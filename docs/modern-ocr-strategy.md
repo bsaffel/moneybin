@@ -13,9 +13,8 @@
 ### Installation & Setup
 
 ```bash
-uv pip install pdfplumber==0.9.5
-uv pip install pandas>=2.1.0
-uv pip install pillow>=10.0.0  # For image processing
+uv pip install pdfplumber>=0.11.4
+uv pip install pillow>=10.4.0  # For image processing
 ```
 
 ## Core Implementation Strategy

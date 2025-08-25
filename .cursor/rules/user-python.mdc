@@ -43,7 +43,7 @@
 
 ### Data Processing
 
-- **Pandas**: Use vectorized operations when possible
+- **Polars**: Use for high-performance data manipulation when needed
 - **DuckDB**: Use [DuckDB](https://duckdb.org/docs/) for large data operations and analytics
 - **Chunking**: Process large files in chunks to manage memory
 - **Validation**: Always validate financial data before processing

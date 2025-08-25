@@ -125,7 +125,7 @@ def standardize_bank_csv(file_path, bank_type):
 ```python
 # PDF processing with pdfplumber
 import pdfplumber
-import pandas as pd
+import polars as pl
 
 def extract_bank_statement(pdf_path):
     transactions = []

@@ -117,7 +117,7 @@ moneybin/
 - **uv**: Fast Python package manager
 - **Cursor AI**: Integrated development rules
 - **pytest**: Testing framework
-- **pandas 2.2+**: Data manipulation
+- **polars 0.22+**: High-performance data manipulation when needed
 
 ## 🚀 Next Steps
 

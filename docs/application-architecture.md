@@ -71,22 +71,7 @@ moneybin/
 
 ### Key Dependencies
 
-```text
-# pyproject.toml dependencies
-dagster>=1.8.5
-dagster-webserver>=1.8.5
-dagster-duckdb>=0.24.5
-dbt-core>=1.8.7
-dbt-duckdb>=1.8.3
-duckdb>=1.1.1
-pdfplumber>=0.11.4
-plaid-python>=15.0.0
-pandas>=2.2.2
-pydantic>=2.8.2
-python-dotenv>=1.0.0
-requests>=2.32.3
-pytest>=8.3.2
-```
+All project dependencies are managed in `pyproject.toml`. See the `[project.dependencies]` section for core runtime dependencies and `[project.optional-dependencies]` for development, testing, and documentation dependencies.
 
 ## Dagster Asset Architecture
 
@@ -95,7 +80,7 @@ pytest>=8.3.2
 ```python
 # pipelines/assets.py
 from dagster import asset, AssetIn
-import pandas as pd
+import polars as pl
 import duckdb
 
 @asset(group_name="raw_data")
