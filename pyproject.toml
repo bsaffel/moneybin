@@ -104,7 +104,10 @@ line-ending = "auto"
 [tool.pyright]
 # Documentation: https://microsoft.github.io/pyright/#/configuration
 # High-quality configuration balancing rigor with pragmatism
-pythonVersion = "3.11"
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests", "pipelines"]
 typeCheckingMode = "strict"
 useLibraryCodeForTypes = true
 reportMissingImports = true

@@ -57,12 +57,12 @@ moneybin/
 ├── config/                  # Configuration files
 ├── data/                    # Data storage
 ├── dbt/                     # DBT Core project (already initialized)
-│   ├── models/             # DBT data models
-│   ├── analyses/           # DBT analyses
-│   ├── macros/             # DBT macros
-│   ├── seeds/              # DBT seed files
-│   ├── snapshots/          # DBT snapshots
-│   └── tests/              # DBT tests
+│   ├── models/              # DBT data models
+│   ├── analyses/            # DBT analyses
+│   ├── macros/              # DBT macros
+│   ├── seeds/               # DBT seed files
+│   ├── snapshots/           # DBT snapshots
+│   └── tests/               # DBT tests
 ├── docs/                    # Technical documentation
 ├── logs/                    # Application logs
 ├── notebooks/               # Jupyter notebooks for analysis

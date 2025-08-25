@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit init-frameworks venv activate status install-uv
+.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv
 
 # Default target
 .DEFAULT_GOAL := help
@@ -17,15 +17,17 @@ RESET := \033[0m
 PYTHON := python3
 VENV_DIR := .venv
 VENV_ACTIVATE := $(VENV_DIR)/bin/activate
-UV := $(shell command -v uv 2> /dev/null)
 
 # Check if virtual environment is active
 ifdef VIRTUAL_ENV
     PYTHON_ENV := $(PYTHON)
-    UV_ENV := uv
+    UV_PIP_INSTALL := uv pip install
+    UV_PIP_ARGS :=
 else
     PYTHON_ENV := $(VENV_DIR)/bin/python
-    UV_ENV := uv
+    VENV_UV := $(VENV_DIR)/bin/uv
+    UV_PIP_INSTALL := $(VENV_UV) pip install
+    UV_PIP_ARGS :=
 endif
 
 help: ## Show this help message
@@ -37,9 +39,7 @@ help: ## Show this help message
 	@echo "$(GREEN)Development:$(RESET)"
 	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z_-]+:.*?## / && /Development|Code|Format|Lint|Type|Test/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
-	@echo "$(GREEN)Framework Initialization:$(RESET)"
-	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z_-]+:.*?## / && /Framework|Initialize|Init/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-	@echo ""
+
 	@echo "$(GREEN)Utility:$(RESET)"
 	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z_-]+:.*?## / && /Clean|Status|Utility/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
@@ -47,71 +47,74 @@ help: ## Show this help message
 	@echo "  make setup          # Complete development environment setup"
 	@echo "  make test           # Run all tests"
 	@echo "  make format         # Format code with ruff"
-	@echo "  make lint           # Lint code and check formatting"
-	@echo "  make init-frameworks # Initialize git, dagster, and dbt core"
+	@echo "  make check          # Lint code and check formatting"
+
 	@echo ""
 	@echo "$(BLUE)Next Steps After Setup:$(RESET)"
 	@echo "  1. Activate virtual environment: source venv/bin/activate"
-	@echo "  2. Initialize frameworks: make init-frameworks"
-	@echo "  3. Start developing!"
+	@echo "  2. Start developing!"
 
-install-uv: ## Setup & Installation: Install uv package manager
-	@if command -v uv >/dev/null 2>&1; then \
-		echo "$(GREEN)✅ uv is already installed$(RESET)"; \
+check-python: ## Setup & Installation: Verify Python installation
+	@echo "$(BLUE)🐍 Checking Python installation...$(RESET)"
+	@if command -v python3 >/dev/null 2>&1; then \
+		echo "$(GREEN)✅ Python 3 is available$(RESET)"; \
 	else \
-		echo "$(BLUE)📥 Installing uv package manager...$(RESET)"; \
-		curl -LsSf https://astral.sh/uv/install.sh | sh; \
-		echo "$(GREEN)✅ uv installed successfully$(RESET)"; \
-		echo "$(YELLOW)⚠️  Please restart your terminal or run 'source ~/.bashrc' to use uv$(RESET)"; \
+		echo "$(RED)❌ Python 3 is not available$(RESET)"; \
+		echo "Please install Python 3 and try again."; \
 		exit 1; \
 	fi
 
-setup: install-uv venv install-dev pre-commit ## Setup & Installation: Complete development environment setup
+setup: check-python venv install-dev pre-commit ## Setup & Installation: Complete development environment setup
 	@echo "$(GREEN)🎉 Setup complete! Your MoneyBin development environment is ready.$(RESET)"
 	@echo ""
 	@echo "$(BLUE)Next steps:$(RESET)"
 	@echo "  1. Activate the virtual environment: source venv/bin/activate"
-	@echo "  2. Initialize frameworks: make init-frameworks"
-	@echo "  3. Start developing!"
+	@echo "  2. Start developing!"
 
 venv: $(VENV_ACTIVATE) ## Setup & Installation: Create virtual environment
 
 $(VENV_ACTIVATE):
 	@echo "$(BLUE)🚀 Setting up MoneyBin development environment...$(RESET)"
-	@if command -v pyenv >/dev/null 2>&1 && [ -f ".python-version" ]; then \
-		echo "$(BLUE)🐍 Using pyenv with .python-version file...$(RESET)"; \
-		pyenv install --skip-existing; \
-		pyenv local; \
-		python_version=$$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"); \
-		echo "$(GREEN)✅ Python version (pyenv): $$python_version$(RESET)"; \
-	else \
-		python_version=$$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"); \
-		required_version="3.11"; \
-		if [ "$$(printf '%s\n' "$$required_version" "$$python_version" | sort -V | head -n1)" != "$$required_version" ]; then \
-			echo "$(RED)❌ Error: Python 3.11 or higher is required. Found: $$python_version$(RESET)"; \
-			echo "Please upgrade Python and try again."; \
-			echo "Consider using pyenv: https://github.com/pyenv/pyenv"; \
-			exit 1; \
-		fi; \
-		echo "$(GREEN)✅ Python version (system): $$python_version$(RESET)"; \
-	fi
 	@if [ ! -d "$(VENV_DIR)" ]; then \
-		echo "$(BLUE)📦 Creating virtual environment with uv...$(RESET)"; \
-		uv venv $(VENV_DIR); \
-		echo "$(GREEN)✅ Virtual environment created$(RESET)"; \
+		if [ -f ".python-version" ]; then \
+			required_python=$$(cat .python-version); \
+			echo "$(BLUE)🐍 Creating virtual environment with Python $$required_python...$(RESET)"; \
+		else \
+			required_python="3.11"; \
+			echo "$(BLUE)🐍 Creating virtual environment with Python $$required_python or higher...$(RESET)"; \
+		fi; \
+		if command -v uv >/dev/null 2>&1; then \
+			uv venv $(VENV_DIR) --python $$required_python; \
+		else \
+			echo "$(YELLOW)⚠️  uv not available, installing first...$(RESET)"; \
+			curl -LsSf https://astral.sh/uv/install.sh | sh; \
+			export PATH="$$HOME/.local/bin:$$PATH"; \
+			uv venv $(VENV_DIR) --python $$required_python; \
+		fi; \
+		echo "$(BLUE)📥 Installing uv in virtual environment...$(RESET)"; \
+		uv pip install -p $(VENV_DIR)/bin/python uv; \
+		echo "$(GREEN)✅ Virtual environment created with uv$(RESET)"; \
 	else \
 		echo "$(GREEN)✅ Virtual environment already exists$(RESET)"; \
+		if [ ! -f "$(VENV_UV)" ]; then \
+			echo "$(BLUE)📥 Installing uv in existing virtual environment...$(RESET)"; \
+			if [ -f "$(VENV_DIR)/bin/pip" ]; then \
+				$(VENV_DIR)/bin/pip install uv; \
+			else \
+				uv pip install -p $(VENV_DIR)/bin/python uv; \
+			fi; \
+		fi; \
 	fi
 
 install: venv ## Setup & Installation: Install project dependencies
 	@echo "$(BLUE)📥 Installing MoneyBin with uv...$(RESET)"
-	@uv pip install -e .
+	@$(UV_PIP_INSTALL) $(UV_PIP_ARGS) -e .
 
 install-dev: venv ## Setup & Installation: Install development dependencies
 	@echo "$(BLUE)📥 Installing MoneyBin with development dependencies using uv...$(RESET)"
-	@uv pip install -e ".[dev]"
+	@$(UV_PIP_INSTALL) $(UV_PIP_ARGS) -e ".[dev]"
 
-pre-commit: $(VENV_ACTIVATE) ## Development: Install pre-commit hooks
+pre-commit: $(VENV_ACTIVATE) ## Setup & Installation: Install pre-commit hooks
 	@echo "$(BLUE)🔒 Installing pre-commit hooks...$(RESET)"
 	@$(VENV_DIR)/bin/pre-commit install
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
@@ -133,11 +136,14 @@ test-integration: $(VENV_ACTIVATE) ## Development: Run integration tests only
 	@echo "$(BLUE)🧪 Running integration tests...$(RESET)"
 	@$(VENV_DIR)/bin/pytest tests/ -m "integration"
 
-format: $(VENV_ACTIVATE) ## Development: Format code with ruff
+format: $(VENV_ACTIVATE) ## Development: Format code with ruff and fix whitespace issues
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"
 	@$(VENV_DIR)/bin/ruff format .
 	@echo "$(BLUE)🔧 Fixing auto-fixable issues...$(RESET)"
 	@$(VENV_DIR)/bin/ruff check --fix .
+	@echo "$(BLUE)🔧 Fixing whitespace and file ending issues...$(RESET)"
+	@$(VENV_DIR)/bin/pre-commit run trailing-whitespace --all-files || true
+	@$(VENV_DIR)/bin/pre-commit run end-of-file-fixer --all-files || true
 	@echo "$(GREEN)✅ Code formatted and fixed$(RESET)"
 
 lint: $(VENV_ACTIVATE) ## Development: Lint code with ruff
@@ -152,40 +158,6 @@ type-check: $(VENV_ACTIVATE) ## Development: Type check with pyright
 
 check: format lint type-check ## Development: Run all code quality checks
 	@echo "$(GREEN)✅ All code quality checks complete$(RESET)"
-
-init-git: ## Framework: Initialize git repository
-	@if [ ! -d ".git" ]; then \
-		echo "$(BLUE)📦 Initializing git repository...$(RESET)"; \
-		git init; \
-		echo "$(GREEN)✅ Git repository initialized$(RESET)"; \
-	else \
-		echo "$(YELLOW)⚠️  Git repository already exists$(RESET)"; \
-	fi
-
-init-dagster: $(VENV_ACTIVATE) ## Framework: Initialize dagster project
-	@if [ ! -d "pipelines" ]; then \
-		echo "$(BLUE)📦 Initializing dagster project in pipelines/ directory...$(RESET)"; \
-		$(VENV_DIR)/bin/dagster project scaffold --name pipelines; \
-		echo "$(BLUE)🧹 Cleaning up duplicate files and nested directories...$(RESET)"; \
-		rm -rf pipelines/pipelines_tests pipelines/setup.py pipelines/setup.cfg pipelines/README.md pipelines/pyproject.toml; \
-		mv pipelines/pipelines/* pipelines/ 2>/dev/null || true; \
-		rmdir pipelines/pipelines 2>/dev/null || true; \
-		echo "$(GREEN)✅ Dagster project initialized and cleaned up$(RESET)"; \
-	else \
-		echo "$(YELLOW)⚠️  Dagster project already exists in pipelines/$(RESET)"; \
-	fi
-
-init-dbt: $(VENV_ACTIVATE) ## Framework: Initialize dbt core project
-	@if [ ! -d "dbt" ]; then \
-		echo "$(BLUE)📦 Initializing dbt core project...$(RESET)"; \
-		$(VENV_DIR)/bin/dbt init dbt; \
-		echo "$(GREEN)✅ DBT core project initialized$(RESET)"; \
-	else \
-		echo "$(YELLOW)⚠️  DBT project already exists$(RESET)"; \
-	fi
-
-init-frameworks: init-git init-dagster init-dbt ## Framework: Initialize all frameworks (git, dagster, dbt core)
-	@echo "$(GREEN)🎉 All frameworks initialized!$(RESET)"
 
 jupyter: $(VENV_ACTIVATE) ## Development: Start Jupyter notebook server
 	@echo "$(BLUE)📓 Starting Jupyter notebook server...$(RESET)"
@@ -208,16 +180,9 @@ clean-venv: ## Utility: Remove virtual environment
 	@rm -rf $(VENV_DIR)
 	@echo "$(GREEN)✅ Virtual environment removed$(RESET)"
 
-clean-dagster: ## Utility: Clean dagster project files and directories
-	@echo "$(BLUE)🧹 Cleaning dagster project...$(RESET)"
-	@rm -rf pipelines/pipelines_tests pipelines/setup.py pipelines/setup.cfg pipelines/README.md pipelines/pyproject.toml 2>/dev/null || true
-	@if [ -d "pipelines/pipelines" ]; then \
-		mv pipelines/pipelines/* pipelines/ 2>/dev/null || true; \
-		rmdir pipelines/pipelines 2>/dev/null || true; \
-	fi
-	@echo "$(GREEN)✅ Dagster project cleaned$(RESET)"
 
-clean: clean-cache clean-venv clean-dagster ## Utility: Clean all generated files and virtual environment
+
+clean: clean-cache clean-venv ## Utility: Clean all generated files and virtual environment
 	@echo "$(GREEN)✅ All clean!$(RESET)"
 
 status: ## Utility: Show development environment status
@@ -237,10 +202,24 @@ status: ## Utility: Show development environment status
 	@if [ -d "pipelines" ]; then echo "  Dagster: $(GREEN)✅ Initialized$(RESET)"; else echo "  Dagster: $(RED)❌ Not initialized$(RESET)"; fi
 	@if [ -d "dbt" ]; then echo "  DBT Core: $(GREEN)✅ Initialized$(RESET)"; else echo "  DBT Core: $(RED)❌ Not initialized$(RESET)"; fi
 	@echo ""
+	@echo "$(GREEN)Python Management:$(RESET)"
+	@if command -v uv >/dev/null 2>&1; then \
+		echo "  uv: $(GREEN)✅ Available (for Python management)$(RESET)"; \
+	elif command -v python3 >/dev/null 2>&1; then \
+		echo "  python3: $(GREEN)✅ Available (system)$(RESET)"; \
+	else \
+		echo "  python: $(RED)❌ Not available$(RESET)"; \
+	fi
+	@if [ -f ".python-version" ]; then \
+		required_version=$$(cat .python-version); \
+		echo "  .python-version: $(GREEN)✅ Found ($$required_version)$(RESET)"; \
+	else \
+		echo "  .python-version: $(YELLOW)⚠️  Not found (will use 3.11+)$(RESET)"; \
+	fi
+	@echo ""
 	@echo "$(GREEN)Dependencies:$(RESET)"
-	@if command -v uv >/dev/null 2>&1; then echo "  uv: $(GREEN)✅ Available$(RESET)"; else echo "  uv: $(RED)❌ Not available$(RESET)"; fi
-	@if command -v pyenv >/dev/null 2>&1; then echo "  pyenv: $(GREEN)✅ Available$(RESET)"; else echo "  pyenv: $(YELLOW)⚠️  Not available$(RESET)"; fi
-	@if [ -f ".python-version" ]; then echo "  .python-version: $(GREEN)✅ Found$(RESET)"; else echo "  .python-version: $(YELLOW)⚠️  Not found$(RESET)"; fi
+	@if [ -f "$(VENV_UV)" ]; then echo "  uv (venv): $(GREEN)✅ Available$(RESET)"; else echo "  uv (venv): $(YELLOW)⚠️  Not installed$(RESET)"; fi
+
 
 activate: ## Utility: Show how to activate virtual environment
 	@echo "$(BLUE)To activate the virtual environment, run:$(RESET)"
@@ -248,11 +227,3 @@ activate: ## Utility: Show how to activate virtual environment
 	@echo ""
 	@echo "$(BLUE)To deactivate:$(RESET)"
 	@echo "  deactivate"
-
-# Development workflow shortcuts
-dev: setup ## Development: Complete setup and start development
-	@echo "$(GREEN)🚀 Development environment ready!$(RESET)"
-	@echo "$(BLUE)Run 'make activate' to see activation instructions$(RESET)"
-
-quick-check: lint type-check ## Development: Quick code quality check (lint + type check)
-	@echo "$(GREEN)✅ Quick quality check complete$(RESET)"
