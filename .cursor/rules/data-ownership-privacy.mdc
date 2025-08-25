@@ -1,0 +1,45 @@
+---
+description: Enforce data ownership and privacy principles for financial data
+globs: ["**/*.py", "**/*.sql", "**/*.md", "**/*.json"]
+alwaysApply: true
+---
+
+# Data Ownership & Privacy Rules
+
+## Core Principles
+
+- **Full Control**: All financial data must be stored locally or in user-controlled environments
+- **No Expiration**: Data retention is not subject to third-party app policies or subscription limits
+- **Security First**: Implement robust encryption and access controls for all sensitive financial data
+- **Compliance**: Adhere to relevant financial data handling regulations and standards
+
+## Implementation Requirements
+
+### Data Storage
+
+- Store all financial data locally or in user-controlled cloud environments
+- Never rely on third-party services for permanent data storage
+- Implement encryption at rest for all sensitive financial information
+- Use secure, user-controlled backup solutions
+
+### API Integration
+
+- When using external APIs (like Plaid), treat them as data sources, not storage
+- Always maintain local copies of all retrieved data
+- Implement secure credential management for API keys
+- Use encrypted connections for all external API calls
+
+### Privacy Protection
+
+- Minimize data sharing with external services
+- Implement data anonymization for analytics where possible
+- Ensure user consent for any data processing
+- Provide clear data handling documentation
+
+## Security Standards
+
+- Encrypt sensitive financial data at rest and in transit
+- Implement secure authentication and authorization
+- Use secure coding practices to prevent common vulnerabilities
+- Regular security audits and updates
+- Secure API key management with environment variables or secure vaults

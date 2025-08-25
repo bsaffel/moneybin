@@ -1,0 +1,122 @@
+
+# User Python Development Preferences
+
+## Code Style Preferences
+
+### Formatting
+
+- **Ruff**: Always use [Ruff](https://docs.astral.sh/ruff/) for formatting and linting with line length 88
+- **Import Organization**: Ruff handles import organization automatically
+- **Type Hints**: Always include type hints for function parameters and return values
+- **Docstrings**: Use Google-style docstrings for all public functions and classes
+
+### Naming Conventions
+
+- **Files**: snake_case (`plaid_extractor.py`)
+- **Classes**: PascalCase (`PlaidExtractor`)
+- **Functions**: snake_case (`extract_transactions`)
+- **Constants**: UPPER_SNAKE_CASE (`MAX_RETRY_ATTEMPTS`)
+- **Variables**: snake_case (`transaction_data`)
+
+## Project-Specific Patterns
+
+### Data Models
+
+- **Use Pydantic**: All data structures should use [Pydantic](https://docs.pydantic.dev/) models
+- **Validation**: Include field validators for business logic
+- **Documentation**: Add descriptions to all fields
+
+### Error Handling
+
+- **Specific Exceptions**: Catch specific exception types, not generic `Exception`
+- **Logging**: Use structured logging with context
+- **User Feedback**: Provide clear, actionable error messages
+
+### Testing
+
+- **Pytest**: Use [pytest](https://docs.pytest.org/) for all testing
+- **Fixtures**: Create reusable fixtures for common test data
+- **Mocking**: Use unittest.mock for external dependencies
+- **Coverage**: Aim for high test coverage (>80%)
+
+## Financial Data Specific Rules
+
+### Data Processing
+
+- **Pandas**: Use vectorized operations when possible
+- **DuckDB**: Use [DuckDB](https://duckdb.org/docs/) for large data operations and analytics
+- **Chunking**: Process large files in chunks to manage memory
+- **Validation**: Always validate financial data before processing
+
+### Security
+
+- **No Hardcoding**: Never hardcode API keys or secrets
+- **Environment Variables**: Use .env files for configuration
+- **Input Validation**: Validate and sanitize all external inputs
+- **SQL Injection**: Use parameterized queries with DuckDB
+
+### Performance
+
+- **Efficient Operations**: Use appropriate tools for data size
+- **Memory Management**: Monitor memory usage for large datasets
+- **Caching**: Implement caching where appropriate
+- **Async**: Use async/await for I/O operations
+
+## Development Workflow
+
+### Pre-commit
+
+- **Install**: `uv pip install pre-commit && pre-commit install`
+- **Checks**: Code formatting, linting, type checking
+- **Quality Gates**: Ensure code quality before commits
+
+### IDE Setup
+
+- **Ruff Integration**: Configure auto-formatting and linting on save with [Ruff](https://docs.astral.sh/ruff/getting-started/)
+- **Type Checking**: Enable [Pyright](https://microsoft.github.io/pyright/) integration for fast type checking
+- **Linting**: Ruff provides comprehensive linting
+- **Auto-imports**: Ruff handles import organization automatically
+
+### Commands
+
+```bash
+# Development setup
+uv pip install -e ".[dev]"
+pre-commit install
+
+# Code quality
+ruff format .
+ruff check .
+pyright
+
+# Testing
+pytest tests/
+pytest --cov=src tests/
+```
+
+## Compliance with MoneyBin Rules
+
+### Data Ownership
+
+- **Local Storage**: All financial data must be stored locally
+- **No External Storage**: Use external APIs only for extraction
+- **Privacy First**: Implement encryption for sensitive data
+
+### General Error Handling
+
+- **Graceful Degradation**: Handle failures with fallback options
+- **User Experience**: Provide clear error messages and recovery steps
+- **Monitoring**: Log all errors for debugging and monitoring
+
+### System Performance
+
+- **Scalable Design**: Design for growing data volumes
+- **Efficient Processing**: Use appropriate tools for each task
+- **Resource Management**: Monitor and optimize resource usage
+
+Follow these preferences to ensure consistent, high-quality Python development that aligns with the MoneyBin project goals and user experience requirements.
+
+- **Efficient Processing**: Use appropriate tools for each task
+- **Resource Management**: Monitor and optimize resource usage
+
+Follow these preferences to ensure consistent, high-quality Python development that aligns with the MoneyBin project goals and user experience requirements.

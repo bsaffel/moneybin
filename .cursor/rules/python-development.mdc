@@ -1,0 +1,522 @@
+
+# Python Development Standards
+
+## Code Style & Formatting
+
+### Ruff Code Formatter & Linter
+
+- **Always use Ruff**: Code must be formatted and linted with [Ruff](https://docs.astral.sh/ruff/) (line length 88)
+- **Auto-format**: Run `ruff format .` before committing
+- **Auto-lint**: Run `ruff check .` before committing
+- **IDE Integration**: Configure your editor to format on save with Ruff
+
+### Import Organization (Ruff)
+
+- **Standard Library**: Python built-in modules first
+- **Third Party**: External packages (pandas, dagster, etc.)
+- **Local**: MoneyBin modules last
+- **Grouping**: Separate groups with blank lines
+
+```python
+# Standard library imports
+import os
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+# Third-party imports
+import pandas as pd
+import duckdb
+from dagster import asset, get_dagster_logger
+from pydantic import BaseModel
+
+# Local imports
+from moneybin.extractors.plaid_extractor import PlaidExtractor
+from moneybin.processors.data_processor import DataProcessor
+```
+
+## Type Hints & Annotations
+
+### Required Type Hints
+
+- **Function Parameters**: All parameters must have type hints
+- **Return Values**: All functions must specify return types
+- **Variables**: Use type hints for complex variables
+- **Collections**: Specify types for lists, dicts, etc.
+
+### Type Checking with Pyright
+
+- **Use Pyright**: Fast type checking with [Pyright](https://microsoft.github.io/pyright/) instead of mypy
+- **Strict Mode**: Configure Pyright in strict mode for comprehensive type checking
+- **IDE Integration**: Enable Pyright in your editor for real-time type checking
+
+```python
+def process_transactions(
+    transactions: List[Dict[str, Any]],
+    account_id: str,
+    start_date: Optional[datetime] = None
+) -> pd.DataFrame:
+    """Process transaction data and return standardized DataFrame."""
+    pass
+
+# Use type aliases for complex types
+TransactionData = Dict[str, Union[str, float, datetime]]
+TransactionList = List[TransactionData]
+```
+
+### Pydantic Models
+
+- **Data Validation**: Use [Pydantic](https://docs.pydantic.dev/) models for API responses and data structures
+- **Field Validation**: Add constraints and validators where appropriate
+- **Documentation**: Include field descriptions
+
+```python
+from pydantic import BaseModel, Field, validator
+from datetime import datetime
+from decimal import Decimal
+
+class Transaction(BaseModel):
+    """Financial transaction data model."""
+
+    transaction_id: str = Field(..., description="Unique transaction identifier")
+    account_id: str = Field(..., description="Associated account ID")
+    date: datetime = Field(..., description="Transaction date and time")
+    amount: Decimal = Field(..., description="Transaction amount (positive for income, negative for expense)")
+    description: str = Field(..., description="Transaction description")
+    category: Optional[str] = Field(None, description="Transaction category")
+
+    @validator('amount')
+    def validate_amount(cls, v):
+        """Ensure amount is not zero."""
+        if v == 0:
+            raise ValueError('Amount cannot be zero')
+        return v
+```
+
+## Project Structure & Organization
+
+### Source Code Organization
+
+```text
+src/
+├── moneybin/
+│   ├── __init__.py
+│   ├── extractors/          # Data extraction modules
+│   │   ├── __init__.py
+│   │   ├── plaid_extractor.py
+│   │   ├── pdf_extractor.py
+│   │   └── csv_processor.py
+│   ├── processors/          # Data processing utilities
+│   ├── validators/          # Data validation
+│   ├── utils/               # Shared utilities
+│   └── cli.py               # Command-line interface
+```
+
+### Module Naming
+
+- **Files**: Use snake_case for Python files (`plaid_extractor.py`)
+- **Classes**: Use PascalCase for classes (`PlaidExtractor`)
+- **Functions**: Use snake_case for functions (`extract_transactions`)
+- **Constants**: Use UPPER_SNAKE_CASE for constants (`MAX_RETRY_ATTEMPTS`)
+
+### Import Statements
+
+- **Absolute Imports**: Prefer absolute imports for clarity
+- **Relative Imports**: Use relative imports only within packages
+- **Avoid Wildcards**: Never use `from module import *`
+
+```python
+# Good - Absolute imports
+from moneybin.extractors.plaid_extractor import PlaidExtractor
+
+# Good - Relative imports within package
+from .base_extractor import BaseExtractor
+
+# Bad - Wildcard imports
+from moneybin.extractors import *
+```
+
+## Error Handling & Logging
+
+### Exception Handling
+
+- **Specific Exceptions**: Catch specific exception types, not generic `Exception`
+- **Meaningful Messages**: Provide clear error messages with context
+- **Proper Logging**: Log errors with appropriate levels
+
+```python
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+def safe_extract_data(file_path: str) -> Optional[pd.DataFrame]:
+    """Safely extract data from file with proper error handling."""
+    try:
+        if file_path.endswith('.csv'):
+            return pd.read_csv(file_path)
+        elif file_path.endswith('.pdf'):
+            return extract_pdf_data(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: {file_path}")
+
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        return None
+    except pd.errors.EmptyDataError:
+        logger.warning(f"Empty file: {file_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error processing {file_path}: {e}")
+        raise
+```
+
+### Logging Configuration
+
+- **Structured Logging**: Use structured logging for production
+- **Log Levels**: Use appropriate levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- **Context**: Include relevant context in log messages
+
+```python
+import logging
+from dagster import get_dagster_logger
+
+logger = get_dagster_logger()
+
+def process_bank_data(bank_name: str, account_count: int):
+    logger.info("Starting bank data processing", extra={
+        "bank_name": bank_name,
+        "account_count": account_count,
+        "operation": "data_processing"
+    })
+
+    try:
+        # Processing logic here
+        logger.info("Bank data processing completed successfully")
+    except Exception as e:
+        logger.error("Bank data processing failed", extra={
+            "bank_name": bank_name,
+            "error": str(e),
+            "operation": "data_processing"
+        })
+        raise
+```
+
+## Testing Standards
+
+### Test Organization
+
+```text
+tests/
+├── unit/                    # Unit tests
+│   ├── test_extractors/
+│   ├── test_processors/
+│   └── test_validators/
+├── integration/             # Integration tests
+├── fixtures/                # Test data and fixtures
+└── conftest.py             # Pytest configuration
+```
+
+### Test Naming & Structure
+
+- **Test Files**: Prefix with `test_` (`test_plaid_extractor.py`)
+- **Test Functions**: Prefix with `test_` (`test_extract_transactions`)
+- **Test Classes**: Prefix with `Test` (`TestPlaidExtractor`)
+- **Descriptive Names**: Use descriptive test names that explain the scenario
+
+```python
+import pytest
+from unittest.mock import Mock, patch
+from moneybin.extractors.plaid_extractor import PlaidExtractor
+
+class TestPlaidExtractor:
+    """Test suite for PlaidExtractor class."""
+
+    @pytest.fixture
+    def mock_plaid_client(self):
+        """Mock Plaid client for testing."""
+        return Mock()
+
+    def test_extract_transactions_success(self, mock_plaid_client):
+        """Test successful transaction extraction."""
+        # Arrange
+        extractor = PlaidExtractor(mock_plaid_client)
+        mock_plaid_client.transactions_get.return_value = {
+            'transactions': [{'id': '1', 'amount': 100.0}]
+        }
+
+        # Act
+        result = extractor.extract_transactions('token', '2024-01-01', '2024-01-31')
+
+        # Assert
+        assert len(result) == 1
+        assert result[0]['amount'] == 100.0
+
+    def test_extract_transactions_empty_response(self, mock_plaid_client):
+        """Test handling of empty transaction response."""
+        # Arrange
+        extractor = PlaidExtractor(mock_plaid_client)
+        mock_plaid_client.transactions_get.return_value = {'transactions': []}
+
+        # Act
+        result = extractor.extract_transactions('token', '2024-01-01', '2024-01-31')
+
+        # Assert
+        assert result == []
+```
+
+## Performance & Best Practices
+
+### Data Processing
+
+- **Pandas Operations**: Use vectorized operations when possible
+- **Memory Management**: Process large datasets in chunks
+- **DuckDB Integration**: Use [DuckDB](https://duckdb.org/docs/) for large data operations
+
+```python
+# Good - Vectorized operations
+def process_transactions_vectorized(df: pd.DataFrame) -> pd.DataFrame:
+    """Process transactions using vectorized operations."""
+    df['amount_abs'] = df['amount'].abs()
+    df['is_expense'] = df['amount'] < 0
+    df['month'] = df['date'].dt.to_period('M')
+    return df
+
+# Good - Chunked processing for large files
+def process_large_csv(file_path: str, chunk_size: int = 10000):
+    """Process large CSV files in chunks."""
+    for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+        processed_chunk = process_transactions_vectorized(chunk)
+        yield processed_chunk
+
+# Good - DuckDB for large operations
+def aggregate_transactions_duckdb(transactions_df: pd.DataFrame) -> pd.DataFrame:
+    """Use DuckDB for efficient aggregation."""
+    import duckdb
+
+    conn = duckdb.connect(':memory:')
+    conn.register('transactions', transactions_df)
+
+    result = conn.execute("""
+        SELECT
+            strftime('%Y-%m', date) as month,
+            category,
+            SUM(amount) as total_amount,
+            COUNT(*) as transaction_count
+        FROM transactions
+        GROUP BY month, category
+        ORDER BY month DESC, total_amount DESC
+    """).fetchdf()
+
+    conn.close()
+    return result
+```
+
+### Async Operations
+
+- **API Calls**: Use async/await for I/O operations
+- **Concurrent Processing**: Use asyncio.gather for parallel operations
+- **Rate Limiting**: Implement rate limiting for external APIs
+
+```python
+import asyncio
+import aiohttp
+from typing import List
+
+async def fetch_multiple_accounts(session: aiohttp.ClientSession, account_ids: List[str]):
+    """Fetch multiple account balances concurrently."""
+    async def fetch_account(account_id: str):
+        async with session.get(f"/accounts/{account_id}") as response:
+            return await response.json()
+
+    # Process with rate limiting
+    semaphore = asyncio.Semaphore(5)  # Max 5 concurrent requests
+
+    async def fetch_with_rate_limit(account_id: str):
+        async with semaphore:
+            return await fetch_account(account_id)
+
+    tasks = [fetch_with_rate_limit(account_id) for account_id in account_ids]
+    return await asyncio.gather(*tasks)
+```
+
+## Security & Best Practices
+
+### Environment Variables
+
+- **Never Hardcode**: Never hardcode API keys or secrets
+- **Use python-dotenv**: Load environment variables from .env files
+- **Validate Configuration**: Validate required environment variables on startup
+
+```python
+import os
+from dotenv import load_dotenv
+from pydantic import BaseSettings
+
+load_dotenv()
+
+class Settings(BaseSettings):
+    """Application settings with validation."""
+
+    plaid_client_id: str = Field(..., env='PLAID_CLIENT_ID')
+    plaid_secret: str = Field(..., env='PLAID_SECRET')
+    plaid_env: str = Field(default='sandbox', env='PLAID_ENV')
+    duckdb_path: str = Field(default='data/duckdb/financial.db', env='DUCKDB_PATH')
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+
+# Validate settings on import
+try:
+    settings = Settings()
+except ValidationError as e:
+    raise RuntimeError(f"Configuration error: {e}") from e
+```
+
+### Input Validation
+
+- **Sanitize Inputs**: Always validate and sanitize external inputs
+- **Type Checking**: Use type hints and runtime validation
+- **SQL Injection**: Use parameterized queries with DuckDB
+
+```python
+def safe_query_transactions(account_id: str, start_date: str, end_date: str):
+    """Execute safe SQL query with parameterized inputs."""
+    import duckdb
+
+    # Validate inputs
+    if not account_id or not start_date or not end_date:
+        raise ValueError("All parameters are required")
+
+    # Use parameterized query to prevent SQL injection
+    query = """
+        SELECT * FROM transactions
+        WHERE account_id = ?
+        AND date BETWEEN ? AND ?
+        ORDER BY date DESC
+    """
+
+    conn = duckdb.connect('data/duckdb/financial.db')
+    result = conn.execute(query, [account_id, start_date, end_date]).fetchdf()
+    conn.close()
+
+    return result
+```
+
+## Documentation Standards
+
+### Docstrings
+
+- **Google Style**: Use Google-style docstrings
+- **Type Information**: Include type information in docstrings
+- **Examples**: Provide usage examples for complex functions
+
+```python
+def categorize_transaction(description: str, amount: float) -> str:
+    """Categorize a transaction based on description and amount.
+
+    Args:
+        description: Transaction description text
+        amount: Transaction amount (positive for income, negative for expense)
+
+    Returns:
+        str: Transaction category (e.g., 'Food', 'Transportation', 'Income')
+
+    Raises:
+        ValueError: If description is empty or amount is zero
+
+    Example:
+        >>> categorize_transaction("Grocery Store", -45.67)
+        'Food'
+        >>> categorize_transaction("Salary Deposit", 2500.00)
+        'Income'
+    """
+    if not description.strip():
+        raise ValueError("Description cannot be empty")
+
+    if amount == 0:
+        raise ValueError("Amount cannot be zero")
+
+    # Categorization logic here
+    description_lower = description.lower()
+
+    if any(word in description_lower for word in ['grocery', 'food', 'restaurant']):
+        return 'Food'
+    elif any(word in description_lower for word in ['gas', 'uber', 'lyft', 'parking']):
+        return 'Transportation'
+    elif amount > 0:
+        return 'Income'
+    else:
+        return 'Other'
+```
+
+### README & Documentation
+
+- **Project README**: Keep README.md up to date with setup instructions
+- **API Documentation**: Document all public APIs and interfaces
+- **Code Examples**: Include working code examples in documentation
+
+## Development Workflow
+
+### Pre-commit Hooks
+
+- **Install pre-commit**: `uv pip install pre-commit && pre-commit install`
+- **Automatic Checks**: Code formatting, linting, and type checking
+- **Quality Gates**: Ensure code quality before commits
+
+### Development Commands
+
+```bash
+# Format code
+ruff format .
+
+# Lint code
+ruff check .
+
+# Type checking
+pyright
+
+# Run tests
+pytest tests/
+
+# Run tests with coverage
+pytest --cov=src tests/
+
+# Install development dependencies
+uv pip install -e ".[dev]"
+```
+
+### IDE Configuration
+
+- **Ruff Integration**: Configure your editor to use [Ruff](https://docs.astral.sh/ruff/getting-started/)
+- **Type Checking**: Enable [Pyright](https://microsoft.github.io/pyright/) integration in your IDE
+- **Linting**: Ruff provides comprehensive linting
+- **Auto-formatting**: Set up auto-formatting on save with Ruff
+
+## Compliance with Project Rules
+
+### Data Ownership
+
+- **Local Storage**: All financial data must be stored locally
+- **No External APIs**: Use external APIs only for data extraction, not storage
+- **Encryption**: Implement encryption for sensitive data
+
+### Error Handling
+
+- **Graceful Degradation**: Handle failures gracefully with fallback options
+- **User Feedback**: Provide clear error messages to users
+- **Logging**: Log all errors for debugging and monitoring
+
+### Performance
+
+- **Efficient Processing**: Use appropriate tools for data processing (DuckDB for analytics)
+- **Memory Management**: Process large datasets efficiently
+- **Caching**: Implement caching where appropriate for performance
+
+Follow these standards to ensure consistent, maintainable, and high-quality Python code in the MoneyBin project.
+
+- **Memory Management**: Process large datasets efficiently
+- **Caching**: Implement caching where appropriate for performance
+
+Follow these standards to ensure consistent, maintainable, and high-quality Python code in the MoneyBin project.

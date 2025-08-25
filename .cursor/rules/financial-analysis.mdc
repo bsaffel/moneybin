@@ -1,0 +1,102 @@
+---
+description: Standards for financial analysis queries and success metrics
+globs: ["**/*.sql", "**/*.py", "src/analysis/**/*", "dbt/**/*", "notebooks/**/*"]
+alwaysApply: false
+---
+
+# Financial Analysis Standards
+
+## Success Metrics & Functionality
+
+### Core Analysis Capabilities
+
+The system must be able to answer key financial questions:
+
+- **Tax Analysis**: "How much did I pay in taxes last year?"
+- **Spending Analysis**: "What did I spend last year by category?"
+- **Income Analysis**: "What was my total income from all sources?"
+- **Trend Analysis**: "How has my spending changed over time?"
+- **Budget Analysis**: "How much did I spend vs. budget in each category?"
+
+### Query Performance Requirements
+
+- **Fast Response**: Query response times under 5 seconds for typical analysis
+- **Scalable**: Handle growing data volumes efficiently
+- **Reliable**: Consistent, accurate results across all queries
+- **Maintainable**: Easy to update and extend with new analysis types
+
+## SQL Query Standards
+
+### Query Organization
+
+- Use clear, descriptive names for all tables and columns
+- Implement consistent naming conventions across all queries
+- Add comments explaining complex business logic
+- Structure queries for readability and maintainability
+
+### Common Query Patterns
+
+#### Tax Payment Analysis
+
+```sql
+-- Total taxes paid by year
+SELECT
+    strftime('%Y', date) as tax_year,
+    SUM(amount) as total_taxes_paid
+FROM transactions
+WHERE category IN ('Federal Tax', 'State Tax', 'Property Tax')
+    AND amount > 0  -- Tax payments are positive
+GROUP BY tax_year
+ORDER BY tax_year DESC;
+```
+
+#### Spending Analysis
+
+```sql
+-- Annual spending by category
+SELECT
+    strftime('%Y', date) as year,
+    category,
+    SUM(ABS(amount)) as total_spent
+FROM transactions
+WHERE amount < 0  -- Expenses are negative
+    AND date >= '2023-01-01'
+GROUP BY year, category
+ORDER BY year DESC, total_spent DESC;
+```
+
+#### Monthly Trends
+
+```sql
+-- Monthly spending trends
+SELECT
+    strftime('%Y-%m', date) as month,
+    SUM(ABS(amount)) as monthly_spending
+FROM transactions
+WHERE amount < 0
+GROUP BY month
+ORDER BY month;
+```
+
+## Analysis Best Practices
+
+### Data Validation
+
+- Always validate date ranges in analysis queries
+- Check for data completeness before generating reports
+- Handle edge cases like refunds, transfers, and corrections
+- Verify category assignments and merchant data accuracy
+
+### Performance Optimization
+
+- Use appropriate indexes for common query patterns
+- Implement query caching for frequently accessed analyses
+- Optimize aggregation queries for large datasets
+- Consider materialized views for complex recurring analyses
+
+### Report Generation
+
+- Provide clear, actionable insights from analysis
+- Include data quality indicators in reports
+- Format financial amounts consistently
+- Add context and explanations for unusual patterns or outliers

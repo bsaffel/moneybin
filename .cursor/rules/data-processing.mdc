@@ -1,0 +1,76 @@
+---
+description: Data processing and integration standards for financial data sources
+globs: ["**/*.py", "**/*.sql", "src/extractors/**/*", "src/processors/**/*", "dagster/**/*", "dbt/**/*"]
+alwaysApply: false
+---
+
+# Data Processing Standards
+
+## Data Sources & Integration
+
+### Tax Documents
+
+- Extract structured data from official tax PDFs (1040, W-2, 1099, etc.)
+- Support multiple tax document formats and years
+- Validate extracted data against known tax form structures
+- Handle both current and historical tax document formats
+
+### Bank Transactions
+
+- Aggregate transaction data from all connected financial institutions
+- Support multiple data formats (CSV, API, PDF statements)
+- Implement automatic categorization and merchant data enrichment
+- Handle duplicate detection and deduplication
+
+### Multi-Source Support
+
+- Handle diverse data formats and sources with consistent normalization
+- Implement robust data validation and quality checks
+- Support incremental data updates without full reprocessing
+- Maintain data lineage and transformation audit trails
+
+## Technical Architecture Requirements
+
+### DuckDB Integration
+
+- Use DuckDB as the primary analytical database for fast querying
+- Implement efficient CSV import/export workflows
+- Design schema for scalable financial data analysis
+- Optimize queries for common financial analysis patterns
+
+### Data Consistency
+
+- Standardize data formats across all sources using CSV as interchange format
+- Implement data validation and quality checks at each processing stage
+- Maintain consistent column naming and data types
+- Handle missing or malformed data gracefully
+
+### Processing Pipeline
+
+- Support incremental processing for large datasets
+- Implement automated collection with minimal manual data entry
+- Design scalable architecture for growing data volumes
+- Provide clear data transformation and processing logs
+
+## Data Quality Standards
+
+### Validation Requirements
+
+- Cross-reference extracted data with original sources for accuracy
+- Implement automated data quality checks and alerts
+- Validate data types, ranges, and required fields
+- Check for logical consistency across related data points
+
+### Error Handling
+
+- Implement robust error handling for all extraction processes
+- Provide detailed error messages with suggested remediation
+- Log all processing errors for debugging and monitoring
+- Implement retry logic for transient failures
+
+### Audit Trail
+
+- Track data lineage and transformation history
+- Log all data processing operations with timestamps
+- Maintain version history for processed datasets
+- Provide clear documentation of data transformation rules

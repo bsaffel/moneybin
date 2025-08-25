@@ -1,0 +1,93 @@
+
+# Development Standards
+
+## Code Quality Requirements
+
+### Modern Practices
+
+- Use the latest idiomatically correct approaches for each language/framework
+- Link to current authoritative documentation for all framework-specific methods
+- Maintain clean, readable, and maintainable code
+- Implement proper error handling and logging
+
+### Planning Process
+
+1. **Verify Approach**: Research and validate technical approaches before implementation
+2. **Create Plans**: Document implementation plans before making changes
+3. **Minimize Edits**: Make targeted, minimal changes rather than broad rewrites
+4. **Test Incrementally**: Validate each change before proceeding to the next
+
+### Documentation Standards
+
+- Always link to authoritative documentation when suggesting framework methods
+- Provide context and reasoning for technical decisions
+- Document data sources, extraction methods, and transformation processes
+- Maintain clear README files and technical documentation
+- Add comprehensive docstrings to methods and files
+
+## Technology Stack Guidelines
+
+### Primary Technologies
+
+- **Database**: [DuckDB](https://duckdb.org/docs/) for analytical workloads
+- **Data Processing**: Python for extraction and [DBT Core](https://docs.getdbt.com/) for transformation
+- **PDF Processing**: Modern libraries like [pdfplumber](https://github.com/jsvine/pdfplumber), [tabula-py](https://github.com/chezou/tabula-py), or [camelot-py](https://github.com/camelot-dev/camelot)
+- **Bank APIs**: [Plaid](https://plaid.com/docs/) for automated transaction aggregation (where possible)
+- **Storage**: Local filesystem or user-controlled cloud storage
+- **Visualization**: Integration-ready for dashboards and reporting tools
+
+### Development Tools
+
+- **Code Formatting**: [Ruff](https://docs.astral.sh/ruff/) for Python code formatting and linting
+- **Type Checking**: [Pyright](https://microsoft.github.io/pyright/) for fast Python type checking
+- **Package Management**: [uv](https://docs.astral.sh/uv/) for fast Python package management
+- **Testing**: [pytest](https://docs.pytest.org/) for comprehensive testing
+- **Orchestration**: [Dagster](https://docs.dagster.io/) for data pipeline orchestration
+
+### Code Organization
+
+- Prefer editing existing files over creating new ones
+- Never create files unless absolutely necessary for the goal
+- Use clear, descriptive naming conventions
+- Organize code into logical modules and functions
+
+## Error Handling
+
+- Implement robust error handling for all data extraction processes
+- Validate extracted data against original sources
+- Provide clear error messages and recovery suggestions
+- Log errors appropriately for debugging and monitoring
+
+## Development Workflow
+
+### Code Quality Commands
+
+```bash
+# Format and lint code
+ruff format .
+ruff check .
+
+# Type checking
+pyright
+
+# Run tests
+pytest tests/
+
+# Install dependencies
+uv pip install -e ".[dev]"
+```
+
+### Pre-commit Setup
+
+```bash
+# Install pre-commit hooks
+uv pip install pre-commit
+pre-commit install
+```
+
+Follow these standards to ensure consistent, maintainable, and high-quality code in the MoneyBin project.
+
+- Implement robust error handling for all data extraction processes
+- Validate extracted data against original sources
+- Provide clear error messages and recovery suggestions
+- Log errors appropriately for debugging and monitoring

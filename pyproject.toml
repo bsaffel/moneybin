@@ -1,0 +1,199 @@
+[build-system]
+# Documentation: https://packaging.python.org/en/latest/specifications/build-backend/
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Documentation: https://packaging.python.org/en/latest/specifications/core-metadata/
+name = "moneybin"
+version = "0.1.0"
+description = "A personal financial data aggregation and analysis tool built on DuckDB"
+requires-python = ">=3.11"
+dependencies = [
+    # Core orchestration and data processing
+    "dagster>=1.8.5",
+    "dagster-webserver>=1.8.5",
+    "dagster-duckdb>=0.24.5",
+    "dbt-core>=1.8.7",
+    "dbt-duckdb>=1.8.3",
+
+    # Database and data manipulation
+    "duckdb>=1.1.1",
+    "pandas>=2.2.2",
+    "numpy>=2.0.1",
+
+    # PDF processing and OCR
+    "pdfplumber>=0.11.4",
+    "tabula-py>=2.9.3",
+    "camelot-py[cv]>=0.11.0",
+    "PyMuPDF>=1.24.9",
+    "pillow>=10.4.0",
+
+    # API integrations
+    "plaid-python>=15.0.0",
+    "requests>=2.32.3",
+    "python-dotenv>=1.0.1",
+
+    # Data validation and utilities
+    "pydantic>=2.8.2",
+    "python-dateutil>=2.9.0",
+
+    # Jupyter notebooks
+    "jupyter>=1.1.1",
+    "ipykernel>=6.29.5",
+    "matplotlib>=3.9.2",
+    "seaborn>=0.13.2",
+]
+
+[project.optional-dependencies]
+# Documentation: https://packaging.python.org/en/latest/specifications/core-metadata/#optional-dependencies
+dev = [
+    "pytest>=8.3.2",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.2",
+    "pyright>=1.1.375",
+    "flake8>=7.1.1",
+    "pre-commit>=3.8.0",
+]
+
+test = [
+    "pytest>=8.3.2",
+    "pytest-cov>=5.0.0",
+    "pytest-mock>=3.14.0",
+]
+
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.31",
+    "mkdocstrings[python]>=0.25.2",
+]
+
+[tool.ruff]
+# Documentation: https://docs.astral.sh/ruff/configuration/
+target-version = "py311"
+line-length = 88
+preview = true
+
+[tool.ruff.lint]
+# Documentation: https://docs.astral.sh/ruff/rules/
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+    "W2", # trailing whitespace
+    "W292", # no newline at end of file
+]
+ignore = [
+    "E501",  # line too long, handled by line-length
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.format]
+# Documentation: https://docs.astral.sh/ruff/formatter/
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+# insert-final-newline = true  # This is not a valid Ruff formatter option
+
+[tool.pyright]
+# Documentation: https://microsoft.github.io/pyright/#/configuration
+# High-quality configuration balancing rigor with pragmatism
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+useLibraryCodeForTypes = true
+reportMissingImports = true
+reportMissingTypeStubs = false
+
+# Unused code detection
+reportUnusedImport = true
+reportUnusedVariable = true
+reportUnusedClass = true
+reportUnusedFunction = true
+reportDuplicateImport = true
+
+# Optional type handling - critical for financial data
+reportOptionalSubscript = true
+reportOptionalMemberAccess = true
+reportOptionalIterable = true
+reportOptionalContextManager = true
+reportOptionalOperand = true
+
+# Untyped code detection - ensures type safety
+reportUntypedFunctionDecorator = false  # Disabled for Dagster compatibility
+reportUntypedClassDecorator = true
+reportUntypedBaseClass = true
+reportUntypedNamedTuple = true
+
+# Privacy and constants - important for financial apps
+reportPrivateUsage = true
+reportConstantRedefinition = true
+
+# Method overrides - ensures inheritance correctness
+reportIncompatibleMethodOverride = true
+reportIncompatibleVariableOverride = true
+
+# Type completeness - core rigor
+reportMissingParameterType = true
+reportMissingTypeArgument = true
+
+# String safety - prevents runtime errors
+reportInvalidStringEscapeSequence = true
+
+# Unknown types - catches type inference failures
+reportUnknownParameterType = true
+reportUnknownArgumentType = true
+reportUnknownLambdaType = true
+reportUnknownVariableType = false  # Disabled for Dagster compatibility
+reportUnknownMemberType = true
+
+# Additional rigor for financial applications (conservative selection)
+reportInconsistentConstructor = true
+reportUnnecessaryIsInstance = true
+reportUnnecessaryCast = true
+reportUnnecessaryComparison = true
+reportUnusedExpression = true
+
+[tool.pytest.ini_options]
+# Documentation: https://docs.pytest.org/en/stable/reference/reference.html#configuration-options
+minversion = "7.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+[tool.coverage.run]
+# Documentation: https://coverage.readthedocs.io/en/7.4.0/config.html#run-section
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/venv/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+# Documentation: https://coverage.readthedocs.io/en/latest/config.html#report-section
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
