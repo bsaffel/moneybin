@@ -21,6 +21,7 @@ VENV_ACTIVATE := $(VENV_DIR)/bin/activate
 # Check if virtual environment is active
 ifdef VIRTUAL_ENV
     PYTHON_ENV := $(PYTHON)
+    VENV_UV := $(VENV_DIR)/bin/uv
     UV_PIP_INSTALL := uv pip install
     UV_PIP_ARGS :=
 else
@@ -193,32 +194,58 @@ status: ## Utility: Show development environment status
 		echo "  Virtual Environment: $(GREEN)✅ Created$(RESET)"; \
 		venv_python=$$($(VENV_DIR)/bin/python --version 2>&1); \
 		echo "  Python Version: $$venv_python"; \
+		if [ -f "$(VENV_DIR)/pyvenv.cfg" ]; then \
+			echo "  Location: $(VENV_DIR)"; \
+		fi; \
 	else \
 		echo "  Virtual Environment: $(RED)❌ Not found$(RESET)"; \
 	fi
 	@echo ""
-	@echo "$(GREEN)Framework Status:$(RESET)"
-	@if [ -d ".git" ]; then echo "  Git: $(GREEN)✅ Initialized$(RESET)"; else echo "  Git: $(RED)❌ Not initialized$(RESET)"; fi
-	@if [ -d "pipelines" ]; then echo "  Dagster: $(GREEN)✅ Initialized$(RESET)"; else echo "  Dagster: $(RED)❌ Not initialized$(RESET)"; fi
-	@if [ -d "dbt" ]; then echo "  DBT Core: $(GREEN)✅ Initialized$(RESET)"; else echo "  DBT Core: $(RED)❌ Not initialized$(RESET)"; fi
-	@echo ""
-	@echo "$(GREEN)Python Management:$(RESET)"
+	@echo "$(GREEN)Package Management (uv):$(RESET)"
 	@if command -v uv >/dev/null 2>&1; then \
-		echo "  uv: $(GREEN)✅ Available (for Python management)$(RESET)"; \
-	elif command -v python3 >/dev/null 2>&1; then \
-		echo "  python3: $(GREEN)✅ Available (system)$(RESET)"; \
+		uv_version=$$(uv --version 2>/dev/null | head -n1); \
+		echo "  System uv: $(GREEN)✅ $$uv_version$(RESET)"; \
 	else \
-		echo "  python: $(RED)❌ Not available$(RESET)"; \
+		echo "  System uv: $(RED)❌ Not available$(RESET)"; \
 	fi
+	@if [ -f "$(VENV_UV)" ]; then \
+		venv_uv_version=$$($(VENV_UV) --version 2>/dev/null | head -n1); \
+		echo "  Virtual Environment uv: $(GREEN)✅ $$venv_uv_version$(RESET)"; \
+	else \
+		echo "  Virtual Environment uv: $(YELLOW)⚠️  Not installed in venv$(RESET)"; \
+	fi
+	@if [ -f "uv.lock" ]; then \
+		echo "  uv.lock: $(GREEN)✅ Found$(RESET)"; \
+	else \
+		echo "  uv.lock: $(YELLOW)⚠️  Not found$(RESET)"; \
+	fi
+	@if [ -f "pyproject.toml" ]; then \
+		echo "  pyproject.toml: $(GREEN)✅ Found$(RESET)"; \
+	else \
+		echo "  pyproject.toml: $(RED)❌ Not found$(RESET)"; \
+	fi
+	@echo ""
+	@echo "$(GREEN)Python Version Management:$(RESET)"
 	@if [ -f ".python-version" ]; then \
 		required_version=$$(cat .python-version); \
 		echo "  .python-version: $(GREEN)✅ Found ($$required_version)$(RESET)"; \
 	else \
 		echo "  .python-version: $(YELLOW)⚠️  Not found (will use 3.11+)$(RESET)"; \
 	fi
+	@if command -v python3 >/dev/null 2>&1; then \
+		system_python=$$(python3 --version 2>&1); \
+		echo "  System Python: $(GREEN)✅ $$system_python$(RESET)"; \
+	else \
+		echo "  System Python: $(RED)❌ Not available$(RESET)"; \
+	fi
 	@echo ""
-	@echo "$(GREEN)Dependencies:$(RESET)"
-	@if [ -f "$(VENV_UV)" ]; then echo "  uv (venv): $(GREEN)✅ Available$(RESET)"; else echo "  uv (venv): $(YELLOW)⚠️  Not installed$(RESET)"; fi
+	@echo "$(GREEN)Installed Packages:$(RESET)"
+	@if [ -f "$(VENV_UV)" ] && [ -d "$(VENV_DIR)" ]; then \
+		echo "  Core packages:"; \
+		$(VENV_UV) pip list 2>/dev/null | grep -E "(dagster|dbt-core|ruff|pytest|pyright)" | sed 's/^/    /' || echo "    $(YELLOW)⚠️  No core packages found$(RESET)"; \
+	else \
+		echo "  $(YELLOW)⚠️  Cannot check packages (uv not available in venv)$(RESET)"; \
+	fi
 
 
 activate: ## Utility: Show how to activate virtual environment
