@@ -6,6 +6,7 @@ This directory contains project-specific rules for Cursor AI integration. These 
 
 - **`data-ownership-privacy.mdc`**: Core data ownership and privacy principles (always applied)
 - **`development-standards.mdc`**: Development standards and best practices (always applied)
+- **`documentation-sources.mdc`**: Primary documentation sources for project dependencies (always applied)
 - **`data-processing.mdc`**: Data processing and integration standards (applied to relevant files)
 - **`financial-analysis.mdc`**: Financial analysis queries and success metrics (applied to SQL/analysis files)
 

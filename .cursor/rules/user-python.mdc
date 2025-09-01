@@ -120,3 +120,6 @@ Follow these preferences to ensure consistent, high-quality Python development t
 - **Resource Management**: Monitor and optimize resource usage
 
 Follow these preferences to ensure consistent, high-quality Python development that aligns with the MoneyBin project goals and user experience requirements.
+
+
+for python dependencies, do not use vanilla pip, always prefer the uv equivalent

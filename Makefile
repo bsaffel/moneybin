@@ -50,11 +50,6 @@ help: ## Show this help message
 	@echo "  make format         # Format code with ruff"
 	@echo "  make check          # Lint code and check formatting"
 
-	@echo ""
-	@echo "$(BLUE)Next Steps After Setup:$(RESET)"
-	@echo "  1. Activate virtual environment: source venv/bin/activate"
-	@echo "  2. Start developing!"
-
 check-python: ## Setup & Installation: Verify Python installation
 	@echo "$(BLUE)🐍 Checking Python installation...$(RESET)"
 	@if command -v python3 >/dev/null 2>&1; then \
@@ -111,20 +106,26 @@ install: venv ## Setup & Installation: Install project dependencies
 	@echo "$(BLUE)📥 Installing MoneyBin with uv...$(RESET)"
 	@$(UV_PIP_INSTALL) $(UV_PIP_ARGS) -e .
 
-install-dev: venv ## Setup & Installation: Install development dependencies
-	@echo "$(BLUE)📥 Installing MoneyBin with development dependencies using uv...$(RESET)"
+install-dev: venv ## Setup & Installation: Install development dependencies (includes testing tools)
+	@echo "$(BLUE)📥 Installing MoneyBin with development dependencies (includes testing) using uv...$(RESET)"
 	@$(UV_PIP_INSTALL) $(UV_PIP_ARGS) -e ".[dev]"
 
-pre-commit: $(VENV_ACTIVATE) ## Setup & Installation: Install pre-commit hooks
+sync: venv ## Setup & Installation: Sync dependencies using uv (modern approach)
+	@echo "$(BLUE)🔄 Syncing dependencies with uv...$(RESET)"
+	@$(VENV_UV) sync
+	@echo "$(GREEN)✅ Dependencies synchronized$(RESET)"
+
+pre-commit: $(VENV_ACTIVATE) ## Setup & Installation: Install pre-commit hooks (uses venv ruff for consistency)
 	@echo "$(BLUE)🔒 Installing pre-commit hooks...$(RESET)"
 	@$(VENV_DIR)/bin/pre-commit install
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
+	@echo "$(BLUE)ℹ️  Pre-commit uses the same ruff version as your virtual environment$(RESET)"
 
-test: $(VENV_ACTIVATE) ## Development: Run tests
+test: $(VENV_ACTIVATE) ## Development: Run tests (requires install-dev)
 	@echo "$(BLUE)🧪 Running tests...$(RESET)"
 	@$(VENV_DIR)/bin/pytest tests/
 
-test-cov: $(VENV_ACTIVATE) ## Development: Run tests with coverage report
+test-cov: $(VENV_ACTIVATE) ## Development: Run tests with coverage report (requires install-dev)
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
 	@$(VENV_DIR)/bin/pytest --cov=src tests/
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"

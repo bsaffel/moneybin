@@ -1,0 +1,57 @@
+---
+description: Primary documentation sources for MoneyBin project dependencies
+alwaysApply: true
+---
+
+# Documentation Sources
+
+When working on the MoneyBin financial data project, prioritize these official documentation sources:
+
+## Core Framework Documentation
+
+### **Plaid Financial Data API**
+
+- **Primary Documentation**: <https://plaid.com/docs/>
+- **Python SDK Repository**: <https://github.com/plaid/plaid-python>
+- **Python SDK Documentation**: <https://plaid.com/docs/api/python/>
+- Use for: Financial data integration, account connections, transaction retrieval, authentication flows
+
+### **DuckDB Analytics Database**
+
+- **Primary Documentation**: <https://duckdb.org/docs/>
+- **Python API**: <https://duckdb.org/docs/api/python/overview>
+- Use for: SQL queries, data analysis, performance optimization, data types
+
+### **dbt Data Transformation**
+
+- **Primary Documentation**: <https://docs.getdbt.com/>
+- **DuckDB Adapter**: <https://docs.getdbt.com/docs/core/connect-data-platform/duckdb-setup>
+- Use for: Data modeling, transformations, testing, documentation
+
+### **Dagster Data Orchestration**
+
+- **Primary Documentation**: <https://docs.dagster.io/>
+- **DuckDB Integration**: <https://docs.dagster.io/integrations/duckdb>
+- Use for: Pipeline orchestration, asset management, scheduling
+
+## API Version Requirements
+
+- **Plaid API Version**: Use the latest stable version (2020-09-14 or newer)
+- **Python SDK**: Use plaid-python 16.0.0 or later for modern API patterns
+- **DuckDB**: Use latest stable version for optimal performance
+- **dbt**: Use dbt-core 1.7+ with dbt-duckdb adapter
+
+## Documentation Priorities
+
+1. **Always reference official documentation first** before community resources
+2. **Use the latest stable API versions** - avoid deprecated patterns
+3. **Follow security best practices** outlined in official docs
+4. **Prioritize type safety** using official Python type definitions
+
+## Code Examples Source Priority
+
+1. Official documentation examples
+2. Official GitHub repository examples
+3. Well-maintained community examples that follow official patterns
+
+When suggesting code patterns or API usage, always link to the relevant official documentation page that describes the behavior.
