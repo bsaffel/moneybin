@@ -22,7 +22,10 @@ sys.path.append(str(_Path(__file__).resolve().parents[1]))
 import polars as pl
 import pytest
 
-from src.extractors.plaid_extractor import PlaidExtractionConfig, PlaidExtractor
+from src.moneybin.extractors.plaid_extractor import (
+    PlaidExtractionConfig,
+    PlaidExtractor,
+)
 
 # ------------------------------
 # Unit tests (using a local fixture that patches PlaidApi)

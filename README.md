@@ -6,7 +6,7 @@ A self-hosted personal financial data aggregation and analysis system that provi
 
 MoneyBin allows you to:
 
-- Extract structured data from tax PDFs (1040, W-2, 1099, etc.)
+- Extract structured financial data from CSVs, APIs, and tax PDFs (1040, W-2, 1099, etc.)
 - Aggregate transaction data from all your bank accounts
 - Store everything in a local DuckDB database
 - Query your financial data with SQL for insights like:
@@ -16,11 +16,11 @@ MoneyBin allows you to:
 
 ## Key Benefits
 
-✅ **Data Ownership**: Your financial data stays under your control
-✅ **No Expiration**: Data doesn't disappear when subscriptions end
-✅ **Privacy First**: No third-party access to your sensitive information
-✅ **Customizable**: Build exactly the analysis you need
-✅ **Cost Effective**: No recurring subscription fees
+- ✅ **Data Ownership**: Your financial data stays under your control
+- ✅ **No Expiration**: Data doesn't disappear when subscriptions end
+- ✅ **Privacy First**: No third-party access to your sensitive information
+- ✅ **Customizable**: Build exactly the analysis you need
+- ✅ **Cost Effective**: No recurring subscription fees
 
 ## Quick Start
 

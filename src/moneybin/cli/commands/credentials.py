@@ -10,8 +10,8 @@ from pathlib import Path
 import typer
 
 # Import the actual implementation classes
-from src.logging import setup_logging
-from utils.secrets_manager import SecretsManager, setup_secure_environment
+from moneybin.logging import setup_logging
+from moneybin.utils.secrets_manager import SecretsManager, setup_secure_environment
 
 app = typer.Typer(help="Manage API credentials and environment configuration")
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ def list_services() -> None:
 @app.command("validate-plaid")
 def validate_plaid() -> None:
     """Validate Plaid API credentials specifically."""
-    from extractors.plaid_extractor import PlaidExtractor
+    from moneybin.extractors.plaid_extractor import PlaidExtractor
 
     try:
         extractor = PlaidExtractor()

@@ -76,6 +76,7 @@
 - **Type Checking**: Enable [Pyright](https://microsoft.github.io/pyright/) integration for fast type checking
 - **Linting**: Ruff provides comprehensive linting
 - **Auto-imports**: Ruff handles import organization automatically
+- **Use UV**: For python dependencies, do not use vanilla pip, always prefer the uv equivalent
 
 ### Commands
 
@@ -115,11 +116,3 @@ pytest --cov=src tests/
 - **Resource Management**: Monitor and optimize resource usage
 
 Follow these preferences to ensure consistent, high-quality Python development that aligns with the MoneyBin project goals and user experience requirements.
-
-- **Efficient Processing**: Use appropriate tools for each task
-- **Resource Management**: Monitor and optimize resource usage
-
-Follow these preferences to ensure consistent, high-quality Python development that aligns with the MoneyBin project goals and user experience requirements.
-
-
-for python dependencies, do not use vanilla pip, always prefer the uv equivalent

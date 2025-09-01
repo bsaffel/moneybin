@@ -13,6 +13,32 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class PlaidCredentials(BaseModel):
+    """Secure credential management for Plaid API access."""
+
+    model_config = ConfigDict(frozen=True)
+
+    client_id: str = Field(..., description="Plaid client ID")
+    secret: str = Field(..., description="Plaid secret key")
+    environment: str = Field(default="sandbox", description="Plaid environment")
+
+    @classmethod
+    def from_environment(cls) -> "PlaidCredentials":
+        """Load credentials from environment variables securely."""
+        import os
+
+        client_id = os.getenv("PLAID_CLIENT_ID")
+        secret = os.getenv("PLAID_SECRET")
+        environment = os.getenv("PLAID_ENV", "sandbox")
+
+        if not client_id:
+            raise ValueError("PLAID_CLIENT_ID environment variable is required")
+        if not secret:
+            raise ValueError("PLAID_SECRET environment variable is required")
+
+        return cls(client_id=client_id, secret=secret, environment=environment)
+
+
 class PlaidEnvironment(Enum):
     """Plaid API environment options."""
 

@@ -10,12 +10,12 @@ from pathlib import Path
 import typer
 
 # Import the actual implementation classes
-from extractors.plaid_extractor import (
+from moneybin.extractors.plaid_extractor import (
     PlaidConnectionManager,
     PlaidExtractor,
-    create_sample_env_file,
 )
-from src.logging import setup_logging
+from moneybin.logging import setup_logging
+from moneybin.utils.secrets_manager import setup_secure_environment
 
 app = typer.Typer(help="Extract financial data from various sources")
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def extract_plaid(
     try:
         # Create sample environment file if needed or requested
         if setup_env or not Path(".env").exists():
-            create_sample_env_file()
+            setup_secure_environment()
             logger.info("Created sample .env file - please configure your credentials")
             if setup_env:
                 return

@@ -158,28 +158,28 @@ make dagster-dev
 
 #### Authentication Errors
 
-```
+```text
 PlaidAuthError: Invalid credentials or expired tokens
 Resolution: Check API keys or relink account
 ```
 
 #### Item Errors
 
-```
+```text
 PlaidItemError: Account connection issues
 Resolution: User needs to relink account through Plaid Link
 ```
 
 #### Rate Limit Errors
 
-```
+```text
 PlaidRateLimitError: API rate limits exceeded
 Resolution: Wait and retry, or reduce extraction frequency
 ```
 
 #### API Errors
 
-```
+```text
 PlaidAPIError: General API issues
 Resolution: Check Plaid service status
 ```

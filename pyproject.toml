@@ -48,7 +48,7 @@ where = ["src"]
 
 [project.scripts]
 # Unified CLI entry point using Typer
-moneybin = "cli.main:main"
+moneybin = "moneybin.cli.main:main"
 
 [project.optional-dependencies]
 # Documentation: https://packaging.python.org/en/latest/specifications/core-metadata/#optional-dependencies

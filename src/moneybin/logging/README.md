@@ -8,7 +8,7 @@ This package provides unified logging configuration for all MoneyBin components 
 
 ```python
 import logging
-from src.logging import setup_logging
+from moneybin.logging import setup_logging
 
 # Configure logging once at application startup
 setup_logging()
@@ -23,7 +23,7 @@ logger.error("This is an error message")
 
 ```python
 import logging
-from src.logging import setup_logging
+from moneybin.logging import setup_logging
 
 # Set up CLI-friendly logging
 setup_logging(cli_mode=True, verbose=False)
@@ -54,7 +54,7 @@ def my_asset():
 ### Programmatic Configuration
 
 ```python
-from src.logging import LoggingConfig, setup_logging
+from moneybin.logging import LoggingConfig, setup_logging
 
 config = LoggingConfig(
     level="DEBUG",

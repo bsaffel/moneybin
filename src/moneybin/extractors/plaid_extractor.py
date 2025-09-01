@@ -22,38 +22,13 @@ from plaid.exceptions import ApiException
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.transactions_get_request import TransactionsGetRequest
 from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
-from pydantic import BaseModel, ConfigDict, Field
 
-from .plaid_schemas import AccountSchema, TransactionSchema
+from .plaid_schemas import AccountSchema, PlaidCredentials, TransactionSchema
 
 # Load environment variables
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-
-class PlaidCredentials(BaseModel):
-    """Secure credential management for Plaid API access."""
-
-    model_config = ConfigDict(frozen=True)
-
-    client_id: str = Field(..., description="Plaid client ID")
-    secret: str = Field(..., description="Plaid secret key")
-    environment: str = Field(default="sandbox", description="Plaid environment")
-
-    @classmethod
-    def from_environment(cls) -> "PlaidCredentials":
-        """Load credentials from environment variables securely."""
-        client_id = os.getenv("PLAID_CLIENT_ID")
-        secret = os.getenv("PLAID_SECRET")
-        environment = os.getenv("PLAID_ENV", "sandbox")
-
-        if not client_id:
-            raise ValueError("PLAID_CLIENT_ID environment variable is required")
-        if not secret:
-            raise ValueError("PLAID_SECRET environment variable is required")
-
-        return cls(client_id=client_id, secret=secret, environment=environment)
 
 
 @dataclass
@@ -367,36 +342,3 @@ class PlaidConnectionManager:
                 all_data[institution] = {}
 
         return all_data
-
-
-def create_sample_env_file() -> None:
-    """Create a sample .env file with required Plaid configuration."""
-    sample_content = """# Plaid API Configuration
-# Get these from https://dashboard.plaid.com/team/keys
-
-# Required: Plaid API credentials
-PLAID_CLIENT_ID=your_plaid_client_id_here
-PLAID_SECRET=your_plaid_secret_here
-PLAID_ENV=sandbox  # sandbox, development, or production
-
-# Institution Access Tokens (add after linking accounts)
-# PLAID_TOKEN_WELLS_FARGO=access-sandbox-xxx
-# PLAID_TOKEN_CHASE=access-sandbox-yyy
-# PLAID_TOKEN_CAPITAL_ONE=access-sandbox-zzz
-# PLAID_TOKEN_FIDELITY=access-sandbox-aaa
-# PLAID_TOKEN_ETRADE=access-sandbox-bbb
-
-# Optional: Database configuration
-DUCKDB_PATH=data/duckdb/financial.db
-
-# Optional: Logging configuration
-LOG_LEVEL=INFO
-LOG_TO_FILE=true
-LOG_FILE_PATH=logs/moneybin.log
-"""
-
-    env_path = Path(".env.example")
-    with open(env_path, "w") as f:
-        f.write(sample_content)
-
-    logger.info(f"Created sample environment file at {env_path}")

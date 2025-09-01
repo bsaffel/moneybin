@@ -6,7 +6,7 @@ including CLI commands, data extractors, Dagster pipelines, and utility modules.
 Standard usage:
     ```python
     import logging
-    from src.logging import setup_logging
+    from moneybin.logging import setup_logging
 
     # Configure once at application startup
     setup_logging()

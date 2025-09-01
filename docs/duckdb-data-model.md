@@ -16,6 +16,7 @@ This document defines the comprehensive data model for storing all Plaid API dat
 ## Institution Coverage
 
 ### Supported via Plaid API
+
 - ✅ Wells Fargo (checking, savings, credit cards)
 - ✅ Chase (all account types)
 - ✅ Capital One (banking and credit products)
@@ -23,6 +24,7 @@ This document defines the comprehensive data model for storing all Plaid API dat
 - ✅ E*TRADE (brokerage and retirement accounts)
 
 ### Future Extensions
+
 - QuickBooks (separate API integration)
 - Manual CSV imports (all institutions)
 - PDF statement processing (Goldman Sachs, tax forms)
