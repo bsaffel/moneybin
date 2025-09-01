@@ -80,20 +80,9 @@ Analytics-Ready Data
 
 ### Current Directory Structure
 
-```text
-moneybin/
-├── .cursor/                 # AI-integrated development rules
-├── .venv/                   # Python virtual environment
-├── config/                  # Configuration management
-├── data/                    # Data storage
-├── dbt/                     # dbt transformations (already initialized)
-├── docs/                    # Documentation
-├── logs/                    # Application logs
-├── notebooks/               # Jupyter notebooks for analysis
-├── pipelines/               # Dagster pipeline definitions
-├── src/                     # Data extraction and processing modules
-└── tests/                   # Unit and integration tests
-```
+The project follows a modern data engineering architecture with Dagster orchestration, dbt transformations, and DuckDB analytics.
+
+**📁 For the complete directory structure**, see [Application Architecture → Directory Structure](application-architecture.md#directory-structure).
 
 ## 🎯 Institution-Specific Approaches
 

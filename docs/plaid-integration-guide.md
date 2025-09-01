@@ -33,7 +33,7 @@ This guide covers the secure implementation of Plaid API integration for MoneyBi
 Use Plaid Link to connect your accounts and get access tokens:
 
 ```python
-from src.extractors import PlaidExtractor, PlaidConnectionManager
+from moneybin.extractors import PlaidExtractor, PlaidConnectionManager
 
 # Initialize the extractor
 extractor = PlaidExtractor()
@@ -206,7 +206,7 @@ The extractor automatically retries failed requests with:
 ### Custom Validation
 
 ```python
-from src.extractors.plaid_schemas import validate_transaction_data
+from moneybin.extractors.plaid_schemas import validate_transaction_data
 
 # Validate extracted transaction data
 transactions = extractor.get_transactions(access_token)
@@ -223,7 +223,7 @@ for check in quality_checks:
 ### PlaidExtractionConfig
 
 ```python
-from src.extractors import PlaidExtractionConfig
+from moneybin.extractors import PlaidExtractionConfig
 from pathlib import Path
 
 config = PlaidExtractionConfig(
@@ -246,7 +246,7 @@ extractor = PlaidExtractor(config)
 ```python
 # pipelines/assets.py
 from dagster import asset
-from src.extractors import PlaidConnectionManager
+from moneybin.extractors import PlaidConnectionManager
 
 @asset(group_name="raw_data")
 def plaid_raw_data():
@@ -347,7 +347,7 @@ PLAID_TOKEN_CHASE=access-sandbox-yyy
 
    ```python
    # Or using Python API directly
-   from src.utils import SecretsManager
+   from moneybin.utils import SecretsManager
    manager = SecretsManager()
    validation = manager.validate_all_credentials()
    print(validation)

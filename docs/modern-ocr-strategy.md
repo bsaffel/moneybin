@@ -368,7 +368,7 @@ class ParallelPDFProcessor:
 ```python
 # pipelines/assets.py
 from dagster import asset, get_dagster_logger
-from src.extractors.pdf_extractor import TaxPDFExtractor, BankStatementProcessor
+from moneybin.extractors.pdf_extractor import TaxPDFExtractor, BankStatementProcessor
 
 @asset(group_name="pdf_extraction")
 def processed_tax_pdfs() -> pd.DataFrame:

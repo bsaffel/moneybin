@@ -21,42 +21,56 @@
 
 ```text
 moneybin/
-├── .cursor/
-│   └── rules/                    # Cursor AI integration rules
-├── pipelines/                     # Dagster pipeline definitions
-│   ├── assets.py                 # Data assets definitions
-│   ├── definitions.py            # Pipeline definitions
-│   └── __init__.py               # Package initialization
-├── dbt/                          # dbt transformations
-│   ├── models/                   # SQL transformation models
-│   │   ├── staging/             # Raw data staging
-│   │   ├── intermediate/        # Business logic
-│   │   └── marts/               # Final analytics tables
-│   ├── macros/                  # Reusable SQL macros
-│   ├── tests/                   # Data quality tests
-│   └── seeds/                   # Reference data
-├── src/                         # Python source code
-│   ├── extractors/              # Data extraction modules
-│   │   ├── plaid_extractor.py  # Plaid API integration
-│   │   ├── pdf_extractor.py    # PDF processing
-│   │   ├── csv_processor.py    # CSV standardization
-│   │   └── quickbooks_api.py   # QuickBooks integration
-│   ├── processors/              # Data processing utilities
-│   ├── validators/              # Data validation
-│   └── utils/                   # Shared utilities
-├── data/                        # Data storage
-│   ├── raw/                     # Raw extracted data
-│   ├── processed/               # Cleaned/standardized data
-│   ├── duckdb/                  # DuckDB database files
-│   └── temp/                    # Temporary processing files
+├── .cursor/                     # Cursor-integrated project rules
+├── .venv/                       # Python virtual environment
 ├── config/                      # Configuration files
-│   ├── dagster.yaml            # Dagster configuration
-│   ├── dbt_profiles.yml        # dbt profiles
-│   └── app_config.yaml         # Application settings
+├── data/                        # Data storage
+│   ├── duckdb/                  # DuckDB database files
+│   ├── processed/               # Cleaned/standardized data
+│   ├── raw/                     # Raw extracted data
+│   │   └── plaid/               # Plaid API extractions (parquet files)
+│   └── temp/                    # Temporary processing files
+├── dbt/                         # dbt transformations
+│   ├── analyses/                # dbt analyses
+│   ├── dbt_packages/            # dbt package dependencies
+│   ├── macros/                  # Reusable SQL macros
+│   ├── models/                  # SQL transformation models
+│   │   └── example/             # Example models (staging, intermediate, marts)
+│   ├── profiles.yml             # dbt profiles configuration
+│   ├── seeds/                   # Reference data
+│   ├── snapshots/               # dbt snapshots
+│   └── tests/                   # Data quality tests
+├── docs/                        # Technical documentation
+├── logs/                        # Application logs
 ├── notebooks/                   # Jupyter notebooks for analysis
+├── pipelines/                   # Dagster pipeline definitions
+│   ├── __init__.py              # Package initialization
+│   ├── assets.py                # Data assets definitions
+│   └── definitions.py           # Pipeline definitions
+├── src/                         # Python source code
+│   └── moneybin/                # Main package
+│       ├── cli/                 # Command line interface
+│       │   ├── commands/        # CLI command modules
+│       │   │   ├── credentials.py # Credential management
+│       │   │   └── extract.py   # Data extraction commands
+│       │   └── main.py          # Main CLI entry point
+│       ├── extractors/          # Data extraction modules
+│       │   ├── plaid_extractor.py # Plaid API integration
+│       │   └── plaid_schemas.py # Plaid data schemas
+│       ├── logging/             # Logging configuration
+│       │   └── config.py        # Logging setup
+│       ├── processors/          # Data processing utilities
+│       ├── utils/               # Shared utilities
+│       │   └── secrets_manager.py # Secure credential management
+│       └── validators/          # Data validation
+├── target/                      # dbt compilation outputs
 ├── tests/                       # Unit and integration tests
-├── docs/                        # Documentation
-└── pyproject.toml              # Python project configuration
+├── .gitignore                   # Git ignore patterns
+├── .python-version              # Python version pin for pyenv/uv
+├── dbt_project.yml              # dbt project configuration
+├── Makefile                     # Development automation
+├── pyproject.toml               # Python project configuration
+└── uv.lock                      # UV dependency lock file
 ```
 
 ## Technology Stack
@@ -86,21 +100,21 @@ import duckdb
 @asset(group_name="raw_data")
 def plaid_transactions() -> pd.DataFrame:
     """Extract transactions from Plaid API"""
-    from src.extractors.plaid_extractor import PlaidExtractor
+    from moneybin.extractors.plaid_extractor import PlaidExtractor
     extractor = PlaidExtractor()
     return extractor.get_all_transactions()
 
 @asset(group_name="raw_data")
 def manual_csv_transactions() -> pd.DataFrame:
     """Process manually uploaded CSV files"""
-    from src.extractors.csv_processor import CSVProcessor
+    from moneybin.processors.csv_processor import CSVProcessor
     processor = CSVProcessor()
     return processor.process_all_csv_files()
 
 @asset(group_name="raw_data")
 def tax_pdf_data() -> pd.DataFrame:
     """Extract data from tax PDF documents"""
-    from src.extractors.pdf_extractor import TaxPDFExtractor
+    from moneybin.extractors.pdf_extractor import TaxPDFExtractor
     extractor = TaxPDFExtractor()
     return extractor.extract_all_tax_forms()
 
@@ -326,12 +340,12 @@ models:
 ```
 
 ```yaml
-# config/dbt_profiles.yml
+# dbt/profiles.yml
 moneybin:
   outputs:
     dev:
       type: duckdb
-      path: 'data/duckdb/financial.db'
+      path: 'dbt/dev.duckdb'
       threads: 4
     prod:
       type: duckdb

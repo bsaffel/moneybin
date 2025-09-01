@@ -1,5 +1,7 @@
 # MoneyBin - Personal Financial Data Aggregation
 
+![MoneyBin Icon](docs/assets/moneybin-icon.png)
+
 A self-hosted personal financial data aggregation and analysis system that provides functionality similar to Empower or Monarch Money while maintaining complete data ownership and control.
 
 ## Overview
@@ -81,36 +83,23 @@ See the specialized strategy documents for detailed implementation approaches.
 
 ## Project Structure
 
+The project follows a modern data engineering architecture with clear separation of concerns:
+
 ```text
 moneybin/
-├── .cursor/                 # Cursor-integrated project rules
-├── .venv/                   # Python virtual environment
-├── config/                  # Configuration files
-├── data/                    # Data storage
-├── dbt/                     # DBT Core project (already initialized)
-│   ├── models/              # DBT data models
-│   ├── analyses/            # DBT analyses
-│   ├── macros/              # DBT macros
-│   ├── seeds/               # DBT seed files
-│   ├── snapshots/           # DBT snapshots
-│   └── tests/               # DBT tests
-├── docs/                    # Technical documentation
-├── logs/                    # Application logs
-├── notebooks/               # Jupyter notebooks for analysis
-├── pipelines/               # Dagster pipeline definitions
-├── src/                     # Python source code
-│   ├── extractors/          # Data extraction modules
+├── data/                    # All data storage (raw, processed, databases)
+├── dbt/                     # dbt transformations and models
+├── pipelines/               # Dagster orchestration
+├── src/moneybin/            # Python application code
+│   ├── cli/                 # Command line interface
+│   ├── extractors/          # Data extraction (Plaid, PDF, CSV)
 │   ├── processors/          # Data processing utilities
-│   ├── validators/          # Data validation
-│   └── utils/               # Shared utilities
+│   └── utils/               # Shared utilities and configuration
 ├── tests/                   # Unit and integration tests
-├── .gitignore               # Git ignore patterns
-├── .python-version          # Python version pin for pyenv/uv
-├── dbt_project.yml          # DBT project configuration
-├── Makefile                 # Development automation
-├── pyproject.toml           # Python project configuration
-└── uv.lock                  # UV dependency lock file
+└── docs/                    # Technical documentation
 ```
+
+**📁 For the complete directory structure** with all subdirectories and files, see [Application Architecture → Directory Structure](docs/application-architecture.md#directory-structure).
 
 ## Detailed Setup Instructions
 
