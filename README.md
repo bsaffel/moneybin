@@ -1,8 +1,12 @@
+<!-- markdownlint-disable MD033 MD041 -->
+<div align="center">
+  <img src="docs/assets/moneybin-icon.png" alt="MoneyBin Icon" width="400">
+</div>
+<!-- markdownlint-enable MD033 MD041 -->
+
 # MoneyBin - Personal Financial Data Aggregation
 
-![MoneyBin Icon](docs/assets/moneybin-icon.png)
-
-A self-hosted personal financial data aggregation and analysis system that provides functionality similar to Empower or Monarch Money while maintaining complete data ownership and control.
+A self-hosted personal financial data aggregation and analysis system built on DuckDB that provides functionality similar to Empower or Monarch Money while maintaining complete data ownership and control.
 
 ## Overview
 
