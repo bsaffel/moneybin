@@ -37,7 +37,8 @@ def mocked_plaid_client(mocker: Any) -> Any:
     """Patch PlaidApi constructor and return the injected mock client."""
     client = mocker.MagicMock()
     mocker.patch(
-        "src.extractors.plaid_extractor.plaid_api.PlaidApi", return_value=client
+        "src.moneybin.extractors.plaid_extractor.plaid_api.PlaidApi",
+        return_value=client,
     )
     return client
 

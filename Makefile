@@ -18,17 +18,11 @@ PYTHON := python3
 VENV_DIR := .venv
 VENV_ACTIVATE := $(VENV_DIR)/bin/activate
 
-# Check if virtual environment is active
+# Python environment settings
 ifdef VIRTUAL_ENV
     PYTHON_ENV := $(PYTHON)
-    VENV_UV := $(VENV_DIR)/bin/uv
-    UV_PIP_INSTALL := uv pip install
-    UV_PIP_ARGS :=
 else
     PYTHON_ENV := $(VENV_DIR)/bin/python
-    VENV_UV := $(VENV_DIR)/bin/uv
-    UV_PIP_INSTALL := $(VENV_UV) pip install
-    UV_PIP_ARGS :=
 endif
 
 help: ## Show this help message
@@ -44,11 +38,20 @@ help: ## Show this help message
 	@echo "$(GREEN)Utility:$(RESET)"
 	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z_-]+:.*?## / && /Clean|Status|Utility/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
-	@echo "$(BLUE)Usage Examples:$(RESET)"
+	@echo "$(BLUE)Quick Start:$(RESET)"
 	@echo "  make setup          # Complete development environment setup"
-	@echo "  make test           # Run all tests"
-	@echo "  make format         # Format code with ruff"
-	@echo "  make check          # Lint code and check formatting"
+	@echo "  make status         # Check environment status"
+	@echo ""
+	@echo "$(BLUE)Development Workflow:$(RESET)"
+	@echo "  make test              # Run tests (recommended)"
+	@echo "  make format            # Format code (recommended)"
+	@echo "  make dagster-dev       # Start Dagster server"
+	@echo "  make update-deps       # Update all dependencies"
+	@echo ""
+	@echo "$(BLUE)Dependency Management:$(RESET)"
+	@echo "  make sync           # Sync from lockfile (fast, reproducible)"
+	@echo "  make lock           # Generate/update lockfile"
+	@echo "  make clean          # Clean environment and start fresh"
 
 check-python: ## Setup & Installation: Verify Python installation
 	@echo "$(BLUE)🐍 Checking Python installation...$(RESET)"
@@ -60,12 +63,20 @@ check-python: ## Setup & Installation: Verify Python installation
 		exit 1; \
 	fi
 
-setup: check-python venv install-dev pre-commit ## Setup & Installation: Complete development environment setup
+setup: check-python venv lock sync pre-commit ## Setup & Installation: Complete development environment setup
 	@echo "$(GREEN)🎉 Setup complete! Your MoneyBin development environment is ready.$(RESET)"
 	@echo ""
 	@echo "$(BLUE)Next steps:$(RESET)"
-	@echo "  1. Activate the virtual environment: source venv/bin/activate"
-	@echo "  2. Start developing!"
+	@echo "  make test                 # Run tests"
+	@echo "  make format               # Format and lint code"
+	@echo "  make dagster-dev          # Start Dagster development server"
+	@echo "  moneybin extract plaid    # Extract financial data"
+	@echo ""
+	@echo "$(BLUE)Useful commands:$(RESET)"
+	@echo "  make status               # Check environment status"
+	@echo "  make update-deps          # Update dependencies"
+	@echo "  make help                 # Show all available commands"
+
 
 venv: $(VENV_ACTIVATE) ## Setup & Installation: Create virtual environment
 
@@ -87,87 +98,86 @@ $(VENV_ACTIVATE):
 			export PATH="$$HOME/.local/bin:$$PATH"; \
 			uv venv $(VENV_DIR) --python $$required_python; \
 		fi; \
-		echo "$(BLUE)📥 Installing uv in virtual environment...$(RESET)"; \
-		uv pip install -p $(VENV_DIR)/bin/python uv; \
-		echo "$(GREEN)✅ Virtual environment created with uv$(RESET)"; \
+		echo "$(GREEN)✅ Virtual environment created$(RESET)"; \
 	else \
 		echo "$(GREEN)✅ Virtual environment already exists$(RESET)"; \
-		if [ ! -f "$(VENV_UV)" ]; then \
-			echo "$(BLUE)📥 Installing uv in existing virtual environment...$(RESET)"; \
-			if [ -f "$(VENV_DIR)/bin/pip" ]; then \
-				$(VENV_DIR)/bin/pip install uv; \
-			else \
-				uv pip install -p $(VENV_DIR)/bin/python uv; \
-			fi; \
-		fi; \
 	fi
 
-install: venv ## Setup & Installation: Install project dependencies
-	@echo "$(BLUE)📥 Installing MoneyBin with uv...$(RESET)"
-	@$(UV_PIP_INSTALL) $(UV_PIP_ARGS) -e .
 
-install-dev: venv ## Setup & Installation: Install development dependencies (includes testing tools)
-	@echo "$(BLUE)📥 Installing MoneyBin with development dependencies (includes testing) using uv...$(RESET)"
-	@$(UV_PIP_INSTALL) $(UV_PIP_ARGS) -e ".[dev]"
+sync: venv ## Setup & Installation: Sync dependencies from lockfile (modern, reproducible)
+	@echo "$(BLUE)🔄 Syncing dependencies from lockfile...$(RESET)"
+	@uv sync --extra dev
+	@echo "$(GREEN)✅ Dependencies synchronized from lockfile$(RESET)"
 
-sync: venv ## Setup & Installation: Sync dependencies using uv (modern approach)
-	@echo "$(BLUE)🔄 Syncing dependencies with uv...$(RESET)"
-	@$(VENV_UV) sync
-	@echo "$(GREEN)✅ Dependencies synchronized$(RESET)"
+sync-prod: venv ## Setup & Installation: Sync production dependencies only
+	@echo "$(BLUE)🔄 Syncing production dependencies...$(RESET)"
+	@uv sync
+	@echo "$(GREEN)✅ Production dependencies synchronized from lockfile$(RESET)"
 
-pre-commit: $(VENV_ACTIVATE) ## Setup & Installation: Install pre-commit hooks (uses venv ruff for consistency)
+update-deps: venv ## Setup & Installation: Update all dependencies to latest versions
+	@echo "$(BLUE)🔄 Updating all dependencies to latest versions...$(RESET)"
+	@uv lock --upgrade
+	@uv sync --extra dev
+	@echo "$(GREEN)✅ All dependencies updated and synchronized$(RESET)"
+
+lock: venv ## Setup & Installation: Generate/update lockfile without installing
+	@echo "$(BLUE)🔒 Generating lockfile...$(RESET)"
+	@uv lock
+	@echo "$(GREEN)✅ Lockfile updated$(RESET)"
+
+pre-commit: venv ## Setup & Installation: Install pre-commit hooks
 	@echo "$(BLUE)🔒 Installing pre-commit hooks...$(RESET)"
-	@$(VENV_DIR)/bin/pre-commit install
+	@uv run pre-commit install
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
-	@echo "$(BLUE)ℹ️  Pre-commit uses the same ruff version as your virtual environment$(RESET)"
+	@echo "$(BLUE)ℹ️  Pre-commit will use uv run for consistent tool versions$(RESET)"
 
-test: $(VENV_ACTIVATE) ## Development: Run tests (requires install-dev)
+test: venv ## Development: Run tests using uv environment
 	@echo "$(BLUE)🧪 Running tests...$(RESET)"
-	@$(VENV_DIR)/bin/pytest tests/
+	@uv run pytest tests/
 
-test-cov: $(VENV_ACTIVATE) ## Development: Run tests with coverage report (requires install-dev)
+test-cov: venv ## Development: Run tests with coverage report using uv environment
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
-	@$(VENV_DIR)/bin/pytest --cov=src tests/
+	@uv run pytest --cov=src tests/
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"
 
-test-unit: $(VENV_ACTIVATE) ## Development: Run unit tests only
+test-unit: venv ## Development: Run unit tests only using uv environment
 	@echo "$(BLUE)🧪 Running unit tests...$(RESET)"
-	@$(VENV_DIR)/bin/pytest tests/ -m "unit"
+	@uv run pytest tests/ -m "unit"
 
-test-integration: $(VENV_ACTIVATE) ## Development: Run integration tests only
+test-integration: venv ## Development: Run integration tests only using uv environment
 	@echo "$(BLUE)🧪 Running integration tests...$(RESET)"
-	@$(VENV_DIR)/bin/pytest tests/ -m "integration"
+	@uv run pytest tests/ -m "integration"
 
-format: $(VENV_ACTIVATE) ## Development: Format code with ruff and fix whitespace issues
+format: venv ## Development: Format code with ruff using uv environment
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"
-	@$(VENV_DIR)/bin/ruff format .
+	@uv run ruff format .
 	@echo "$(BLUE)🔧 Fixing auto-fixable issues...$(RESET)"
-	@$(VENV_DIR)/bin/ruff check --fix .
+	@uv run ruff check --fix .
 	@echo "$(BLUE)🔧 Fixing whitespace and file ending issues...$(RESET)"
-	@$(VENV_DIR)/bin/pre-commit run trailing-whitespace --all-files || true
-	@$(VENV_DIR)/bin/pre-commit run end-of-file-fixer --all-files || true
+	@uv run pre-commit run trailing-whitespace --all-files || true
+	@uv run pre-commit run end-of-file-fixer --all-files || true
 	@echo "$(GREEN)✅ Code formatted and fixed$(RESET)"
 
-lint: $(VENV_ACTIVATE) ## Development: Lint code with ruff
+lint: venv ## Development: Lint code with ruff using uv environment
 	@echo "$(BLUE)🔍 Linting code with ruff...$(RESET)"
-	@$(VENV_DIR)/bin/ruff check .
+	@uv run ruff check .
 	@echo "$(GREEN)✅ Linting complete$(RESET)"
 
-type-check: $(VENV_ACTIVATE) ## Development: Type check with pyright
+type-check: venv ## Development: Type check with pyright using uv environment
 	@echo "$(BLUE)🔍 Type checking with pyright...$(RESET)"
-	@$(VENV_DIR)/bin/pyright
+	@uv run pyright
 	@echo "$(GREEN)✅ Type checking complete$(RESET)"
 
 check: format lint type-check ## Development: Run all code quality checks
 	@echo "$(GREEN)✅ All code quality checks complete$(RESET)"
 
-jupyter: $(VENV_ACTIVATE) ## Development: Start Jupyter notebook server
+jupyter: venv ## Development: Start Jupyter notebook server using uv environment
 	@echo "$(BLUE)📓 Starting Jupyter notebook server...$(RESET)"
-	@$(VENV_DIR)/bin/jupyter notebook notebooks/
+	@uv run jupyter notebook notebooks/
 
-dagster-dev: $(VENV_ACTIVATE) ## Development: Start Dagster development server
+dagster-dev: venv ## Development: Start Dagster development server using uv environment
 	@echo "$(BLUE)🚀 Starting Dagster development server...$(RESET)"
-	@cd pipelines && ../$(VENV_DIR)/bin/dagster dev
+	@cd pipelines && uv run dagster dev
 
 clean-cache: ## Utility: Clean Python cache files
 	@echo "$(BLUE)🧹 Cleaning Python cache files...$(RESET)"
@@ -209,22 +219,25 @@ status: ## Utility: Show development environment status
 	else \
 		echo "  System uv: $(RED)❌ Not available$(RESET)"; \
 	fi
-	@if [ -f "$(VENV_UV)" ]; then \
-		venv_uv_version=$$($(VENV_UV) --version 2>/dev/null | head -n1); \
-		echo "  Virtual Environment uv: $(GREEN)✅ $$venv_uv_version$(RESET)"; \
-	else \
-		echo "  Virtual Environment uv: $(YELLOW)⚠️  Not installed in venv$(RESET)"; \
-	fi
+
 	@if [ -f "uv.lock" ]; then \
-		echo "  uv.lock: $(GREEN)✅ Found$(RESET)"; \
+		echo "  uv.lock: $(GREEN)✅ Found (modern lockfile workflow)$(RESET)"; \
 	else \
-		echo "  uv.lock: $(YELLOW)⚠️  Not found$(RESET)"; \
+		echo "  uv.lock: $(YELLOW)⚠️  Not found - run 'make lock' to create$(RESET)"; \
 	fi
 	@if [ -f "pyproject.toml" ]; then \
 		echo "  pyproject.toml: $(GREEN)✅ Found$(RESET)"; \
 	else \
 		echo "  pyproject.toml: $(RED)❌ Not found$(RESET)"; \
 	fi
+	@echo ""
+	@echo "$(GREEN)Modern Workflow:$(RESET)"
+	@echo "  Recommended commands:"
+	@echo "    $(BLUE)make test$(RESET)                 # Run tests"
+	@echo "    $(BLUE)make format$(RESET)               # Format code"
+	@echo "    $(BLUE)make type-check$(RESET)           # Type check"
+	@echo "    $(BLUE)make update-deps$(RESET)          # Update dependencies"
+	@echo "    $(BLUE)make sync$(RESET)                 # Sync from lockfile"
 	@echo ""
 	@echo "$(GREEN)Python Version Management:$(RESET)"
 	@if [ -f ".python-version" ]; then \
@@ -241,17 +254,9 @@ status: ## Utility: Show development environment status
 	fi
 	@echo ""
 	@echo "$(GREEN)Installed Packages:$(RESET)"
-	@if [ -f "$(VENV_UV)" ] && [ -d "$(VENV_DIR)" ]; then \
+	@if [ -d "$(VENV_DIR)" ]; then \
 		echo "  Core packages:"; \
-		$(VENV_UV) pip list 2>/dev/null | grep -E "(dagster|dbt-core|ruff|pytest|pyright)" | sed 's/^/    /' || echo "    $(YELLOW)⚠️  No core packages found$(RESET)"; \
+		uv pip list 2>/dev/null | grep -E "(dagster|dbt-core|duckdb|polars|ruff|pytest|pyright)" | sed 's/^/    /' || echo "    $(YELLOW)⚠️  No core packages found$(RESET)"; \
 	else \
-		echo "  $(YELLOW)⚠️  Cannot check packages (uv not available in venv)$(RESET)"; \
+		echo "  $(YELLOW)⚠️  Virtual environment not found$(RESET)"; \
 	fi
-
-
-activate: ## Utility: Show how to activate virtual environment
-	@echo "$(BLUE)To activate the virtual environment, run:$(RESET)"
-	@echo "  source $(VENV_DIR)/bin/activate"
-	@echo ""
-	@echo "$(BLUE)To deactivate:$(RESET)"
-	@echo "  deactivate"

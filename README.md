@@ -4,9 +4,9 @@
 </div>
 <!-- markdownlint-enable MD033 MD041 -->
 
-# MoneyBin - Personal Financial Data Aggregation
+# MoneyBin - Personal Financial Data App
 
-A self-hosted personal financial data aggregation and analysis system built on DuckDB that provides functionality similar to Empower or Monarch Money while maintaining complete data ownership and control.
+A self-hosted personal financial data aggregation and analysis toolkit built on DuckDB that provides functionality similar to Empower or Monarch Money while maintaining complete data ownership and control.
 
 ## Overview
 
@@ -36,6 +36,41 @@ MoneyBin allows you to:
 - uv package manager (recommended) or pip
 - Git
 
+#### Installing uv Package Manager
+
+The project uses [uv](https://docs.astral.sh/uv/) for fast, reliable dependency management. If you don't have uv installed, the `make setup` command will automatically install it for you. However, you can also install it manually:
+
+**macOS and Linux:**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**Windows:**
+
+```bash
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**Alternative installation methods:**
+
+```bash
+# Using pip
+pip install uv
+
+# Using homebrew (macOS)
+brew install uv
+
+# Using pipx
+pipx install uv
+```
+
+**Verify installation:**
+
+```bash
+uv --version
+```
+
 ### Fastest Setup (Recommended)
 
 The easiest way to get started is using the provided Makefile:
@@ -54,10 +89,10 @@ make status
 This single command will:
 
 - Check Python installation
+- Automatically install uv package manager if not present
 - Create virtual environment with correct Python version
-- Install uv package manager if needed
-- Install all development dependencies
-- Set up pre-commit hooks
+- Install all development dependencies using uv
+- Set up pre-commit hooks for code quality
 
 ### Alternative Setup Options
 
@@ -137,12 +172,20 @@ uv venv .venv --python 3.11
 
 #### 3. Install Dependencies
 
-```bash
-# Install development dependencies (recommended - includes testing tools)
-make install-dev
+The project uses uv for faster, more reliable dependency management:
 
-# Or install just main dependencies (production use only)
-make install
+```bash
+# Sync dependencies from lockfile (recommended - fastest and most reproducible)
+make sync
+
+# Sync production dependencies only (no dev tools)
+make sync-prod
+
+# Update all dependencies to latest versions
+make update-deps
+
+# Generate/update lockfile without installing
+make lock
 ```
 
 #### 4. Framework Status
@@ -246,10 +289,11 @@ moneybin credentials list-services        # Show supported services
 
 ```bash
 make setup          # Complete development environment setup (recommended)
-make sync           # Sync dependencies using uv (modern approach)
+make sync           # Sync dependencies from lockfile (modern, reproducible)
+make sync-prod      # Sync production dependencies only
+make update-deps    # Update all dependencies to latest versions
+make lock           # Generate/update lockfile without installing
 make venv           # Create virtual environment only
-make install        # Install main project dependencies only
-make install-dev    # Install development dependencies (includes testing tools)
 make pre-commit     # Install pre-commit hooks
 make check-python   # Verify Python installation
 ```
@@ -257,8 +301,8 @@ make check-python   # Verify Python installation
 #### Development Commands
 
 ```bash
-make test           # Run all tests (requires install-dev)
-make test-cov       # Run tests with coverage report (requires install-dev)
+make test           # Run all tests (requires dev dependencies via sync)
+make test-cov       # Run tests with coverage report
 make test-unit      # Run unit tests only
 make test-integration # Run integration tests only
 make format         # Format code with ruff and fix issues
@@ -329,8 +373,8 @@ make dagster-dev
 make check
 make test
 
-# Note: install-dev includes both development tools AND testing framework
-# No need for separate test dependency installation
+# Note: 'make setup' installs both development tools AND testing framework
+# All dependencies are managed through uv sync
 ```
 
 ## Data Sources Supported
