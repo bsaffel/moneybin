@@ -1,5 +1,51 @@
+---
+description: Comprehensive Python development guidelines and coding standards for MoneyBin
+alwaysApply: true
+---
 
 # Python Development Standards
+
+## Core Development Principles
+
+### Modern Practices
+
+- Use the latest idiomatically correct approaches for each language/framework
+- Link to current authoritative documentation for all framework-specific methods
+- Maintain clean, readable, and maintainable code
+- Implement proper error handling and logging
+
+### Planning Process
+
+1. **Verify Approach**: Research and validate technical approaches before implementation
+2. **Create Plans**: Document implementation plans before making changes
+3. **Minimize Edits**: Make targeted, minimal changes rather than broad rewrites
+4. **Test Incrementally**: Validate each change before proceeding to the next
+
+### Code Organization
+
+- Prefer editing existing files over creating new ones
+- Never create files unless absolutely necessary for the goal
+- Use clear, descriptive naming conventions
+- Organize code into logical modules and functions
+
+## Technology Stack
+
+### Primary Technologies
+
+- **Database**: [DuckDB](https://duckdb.org/docs/) for analytical workloads
+- **Data Processing**: Python for extraction and [DBT Core](https://docs.getdbt.com/) for transformation
+- **PDF Processing**: Modern libraries like [pdfplumber](https://github.com/jsvine/pdfplumber), [tabula-py](https://github.com/chezou/tabula-py), or [camelot-py](https://github.com/camelot-dev/camelot)
+- **Bank APIs**: [Plaid](https://plaid.com/docs/) for automated transaction aggregation (where possible)
+- **Storage**: Local filesystem or user-controlled cloud storage
+- **Visualization**: Integration-ready for dashboards and reporting tools
+
+### Development Tools
+
+- **Code Formatting**: [Ruff](https://docs.astral.sh/ruff/) for Python code formatting and linting
+- **Type Checking**: [Pyright](https://microsoft.github.io/pyright/) for fast Python type checking
+- **Package Management**: [uv](https://docs.astral.sh/uv/) for fast Python package management
+- **Testing**: [pytest](https://docs.pytest.org/) for comprehensive testing
+- **Orchestration**: [Dagster](https://docs.dagster.io/) for data pipeline orchestration
 
 ## Code Style & Formatting
 
@@ -9,6 +55,14 @@
 - **Auto-format**: Run `ruff format .` before committing
 - **Auto-lint**: Run `ruff check .` before committing
 - **IDE Integration**: Configure your editor to format on save with Ruff
+
+### Naming Conventions
+
+- **Files**: snake_case (`plaid_extractor.py`)
+- **Classes**: PascalCase (`PlaidExtractor`)
+- **Functions**: snake_case (`extract_transactions`)
+- **Constants**: UPPER_SNAKE_CASE (`MAX_RETRY_ATTEMPTS`)
+- **Variables**: snake_case (`transaction_data`)
 
 ### Import Organization (Ruff)
 
@@ -22,7 +76,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any
 
 # Third-party imports
 import polars as pl
@@ -33,6 +87,23 @@ from pydantic import BaseModel
 # Local imports
 from moneybin.extractors.plaid_extractor import PlaidExtractor
 from moneybin.processors.data_processor import DataProcessor
+```
+
+### Import Statements
+
+- **Absolute Imports**: Prefer absolute imports for clarity
+- **Relative Imports**: Use relative imports only within packages
+- **Avoid Wildcards**: Never use `from module import *`
+
+```python
+# Good - Absolute imports
+from moneybin.extractors.plaid_extractor import PlaidExtractor
+
+# Good - Relative imports within package
+from .base_extractor import BaseExtractor
+
+# Bad - Wildcard imports
+from moneybin.extractors import *
 ```
 
 ## Type Hints & Annotations
@@ -52,16 +123,16 @@ from moneybin.processors.data_processor import DataProcessor
 
 ```python
 def process_transactions(
-    transactions: List[Dict[str, Any]],
+    transactions: list[dict[str, Any]],
     account_id: str,
-    start_date: Optional[datetime] = None
+    start_date: datetime | None = None
 ) -> pd.DataFrame:
     """Process transaction data and return standardized DataFrame."""
     pass
 
 # Use type aliases for complex types
-TransactionData = Dict[str, Union[str, float, datetime]]
-TransactionList = List[TransactionData]
+TransactionData = dict[str, str | float | datetime]
+TransactionList = list[TransactionData]
 ```
 
 ### Pydantic Models
@@ -71,7 +142,7 @@ TransactionList = List[TransactionData]
 - **Documentation**: Include field descriptions
 
 ```python
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from decimal import Decimal
 
@@ -83,9 +154,10 @@ class Transaction(BaseModel):
     date: datetime = Field(..., description="Transaction date and time")
     amount: Decimal = Field(..., description="Transaction amount (positive for income, negative for expense)")
     description: str = Field(..., description="Transaction description")
-    category: Optional[str] = Field(None, description="Transaction category")
+    category: str | None = Field(None, description="Transaction category")
 
-    @validator('amount')
+    @field_validator('amount')
+    @classmethod
     def validate_amount(cls, v):
         """Ensure amount is not zero."""
         if v == 0:
@@ -112,30 +184,6 @@ src/
 │   └── cli.py               # Command-line interface
 ```
 
-### Module Naming
-
-- **Files**: Use snake_case for Python files (`plaid_extractor.py`)
-- **Classes**: Use PascalCase for classes (`PlaidExtractor`)
-- **Functions**: Use snake_case for functions (`extract_transactions`)
-- **Constants**: Use UPPER_SNAKE_CASE for constants (`MAX_RETRY_ATTEMPTS`)
-
-### Import Statements
-
-- **Absolute Imports**: Prefer absolute imports for clarity
-- **Relative Imports**: Use relative imports only within packages
-- **Avoid Wildcards**: Never use `from module import *`
-
-```python
-# Good - Absolute imports
-from moneybin.extractors.plaid_extractor import PlaidExtractor
-
-# Good - Relative imports within package
-from .base_extractor import BaseExtractor
-
-# Bad - Wildcard imports
-from moneybin.extractors import *
-```
-
 ## Error Handling & Logging
 
 ### Exception Handling
@@ -143,14 +191,14 @@ from moneybin.extractors import *
 - **Specific Exceptions**: Catch specific exception types, not generic `Exception`
 - **Meaningful Messages**: Provide clear error messages with context
 - **Proper Logging**: Log errors with appropriate levels
+- **User Feedback**: Provide clear, actionable error messages
 
 ```python
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-def safe_extract_data(file_path: str) -> Optional[pd.DataFrame]:
+def safe_extract_data(file_path: str) -> pd.DataFrame | None:
     """Safely extract data from file with proper error handling."""
     try:
         if file_path.endswith('.csv'):
@@ -223,19 +271,22 @@ tests/
 - **Test Functions**: Prefix with `test_` (`test_extract_transactions`)
 - **Test Classes**: Prefix with `Test` (`TestPlaidExtractor`)
 - **Descriptive Names**: Use descriptive test names that explain the scenario
+- **Pytest**: Use [pytest](https://docs.pytest.org/) for all testing
+- **Fixtures**: Create reusable fixtures for common test data
+- **Mocking**: Use pytest-mock's mocker fixture for external dependencies
+- **Coverage**: Aim for high test coverage (>80%)
 
 ```python
 import pytest
-from unittest.mock import Mock, patch
 from moneybin.extractors.plaid_extractor import PlaidExtractor
 
 class TestPlaidExtractor:
     """Test suite for PlaidExtractor class."""
 
     @pytest.fixture
-    def mock_plaid_client(self):
+    def mock_plaid_client(self, mocker):
         """Mock Plaid client for testing."""
-        return Mock()
+        return mocker.Mock()
 
     def test_extract_transactions_success(self, mock_plaid_client):
         """Test successful transaction extraction."""
@@ -265,14 +316,14 @@ class TestPlaidExtractor:
         assert result == []
 ```
 
-## Performance & Best Practices
+## Financial Data Specific Rules
 
 ### Data Processing
 
-- **Polars Operations**: Use for high-performance data manipulation when needed
-- **DuckDB Operations**: Use SQL for complex data transformations
-- **Memory Management**: Process large datasets in chunks
-- **DuckDB Integration**: Use [DuckDB](https://duckdb.org/docs/) for large data operations
+- **Polars**: Use for high-performance data manipulation when needed
+- **DuckDB**: Use [DuckDB](https://duckdb.org/docs/) for large data operations and analytics
+- **Chunking**: Process large files in chunks to manage memory
+- **Validation**: Always validate financial data before processing
 
 ```python
 # Good - Vectorized operations
@@ -322,9 +373,8 @@ def aggregate_transactions_duckdb(transactions_df: pd.DataFrame) -> pd.DataFrame
 ```python
 import asyncio
 import aiohttp
-from typing import List
 
-async def fetch_multiple_accounts(session: aiohttp.ClientSession, account_ids: List[str]):
+async def fetch_multiple_accounts(session: aiohttp.ClientSession, account_ids: list[str]):
     """Fetch multiple account balances concurrently."""
     async def fetch_account(account_id: str):
         async with session.get(f"/accounts/{account_id}") as response:
@@ -352,21 +402,24 @@ async def fetch_multiple_accounts(session: aiohttp.ClientSession, account_ids: L
 ```python
 import os
 from dotenv import load_dotenv
-from pydantic import BaseSettings
+from pydantic import BaseModel, Field, ConfigDict
+from pydantic_settings import BaseSettings
 
 load_dotenv()
 
 class Settings(BaseSettings):
     """Application settings with validation."""
 
-    plaid_client_id: str = Field(..., env='PLAID_CLIENT_ID')
-    plaid_secret: str = Field(..., env='PLAID_SECRET')
-    plaid_env: str = Field(default='sandbox', env='PLAID_ENV')
-    duckdb_path: str = Field(default='data/duckdb/financial.db', env='DUCKDB_PATH')
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="forbid"
+    )
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    plaid_client_id: str = Field(..., description="Plaid client ID")
+    plaid_secret: str = Field(..., description="Plaid secret key")
+    plaid_env: str = Field(default='sandbox', description="Plaid environment")
+    duckdb_path: str = Field(default='data/duckdb/financial.db', description="DuckDB database path")
 
 # Validate settings on import
 try:
@@ -409,7 +462,7 @@ def safe_query_transactions(account_id: str, start_date: str, end_date: str):
 
 ### Docstrings
 
-- **Google Style**: Use Google-style docstrings
+- **Google Style**: Use Google-style docstrings for all public functions and classes
 - **Type Information**: Include type information in docstrings
 - **Examples**: Provide usage examples for complex functions
 
@@ -452,72 +505,71 @@ def categorize_transaction(description: str, amount: float) -> str:
         return 'Other'
 ```
 
-### README & Documentation
+### Documentation Requirements
 
-- **Project README**: Keep README.md up to date with setup instructions
-- **API Documentation**: Document all public APIs and interfaces
-- **Code Examples**: Include working code examples in documentation
+- **Always link to authoritative documentation** when suggesting framework methods
+- **Provide context and reasoning** for technical decisions
+- **Document data sources, extraction methods, and transformation processes**
+- **Maintain clear README files** and technical documentation
+- **Add comprehensive docstrings** to methods and files
 
 ## Development Workflow
 
 ### Pre-commit Hooks
 
-- **Install pre-commit**: `uv pip install pre-commit && pre-commit install`
+- **Install pre-commit**: `uv add --dev pre-commit && pre-commit install`
 - **Automatic Checks**: Code formatting, linting, and type checking
 - **Quality Gates**: Ensure code quality before commits
 
 ### Development Commands
 
 ```bash
-# Format code
+# Development setup
+uv sync --dev
+pre-commit install
+
+# Code quality
 ruff format .
-
-# Lint code
 ruff check .
-
-# Type checking
 pyright
 
-# Run tests
+# Testing
 pytest tests/
-
-# Run tests with coverage
 pytest --cov=src tests/
 
-# Install development dependencies
-uv pip install -e ".[dev]"
+# Add dependencies (always use uv, not pip)
+uv add package-name              # Add runtime dependency
+uv add --dev package-name        # Add development dependency
 ```
 
 ### IDE Configuration
 
-- **Ruff Integration**: Configure your editor to use [Ruff](https://docs.astral.sh/ruff/getting-started/)
-- **Type Checking**: Enable [Pyright](https://microsoft.github.io/pyright/) integration in your IDE
+- **Ruff Integration**: Configure auto-formatting and linting on save with [Ruff](https://docs.astral.sh/ruff/getting-started/)
+- **Type Checking**: Enable [Pyright](https://microsoft.github.io/pyright/) integration for fast type checking
 - **Linting**: Ruff provides comprehensive linting
-- **Auto-formatting**: Set up auto-formatting on save with Ruff
+- **Auto-imports**: Ruff handles import organization automatically
 
-## Compliance with Project Rules
+## Compliance with MoneyBin Rules
 
 ### Data Ownership
 
 - **Local Storage**: All financial data must be stored locally
-- **No External APIs**: Use external APIs only for data extraction, not storage
-- **Encryption**: Implement encryption for sensitive data
-
-### Error Handling
-
-- **Graceful Degradation**: Handle failures gracefully with fallback options
-- **User Feedback**: Provide clear error messages to users
-- **Logging**: Log all errors for debugging and monitoring
+- **No External Storage**: Use external APIs only for extraction, not storage
+- **Privacy First**: Implement encryption for sensitive data
 
 ### Performance
 
-- **Efficient Processing**: Use appropriate tools for data processing (DuckDB for analytics)
-- **Memory Management**: Process large datasets efficiently
-- **Caching**: Implement caching where appropriate for performance
+- **Efficient Operations**: Use appropriate tools for data size
+- **Memory Management**: Monitor memory usage for large datasets
+- **Caching**: Implement caching where appropriate
+- **Scalable Design**: Design for growing data volumes
 
-Follow these standards to ensure consistent, maintainable, and high-quality Python code in the MoneyBin project.
+### Error Handling
 
-- **Memory Management**: Process large datasets efficiently
-- **Caching**: Implement caching where appropriate for performance
+- **Graceful Degradation**: Handle failures with fallback options
+- **User Experience**: Provide clear error messages and recovery steps
+- **Monitoring**: Log all errors for debugging and monitoring
+- **Robust Processing**: Implement robust error handling for all data extraction processes
+- **Data Validation**: Validate extracted data against original sources
 
 Follow these standards to ensure consistent, maintainable, and high-quality Python code in the MoneyBin project.

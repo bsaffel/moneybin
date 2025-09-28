@@ -4,11 +4,20 @@ This directory contains project-specific rules for Cursor AI integration. These 
 
 ## Rule Files
 
-- **`data-ownership-privacy.mdc`**: Core data ownership and privacy principles (always applied)
-- **`development-standards.mdc`**: Development standards and best practices (always applied)
-- **`documentation-sources.mdc`**: Primary documentation sources for project dependencies (always applied)
-- **`data-processing.mdc`**: Data processing and integration standards (applied to relevant files)
-- **`financial-analysis.mdc`**: Financial analysis queries and success metrics (applied to SQL/analysis files)
+### Always Applied Rules
+
+- **`data-ownership-privacy.mdc`**: Core data ownership and privacy principles
+- **`documentation-sources.mdc`**: Primary documentation sources for project dependencies
+- **`path-objects.mdc`**: Path object usage standards for filesystem operations
+- **`python-development.mdc`**: Comprehensive Python development guidelines and coding standards
+
+### Context-Specific Rules
+
+- **`testing-strategy.mdc`**: Focused testing strategy and implementation guidelines
+- **`cli-development.mdc`**: CLI command development patterns and standards
+- **`data-processing.mdc`**: Data processing and integration standards
+- **`duckdb-functions.mdc`**: DuckDB-specific SQL functions and patterns
+- **`financial-analysis.mdc`**: Financial analysis queries and success metrics
 
 ## How It Works
 
