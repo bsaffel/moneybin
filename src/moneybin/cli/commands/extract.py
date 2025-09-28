@@ -9,7 +9,6 @@ from pathlib import Path
 
 import typer
 
-# Import the actual implementation classes
 from moneybin.extractors.plaid_extractor import (
     PlaidConnectionManager,
     PlaidExtractor,

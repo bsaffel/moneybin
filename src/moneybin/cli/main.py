@@ -7,7 +7,7 @@ and system utilities.
 
 import typer
 
-from .commands import credentials, extract
+from .commands import credentials, extract, load, transform
 
 app = typer.Typer(
     name="moneybin",
@@ -22,6 +22,8 @@ app.add_typer(extract.app, name="extract", help="Data extraction commands")
 app.add_typer(
     credentials.app, name="credentials", help="Credential management commands"
 )
+app.add_typer(load.app, name="load", help="Data loading commands")
+app.add_typer(transform.app, name="transform", help="Data transformation commands")
 
 
 def main() -> None:

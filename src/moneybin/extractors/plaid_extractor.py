@@ -71,7 +71,11 @@ class PlaidExtractor:
         )
 
     def _get_plaid_environment(self) -> str:
-        """Get the appropriate Plaid environment URL."""
+        """Get the appropriate Plaid environment URL.
+
+        Returns:
+            str: The Plaid API base URL for the configured environment
+        """
         env_name = self.credentials.environment.lower()
         if env_name == "production":
             return "https://production.plaid.com"
@@ -132,7 +136,18 @@ class PlaidExtractor:
         return access_token
 
     def get_accounts(self, access_token: str) -> pl.DataFrame:
-        """Fetch accounts using the Plaid SDK and return a DataFrame."""
+        """Fetch accounts using the Plaid SDK and return a DataFrame.
+
+        Args:
+            access_token: Plaid access token for the institution
+
+        Returns:
+            pl.DataFrame: DataFrame containing account information with columns:
+                - account_id, name, type, subtype, balances, etc.
+
+        Raises:
+            Exception: If the API call fails or data validation fails
+        """
         try:
             request = AccountsGetRequest(access_token=access_token)
             response: Any = self.client.accounts_get(request)
@@ -179,7 +194,20 @@ class PlaidExtractor:
         start_date: datetime | None = None,
         end_date: datetime | None = None,
     ) -> pl.DataFrame:
-        """Fetch transactions using the Plaid SDK and return a DataFrame."""
+        """Fetch transactions using the Plaid SDK and return a DataFrame.
+
+        Args:
+            access_token: Plaid access token for the institution
+            start_date: Start date for transaction retrieval. Defaults to 365 days ago.
+            end_date: End date for transaction retrieval. Defaults to today.
+
+        Returns:
+            pl.DataFrame: DataFrame containing transaction information with columns:
+                - transaction_id, account_id, amount, date, name, category, etc.
+
+        Raises:
+            Exception: If the API call fails or data validation fails
+        """
         if not start_date:
             start_date = datetime.now() - timedelta(days=self.config.days_lookback)
         if not end_date:

@@ -29,8 +29,8 @@ class SecureConfig(BaseModel):
 class DatabaseCredentials(SecureConfig):
     """Secure database connection credentials."""
 
-    database_path: str = Field(..., description="Path to DuckDB database file")
-    backup_path: str | None = Field(None, description="Path for database backups")
+    database_path: Path = Field(..., description="Path to DuckDB database file")
+    backup_path: Path | None = Field(None, description="Path for database backups")
     encryption_key: str | None = Field(None, description="Database encryption key")
 
     @classmethod
@@ -40,9 +40,10 @@ class DatabaseCredentials(SecureConfig):
         Returns:
             DatabaseCredentials: Validated database configuration
         """
+        backup_path_str = os.getenv("DUCKDB_BACKUP_PATH")
         return cls(
-            database_path=os.getenv("DUCKDB_PATH", "data/duckdb/financial.db"),
-            backup_path=os.getenv("DUCKDB_BACKUP_PATH"),
+            database_path=Path(os.getenv("DUCKDB_PATH", "data/duckdb/financial.db")),
+            backup_path=Path(backup_path_str) if backup_path_str else None,
             encryption_key=os.getenv("DUCKDB_ENCRYPTION_KEY"),
         )
 
@@ -395,7 +396,7 @@ DEBUG=false
 # WEBHOOK_SECRET=your_webhook_secret_for_plaid_notifications
 """
 
-        with open(env_file, "w") as f:
+        with env_file.open("w") as f:
             f.write(sample_content)
 
         logger.info(f"Created secure environment template at {env_file}")
