@@ -131,24 +131,24 @@ pre-commit: venv ## Setup & Installation: Install pre-commit hooks
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
 	@echo "$(BLUE)ℹ️  Pre-commit will use uv run for consistent tool versions$(RESET)"
 
-test: venv ## Development: Run tests using uv environment
+test: venv ## Development: Run tests
 	@echo "$(BLUE)🧪 Running tests...$(RESET)"
 	@uv run pytest tests/
 
-test-cov: venv ## Development: Run tests with coverage report using uv environment
+test-cov: venv ## Development: Run tests with coverage report
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
 	@uv run pytest --cov=src tests/
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"
 
-test-unit: venv ## Development: Run unit tests only using uv environment
+test-unit: venv ## Development: Run unit tests only
 	@echo "$(BLUE)🧪 Running unit tests...$(RESET)"
 	@uv run pytest tests/ -m "unit"
 
-test-integration: venv ## Development: Run integration tests only using uv environment
+test-integration: venv ## Development: Run integration tests only
 	@echo "$(BLUE)🧪 Running integration tests...$(RESET)"
 	@uv run pytest tests/ -m "integration"
 
-format: venv ## Development: Format code with ruff using uv environment
+format: venv ## Development: Format code with ruff
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"
 	@uv run ruff format .
 	@echo "$(BLUE)🔧 Fixing auto-fixable issues...$(RESET)"
@@ -158,12 +158,12 @@ format: venv ## Development: Format code with ruff using uv environment
 	@uv run pre-commit run end-of-file-fixer --all-files || true
 	@echo "$(GREEN)✅ Code formatted and fixed$(RESET)"
 
-lint: venv ## Development: Lint code with ruff using uv environment
+lint: venv ## Development: Lint code with ruff
 	@echo "$(BLUE)🔍 Linting code with ruff...$(RESET)"
 	@uv run ruff check .
 	@echo "$(GREEN)✅ Linting complete$(RESET)"
 
-type-check: venv ## Development: Type check with pyright using uv environment
+type-check: venv ## Development: Type check with pyright
 	@echo "$(BLUE)🔍 Type checking with pyright...$(RESET)"
 	@uv run pyright
 	@echo "$(GREEN)✅ Type checking complete$(RESET)"
@@ -171,11 +171,11 @@ type-check: venv ## Development: Type check with pyright using uv environment
 check: format lint type-check ## Development: Run all code quality checks
 	@echo "$(GREEN)✅ All code quality checks complete$(RESET)"
 
-jupyter: venv ## Development: Start Jupyter notebook server using uv environment
+jupyter: venv ## Development: Start Jupyter notebook server
 	@echo "$(BLUE)📓 Starting Jupyter notebook server...$(RESET)"
 	@uv run jupyter notebook notebooks/
 
-dagster-dev: venv ## Development: Start Dagster development server using uv environment
+dagster-dev: venv ## Development: Start Dagster development server
 	@echo "$(BLUE)🚀 Starting Dagster development server...$(RESET)"
 	@cd pipelines && uv run dagster dev
 
@@ -221,7 +221,7 @@ status: ## Utility: Show development environment status
 	fi
 
 	@if [ -f "uv.lock" ]; then \
-		echo "  uv.lock: $(GREEN)✅ Found (modern lockfile workflow)$(RESET)"; \
+		echo "  uv.lock: $(GREEN)✅ Found$(RESET)"; \
 	else \
 		echo "  uv.lock: $(YELLOW)⚠️  Not found - run 'make lock' to create$(RESET)"; \
 	fi
@@ -230,14 +230,6 @@ status: ## Utility: Show development environment status
 	else \
 		echo "  pyproject.toml: $(RED)❌ Not found$(RESET)"; \
 	fi
-	@echo ""
-	@echo "$(GREEN)Modern Workflow:$(RESET)"
-	@echo "  Recommended commands:"
-	@echo "    $(BLUE)make test$(RESET)                 # Run tests"
-	@echo "    $(BLUE)make format$(RESET)               # Format code"
-	@echo "    $(BLUE)make type-check$(RESET)           # Type check"
-	@echo "    $(BLUE)make update-deps$(RESET)          # Update dependencies"
-	@echo "    $(BLUE)make sync$(RESET)                 # Sync from lockfile"
 	@echo ""
 	@echo "$(GREEN)Python Version Management:$(RESET)"
 	@if [ -f ".python-version" ]; then \
