@@ -1,0 +1,318 @@
+---
+description: Modern configuration management standards using Pydantic Settings
+globs: ["**/*.py", "src/**/*", "tests/**/*"]
+alwaysApply: true
+---
+
+# Configuration Management Standards
+
+## Core Principle
+
+Use **Pydantic Settings** as the single source of truth for all application configuration. Never hardcode paths, database connections, or API settings throughout the codebase.
+
+## Implementation Requirements
+
+### Centralized Configuration Structure
+
+```python
+# src/moneybin/config.py
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
+from typing import Literal
+
+class DatabaseConfig(BaseModel):
+    """Database configuration with validation."""
+    model_config = ConfigDict(frozen=True)
+
+    path: Path = Field(
+        default=Path("data/duckdb/moneybin.duckdb"),
+        description="Path to DuckDB database file"
+    )
+    backup_path: Path | None = Field(
+        default=None,
+        description="Path to database backup directory"
+    )
+
+class PlaidConfig(BaseModel):
+    """Plaid API configuration with constraints."""
+    model_config = ConfigDict(frozen=True)
+
+    client_id: str = Field(..., description="Plaid client ID")
+    secret: str = Field(..., description="Plaid secret key")
+    environment: Literal["sandbox", "development", "production"] = Field(
+        default="sandbox", description="Plaid environment"
+    )
+    batch_size: int = Field(
+        default=500, ge=1, le=500, description="API batch size"
+    )
+
+class MoneyBinSettings(BaseSettings):
+    """Main application settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="MONEYBIN_",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="ignore",  # Allow extra env vars
+        frozen=True,
+    )
+
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    plaid: PlaidConfig = Field(default_factory=PlaidConfig)
+
+    # Legacy environment variable support
+    def __init__(self, **kwargs):
+        # Handle DUCKDB_PATH, PLAID_CLIENT_ID, etc.
+        if "database" not in kwargs and os.getenv("DUCKDB_PATH"):
+            kwargs["database"] = DatabaseConfig(path=Path(os.getenv("DUCKDB_PATH")))
+        super().__init__(**kwargs)
+```
+
+### Global Settings Access Pattern
+
+```python
+# Singleton pattern with lazy loading
+_settings: MoneyBinSettings | None = None
+
+def get_settings() -> MoneyBinSettings:
+    """Get the global settings instance."""
+    global _settings
+    if _settings is None:
+        _settings = MoneyBinSettings()
+        _settings.validate_required_credentials()
+    return _settings
+
+# Convenience functions for common access patterns
+def get_database_path() -> Path:
+    """Get the configured database path."""
+    return get_settings().database.path
+
+def get_plaid_config() -> PlaidConfig:
+    """Get the Plaid configuration."""
+    return get_settings().plaid
+```
+
+## Usage Standards
+
+### ❌ Never Do This (Hardcoded Paths)
+
+```python
+# BAD - Hardcoded paths scattered throughout codebase
+conn = duckdb.connect("data/duckdb/moneybin.duckdb")
+raw_path = Path("data/raw/plaid")
+config = PlaidExtractionConfig(
+    raw_data_path=Path("data/raw/plaid"),
+    days_lookback=365
+)
+```
+
+### ✅ Always Do This (Centralized Configuration)
+
+```python
+# GOOD - Use centralized configuration
+from moneybin.config import get_database_path, get_plaid_config, get_settings
+
+conn = duckdb.connect(str(get_database_path()))
+settings = get_settings()
+raw_path = settings.data.raw_data_path
+
+plaid_config = get_plaid_config()
+config = PlaidExtractionConfig(
+    raw_data_path=settings.data.raw_data_path,
+    days_lookback=plaid_config.days_lookback
+)
+```
+
+### Configuration Classes Integration
+
+When existing configuration classes need paths, integrate with centralized config:
+
+```python
+@dataclass
+class LoadingConfig:
+    """Configuration that uses centralized defaults."""
+
+    source_path: Path | None = None
+    database_path: Path | None = None
+    incremental: bool = True
+
+    def __post_init__(self):
+        """Set defaults from centralized configuration."""
+        if self.source_path is None:
+            self.source_path = get_raw_data_path()
+        if self.database_path is None:
+            self.database_path = get_database_path()
+```
+
+## Environment Variable Standards
+
+### Preferred Format (New)
+
+```bash
+# Hierarchical with prefix
+MONEYBIN_DATABASE__PATH=custom/path/db.duckdb
+MONEYBIN_PLAID__CLIENT_ID=your_client_id
+MONEYBIN_PLAID__ENVIRONMENT=production
+MONEYBIN_DEBUG=true
+```
+
+### Legacy Support (Maintained for Compatibility)
+
+```bash
+# Legacy format - still supported
+DUCKDB_PATH=data/duckdb/moneybin.duckdb
+PLAID_CLIENT_ID=your_client_id
+PLAID_SECRET=your_secret
+PLAID_ENV=sandbox
+```
+
+## CLI Integration Standards
+
+### Configuration-Aware CLI Commands
+
+```python
+@app.command("load")
+def load_command(
+    source_path: Path = typer.Option(
+        None,  # Use None, not hardcoded default
+        "--source",
+        help="Source directory (default: from config)"
+    ),
+    database_path: Path = typer.Option(
+        None,  # Use None, not hardcoded default
+        "--database",
+        help="Database file (default: from config)"
+    ),
+):
+    """Load data using centralized configuration defaults."""
+
+    # Use centralized config for defaults
+    config = LoadingConfig(
+        source_path=source_path or get_raw_data_path(),
+        database_path=database_path or get_database_path(),
+    )
+```
+
+## Validation Standards
+
+### Runtime Validation
+
+```python
+class MoneyBinSettings(BaseSettings):
+    """Settings with comprehensive validation."""
+
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, v: str) -> str:
+        if v == "production" and os.getenv("DEBUG", "").lower() in ("true", "1"):
+            raise ValueError("DEBUG mode cannot be enabled in production")
+        return v
+
+    def validate_required_credentials(self) -> None:
+        """Validate that required credentials are present."""
+        errors = []
+        if not self.plaid.client_id:
+            errors.append("PLAID_CLIENT_ID is required")
+        if not self.plaid.secret:
+            errors.append("PLAID_SECRET is required")
+        if errors:
+            raise ValueError(f"Missing required configuration: {', '.join(errors)}")
+```
+
+### Field Constraints
+
+```python
+class PlaidConfig(BaseModel):
+    """Configuration with built-in validation."""
+
+    batch_size: int = Field(
+        default=500,
+        ge=1, le=500,  # Validation constraints
+        description="Batch size for API requests"
+    )
+
+    environment: Literal["sandbox", "development", "production"] = Field(
+        default="sandbox",
+        description="Plaid environment"
+    )
+
+    @field_validator("client_id")
+    @classmethod
+    def validate_client_id(cls, v: str) -> str:
+        if not v or len(v) < 10:
+            raise ValueError("Client ID must be at least 10 characters")
+        return v
+```
+
+## Testing Standards
+
+### Configuration Override for Tests
+
+```python
+def test_with_custom_config():
+    """Test with custom configuration."""
+
+    # Create test-specific configuration
+    test_settings = MoneyBinSettings(
+        database=DatabaseConfig(path=Path("test_db.duckdb")),
+        plaid=PlaidConfig(
+            client_id="test_client",
+            secret="test_secret",
+            batch_size=100  # Smaller for tests
+        )
+    )
+
+    # Use in test...
+```
+
+### Environment Isolation
+
+```python
+def test_environment_variables(monkeypatch):
+    """Test environment variable handling."""
+
+    # Set test environment variables
+    monkeypatch.setenv("MONEYBIN_DEBUG", "true")
+    monkeypatch.setenv("MONEYBIN_DATABASE__PATH", "test.db")
+
+    # Reload settings to pick up changes
+    from moneybin.config import reload_settings
+    settings = reload_settings()
+
+    assert settings.debug is True
+    assert settings.database.path == Path("test.db")
+```
+
+## Benefits of This Approach
+
+### Type Safety
+
+- **Compile-time checking**: IDEs catch configuration errors
+- **Runtime validation**: Clear error messages for invalid values
+- **Constraint enforcement**: Field validators ensure valid ranges
+
+### Developer Experience
+
+- **Autocomplete**: Full IDE support for configuration options
+- **Documentation**: Self-documenting field descriptions
+- **Refactoring**: Safe renaming and restructuring
+
+### Operational Benefits
+
+- **Environment flexibility**: Easy deployment across environments
+- **Validation**: Catch configuration errors at startup
+- **Legacy support**: Smooth migration from old configuration patterns
+
+## Migration Guidelines
+
+When updating existing code:
+
+1. **Replace hardcoded paths** with centralized configuration calls
+2. **Update function signatures** to remove path parameters where appropriate
+3. **Add configuration validation** for new settings
+4. **Maintain backward compatibility** with existing environment variables
+5. **Update tests** to use configuration overrides
+
+This standard ensures consistent, maintainable, and type-safe configuration management throughout the MoneyBin codebase.

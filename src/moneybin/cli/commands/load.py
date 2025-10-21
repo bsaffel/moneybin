@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from moneybin.config import get_database_path, get_raw_data_path
 from moneybin.loaders import ParquetLoader
 from moneybin.loaders.parquet_loader import LoadingConfig
 from moneybin.logging import setup_logging
@@ -20,16 +21,16 @@ logger = logging.getLogger(__name__)
 @app.command("parquet")
 def load_parquet(
     source_path: Path = typer.Option(
-        Path("data/raw"),
+        None,
         "--source",
         "-s",
-        help="Source directory containing Parquet files",
+        help="Source directory containing Parquet files (default: from config)",
     ),
     database_path: Path = typer.Option(
-        Path("data/duckdb/moneybin.duckdb"),
+        None,
         "--database",
         "-d",
-        help="Target DuckDB database file",
+        help="Target DuckDB database file (default: from config)",
     ),
     incremental: bool = typer.Option(
         True,
@@ -54,10 +55,10 @@ def load_parquet(
     setup_logging(cli_mode=True, verbose=verbose)
 
     try:
-        # Create configuration
+        # Create configuration with centralized defaults
         config = LoadingConfig(
-            source_path=source_path,
-            database_path=database_path,
+            source_path=source_path or get_raw_data_path(),
+            database_path=database_path or get_database_path(),
             incremental=incremental,
         )
 
@@ -84,10 +85,10 @@ def load_parquet(
 @app.command("status")
 def load_status(
     database_path: Path = typer.Option(
-        Path("data/duckdb/moneybin.duckdb"),
+        None,
         "--database",
         "-d",
-        help="DuckDB database file to check",
+        help="DuckDB database file to check (default: from config)",
     ),
 ) -> None:
     """Show the status of loaded data in DuckDB.
@@ -98,8 +99,8 @@ def load_status(
     setup_logging(cli_mode=True)
 
     try:
-        # Create configuration
-        config = LoadingConfig(database_path=database_path)
+        # Create configuration with centralized defaults
+        config = LoadingConfig(database_path=database_path or get_database_path())
         loader = ParquetLoader(config)
 
         # Get database status

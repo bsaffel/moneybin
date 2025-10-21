@@ -37,11 +37,12 @@ dependencies = [
     "ipykernel>=6.30.1",
     "matplotlib>=3.10.5",
     "seaborn>=0.13.2",
+    "pydantic-settings>=2.11.0",
 ]
 
 [tool.setuptools]
 # Configure src/ layout for proper package discovery
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 # Find packages in src/ directory
@@ -58,7 +59,7 @@ dev = [
     "ruff>=0.12.10",
     "pyright>=1.1.404",
     "pre-commit>=4.3.0",
-    "sqlparse>=0.5.0",  # SQL parsing and basic formatting
+    "sqlparse>=0.5.0",   # SQL parsing and basic formatting
     # Testing framework and tools
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
@@ -93,9 +94,9 @@ select = [
     "T20", # flake8-print
 ]
 ignore = [
-    "E501",  # line too long, handled by line-length
-    "B008",  # do not perform function calls in argument defaults
-    "C901",  # too complex
+    "E501", # line too long, handled by line-length
+    "B008", # do not perform function calls in argument defaults
+    "C901", # too complex
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -136,7 +137,7 @@ reportOptionalContextManager = true
 reportOptionalOperand = true
 
 # Untyped code detection - ensures type safety
-reportUntypedFunctionDecorator = false  # Disabled for Dagster compatibility
+reportUntypedFunctionDecorator = false # Disabled for Dagster compatibility
 reportUntypedClassDecorator = true
 reportUntypedBaseClass = true
 reportUntypedNamedTuple = true
@@ -160,7 +161,7 @@ reportInvalidStringEscapeSequence = true
 reportUnknownParameterType = true
 reportUnknownArgumentType = true
 reportUnknownLambdaType = true
-reportUnknownVariableType = false  # Disabled for Dagster compatibility
+reportUnknownVariableType = false # Disabled for Dagster compatibility
 reportUnknownMemberType = true
 
 # Additional rigor for financial applications (conservative selection)
@@ -187,12 +188,7 @@ markers = [
 [tool.coverage.run]
 # Documentation: https://coverage.readthedocs.io/en/7.4.0/config.html#run-section
 source = ["src"]
-omit = [
-    "*/tests/*",
-    "*/test_*",
-    "*/venv/*",
-    "*/__pycache__/*",
-]
+omit = ["*/tests/*", "*/test_*", "*/venv/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
 # Documentation: https://coverage.readthedocs.io/en/latest/config.html#report-section
@@ -211,6 +207,4 @@ exclude_lines = [
 
 
 [dependency-groups]
-dev = [
-    "sqlparse>=0.5.3",
-]
+dev = ["sqlparse>=0.5.3"]

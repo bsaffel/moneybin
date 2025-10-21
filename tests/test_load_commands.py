@@ -48,12 +48,25 @@ class TestLoadCommands:
         """Mock setup_logging for testing."""
         return mocker.patch("src.moneybin.cli.commands.load.setup_logging")
 
+    @pytest.fixture
+    def mock_config_functions(self, mocker: Any) -> None:
+        """Mock configuration functions to return test values."""
+        mocker.patch(
+            "src.moneybin.cli.commands.load.get_raw_data_path",
+            return_value=Path("data/raw"),
+        )
+        mocker.patch(
+            "src.moneybin.cli.commands.load.get_database_path",
+            return_value=Path("data/duckdb/testbin.duckdb"),
+        )
+
     def test_parquet_command_argument_parsing(
         self,
         runner: CliRunner,
         mock_parquet_loader: MagicMock,
         mock_loading_config: MagicMock,
         mock_setup_logging: MagicMock,
+        mock_config_functions: None,
     ) -> None:
         """Test CLI argument parsing for parquet command."""
         mock_parquet_loader.load_all_parquet_files.return_value = {}
@@ -63,7 +76,7 @@ class TestLoadCommands:
         assert result.exit_code == 0
         mock_loading_config.assert_called_with(
             source_path=Path("data/raw"),
-            database_path=Path("data/duckdb/moneybin.duckdb"),
+            database_path=Path("data/duckdb/testbin.duckdb"),
             incremental=True,
         )
 
@@ -95,6 +108,7 @@ class TestLoadCommands:
         mock_parquet_loader: MagicMock,
         mock_loading_config: MagicMock,
         mock_setup_logging: MagicMock,
+        mock_config_functions: None,
     ) -> None:
         """Test CLI exit codes for different error conditions."""
         # Success case
@@ -122,6 +136,7 @@ class TestLoadCommands:
         mock_parquet_loader: MagicMock,
         mock_loading_config: MagicMock,
         mock_setup_logging: MagicMock,
+        mock_config_functions: None,
     ) -> None:
         """Test CLI argument parsing for status command."""
         mock_parquet_loader.get_database_status.return_value = {}
@@ -130,7 +145,7 @@ class TestLoadCommands:
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         mock_loading_config.assert_called_with(
-            database_path=Path("data/duckdb/moneybin.duckdb")
+            database_path=Path("data/duckdb/testbin.duckdb")
         )
 
         # Test custom database path
@@ -145,6 +160,7 @@ class TestLoadCommands:
         mock_parquet_loader: MagicMock,
         mock_loading_config: MagicMock,
         mock_setup_logging: MagicMock,
+        mock_config_functions: None,
     ) -> None:
         """Test CLI exit codes for status command error conditions."""
         # Success case - must include both row_count and estimated_size

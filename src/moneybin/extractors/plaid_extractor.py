@@ -4,15 +4,17 @@ This module uses the Plaid Python SDK with minimal wrapping to fetch
 accounts and transactions, returning simple tabular data structures.
 """
 
+import hashlib
 import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import duckdb
 import polars as pl
 from dotenv import load_dotenv
 from plaid.api import plaid_api
@@ -23,6 +25,7 @@ from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.transactions_get_request import TransactionsGetRequest
 from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 
+from ..config import get_database_path
 from .plaid_schemas import AccountSchema, PlaidCredentials, TransactionSchema
 
 # Load environment variables
@@ -135,6 +138,151 @@ class PlaidExtractor:
 
         return access_token
 
+    def _get_incremental_date_range(
+        self, access_token: str
+    ) -> tuple[datetime | None, datetime | None]:
+        """Calculate incremental date range for extraction.
+
+        Returns dates only if there are complete new days to extract.
+        Uses day boundaries to ensure complete transaction data.
+
+        Args:
+            access_token: Plaid access token for the institution
+
+        Returns:
+            tuple: (start_date, end_date) if new data available, (None, None) otherwise
+        """
+        # Connect to database to check last extraction
+        try:
+            conn = duckdb.connect(str(get_database_path()))  # type: ignore[misc]
+
+            # Ensure extraction metadata table exists
+            conn.sql("""
+                CREATE TABLE IF NOT EXISTS extraction_metadata (
+                    institution_name VARCHAR,
+                    access_token_hash VARCHAR,
+                    last_extraction_date DATE,
+                    last_extraction_timestamp TIMESTAMP,
+                    total_transactions_extracted INTEGER,
+                    extraction_job_id VARCHAR,
+                    PRIMARY KEY (institution_name, access_token_hash)
+                )
+            """)  # type: ignore[misc]
+
+            # Hash token for lookup (don't store raw tokens)
+            token_hash = hashlib.sha256(access_token.encode()).hexdigest()[:16]
+
+            # Get last extraction date
+            result = conn.execute(
+                """
+                SELECT last_extraction_date
+                FROM extraction_metadata
+                WHERE access_token_hash = ?
+                ORDER BY last_extraction_timestamp DESC
+                LIMIT 1
+            """,
+                [token_hash],
+            ).fetchone()  # type: ignore[misc]
+
+            conn.close()
+
+            # Calculate date boundaries
+            today = datetime.now().date()
+            yesterday = today - timedelta(days=1)
+
+            if result and result[0]:
+                last_extraction_date = result[0]
+                if not isinstance(last_extraction_date, date):
+                    raise TypeError(
+                        f"Expected date, got {type(last_extraction_date).__name__}"  # pyright: ignore[reportUnknownArgumentType]
+                    )
+
+                # Only extract if we have complete new days
+                # Start from day after last extraction, end at yesterday (complete day)
+                potential_start = last_extraction_date + timedelta(days=1)
+
+                if potential_start <= yesterday:
+                    start_date = datetime.combine(potential_start, datetime.min.time())
+                    end_date = datetime.combine(yesterday, datetime.max.time())
+
+                    logger.info(
+                        f"Incremental extraction: {potential_start} to {yesterday}"
+                    )
+                    return start_date, end_date
+                else:
+                    logger.info(
+                        f"No new complete days since last extraction on {last_extraction_date}"
+                    )
+                    return None, None
+            else:
+                # First extraction - get full lookback period ending yesterday
+                start_date = datetime.combine(
+                    today - timedelta(days=self.config.days_lookback),
+                    datetime.min.time(),
+                )
+                end_date = datetime.combine(yesterday, datetime.max.time())
+
+                logger.info(f"First extraction: {start_date.date()} to {yesterday}")
+                return start_date, end_date
+
+        except Exception as e:
+            logger.warning(f"Failed to check extraction metadata: {e}")
+            logger.info("Falling back to full lookback period")
+
+            # Fallback to default behavior
+            today = datetime.now().date()
+            yesterday = today - timedelta(days=1)
+            start_date = datetime.combine(
+                today - timedelta(days=self.config.days_lookback), datetime.min.time()
+            )
+            end_date = datetime.combine(yesterday, datetime.max.time())
+            return start_date, end_date
+
+    def _update_extraction_metadata(
+        self, access_token: str, extraction_end_date: datetime, transaction_count: int
+    ) -> None:
+        """Update extraction metadata in DuckDB after successful extraction.
+
+        Args:
+            access_token: Plaid access token for the institution
+            extraction_end_date: End date of the extraction
+            transaction_count: Number of transactions extracted
+        """
+        try:
+            conn = duckdb.connect(str(get_database_path()))  # type: ignore[misc]
+
+            # Hash token for security (don't store raw tokens)
+            token_hash = hashlib.sha256(access_token.encode()).hexdigest()[:16]
+
+            # Use end_date as the last_extraction_date (last complete day extracted)
+            extraction_date = extraction_end_date.date()
+
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO extraction_metadata
+                (institution_name, access_token_hash, last_extraction_date,
+                 last_extraction_timestamp, total_transactions_extracted, extraction_job_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    "unknown",  # Will be improved when we add institution tracking
+                    token_hash,
+                    extraction_date,
+                    datetime.now(),
+                    transaction_count,
+                    str(uuid4()),
+                ],
+            )
+
+            conn.close()
+            logger.info(
+                f"Updated extraction metadata: last_date={extraction_date}, count={transaction_count}"
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to update extraction metadata: {e}")
+            # Don't fail the extraction if metadata update fails
+
     def get_accounts(self, access_token: str) -> pl.DataFrame:
         """Fetch accounts using the Plaid SDK and return a DataFrame.
 
@@ -193,13 +341,15 @@ class PlaidExtractor:
         access_token: str,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        force_extraction: bool = False,
     ) -> pl.DataFrame:
         """Fetch transactions using the Plaid SDK and return a DataFrame.
 
         Args:
             access_token: Plaid access token for the institution
-            start_date: Start date for transaction retrieval. Defaults to 365 days ago.
-            end_date: End date for transaction retrieval. Defaults to today.
+            start_date: Start date for transaction retrieval. Defaults to incremental extraction.
+            end_date: End date for transaction retrieval. Defaults to yesterday (complete day).
+            force_extraction: If True, skip incremental logic and extract specified range.
 
         Returns:
             pl.DataFrame: DataFrame containing transaction information with columns:
@@ -208,6 +358,19 @@ class PlaidExtractor:
         Raises:
             Exception: If the API call fails or data validation fails
         """
+        # Use incremental extraction logic unless dates are explicitly provided or forced
+        if not force_extraction and (start_date is None or end_date is None):
+            start_date, end_date = self._get_incremental_date_range(access_token)
+
+            # If no new complete days available, return empty DataFrame
+            if start_date is None or end_date is None:
+                logger.info(
+                    "✅ No new complete days available for extraction - skipping API call"
+                )
+                logger.info("💰 Saved Plaid API call - no duplicate data downloaded")
+                return pl.DataFrame()
+
+        # Fallback for explicit date ranges
         if not start_date:
             start_date = datetime.now() - timedelta(days=self.config.days_lookback)
         if not end_date:
@@ -292,6 +455,12 @@ class PlaidExtractor:
                     f"Saved {len(transactions_data)} transactions to {output_path}"
                 )
 
+            # Update extraction metadata after successful extraction
+            if not force_extraction and len(transactions_data) > 0:
+                self._update_extraction_metadata(
+                    access_token, end_date, len(transactions_data)
+                )
+
             return df
 
         except Exception as e:
@@ -299,14 +468,18 @@ class PlaidExtractor:
             raise
 
     def extract_all_data(
-        self, access_token: str, institution_name: str | None = None
+        self,
+        access_token: str,
+        institution_name: str | None = None,
+        force_extraction: bool = False,
     ) -> dict[str, pl.DataFrame]:
         """Extract all available data types for an institution."""
         job_id = str(uuid4())
         institution_name = institution_name or "unknown"
 
+        extraction_mode = "FORCED" if force_extraction else "INCREMENTAL"
         logger.info(
-            f"Starting data extraction for {institution_name} (job_id: {job_id})"
+            f"Starting {extraction_mode} data extraction for {institution_name} (job_id: {job_id})"
         )
 
         results = {}
@@ -314,7 +487,9 @@ class PlaidExtractor:
         try:
             # Extract core data
             results["accounts"] = self.get_accounts(access_token)
-            results["transactions"] = self.get_transactions(access_token)
+            results["transactions"] = self.get_transactions(
+                access_token, force_extraction=force_extraction
+            )
 
             # Create empty DataFrames for optional data types
             results["investment_holdings"] = pl.DataFrame()
@@ -338,7 +513,9 @@ class PlaidConnectionManager:
         """Initialize connection manager."""
         self.extractor = PlaidExtractor()
 
-    def extract_all_institutions(self) -> dict[str, dict[str, pl.DataFrame]]:
+    def extract_all_institutions(
+        self, force_extraction: bool = False
+    ) -> dict[str, dict[str, pl.DataFrame]]:
         """Extract data from all configured institutions."""
         all_data = {}
 
@@ -362,7 +539,7 @@ class PlaidConnectionManager:
             logger.info(f"Extracting data from {institution}")
             try:
                 all_data[institution] = self.extractor.extract_all_data(
-                    token, institution
+                    token, institution, force_extraction
                 )
                 logger.info(f"✅ Successfully extracted data from {institution}")
             except Exception as e:

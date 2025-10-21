@@ -24,12 +24,22 @@ from src.moneybin.loaders.parquet_loader import LoadingConfig, ParquetLoader
 class TestLoadingConfig:
     """Test cases for LoadingConfig dataclass."""
 
-    def test_default_config(self) -> None:
+    def test_default_config(self, mocker: Any) -> None:
         """Test default configuration values."""
+        # Mock configuration functions to return test values
+        mocker.patch(
+            "src.moneybin.loaders.parquet_loader.get_raw_data_path",
+            return_value=Path("data/raw"),
+        )
+        mocker.patch(
+            "src.moneybin.loaders.parquet_loader.get_database_path",
+            return_value=Path("data/duckdb/testbin.duckdb"),
+        )
+
         config = LoadingConfig()
 
         assert config.source_path == Path("data/raw")
-        assert config.database_path == Path("data/duckdb/moneybin.duckdb")
+        assert config.database_path == Path("data/duckdb/testbin.duckdb")
         assert config.incremental is True
         assert config.create_database_dir is True
 
@@ -72,12 +82,24 @@ class TestParquetLoader:
         mocker.patch("duckdb.connect", return_value=mock_context_manager)
         return mock_conn
 
-    def test_init_with_default_config(self) -> None:
+    @pytest.fixture
+    def mock_config_functions(self, mocker: Any) -> None:
+        """Mock configuration functions to return test values."""
+        mocker.patch(
+            "src.moneybin.loaders.parquet_loader.get_raw_data_path",
+            return_value=Path("data/raw"),
+        )
+        mocker.patch(
+            "src.moneybin.loaders.parquet_loader.get_database_path",
+            return_value=Path("data/duckdb/testbin.duckdb"),
+        )
+
+    def test_init_with_default_config(self, mock_config_functions: None) -> None:
         """Test ParquetLoader initialization with default config."""
         loader = ParquetLoader()
 
         assert loader.config.source_path == Path("data/raw")
-        assert loader.config.database_path == Path("data/duckdb/moneybin.duckdb")
+        assert loader.config.database_path == Path("data/duckdb/testbin.duckdb")
         assert loader.config.incremental is True
         assert loader.config.create_database_dir is True
 
@@ -125,7 +147,7 @@ class TestParquetLoader:
     ) -> None:
         """Test load_all_parquet_files with no Plaid data available."""
         # Create source directory but no plaid subdirectory
-        temp_config.source_path.mkdir(parents=True)
+        temp_config.resolved_source_path.mkdir(parents=True)
 
         loader = ParquetLoader(temp_config)
         result = loader.load_all_parquet_files()
@@ -138,7 +160,7 @@ class TestParquetLoader:
     ) -> None:
         """Test load_all_parquet_files with Plaid data available."""
         # Create source directory and plaid subdirectory
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
 
         # Create mock parquet files
@@ -172,7 +194,7 @@ class TestParquetLoader:
     ) -> None:
         """Test get_database_status returns correct status information."""
         # Create database file
-        temp_config.database_path.touch()
+        temp_config.resolved_database_path.touch()
 
         # Mock SQL queries - need to handle multiple calls
         def mock_sql_side_effect(query: str) -> MagicMock:
@@ -207,7 +229,7 @@ class TestParquetLoader:
     ) -> None:
         """Test get_database_status skips invalid table names."""
         # Create database file
-        temp_config.database_path.touch()
+        temp_config.resolved_database_path.touch()
 
         # Mock SQL queries - need to handle multiple calls
         def mock_sql_side_effect(query: str) -> MagicMock:
@@ -238,7 +260,7 @@ class TestParquetLoader:
         self, temp_config: LoadingConfig, mock_duckdb_connection: MagicMock
     ) -> None:
         """Test _load_plaid_data with no Parquet files."""
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
 
         loader = ParquetLoader(temp_config)
@@ -250,7 +272,7 @@ class TestParquetLoader:
         self, temp_config: LoadingConfig, mock_duckdb_connection: MagicMock, mocker: Any
     ) -> None:
         """Test _load_plaid_data with Parquet files."""
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
 
         # Create mock parquet files
@@ -276,7 +298,7 @@ class TestParquetLoader:
         self, temp_config: LoadingConfig, mock_duckdb_connection: MagicMock
     ) -> None:
         """Test _load_accounts_table with single file creating new table."""
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
         parquet_file = plaid_path / "accounts_20240101.parquet"
         parquet_file.touch()
@@ -299,7 +321,7 @@ class TestParquetLoader:
         self, temp_config: LoadingConfig, mock_duckdb_connection: MagicMock
     ) -> None:
         """Test _load_accounts_table with multiple files in incremental mode."""
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
         parquet_files = [
             plaid_path / "accounts_20240101.parquet",
@@ -327,7 +349,7 @@ class TestParquetLoader:
     ) -> None:
         """Test _load_accounts_table with full refresh mode."""
         temp_config.incremental = False
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
         parquet_file = plaid_path / "accounts_20240101.parquet"
         parquet_file.touch()
@@ -350,7 +372,7 @@ class TestParquetLoader:
         self, temp_config: LoadingConfig, mock_duckdb_connection: MagicMock
     ) -> None:
         """Test _load_transactions_table with single file creating new table."""
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
         parquet_file = plaid_path / "transactions_20240101.parquet"
         parquet_file.touch()
@@ -375,7 +397,7 @@ class TestParquetLoader:
         self, temp_config: LoadingConfig, mock_duckdb_connection: MagicMock
     ) -> None:
         """Test _load_transactions_table with multiple files in incremental mode."""
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
         parquet_files = [
             plaid_path / "transactions_20240101.parquet",
@@ -403,7 +425,7 @@ class TestParquetLoader:
     ) -> None:
         """Test _load_transactions_table with full refresh mode."""
         temp_config.incremental = False
-        plaid_path = temp_config.source_path / "plaid"
+        plaid_path = temp_config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
         parquet_file = plaid_path / "transactions_20240101.parquet"
         parquet_file.touch()
@@ -438,7 +460,7 @@ class TestParquetLoaderIntegration:
         )
 
         # Create source directory structure
-        plaid_path = config.source_path / "plaid"
+        plaid_path = config.resolved_source_path / "plaid"
         plaid_path.mkdir(parents=True)
 
         # Create a simple test parquet file with accounts data
