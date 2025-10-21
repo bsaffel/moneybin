@@ -237,6 +237,7 @@ def test_parquet_loader_edge_cases():
 - Update this strategy as the project evolves
 
 This focused testing strategy ensures comprehensive coverage while avoiding redundancy and maintaining test suite efficiency.
+
 # Testing Strategy Standards
 
 ## Core Principle

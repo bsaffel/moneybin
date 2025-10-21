@@ -28,6 +28,12 @@ def extract_plaid(
     setup_env: bool = typer.Option(
         False, "--setup-env", help="Create sample .env file and exit"
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force full extraction, bypassing incremental logic",
+    ),
 ) -> None:
     """Extract financial data from all configured Plaid institutions.
 
@@ -36,9 +42,13 @@ def extract_plaid(
     2. Extract accounts and transactions from all configured institutions
     3. Save raw data to data/raw/plaid/ directory
 
+    By default, uses incremental extraction (only new complete days).
+    Use --force to extract the full lookback period regardless of previous extractions.
+
     Args:
         verbose: Enable debug level logging
         setup_env: Create sample .env file and exit
+        force: Force full extraction, bypassing incremental logic
     """
     setup_logging(cli_mode=True, verbose=verbose)
 
@@ -69,8 +79,22 @@ def extract_plaid(
         manager = PlaidConnectionManager()
 
         # Extract from all configured institutions
-        logger.info("Starting extraction from all configured institutions...")
-        all_data = manager.extract_all_institutions()
+        if force:
+            logger.info(
+                "🔄 Starting FORCED extraction from all configured institutions..."
+            )
+            logger.info(
+                "⚠️  This will extract the full lookback period regardless of previous extractions"
+            )
+        else:
+            logger.info(
+                "📈 Starting INCREMENTAL extraction from all configured institutions..."
+            )
+            logger.info(
+                "✨ Only new complete days will be extracted (use --force for full extraction)"
+            )
+
+        all_data = manager.extract_all_institutions(force_extraction=force)
 
         if not all_data:
             logger.warning("No data extracted - check your access tokens")
@@ -92,6 +116,12 @@ def extract_all(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose logging"
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force full extraction, bypassing incremental logic",
+    ),
 ) -> None:
     """Extract data from all configured sources.
 
@@ -100,6 +130,7 @@ def extract_all(
 
     Args:
         verbose: Enable debug level logging
+        force: Force full extraction, bypassing incremental logic
     """
     # For now, just call the Plaid extraction
-    extract_plaid(verbose=verbose, setup_env=False)
+    extract_plaid(verbose=verbose, setup_env=False, force=force)

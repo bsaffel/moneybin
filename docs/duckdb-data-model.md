@@ -4,6 +4,8 @@
 
 This document defines the comprehensive data model for storing all Plaid API data in DuckDB. The schema is designed to handle data from all supported financial institutions while maintaining data integrity, performance, and analytical capabilities.
 
+For a visual representation of the complete data model, see the [Entity Relationship Diagram](duckdb-er-diagram.html) (interactive HTML version) or the [markdown version](duckdb-er-diagram.md).
+
 ## Core Design Principles
 
 1. **Data Ownership**: All data stored locally in user-controlled DuckDB instance

@@ -11,6 +11,8 @@ from typing import Any
 
 import duckdb
 
+from ..config import get_database_path, get_raw_data_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,10 +20,31 @@ logger = logging.getLogger(__name__)
 class LoadingConfig:
     """Configuration for Parquet loading operations."""
 
-    source_path: Path = Path("data/raw")
-    database_path: Path = Path("data/duckdb/moneybin.duckdb")
+    source_path: Path | None = None
+    database_path: Path | None = None
     incremental: bool = True
     create_database_dir: bool = True
+
+    def __post_init__(self):
+        """Set default values from centralized configuration."""
+        if self.source_path is None:
+            self.source_path = get_raw_data_path()
+        if self.database_path is None:
+            self.database_path = get_database_path()
+
+    @property
+    def resolved_source_path(self) -> Path:
+        """Get the resolved source path (guaranteed to be not None)."""
+        if self.source_path is None:
+            raise ValueError("source_path should be set in __post_init__")
+        return self.source_path
+
+    @property
+    def resolved_database_path(self) -> Path:
+        """Get the resolved database path (guaranteed to be not None)."""
+        if self.database_path is None:
+            raise ValueError("database_path should be set in __post_init__")
+        return self.database_path
 
 
 class ParquetLoader:
@@ -36,7 +59,7 @@ class ParquetLoader:
         self.config = config or LoadingConfig()
 
         if self.config.create_database_dir:
-            self.config.database_path.parent.mkdir(parents=True, exist_ok=True)
+            self.config.resolved_database_path.parent.mkdir(parents=True, exist_ok=True)
 
     def load_all_parquet_files(self) -> dict[str, int]:
         """Load all Parquet files from the source directory into DuckDB.
@@ -45,15 +68,15 @@ class ParquetLoader:
             dict: Mapping of table names to record counts loaded
         """
         logger.info("Starting Parquet file loading into DuckDB")
-        logger.info(f"Source: {self.config.source_path}")
-        logger.info(f"Database: {self.config.database_path}")
+        logger.info(f"Source: {self.config.resolved_source_path}")
+        logger.info(f"Database: {self.config.resolved_database_path}")
         logger.info(
             f"Mode: {'incremental' if self.config.incremental else 'full refresh'}"
         )
 
-        if not self.config.source_path.exists():
+        if not self.config.resolved_source_path.exists():
             raise FileNotFoundError(
-                f"Source path does not exist: {self.config.source_path}"
+                f"Source path does not exist: {self.config.resolved_source_path}"
             )
 
         results = {}
@@ -62,11 +85,13 @@ class ParquetLoader:
         # define the config parameter as dict[Unknown, Unknown]. This triggers Pyright's
         # reportUnknownMemberType error in strict mode. The function works correctly;
         # this is a type annotation limitation in DuckDB's current stubs.
-        with duckdb.connect(self.config.database_path) as conn:  # type: ignore[misc]
-            logger.info(f"Connected to DuckDB database: {self.config.database_path}")
+        with duckdb.connect(self.config.resolved_database_path) as conn:  # type: ignore[misc]
+            logger.info(
+                f"Connected to DuckDB database: {self.config.resolved_database_path}"
+            )
 
             # Load Plaid data
-            plaid_path = self.config.source_path / "plaid"
+            plaid_path = self.config.resolved_source_path / "plaid"
             if plaid_path.exists():
                 plaid_results = self._load_plaid_data(conn, plaid_path)
                 # Pyright's reportUnknownArgumentType flags dict.update() because the return type
@@ -89,9 +114,9 @@ class ParquetLoader:
         Returns:
             dict: Mapping of table names to their status information
         """
-        if not self.config.database_path.exists():
+        if not self.config.resolved_database_path.exists():
             raise FileNotFoundError(
-                f"Database file does not exist: {self.config.database_path}"
+                f"Database file does not exist: {self.config.resolved_database_path}"
             )
 
         status = {}
@@ -100,7 +125,7 @@ class ParquetLoader:
         # define the config parameter as dict[Unknown, Unknown]. This triggers Pyright's
         # reportUnknownMemberType error in strict mode. The function works correctly;
         # this is a type annotation limitation in DuckDB's current stubs.
-        with duckdb.connect(self.config.database_path) as conn:  # type: ignore[misc]
+        with duckdb.connect(self.config.resolved_database_path) as conn:  # type: ignore[misc]
             # List all tables
             tables = conn.sql("""
                 SELECT table_name, estimated_size

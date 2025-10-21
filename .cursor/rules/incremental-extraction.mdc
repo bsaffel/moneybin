@@ -1,0 +1,197 @@
+---
+description: Incremental data extraction and duplicate prevention standards
+globs: ["**/*.py", "src/extractors/**/*", "src/cli/**/*", "src/loaders/**/*"]
+alwaysApply: true
+---
+
+# Incremental Data Extraction Standards
+
+## Core Principles
+
+### Smart Extraction Logic
+
+- **Day-boundary extraction**: Only extract complete days of data to ensure consistency
+- **Incremental by default**: Avoid duplicate API calls and data downloads unless explicitly forced
+- **Metadata tracking**: Store extraction metadata in the primary database (DuckDB) for consistency
+- **API cost optimization**: Minimize external API calls through intelligent caching and deduplication
+
+### Duplicate Prevention Strategy
+
+- **Extraction level**: Track last extraction dates to avoid downloading same data
+- **Loading level**: Use unique identifiers (e.g., transaction_id) to prevent duplicate database records
+- **Storage level**: Allow duplicate raw files but deduplicate at database level
+
+## Implementation Requirements
+
+### Extraction Metadata
+
+Store extraction tracking information in the primary database:
+
+```sql
+CREATE TABLE IF NOT EXISTS extraction_metadata (
+    institution_name VARCHAR,
+    access_token_hash VARCHAR,  -- hashed for security
+    last_extraction_date DATE,
+    last_extraction_timestamp TIMESTAMP,
+    total_transactions_extracted INTEGER,
+    extraction_job_id VARCHAR,
+    PRIMARY KEY (institution_name, access_token_hash)
+);
+```
+
+### Incremental Logic Pattern
+
+```python
+def get_incremental_date_range(self, access_token: str) -> tuple[datetime | None, datetime | None]:
+    """Calculate date range for incremental extraction.
+
+    Returns:
+        (start_date, end_date) if new complete days available, (None, None) otherwise
+    """
+    # Check last extraction from metadata
+    last_extraction_date = self._get_last_extraction_date(access_token)
+
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+
+    if last_extraction_date:
+        # Only extract if we have complete new days
+        potential_start = last_extraction_date + timedelta(days=1)
+        if potential_start <= yesterday:
+            return (
+                datetime.combine(potential_start, datetime.min.time()),
+                datetime.combine(yesterday, datetime.max.time())
+            )
+        else:
+            return None, None  # No new complete days
+    else:
+        # First extraction - get full lookback period
+        return (
+            datetime.combine(today - timedelta(days=lookback_days), datetime.min.time()),
+            datetime.combine(yesterday, datetime.max.time())
+        )
+```
+
+### Force Override Pattern
+
+Always provide a force mechanism to bypass incremental logic:
+
+```python
+def extract_data(
+    self,
+    access_token: str,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    force_extraction: bool = False,
+) -> DataFrame:
+    """Extract data with incremental logic and force override."""
+
+    # Use incremental logic unless dates explicitly provided or forced
+    if not force_extraction and (start_date is None or end_date is None):
+        start_date, end_date = self._get_incremental_date_range(access_token)
+
+        # Skip extraction if no new data
+        if start_date is None or end_date is None:
+            logger.info("✅ No new complete days available - skipping API call")
+            logger.info("💰 Saved API call - no duplicate data downloaded")
+            return empty_dataframe()
+
+    # Proceed with extraction...
+```
+
+## CLI Integration Standards
+
+### Force Flag Implementation
+
+All extraction commands must support a `--force` flag:
+
+```python
+@app.command("extract")
+def extract_command(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force full extraction, bypassing incremental logic"
+    ),
+) -> None:
+    """Extract data with smart incremental logic by default."""
+
+    if force:
+        logger.info("🔄 Starting FORCED extraction...")
+        logger.info("⚠️  This will extract full lookback period regardless of previous extractions")
+    else:
+        logger.info("📈 Starting INCREMENTAL extraction...")
+        logger.info("✨ Only new complete days will be extracted (use --force for full extraction)")
+```
+
+### User Communication Requirements
+
+- **Clear messaging**: Always log which extraction mode is being used
+- **Cost awareness**: Show when API calls are saved ("💰 Saved API call")
+- **Help documentation**: Explain incremental vs force extraction in command help
+
+## Database Loading Standards
+
+### Deduplication Strategy
+
+```python
+def load_transactions_incremental(self, parquet_files: list[Path]) -> int:
+    """Load transactions with deduplication."""
+
+    if self.config.incremental:
+        # Insert only new records (avoiding duplicates by transaction_id)
+        conn.sql(f"""
+            INSERT INTO {table_name}
+            SELECT *
+            FROM read_parquet({file_pattern})
+            WHERE transaction_id NOT IN (
+                SELECT DISTINCT transaction_id
+                FROM {table_name}
+            )
+        """)
+    else:
+        # Full refresh - replace entire table
+        conn.sql(f"""
+            CREATE OR REPLACE TABLE {table_name} AS
+            SELECT * FROM read_parquet({file_pattern})
+        """)
+```
+
+## Logging Standards
+
+### Required Log Messages
+
+```python
+# Incremental extraction success
+logger.info("✅ No new complete days available for extraction - skipping API call")
+logger.info("💰 Saved Plaid API call - no duplicate data downloaded")
+
+# Force extraction warning
+logger.info("🔄 Starting FORCED extraction from all configured institutions...")
+logger.info("⚠️  This will extract the full lookback period regardless of previous extractions")
+
+# Successful extraction
+logger.info(f"Updated extraction metadata: last_date={extraction_date}, count={transaction_count}")
+```
+
+## Error Handling Requirements
+
+### Graceful Degradation
+
+- **Metadata failures**: Fall back to full extraction if metadata queries fail
+- **Partial failures**: Continue processing other institutions if one fails
+- **API errors**: Implement retry logic with exponential backoff
+- **Clear error messages**: Provide actionable remediation steps
+
+## Testing Requirements
+
+### Must Test
+
+- First extraction (full lookback period)
+- Subsequent extractions (only new days)
+- No new data scenarios (API calls skipped)
+- Force override functionality
+- Metadata persistence and retrieval
+
+**Reference Implementation**: See `src/moneybin/extractors/plaid_extractor.py` for complete implementation example.
