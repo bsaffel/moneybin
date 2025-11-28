@@ -43,7 +43,8 @@ help: ## Show this help message
 	@echo "  make status         # Check environment status"
 	@echo ""
 	@echo "$(BLUE)Development Workflow:$(RESET)"
-	@echo "  make test              # Run tests (recommended)"
+	@echo "  make test              # Run unit tests (fast, recommended)"
+	@echo "  make test-all          # Run all tests including integration tests"
 	@echo "  make check             # Format and validate code (recommended)"
 	@echo "  make dagster-dev       # Start Dagster server"
 	@echo "  make update-deps       # Update all dependencies"
@@ -67,7 +68,8 @@ setup: check-python venv lock sync pre-commit ## Setup & Installation: Complete 
 	@echo "$(GREEN)🎉 Setup complete! Your MoneyBin development environment is ready.$(RESET)"
 	@echo ""
 	@echo "$(BLUE)Next steps:$(RESET)"
-	@echo "  make test                 # Run tests"
+	@echo "  make test                 # Run unit tests (fast)"
+	@echo "  make test-all             # Run all tests including integration tests"
 	@echo "  make check                # Format and validate code"
 	@echo "  make dagster-dev          # Start Dagster development server"
 	@echo "  moneybin extract plaid    # Extract financial data"
@@ -131,18 +133,20 @@ pre-commit: venv ## Setup & Installation: Install pre-commit hooks
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
 	@echo "$(BLUE)ℹ️  Pre-commit will use uv run for consistent tool versions$(RESET)"
 
-test: venv ## Development: Run tests
-	@echo "$(BLUE)🧪 Running tests...$(RESET)"
+test-unit: venv ## Development: Run unit tests only (excludes integration tests)
+	@echo "$(BLUE)🧪 Running unit tests (use 'make test-all' for all tests)...$(RESET)"
+	@uv run pytest tests/ -m "not integration"
+
+test: test-unit ## Development: Run unit tests (alias for test-unit)
+
+test-all: venv ## Development: Run all tests including integration tests
+	@echo "$(BLUE)🧪 Running all tests (including integration tests)...$(RESET)"
 	@uv run pytest tests/
 
 test-cov: venv ## Development: Run tests with coverage report
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
-	@uv run pytest --cov=src tests/
+	@uv run pytest --cov=src tests/ -m "not integration"
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"
-
-test-unit: venv ## Development: Run unit tests only
-	@echo "$(BLUE)🧪 Running unit tests...$(RESET)"
-	@uv run pytest tests/ -m "unit"
 
 test-integration: venv ## Development: Run integration tests only
 	@echo "$(BLUE)🧪 Running integration tests...$(RESET)"
@@ -191,8 +195,6 @@ clean-venv: ## Utility: Remove virtual environment
 	@echo "$(BLUE)🧹 Removing virtual environment...$(RESET)"
 	@rm -rf $(VENV_DIR)
 	@echo "$(GREEN)✅ Virtual environment removed$(RESET)"
-
-
 
 clean: clean-cache clean-venv ## Utility: Clean all generated files and virtual environment
 	@echo "$(GREEN)✅ All clean!$(RESET)"
