@@ -1,0 +1,54 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw data tables loaded from external sources (Plaid API, CSV files, etc.)
+    schema: main
+    tables:
+      - name: raw_plaid_transactions
+        description: |
+          Raw transaction data extracted from Plaid API.
+          Contains all transaction fields as extracted, without transformation.
+        columns:
+          - name: transaction_id
+            description: Unique transaction identifier from Plaid
+          - name: account_id
+            description: Account identifier from Plaid
+          - name: amount
+            description: Transaction amount (Plaid convention - positive = expense)
+          - name: date
+            description: Transaction posting date (VARCHAR format)
+          - name: name
+            description: Transaction description/name
+          - name: merchant_name
+            description: Merchant name if available
+          - name: category_primary
+            description: Primary transaction category from Plaid
+          - name: category_detailed
+            description: Detailed transaction category from Plaid
+          - name: pending
+            description: Whether transaction is pending
+          - name: extracted_at
+            description: Timestamp when data was extracted from Plaid API
+
+      - name: raw_plaid_accounts
+        description: |
+          Raw account data extracted from Plaid API.
+          Contains account details, balances, and institution information.
+        columns:
+          - name: account_id
+            description: Unique account identifier from Plaid
+          - name: institution_id
+            description: Institution identifier from Plaid
+          - name: account_name
+            description: Account nickname or name
+          - name: account_type
+            description: Account type (depository, credit, etc.)
+          - name: account_subtype
+            description: Account subtype (checking, savings, credit card, etc.)
+          - name: balance_current
+            description: Current account balance
+          - name: balance_available
+            description: Available balance (may differ from current for credit)
+          - name: extracted_at
+            description: Timestamp when data was extracted from Plaid API

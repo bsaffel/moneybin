@@ -1,0 +1,176 @@
+version: 2
+
+models:
+  - name: fct_transactions
+    description: |
+      Unified transactions fact table consolidating financial transactions from all data sources.
+
+      This is the primary fact table for transaction-level analysis and should be used as the
+      foundation for all downstream transaction marts and reporting models.
+
+      **Data Sources:**
+      - Plaid API (current)
+      - Future: manual CSV uploads, additional bank APIs, cryptocurrency exchanges, etc.
+
+      **Key Features:**
+      - Standardized data types (DATE, DECIMAL)
+      - Normalized transaction amounts (negative = expense, positive = income)
+      - Source system tracking for multi-source traceability
+      - Rich dimensional attributes (time, location, category)
+      - Future-proof schema design
+
+      **Amount Convention:**
+      - Negative values = expenses (money going out)
+      - Positive values = income (money coming in)
+      - This is opposite of Plaid's convention but aligns with accounting standards
+
+    columns:
+      # Primary Identifiers
+      - name: transaction_id
+        description: Unique transaction identifier (source-specific format)
+        data_tests:
+          - unique
+          - not_null
+
+      - name: account_id
+        description: Account identifier associated with this transaction
+        data_tests:
+          - not_null
+
+      # Transaction Timing
+      - name: transaction_date
+        description: Date when the transaction was posted/cleared
+        data_tests:
+          - not_null
+
+      - name: authorized_date
+        description: Date when the transaction was authorized (may be null for older transactions)
+
+      # Transaction Amount
+      - name: amount
+        description: |
+          Transaction amount in the account's currency.
+          Negative = expense (money out), Positive = income (money in)
+        data_tests:
+          - not_null
+
+      - name: amount_absolute
+        description: Absolute value of transaction amount (always positive)
+        data_tests:
+          - not_null
+
+      - name: transaction_direction
+        description: Direction of money flow (expense, income, or zero)
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['expense', 'income', 'zero']
+
+      # Transaction Description
+      - name: description
+        description: Transaction description or name
+        data_tests:
+          - not_null
+
+      - name: merchant_name
+        description: Merchant or business name (may be null for non-merchant transactions)
+
+      # Classification
+      - name: category
+        description: Primary transaction category
+
+      - name: subcategory
+        description: Detailed subcategory for more granular classification
+
+      - name: payment_channel
+        description: Payment channel (online, in store, etc.)
+
+      - name: transaction_type
+        description: Transaction type from source system
+
+      # Transaction Status
+      - name: is_pending
+        description: Whether transaction is still pending (not yet posted)
+        data_tests:
+          - not_null
+
+      - name: pending_transaction_id
+        description: ID linking to the pending version of this transaction (if applicable)
+
+      # Location Information
+      - name: location_address
+        description: Transaction location address
+
+      - name: location_city
+        description: Transaction location city
+
+      - name: location_region
+        description: Transaction location region/state
+
+      - name: location_postal_code
+        description: Transaction location postal/ZIP code
+
+      - name: location_country
+        description: Transaction location country
+
+      - name: location_latitude
+        description: Transaction location latitude coordinate
+
+      - name: location_longitude
+        description: Transaction location longitude coordinate
+
+      # Currency
+      - name: currency_code
+        description: ISO currency code (e.g., USD, EUR, GBP)
+        data_tests:
+          - not_null
+
+      # Source Tracking
+      - name: source_system
+        description: |
+          Source system that provided this transaction data.
+          Enables multi-source transaction consolidation and traceability.
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['plaid']
+              # Future values: 'manual_csv', 'cryptocurrency', etc.
+
+      - name: source_extracted_at
+        description: Timestamp when data was extracted from the source system
+
+      - name: dbt_loaded_at
+        description: Timestamp when dbt model was last run/loaded
+        data_tests:
+          - not_null
+
+      # Derived Time Dimensions
+      - name: transaction_year
+        description: Year of transaction (derived from transaction_date)
+        data_tests:
+          - not_null
+
+      - name: transaction_month
+        description: Month of transaction (1-12, derived from transaction_date)
+        data_tests:
+          - not_null
+
+      - name: transaction_day
+        description: Day of month (1-31, derived from transaction_date)
+        data_tests:
+          - not_null
+
+      - name: transaction_day_of_week
+        description: Day of week (0-6, derived from transaction_date)
+        data_tests:
+          - not_null
+
+      - name: transaction_year_month
+        description: Year-month string (YYYY-MM format)
+        data_tests:
+          - not_null
+
+      - name: transaction_year_quarter
+        description: Year-quarter string (YYYY-QN format)
+        data_tests:
+          - not_null
