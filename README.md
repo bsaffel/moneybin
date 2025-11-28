@@ -12,21 +12,49 @@ A self-hosted personal financial data aggregation and analysis toolkit built on 
 
 MoneyBin allows you to:
 
-- Extract structured financial data from CSVs, APIs, and tax PDFs (1040, W-2, 1099, etc.)
-- Aggregate transaction data from all your bank accounts
+- **Free Tier**: Extract structured financial data from local files (CSV, Excel, OFX, PDF statements)
+- **Paid Tier (Optional)**: Automatically sync transaction data from bank accounts via MoneyBin Sync service
 - Store everything in a local DuckDB database
 - Query your financial data with SQL for insights like:
   - "How much did I pay in taxes last year?"
   - "What was my total spending by category?"
   - "What are my monthly recurring expenses?"
 
+## Architecture
+
+MoneyBin is split into two distinct components:
+
+- **Client (Free & Local)**: Local-first data processing with DuckDB, dbt, file importers, and Jupyter
+- **Server (Optional Paid Sync)**: Hosted sync service for automatic bank connections via Plaid/Yodlee
+
+### Security Model
+
+All sensitive financial data stays on your local machine. The optional sync service implements **end-to-end encryption with honest security**:
+
+- 🔐 **Client authenticates via OAuth** (Auth0) - never sends Plaid tokens
+- 🔒 **Server encrypts immediately** - converts Plaid data to encrypted Parquet
+- 🔑 **Only you can decrypt** - encryption keys derived from your master password
+- 🛡️ **Server can't read stored data** - encrypted at rest, only you have the key
+- ⚠️ **Honest disclosure** - server sees plaintext briefly while encrypting for you
+
+**What this means:**
+
+- ✅ Your stored data is encrypted - we can't decrypt it later
+- ✅ Database breach → only encrypted data compromised
+- ✅ Better than most financial services (which store plaintext)
+- ⚠️ Requires trusting server during active processing (like email with PGP)
+- ✅ **Free tier alternative** - use local-only mode for complete control
+
+> **Future Feature**: E2E encryption will be implemented in Phase 2. See [`docs/architecture/e2e-encryption.md`](docs/architecture/e2e-encryption.md) for complete design and [`docs/architecture/security-tradeoffs.md`](docs/architecture/security-tradeoffs.md) for honest security analysis.
+
 ## Key Benefits
 
 - ✅ **Data Ownership**: Your financial data stays under your control
 - ✅ **No Expiration**: Data doesn't disappear when subscriptions end
 - ✅ **Privacy First**: No third-party access to your sensitive information
+- 🔐 **Zero-Knowledge Security**: E2E encryption means even the sync server can't read your data (future)
 - ✅ **Customizable**: Build exactly the analysis you need
-- ✅ **Cost Effective**: No recurring subscription fees
+- ✅ **Cost Effective**: No recurring subscription fees for local use
 
 ## Quick Start
 
@@ -126,15 +154,27 @@ The project follows a modern data engineering architecture with clear separation
 
 ```text
 moneybin/
-├── data/                    # All data storage (raw, processed, databases)
+├── data/                    # All data storage (profile-based isolation)
+│   ├── {profile}/          # Profile-specific data (alice, bob, household)
+│   │   ├── raw/            # Raw extracted data (plaid, csv, excel, ofx, pdf)
+│   │   ├── processed/      # Intermediate processed data
+│   │   └── duckdb/         # Profile-specific DuckDB database
 ├── dbt/                     # dbt transformations and models
 ├── pipelines/               # Dagster orchestration
-├── src/moneybin/            # Python application code
-│   ├── cli/                 # Command line interface
-│   ├── extractors/          # Data extraction (Plaid, PDF, CSV)
-│   ├── processors/          # Data processing utilities
-│   └── utils/               # Shared utilities and configuration
-├── tests/                   # Unit and integration tests
+├── src/
+│   ├── moneybin/           # Client package (local-first)
+│   │   ├── cli/            # Command line interface
+│   │   ├── extractors/     # Local file parsers (CSV, Excel, OFX, PDF)
+│   │   ├── connectors/     # Sync service integrations (Plaid Sync)
+│   │   ├── loaders/        # DuckDB data loaders
+│   │   └── utils/          # Shared utilities and configuration
+│   └── moneybin_server/    # Server package (hosted sync)
+│       ├── connectors/     # External API integrations (Plaid, Yodlee)
+│       ├── api/            # FastAPI server (future)
+│       └── config.py       # Server-side configuration
+├── tests/
+│   ├── moneybin/           # Client tests
+│   └── moneybin_server/    # Server tests
 └── docs/                    # Technical documentation
 ```
 
@@ -275,25 +315,25 @@ PLAID_ENV=production
 
 ```bash
 # Default profile
-moneybin extract plaid
+moneybin sync plaid
 
 # Alice's accounts
-moneybin --profile=alice extract plaid
+moneybin --profile=alice sync plaid
 moneybin --profile=alice load parquet
 moneybin --profile=alice transform run
 
 # Bob's accounts
-moneybin --profile=bob extract plaid
+moneybin --profile=bob sync plaid
 
 # Shared household account
-moneybin --profile=household extract plaid
+moneybin --profile=household sync plaid
 
 # Short flag
-moneybin -p alice extract plaid
+moneybin -p alice sync plaid
 
 # Via environment variable
 export MONEYBIN_PROFILE=alice
-moneybin extract plaid
+moneybin sync plaid
 ```
 
 ##### Testing vs Production
@@ -302,10 +342,10 @@ You can also use profiles for environment separation:
 
 ```bash
 # For development/testing
-moneybin --profile=dev extract plaid    # Uses .env.dev (sandbox)
+moneybin --profile=dev sync plaid    # Uses .env.dev (sandbox)
 
 # For production data
-moneybin --profile=prod extract plaid   # Uses .env.prod (real accounts)
+moneybin --profile=prod sync plaid   # Uses .env.prod (real accounts)
 ```
 
 #### 7. Verify Installation
@@ -334,35 +374,42 @@ The project provides a unified CLI interface using modern Typer framework:
 moneybin --help
 
 # Profile-based commands (different users)
-moneybin --profile=alice extract plaid    # Alice's accounts
-moneybin --profile=bob extract plaid      # Bob's accounts
-moneybin -p household load parquet        # Shared household account
+moneybin --profile=alice sync plaid      # Sync Alice's bank accounts
+moneybin --profile=bob sync plaid        # Sync Bob's bank accounts
+moneybin -p household load parquet       # Load shared household data
 
-# Data extraction commands
+# Data sync commands (external services - optional paid tier)
+moneybin sync --help
+moneybin sync plaid                      # Sync from Plaid (via MoneyBin Sync service)
+moneybin sync plaid --verbose            # With debug logging
+moneybin sync plaid --force              # Force full sync (bypass incremental)
+moneybin sync all                        # Sync from all configured services
+
+# Data extraction commands (local files - free tier)
 moneybin extract --help
-moneybin extract plaid                    # Extract from Plaid API (dev profile by default)
-moneybin extract plaid --verbose          # With debug logging
-moneybin extract plaid --force            # Force full extraction (bypass incremental)
-moneybin extract all                      # Extract from all sources
+moneybin extract csv <file>              # Extract from CSV file
+moneybin extract excel <file>            # Extract from Excel file
+moneybin extract ofx <file>              # Extract from OFX/QFX file
+moneybin extract pdf <file>              # Extract from PDF statement
 
 # Data loading commands
 moneybin load --help
-moneybin load parquet                     # Load Parquet files into DuckDB
-moneybin load status                      # Check database loading status
+moneybin load parquet                    # Load Parquet files into DuckDB
+moneybin load status                     # Check database loading status
 
 # Data transformation commands
 moneybin transform --help
-moneybin transform run                    # Run all dbt transformations
-moneybin transform run -m core            # Run specific model selection
-moneybin transform test                   # Run dbt tests
+moneybin transform run                   # Run all dbt transformations
+moneybin transform run -m core           # Run specific model selection
+moneybin transform test                  # Run dbt tests
 
 # Credential management commands
 moneybin credentials --help
-moneybin credentials setup                # Set up .env file
-moneybin credentials setup --force        # Overwrite existing .env
-moneybin credentials validate             # Validate all credentials
-moneybin credentials validate-plaid       # Validate Plaid specifically
-moneybin credentials list-services        # Show supported services
+moneybin credentials setup               # Set up .env file
+moneybin credentials setup --force       # Overwrite existing .env
+moneybin credentials validate            # Validate all credentials
+moneybin credentials validate-plaid      # Validate Plaid specifically
+moneybin credentials list-services       # Show supported services
 ```
 
 ### Available Makefile Commands

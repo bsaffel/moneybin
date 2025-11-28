@@ -7,19 +7,14 @@ and user experience. Business logic is tested in test_parquet_loader.py.
 
 from __future__ import annotations
 
-# Ensure project root is on sys.path so 'src' namespace is importable
-import sys
 from pathlib import Path
-from pathlib import Path as _Path
 from typing import Any
 from unittest.mock import MagicMock
-
-sys.path.append(str(_Path(__file__).resolve().parents[1]))
 
 import pytest
 from typer.testing import CliRunner
 
-from src.moneybin.cli.commands.load import app
+from moneybin.cli.commands.load import app
 
 
 class TestLoadCommands:
@@ -33,7 +28,7 @@ class TestLoadCommands:
     @pytest.fixture
     def mock_parquet_loader(self, mocker: Any) -> MagicMock:
         """Mock ParquetLoader for testing CLI commands."""
-        mock_loader_class = mocker.patch("src.moneybin.cli.commands.load.ParquetLoader")
+        mock_loader_class = mocker.patch("moneybin.cli.commands.load.ParquetLoader")
         mock_loader = MagicMock()
         mock_loader_class.return_value = mock_loader
         return mock_loader
@@ -41,22 +36,22 @@ class TestLoadCommands:
     @pytest.fixture
     def mock_loading_config(self, mocker: Any) -> MagicMock:
         """Mock LoadingConfig for testing CLI commands."""
-        return mocker.patch("src.moneybin.cli.commands.load.LoadingConfig")
+        return mocker.patch("moneybin.cli.commands.load.LoadingConfig")
 
     @pytest.fixture
     def mock_setup_logging(self, mocker: Any) -> MagicMock:
         """Mock setup_logging for testing."""
-        return mocker.patch("src.moneybin.cli.commands.load.setup_logging")
+        return mocker.patch("moneybin.cli.commands.load.setup_logging")
 
     @pytest.fixture
     def mock_config_functions(self, mocker: Any) -> None:
         """Mock configuration functions to return test values."""
         mocker.patch(
-            "src.moneybin.cli.commands.load.get_raw_data_path",
+            "moneybin.cli.commands.load.get_raw_data_path",
             return_value=Path("data/raw"),
         )
         mocker.patch(
-            "src.moneybin.cli.commands.load.get_database_path",
+            "moneybin.cli.commands.load.get_database_path",
             return_value=Path("data/duckdb/testbin.duckdb"),
         )
 

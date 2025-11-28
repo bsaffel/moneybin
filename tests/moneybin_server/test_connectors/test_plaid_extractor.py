@@ -8,21 +8,16 @@ unless `PLAID_CLIENT_ID` and `PLAID_SECRET` are set in the environment.
 
 from __future__ import annotations
 
-# Ensure project root is on sys.path so 'src' namespace is importable
-import sys
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from pathlib import Path as _Path
 from types import SimpleNamespace
 from typing import Any, cast
-
-sys.path.append(str(_Path(__file__).resolve().parents[1]))
 
 import polars as pl
 import pytest
 
-from src.moneybin.extractors.plaid_extractor import (
+from moneybin_server.connectors.plaid.extractor import (
     PlaidExtractionConfig,
     PlaidExtractor,
 )
@@ -37,7 +32,7 @@ def mocked_plaid_client(mocker: Any) -> Any:
     """Patch PlaidApi constructor and return the injected mock client."""
     client = mocker.MagicMock()
     mocker.patch(
-        "src.moneybin.extractors.plaid_extractor.plaid_api.PlaidApi",
+        "moneybin_server.connectors.plaid.extractor.plaid_api.PlaidApi",
         return_value=client,
     )
     return client

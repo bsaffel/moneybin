@@ -25,8 +25,7 @@ from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.transactions_get_request import TransactionsGetRequest
 from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 
-from ..config import get_database_path
-from .plaid_schemas import AccountSchema, PlaidCredentials, TransactionSchema
+from .schemas import AccountSchema, PlaidCredentials, TransactionSchema
 
 # Load environment variables
 load_dotenv()
@@ -49,10 +48,20 @@ class PlaidExtractionConfig:
 class PlaidExtractor:
     """Secure Plaid API client using modern SDK structure."""
 
-    def __init__(self, config: PlaidExtractionConfig | None = None):
-        """Initialize the Plaid extractor with secure credentials."""
+    def __init__(
+        self,
+        config: PlaidExtractionConfig | None = None,
+        database_path: Path | None = None,
+    ):
+        """Initialize the Plaid extractor with secure credentials.
+
+        Args:
+            config: Extraction configuration (batch size, retries, etc.)
+            database_path: Path to DuckDB database (for extraction metadata)
+        """
         self.config = config or PlaidExtractionConfig()
         self.credentials = PlaidCredentials.from_environment()
+        self.database_path = database_path
 
         # Initialize Plaid client with modern SDK
         configuration = Configuration(
@@ -154,8 +163,18 @@ class PlaidExtractor:
             tuple: (start_date, end_date) if new data available, (None, None) otherwise
         """
         # Connect to database to check last extraction
+        if not self.database_path:
+            # No database configured - return full lookback range
+            today = datetime.now().date()
+            yesterday = today - timedelta(days=1)
+            start_date = datetime.combine(
+                today - timedelta(days=self.config.days_lookback), datetime.min.time()
+            )
+            end_date = datetime.combine(yesterday, datetime.max.time())
+            return start_date, end_date
+
         try:
-            conn = duckdb.connect(str(get_database_path()))  # type: ignore[misc]
+            conn = duckdb.connect(str(self.database_path))  # type: ignore[misc]
 
             # Ensure extraction metadata table exists
             conn.sql("""
@@ -249,8 +268,13 @@ class PlaidExtractor:
             extraction_end_date: End date of the extraction
             transaction_count: Number of transactions extracted
         """
+        if not self.database_path:
+            # No database configured - skip metadata update
+            logger.debug("Skipping extraction metadata update (no database configured)")
+            return
+
         try:
-            conn = duckdb.connect(str(get_database_path()))  # type: ignore[misc]
+            conn = duckdb.connect(str(self.database_path))  # type: ignore[misc]
 
             # Hash token for security (don't store raw tokens)
             token_hash = hashlib.sha256(access_token.encode()).hexdigest()[:16]

@@ -7,18 +7,13 @@ data loading operations, database status checking, and error handling.
 
 from __future__ import annotations
 
-# Ensure project root is on sys.path so 'src' namespace is importable
-import sys
 from pathlib import Path
-from pathlib import Path as _Path
 from typing import Any
 from unittest.mock import MagicMock
 
-sys.path.append(str(_Path(__file__).resolve().parents[1]))
-
 import pytest
 
-from src.moneybin.loaders.parquet_loader import LoadingConfig, ParquetLoader
+from moneybin.loaders.parquet_loader import LoadingConfig, ParquetLoader
 
 
 class TestLoadingConfig:
@@ -28,11 +23,11 @@ class TestLoadingConfig:
         """Test default configuration values."""
         # Mock configuration functions to return test values
         mocker.patch(
-            "src.moneybin.loaders.parquet_loader.get_raw_data_path",
+            "moneybin.loaders.parquet_loader.get_raw_data_path",
             return_value=Path("data/raw"),
         )
         mocker.patch(
-            "src.moneybin.loaders.parquet_loader.get_database_path",
+            "moneybin.loaders.parquet_loader.get_database_path",
             return_value=Path("data/duckdb/testbin.duckdb"),
         )
 
@@ -86,11 +81,11 @@ class TestParquetLoader:
     def mock_config_functions(self, mocker: Any) -> None:
         """Mock configuration functions to return test values."""
         mocker.patch(
-            "src.moneybin.loaders.parquet_loader.get_raw_data_path",
+            "moneybin.loaders.parquet_loader.get_raw_data_path",
             return_value=Path("data/raw"),
         )
         mocker.patch(
-            "src.moneybin.loaders.parquet_loader.get_database_path",
+            "moneybin.loaders.parquet_loader.get_database_path",
             return_value=Path("data/duckdb/testbin.duckdb"),
         )
 

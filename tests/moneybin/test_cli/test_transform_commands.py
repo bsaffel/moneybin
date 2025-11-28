@@ -7,19 +7,14 @@ and subprocess command building. Business logic is handled by dbt directly.
 
 from __future__ import annotations
 
-# Ensure project root is on sys.path so 'src' namespace is importable
-import sys
 from pathlib import Path
-from pathlib import Path as _Path
 from typing import Any
 from unittest.mock import MagicMock
-
-sys.path.append(str(_Path(__file__).resolve().parents[1]))
 
 import pytest
 from typer.testing import CliRunner
 
-from src.moneybin.cli.commands.transform import app
+from moneybin.cli.commands.transform import app
 
 
 class TestTransformCommands:
@@ -33,7 +28,7 @@ class TestTransformCommands:
     @pytest.fixture
     def mock_setup_logging(self, mocker: Any) -> MagicMock:
         """Mock setup_logging for testing."""
-        return mocker.patch("src.moneybin.cli.commands.transform.setup_logging")
+        return mocker.patch("moneybin.cli.commands.transform.setup_logging")
 
     @pytest.fixture
     def mock_subprocess_run(self, mocker: Any) -> MagicMock:
@@ -43,7 +38,7 @@ class TestTransformCommands:
         mock_result.stdout = "dbt run completed successfully"
         mock_result.stderr = ""
         return mocker.patch(
-            "src.moneybin.cli.commands.transform.subprocess.run",
+            "moneybin.cli.commands.transform.subprocess.run",
             return_value=mock_result,
         )
 
@@ -58,7 +53,7 @@ class TestTransformCommands:
         mock_process.stdout = mock_stdout
         mock_process.wait.return_value = None
         return mocker.patch(
-            "src.moneybin.cli.commands.transform.subprocess.Popen",
+            "moneybin.cli.commands.transform.subprocess.Popen",
             return_value=mock_process,
         )
 

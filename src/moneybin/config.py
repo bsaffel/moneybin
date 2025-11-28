@@ -38,33 +38,6 @@ class DatabaseConfig(BaseModel):
         return v
 
 
-class PlaidConfig(BaseModel):
-    """Plaid API configuration settings."""
-
-    model_config = ConfigDict(frozen=True)
-
-    client_id: str = Field(..., description="Plaid client ID")
-    secret: str = Field(..., description="Plaid secret key")
-    environment: Literal["sandbox", "development", "production"] = Field(
-        default="sandbox", description="Plaid environment"
-    )
-    days_lookback: int = Field(
-        default=365,
-        ge=1,
-        le=730,
-        description="Default days to look back for transactions",
-    )
-    batch_size: int = Field(
-        default=500, ge=1, le=500, description="Batch size for API requests"
-    )
-    max_retries: int = Field(
-        default=3, ge=0, le=10, description="Maximum API retry attempts"
-    )
-    retry_delay: float = Field(
-        default=1.0, ge=0.1, le=10.0, description="Delay between retries in seconds"
-    )
-
-
 class DataConfig(BaseModel):
     """Data processing and storage configuration."""
 
@@ -107,6 +80,57 @@ class LoggingConfig(BaseModel):
     )
 
 
+class SyncConfig(BaseModel):
+    """Configuration for MoneyBin Sync service (optional paid tier).
+
+    The sync service provides automatic bank data synchronization through
+    hosted connectors (Plaid, Yodlee, etc.) with E2E encryption.
+
+    Security Model:
+    - All bank access tokens stored server-side only
+    - Client authenticates via OAuth2/Auth0 (future)
+    - Client never handles or sees Plaid access tokens
+    - All bank API communication happens server-side
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable MoneyBin Sync service (paid tier)",
+    )
+    server_url: str | None = Field(
+        default=None,
+        description="MoneyBin Sync server URL (e.g., https://sync.moneybin.app)",
+    )
+    api_key: str | None = Field(
+        default=None,
+        description="API key for MoneyBin Sync service (legacy - prefer OAuth)",
+    )
+    use_local_server: bool = Field(
+        default=True,
+        description="Use local server code directly (development mode)",
+    )
+
+    # OAuth/Auth0 configuration (future)
+    oauth_client_id: str | None = Field(
+        default=None,
+        description="OAuth2 client ID (for Auth0 integration)",
+    )
+    oauth_client_secret: str | None = Field(
+        default=None,
+        description="OAuth2 client secret (for Auth0 integration)",
+    )
+    oauth_domain: str | None = Field(
+        default=None,
+        description="OAuth2/Auth0 domain (e.g., moneybin.auth0.com)",
+    )
+    oauth_audience: str | None = Field(
+        default=None,
+        description="OAuth2 API audience/identifier",
+    )
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -124,13 +148,9 @@ class MoneyBinSettings(BaseSettings):
 
     # Core configuration sections
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
-    plaid: PlaidConfig = Field(
-        default_factory=lambda: PlaidConfig(
-            client_id="", secret="", environment="sandbox"
-        )
-    )
     data: DataConfig = Field(default_factory=DataConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    sync: SyncConfig = Field(default_factory=SyncConfig)
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
@@ -171,23 +191,6 @@ class MoneyBinSettings(BaseSettings):
             duckdb_path = os.getenv("DUCKDB_PATH")
             if duckdb_path:
                 kwargs["database"] = DatabaseConfig(path=Path(duckdb_path))
-
-        # Handle legacy Plaid environment variables
-        if "plaid" not in kwargs:
-            plaid_config: dict[str, Any] = {}
-            client_id = os.getenv("PLAID_CLIENT_ID")
-            secret = os.getenv("PLAID_SECRET")
-            env = os.getenv("PLAID_ENV", "sandbox")
-
-            if client_id:
-                plaid_config["client_id"] = client_id
-            if secret:
-                plaid_config["secret"] = secret
-            if env in ("sandbox", "development", "production"):
-                plaid_config["environment"] = env
-
-            if plaid_config and client_id and secret:
-                kwargs["plaid"] = PlaidConfig(**plaid_config)
 
         super().__init__(**kwargs)
 
@@ -271,16 +274,13 @@ class MoneyBinSettings(BaseSettings):
             directory.mkdir(parents=True, exist_ok=True)
 
     def validate_required_credentials(self) -> None:
-        """Validate that required credentials are present."""
-        errors: list[str] = []
+        """Validate that required credentials are present.
 
-        if not self.plaid.client_id:
-            errors.append("PLAID_CLIENT_ID is required")
-        if not self.plaid.secret:
-            errors.append("PLAID_SECRET is required")
-
-        if errors:
-            raise ValueError(f"Missing required configuration: {', '.join(errors)}")
+        Note: Plaid credentials are now validated on the server side.
+        This method is kept for potential future client-side validation needs.
+        """
+        # No client-side credentials to validate currently
+        pass
 
 
 # Global settings instances - lazy loaded per profile
@@ -437,13 +437,13 @@ def get_raw_data_path() -> Path:
     return get_settings().data.raw_data_path
 
 
-def get_plaid_config() -> PlaidConfig:
-    """Get the Plaid configuration for the current profile.
+def get_sync_config() -> SyncConfig:
+    """Get the sync service configuration for the current profile.
 
     Returns:
-        PlaidConfig: The Plaid configuration
+        SyncConfig: The sync service configuration
     """
-    return get_settings().plaid
+    return get_settings().sync
 
 
 def get_logging_config() -> LoggingConfig:

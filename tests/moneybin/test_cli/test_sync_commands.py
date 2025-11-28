@@ -1,5 +1,5 @@
 # ruff: noqa: S101,S106
-"""Tests for extract CLI commands.
+"""Tests for sync CLI commands.
 
 Tests CLI-specific functionality: argument parsing, exit codes, error handling,
 and environment setup. Business logic is tested in test_plaid_extractor.py.
@@ -7,23 +7,18 @@ and environment setup. Business logic is tested in test_plaid_extractor.py.
 
 from __future__ import annotations
 
-# Ensure project root is on sys.path so 'src' namespace is importable
-import sys
 from pathlib import Path
-from pathlib import Path as _Path
 from typing import Any
 from unittest.mock import MagicMock
-
-sys.path.append(str(_Path(__file__).resolve().parents[1]))
 
 import pytest
 from typer.testing import CliRunner
 
-from src.moneybin.cli.commands.extract import app
+from moneybin.cli.commands.sync import app
 
 
-class TestExtractCommands:
-    """Test CLI-specific functionality for extract commands."""
+class TestSyncCommands:
+    """Test CLI-specific functionality for sync commands."""
 
     @pytest.fixture
     def runner(self) -> CliRunner:
@@ -33,14 +28,12 @@ class TestExtractCommands:
     @pytest.fixture
     def mock_setup_logging(self, mocker: Any) -> MagicMock:
         """Mock setup_logging for testing."""
-        return mocker.patch("src.moneybin.cli.commands.extract.setup_logging")
+        return mocker.patch("moneybin.cli.commands.sync.setup_logging")
 
     @pytest.fixture
     def mock_setup_secure_environment(self, mocker: Any) -> MagicMock:
         """Mock setup_secure_environment for testing."""
-        return mocker.patch(
-            "src.moneybin.cli.commands.extract.setup_secure_environment"
-        )
+        return mocker.patch("moneybin.cli.commands.sync.setup_secure_environment")
 
     def test_extract_plaid_argument_parsing(
         self,

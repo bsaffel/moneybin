@@ -12,7 +12,7 @@ import typer
 
 from ..config import set_current_profile
 from ..logging import setup_logging
-from .commands import credentials, extract, load, transform
+from .commands import credentials, extract, load, sync, transform
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +54,9 @@ def main_callback(
     - Profile names must be alphanumeric with optional dashes/underscores
 
     Examples:
-      moneybin --profile=alice extract plaid    # Alice's bank accounts
-      moneybin --profile=bob load parquet       # Bob's transactions
-      moneybin --profile=household transform run # Shared household account
+      moneybin --profile=alice sync plaid        # Sync Alice's bank accounts
+      moneybin --profile=bob load parquet        # Load Bob's transactions
+      moneybin --profile=household transform run # Transform household data
 
     Can also be set via MONEYBIN_PROFILE environment variable.
     """
@@ -84,7 +84,8 @@ def main_callback(
 
 
 # Add command groups
-app.add_typer(extract.app, name="extract", help="Data extraction commands")
+app.add_typer(sync.app, name="sync", help="Sync data from external services")
+app.add_typer(extract.app, name="extract", help="Extract data from local files")
 app.add_typer(
     credentials.app, name="credentials", help="Credential management commands"
 )

@@ -91,17 +91,16 @@ def list_services() -> None:
 @app.command("validate-plaid")
 def validate_plaid() -> None:
     """Validate Plaid API credentials specifically."""
-    from moneybin.extractors.plaid_extractor import PlaidExtractor
+    import os
+
+    from moneybin.connectors.plaid_sync import PlaidSyncConnector
+
+    setup_logging(cli_mode=True)
 
     try:
-        extractor = PlaidExtractor()
-        credentials = extractor.credentials
-        logger.info(
-            f"✅ Plaid credentials valid for {credentials.environment} environment"
-        )
-
-        # Test basic API connectivity
-        import os
+        # Initialize connector (validates credentials on init)
+        _ = PlaidSyncConnector()
+        logger.info("✅ Plaid credentials validated successfully")
 
         # Check for configured tokens by looking at environment variables
         token_vars = [

@@ -68,18 +68,15 @@ class TestProfileConfiguration:
 
         settings = get_settings_for_profile("dev")
         assert settings.profile == "dev"
-        assert settings.plaid.environment == "sandbox"
+        # Plaid credentials are now validated server-side through sync connector
+        assert settings.sync is not None
 
     def test_get_settings_for_profile_prod(self, mocker: MockerFixture):
         """Test getting settings for prod profile explicitly."""
         # Mock environment variables
         mocker.patch.dict(
             os.environ,
-            {
-                "PLAID_CLIENT_ID": "test_prod_client_id",
-                "PLAID_SECRET": "test_prod_secret",
-                "PLAID_ENV": "production",
-            },
+            {},
         )
 
         # Mock file existence to avoid actual file reads
@@ -87,6 +84,8 @@ class TestProfileConfiguration:
 
         settings = get_settings_for_profile("prod")
         assert settings.profile == "prod"
+        # Plaid credentials are now validated server-side through sync connector
+        assert settings.sync is not None
 
     def test_get_settings_for_invalid_profile_raises_error(self):
         """Test that getting settings for invalid profile raises ValueError."""
@@ -108,10 +107,7 @@ class TestProfileConfiguration:
         # Mock environment variables
         mocker.patch.dict(
             os.environ,
-            {
-                "PLAID_CLIENT_ID": "test_client_id",
-                "PLAID_SECRET": "test_secret",
-            },
+            {},
         )
 
         # Mock file existence
@@ -135,10 +131,7 @@ class TestProfileConfiguration:
         # Mock environment variables
         mocker.patch.dict(
             os.environ,
-            {
-                "PLAID_CLIENT_ID": "test_client_id",
-                "PLAID_SECRET": "test_secret",
-            },
+            {},
         )
 
         # Mock file existence
@@ -158,10 +151,7 @@ class TestProfileConfiguration:
         # Mock file existence to test the file selection logic
         mocker.patch.dict(
             os.environ,
-            {
-                "PLAID_CLIENT_ID": "test_client",
-                "PLAID_SECRET": "test_secret",
-            },
+            {},
         )
         mocker.patch.object(Path, "exists", return_value=False)
 
@@ -170,14 +160,11 @@ class TestProfileConfiguration:
         assert settings.profile == "alice"
 
     def test_legacy_environment_variables(self, mocker: MockerFixture):
-        """Test that legacy environment variables still work."""
+        """Test that legacy DUCKDB_PATH environment variable still works."""
         # Mock legacy environment variables
         mocker.patch.dict(
             os.environ,
             {
-                "PLAID_CLIENT_ID": "legacy_client_id",
-                "PLAID_SECRET": "legacy_secret",
-                "PLAID_ENV": "sandbox",
                 "DUCKDB_PATH": "custom/path/db.duckdb",
             },
             clear=True,
@@ -188,19 +175,14 @@ class TestProfileConfiguration:
 
         settings = MoneyBinSettings(profile="dev")
 
-        assert settings.plaid.client_id == "legacy_client_id"
-        assert settings.plaid.secret == "legacy_secret"  # noqa: S105  # Test fixture value, not a real secret
-        assert settings.plaid.environment == "sandbox"
+        # Legacy DUCKDB_PATH should still work
         assert settings.database.path == Path("custom/path/db.duckdb")
 
     def test_profile_field_in_settings(self, mocker: MockerFixture):
         """Test that profile field is properly set in settings."""
         mocker.patch.dict(
             os.environ,
-            {
-                "PLAID_CLIENT_ID": "test_client",
-                "PLAID_SECRET": "test_secret",
-            },
+            {},
         )
         mocker.patch.object(Path, "exists", return_value=False)
 
@@ -214,10 +196,7 @@ class TestProfileConfiguration:
         """Test that get_settings() uses the current profile."""
         mocker.patch.dict(
             os.environ,
-            {
-                "PLAID_CLIENT_ID": "test_client",
-                "PLAID_SECRET": "test_secret",
-            },
+            {},
         )
         mocker.patch.object(Path, "exists", return_value=False)
 
