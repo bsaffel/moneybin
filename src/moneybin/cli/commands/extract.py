@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from moneybin.config import get_current_profile
 from moneybin.extractors.plaid_extractor import (
     PlaidConnectionManager,
     PlaidExtractor,
@@ -52,7 +53,8 @@ def extract_plaid(
     """
     setup_logging(cli_mode=True, verbose=verbose)
 
-    logger.info("Starting MoneyBin Plaid API extraction (Modern SDK)")
+    profile = get_current_profile()
+    logger.info(f"Starting MoneyBin Plaid API extraction (Profile: {profile})")
 
     try:
         # Create sample environment file if needed or requested

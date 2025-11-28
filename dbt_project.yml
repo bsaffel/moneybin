@@ -29,11 +29,30 @@ clean-targets:
 # Configuring models
 # Full documentation: https://docs.getdbt.com/docs/configuring-models
 
-# In this example config, we tell dbt to build all models in the example/
-# directory as views. These settings can be overridden in the individual model
-# files using the `{{ config(...) }}` macro.
 models:
   moneybin:
-    # Config indicated by + and applies to all files under models/example/
+    # Core data models (facts and dimensions)
+    # These are the foundation of the data warehouse
+    core:
+      +materialized: table
+      +tags:
+        - "core"
+      +meta:
+        owner: "moneybin"
+        layer: "core"
+
+    # Data marts (analytics and reporting models)
+    # Built on top of core models for specific use cases
+    marts:
+      +materialized: view
+      +tags:
+        - "marts"
+      +meta:
+        owner: "moneybin"
+        layer: "marts"
+
+    # Example models (can be removed in production)
     example:
       +materialized: view
+      +tags:
+        - "example"

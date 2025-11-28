@@ -115,17 +115,12 @@ class MoneyBinSettings(BaseSettings):
 
     Environment variables are loaded with the MONEYBIN_ prefix.
     For nested configs, use double underscores: MONEYBIN_DATABASE__PATH
-    """
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        env_prefix="MONEYBIN_",
-        env_nested_delimiter="__",
-        case_sensitive=False,
-        extra="ignore",  # Allow extra env vars that don't match our schema
-        frozen=True,
-    )
+    Profile Support:
+    - Loads from .env.{profile} files (e.g., .env.dev, .env.prod)
+    - Falls back to .env for backward compatibility
+    - Profile defaults to "dev" for safety
+    """
 
     # Core configuration sections
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -142,9 +137,35 @@ class MoneyBinSettings(BaseSettings):
     environment: Literal["development", "staging", "production"] = Field(
         default="development", description="Application environment"
     )
+    profile: str = Field(
+        default="default",
+        description="User profile name (e.g., alice, bob, household)",
+    )
+
+    @field_validator("profile")
+    @classmethod
+    def validate_profile_name(cls, v: str) -> str:
+        """Ensure profile name is safe for use as a filename."""
+        import re
+
+        if not v:
+            raise ValueError("Profile name cannot be empty")
+
+        # Allow alphanumeric, dash, and underscore only
+        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
+            raise ValueError(
+                "Profile name must contain only alphanumeric characters, "
+                "dashes, and underscores"
+            )
+
+        return v
 
     def __init__(self, **kwargs: Any):
-        """Initialize settings with environment variable overrides."""
+        """Initialize settings with environment variable overrides.
+
+        Args:
+            **kwargs: Additional configuration overrides
+        """
         # Handle legacy DUCKDB_PATH environment variable
         if "database" not in kwargs:
             duckdb_path = os.getenv("DUCKDB_PATH")
@@ -169,6 +190,61 @@ class MoneyBinSettings(BaseSettings):
                 kwargs["plaid"] = PlaidConfig(**plaid_config)
 
         super().__init__(**kwargs)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        """Customize how settings are loaded to support profile-based env files.
+
+        This method is called by Pydantic Settings to determine the order and
+        sources of configuration loading.
+        """
+        # Get profile from init settings if provided
+        # Pyright reports "Type of 'get' is partially unknown" because init_settings
+        # from Pydantic doesn't have well-defined types in the stubs.
+        init_dict = init_settings.init_kwargs if init_settings else {}
+        profile = init_dict.get("profile", "dev")  # type: ignore[reportUnknownMemberType]
+
+        # Determine which env file to load based on profile
+        profile_env_file = Path(f".env.{profile}")
+        if profile_env_file.exists():
+            env_file = str(profile_env_file)
+        else:
+            # Fall back to .env for backward compatibility
+            env_file = ".env"
+
+        # Create custom dotenv settings with the profile-specific file
+        from pydantic_settings import DotEnvSettingsSource
+
+        custom_dotenv = DotEnvSettingsSource(
+            settings_cls,
+            env_file=env_file,
+            env_file_encoding="utf-8",
+        )
+
+        # Return sources in priority order (later sources override earlier ones)
+        return (
+            init_settings,
+            env_settings,
+            custom_dotenv,
+            file_secret_settings,
+        )
+
+    model_config = SettingsConfigDict(
+        env_file=".env",  # Default, but overridden by settings_customise_sources
+        env_file_encoding="utf-8",
+        env_prefix="MONEYBIN_",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="ignore",  # Allow extra env vars that don't match our schema
+        frozen=True,
+    )
 
     @field_validator("environment")
     @classmethod
@@ -207,69 +283,173 @@ class MoneyBinSettings(BaseSettings):
             raise ValueError(f"Missing required configuration: {', '.join(errors)}")
 
 
-# Global settings instance - lazy loaded
-_settings: MoneyBinSettings | None = None
+# Global settings instances - lazy loaded per profile
+_settings_cache: dict[str, MoneyBinSettings] = {}
+_current_profile: str = "default"
 
 
-def get_settings() -> MoneyBinSettings:
-    """Get the global settings instance.
+def get_settings(profile: str | None = None) -> MoneyBinSettings:
+    """Get the settings instance for the specified user profile.
 
-    This function provides a singleton pattern for accessing configuration
-    throughout the application. Settings are loaded once and cached.
+    This function provides a singleton pattern per profile for accessing configuration
+    throughout the application. Settings are loaded once per profile and cached.
+
+    Args:
+        profile: User profile name (e.g., 'alice', 'bob'). Defaults to current profile.
 
     Returns:
-        MoneyBinSettings: The global configuration instance
+        MoneyBinSettings: The configuration instance for the specified profile
 
     Raises:
         ValueError: If required configuration is missing or invalid
     """
-    global _settings
+    global _current_profile, _settings_cache
 
-    if _settings is None:
-        try:
-            _settings = MoneyBinSettings()
-            _settings.validate_required_credentials()
+    # Use current profile if none specified
+    if profile is None:
+        profile = _current_profile
 
-            # Create directories if configured to do so
-            if _settings.database.create_dirs:
-                _settings.create_directories()
+    # Return cached settings if available
+    if profile in _settings_cache:
+        return _settings_cache[profile]
 
-        except Exception as e:
-            raise ValueError(f"Configuration error: {e}") from e
+    # Load and cache new settings for this profile
+    try:
+        settings = MoneyBinSettings(profile=profile)
+        settings.validate_required_credentials()
 
-    return _settings
+        # Create directories if configured to do so
+        if settings.database.create_dirs:
+            settings.create_directories()
+
+        _settings_cache[profile] = settings
+        return settings
+
+    except Exception as e:
+        raise ValueError(f"Configuration error for profile '{profile}': {e}") from e
 
 
-def reload_settings() -> MoneyBinSettings:
+def set_current_profile(profile: str) -> None:
+    """Set the current active user profile.
+
+    Args:
+        profile: User profile name (e.g., 'alice', 'bob', 'household')
+
+    Raises:
+        ValueError: If profile name contains invalid characters
+    """
+    import re
+
+    global _current_profile
+
+    if not profile:
+        raise ValueError("Profile name cannot be empty")
+
+    # Validate profile name is safe for filenames
+    if not re.match(r"^[a-zA-Z0-9_-]+$", profile):
+        raise ValueError(
+            f"Invalid profile: {profile}. "
+            "Profile name must contain only alphanumeric characters, dashes, and underscores"
+        )
+
+    _current_profile = profile
+
+
+def get_current_profile() -> str:
+    """Get the current active user profile.
+
+    Returns:
+        str: The current profile name (e.g., 'alice', 'bob', 'default')
+    """
+    return _current_profile
+
+
+def get_settings_for_profile(profile: str) -> MoneyBinSettings:
+    """Get settings for a specific user profile.
+
+    This is an explicit function for getting settings for a specific profile
+    without changing the current profile.
+
+    Args:
+        profile: User profile name (e.g., 'alice', 'bob', 'household')
+
+    Returns:
+        MoneyBinSettings: The configuration instance for the specified profile
+
+    Raises:
+        ValueError: If required configuration is missing or invalid
+    """
+    import re
+
+    if not profile:
+        raise ValueError("Profile name cannot be empty")
+
+    # Validate profile name is safe for filenames
+    if not re.match(r"^[a-zA-Z0-9_-]+$", profile):
+        raise ValueError(
+            f"Invalid profile: {profile}. "
+            "Profile name must contain only alphanumeric characters, dashes, and underscores"
+        )
+
+    return get_settings(profile)
+
+
+def reload_settings(profile: str | None = None) -> MoneyBinSettings:
     """Reload settings from environment variables.
 
     This function forces a reload of the configuration, useful for testing
     or when environment variables change at runtime.
 
+    Args:
+        profile: Profile to reload. If None, reloads current profile.
+
     Returns:
         MoneyBinSettings: The reloaded configuration instance
     """
-    global _settings
-    _settings = None
-    return get_settings()
+    global _settings_cache, _current_profile
+
+    if profile is None:
+        profile = _current_profile
+
+    # Clear cached settings for this profile
+    if profile in _settings_cache:
+        del _settings_cache[profile]
+
+    return get_settings(profile)
 
 
 # Convenience functions for common configuration access
 def get_database_path() -> Path:
-    """Get the configured database path."""
+    """Get the configured database path for the current profile.
+
+    Returns:
+        Path: The database path
+    """
     return get_settings().database.path
 
 
 def get_raw_data_path() -> Path:
-    """Get the configured raw data path."""
+    """Get the configured raw data path for the current profile.
+
+    Returns:
+        Path: The raw data path
+    """
     return get_settings().data.raw_data_path
 
 
 def get_plaid_config() -> PlaidConfig:
-    """Get the Plaid configuration."""
+    """Get the Plaid configuration for the current profile.
+
+    Returns:
+        PlaidConfig: The Plaid configuration
+    """
     return get_settings().plaid
 
 
 def get_logging_config() -> LoggingConfig:
-    """Get the logging configuration."""
+    """Get the logging configuration for the current profile.
+
+    Returns:
+        LoggingConfig: The logging configuration
+    """
     return get_settings().logging

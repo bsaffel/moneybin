@@ -107,11 +107,12 @@ class PlaidExtractor:
             raise ValueError("create_sandbox_access_token is only available in sandbox")
 
         # Late imports to keep production path lean and avoid top-level dependency churn
-        from plaid.model.item_public_token_exchange_request import (  # noqa: WPS433
+        # These imports are only needed in sandbox/test environments, not production
+        from plaid.model.item_public_token_exchange_request import (
             ItemPublicTokenExchangeRequest,
         )
-        from plaid.model.products import Products  # noqa: WPS433
-        from plaid.model.sandbox_public_token_create_request import (  # noqa: WPS433
+        from plaid.model.products import Products
+        from plaid.model.sandbox_public_token_create_request import (
             SandboxPublicTokenCreateRequest,
         )
 

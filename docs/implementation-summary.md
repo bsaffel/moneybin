@@ -168,3 +168,284 @@ The project follows a modern data engineering architecture with Dagster orchestr
 ✅ **Extensible Design**: Easy to add new data sources and features
 
 The MoneyBin project now has a complete, modern architecture with all frameworks initialized and clear implementation paths for all target financial institutions and tax processing requirements.
+
+## 🔐 Configuration Management & Profile System
+
+### Profile-Based Configuration Architecture
+
+**Implementation**: `src/moneybin/config.py`
+
+MoneyBin uses a sophisticated profile-based configuration system to safely manage development and production credentials:
+
+#### Profile Types
+
+- **dev profile**: Uses `.env.dev` for Plaid sandbox and test data (safe for development)
+- **prod profile**: Uses `.env.prod` for real bank data and production credentials
+- **Default**: Always uses `dev` profile for safety unless explicitly overridden
+
+#### Configuration Loading Priority
+
+```python
+1. CLI flag: --profile=prod           (highest priority)
+2. Environment variable: MONEYBIN_PROFILE=prod
+3. Default: dev                       (lowest priority - for safety)
+
+# File selection:
+.env.dev   → Development/sandbox credentials
+.env.prod  → Production/real bank credentials
+.env       → Legacy single-file (treated as dev profile)
+```
+
+#### Security Features
+
+- **CLI Security**: Credentials never passed on command line (prevents shell history logging)
+- **File Separation**: Separate credential files for dev/prod environments
+- **Gitignored Files**: All `.env*` files excluded from version control
+- **Profile Indicators**: Clear visual indicators in CLI output (🧪 DEV / 🔴 PROD)
+- **Production Warnings**: Explicit warnings when using prod profile
+- **Type Safety**: Pydantic validation of all configuration values
+
+#### CLI Integration
+
+```bash
+# Global profile flag (applies to all commands)
+moneybin --profile=dev extract plaid    # Use dev credentials
+moneybin --profile=prod load parquet    # Use prod credentials
+moneybin -p prod transform run          # Short flag
+
+# Environment variable
+export MONEYBIN_PROFILE=prod
+moneybin extract plaid
+
+# Profile awareness in output
+$ moneybin --profile=prod extract plaid
+🔴 PROD | Using profile: prod
+⚠️  PRODUCTION MODE: Working with real bank data and credentials
+```
+
+## 📊 Data Warehouse Architecture
+
+### Core Data Models (dbt)
+
+**Implementation**: `dbt/models/core/`
+
+#### Unified Transactions Fact Table
+
+**File**: `dbt/models/core/fct_transactions.sql`
+
+The primary fact table for all transaction-level analysis:
+
+**Design Philosophy**:
+
+- **Multi-Source Ready**: Supports transactions from any source (Plaid, CSV, cryptocurrency, etc.)
+- **Standardized Schema**: Consistent data types and field names across all sources
+- **Kimball Methodology**: Follows dimensional modeling best practices
+- **Type Safety**: Proper data type conversions from raw data
+
+**Key Features**:
+
+1. **Source System Tracking**
+
+   ```sql
+   source_system VARCHAR  -- 'plaid', 'csv', 'crypto', etc.
+   ```
+
+   Enables multi-source transaction consolidation and data lineage
+
+2. **Standardized Amounts**
+
+   ```sql
+   amount DECIMAL(18,2)           -- negative = expense, positive = income
+   amount_absolute DECIMAL(18,2)  -- always positive
+   transaction_direction VARCHAR  -- 'expense', 'income', 'zero'
+   ```
+
+   Normalized convention (opposite of Plaid's) aligns with accounting standards
+
+3. **Rich Time Dimensions**
+
+   ```sql
+   transaction_date DATE
+   transaction_year INTEGER
+   transaction_month INTEGER
+   transaction_year_month VARCHAR  -- 'YYYY-MM'
+   transaction_year_quarter VARCHAR  -- 'YYYY-QN'
+   ```
+
+   Pre-computed for fast time-based analysis
+
+4. **Location Data**
+
+   ```sql
+   location_city, location_region, location_country
+   location_latitude, location_longitude
+   ```
+
+   Enables geographic analysis of spending
+
+5. **Category Hierarchy**
+
+   ```sql
+   category VARCHAR           -- Primary category
+   subcategory VARCHAR        -- Detailed subcategory
+   ```
+
+   Two-level categorization for flexible analysis
+
+6. **Data Quality** (via dbt tests in `schema.yml`):
+
+- Transaction ID uniqueness
+- Required field validation (not null)
+- Valid transaction directions
+- Valid source systems
+- Referential integrity
+
+#### Future Core Tables (Planned)
+
+- `fct_account_balances`: Daily balance snapshots
+- `fct_investments`: Investment transactions and positions
+- `dim_accounts`: Account master data
+- `dim_institutions`: Financial institution metadata
+
+### Analytics Marts (Future)
+
+**Location**: `dbt/models/marts/`
+
+Future analytical models built on `fct_transactions`:
+
+- Monthly spending analysis by category
+- Cash flow projections
+- Budget tracking and variance
+- Net worth over time
+
+## 🧪 Testing Infrastructure
+
+### Test Coverage
+
+**Location**: `tests/`
+
+#### Configuration Tests
+
+**File**: `tests/test_config_profiles.py`
+
+Comprehensive profile system testing:
+
+- Profile loading and validation
+- Environment file selection (`.env.dev`, `.env.prod`)
+- Profile caching and reloading
+- Legacy environment variable support
+- Settings validation
+
+#### CLI Profile Tests
+
+**File**: `tests/test_cli_profiles.py`
+
+CLI integration testing:
+
+- Profile flag parsing (`--profile`, `-p`)
+- Default profile behavior (dev)
+- Invalid profile handling
+- Profile propagation to commands
+- Profile indicator output validation
+- Environment variable overrides
+
+#### Data Pipeline Tests
+
+- `test_plaid_extractor.py`: Plaid API integration
+- `test_parquet_loader.py`: Database loading
+- `test_extract_commands.py`: CLI extraction commands
+- `test_load_commands.py`: CLI loading commands
+- `test_transform_commands.py`: CLI transformation commands
+
+### Running Tests
+
+```bash
+# All tests
+make test
+
+# With coverage
+make test-cov
+
+# Specific test files
+pytest tests/test_config_profiles.py -v
+pytest tests/test_cli_profiles.py -v
+
+# Specific test
+pytest tests/test_cli_profiles.py::TestCLIProfileHandling::test_explicit_prod_profile -v
+```
+
+## 📋 Next Implementation Steps
+
+### Immediate (To Complete This Feature)
+
+1. **Configure Production Environment**
+
+   ```bash
+   cp .env.prod.example .env.prod
+   # Edit .env.prod with real Plaid production credentials
+   ```
+
+2. **Extract Production Data**
+
+   ```bash
+   moneybin --profile=prod extract plaid
+   ```
+
+3. **Load and Transform**
+
+   ```bash
+   moneybin --profile=prod load parquet
+   moneybin --profile=prod transform run
+   ```
+
+4. **Verify Unified Transactions**
+
+   ```bash
+   moneybin --profile=prod load status
+   # Query fct_transactions table to verify data
+   ```
+
+5. **Compare with Other Apps**
+   - Export transactions from existing finance apps
+   - Compare against `fct_transactions` to validate accuracy
+
+### Short-Term Enhancements
+
+1. **Additional Marts**
+   - `monthly_spending.sql`: Monthly aggregations by category
+   - `recurring_transactions.sql`: Identify recurring charges
+   - `cash_flow.sql`: Income vs expenses analysis
+
+2. **Dimension Tables**
+   - `dim_accounts`: Account master data with metadata
+   - `dim_categories`: Category hierarchy and mappings
+
+3. **Data Quality**
+   - Additional dbt tests for business logic
+   - Data freshness checks
+   - Volume anomaly detection
+
+### Future Enhancements
+
+1. **Additional Data Sources**
+   - Manual CSV uploads with web interface
+   - Cryptocurrency exchange APIs
+   - Investment portfolio tracking
+   - Additional bank API integrations
+
+2. **Advanced Analytics**
+   - Budget vs actual tracking
+   - Spending trend analysis
+   - Anomaly detection
+   - Forecasting and projections
+
+3. **Automation**
+   - Dagster scheduled runs
+   - Email/SMS alerts
+   - Data quality monitoring
+   - Automated reconciliation
+
+4. **Visualization**
+   - Dashboard integration (Metabase, Superset)
+   - Custom reports and exports
+   - Real-time transaction monitoring

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import typer
 
+from moneybin.config import get_current_profile
 from moneybin.logging import setup_logging
 
 app = typer.Typer(help="Run data transformations using dbt")
@@ -88,7 +89,8 @@ def run_transformations(
     """
     setup_logging(cli_mode=True, verbose=verbose)
 
-    logger.info("Starting dbt transformations")
+    profile = get_current_profile()
+    logger.info(f"Starting dbt transformations (Profile: {profile})")
 
     # Validate inputs
     project_dir_str = _validate_project_dir(project_dir)

@@ -135,6 +135,69 @@ TransactionData = dict[str, str | float | datetime]
 TransactionList = list[TransactionData]
 ```
 
+### Type Annotation Verification Workflow
+
+**ALWAYS verify type annotations by running pyright checks before considering implementation complete.**
+
+#### Required Workflow:
+
+1. **Add Type Annotations**: All functions, parameters, and return values must have type annotations
+2. **Run Pyright**: Verify the specific file(s) you modified
+3. **Fix Type Errors**: Address all type checking errors before committing
+4. **Document Exceptions**: Use `# type: ignore[...]` comments only when necessary with clear explanations
+
+#### Verification Commands:
+
+```bash
+# Check a specific file after editing
+uv run pyright src/moneybin/config.py
+
+# Check a specific module
+uv run pyright src/moneybin/extractors/
+
+# Check all test files
+uv run pyright tests/
+
+# Check entire codebase
+uv run pyright
+```
+
+#### Common Type Annotations for Pytest Fixtures:
+
+```python
+from pathlib import Path
+from pytest_mock import MockerFixture
+
+def test_example(
+    tmp_path: Path,              # Temporary directory fixture
+    mocker: MockerFixture,        # Pytest-mock fixture
+    caplog,                       # Type annotation not typically needed
+):
+    """Test with proper fixture type annotations."""
+    pass
+```
+
+#### Type Ignore Comments (Use Sparingly):
+
+When third-party library type stubs are incomplete or incorrect, use specific type ignore comments:
+
+```python
+# For specific type checking issues
+result = some_library_call()  # type: ignore[reportUnknownMemberType]
+
+# With explanation for why ignore is needed
+conn = duckdb.connect(db_path)  # type: ignore[misc]
+# DuckDB's type stubs don't define the config parameter correctly
+```
+
+#### Best Practices:
+
+- **Never skip type checking** - Always run pyright on modified python files
+- **Fix at the source** - Prefer adding proper types over ignoring errors
+- **Explain ignores** - Always comment why a type ignore is necessary
+- **Test fixtures** - Add type annotations for pytest fixtures (MockerFixture, Path, etc.)
+- **Import types** - Import typing utilities as needed (Any, Literal, TypeVar, etc.)
+
 ### Pydantic Models
 
 - **Data Validation**: Use [Pydantic](https://docs.pydantic.dev/) models for API responses and data structures

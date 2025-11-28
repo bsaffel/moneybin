@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 
 # Import the actual implementation classes
+from moneybin.config import get_current_profile
 from moneybin.logging import setup_logging
 from moneybin.utils.secrets_manager import SecretsManager, setup_secure_environment
 
@@ -43,6 +44,9 @@ def validate() -> None:
     """Validate all configured credentials and API connections."""
     # Set up logging for this command
     setup_logging(cli_mode=True)
+
+    profile = get_current_profile()
+    logger.info(f"Validating credentials (Profile: {profile})")
 
     # Test credentials loading
     manager = SecretsManager()

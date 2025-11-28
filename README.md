@@ -224,22 +224,88 @@ moneybin:
   target: dev
 ```
 
-#### 6. Environment Variables
+#### 6. Environment Variables & Profile Configuration
 
-Create a `.env` file for sensitive configuration:
+MoneyBin uses a **profile-based configuration system** to manage financial data for different users:
+
+##### Profile System
+
+- **User-based profiles**: Each person has their own profile (e.g., `alice`, `bob`, `household`)
+- **Separate credentials**: Each profile has its own Plaid credentials and transaction data
+- **Use cases**: Individual family members, personal vs business, testing vs production
+- **Default**: Uses `default` profile unless explicitly overridden
+
+##### Setup Configuration Files
 
 ```bash
-# .env (do not commit to git)
-PLAID_CLIENT_ID=your_plaid_client_id
-PLAID_SECRET=your_plaid_secret
-PLAID_ENV=development  # or production
+# Create configuration files for each user/profile
+cp .env.dev.example .env.alice     # Alice's personal accounts
+cp .env.prod.example .env.bob      # Bob's personal accounts
+cp .env.prod.example .env.household # Shared household accounts
 
-# QuickBooks (if using)
-QUICKBOOKS_CLIENT_ID=your_qb_client_id
-QUICKBOOKS_CLIENT_SECRET=your_qb_client_secret
+# Edit each file with that user's Plaid credentials
+```
 
-# Database
-DUCKDB_PATH=dbt/dev.duckdb
+##### Example: User Profile Configuration (.env.alice)
+
+```bash
+# .env.alice - Alice's personal financial accounts
+PLAID_CLIENT_ID=alice_plaid_client_id
+PLAID_SECRET=alice_plaid_secret
+PLAID_ENV=production  # or sandbox for testing
+
+# Optional: Separate database per user
+# DUCKDB_PATH=data/duckdb/moneybin_alice.duckdb
+# MONEYBIN_PLAID__DAYS_LOOKBACK=365
+```
+
+##### Example: Shared Profile (.env.household)
+
+```bash
+# .env.household - Shared household accounts
+PLAID_CLIENT_ID=household_plaid_client_id
+PLAID_SECRET=household_plaid_secret
+PLAID_ENV=production
+
+# Shared household database
+# DUCKDB_PATH=data/duckdb/moneybin_household.duckdb
+```
+
+##### Using Profiles with CLI
+
+```bash
+# Default profile
+moneybin extract plaid
+
+# Alice's accounts
+moneybin --profile=alice extract plaid
+moneybin --profile=alice load parquet
+moneybin --profile=alice transform run
+
+# Bob's accounts
+moneybin --profile=bob extract plaid
+
+# Shared household account
+moneybin --profile=household extract plaid
+
+# Short flag
+moneybin -p alice extract plaid
+
+# Via environment variable
+export MONEYBIN_PROFILE=alice
+moneybin extract plaid
+```
+
+##### Testing vs Production
+
+You can also use profiles for environment separation:
+
+```bash
+# For development/testing
+moneybin --profile=dev extract plaid    # Uses .env.dev (sandbox)
+
+# For production data
+moneybin --profile=prod extract plaid   # Uses .env.prod (real accounts)
 ```
 
 #### 7. Verify Installation
@@ -267,12 +333,28 @@ The project provides a unified CLI interface using modern Typer framework:
 # Main help - see all available commands
 moneybin --help
 
+# Profile-based commands (different users)
+moneybin --profile=alice extract plaid    # Alice's accounts
+moneybin --profile=bob extract plaid      # Bob's accounts
+moneybin -p household load parquet        # Shared household account
+
 # Data extraction commands
 moneybin extract --help
-moneybin extract plaid                    # Extract from Plaid API
+moneybin extract plaid                    # Extract from Plaid API (dev profile by default)
 moneybin extract plaid --verbose          # With debug logging
-moneybin extract plaid --setup-env        # Create .env template
+moneybin extract plaid --force            # Force full extraction (bypass incremental)
 moneybin extract all                      # Extract from all sources
+
+# Data loading commands
+moneybin load --help
+moneybin load parquet                     # Load Parquet files into DuckDB
+moneybin load status                      # Check database loading status
+
+# Data transformation commands
+moneybin transform --help
+moneybin transform run                    # Run all dbt transformations
+moneybin transform run -m core            # Run specific model selection
+moneybin transform test                   # Run dbt tests
 
 # Credential management commands
 moneybin credentials --help
@@ -436,11 +518,29 @@ ORDER BY year DESC, total_spent DESC;
 
 ## Security & Privacy
 
-- All data stored locally or in user-controlled environments
-- Encryption at rest and in transit
-- Secure API key management
-- No data sharing with third parties
-- Compliance with financial data handling standards
+### Data Protection
+
+- **Local Storage**: All financial data stored locally or in user-controlled environments
+- **Encryption**: Disk encryption recommended (FileVault, BitLocker, etc.)
+- **No Third-Party Storage**: External APIs used only for data extraction, not storage
+- **Privacy First**: No data sharing with third parties
+
+### Credential Security
+
+- **Profile-Based Separation**: Dev/prod credentials kept in separate files
+- **Gitignored Files**: `.env.dev` and `.env.prod` never committed to version control
+- **CLI Security**: Credentials never passed on command line (prevents shell history logging)
+- **Environment Variables**: Secure loading via Pydantic Settings
+- **Default Safety**: Always defaults to dev profile to prevent accidental production access
+
+### Best Practices
+
+1. **Never commit** `.env.dev`, `.env.prod`, or `.env` files
+2. **Use disk encryption** on machines with financial data
+3. **Rotate credentials** immediately if compromised
+4. **Monitor API usage** via Plaid dashboard for unusual activity
+5. **Separate databases** for dev and prod if desired (via `DUCKDB_PATH`)
+6. **Test with sandbox first** before connecting real bank accounts
 
 ## Contributing
 

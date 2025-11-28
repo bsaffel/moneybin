@@ -9,7 +9,7 @@ from pathlib import Path
 
 import typer
 
-from moneybin.config import get_database_path, get_raw_data_path
+from moneybin.config import get_current_profile, get_database_path, get_raw_data_path
 from moneybin.loaders import ParquetLoader
 from moneybin.loaders.parquet_loader import LoadingConfig
 from moneybin.logging import setup_logging
@@ -54,6 +54,9 @@ def load_parquet(
     """
     setup_logging(cli_mode=True, verbose=verbose)
 
+    profile = get_current_profile()
+    logger.info(f"Loading Parquet files (Profile: {profile})")
+
     try:
         # Create configuration with centralized defaults
         config = LoadingConfig(
@@ -97,6 +100,9 @@ def load_status(
         database_path: Path to DuckDB database file
     """
     setup_logging(cli_mode=True)
+
+    profile = get_current_profile()
+    logger.info(f"Checking database status (Profile: {profile})")
 
     try:
         # Create configuration with centralized defaults
