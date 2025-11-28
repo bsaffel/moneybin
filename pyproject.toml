@@ -29,6 +29,7 @@ dependencies = [
     "python-dotenv>=1.1.1",
     # Data validation and utilities
     "pydantic>=2.11.7",
+    "pydantic-settings>=2.11.0",
     "python-dateutil>=2.9.0.post0",
     # Modern CLI framework
     "typer>=0.15.0",
@@ -37,7 +38,6 @@ dependencies = [
     "ipykernel>=6.30.1",
     "matplotlib>=3.10.5",
     "seaborn>=0.13.2",
-    "pydantic-settings>=2.11.0",
 ]
 
 [tool.setuptools]
@@ -52,18 +52,20 @@ where = ["src"]
 # Unified CLI entry point using Typer
 moneybin = "moneybin.cli.main:main"
 
-[project.optional-dependencies]
-# Documentation: https://packaging.python.org/en/latest/specifications/core-metadata/#optional-dependencies
+[dependency-groups]
+# Documentation: https://peps.python.org/pep-0735/
+# Modern dependency groups standard (PEP 735) for optional/development dependencies
 dev = [
     # Code quality and formatting
-    "ruff>=0.12.10",
-    "pyright>=1.1.404",
-    "pre-commit>=4.3.0",
-    "sqlparse>=0.5.0",   # SQL parsing and basic formatting
+    "ruff>=0.14.6",
+    "pyright>=1.1.407",
+    "pre-commit>=4.4.0",
+    "sqlfluff>=3.5.0",
+    "sqlparse>=0.5.3",
     # Testing framework and tools
     "pytest>=8.4.1",
-    "pytest-cov>=6.2.1",
-    "pytest-mock>=3.14.1",
+    "pytest-cov>=7.0.0",
+    "pytest-mock>=3.15.1",
 ]
 
 docs = [
@@ -213,5 +215,19 @@ exclude_lines = [
 ]
 
 
-[dependency-groups]
-dev = ["sqlparse>=0.5.3"]
+[tool.sqlfluff.core]
+# Documentation: https://docs.sqlfluff.com/en/stable/configuration.html
+dialect = "duckdb"
+templater = "jinja"  # Fast templater that understands dbt syntax without compilation
+exclude_rules = ["L034"]  # Disable "Select wildcards then simple targets before calculations and aggregates"
+max_line_length = 88
+
+[tool.sqlfluff.indentation]
+indented_joins = false
+indented_using_on = true
+template_blocks_indent = true
+
+[tool.sqlfluff.templater.jinja]
+# Add dbt builtins so SQLFluff understands {{ config(...) }}, {{ source(...) }}, etc.
+load_macros_from_path = "dbt/macros"
+apply_dbt_builtins = true
