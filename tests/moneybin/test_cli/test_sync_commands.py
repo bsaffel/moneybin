@@ -35,11 +35,22 @@ class TestSyncCommands:
         """Mock setup_secure_environment for testing."""
         return mocker.patch("moneybin.cli.commands.sync.setup_secure_environment")
 
+    @pytest.fixture
+    def mock_plaid_connection_manager(self, mocker: Any) -> MagicMock:
+        """Mock PlaidConnectionManager to avoid heavy initialization."""
+        mock_manager = MagicMock()
+        mock_manager.extract_all_institutions.return_value = {}
+        return mocker.patch(
+            "moneybin.cli.commands.sync.PlaidConnectionManager",
+            return_value=mock_manager,
+        )
+
     def test_extract_plaid_argument_parsing(
         self,
         runner: CliRunner,
         mock_setup_logging: MagicMock,
         mock_setup_secure_environment: MagicMock,
+        mock_plaid_connection_manager: MagicMock,
     ) -> None:
         """Test CLI argument parsing for extract plaid command."""
         # Test verbose argument parsing
@@ -66,6 +77,7 @@ class TestSyncCommands:
         runner: CliRunner,
         mock_setup_logging: MagicMock,
         mock_setup_secure_environment: MagicMock,
+        mock_plaid_connection_manager: MagicMock,
     ) -> None:
         """Test that extract plaid command handles errors gracefully."""
         # Without proper setup, command should fail gracefully with exit code 1
@@ -80,6 +92,7 @@ class TestSyncCommands:
         runner: CliRunner,
         mock_setup_logging: MagicMock,
         mock_setup_secure_environment: MagicMock,
+        mock_plaid_connection_manager: MagicMock,
     ) -> None:
         """Test extract all command argument parsing."""
         # Test verbose argument parsing
