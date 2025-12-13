@@ -1,7 +1,13 @@
 ---
 description: Incremental data extraction and duplicate prevention standards
-globs: ["**/*.py", "src/extractors/**/*", "src/cli/**/*", "src/loaders/**/*"]
-alwaysApply: true
+globs: [
+  "src/extractors/**/*.py",
+  "src/cli/commands/extract.py",
+  "src/loaders/**/*.py",
+  "src/connectors/**/*.py",
+  "src/utils/**/*.py"
+]
+alwaysApply: false
 ---
 
 # Incremental Data Extraction Standards

@@ -1,6 +1,6 @@
 ---
 description: Explicit rules for using correct DuckDB functions and SQL patterns
-globs: ["**/*.sql", "**/*.py", "dbt/**/*", "dagster/**/*", "notebooks/**/*"]
+globs: ["**/*.sql", "dbt/**/*.sql", "pipelines/**/*.py", "src/**/loaders/**/*.py", "notebooks/**/*.ipynb"]
 alwaysApply: false
 ---
 

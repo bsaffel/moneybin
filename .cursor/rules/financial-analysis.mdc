@@ -1,6 +1,6 @@
 ---
 description: Standards for financial analysis queries and success metrics
-globs: ["**/*.sql", "**/*.py", "src/analysis/**/*", "dbt/**/*", "notebooks/**/*"]
+globs: ["**/*.sql", "dbt/models/**/*.sql", "src/analysis/**/*.py", "notebooks/**/*.ipynb"]
 alwaysApply: false
 ---
 

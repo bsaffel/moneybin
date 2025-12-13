@@ -1,0 +1,454 @@
+---
+description: Performance optimization patterns for data processing and client-side operations
+globs: ["**/processors/**/*", "**/extractors/**/*", "**/loaders/**/*", "**/*performance*.py"]
+alwaysApply: false
+---
+
+# Python Performance Standards
+
+## Data Processing Library Hierarchy
+
+**Always prefer DuckDB > Polars > Pandas** for data operations.
+
+### Decision Matrix
+
+Use this hierarchy when choosing data processing libraries:
+
+1. **DuckDB (First Choice)**: Analytical queries, aggregations, SQL operations
+   - Best for: Complex queries, joins, aggregations, window functions
+   - Performance: Optimized for analytical workloads
+   - When: Working with structured data and SQL-like operations
+
+2. **Polars (Second Choice)**: High-performance data manipulation
+   - Best for: ETL operations, data transformations, large datasets
+   - Performance: Faster than Pandas for most operations
+   - When: Need DataFrame operations but DuckDB SQL isn't suitable
+
+3. **Pandas (Last Resort)**: Only when DuckDB or Polars cannot accomplish the task
+   - Best for: Legacy code compatibility, specific libraries that require Pandas
+   - Performance: Slower than DuckDB and Polars
+   - When: Absolutely necessary due to external library requirements
+
+### DuckDB for Analytical Operations (Preferred)
+
+Use DuckDB as the primary tool for data operations:
+
+```python
+import duckdb
+from pathlib import Path
+
+def aggregate_transactions(db_path: Path) -> pd.DataFrame:
+    """Use DuckDB for efficient aggregation.
+
+    Args:
+        db_path: Path to DuckDB database
+
+    Returns:
+        Aggregated results
+    """
+    conn = duckdb.connect(str(db_path))
+
+    result = conn.execute("""
+        SELECT
+            strftime('%Y-%m', date) as month,
+            category,
+            SUM(amount) as total_amount,
+            COUNT(*) as transaction_count,
+            AVG(amount) as avg_amount
+        FROM transactions
+        GROUP BY month, category
+        ORDER BY month DESC, total_amount DESC
+    """).fetchdf()
+
+    conn.close()
+    return result
+```
+
+### Direct File Reading with DuckDB
+
+Query files directly without loading into memory:
+
+```python
+def query_parquet_direct(parquet_path: Path) -> pd.DataFrame:
+    """Query parquet files directly without loading into memory.
+
+    Args:
+        parquet_path: Path to parquet file or directory
+
+    Returns:
+        Query results as DataFrame
+    """
+    conn = duckdb.connect(':memory:')
+
+    result = conn.execute(f"""
+        SELECT
+            date,
+            category,
+            SUM(amount) as total
+        FROM read_parquet('{parquet_path}/*.parquet')
+        WHERE date >= '2024-01-01'
+        GROUP BY date, category
+        ORDER BY date DESC
+    """).fetchdf()
+
+    conn.close()
+    return result
+```
+
+### Polars for DataFrame Operations (When DuckDB SQL Isn't Suitable)
+
+Use Polars when you need DataFrame operations that don't fit SQL patterns:
+
+```python
+import polars as pl
+from pathlib import Path
+
+def transform_with_polars(file_path: Path) -> pl.DataFrame:
+    """Use Polars for high-performance ETL operations.
+
+    Args:
+        file_path: Path to data file
+
+    Returns:
+        Transformed Polars DataFrame
+    """
+    df = pl.read_parquet(file_path)
+
+    # Polars has a lazy evaluation mode for better performance
+    result = (
+        df.lazy()
+        .filter(pl.col("amount") < 0)  # Expenses only
+        .with_columns([
+            pl.col("amount").abs().alias("amount_abs"),
+            pl.col("date").dt.strftime("%Y-%m").alias("month"),
+        ])
+        .group_by("month", "category")
+        .agg([
+            pl.col("amount_abs").sum().alias("total_spent"),
+            pl.col("transaction_id").count().alias("count"),
+        ])
+        .sort("month", descending=True)
+        .collect()  # Execute lazy operations
+    )
+
+    return result
+
+def polars_to_duckdb(df: pl.DataFrame) -> pd.DataFrame:
+    """Convert Polars DataFrame to work with DuckDB if needed.
+
+    Args:
+        df: Polars DataFrame
+
+    Returns:
+        Pandas DataFrame for DuckDB operations
+    """
+    return df.to_pandas()
+```
+
+### Pandas Only When Necessary
+
+Only use Pandas when DuckDB or Polars cannot accomplish the task:
+
+```python
+import pandas as pd
+from pathlib import Path
+
+def pandas_specific_operation(file_path: Path) -> pd.DataFrame:
+    """Use Pandas only when required by external libraries.
+
+    Args:
+        file_path: Path to data file
+
+    Returns:
+        Processed DataFrame
+
+    Note:
+        This example uses Pandas because some_external_library
+        requires a Pandas DataFrame and doesn't support DuckDB/Polars.
+    """
+    # Only load with Pandas if required by downstream library
+    df = pd.read_parquet(file_path)
+
+    # Use vectorized operations (not loops)
+    df['amount_abs'] = df['amount'].abs()
+    df['is_expense'] = df['amount'] < 0
+
+    # Pass to library that requires Pandas
+    result = some_external_library.process(df)
+
+    return result
+```
+
+### Vectorized Operations (When Using Pandas)
+
+If you must use Pandas, always prefer vectorized operations over loops:
+
+```python
+import pandas as pd
+
+# ❌ BAD - Slow loop-based processing
+def process_transactions_slow(df: pd.DataFrame) -> pd.DataFrame:
+    """Inefficient row-by-row processing."""
+    for idx, row in df.iterrows():
+        df.at[idx, 'amount_abs'] = abs(row['amount'])
+        df.at[idx, 'is_expense'] = row['amount'] < 0
+    return df
+
+# ✅ GOOD - Fast vectorized operations
+def process_transactions_vectorized(df: pd.DataFrame) -> pd.DataFrame:
+    """Efficient vectorized operations."""
+    df['amount_abs'] = df['amount'].abs()
+    df['is_expense'] = df['amount'] < 0
+    return df
+```
+
+## Memory Management
+
+### Monitor Memory Usage
+
+```python
+import psutil
+import logging
+
+logger = logging.getLogger(__name__)
+
+def log_memory_usage(operation: str) -> None:
+    """Log current memory usage.
+
+    Args:
+        operation: Description of current operation
+    """
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    memory_mb = memory_info.rss / 1024 / 1024
+
+    logger.info(f"{operation}: Memory usage: {memory_mb:.2f} MB")
+
+# Usage
+log_memory_usage("Before loading data")
+df = pl.read_parquet("large_file.parquet")  # Use Polars, not Pandas
+log_memory_usage("After loading data")
+```
+
+### Release Memory Explicitly
+
+```python
+import gc
+import polars as pl
+
+def process_and_cleanup():
+    """Process data and explicitly release memory."""
+    # Load and process data
+    df = pl.read_parquet("large_file.parquet")
+    result = process_data(df)
+
+    # Delete large objects and run garbage collection
+    del df
+    gc.collect()
+
+    return result
+```
+
+### Chunked Processing for Large Files
+
+When working with files too large for memory:
+
+```python
+import duckdb
+from pathlib import Path
+
+def process_large_file_duckdb(file_path: Path) -> None:
+    """Use DuckDB to process large files without loading into memory.
+
+    Args:
+        file_path: Path to large data file
+    """
+    conn = duckdb.connect(':memory:')
+
+    # DuckDB can process files larger than memory
+    conn.execute(f"""
+        CREATE TABLE results AS
+        SELECT
+            category,
+            SUM(amount) as total
+        FROM read_parquet('{file_path}')
+        GROUP BY category
+    """)
+
+    # Stream results in batches if needed
+    result = conn.execute("SELECT * FROM results").fetchdf()
+    conn.close()
+```
+
+## Database Connections
+
+### Use Context Managers
+
+```python
+from contextlib import contextmanager
+import duckdb
+from pathlib import Path
+
+@contextmanager
+def get_db_connection(db_path: Path):
+    """Context manager for database connections.
+
+    Args:
+        db_path: Path to database file
+
+    Yields:
+        Database connection
+    """
+    conn = duckdb.connect(str(db_path))
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+# Usage - connection automatically closed
+with get_db_connection(Path("data.db")) as conn:
+    result = conn.execute("SELECT * FROM transactions").fetchdf()
+```
+
+### Batch Operations
+
+```python
+import duckdb
+import polars as pl
+
+def batch_insert(conn: duckdb.DuckDBPyConnection, records: list[dict], batch_size: int = 1000):
+    """Insert records in batches for better performance.
+
+    Args:
+        conn: Database connection
+        records: List of records to insert
+        batch_size: Number of records per batch
+    """
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+
+        # Convert to Polars for efficient batch insert
+        df = pl.DataFrame(batch)
+        conn.execute("INSERT INTO transactions SELECT * FROM df")
+
+        logger.debug(f"Inserted batch {i // batch_size + 1}, records {i} to {i + len(batch)}")
+```
+
+## Profiling and Optimization
+
+### Profile Code Performance
+
+```python
+import cProfile
+import pstats
+from io import StringIO
+
+def profile_function(func, *args, **kwargs):
+    """Profile function execution.
+
+    Args:
+        func: Function to profile
+        *args: Function arguments
+        **kwargs: Function keyword arguments
+
+    Returns:
+        Function result and profiling statistics
+    """
+    profiler = cProfile.Profile()
+    profiler.enable()
+
+    result = func(*args, **kwargs)
+
+    profiler.disable()
+
+    # Print stats
+    stream = StringIO()
+    stats = pstats.Stats(profiler, stream=stream)
+    stats.sort_stats('cumulative')
+    stats.print_stats(20)  # Top 20 functions
+
+    print(stream.getvalue())
+
+    return result
+
+# Usage
+result = profile_function(process_large_dataset, data)
+```
+
+### Time Operations
+
+```python
+import time
+import logging
+from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
+
+@contextmanager
+def timer(operation: str):
+    """Context manager to time operations.
+
+    Args:
+        operation: Description of operation being timed
+    """
+    start = time.time()
+    try:
+        yield
+    finally:
+        elapsed = time.time() - start
+        logger.info(f"{operation} completed in {elapsed:.2f} seconds")
+
+# Usage
+with timer("Data processing"):
+    result = process_large_dataset(data)
+```
+
+## Performance Best Practices
+
+### Library Selection Checklist
+
+When processing data, ask these questions in order:
+
+1. **Can I use DuckDB SQL?**
+   - ✅ Yes → Use DuckDB
+   - ❌ No → Continue to #2
+
+2. **Can I use Polars DataFrame operations?**
+   - ✅ Yes → Use Polars
+   - ❌ No → Continue to #3
+
+3. **Does an external library require Pandas?**
+   - ✅ Yes → Use Pandas (document why)
+   - ❌ No → Reconsider using DuckDB or Polars
+
+### Code Documentation
+
+When using Pandas, document why DuckDB/Polars weren't suitable:
+
+```python
+def process_with_pandas(data: pd.DataFrame) -> pd.DataFrame:
+    """Process data with Pandas.
+
+    Note:
+        Using Pandas because external_visualization_lib requires
+        a Pandas DataFrame and doesn't support Polars/DuckDB.
+        See: https://github.com/external-lib/issues/123
+    """
+    # Pandas-specific processing
+    return processed_data
+```
+
+### Performance Checklist
+
+- [ ] Use DuckDB for SQL-style operations and aggregations
+- [ ] Use Polars for high-performance DataFrame operations
+- [ ] Use Pandas only when required by external libraries
+- [ ] Use vectorized operations (never loops for data processing)
+- [ ] Process large files with DuckDB's direct file reading
+- [ ] Monitor memory usage for large datasets
+- [ ] Use batch operations for database writes
+- [ ] Close resources properly (use context managers)
+- [ ] Profile code to identify bottlenecks
+- [ ] Document library choice when using Pandas
+
+Follow these performance standards to ensure efficient data processing in the MoneyBin project.

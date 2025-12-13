@@ -1,0 +1,443 @@
+---
+description: Python development tools configuration including Ruff, Pyright, uv, and pre-commit
+globs: ["pyproject.toml", ".pre-commit-config.yaml"]
+alwaysApply: false
+---
+
+# Python Tooling Standards
+
+## Technology Stack
+
+### Development Tools
+
+- **Code Formatting**: [Ruff](https://docs.astral.sh/ruff/) for Python code formatting and linting
+- **Type Checking**: [Pyright](https://microsoft.github.io/pyright/) for fast Python type checking
+- **Package Management**: [uv](https://docs.astral.sh/uv/) for fast Python package management
+- **Testing**: [pytest](https://docs.pytest.org/) for comprehensive testing
+- **Pre-commit**: Automated code quality checks before commits
+
+## Ruff Configuration
+
+### Basic Setup
+
+Ruff handles both formatting and linting. Configure in `pyproject.toml`:
+
+```toml
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["moneybin"]
+```
+
+### Running Ruff
+
+```bash
+# Format code
+ruff format .
+
+# Check for linting issues
+ruff check .
+
+# Auto-fix linting issues where possible
+ruff check --fix .
+
+# Check specific file
+ruff check src/moneybin/config.py
+```
+
+## Pyright Configuration
+
+### Setup
+
+Configure Pyright in `pyproject.toml`:
+
+```toml
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", "**/node_modules", ".venv"]
+
+pythonVersion = "3.11"
+pythonPlatform = "All"
+
+typeCheckingMode = "standard"  # or "strict" for stricter checking
+
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportUnusedImport = "warning"
+reportUnusedClass = "warning"
+reportUnusedFunction = "warning"
+reportUnusedVariable = "warning"
+reportDuplicateImport = "error"
+```
+
+### Running Pyright
+
+```bash
+# Check entire codebase
+uv run pyright
+
+# Check specific file after editing
+uv run pyright src/moneybin/config.py
+
+# Check specific module
+uv run pyright src/moneybin/extractors/
+
+# Check all test files
+uv run pyright tests/
+```
+
+### Common Type Annotations
+
+```python
+from pathlib import Path
+from pytest_mock import MockerFixture
+from typing import Any
+
+def test_example(
+    tmp_path: Path,              # Temporary directory fixture
+    mocker: MockerFixture,        # Pytest-mock fixture
+    caplog,                       # Type annotation not typically needed
+):
+    """Test with proper fixture type annotations."""
+    pass
+```
+
+## UV Package Management
+
+### Installation and Usage
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtual environment
+uv venv
+
+# Install dependencies from pyproject.toml
+uv sync
+
+# Install dev dependencies
+uv sync --dev
+
+# Add runtime dependency
+uv add package-name
+
+# Add development dependency
+uv add --dev package-name
+
+# Remove dependency
+uv remove package-name
+
+# Run command in virtual environment
+uv run pytest tests/
+
+# Run Python script
+uv run python script.py
+```
+
+### Never Use pip Directly
+
+```bash
+# ❌ DON'T USE
+pip install package-name
+pip freeze > requirements.txt
+
+# ✅ ALWAYS USE
+uv add package-name
+uv sync
+```
+
+## Pre-commit Hooks
+
+### Installation
+
+```bash
+# Add pre-commit as dev dependency
+uv add --dev pre-commit
+
+# Install pre-commit hooks
+pre-commit install
+```
+
+### Configuration
+
+Create `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.0
+    hooks:
+      # Run the formatter
+      - id: ruff-format
+      # Run the linter
+      - id: ruff
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/mirrors-pyright
+    rev: v1.1.350
+    hooks:
+      - id: pyright
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-json
+      - id: check-toml
+```
+
+### Running Pre-commit
+
+```bash
+# Run on staged files (automatic on commit)
+pre-commit run
+
+# Run on all files
+pre-commit run --all-files
+
+# Run specific hook
+pre-commit run ruff --all-files
+
+# Update hooks to latest versions
+pre-commit autoupdate
+```
+
+## IDE Configuration
+
+### VS Code / Cursor Settings
+
+Create `.vscode/settings.json`:
+
+```json
+{
+  "[python]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "explicit",
+      "source.organizeImports": "explicit"
+    }
+  },
+  "python.analysis.typeCheckingMode": "standard",
+  "python.analysis.diagnosticMode": "workspace",
+  "ruff.format.args": ["--line-length=88"],
+  "ruff.lint.args": [],
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false
+}
+```
+
+### Recommended Extensions
+
+- **Ruff**: `charliermarsh.ruff` - Formatting and linting
+- **Pylance**: `ms-python.vscode-pylance` - Type checking and IntelliSense
+- **Python**: `ms-python.python` - Python language support
+
+## Development Workflow
+
+### Setup New Development Environment
+
+```bash
+# 1. Clone repository
+git clone <repo-url>
+cd moneybin
+
+# 2. Install dependencies
+uv sync --dev
+
+# 3. Install pre-commit hooks
+pre-commit install
+
+# 4. Verify setup
+uv run pytest tests/
+uv run pyright
+ruff check .
+```
+
+### Before Committing
+
+```bash
+# 1. Format code
+ruff format .
+
+# 2. Check linting
+ruff check .
+
+# 3. Run type checking
+uv run pyright
+
+# 4. Run tests
+uv run pytest tests/
+
+# 5. Commit (pre-commit hooks run automatically)
+git add .
+git commit -m "Your commit message"
+```
+
+### Quick Quality Check
+
+```bash
+# Run all quality checks at once
+ruff format . && ruff check . && uv run pyright && uv run pytest tests/ -v
+```
+
+## Testing with uv
+
+```bash
+# Run all tests
+uv run pytest tests/ -v
+
+# Run with coverage
+uv run pytest tests/ --cov=src/moneybin --cov-report=html
+
+# Run specific test file
+uv run pytest tests/test_config.py -v
+
+# Run tests matching pattern
+uv run pytest tests/ -k "test_validation" -v
+
+# Run only unit tests (exclude integration)
+uv run pytest tests/ -v -m "not integration"
+```
+
+## pyproject.toml Structure
+
+Example comprehensive `pyproject.toml`:
+
+```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moneybin"
+version = "0.1.0"
+description = "Personal financial data platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=0.9.0",
+    "pandas>=2.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "plaid-python>=16.0.0",
+    "typer>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.3.0",
+    "pyright>=1.1.350",
+    "pre-commit>=3.5.0",
+]
+
+[project.scripts]
+moneybin = "moneybin.cli.main:app"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["moneybin"]
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --strict-markers"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests requiring external systems",
+    "slow: Tests that take significant time",
+]
+
+[tool.coverage.run]
+source = ["src/moneybin"]
+omit = ["tests/*", "**/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Import errors with uv**:
+```bash
+# Reinstall dependencies
+uv sync --reinstall
+```
+
+**Type checking errors**:
+```bash
+# Clear pyright cache
+rm -rf .pyright/
+uv run pyright
+```
+
+**Pre-commit hook failures**:
+```bash
+# Update hooks
+pre-commit autoupdate
+
+# Re-run specific hook
+pre-commit run ruff --all-files
+```
+
+## Tooling Checklist
+
+- [ ] Ruff configured for formatting and linting
+- [ ] Pyright configured for type checking
+- [ ] uv used for all package management
+- [ ] Pre-commit hooks installed and working
+- [ ] IDE configured with appropriate extensions
+- [ ] All tools integrated in pyproject.toml
+- [ ] CI/CD pipeline includes all quality checks
+
+Follow these tooling standards to maintain consistent code quality across the MoneyBin project.

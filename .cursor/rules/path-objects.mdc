@@ -1,6 +1,7 @@
 ---
 description: Path object usage standards for filesystem operations
-alwaysApply: true
+globs: ["**/*.py"]
+alwaysApply: false
 ---
 
 # Path Object Usage Standards

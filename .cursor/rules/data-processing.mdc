@@ -1,10 +1,20 @@
 ---
 description: Data processing and integration standards for financial data sources
-globs: ["**/*.py", "**/*.sql", "src/extractors/**/*", "src/processors/**/*", "dagster/**/*", "dbt/**/*"]
+globs: ["src/extractors/**/*.py", "src/processors/**/*.py", "src/loaders/**/*.py", "pipelines/**/*.py", "dbt/**/*.sql"]
 alwaysApply: false
 ---
 
 # Data Processing Standards
+
+## Data Processing Library Preference
+
+**Always prefer DuckDB > Polars > Pandas** for data operations.
+
+- **DuckDB (First Choice)**: Primary tool for analytical queries, aggregations, SQL operations
+- **Polars (Second Choice)**: High-performance alternative when DuckDB SQL isn't suitable
+- **Pandas (Last Resort)**: Only when DuckDB or Polars cannot accomplish the task
+
+When using Pandas, document why DuckDB/Polars weren't suitable for the specific use case.
 
 ## Data Sources & Integration
 
