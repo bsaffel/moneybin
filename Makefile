@@ -108,7 +108,7 @@ $(VENV_ACTIVATE):
 
 sync: venv ## Setup & Installation: Sync dependencies from lockfile (modern, reproducible)
 	@echo "$(BLUE)🔄 Syncing dependencies from lockfile...$(RESET)"
-	@uv sync --extra dev
+	@uv sync --group dev
 	@echo "$(GREEN)✅ Dependencies synchronized from lockfile$(RESET)"
 
 sync-prod: venv ## Setup & Installation: Sync production dependencies only
@@ -119,7 +119,7 @@ sync-prod: venv ## Setup & Installation: Sync production dependencies only
 update-deps: venv ## Setup & Installation: Update all dependencies to latest versions
 	@echo "$(BLUE)🔄 Updating all dependencies to latest versions...$(RESET)"
 	@uv lock --upgrade
-	@uv sync --extra dev
+	@uv sync --group dev
 	@echo "$(GREEN)✅ All dependencies updated and synchronized$(RESET)"
 
 lock: venv ## Setup & Installation: Generate/update lockfile without installing
