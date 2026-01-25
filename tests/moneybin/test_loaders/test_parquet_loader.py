@@ -28,13 +28,13 @@ class TestLoadingConfig:
         )
         mocker.patch(
             "moneybin.loaders.parquet_loader.get_database_path",
-            return_value=Path("data/duckdb/testbin.duckdb"),
+            return_value=Path("data/test/testbin.duckdb"),
         )
 
         config = LoadingConfig()
 
         assert config.source_path == Path("data/raw")
-        assert config.database_path == Path("data/duckdb/testbin.duckdb")
+        assert config.database_path == Path("data/test/testbin.duckdb")
         assert config.incremental is True
         assert config.create_database_dir is True
 
@@ -86,7 +86,7 @@ class TestParquetLoader:
         )
         mocker.patch(
             "moneybin.loaders.parquet_loader.get_database_path",
-            return_value=Path("data/duckdb/testbin.duckdb"),
+            return_value=Path("data/test/testbin.duckdb"),
         )
 
     def test_init_with_default_config(self, mock_config_functions: None) -> None:
@@ -94,7 +94,7 @@ class TestParquetLoader:
         loader = ParquetLoader()
 
         assert loader.config.source_path == Path("data/raw")
-        assert loader.config.database_path == Path("data/duckdb/testbin.duckdb")
+        assert loader.config.database_path == Path("data/test/testbin.duckdb")
         assert loader.config.incremental is True
         assert loader.config.create_database_dir is True
 

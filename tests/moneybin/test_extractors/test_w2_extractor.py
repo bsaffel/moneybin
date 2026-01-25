@@ -175,6 +175,7 @@ def test_extractor_initialization(extractor_config: W2ExtractionConfig) -> None:
     extractor = W2Extractor(extractor_config)
 
     assert extractor.config == extractor_config
+    assert extractor.config.raw_data_path is not None  # Set during initialization
     assert extractor.config.raw_data_path.exists()
 
 
@@ -342,6 +343,7 @@ def test_extract_saves_raw_parquet_file(
     extractor.extract_from_file(sample_w2_file)
 
     # Check that extraction directory was created
+    assert extractor_config.raw_data_path is not None  # Set during extractor init
     extraction_dir = extractor_config.raw_data_path / "extracted" / sample_w2_file.stem
     assert extraction_dir.exists()
     assert extraction_dir.is_dir()

@@ -12,7 +12,6 @@ from moneybin.utils.secrets_manager import (
     PlaidCredentials,
     QuickBooksCredentials,
     SecretsManager,
-    setup_secure_environment,
 )
 
 
@@ -22,24 +21,24 @@ class TestDatabaseCredentials:
     def test_create_database_credentials(self) -> None:
         """Test creating DatabaseCredentials with valid data."""
         creds = DatabaseCredentials(
-            database_path=Path("data/duckdb/test.db"),
+            database_path=Path("data/test/test.db"),
             backup_path=Path("data/backups"),
             encryption_key="test_key",
         )
 
-        assert creds.database_path == Path("data/duckdb/test.db")
+        assert creds.database_path == Path("data/test/test.db")
         assert creds.backup_path == Path("data/backups")
         assert creds.encryption_key == "test_key"
 
     def test_database_credentials_optional_fields(self) -> None:
         """Test DatabaseCredentials with optional fields as None."""
         creds = DatabaseCredentials(
-            database_path=Path("data/duckdb/test.db"),
+            database_path=Path("data/test/test.db"),
             backup_path=None,
             encryption_key=None,
         )
 
-        assert creds.database_path == Path("data/duckdb/test.db")
+        assert creds.database_path == Path("data/test/test.db")
         assert creds.backup_path is None
         assert creds.encryption_key is None
 
@@ -76,7 +75,7 @@ class TestDatabaseCredentials:
 
         creds = DatabaseCredentials.from_environment()
 
-        assert creds.database_path == Path("data/duckdb/financial.db")
+        assert creds.database_path == Path("data/default/financial.db")
         assert creds.backup_path is None
         assert creds.encryption_key is None
 
@@ -653,89 +652,3 @@ class TestSecretsManager:
         SecretsManager()
 
         assert "DEBUG mode should not be enabled" in caplog.text
-
-
-class TestSetupSecureEnvironment:
-    """Test cases for setup_secure_environment function."""
-
-    def test_creates_directories(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that necessary directories are created.
-
-        Args:
-            tmp_path: Pytest temporary directory fixture
-            monkeypatch: Pytest monkeypatch fixture
-        """
-        monkeypatch.chdir(tmp_path)
-
-        setup_secure_environment()
-
-        assert (tmp_path / "config").exists()
-        assert (tmp_path / "data/raw/plaid").exists()
-        assert (tmp_path / "data/processed").exists()
-        assert (tmp_path / "logs").exists()
-
-    def test_creates_env_template(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that .env template file is created.
-
-        Args:
-            tmp_path: Pytest temporary directory fixture
-            monkeypatch: Pytest monkeypatch fixture
-        """
-        monkeypatch.chdir(tmp_path)
-
-        setup_secure_environment()
-
-        env_file = tmp_path / ".env"
-        assert env_file.exists()
-
-        content = env_file.read_text()
-        assert "PLAID_CLIENT_ID" in content
-        assert "PLAID_SECRET" in content
-        assert "DUCKDB_PATH" in content
-        assert "QUICKBOOKS_CLIENT_ID" in content
-
-    def test_does_not_overwrite_existing_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that existing .env file is not overwritten.
-
-        Args:
-            tmp_path: Pytest temporary directory fixture
-            monkeypatch: Pytest monkeypatch fixture
-        """
-        monkeypatch.chdir(tmp_path)
-
-        # Create existing .env file
-        env_file = tmp_path / ".env"
-        original_content = "EXISTING_CONFIG=value"
-        env_file.write_text(original_content)
-
-        setup_secure_environment()
-
-        # Should not overwrite
-        assert env_file.read_text() == original_content
-
-    def test_idempotent_directory_creation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that running setup twice is idempotent.
-
-        Args:
-            tmp_path: Pytest temporary directory fixture
-            monkeypatch: Pytest monkeypatch fixture
-        """
-        monkeypatch.chdir(tmp_path)
-
-        # Run setup twice
-        setup_secure_environment()
-        setup_secure_environment()
-
-        # All directories should still exist
-        assert (tmp_path / "config").exists()
-        assert (tmp_path / "data/raw/plaid").exists()
-        assert (tmp_path / "data/processed").exists()
-        assert (tmp_path / "logs").exists()

@@ -99,7 +99,7 @@ class OFXExtractionConfig:
     """Configuration for OFX file extraction."""
 
     save_raw_data: bool = True
-    raw_data_path: Path = Path("data/raw/ofx")
+    raw_data_path: Path | None = None  # Will use profile-aware path if None
     preserve_source_files: bool = True
     validate_balances: bool = True
 
@@ -113,7 +113,13 @@ class OFXExtractor:
         Args:
             config: Extraction configuration settings
         """
+        from moneybin.config import get_raw_data_path
+
         self.config = config or OFXExtractionConfig()
+
+        # Use profile-aware path if not explicitly provided
+        if self.config.raw_data_path is None:
+            self.config.raw_data_path = get_raw_data_path() / "ofx"
 
         # Ensure output directory exists
         self.config.raw_data_path.mkdir(parents=True, exist_ok=True)
@@ -421,6 +427,7 @@ class OFXExtractor:
             source_file: Original source file path (for naming)
         """
         # Create extraction directory named after source file (without extension)
+        assert self.config.raw_data_path is not None  # noqa: S101 - Set in __init__, safe for type narrowing
         file_stem = source_file.stem
         extraction_dir = self.config.raw_data_path / "extracted" / file_stem
         extraction_dir.mkdir(parents=True, exist_ok=True)

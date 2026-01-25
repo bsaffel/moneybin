@@ -12,7 +12,6 @@ import typer
 from moneybin.config import get_current_profile, get_database_path, get_raw_data_path
 from moneybin.loaders import ParquetLoader
 from moneybin.loaders.parquet_loader import LoadingConfig
-from moneybin.logging import setup_logging
 
 app = typer.Typer(help="Load raw data files into DuckDB")
 logger = logging.getLogger(__name__)
@@ -52,8 +51,6 @@ def load_parquet(
         incremental: Whether to use incremental loading to avoid duplicates
         verbose: Enable debug level logging
     """
-    setup_logging(cli_mode=True, verbose=verbose)
-
     profile = get_current_profile()
     logger.info(f"Loading Parquet files (Profile: {profile})")
 
@@ -99,8 +96,6 @@ def load_status(
     Args:
         database_path: Path to DuckDB database file
     """
-    setup_logging(cli_mode=True)
-
     profile = get_current_profile()
     logger.info(f"Checking database status (Profile: {profile})")
 

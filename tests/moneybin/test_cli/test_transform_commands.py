@@ -26,11 +26,6 @@ class TestTransformCommands:
         return CliRunner()
 
     @pytest.fixture
-    def mock_setup_logging(self, mocker: Any) -> MagicMock:
-        """Mock setup_logging for testing."""
-        return mocker.patch("moneybin.cli.commands.transform.setup_logging")
-
-    @pytest.fixture
     def mock_subprocess_run(self, mocker: Any) -> MagicMock:
         """Mock subprocess.run for testing."""
         mock_result = MagicMock()
@@ -67,7 +62,6 @@ class TestTransformCommands:
     def test_run_command_argument_parsing(
         self,
         runner: CliRunner,
-        mock_setup_logging: MagicMock,
         mock_subprocess_run: MagicMock,
         temp_dbt_project: Path,
     ) -> None:
@@ -106,7 +100,6 @@ class TestTransformCommands:
     def test_run_command_input_validation(
         self,
         runner: CliRunner,
-        mock_setup_logging: MagicMock,
         mock_subprocess_run: MagicMock,
     ) -> None:
         """Test input validation for run command."""
@@ -127,7 +120,6 @@ class TestTransformCommands:
     def test_run_command_exit_codes(
         self,
         runner: CliRunner,
-        mock_setup_logging: MagicMock,
         mock_subprocess_run: MagicMock,
         temp_dbt_project: Path,
     ) -> None:
@@ -151,7 +143,6 @@ class TestTransformCommands:
     def test_test_command_argument_parsing(
         self,
         runner: CliRunner,
-        mock_setup_logging: MagicMock,
         mock_subprocess_run: MagicMock,
         temp_dbt_project: Path,
     ) -> None:
@@ -179,7 +170,6 @@ class TestTransformCommands:
     def test_docs_command_argument_parsing(
         self,
         runner: CliRunner,
-        mock_setup_logging: MagicMock,
         mock_subprocess_run: MagicMock,
         temp_dbt_project: Path,
     ) -> None:
@@ -218,7 +208,6 @@ class TestTransformCommands:
     def test_compile_command_argument_parsing(
         self,
         runner: CliRunner,
-        mock_setup_logging: MagicMock,
         mock_subprocess_run: MagicMock,
         temp_dbt_project: Path,
     ) -> None:
@@ -244,7 +233,6 @@ class TestTransformCommands:
     def test_verbose_mode_uses_popen(
         self,
         runner: CliRunner,
-        mock_setup_logging: MagicMock,
         mock_subprocess_run: MagicMock,
         mock_subprocess_popen: MagicMock,
         temp_dbt_project: Path,

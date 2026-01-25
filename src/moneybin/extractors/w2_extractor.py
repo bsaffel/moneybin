@@ -228,7 +228,7 @@ class W2ExtractionConfig:
     """Configuration for W2 PDF extraction."""
 
     save_raw_data: bool = True
-    raw_data_path: Path = Path("data/raw/w2")
+    raw_data_path: Path | None = None  # Will use profile-aware path if None
     preserve_source_files: bool = True
     require_dual_extraction: bool = True  # Require both methods to agree
     min_confidence_score: float = 0.8  # Minimum confidence to proceed
@@ -244,7 +244,13 @@ class W2Extractor:
         Args:
             config: Extraction configuration settings
         """
+        from moneybin.config import get_raw_data_path
+
         self.config = config or W2ExtractionConfig()
+
+        # Use profile-aware path if not explicitly provided
+        if self.config.raw_data_path is None:
+            self.config.raw_data_path = get_raw_data_path() / "w2"
 
         # Ensure output directory exists
         self.config.raw_data_path.mkdir(parents=True, exist_ok=True)
@@ -1069,6 +1075,7 @@ class W2Extractor:
             df: DataFrame containing W2 data
             source_file: Original source file path
         """
+        assert self.config.raw_data_path is not None  # noqa: S101 - Set in __init__, safe for type narrowing
         file_stem = source_file.stem
         extraction_dir = self.config.raw_data_path / "extracted" / file_stem
         extraction_dir.mkdir(parents=True, exist_ok=True)

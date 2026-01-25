@@ -11,7 +11,6 @@ from pathlib import Path
 import typer
 
 from moneybin.config import get_current_profile
-from moneybin.logging import setup_logging
 
 app = typer.Typer(help="Run data transformations using dbt")
 logger = logging.getLogger(__name__)
@@ -87,8 +86,6 @@ def run_transformations(
         project_dir: dbt project directory
         verbose: Enable debug level logging
     """
-    setup_logging(cli_mode=True, verbose=verbose)
-
     profile = get_current_profile()
     logger.info(f"Starting dbt transformations (Profile: {profile})")
 
@@ -186,8 +183,6 @@ def run_tests(
         project_dir: dbt project directory
         verbose: Enable debug level logging
     """
-    setup_logging(cli_mode=True, verbose=verbose)
-
     logger.info("Starting dbt tests")
 
     # Validate inputs
@@ -253,8 +248,6 @@ def generate_docs(
         serve: Whether to serve docs after generation
         port: Port for documentation server
     """
-    setup_logging(cli_mode=True)
-
     logger.info("Generating dbt documentation")
 
     # Validate inputs
@@ -312,8 +305,6 @@ def compile_models(
         models: Specific models to compile (optional)
         project_dir: dbt project directory
     """
-    setup_logging(cli_mode=True)
-
     logger.info("Compiling dbt models")
 
     # Validate inputs

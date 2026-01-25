@@ -171,57 +171,191 @@ The MoneyBin project now has a complete, modern architecture with all frameworks
 
 ## 🔐 Configuration Management & Profile System
 
-### Profile-Based Configuration Architecture
+MoneyBin implements a comprehensive profile-based system for complete data isolation, enabling multi-user support and environment separation (dev/test/prod).
 
-**Implementation**: `src/moneybin/config.py`
+### Profile System Architecture
 
-MoneyBin uses a sophisticated profile-based configuration system to safely manage development and production credentials:
+**Core Implementation**: `src/moneybin/config.py`, `src/moneybin/utils/user_config.py`
 
-#### Profile Types
+Each profile maintains completely isolated:
+- **Database**: Separate DuckDB file per profile
+- **Data**: Isolated raw, processed, and temp directories
+- **Logs**: Profile-specific log files
+- **Extractors**: All data extraction respects profile boundaries
 
-- **dev profile**: Uses `.env.dev` for Plaid sandbox and test data (safe for development)
-- **prod profile**: Uses `.env.prod` for real bank data and production credentials
-- **Default**: Always uses `dev` profile for safety unless explicitly overridden
+### Profile Directory Structure
 
-#### Configuration Loading Priority
+```
+data/
+  {profile}/                    # Each profile has its own data directory
+    moneybin.duckdb            # Profile-specific database
+    raw/                       # Raw extracted data
+      ofx/                     # OFX/QFX bank files
+      w2/                      # W2 tax forms
+      plaid/                   # Plaid API data
+    processed/                 # Processed data
+    temp/                      # Temporary files
 
-```python
-1. CLI flag: --profile=prod           (highest priority)
-2. Environment variable: MONEYBIN_PROFILE=prod
-3. Default: dev                       (lowest priority - for safety)
-
-# File selection:
-.env.dev   → Development/sandbox credentials
-.env.prod  → Production/real bank credentials
-.env       → Legacy single-file (treated as dev profile)
+logs/
+  {profile}/                    # Profile-specific logs
+    moneybin.log               # Application log file
 ```
 
-#### Security Features
+### User Configuration Management
 
-- **CLI Security**: Credentials never passed on command line (prevents shell history logging)
-- **File Separation**: Separate credential files for dev/prod environments
-- **Gitignored Files**: All `.env*` files excluded from version control
-- **Profile Indicators**: Clear visual indicators in CLI output (🧪 DEV / 🔴 PROD)
-- **Production Warnings**: Explicit warnings when using prod profile
-- **Type Safety**: Pydantic validation of all configuration values
+**File**: `~/.moneybin/config.yaml`
 
-#### CLI Integration
+Stores persistent user preferences:
+```yaml
+default_profile: john-smith
+```
+
+**Profile Name Normalization**:
+- User-friendly input: "John Smith", "alice_work", "Bob-Personal"
+- Normalized output: "john-smith", "alice-work", "bob-personal"
+- Rules: lowercase, spaces/underscores → hyphens, special characters removed
+
+**First-Run Experience**:
+```bash
+$ moneybin sync plaid
+👋 Welcome to MoneyBin!
+
+No default profile found. Let's set one up.
+
+What is your first name? John
+✅ Created profile: john
+✅ Set john as your default profile
+
+Configuration saved to: ~/.moneybin/config.yaml
+```
+
+### Profile Resolution Priority
+
+```
+1. CLI flag: --profile=alice       (highest priority)
+2. Environment variable: MONEYBIN_PROFILE=alice
+3. Saved default: ~/.moneybin/config.yaml
+4. Interactive prompt: (first run only)
+```
+
+### CLI Profile Management
 
 ```bash
-# Global profile flag (applies to all commands)
-moneybin --profile=dev extract plaid    # Use dev credentials
-moneybin --profile=prod load parquet    # Use prod credentials
-moneybin -p prod transform run          # Short flag
+# View current configuration
+moneybin config show
+moneybin config path                    # Show config file location
+
+# Manage default profile
+moneybin config get-default-profile
+moneybin config set-default-profile john
+
+# Use different profiles
+moneybin --profile=alice sync plaid     # Alice's data
+moneybin --profile=bob extract ofx file.qfx    # Bob's data
+moneybin -p work load parquet           # Work profile (short flag)
 
 # Environment variable
-export MONEYBIN_PROFILE=prod
-moneybin extract plaid
-
-# Profile awareness in output
-$ moneybin --profile=prod extract plaid
-🔴 PROD | Using profile: prod
-⚠️  PRODUCTION MODE: Working with real bank data and credentials
+export MONEYBIN_PROFILE=alice
+moneybin extract plaid                  # Uses alice profile
 ```
+
+### Profile-Aware Components
+
+#### Extractors (All Respect Profiles)
+
+**OFX Extractor** (`src/moneybin/extractors/ofx_extractor.py`):
+```python
+# Automatically uses: data/{profile}/raw/ofx/
+extractor = OFXExtractor()  # Uses current profile
+```
+
+**W2 Extractor** (`src/moneybin/extractors/w2_extractor.py`):
+```python
+# Automatically uses: data/{profile}/raw/w2/
+extractor = W2Extractor()  # Uses current profile
+```
+
+**Plaid Extractor** (`src/moneybin_server/connectors/plaid/extractor.py`):
+```python
+# Must provide profile-aware path explicitly
+config = PlaidExtractionConfig(
+    raw_data_path=settings.data.raw_data_path / "plaid"
+)
+```
+
+#### Logging System
+
+**Implementation**: `src/moneybin/logging/config.py`
+
+Logs automatically go to `logs/{profile}/moneybin.log`:
+```python
+# Setup happens in CLI main callback with profile context
+setup_logging(cli_mode=True, verbose=verbose, profile=profile)
+
+# Log files created per profile:
+# logs/alice/moneybin.log
+# logs/bob/moneybin.log
+# logs/test/moneybin.log
+```
+
+### Multi-User Example
+
+```bash
+# Alice's workflow
+moneybin --profile=alice sync plaid
+moneybin --profile=alice load parquet
+# Data: data/alice/raw/plaid/
+# Database: data/alice/moneybin.duckdb
+# Logs: logs/alice/moneybin.log
+
+# Bob's workflow
+moneybin --profile=bob extract ofx statement.qfx
+moneybin --profile=bob load parquet
+# Data: data/bob/raw/ofx/
+# Database: data/bob/moneybin.duckdb
+# Logs: logs/bob/moneybin.log
+
+# No data pollution - completely isolated!
+```
+
+### Test Isolation
+
+**Implementation**: `tests/moneybin/conftest.py`
+
+Automatic test cleanup via `autouse=True` fixture:
+```python
+@pytest.fixture(autouse=True)
+def clean_profile_state():
+    """Clean up profile state before and after each test."""
+    # Before test: clean state
+    clear_settings_cache()
+    set_current_profile("test")
+
+    yield  # Run test
+
+    # After test: cleanup
+    clear_settings_cache()
+    set_current_profile("test")
+    cleanup_test_profile_directories()  # Remove test profiles
+```
+
+**Cleaned Up Profiles**:
+- `alice`, `bob`, `dev`, `prod`
+- `alice-work`, `bob-personal`
+- `invalid`, `testprofile`
+- Any profile created during tests
+
+**Persistent Profiles**:
+- `test` (test fixture profile)
+- User profiles (e.g., `john-smith`, `brandon`)
+
+### Security Features
+
+- **Data Isolation**: Each user/environment has completely separate data
+- **No Cross-Contamination**: Tests cannot affect production data
+- **Clean State**: Automatic cleanup ensures reproducible tests
+- **Type Safety**: Pydantic validation of all configuration values
+- **Path Validation**: Profile names validated and normalized for safety
 
 ## 📊 Data Warehouse Architecture
 

@@ -12,7 +12,8 @@ import typer
 
 from ..config import set_current_profile
 from ..logging import setup_logging
-from .commands import credentials, db, extract, load, sync, transform
+from ..utils.user_config import ensure_default_profile
+from .commands import config, credentials, db, extract, load, sync, transform
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +29,14 @@ app = typer.Typer(
 @app.callback()
 def main_callback(
     profile: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--profile",
             "-p",
-            help="User profile to use (e.g., alice, bob, yourself). Default: default",
+            help="User profile to use (e.g., alice, bob, yourself). Uses saved default if not specified.",
             envvar="MONEYBIN_PROFILE",
         ),
-    ] = "default",
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option(
@@ -48,42 +49,48 @@ def main_callback(
     """Global options for MoneyBin CLI.
 
     The profile option determines which user's financial data to work with:
+    - Each profile has isolated data storage in data/{profile}/
     - Each profile loads from .env.{profile} files (e.g., .env.alice, .env.bob)
-    - Each profile has separate Plaid credentials and transaction data
     - Use profiles for: different family members, personal vs business, etc.
-    - Profile names must be alphanumeric with optional dashes/underscores
+    - Profile names are normalized to lowercase with hyphens
 
     Examples:
+      moneybin sync plaid                        # Use default profile
       moneybin --profile=alice sync plaid        # Sync Alice's bank accounts
       moneybin --profile=bob load parquet        # Load Bob's transactions
       moneybin --profile=household transform run # Transform household data
 
     Can also be set via MONEYBIN_PROFILE environment variable.
+    Priority: --profile flag > MONEYBIN_PROFILE > saved default > prompt
     """
-    import re
+    # Resolve profile name BEFORE setting up logging so logs go to correct directory
+    # Priority:
+    # 1. --profile flag (already checked by typer)
+    # 2. MONEYBIN_PROFILE env var (already checked by typer)
+    # 3. Saved default from ~/.moneybin/config.yaml
+    # 4. Prompt user for first name
+    if profile is None:
+        try:
+            profile = ensure_default_profile()
+        except KeyboardInterrupt:
+            # User cancelled setup
+            raise typer.Abort() from None
 
-    # Initialize logging with centralized configuration
-    setup_logging(cli_mode=True, verbose=verbose)
+    # Set the current profile globally (will normalize the name)
+    try:
+        set_current_profile(profile)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
-    # Validate profile name
-    if not re.match(r"^[a-zA-Z0-9_-]+$", profile):
-        logger.error(
-            f"Invalid profile: {profile}. "
-            "Must contain only alphanumeric characters, dashes, and underscores"
-        )
-        raise typer.BadParameter(
-            f"Invalid profile name: {profile}. "
-            "Use only alphanumeric characters, dashes, and underscores"
-        )
-
-    # Set the current profile globally
-    set_current_profile(profile)
+    # Initialize logging AFTER profile is set so logs go to profile-specific directory
+    setup_logging(cli_mode=True, verbose=verbose, profile=profile)
 
     # Log which profile is active
     logger.info(f"👤 Using profile: {profile}")
 
 
 # Add command groups
+app.add_typer(config.app, name="config", help="User configuration management")
 app.add_typer(sync.app, name="sync", help="Sync data from external services")
 app.add_typer(extract.app, name="extract", help="Extract data from local files")
 app.add_typer(

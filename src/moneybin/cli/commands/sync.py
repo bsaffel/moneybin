@@ -5,14 +5,11 @@ through the MoneyBin Sync service (Plaid, Yodlee, etc.).
 """
 
 import logging
-from pathlib import Path
 
 import typer
 
 from moneybin.config import get_current_profile
 from moneybin.connectors.plaid_sync import PlaidConnectionManager
-from moneybin.logging import setup_logging
-from moneybin.utils.secrets_manager import setup_secure_environment
 
 app = typer.Typer(help="Sync financial data from external services")
 logger = logging.getLogger(__name__)
@@ -22,9 +19,6 @@ logger = logging.getLogger(__name__)
 def sync_plaid(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose logging"
-    ),
-    setup_env: bool = typer.Option(
-        False, "--setup-env", help="Create sample .env file and exit"
     ),
     force: bool = typer.Option(
         False,
@@ -45,22 +39,12 @@ def sync_plaid(
 
     Args:
         verbose: Enable debug level logging
-        setup_env: Create sample .env file and exit
         force: Force full sync, bypassing incremental logic
     """
-    setup_logging(cli_mode=True, verbose=verbose)
-
     profile = get_current_profile()
     logger.info(f"Starting MoneyBin Plaid sync (Profile: {profile})")
 
     try:
-        # Create sample environment file if needed or requested
-        if setup_env or not Path(".env").exists():
-            setup_secure_environment()
-            logger.info("Created sample .env file - please configure your credentials")
-            if setup_env:
-                return
-
         # Initialize connection manager (which validates Plaid configuration)
         manager = PlaidConnectionManager()
 
@@ -117,4 +101,4 @@ def sync_all(
         force: Force full sync, bypassing incremental logic
     """
     # For now, just call the Plaid sync
-    sync_plaid(verbose=verbose, setup_env=False, force=force)
+    sync_plaid(verbose=verbose, force=force)

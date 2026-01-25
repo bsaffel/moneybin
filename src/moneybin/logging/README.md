@@ -47,7 +47,7 @@ def my_asset():
 
 - `LOG_LEVEL`: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL) - default: INFO
 - `LOG_TO_FILE`: Enable file logging (true/false) - default: true
-- `LOG_FILE_PATH`: Path to log file - default: logs/moneybin.log
+- `LOG_FILE_PATH`: Path to log file - default: logs/{profile}/moneybin.log
 - `LOG_MAX_FILE_SIZE_MB`: Max log file size in MB - default: 50
 - `LOG_BACKUP_COUNT`: Number of backup log files - default: 5
 

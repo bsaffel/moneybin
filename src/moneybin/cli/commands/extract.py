@@ -10,8 +10,6 @@ import logging
 
 import typer
 
-from moneybin.logging import setup_logging
-
 app = typer.Typer(help="Extract financial data from local files")
 logger = logging.getLogger(__name__)
 
@@ -32,8 +30,6 @@ def extract_csv(
         file_path: Path to the CSV file
         verbose: Enable debug level logging
     """
-    setup_logging(cli_mode=True, verbose=verbose)
-
     logger.info(f"CSV extraction from: {file_path}")
     logger.warning("⚠️  CSV extraction not yet implemented")
     logger.info("This feature will parse CSV bank statements and save to Parquet")
@@ -56,8 +52,6 @@ def extract_excel(
         file_path: Path to the Excel file
         verbose: Enable debug level logging
     """
-    setup_logging(cli_mode=True, verbose=verbose)
-
     logger.info(f"Excel extraction from: {file_path}")
     logger.warning("⚠️  Excel extraction not yet implemented")
     logger.info("This feature will parse Excel financial data and save to Parquet")
@@ -111,8 +105,6 @@ def extract_ofx(
     from moneybin.extractors.ofx_extractor import OFXExtractor
     from moneybin.loaders.ofx_loader import OFXLoader
     from moneybin.utils.file import copy_to_raw as copy_file_to_raw
-
-    setup_logging(cli_mode=True, verbose=verbose)
 
     source_file = Path(file_path)
 
@@ -190,8 +182,6 @@ def extract_pdf(
         file_path: Path to the PDF file
         verbose: Enable debug level logging
     """
-    setup_logging(cli_mode=True, verbose=verbose)
-
     logger.info(f"PDF extraction from: {file_path}")
     logger.warning("⚠️  PDF extraction not yet implemented")
     logger.info("This feature will parse PDF statements and save to Parquet")
@@ -256,8 +246,6 @@ def extract_w2(
     from moneybin.extractors.w2_extractor import W2Extractor
     from moneybin.loaders.w2_loader import W2Loader
     from moneybin.utils.file import copy_to_raw as copy_file_to_raw
-
-    setup_logging(cli_mode=True, verbose=verbose)
 
     source_file = Path(file_path)
 

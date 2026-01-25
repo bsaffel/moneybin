@@ -19,7 +19,7 @@ class DatabaseConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: Path = Field(
-        default=Path("data/duckdb/moneybin.duckdb"),
+        default=Path("data/default/moneybin.duckdb"),
         description="Path to DuckDB database file",
     )
     backup_path: Path | None = Field(
@@ -46,9 +46,6 @@ class DataConfig(BaseModel):
     raw_data_path: Path = Field(
         default=Path("data/raw"), description="Path to raw data directory"
     )
-    processed_data_path: Path = Field(
-        default=Path("data/processed"), description="Path to processed data directory"
-    )
     temp_data_path: Path = Field(
         default=Path("data/temp"), description="Path to temporary data directory"
     )
@@ -70,7 +67,7 @@ class LoggingConfig(BaseModel):
     )
     log_to_file: bool = Field(default=True, description="Enable file logging")
     log_file_path: Path = Field(
-        default=Path("logs/moneybin.log"), description="Path to log file"
+        default=Path("logs/default/moneybin.log"), description="Path to log file"
     )
     max_file_size_mb: int = Field(
         default=50, ge=1, le=1000, description="Maximum log file size in MB"
@@ -165,20 +162,20 @@ class MoneyBinSettings(BaseSettings):
     @field_validator("profile")
     @classmethod
     def validate_profile_name(cls, v: str) -> str:
-        """Ensure profile name is safe for use as a filename."""
-        import re
+        """Ensure profile name is safe for use as a filename and normalize it."""
+        from moneybin.utils.user_config import normalize_profile_name
 
         if not v:
             raise ValueError("Profile name cannot be empty")
 
-        # Allow alphanumeric, dash, and underscore only
-        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
-            raise ValueError(
-                "Profile name must contain only alphanumeric characters, "
-                "dashes, and underscores"
-            )
-
-        return v
+        # Normalize profile name to lowercase with hyphens
+        # This allows users to provide "John Smith", "Alice_Work", etc.
+        # and converts them to "john-smith", "alice-work", etc.
+        try:
+            normalized = normalize_profile_name(v)
+            return normalized
+        except ValueError as e:
+            raise ValueError(f"Invalid profile name: {e}") from e
 
     def __init__(self, **kwargs: Any):
         """Initialize settings with environment variable overrides.
@@ -186,11 +183,40 @@ class MoneyBinSettings(BaseSettings):
         Args:
             **kwargs: Additional configuration overrides
         """
-        # Handle legacy DUCKDB_PATH environment variable
-        if "database" not in kwargs:
-            duckdb_path = os.getenv("DUCKDB_PATH")
+        # Get profile name (will be normalized by validator)
+        profile = kwargs.get("profile", "default")
+
+        # Make paths profile-aware if not explicitly provided
+        # Structure: data/{profile}/[raw, temp]
+
+        # Check for legacy DUCKDB_PATH environment variable
+        duckdb_path = os.getenv("DUCKDB_PATH")
+
+        # Set database path if not explicitly provided or if using old default
+        if "database" not in kwargs or (
+            "database" in kwargs
+            and kwargs["database"].path == Path("data/default/moneybin.duckdb")
+        ):
             if duckdb_path:
                 kwargs["database"] = DatabaseConfig(path=Path(duckdb_path))
+            else:
+                # Use profile-aware path
+                kwargs["database"] = DatabaseConfig(
+                    path=Path(f"data/{profile}/moneybin.duckdb")
+                )
+
+        if "data" not in kwargs:
+            # Use profile-aware data paths
+            kwargs["data"] = DataConfig(
+                raw_data_path=Path(f"data/{profile}/raw"),
+                temp_data_path=Path(f"data/{profile}/temp"),
+            )
+
+        if "logging" not in kwargs:
+            # Use profile-aware log path
+            kwargs["logging"] = LoggingConfig(
+                log_file_path=Path(f"logs/{profile}/moneybin.log")
+            )
 
         super().__init__(**kwargs)
 
@@ -262,7 +288,6 @@ class MoneyBinSettings(BaseSettings):
         directories = [
             self.database.path.parent,
             self.data.raw_data_path,
-            self.data.processed_data_path,
             self.data.temp_data_path,
             self.logging.log_file_path.parent,
         ]
@@ -283,76 +308,100 @@ class MoneyBinSettings(BaseSettings):
         pass
 
 
-# Global settings instances - lazy loaded per profile
-_settings_cache: dict[str, MoneyBinSettings] = {}
-_current_profile: str = "default"
+# Global settings - single instance for current profile
+_current_settings: MoneyBinSettings | None = None
 
 
-def get_settings(profile: str | None = None) -> MoneyBinSettings:
-    """Get the settings instance for the specified user profile.
-
-    This function provides a singleton pattern per profile for accessing configuration
-    throughout the application. Settings are loaded once per profile and cached.
-
-    Args:
-        profile: User profile name (e.g., 'alice', 'bob'). Defaults to current profile.
+def _get_initial_profile() -> str:
+    """Get the initial profile from user config or default to 'default'.
 
     Returns:
-        MoneyBinSettings: The configuration instance for the specified profile
+        str: The profile name to use (from user config or 'default')
+    """
+    try:
+        from moneybin.utils.user_config import get_default_profile
+
+        profile = get_default_profile()
+        return profile if profile else "default"
+    except Exception:
+        # If we can't load user config, default to 'default'
+        return "default"
+
+
+_current_profile: str = _get_initial_profile()
+
+
+def get_settings() -> MoneyBinSettings:
+    """Get the settings instance for the current user profile.
+
+    This function provides a singleton pattern for accessing configuration
+    throughout the application. Settings are loaded once and cached for the
+    current profile.
+
+    Returns:
+        MoneyBinSettings: The configuration instance for the current profile
 
     Raises:
         ValueError: If required configuration is missing or invalid
-    """
-    global _current_profile, _settings_cache
 
-    # Use current profile if none specified
-    if profile is None:
-        profile = _current_profile
+    Note:
+        The profile is determined by _current_profile, which can be changed
+        via set_current_profile(). Changing the profile invalidates the cache.
+    """
+    global _current_settings, _current_profile
 
     # Return cached settings if available
-    if profile in _settings_cache:
-        return _settings_cache[profile]
+    if _current_settings is not None:
+        return _current_settings
 
-    # Load and cache new settings for this profile
+    # Load and cache new settings for current profile
     try:
-        settings = MoneyBinSettings(profile=profile)
+        settings = MoneyBinSettings(profile=_current_profile)
         settings.validate_required_credentials()
 
         # Create directories if configured to do so
         if settings.database.create_dirs:
             settings.create_directories()
 
-        _settings_cache[profile] = settings
+        _current_settings = settings
         return settings
 
     except Exception as e:
-        raise ValueError(f"Configuration error for profile '{profile}': {e}") from e
+        raise ValueError(
+            f"Configuration error for profile '{_current_profile}': {e}"
+        ) from e
 
 
 def set_current_profile(profile: str) -> None:
     """Set the current active user profile.
 
+    Changing the profile invalidates the cached settings, forcing a reload
+    on the next call to get_settings().
+
     Args:
         profile: User profile name (e.g., 'alice', 'bob', 'household')
+                 Will be normalized to lowercase with hyphens
 
     Raises:
         ValueError: If profile name contains invalid characters
     """
-    import re
+    from moneybin.utils.user_config import normalize_profile_name
 
-    global _current_profile
+    global _current_profile, _current_settings
 
     if not profile:
         raise ValueError("Profile name cannot be empty")
 
-    # Validate profile name is safe for filenames
-    if not re.match(r"^[a-zA-Z0-9_-]+$", profile):
-        raise ValueError(
-            f"Invalid profile: {profile}. "
-            "Profile name must contain only alphanumeric characters, dashes, and underscores"
-        )
+    # Normalize profile name
+    try:
+        normalized = normalize_profile_name(profile)
 
-    _current_profile = profile
+        # Only invalidate cache if profile actually changed
+        if normalized != _current_profile:
+            _current_profile = normalized
+            _current_settings = None  # Invalidate cache
+    except ValueError as e:
+        raise ValueError(f"Invalid profile name: {e}") from e
 
 
 def get_current_profile() -> str:
@@ -367,31 +416,33 @@ def get_current_profile() -> str:
 def get_settings_for_profile(profile: str) -> MoneyBinSettings:
     """Get settings for a specific user profile.
 
-    This is an explicit function for getting settings for a specific profile
-    without changing the current profile.
+    This is a convenience function that switches to the specified profile
+    and returns its settings. The profile change persists after this call.
 
     Args:
         profile: User profile name (e.g., 'alice', 'bob', 'household')
+                 Will be normalized to lowercase with hyphens
 
     Returns:
         MoneyBinSettings: The configuration instance for the specified profile
 
     Raises:
         ValueError: If required configuration is missing or invalid
-    """
-    import re
 
+    Note:
+        This function changes the current profile via set_current_profile().
+        If you need the current profile to remain unchanged, consider saving
+        it first and restoring it after.
+    """
     if not profile:
         raise ValueError("Profile name cannot be empty")
 
-    # Validate profile name is safe for filenames
-    if not re.match(r"^[a-zA-Z0-9_-]+$", profile):
-        raise ValueError(
-            f"Invalid profile: {profile}. "
-            "Profile name must contain only alphanumeric characters, dashes, and underscores"
-        )
-
-    return get_settings(profile)
+    # Switch to the requested profile
+    try:
+        set_current_profile(profile)
+        return get_settings()
+    except ValueError as e:
+        raise ValueError(f"Invalid profile name: {e}") from e
 
 
 def reload_settings(profile: str | None = None) -> MoneyBinSettings:
@@ -402,20 +453,33 @@ def reload_settings(profile: str | None = None) -> MoneyBinSettings:
 
     Args:
         profile: Profile to reload. If None, reloads current profile.
+                 If specified and different from current, switches to that profile.
 
     Returns:
         MoneyBinSettings: The reloaded configuration instance
     """
-    global _settings_cache, _current_profile
+    global _current_settings, _current_profile
 
-    if profile is None:
-        profile = _current_profile
+    # If profile specified, switch to it (which invalidates cache)
+    if profile is not None and profile != _current_profile:
+        set_current_profile(profile)
+    else:
+        # Just invalidate current cache to force reload
+        _current_settings = None
 
-    # Clear cached settings for this profile
-    if profile in _settings_cache:
-        del _settings_cache[profile]
+    return get_settings()
 
-    return get_settings(profile)
+
+def clear_settings_cache() -> None:
+    """Clear cached settings and reset to test profile.
+
+    This function is primarily for testing to ensure clean state between tests.
+    It clears the cached settings and resets the current profile to 'test'.
+    """
+    global _current_settings, _current_profile
+
+    _current_settings = None
+    _current_profile = "test"
 
 
 # Convenience functions for common configuration access

@@ -42,7 +42,7 @@ class DatabaseCredentials(SecureConfig):
         """
         backup_path_str = os.getenv("DUCKDB_BACKUP_PATH")
         return cls(
-            database_path=Path(os.getenv("DUCKDB_PATH", "data/duckdb/financial.db")),
+            database_path=Path(os.getenv("DUCKDB_PATH", "data/default/financial.db")),
             backup_path=Path(backup_path_str) if backup_path_str else None,
             encryption_key=os.getenv("DUCKDB_ENCRYPTION_KEY"),
         )
@@ -331,74 +331,3 @@ class SecretsManager:
             validation_results["database"] = False
 
         return validation_results
-
-
-def setup_secure_environment() -> None:
-    """Set up secure environment configuration for MoneyBin.
-
-    This function creates necessary directories and sample configuration files
-    for secure credential management.
-    """
-    # Create necessary directories
-    directories = [
-        Path("config"),
-        Path("data/raw/plaid"),
-        Path("data/processed"),
-        Path("logs"),
-    ]
-
-    for directory in directories:
-        directory.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Created directory: {directory}")
-
-    # Create sample .env file if it doesn't exist
-    env_file = Path(".env")
-    if not env_file.exists():
-        sample_content = """# MoneyBin Secure Configuration
-# Copy this file to .env and fill in your actual credentials
-
-# Plaid API Configuration
-# Get these from https://dashboard.plaid.com/team/keys
-PLAID_CLIENT_ID=your_plaid_client_id_here
-PLAID_SECRET=your_plaid_secret_here
-PLAID_ENV=sandbox  # sandbox, development, or production
-
-# Institution Access Tokens (add after linking accounts through Plaid Link)
-# PLAID_TOKEN_WELLS_FARGO=access-sandbox-xxx
-# PLAID_TOKEN_CHASE=access-sandbox-yyy
-# PLAID_TOKEN_CAPITAL_ONE=access-sandbox-zzz
-# PLAID_TOKEN_FIDELITY=access-sandbox-aaa
-# PLAID_TOKEN_ETRADE=access-sandbox-bbb
-
-# QuickBooks API Configuration (optional)
-# Get these from https://developer.intuit.com/app/developer/myapps
-# QUICKBOOKS_CLIENT_ID=your_quickbooks_client_id
-# QUICKBOOKS_CLIENT_SECRET=your_quickbooks_client_secret
-# QUICKBOOKS_REDIRECT_URI=http://localhost:8080/callback
-# QUICKBOOKS_ACCESS_TOKEN=your_access_token
-# QUICKBOOKS_REFRESH_TOKEN=your_refresh_token
-# QUICKBOOKS_COMPANY_ID=your_company_id
-
-# Database Configuration
-DUCKDB_PATH=data/duckdb/financial.db
-# DUCKDB_BACKUP_PATH=data/backups/
-# DUCKDB_ENCRYPTION_KEY=your_encryption_key_here
-
-# Application Configuration
-LOG_LEVEL=INFO
-LOG_TO_FILE=true
-LOG_FILE_PATH=logs/moneybin.log
-LOG_MAX_FILE_SIZE_MB=50
-LOG_BACKUP_COUNT=5
-DEBUG=false
-
-# Security Configuration
-# WEBHOOK_SECRET=your_webhook_secret_for_plaid_notifications
-"""
-
-        with env_file.open("w") as f:
-            f.write(sample_content)
-
-        logger.info(f"Created secure environment template at {env_file}")
-        logger.warning("IMPORTANT: Fill in your actual credentials in .env file")
-        logger.warning("NEVER commit .env file to version control")

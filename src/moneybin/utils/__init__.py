@@ -1,7 +1,7 @@
 """Utility modules for MoneyBin application.
 
 This package provides shared utilities including secure secrets management,
-configuration handling, and common helper functions.
+user configuration management, and common helper functions.
 """
 
 from .secrets_manager import (
@@ -10,7 +10,13 @@ from .secrets_manager import (
     PlaidCredentials,
     QuickBooksCredentials,
     SecretsManager,
-    setup_secure_environment,
+)
+from .user_config import (
+    ensure_default_profile,
+    get_default_profile,
+    get_user_config_path,
+    normalize_profile_name,
+    set_default_profile,
 )
 
 __all__ = [
@@ -19,5 +25,9 @@ __all__ = [
     "QuickBooksCredentials",
     "DatabaseCredentials",
     "AccessTokenStore",
-    "setup_secure_environment",
+    "ensure_default_profile",
+    "get_default_profile",
+    "get_user_config_path",
+    "normalize_profile_name",
+    "set_default_profile",
 ]

@@ -42,6 +42,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "pytesseract>=0.3.13",
     "pdf2image>=1.17.0",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.setuptools]
@@ -117,6 +118,13 @@ ignore = [
 # Test files should use asserts - this is standard pytest practice
 "tests/**/*.py" = [
     "S101",  # assert used - standard in pytest
+]
+# CLI commands and user config use print() for user-facing output
+"src/moneybin/cli/commands/*.py" = [
+    "T201",  # print() allowed in CLI commands for user output
+]
+"src/moneybin/utils/user_config.py" = [
+    "T201",  # print() allowed for interactive user prompts
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -203,6 +211,10 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+]
+filterwarnings = [
+    # Ignore deprecation warnings from third-party libraries we don't control
+    "ignore:Call to deprecated method findAll:DeprecationWarning:ofxparse",
 ]
 
 [tool.coverage.run]

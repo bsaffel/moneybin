@@ -5,45 +5,50 @@ and credential validation across all integrated services.
 """
 
 import logging
-from pathlib import Path
 
 import typer
 
 # Import the actual implementation classes
 from moneybin.config import get_current_profile
-from moneybin.logging import setup_logging
-from moneybin.utils.secrets_manager import SecretsManager, setup_secure_environment
+from moneybin.utils.secrets_manager import SecretsManager
 
 app = typer.Typer(help="Manage API credentials and environment configuration")
 logger = logging.getLogger(__name__)
 
 
 @app.command("setup")
-def setup(
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Overwrite existing .env file"
-    ),
-) -> None:
-    """Set up secure environment configuration.
+def setup() -> None:
+    """Initialize MoneyBin configuration directories.
 
-    Creates necessary directories and environment files for secure credential storage.
+    Creates necessary profile-specific directories for data and logs.
+    Configuration directories are automatically created when needed.
 
-    Args:
-        force: Overwrite existing .env file if it exists
+    Note: This command is now largely unnecessary as directories are created
+    automatically on first use. It's maintained for explicit initialization
+    if desired, or to verify directory structure.
     """
-    if Path(".env").exists() and not force:
-        logger.info("✅ .env file already exists (use --force to overwrite)")
-        return
+    from moneybin.config import get_settings
 
-    setup_secure_environment()
-    logger.info("✅ Secure environment setup completed")
+    profile = get_current_profile()
+    logger.info(f"Initializing MoneyBin environment for profile: {profile}")
+
+    # Get settings to trigger automatic directory creation
+    settings = get_settings()
+    settings.create_directories()
+
+    logger.info("✅ Configuration directories initialized")
+    logger.info(f"   Database: {settings.database.path}")
+    logger.info(f"   Raw data: {settings.data.raw_data_path}")
+    logger.info(f"   Logs: {settings.logging.log_file_path}")
+    logger.info("")
+    logger.info("📝 For configuration, see: .env.example or docs/")
+    logger.info("⚠️  Store sensitive credentials in environment variables or .env")
 
 
 @app.command("validate")
 def validate() -> None:
     """Validate all configured credentials and API connections."""
     # Set up logging for this command
-    setup_logging(cli_mode=True)
 
     profile = get_current_profile()
     logger.info(f"Validating credentials (Profile: {profile})")
@@ -74,7 +79,6 @@ def validate() -> None:
 def list_services() -> None:
     """List all supported services and their credential requirements."""
     # Set up logging for this command
-    setup_logging(cli_mode=True)
 
     logger.info("🔧 Supported Services:")
     logger.info("  Plaid API:")
@@ -94,8 +98,6 @@ def validate_plaid() -> None:
     import os
 
     from moneybin.connectors.plaid_sync import PlaidSyncConnector
-
-    setup_logging(cli_mode=True)
 
     try:
         # Initialize connector (validates credentials on init)

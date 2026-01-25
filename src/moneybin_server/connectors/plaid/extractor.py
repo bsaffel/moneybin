@@ -42,7 +42,7 @@ class PlaidExtractionConfig:
     max_retries: int = 3
     retry_delay: float = 1.0
     save_raw_data: bool = True
-    raw_data_path: Path = Path("data/raw/plaid")
+    raw_data_path: Path | None = None  # Should be set explicitly based on profile
 
 
 class PlaidExtractor:
@@ -62,6 +62,13 @@ class PlaidExtractor:
         self.config = config or PlaidExtractionConfig()
         self.credentials = PlaidCredentials.from_environment()
         self.database_path = database_path
+
+        # Validate that raw_data_path is set (should come from caller)
+        if self.config.raw_data_path is None:
+            raise ValueError(
+                "PlaidExtractionConfig.raw_data_path must be set explicitly. "
+                "It should use the profile-aware path from the calling context."
+            )
 
         # Initialize Plaid client with modern SDK
         configuration = Configuration(
@@ -348,6 +355,7 @@ class PlaidExtractor:
             df = pl.DataFrame(accounts_data)
 
             if self.config.save_raw_data:
+                assert self.config.raw_data_path is not None  # noqa: S101 - Validated in __init__, safe for type narrowing
                 output_path = (
                     self.config.raw_data_path
                     / f"accounts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
@@ -471,6 +479,7 @@ class PlaidExtractor:
             df = pl.DataFrame(transactions_data)
 
             if self.config.save_raw_data:
+                assert self.config.raw_data_path is not None  # noqa: S101 - Validated in __init__, safe for type narrowing
                 output_path = (
                     self.config.raw_data_path
                     / f"transactions_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{datetime.now().strftime('%H%M%S')}.parquet"

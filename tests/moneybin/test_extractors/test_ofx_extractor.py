@@ -84,6 +84,7 @@ def test_extractor_initialization(extractor_config: OFXExtractionConfig) -> None
     extractor = OFXExtractor(extractor_config)
 
     assert extractor.config == extractor_config
+    assert extractor.config.raw_data_path is not None  # Set during initialization
     assert extractor.config.raw_data_path.exists()
 
 
@@ -234,6 +235,7 @@ def test_extract_saves_raw_parquet_files(
     extractor.extract_from_file(sample_ofx_file)
 
     # Check that extraction directory was created
+    assert extractor_config.raw_data_path is not None  # Set during extractor init
     extraction_dir = extractor_config.raw_data_path / "extracted" / sample_ofx_file.stem
     assert extraction_dir.exists()
     assert extraction_dir.is_dir()
