@@ -7,6 +7,54 @@ alwaysApply: true
 
 ## Core Development Principles
 
+### Linter/Type Checker Suppression Comments
+
+**ALWAYS include a reason when suppressing linter warnings or type errors.**
+
+When using `# noqa:`, `# type: ignore`, or similar suppression comments, ALWAYS add a brief explanation of why the suppression is needed.
+
+**Format:**
+
+```python
+# noqa: ERROR_CODE - reason for suppression
+# type: ignore[error-type] - reason for suppression
+```
+
+**Examples:**
+
+```python
+# Good - includes reason
+from moneybin.utils.file import (
+    _files_are_identical,  # type: ignore[reportPrivateUsage] - testing private function
+    copy_to_raw,
+)
+
+creds = PlaidCredentials(
+    client_id="test_id",
+    secret="test_secret",  # noqa: S106 - test fixture uses dummy credentials
+    webhook_url=None,
+)
+
+# Bad - no reason provided
+from moneybin.utils.file import (
+    _files_are_identical,  # type: ignore[reportPrivateUsage]
+    copy_to_raw,
+)
+
+creds = PlaidCredentials(
+    client_id="test_id",
+    secret="test_secret",  # noqa: S106
+    webhook_url=None,
+)
+```
+
+**Why this matters:**
+
+- Makes code reviews easier by explaining intent
+- Helps future maintainers understand why suppression was necessary
+- Prevents cargo-culting of suppressions without understanding
+- Documents technical debt or workarounds
+
 ### Package Management with uv
 
 **CRITICAL: MoneyBin uses `uv` for all Python package and environment management.**

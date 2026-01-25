@@ -115,7 +115,6 @@ ignore = [
 # Test files should use asserts - this is standard pytest practice
 "tests/**/*.py" = [
     "S101",  # assert used - standard in pytest
-    "S106",  # hardcoded password - test fixtures use dummy credentials
 ]
 
 [tool.ruff.lint.pydocstyle]
