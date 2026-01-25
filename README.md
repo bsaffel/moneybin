@@ -264,6 +264,31 @@ moneybin:
   target: dev
 ```
 
+**Optional: DuckDB CLI for Data Exploration**
+
+MoneyBin includes convenient `db` commands that wrap the DuckDB CLI. To use these commands, install the DuckDB CLI separately:
+
+```bash
+# macOS
+brew install duckdb
+
+# Linux (download from duckdb.org)
+wget https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+unzip duckdb_cli-linux-amd64.zip
+sudo mv duckdb /usr/local/bin/
+
+# Windows (download from duckdb.org)
+# https://duckdb.org/docs/installation/
+```
+
+Once installed, you can use:
+
+```bash
+moneybin db ui              # Open web UI to explore your data
+moneybin db shell           # Interactive SQL shell
+moneybin db query "..."     # Run one-off queries
+```
+
 #### 6. Environment Variables & Profile Configuration
 
 MoneyBin uses a **profile-based configuration system** to manage financial data for different users:
@@ -402,6 +427,13 @@ moneybin transform --help
 moneybin transform run                   # Run all dbt transformations
 moneybin transform run -m core           # Run specific model selection
 moneybin transform test                  # Run dbt tests
+
+# Database exploration commands
+moneybin db --help
+moneybin db ui                           # Open DuckDB web UI to explore data
+moneybin db query "SELECT * FROM ..."   # Execute SQL query
+moneybin db query "SELECT ..." --format csv  # Export query results as CSV
+moneybin db shell                        # Open interactive SQL shell
 
 # Credential management commands
 moneybin credentials --help

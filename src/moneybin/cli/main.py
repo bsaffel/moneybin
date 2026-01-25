@@ -12,7 +12,7 @@ import typer
 
 from ..config import set_current_profile
 from ..logging import setup_logging
-from .commands import credentials, extract, load, sync, transform
+from .commands import credentials, db, extract, load, sync, transform
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ app.add_typer(
 )
 app.add_typer(load.app, name="load", help="Data loading commands")
 app.add_typer(transform.app, name="transform", help="Data transformation commands")
+app.add_typer(db.app, name="db", help="Database exploration and query commands")
 
 
 def main() -> None:
