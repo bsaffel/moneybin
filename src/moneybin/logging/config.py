@@ -35,9 +35,14 @@ class LoggingConfig:
         Returns:
             LoggingConfig: Configuration loaded from environment
         """
+        from moneybin.utils.user_config import normalize_profile_name
+
         # Get profile from parameter or environment or default to 'test'
         if profile is None:
             profile = os.getenv("MONEYBIN_PROFILE", "test")
+
+        # Normalize profile name BEFORE using it for paths
+        profile = normalize_profile_name(profile)
 
         # If LOG_FILE_PATH is explicitly set, use it; otherwise use profile-aware default
         env_log_path = os.getenv("LOG_FILE_PATH")

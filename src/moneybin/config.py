@@ -183,8 +183,15 @@ class MoneyBinSettings(BaseSettings):
         Args:
             **kwargs: Additional configuration overrides
         """
-        # Get profile name (will be normalized by validator)
-        profile = kwargs.get("profile", "default")
+        from moneybin.utils.user_config import normalize_profile_name
+
+        # Get and normalize profile name BEFORE using it for paths
+        # This ensures directories are created with normalized names
+        raw_profile = kwargs.get("profile", "default")
+        profile = normalize_profile_name(raw_profile)
+
+        # Update kwargs with normalized profile name
+        kwargs["profile"] = profile
 
         # Make paths profile-aware if not explicitly provided
         # Structure: data/{profile}/[raw, temp]
