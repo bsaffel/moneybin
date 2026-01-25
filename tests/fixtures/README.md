@@ -2,6 +2,27 @@
 
 This directory contains sample data files used across test suites.
 
+## W-2 Tax Form Fixtures
+
+### `sample_w2_2024.pdf`
+
+A public domain sample W-2 from Google Cloud Document AI samples containing non-PII test data:
+
+- **Source**: https://storage.googleapis.com/cloud-samples-data/documentai/LendingDocAI/W2Parser/W2_XL_input_clean_1000.pdf
+- **Employee**: Howard Radial (SSN: 077-49-4905 - sample/fake data)
+- **Employer**: EIN 37-2766773
+- **Tax Year**: 2010/2018 (test overrides to 2024)
+- **Wages**: $28,287.19
+- **Federal Tax**: $1,608.75
+- **Layout**: 2×2 grid (4 copies of W-2 on single page)
+
+Used by:
+
+- `test_w2_extractor.py` - Testing W-2 PDF extraction and parsing
+- `test_w2_loader.py` - Testing W-2 data loading to DuckDB
+
+**Note**: This is a publicly available sample document with no real PII, safe for committing to source control.
+
 ## OFX/QFX Fixtures
 
 ### `sample_statement.qfx`
