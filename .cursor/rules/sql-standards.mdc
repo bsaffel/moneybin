@@ -1,0 +1,96 @@
+---
+description: SQL formatting and linting standards using SQLFluff with DuckDB dialect
+globs: ["**/*.sql", "dbt/**/*.sql", "src/**/sql/**/*.sql", "pyproject.toml"]
+alwaysApply: false
+---
+
+# SQL Standards
+
+## SQLFluff for SQL Linting
+
+**All SQL files must be linted with SQLFluff** (configured in `pyproject.toml`).
+
+**Key Configuration:**
+
+- **Dialect**: DuckDB
+- **Templater**: `jinja` (works for both plain SQL and dbt files)
+- **Max line length**: 88 characters
+
+## SQL File Types
+
+MoneyBin uses two types of SQL files, both handled by the same configuration:
+
+### Raw Schema Files
+
+Location: `src/moneybin/sql/schema/*.sql`
+
+- Plain SQL CREATE TABLE statements
+- No Jinja templating needed
+- Jinja templater passes plain SQL through unchanged
+
+```sql
+-- Raw schema SQL file (no special comments needed)
+CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
+    transaction_id VARCHAR,
+    amount DECIMAL(18, 2),
+    PRIMARY KEY (transaction_id)
+);
+```
+
+### dbt Model Files
+
+Location: `dbt/models/**/*.sql`
+
+- Uses Jinja templating for dbt functions
+- Can use `{{ config() }}`, `{{ source() }}`, `{{ ref() }}`, etc.
+- Same templater works automatically
+
+```sql
+-- dbt model file (Jinja syntax automatically detected)
+{{ config(materialized='table') }}
+
+SELECT * FROM {{ source('raw', 'ofx_transactions') }}
+```
+
+## Running SQLFluff
+
+```bash
+# Lint all SQL files
+uv run sqlfluff lint src/moneybin/sql/
+uv run sqlfluff lint dbt/models/
+
+# Fix auto-fixable issues
+uv run sqlfluff fix src/moneybin/sql/
+
+# Check specific file
+uv run sqlfluff lint src/moneybin/sql/schema/raw_ofx_transactions.sql
+```
+
+## Configuration in pyproject.toml
+
+**CRITICAL: All SQLFluff configuration must be in `pyproject.toml`**
+
+Never create separate `.sqlfluff` or `.sqlfluffignore` files. Keep all configuration centralized.
+
+```toml
+[tool.sqlfluff.core]
+dialect = "duckdb"
+templater = "jinja"  # Works for both plain SQL and dbt
+max_line_length = 88
+
+[tool.sqlfluff.templater.jinja]
+load_macros_from_path = "dbt/macros"
+apply_dbt_builtins = true
+```
+
+## Why Jinja Templater for All SQL?
+
+- **Plain SQL files** without Jinja syntax pass through unchanged
+- **dbt files** with Jinja are properly templated
+- **No file-specific configuration** or comments needed
+- **Single consistent configuration** for entire project
+
+## Related Standards
+
+- See `duckdb-functions.mdc` for DuckDB-specific SQL patterns
+- See `pyproject.toml` for complete SQLFluff configuration

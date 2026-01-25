@@ -10,9 +10,34 @@ alwaysApply: false
 
 **Always prefer DuckDB > Polars > Pandas** for data operations.
 
-- **DuckDB (First Choice)**: Primary tool for analytical queries, aggregations, SQL operations
-- **Polars (Second Choice)**: High-performance alternative when DuckDB SQL isn't suitable
-- **Pandas (Last Resort)**: Only when DuckDB or Polars cannot accomplish the task
+### Library Hierarchy
+
+1. **DuckDB (First Choice)**: For analytical queries, aggregations, SQL operations
+2. **Polars (Second Choice)**: For high-performance DataFrame operations
+3. **Pandas (Last Resort)**: Only when DuckDB or Polars cannot accomplish the task
+
+```python
+# ✅ GOOD - Use DuckDB for analytical queries
+import duckdb
+result = conn.execute("""
+    SELECT category, SUM(amount) FROM transactions GROUP BY category
+""").fetchdf()
+
+# ✅ GOOD - Use Polars for DataFrame operations
+import polars as pl
+df = pl.read_parquet("data.parquet").filter(pl.col("amount") > 0)
+
+# ⚠️ ONLY IF NECESSARY - Document why Pandas is required
+import pandas as pd
+# Note: Using Pandas because external_lib requires pd.DataFrame
+df = pd.read_parquet("data.parquet")
+```
+
+### When to Use Each Library
+
+- **DuckDB**: Complex queries, joins, aggregations, window functions, direct file reading
+- **Polars**: ETL operations, data transformations, lazy evaluation pipelines
+- **Pandas**: External library compatibility (document why DuckDB/Polars won't work)
 
 When using Pandas, document why DuckDB/Polars weren't suitable for the specific use case.
 

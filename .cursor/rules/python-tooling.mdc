@@ -1,6 +1,19 @@
 ---
 description: Python development tools configuration including Ruff, Pyright, uv, and pre-commit
-globs: ["pyproject.toml", ".pre-commit-config.yaml"]
+globs: [
+  "pyproject.toml",
+  "uv.lock",
+  ".pre-commit-config.yaml",
+  ".python-version",
+  "setup.py",
+  "setup.cfg",
+  "requirements*.txt",
+  "Makefile",
+  ".github/workflows/*.yml",
+  ".github/workflows/*.yaml",
+  "Dockerfile",
+  "docker-compose.yml"
+]
 alwaysApply: false
 ---
 
@@ -123,6 +136,10 @@ def test_example(
 
 ## UV Package Management
 
+### CRITICAL: Always Use uv Commands
+
+**MoneyBin uses `uv` for all Python package and environment management.**
+
 ### Installation and Usage
 
 ```bash
@@ -152,19 +169,107 @@ uv run pytest tests/
 
 # Run Python script
 uv run python script.py
+
+# Run CLI commands
+uv run moneybin extract ofx file.qfx
 ```
 
-### Never Use pip Directly
+### ❌ NEVER Use These Commands
 
 ```bash
-# ❌ DON'T USE
+# ❌ WRONG - Never use pip directly
 pip install package-name
-pip freeze > requirements.txt
+pip install -e .
+python -m pip install package-name
 
-# ✅ ALWAYS USE
-uv add package-name
-uv sync
+# ❌ WRONG - Never use uv pip
+uv pip install package-name
+uv pip install -e .
+
+# ❌ WRONG - Never activate venv manually then use python
+source .venv/bin/activate
+python script.py
+
+# ❌ WRONG - Never use python -m directly
+python -m moneybin.cli.main
+python -m pytest
 ```
+
+### ✅ ALWAYS Use These Commands
+
+```bash
+# ✅ CORRECT - Add dependencies
+uv add package-name              # Add to [project.dependencies]
+uv add --dev package-name       # Add to [dependency-groups.dev]
+
+# ✅ CORRECT - Install project in editable mode
+uv sync                         # Installs project + all dependencies
+
+# ✅ CORRECT - Run Python commands
+uv run python script.py         # Runs in managed environment
+uv run moneybin --help          # Runs CLI commands
+uv run pytest tests/            # Runs tests
+
+# ✅ CORRECT - Run any command in environment
+uv run ruff check .             # Runs ruff
+uv run pyright src/             # Runs type checker
+```
+
+### Common Scenarios
+
+**Installing a new dependency:**
+```bash
+# ❌ WRONG
+pip install ofxparse
+uv pip install ofxparse
+
+# ✅ CORRECT
+uv add ofxparse
+```
+
+**Running the CLI:**
+```bash
+# ❌ WRONG
+python -m moneybin.cli.main extract ofx file.qfx
+source .venv/bin/activate && moneybin extract ofx file.qfx
+
+# ✅ CORRECT
+uv run moneybin extract ofx file.qfx
+```
+
+**Running tests:**
+```bash
+# ❌ WRONG
+pytest tests/
+python -m pytest tests/
+
+# ✅ CORRECT
+uv run pytest tests/
+```
+
+**Installing project for development:**
+```bash
+# ❌ WRONG
+pip install -e .
+uv pip install -e .
+
+# ✅ CORRECT
+uv sync          # Installs everything including project in editable mode
+```
+
+### Why uv?
+
+1. **Faster**: 10-100x faster than pip
+2. **Deterministic**: Lock file ensures reproducible builds
+3. **Integrated**: Manages both environment and packages
+4. **Modern**: Uses pyproject.toml (PEP 621) natively
+5. **Compatible**: Drop-in replacement for pip/pip-tools
+
+### uv Documentation
+
+- **Main docs**: https://docs.astral.sh/uv/
+- **Commands**: https://docs.astral.sh/uv/reference/cli/
+- **pyproject.toml**: https://docs.astral.sh/uv/concepts/projects/
 
 ## Pre-commit Hooks
 

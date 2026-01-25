@@ -7,6 +7,42 @@ alwaysApply: true
 
 ## Core Development Principles
 
+### Package Management with uv
+
+**CRITICAL: MoneyBin uses `uv` for all Python package and environment management.**
+
+**ALWAYS use these commands:**
+
+- `uv add package-name` - Add a dependency
+- `uv run command` - Run any command in the project environment
+- `uv sync` - Install/update dependencies
+
+**NEVER use these commands:**
+
+- ❌ `pip install package-name`
+- ❌ `uv pip install package-name`
+- ❌ `python -m pip install package-name`
+- ❌ `pip install -e .`
+- ❌ `python -m moneybin.cli.main` (use `uv run moneybin` instead)
+
+**Examples:**
+
+```bash
+# ✅ Add a dependency
+uv add ofxparse
+
+# ✅ Run CLI commands
+uv run moneybin extract ofx file.qfx
+
+# ✅ Run tests
+uv run pytest tests/
+
+# ✅ Run Python scripts
+uv run python script.py
+```
+
+See `.cursor/rules/python-tooling.mdc` for complete uv documentation.
+
 ### Modern Practices
 
 - Use the latest idiomatically correct approaches for each language/framework
@@ -39,11 +75,7 @@ alwaysApply: true
 
 ### Naming Conventions
 
-- **Files**: snake_case (`plaid_extractor.py`)
-- **Classes**: PascalCase (`PlaidExtractor`)
-- **Functions**: snake_case (`extract_transactions`)
-- **Constants**: UPPER_SNAKE_CASE (`MAX_RETRY_ATTEMPTS`)
-- **Variables**: snake_case (`transaction_data`)
+See `naming-conventions.mdc` for complete standards including acronym capitalization (OFX, CSV, PDF, etc.).
 
 ### Import Organization (Ruff)
 
@@ -120,14 +152,14 @@ TransactionList = list[TransactionData]
 
 **ALWAYS verify type annotations by running pyright checks before considering implementation complete.**
 
-#### Required Workflow:
+#### Required Workflow
 
 1. **Add Type Annotations**: All functions, parameters, and return values must have type annotations
 2. **Run Pyright**: Verify the specific file(s) you modified
 3. **Fix Type Errors**: Address all type checking errors before committing
 4. **Document Exceptions**: Use `# type: ignore[...]` comments only when necessary with clear explanations
 
-#### Best Practices:
+#### Best Practices
 
 - **Never skip type checking** - Always run pyright on modified python files
 - **Fix at the source** - Prefer adding proper types over ignoring errors
@@ -137,29 +169,25 @@ TransactionList = list[TransactionData]
 
 ### Pydantic Models
 
-- **Data Validation**: Use [Pydantic](https://docs.pydantic.dev/) models for API responses and data structures
-- **Field Validation**: Add constraints and validators where appropriate
-- **Documentation**: Include field descriptions
+Use [Pydantic](https://docs.pydantic.dev/) models for API responses and data structures:
+
+- Add field descriptions and constraints
+- Use field validators for complex validation
+- Include proper type hints
 
 ```python
 from pydantic import BaseModel, Field, field_validator
-from datetime import datetime
 from decimal import Decimal
 
 class Transaction(BaseModel):
     """Financial transaction data model."""
 
     transaction_id: str = Field(..., description="Unique transaction identifier")
-    account_id: str = Field(..., description="Associated account ID")
-    date: datetime = Field(..., description="Transaction date and time")
-    amount: Decimal = Field(..., description="Transaction amount (positive for income, negative for expense)")
-    description: str = Field(..., description="Transaction description")
-    category: str | None = Field(None, description="Transaction category")
+    amount: Decimal = Field(..., description="Transaction amount")
 
     @field_validator('amount')
     @classmethod
     def validate_amount(cls, v):
-        """Ensure amount is not zero."""
         if v == 0:
             raise ValueError('Amount cannot be zero')
         return v
@@ -263,36 +291,9 @@ def categorize_transaction(description: str, amount: float) -> str:
 
 ## Data Processing Library Standards
 
-### Library Hierarchy: DuckDB > Polars > Pandas
+**Always prefer: DuckDB > Polars > Pandas**
 
-Always prefer libraries in this order:
-
-1. **DuckDB (First Choice)**: For analytical queries, aggregations, SQL operations
-2. **Polars (Second Choice)**: For high-performance DataFrame operations
-3. **Pandas (Last Resort)**: Only when DuckDB or Polars cannot accomplish the task
-
-```python
-# ✅ GOOD - Use DuckDB for analytical queries
-import duckdb
-result = conn.execute("""
-    SELECT category, SUM(amount) FROM transactions GROUP BY category
-""").fetchdf()
-
-# ✅ GOOD - Use Polars for DataFrame operations
-import polars as pl
-df = pl.read_parquet("data.parquet").filter(pl.col("amount") > 0)
-
-# ⚠️ ONLY IF NECESSARY - Document why Pandas is required
-import pandas as pd
-# Note: Using Pandas because external_lib requires pd.DataFrame
-df = pd.read_parquet("data.parquet")
-```
-
-### When to Use Each Library
-
-- **DuckDB**: Complex queries, joins, aggregations, window functions, direct file reading
-- **Polars**: ETL operations, data transformations, lazy evaluation pipelines
-- **Pandas**: External library compatibility (document why DuckDB/Polars won't work)
+See `data-processing.mdc` for complete library selection guidelines and examples.
 
 ## Project Structure & Organization
 
