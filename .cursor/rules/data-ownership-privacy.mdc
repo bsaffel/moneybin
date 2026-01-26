@@ -1,7 +1,7 @@
 ---
 description: Enforce data ownership and privacy principles for financial data
 globs: ["**/*.py", "**/*.sql", "**/*.md", "**/*.json"]
-alwaysApply: true
+alwaysApply: false
 ---
 
 # Data Ownership & Privacy Rules

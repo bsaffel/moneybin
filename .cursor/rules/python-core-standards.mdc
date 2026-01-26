@@ -5,361 +5,67 @@ alwaysApply: true
 
 # Python Core Standards
 
-## Core Development Principles
+## Package Management
 
-### Linter/Type Checker Suppression Comments
+**CRITICAL: Use `uv` for all Python package management:**
 
-**ALWAYS include a reason when suppressing linter warnings or type errors.**
-
-When using `# noqa:`, `# type: ignore`, or similar suppression comments, ALWAYS add a brief explanation of why the suppression is needed.
-
-**Format:**
-
-```python
-# noqa: ERROR_CODE - reason for suppression
-# type: ignore[error-type] - reason for suppression
-```
-
-**Examples:**
-
-```python
-# Good - includes reason
-from moneybin.utils.file import (
-    _files_are_identical,  # type: ignore[reportPrivateUsage] - testing private function
-    copy_to_raw,
-)
-
-creds = PlaidCredentials(
-    client_id="test_id",
-    secret="test_secret",  # noqa: S106 - test fixture uses dummy credentials
-    webhook_url=None,
-)
-
-# Bad - no reason provided
-from moneybin.utils.file import (
-    _files_are_identical,  # type: ignore[reportPrivateUsage]
-    copy_to_raw,
-)
-
-creds = PlaidCredentials(
-    client_id="test_id",
-    secret="test_secret",  # noqa: S106
-    webhook_url=None,
-)
-```
-
-**Why this matters:**
-
-- Makes code reviews easier by explaining intent
-- Helps future maintainers understand why suppression was necessary
-- Prevents cargo-culting of suppressions without understanding
-- Documents technical debt or workarounds
-
-### Package Management with uv
-
-**CRITICAL: MoneyBin uses `uv` for all Python package and environment management.**
-
-**ALWAYS use these commands:**
-
-- `uv add package-name` - Add a dependency
-- `uv run command` - Run any command in the project environment
+- `uv add package-name` - Add dependency
+- `uv run command` - Run commands in project environment
 - `uv sync` - Install/update dependencies
-
-**NEVER use these commands:**
-
-- ❌ `pip install package-name`
-- ❌ `uv pip install package-name`
-- ❌ `python -m pip install package-name`
-- ❌ `pip install -e .`
-- ❌ `python -m moneybin.cli.main` (use `uv run moneybin` instead)
-
-**Examples:**
-
-```bash
-# ✅ Add a dependency
-uv add ofxparse
-
-# ✅ Run CLI commands
-uv run moneybin extract ofx file.qfx
-
-# ✅ Run tests
-uv run pytest tests/
-
-# ✅ Run Python scripts
-uv run python script.py
-```
-
-See `.cursor/rules/python-tooling.mdc` for complete uv documentation.
-
-### Modern Practices
-
-- Use the latest idiomatically correct approaches for each language/framework
-- Link to current authoritative documentation for all framework-specific methods
-- Maintain clean, readable, and maintainable code
-- Implement proper error handling and logging
-
-### Planning Process
-
-1. **Verify Approach**: Research and validate technical approaches before implementation
-2. **Create Plans**: Document implementation plans before making changes
-3. **Minimize Edits**: Make targeted, minimal changes rather than broad rewrites
-4. **Test Incrementally**: Validate each change before proceeding to the next
-
-### Code Organization
-
-- Prefer editing existing files over creating new ones
-- Never create files unless absolutely necessary for the goal
-- Use clear, descriptive naming conventions
-- Organize code into logical modules and functions
+- **NEVER use**: `pip install`, `uv pip install`, `pip install -e .`, `python -m moneybin.cli.main`
 
 ## Code Style & Formatting
 
-### Ruff Code Formatter & Linter
-
-- **Always use Ruff**: Code must be formatted and linted with [Ruff](https://docs.astral.sh/ruff/) (line length 88)
-- **Auto-format**: Run `ruff format .` before committing
-- **Auto-lint**: Run `ruff check .` before committing
-- **IDE Integration**: Configure your editor to format on save with Ruff
-
-### Naming Conventions
-
-See `naming-conventions.mdc` for complete standards including acronym capitalization (OFX, CSV, PDF, etc.).
-
-### Import Organization (Ruff)
-
-- **Standard Library**: Python built-in modules first
-- **Third Party**: External packages (polars, dagster, etc.)
-- **Local**: MoneyBin modules last
-- **Grouping**: Separate groups with blank lines
-
-```python
-# Standard library imports
-import os
-import sys
-from pathlib import Path
-from typing import Any
-
-# Third-party imports
-import polars as pl
-import duckdb
-from dagster import asset, get_dagster_logger
-from pydantic import BaseModel
-
-# Local imports
-from moneybin.extractors.plaid_extractor import PlaidExtractor
-from moneybin.processors.data_processor import DataProcessor
-```
-
-### Import Statements
-
-- **Absolute Imports**: Prefer absolute imports for clarity
-- **Relative Imports**: Use relative imports only within packages
-- **Avoid Wildcards**: Never use `from module import *`
-
-```python
-# Good - Absolute imports
-from moneybin.extractors.plaid_extractor import PlaidExtractor
-
-# Good - Relative imports within package
-from .base_extractor import BaseExtractor
-
-# Bad - Wildcard imports
-from moneybin.extractors import *
-```
+- **Ruff**: All code must be formatted/linted with [Ruff](https://docs.astral.sh/ruff/) (line length 88)
+- Run `ruff format .` and `ruff check .` before committing
+- Use `ruff check --fix` to organize imports
+- Prefer absolute imports, use relative only within packages
+- **ALWAYS include reason** for `# noqa:` or `# type: ignore` comments
 
 ## Type Hints & Annotations
 
-### Required Type Hints
-
-- **Function Parameters**: All parameters must have type hints
-- **Return Values**: All functions must specify return types
-- **Variables**: Use type hints for complex variables
-- **Collections**: Specify types for lists, dicts, etc.
-
-### Type Checking with Pyright
-
-- **Use Pyright**: Fast type checking with [Pyright](https://microsoft.github.io/pyright/) instead of mypy
-- **Strict Mode**: Configure Pyright in strict mode for comprehensive type checking
-- **IDE Integration**: Enable Pyright in your editor for real-time type checking
-
-```python
-def process_transactions(
-    transactions: list[dict[str, Any]],
-    account_id: str,
-    start_date: datetime | None = None
-) -> pd.DataFrame:
-    """Process transaction data and return standardized DataFrame."""
-    pass
-
-# Use type aliases for complex types
-TransactionData = dict[str, str | float | datetime]
-TransactionList = list[TransactionData]
-```
-
-### Type Annotation Verification Workflow
-
-**ALWAYS verify type annotations by running pyright checks before considering implementation complete.**
-
-#### Required Workflow
-
-1. **Add Type Annotations**: All functions, parameters, and return values must have type annotations
-2. **Run Pyright**: Verify the specific file(s) you modified
-3. **Fix Type Errors**: Address all type checking errors before committing
-4. **Document Exceptions**: Use `# type: ignore[...]` comments only when necessary with clear explanations
-
-#### Best Practices
-
-- **Never skip type checking** - Always run pyright on modified python files
-- **Fix at the source** - Prefer adding proper types over ignoring errors
-- **Explain ignores** - Always comment why a type ignore is necessary
-- **Test fixtures** - Add type annotations for pytest fixtures (MockerFixture, Path, etc.)
-- **Import types** - Import typing utilities as needed (Any, Literal, TypeVar, etc.)
+- **All** function parameters and return values must have type hints
+- Use **Pyright** for type checking (not mypy)
+- **ALWAYS run pyright** on modified files before completion
+- Use modern Python types: `list[str]`, `dict[str, Any]`, `str | None` (not `List`, `Dict`, `Optional`)
+- Type aliases for complex types: `TransactionData = dict[str, str | float | datetime]`
 
 ### Pydantic Models
 
-Use [Pydantic](https://docs.pydantic.dev/) models for API responses and data structures:
-
-- Add field descriptions and constraints
-- Use field validators for complex validation
-- Include proper type hints
-
-```python
-from pydantic import BaseModel, Field, field_validator
-from decimal import Decimal
-
-class Transaction(BaseModel):
-    """Financial transaction data model."""
-
-    transaction_id: str = Field(..., description="Unique transaction identifier")
-    amount: Decimal = Field(..., description="Transaction amount")
-
-    @field_validator('amount')
-    @classmethod
-    def validate_amount(cls, v):
-        if v == 0:
-            raise ValueError('Amount cannot be zero')
-        return v
-```
+- Use [Pydantic](https://docs.pydantic.dev/) for API responses and data structures
+- Include field descriptions, constraints, and validators
 
 ## Error Handling & Logging
 
-### Exception Handling
+- Catch **specific exceptions**, not generic `Exception`
+- Use structured logging with appropriate levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- Include context in error messages and log statements
+- Always use `logger = logging.getLogger(__name__)`
 
-- **Specific Exceptions**: Catch specific exception types, not generic `Exception`
-- **Meaningful Messages**: Provide clear error messages with context
-- **Proper Logging**: Log errors with appropriate levels
-- **User Feedback**: Provide clear, actionable error messages
+## Documentation
 
-```python
-import logging
+- **Google-style docstrings** for all public functions/classes
+- Include Args, Returns, Raises sections
+- Link to authoritative documentation when suggesting framework methods
+- Document data sources, extraction methods, and transformation processes
 
-logger = logging.getLogger(__name__)
+## Code Organization
 
-def safe_extract_data(file_path: Path) -> pd.DataFrame | None:
-    """Safely extract data from file with proper error handling."""
-    try:
-        if file_path.suffix == '.csv':
-            return pd.read_csv(file_path)
-        elif file_path.suffix == '.pdf':
-            return extract_pdf_data(file_path)
-        else:
-            raise ValueError(f"Unsupported file type: {file_path}")
+- **Prefer editing** existing files over creating new ones
+- Use clear, descriptive naming (see `naming-conventions.mdc`)
+- Organize code into logical modules and functions
+- Modern Python idioms: `datetime | None` not `Optional[datetime]`
 
-    except FileNotFoundError:
-        logger.error(f"File not found: {file_path}")
-        return None
-    except pd.errors.EmptyDataError:
-        logger.warning(f"Empty file: {file_path}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error processing {file_path}: {e}")
-        raise
-```
-
-### Logging Configuration
-
-- **Structured Logging**: Use structured logging for production
-- **Log Levels**: Use appropriate levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-- **Context**: Include relevant context in log messages
-
-## Documentation Standards
-
-### Docstrings
-
-- **Google Style**: Use Google-style docstrings for all public functions and classes
-- **Type Information**: Include type information in docstrings
-- **Examples**: Provide usage examples for complex functions
-
-```python
-def categorize_transaction(description: str, amount: float) -> str:
-    """Categorize a transaction based on description and amount.
-
-    Args:
-        description: Transaction description text
-        amount: Transaction amount (positive for income, negative for expense)
-
-    Returns:
-        str: Transaction category (e.g., 'Food', 'Transportation', 'Income')
-
-    Raises:
-        ValueError: If description is empty or amount is zero
-
-    Example:
-        >>> categorize_transaction("Grocery Store", -45.67)
-        'Food'
-        >>> categorize_transaction("Salary Deposit", 2500.00)
-        'Income'
-    """
-    if not description.strip():
-        raise ValueError("Description cannot be empty")
-
-    if amount == 0:
-        raise ValueError("Amount cannot be zero")
-
-    # Categorization logic here
-    description_lower = description.lower()
-
-    if any(word in description_lower for word in ['grocery', 'food', 'restaurant']):
-        return 'Food'
-    elif any(word in description_lower for word in ['gas', 'uber', 'lyft', 'parking']):
-        return 'Transportation'
-    elif amount > 0:
-        return 'Income'
-    else:
-        return 'Other'
-```
-
-### Documentation Requirements
-
-- **Always link to authoritative documentation** when suggesting framework methods
-- **Provide context and reasoning** for technical decisions
-- **Document data sources, extraction methods, and transformation processes**
-- **Maintain clear README files** and technical documentation
-- **Add comprehensive docstrings** to methods and files
-
-## Data Processing Library Standards
+## Data Processing
 
 **Always prefer: DuckDB > Polars > Pandas**
 
-See `data-processing.mdc` for complete library selection guidelines and examples.
+See `data-processing.mdc` for complete guidelines.
 
-## Project Structure & Organization
+## Development Process
 
-### Source Code Organization
-
-```text
-src/
-├── moneybin/
-│   ├── __init__.py
-│   ├── extractors/          # Data extraction modules
-│   │   ├── __init__.py
-│   │   ├── plaid_extractor.py
-│   │   ├── pdf_extractor.py
-│   │   └── csv_processor.py
-│   ├── processors/          # Data processing utilities
-│   ├── validators/          # Data validation
-│   ├── utils/               # Shared utilities
-│   └── cli.py               # Command-line interface
-```
-
-Follow these core standards to ensure consistent, maintainable, and high-quality Python code in the MoneyBin project.
+1. Verify approach before implementation
+2. Minimize edits - targeted changes over rewrites
+3. Test incrementally
+4. Run pyright on modified files
+5. Format/lint with Ruff before committing

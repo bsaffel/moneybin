@@ -1,12 +1,6 @@
 ---
 description: Incremental data extraction and duplicate prevention standards
-globs: [
-  "src/extractors/**/*.py",
-  "src/cli/commands/extract.py",
-  "src/loaders/**/*.py",
-  "src/connectors/**/*.py",
-  "src/utils/**/*.py"
-]
+globs: ["src/extractors/**/*.py", "src/cli/commands/extract.py", "src/loaders/**/*.py"]
 alwaysApply: false
 ---
 
@@ -14,190 +8,79 @@ alwaysApply: false
 
 ## Core Principles
 
-### Smart Extraction Logic
+- **Day-boundary extraction**: Only extract complete days for consistency
+- **Incremental by default**: Avoid duplicate API calls unless forced
+- **Metadata tracking**: Store extraction dates in primary database (DuckDB)
+- **API cost optimization**: Minimize calls through intelligent caching
 
-- **Day-boundary extraction**: Only extract complete days of data to ensure consistency
-- **Incremental by default**: Avoid duplicate API calls and data downloads unless explicitly forced
-- **Metadata tracking**: Store extraction metadata in the primary database (DuckDB) for consistency
-- **API cost optimization**: Minimize external API calls through intelligent caching and deduplication
+## Duplicate Prevention
 
-### Duplicate Prevention Strategy
+- **Extraction level**: Track last extraction dates
+- **Loading level**: Use unique IDs (transaction_id) to prevent duplicates
+- **Storage level**: Allow duplicate raw files, deduplicate at database level
 
-- **Extraction level**: Track last extraction dates to avoid downloading same data
-- **Loading level**: Use unique identifiers (e.g., transaction_id) to prevent duplicate database records
-- **Storage level**: Allow duplicate raw files but deduplicate at database level
-
-## Implementation Requirements
-
-### Extraction Metadata
-
-Store extraction tracking information in the primary database:
-
-```sql
-CREATE TABLE IF NOT EXISTS extraction_metadata (
-    institution_name VARCHAR,
-    access_token_hash VARCHAR,  -- hashed for security
-    last_extraction_date DATE,
-    last_extraction_timestamp TIMESTAMP,
-    total_transactions_extracted INTEGER,
-    extraction_job_id VARCHAR,
-    PRIMARY KEY (institution_name, access_token_hash)
-);
-```
-
-### Incremental Logic Pattern
+## Implementation Pattern
 
 ```python
-def get_incremental_date_range(self, access_token: str) -> tuple[datetime | None, datetime | None]:
+def get_incremental_date_range(access_token: str) -> tuple[datetime | None, datetime | None]:
     """Calculate date range for incremental extraction.
 
-    Returns:
-        (start_date, end_date) if new complete days available, (None, None) otherwise
+    Returns (start_date, end_date) if new complete days available, (None, None) otherwise
     """
-    # Check last extraction from metadata
-    last_extraction_date = self._get_last_extraction_date(access_token)
-
+    last_extraction = get_last_extraction_date(access_token)
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
 
-    if last_extraction_date:
-        # Only extract if we have complete new days
-        potential_start = last_extraction_date + timedelta(days=1)
+    if last_extraction:
+        potential_start = last_extraction + timedelta(days=1)
         if potential_start <= yesterday:
-            return (
-                datetime.combine(potential_start, datetime.min.time()),
-                datetime.combine(yesterday, datetime.max.time())
-            )
+            return (potential_start, yesterday)
         else:
-            return None, None  # No new complete days
+            logger.info("✅ No new complete days - skipping API call")
+            logger.info("💰 Saved API call")
+            return (None, None)
     else:
-        # First extraction - get full lookback period
-        return (
-            datetime.combine(today - timedelta(days=lookback_days), datetime.min.time()),
-            datetime.combine(yesterday, datetime.max.time())
-        )
+        # First extraction - full lookback
+        return (today - timedelta(days=lookback_days), yesterday)
 ```
 
-### Force Override Pattern
-
-Always provide a force mechanism to bypass incremental logic:
+## Force Override
 
 ```python
-def extract_data(
-    self,
-    access_token: str,
-    start_date: datetime | None = None,
-    end_date: datetime | None = None,
-    force_extraction: bool = False,
-) -> DataFrame:
-    """Extract data with incremental logic and force override."""
-
-    # Use incremental logic unless dates explicitly provided or forced
-    if not force_extraction and (start_date is None or end_date is None):
-        start_date, end_date = self._get_incremental_date_range(access_token)
-
-        # Skip extraction if no new data
-        if start_date is None or end_date is None:
-            logger.info("✅ No new complete days available - skipping API call")
-            logger.info("💰 Saved API call - no duplicate data downloaded")
-            return empty_dataframe()
-
+def extract_data(access_token: str, force: bool = False) -> DataFrame:
+    """Extract with incremental logic, force override available."""
+    if not force:
+        start_date, end_date = get_incremental_date_range(access_token)
+        if start_date is None:
+            return empty_dataframe()  # No new data
     # Proceed with extraction...
 ```
 
-## CLI Integration Standards
-
-### Force Flag Implementation
-
-All extraction commands must support a `--force` flag:
+## CLI Integration
 
 ```python
 @app.command("extract")
-def extract_command(
-    force: bool = typer.Option(
-        False,
-        "--force",
-        "-f",
-        help="Force full extraction, bypassing incremental logic"
-    ),
-) -> None:
-    """Extract data with smart incremental logic by default."""
-
+def extract_command(force: bool = typer.Option(False, "--force", "-f")):
+    """Extract with smart incremental logic (use --force for full)."""
     if force:
-        logger.info("🔄 Starting FORCED extraction...")
-        logger.info("⚠️  This will extract full lookback period regardless of previous extractions")
+        logger.info("🔄 FORCED extraction - full lookback period")
     else:
-        logger.info("📈 Starting INCREMENTAL extraction...")
-        logger.info("✨ Only new complete days will be extracted (use --force for full extraction)")
+        logger.info("📈 INCREMENTAL extraction - only new days")
 ```
 
-### User Communication Requirements
-
-- **Clear messaging**: Always log which extraction mode is being used
-- **Cost awareness**: Show when API calls are saved ("💰 Saved API call")
-- **Help documentation**: Explain incremental vs force extraction in command help
-
-## Database Loading Standards
-
-### Deduplication Strategy
+## Database Loading
 
 ```python
-def load_transactions_incremental(self, parquet_files: list[Path]) -> int:
-    """Load transactions with deduplication."""
-
-    if self.config.incremental:
-        # Insert only new records (avoiding duplicates by transaction_id)
-        conn.sql(f"""
-            INSERT INTO {table_name}
-            SELECT *
-            FROM read_parquet({file_pattern})
-            WHERE transaction_id NOT IN (
-                SELECT DISTINCT transaction_id
-                FROM {table_name}
-            )
-        """)
-    else:
-        # Full refresh - replace entire table
-        conn.sql(f"""
-            CREATE OR REPLACE TABLE {table_name} AS
-            SELECT * FROM read_parquet({file_pattern})
-        """)
+# Incremental load with deduplication
+if incremental:
+    conn.sql("""
+        INSERT INTO transactions
+        SELECT * FROM read_parquet('data/*.parquet')
+        WHERE transaction_id NOT IN (SELECT transaction_id FROM transactions)
+    """)
+else:
+    # Full refresh
+    conn.sql("CREATE OR REPLACE TABLE transactions AS SELECT * FROM read_parquet('data/*.parquet')")
 ```
 
-## Logging Standards
-
-### Required Log Messages
-
-```python
-# Incremental extraction success
-logger.info("✅ No new complete days available for extraction - skipping API call")
-logger.info("💰 Saved Plaid API call - no duplicate data downloaded")
-
-# Force extraction warning
-logger.info("🔄 Starting FORCED extraction from all configured institutions...")
-logger.info("⚠️  This will extract the full lookback period regardless of previous extractions")
-
-# Successful extraction
-logger.info(f"Updated extraction metadata: last_date={extraction_date}, count={transaction_count}")
-```
-
-## Error Handling Requirements
-
-### Graceful Degradation
-
-- **Metadata failures**: Fall back to full extraction if metadata queries fail
-- **Partial failures**: Continue processing other institutions if one fails
-- **API errors**: Implement retry logic with exponential backoff
-- **Clear error messages**: Provide actionable remediation steps
-
-## Testing Requirements
-
-### Must Test
-
-- First extraction (full lookback period)
-- Subsequent extractions (only new days)
-- No new data scenarios (API calls skipped)
-- Force override functionality
-- Metadata persistence and retrieval
-
-**Reference Implementation**: See `src/moneybin/extractors/plaid_extractor.py` for complete implementation example.
+**Reference**: See `src/moneybin/extractors/plaid_extractor.py` for complete implementation

@@ -6,538 +6,166 @@ alwaysApply: false
 
 # Rules Creation Standards
 
-## Purpose of This File
+## When to Create
 
-This file guides the creation and maintenance of Cursor rules files. Use these standards when creating new rules based on conversations, project needs, or code patterns.
+**Create**: Repeated patterns, project standards, common mistakes, security/performance concerns
+**Skip**: One-off solutions, obvious standards, volatile patterns
 
-## When to Create New Rules
-
-### Create New Rules When
-
-✅ **Patterns emerge repeatedly** across conversations or code reviews
-✅ **Project-specific standards** need documentation (library preferences, architecture patterns)
-✅ **Technology-specific guidance** is needed (framework usage, API patterns)
-✅ **Common mistakes** are identified that should be prevented
-✅ **Integration patterns** are established (external APIs, tools, workflows)
-✅ **Security or performance** concerns require consistent enforcement
-
-### Don't Create Rules For
-
-❌ **One-off solutions** that don't generalize
-❌ **Obvious standards** already well-documented in official docs
-❌ **Highly volatile patterns** that change frequently
-❌ **User-specific preferences** that aren't team standards
-❌ **Redundant content** already covered in existing rules
-
-## Rule File Structure
-
-### Frontmatter Format
-
-Every `.mdc` file must start with YAML frontmatter:
+## File Structure
 
 ```yaml
 ---
-description: Brief, clear description of what this rule covers (1-2 sentences)
-globs: ["pattern/**/*.py", "another/pattern/**/*"]  # Optional
-alwaysApply: false  # Default to false, only use true for core standards
+description: Brief, clear (1-2 sentences)
+globs: ["pattern/**/*.py"]  # Optional, specific
+alwaysApply: false  # Default
 ---
 ```
 
-### Frontmatter Guidelines
+## alwaysApply Decision
 
-#### Description Field
+**true** (Target: 500-600 total lines):
 
-- **Keep concise**: 1-2 sentences maximum
-- **Be specific**: "Python testing standards using pytest" not "Testing stuff"
-- **Include keywords**: Help Cursor's AI understand when to load the rule
-- **Action-oriented**: Focus on what the rule helps accomplish
+- Core language standards (style, naming)
+- Critical security/privacy
+- Universal code patterns
 
-#### Glob Patterns
+**false**:
 
-- **Be specific**: `["**/*.py"]` loads for all Python files, is that necessary?
-- **Target precisely**: Use specific paths like `["src/processors/**/*.py"]`
-- **Test glob patterns**: Verify they match intended files
-- **Document reasoning**: Complex patterns may need explanation in content
-
-**Good Glob Examples**:
-
-```yaml
-# Specific to testing
-globs: ["tests/**/*", "**/*test*.py", "conftest.py"]
-
-# Specific to CLI development
-globs: ["**/cli/**/*", "src/**/commands/**/*"]
-
-# Specific to configuration files
-globs: ["pyproject.toml", ".pre-commit-config.yaml", "*.config.js"]
-
-# Specific to data processing
-globs: ["**/processors/**/*.py", "**/extractors/**/*.py", "**/loaders/**/*.py"]
-```
-
-**Bad Glob Examples**:
-
-```yaml
-# Too broad - will load for everything
-globs: ["**/*"]
-
-# Wildcards in middle - may not work as expected
-globs: ["src/*/utils/*.py"]
-
-# Multiple unrelated patterns - consider splitting
-globs: ["**/*.py", "**/*.sql", "**/*.js", "**/*.ts"]
-```
-
-#### alwaysApply Decision
-
-**Use `alwaysApply: true` ONLY for**:
-
-- Core language standards (Python style, naming conventions)
-- Critical security/privacy requirements
-- Fundamental project architecture principles
-- Universal patterns used across all code
-
-**Target**: Keep always-applied rules to ~500-600 lines total across ALL files
-
-**Use `alwaysApply: false` for**:
-
-- Technology-specific patterns (testing, CLI, performance)
-- Domain-specific rules (data processing, security)
-- Tool configuration (Ruff, Pyright, dbt)
+- Tech-specific (testing, CLI, tools)
+- Domain-specific (data, security)
 - Large files (>200 lines)
 
-## Content Organization
+## Content
 
-### File Structure Template
+- Actionable: Show good/bad with examples
+- Focused: Single responsibility
+- Concise: Split at 400 lines
+- Reference: Link `file.py:lines` vs copy
+- Explain why, not just what
 
-```markdown
----
-[frontmatter here]
----
+## Token Optimization
 
-# Title (Match Description but More Detailed)
+**CRITICAL**: Minimize tokens while maximizing information density for LLM consumption.
 
-## Core Principles / Overview
+### Writing Strategies
 
-Brief introduction explaining the purpose and scope of these rules.
+**Prefer**:
 
-## [Main Topic 1]
+- Lists over prose: `Use X, Y, Z` not "You should use X. Also use Y. Additionally, use Z."
+- Colons over sentences: `Format: ruff format .` not "To format, run ruff format"
+- Symbols: `>` `<` `→` `vs` `|` instead of words
+- Abbreviations: "config" not "configuration", "args" not "arguments"
+- Direct commands: `Add dependencies with uv add pkg` vs "You can add dependencies by using the uv add command with the package name"
 
-### [Subtopic 1.1]
+**Avoid**:
 
-Explanation with examples.
+- Filler words: "please", "always make sure to", "it is important that"
+- Verbose transitions: "In addition", "Furthermore", "As mentioned"
+- Redundant explanations: Don't explain what's obvious from code
+- Marketing language: "powerful", "robust", "comprehensive"
+- Repeated context: State once, reference after
 
-#### ✅ Good Patterns
+### Structure Patterns
 
-```python
-# Show correct implementation
-def example_function() -> ReturnType:
-    """Proper implementation."""
-    return result
-```
-
-#### ❌ Bad Patterns
-
-```python
-# Show what to avoid and why
-def bad_function():
-    # Explain why this is wrong
-    return result
-```
-
-### [Subtopic 1.2]
-
-Continue with clear subsections...
-
-## [Main Topic 2]
-
-## Checklist / Summary
-
-- [ ] Key requirement 1
-- [ ] Key requirement 2
-- [ ] Key requirement 3
-
-Follow these standards to [achieve goal].
-
-```
-
-### Content Guidelines
-
-#### Be Actionable
-- **Provide clear examples**: Show both good and bad patterns
-- **Reference real code**: Use file:line pointers to actual implementations when possible
-- **Use generic snippets**: For patterns/templates that don't exist in codebase yet
-- **Explain the "why"**: Don't just state rules, explain reasoning
-- **Link to documentation**: Reference official docs for deeper learning
-- **Include context**: When to apply each pattern
-
-#### Stay Focused
-- **Single responsibility**: Each file should have one clear purpose
-- **Avoid redundancy**: Don't repeat content from other rules
-- **Reference other rules**: Link to related rules when appropriate
-- **Keep concise**: If file exceeds 400 lines, consider splitting
-
-#### Use Consistent Formatting
-
-**Code Examples - Use References Over Snippets**:
-
-Prefer file:line references to actual code over embedded snippets:
+**Efficient**:
 
 ```markdown
-# ✅ GOOD - Reference to actual implementation
-See the implementation in `src/moneybin/config.py:75-95` for the singleton pattern.
-
-# ✅ GOOD - Generic pattern example (doesn't exist in codebase)
-```python
-# Generic pattern for any Pydantic Settings class
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+## Commands
+- `uv add pkg` - Add dependency
+- `uv sync` - Install deps
+- `uv run cmd` - Execute in env
 ```
 
-# ❌ AVOID - Copy of actual code that will become outdated
-```python
-# Copied from config.py - will become stale
-def get_settings() -> MoneyBinSettings:
-    global _settings
-    if _settings is None:
-        _settings = MoneyBinSettings()
-    return _settings
-```
-```
-
-**When to Use Each Approach**:
-- **File:line references**: For existing implementations in the codebase
-- **Generic snippets**: For patterns that don't exist yet or educational examples
-- **Good/bad comparisons**: For showing anti-patterns vs correct approaches
-- **Configuration templates**: For standard structures (pyproject.toml, etc.)
-
-**Section Headers**:
-
-- Use ## for main sections
-- Use ### for subsections
-- Use #### for sub-subsections
-- Keep hierarchy shallow (max 3 levels)
-
-**Lists**:
-
-- Use bullet points for unordered lists
-- Use numbered lists for sequential steps
-- Use checkboxes for requirements/checklists
-
-**Emphasis**:
-
-- **Bold** for key concepts
-- *Italic* for emphasis
-- `code` for inline code/commands
-- > Blockquotes for important notes
-
-## File Size Guidelines
-
-### Target Sizes
-
-- **Always-Applied Files**: 150-250 lines each
-- **Context-Specific Files**: 200-400 lines each
-- **Maximum File Size**: 500 lines (split if larger)
-- **Total Always-Applied**: ~500-600 lines across all files
-
-### When to Split Files
-
-Split a rules file when:
-
-- ✅ File exceeds 400 lines
-- ✅ Multiple distinct topics covered (testing + performance)
-- ✅ Different glob patterns would target different sections
-- ✅ Some content is always-needed, some is context-specific
-
-**Example**: Split `python-development.mdc` into:
-
-- `python-core-standards.mdc` (always-applied, 200 lines)
-- `python-testing.mdc` (context-specific, 150 lines)
-- `python-security.mdc` (context-specific, 100 lines)
-- `python-performance.mdc` (context-specific, 80 lines)
-
-## Integration with Existing Rules
-
-### Before Creating New Rules
-
-1. **Review existing rules**: Check `.cursor/rules/` directory
-2. **Identify overlap**: Does this content fit in an existing file?
-3. **Check references**: Will this create circular dependencies?
-4. **Consider hierarchy**: Is this a subset of existing rules?
-
-### Updating Existing Rules
-
-**Prefer updating over creating** when:
-
-- Content naturally extends existing file
-- File is under 400 lines
-- Same glob patterns would apply
-- Maintains single responsibility principle
-
-**Create new file when**:
-
-- Different glob patterns needed
-- Existing file would exceed 400 lines
-- Distinct topic requiring separate loading
-- Different alwaysApply setting needed
-
-### Cross-References
-
-When rules relate to each other:
+**Wasteful**:
 
 ```markdown
-## Related Standards
+## Commands
+To add a dependency, you can use the uv add command.
+For example: `uv add package-name`
 
-See also:
-- `python-testing.mdc` for testing-specific patterns
-- `python-security.mdc` for security best practices
-- Official docs: [link to external documentation]
+To install dependencies, use uv sync.
+This will install all dependencies.
 ```
 
-## Testing New Rules
+### Code Examples
 
-### Verification Steps
+**Show, don't tell**:
 
-After creating a new rule file:
+```python
+# Good: Type hints required
+def process(data: dict[str, Any]) -> list[Transaction]:
 
-1. **Verify Frontmatter Syntax**:
-
-   ```bash
-   # Ensure YAML is valid
-   cat .cursor/rules/new-file.mdc | head -10
-   ```
-
-2. **Test Glob Patterns**:
-   - Open files that should match the globs
-   - Ask Cursor about the rule topic
-   - Verify rule content is referenced
-
-3. **Check Loading Behavior**:
-   - Open files that shouldn't match
-   - Verify rule doesn't load unnecessarily
-   - Test with different file types
-
-4. **Review Token Impact**:
-   - Monitor context window usage
-   - Ensure rules load efficiently
-   - Check for unexpected rule combinations
-
-### Verification Complete
-
-Once verification is complete, the new rule is ready for use. Cursor will automatically detect and load it based on the frontmatter configuration.
-
-## Common Patterns and Examples
-
-### Technology-Specific Rules
-
-```yaml
----
-description: Framework-specific patterns and best practices
-globs: ["**/framework/**/*", "**/*framework*.py"]
-alwaysApply: false
----
-
-# Framework Integration Standards
-
-## Core Patterns
-
-[Framework-specific guidance]
-
-## Common Mistakes
-
-[Pitfalls and solutions]
-
-## Best Practices
-
-[Recommended approaches]
+# Bad: Missing types
+def process(data):
 ```
 
-### Domain-Specific Rules
+**Not**:
+"All functions must include type hints for parameters and return values. For example, if you have a function that processes data..."
 
-```yaml
----
-description: Domain-specific business logic and patterns
-globs: ["src/domain/**/*", "**/*domain*.py"]
-alwaysApply: false
----
+### Formatting
 
-# Domain Standards
+- **Bold** for critical terms (sparingly)
+- `Code` for literals, commands, filenames
+- No italics, no underlines
+- Headers: Clear hierarchy, brief
+- Tables: Only if denser than lists
+- Checkboxes: `- [ ]` for actionable items only
 
-## Business Logic Patterns
+### Information Density
 
-[Domain-specific patterns]
+**High density** (prefer):
 
-## Data Models
+- `MUST use uv, NEVER pip`
+- `Prefer: DuckDB > Polars > Pandas`
+- `Types: list[T] not List[T]`
 
-[Model definitions and validation]
+**Low density** (avoid):
+
+- "It is required that you always use uv for package management. You should never use pip."
+- "When choosing a data processing library, prefer DuckDB first, then Polars, then Pandas as last resort."
+- "Use modern Python types like list[T] instead of the deprecated List[T] from typing module."
+
+### Example Comparison
+
+**Before** (32 tokens):
+
+```
+When you need to add a new dependency to the project, you should use the uv add command followed by the package name. Do not use pip install.
 ```
 
-### Tool Configuration Rules
+**After** (8 tokens):
 
-```yaml
----
-description: Tool configuration and usage standards
-globs: ["pyproject.toml", ".tool-config.yaml"]
-alwaysApply: false
----
-
-# Tool Configuration Standards
-
-## Configuration Structure
-
-[Standard configuration patterns]
-
-## Common Settings
-
-[Recommended settings]
+```
+Add deps: `uv add pkg` (NEVER `pip install`)
 ```
 
-## Anti-Patterns to Avoid
+## Sizes
 
-### ❌ Don't Create Overly Broad Rules
+- Always-Applied: 150-250 lines
+- Context-Specific: 200-400 lines
+- Max: 500 (split if larger)
 
-**Bad**: Single file covering "All Python Development"
+## Before Creating
 
-- Too large (600+ lines)
-- Mixed concerns (testing + security + performance)
-- Loads unnecessarily for many files
+1. Review existing
+2. Check overlap
+3. Update existing > create new
+4. New only if: different globs, >400 lines, distinct topic
 
-**Good**: Split into focused files
-
-- `python-core-standards.mdc` (always-applied basics)
-- `python-testing.mdc` (test-specific)
-- `python-security.mdc` (security-specific)
-
-### ❌ Don't Duplicate Content
-
-**Bad**: Repeating the same pattern in multiple files
-
-- Creates maintenance burden
-- Causes confusion about source of truth
-- Wastes token budget
-
-**Good**: Reference existing rules
-
-- Link to authoritative rule file
-- Keep each pattern in one place
-
-### ❌ Don't Create Rules Without Clear Need
-
-**Bad**: "Just in case" rules for hypothetical scenarios
-
-- Adds noise without value
-- Wastes token budget
-- Creates maintenance burden
-
-**Good**: Wait for clear pattern to emerge
-
-- Document after 2-3 occurrences
-- Validate need with team
-- Ensure general applicability
-
-### ❌ Don't Use Vague Descriptions
-
-**Bad**: `description: "Python stuff"`
-
-- Doesn't help Cursor decide when to load
-- Unclear purpose
-- Poor documentation
-
-**Good**: `description: "Python testing standards using pytest with fixtures and mocking patterns"`
-
-- Clear purpose
-- Helpful for AI loading decisions
-- Self-documenting
-
-### ❌ Don't Copy Code That Will Become Stale
-
-**Bad**: Copying actual implementation code into rules
+## Template
 
 ```markdown
-Here's how we do configuration:
-```python
-# Copied from src/moneybin/config.py
-def get_settings() -> MoneyBinSettings:
-    global _settings
-    if _settings is None:
-        _settings = MoneyBinSettings()
-        _settings.validate_required_credentials()
-    return _settings
+# Title
+
+## Principles
+[Brief intro]
+
+## Topics
+[Subsections with examples]
+
+### ✅ Good
+```code```
+
+### ❌ Bad
+```avoid```
 ```
-```
-
-**Problems**:
-- Code changes won't be reflected in rules
-- Creates maintenance burden
-- Multiple sources of truth
-
-**Good**: Reference actual code or use generic patterns
-
-```markdown
-See the singleton pattern in `src/moneybin/config.py:75-95`.
-
-For your own settings class, use this pattern:
-```python
-_settings: Settings | None = None
-
-def get_settings() -> Settings:
-    global _settings
-    if _settings is None:
-        _settings = Settings()
-    return _settings
-```
-```
-
-## Maintenance and Evolution
-
-### Regular Review
-
-Periodically review rules for:
-
-- **Outdated patterns**: Update to reflect current best practices
-- **File size growth**: Split if files exceed 400 lines
-- **Changing needs**: Adjust glob patterns and content as project evolves
-- **Redundancy**: Remove or consolidate duplicate content
-
-### Deprecation Process
-
-When patterns become obsolete:
-
-1. **Mark as deprecated** in content:
-
-   ```markdown
-   > ⚠️ **DEPRECATED**: This pattern is no longer recommended.
-   > See `new-pattern.mdc` for current approach.
-   ```
-
-2. **Update cross-references** in related files
-
-3. **Archive or delete** after reasonable transition period
-
-## Quality Checklist
-
-Before finalizing a new rules file:
-
-- [ ] Frontmatter is valid YAML
-- [ ] Description is clear and concise (1-2 sentences)
-- [ ] Glob patterns are specific and tested
-- [ ] `alwaysApply` setting is appropriate (default to false)
-- [ ] File is under 400 lines
-- [ ] Content is focused on single topic
-- [ ] Examples show both good and bad patterns
-- [ ] Cross-references to related rules are included
-- [ ] No duplication with existing rules
-- [ ] Rules are verified to load correctly
-- [ ] Token impact is reasonable
-
-## Summary
-
-Creating effective rules requires:
-
-1. **Clear purpose** - Know why the rule exists
-2. **Precise targeting** - Use appropriate glob patterns
-3. **Focused content** - Single responsibility per file
-4. **Practical examples** - Show both good and bad patterns
-5. **Regular maintenance** - Keep rules current and relevant
-
-Follow these standards to create high-quality, maintainable, and effective Cursor rules that enhance developer productivity without overwhelming the context window.

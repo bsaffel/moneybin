@@ -6,316 +6,53 @@ alwaysApply: false
 
 # Python Testing Standards
 
-## Testing Framework
+## Framework & Organization
 
 - **Pytest**: Use [pytest](https://docs.pytest.org/) for all testing
-- **Fixtures**: Create reusable fixtures for common test data
-- **Mocking**: Use pytest-mock's mocker fixture for external dependencies
-- **Coverage**: Aim for high test coverage (>80%)
+- **Naming**: Files `test_*.py`, functions `test_*()`, classes `TestClassName`
+- **Fixtures**: Create reusable fixtures in `conftest.py`
+- **Mocking**: Use `mocker: MockerFixture` for external dependencies
+- **Coverage**: Aim for >80% on business logic
 
-## Test Organization
-
-### Directory Structure
-
-```text
-tests/
-├── unit/                    # Unit tests
-│   ├── test_extractors/
-│   ├── test_processors/
-│   └── test_validators/
-├── integration/             # Integration tests
-├── fixtures/                # Test data and fixtures
-└── conftest.py             # Pytest configuration
-```
-
-### Test Naming & Structure
-
-- **Test Files**: Prefix with `test_` (`test_plaid_extractor.py`)
-- **Test Functions**: Prefix with `test_` (`test_extract_transactions`)
-- **Test Classes**: Prefix with `Test` (`TestPlaidExtractor`)
-- **Descriptive Names**: Use descriptive test names that explain the scenario
+## Test Markers & Types
 
 ```python
-import pytest
-from pathlib import Path
-from pytest_mock import MockerFixture
-from moneybin.extractors.plaid_extractor import PlaidExtractor
+@pytest.mark.unit  # Fast unit tests (default)
+@pytest.mark.integration  # Tests requiring external systems
+@pytest.mark.slow  # Long-running tests
 
-class TestPlaidExtractor:
-    """Test suite for PlaidExtractor class."""
-
-    @pytest.fixture
-    def mock_plaid_client(self, mocker: MockerFixture):
-        """Mock Plaid client for testing."""
-        return mocker.Mock()
-
-    def test_extract_transactions_success(self, mock_plaid_client):
-        """Test successful transaction extraction."""
-        # Arrange
-        extractor = PlaidExtractor(mock_plaid_client)
-        mock_plaid_client.transactions_get.return_value = {
-            'transactions': [{'id': '1', 'amount': 100.0}]
-        }
-
-        # Act
-        result = extractor.extract_transactions('token', '2024-01-01', '2024-01-31')
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]['amount'] == 100.0
-
-    def test_extract_transactions_empty_response(self, mock_plaid_client):
-        """Test handling of empty transaction response."""
-        # Arrange
-        extractor = PlaidExtractor(mock_plaid_client)
-        mock_plaid_client.transactions_get.return_value = {'transactions': []}
-
-        # Act
-        result = extractor.extract_transactions('token', '2024-01-01', '2024-01-31')
-
-        # Assert
-        assert result == []
-```
-
-## Type Annotations for Pytest Fixtures
-
-```python
-from pathlib import Path
-from pytest_mock import MockerFixture
-
-def test_example(
-    tmp_path: Path,              # Temporary directory fixture
-    mocker: MockerFixture,        # Pytest-mock fixture
-    caplog,                       # Type annotation not typically needed
-):
-    """Test with proper fixture type annotations."""
-    pass
-```
-
-## Test Markers
-
-Use pytest markers to categorize tests:
-
-```python
-import pytest
-
-@pytest.mark.unit
-def test_fast_unit_test():
-    """Fast unit test (default)."""
-    pass
-
-@pytest.mark.integration
-def test_external_api_integration():
-    """Test requiring external systems."""
-    pass
-
-@pytest.mark.slow
-def test_long_running_operation():
-    """Test that takes significant time."""
+# Fixture type annotations
+def test_example(tmp_path: Path, mocker: MockerFixture, caplog):
     pass
 ```
 
 ## Running Tests
 
 ```bash
-# Run all tests
-uv run pytest tests/ -v
-
-# Run only unit tests (exclude integration)
-uv run pytest tests/ -v -m "not integration"
-
-# Run only integration tests
-uv run pytest tests/ -v -m integration
-
-# Run specific test file
-uv run pytest tests/test_parquet_loader.py -v
-
-# Run with coverage
-uv run pytest tests/ --cov=src/moneybin --cov-report=html
+uv run pytest tests/ -v  # All tests
+uv run pytest tests/ -v -m "not integration"  # Unit only
+uv run pytest tests/ -v -m integration  # Integration only
+uv run pytest tests/test_file.py -v  # Specific file
+uv run pytest tests/ --cov=src/moneybin --cov-report=html  # With coverage
 ```
 
 ## Mocking Strategy
 
-### External Dependencies
+- **Mock external dependencies**: APIs, databases, file systems
+- **Use real objects** for internal business logic when possible
+- CLI tests: mock business logic classes (tested separately)
 
-Mock external dependencies (APIs, databases, file systems):
+## Best Practices
 
-```python
-def test_database_operation(mocker: MockerFixture):
-    """Test database operation with mocked connection."""
-    mock_conn = mocker.patch('duckdb.connect')
-    mock_conn.return_value.execute.return_value.fetchdf.return_value = pd.DataFrame()
-
-    # Test code using mocked database
-    result = load_data_to_database()
-
-    assert mock_conn.called
-```
-
-### Internal Business Logic
-
-Use real objects for internal business logic when possible:
-
-```python
-def test_data_processor():
-    """Test data processor with real configuration."""
-    config = ProcessingConfig(source_path=Path("test.csv"))
-    processor = DataProcessor(config)
-
-    # Test with real objects
-    result = processor.validate_config()
-    assert result is True
-```
-
-## Test Data and Fixtures
-
-### Reusable Fixtures
-
-```python
-# conftest.py
-import pytest
-from pathlib import Path
-
-@pytest.fixture
-def sample_transactions():
-    """Sample transaction data for testing."""
-    return [
-        {'id': '1', 'amount': -50.0, 'date': '2024-01-01'},
-        {'id': '2', 'amount': 100.0, 'date': '2024-01-02'},
-    ]
-
-@pytest.fixture
-def temp_csv_file(tmp_path: Path):
-    """Create temporary CSV file for testing."""
-    csv_file = tmp_path / "test.csv"
-    csv_file.write_text("id,amount,date\n1,50.0,2024-01-01\n")
-    return csv_file
-```
-
-### Using Fixtures
-
-```python
-def test_with_fixtures(sample_transactions, temp_csv_file):
-    """Test using reusable fixtures."""
-    assert len(sample_transactions) == 2
-    assert temp_csv_file.exists()
-```
-
-## Testing Best Practices
-
-### Arrange-Act-Assert Pattern
-
-```python
-def test_transaction_processing():
-    """Test following AAA pattern."""
-    # Arrange - Set up test data and dependencies
-    config = ProcessingConfig()
-    processor = DataProcessor(config)
-    transactions = [{'id': '1', 'amount': 50.0}]
-
-    # Act - Execute the operation being tested
-    result = processor.process(transactions)
-
-    # Assert - Verify the expected outcome
-    assert len(result) == 1
-    assert result[0]['processed'] is True
-```
-
-### Test One Thing
-
-Each test should verify a single behavior:
-
-```python
-# Good - Tests one specific behavior
-def test_validates_empty_transactions():
-    """Test that empty transaction list is handled."""
-    processor = DataProcessor()
-    result = processor.validate([])
-    assert result is False
-
-# Good - Tests another specific behavior
-def test_validates_required_fields():
-    """Test that required fields are validated."""
-    processor = DataProcessor()
-    result = processor.validate([{'id': '1'}])  # Missing 'amount'
-    assert result is False
-```
-
-### Avoid Test Interdependence
-
-Tests should be independent and runnable in any order:
-
-```python
-# Bad - Tests depend on shared state
-shared_data = []
-
-def test_first():
-    shared_data.append(1)
-    assert len(shared_data) == 1
-
-def test_second():
-    assert len(shared_data) == 1  # Fails if test_first doesn't run first
-
-# Good - Each test is independent
-def test_first():
-    data = []
-    data.append(1)
-    assert len(data) == 1
-
-def test_second():
-    data = []
-    assert len(data) == 0
-```
-
-## Configuration Override for Tests
-
-```python
-def test_with_custom_config():
-    """Test with custom configuration."""
-    # Create test-specific configuration
-    test_settings = MoneyBinSettings(
-        database=DatabaseConfig(path=Path("test_db.duckdb")),
-        plaid=PlaidConfig(
-            client_id="test_client",
-            secret="test_secret",
-            batch_size=100  # Smaller for tests
-        )
-    )
-
-    # Use in test...
-```
-
-### Environment Isolation
-
-```python
-def test_environment_variables(monkeypatch):
-    """Test environment variable handling."""
-    # Set test environment variables
-    monkeypatch.setenv("MONEYBIN_DEBUG", "true")
-    monkeypatch.setenv("MONEYBIN_DATABASE__PATH", "test.db")
-
-    # Reload settings to pick up changes
-    from moneybin.config import reload_settings
-    settings = reload_settings()
-
-    assert settings.debug is True
-    assert settings.database.path == Path("test.db")
-```
+- **Arrange-Act-Assert**: Structure all tests clearly
+- **Test one thing**: Each test verifies single behavior
+- **Independent tests**: No shared state between tests
+- **Descriptive names**: Test name explains the scenario
+- **Environment isolation**: Use `monkeypatch` for env vars
+- **Test-specific config**: Override settings for tests
 
 ## Coverage Goals
 
-- **Business Logic**: Aim for high coverage (90%+) of core functionality
-- **CLI Commands**: Focus on CLI-specific code paths, not total coverage
-- **Integration**: Cover critical user workflows end-to-end
-
-## Test Quality Checklist
-
-- [ ] Tests are focused and test one thing well
-- [ ] Test names clearly describe the scenario
-- [ ] Appropriate mocking strategy for the test layer
-- [ ] No redundant testing between layers
-- [ ] Error cases and edge cases covered
-- [ ] Integration tests for critical end-to-end flows
-- [ ] Tests are maintainable and not brittle
-
-Follow these testing standards to ensure comprehensive, maintainable test coverage in the MoneyBin project.
+- Business Logic: 90%+ coverage
+- CLI Commands: Focus on CLI-specific paths only
+- Integration: Critical user workflows end-to-end

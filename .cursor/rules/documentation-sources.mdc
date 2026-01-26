@@ -1,6 +1,7 @@
 ---
 description: Primary documentation sources for MoneyBin project dependencies
-alwaysApply: true
+globs: ['**/*.py', '**/*.md']
+alwaysApply: false
 ---
 
 # Documentation Sources

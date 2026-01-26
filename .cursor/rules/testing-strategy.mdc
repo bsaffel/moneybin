@@ -8,234 +8,56 @@ alwaysApply: false
 
 ## Core Principle
 
-Follow a focused testing strategy that maximizes value while minimizing redundancy. Each test should have a clear, distinct purpose and test the appropriate layer of the application.
+Maximize value while minimizing redundancy. Test the appropriate layer - don't duplicate business logic tests in CLI tests.
 
 ## Testing Layers
 
-### 1. Business Logic Tests (Core Module Tests)
+### 1. Business Logic Tests
 
-**Purpose**: Test the core functionality, algorithms, and business rules thoroughly.
+**Comprehensive coverage** of core functionality:
 
-**Scope**:
-
-- Data processing classes (e.g., `ParquetLoader`, `PlaidExtractor`)
+- Data processing classes (`ParquetLoader`, `PlaidExtractor`)
 - Configuration classes and dataclasses
-- Database operations and data transformations
+- Database operations and transformations
 - Error handling and edge cases
-- Integration tests with real external systems (marked with `@pytest.mark.integration`)
-
-**Coverage**: Comprehensive - test all methods, configurations, error conditions, and edge cases.
-
-**Examples**:
-
-- `test_parquet_loader.py` - Tests `ParquetLoader` class thoroughly
-- `test_plaid_extractor.py` - Tests `PlaidExtractor` business logic
+- Integration tests (`@pytest.mark.integration`)
 
 ### 2. CLI Interface Tests
 
-**Purpose**: Test CLI-specific concerns only - avoid retesting business logic already covered in core tests.
-
-**Scope**:
+**Minimal, focused** on CLI concerns only:
 
 - Argument parsing and validation
-- Exit codes for different scenarios
-- Error message handling and user experience
-- Logging setup and CLI-specific behavior
-- Command building and subprocess execution patterns
+- Exit codes
+- Error message handling
+- Logging setup
+- Command building/subprocess execution
 
-**Coverage**: Minimal and focused - test the interface layer, not the underlying functionality.
+**DON'T test** in CLI layer:
 
-**What NOT to test in CLI tests**:
+- Business logic (already tested separately)
+- Data processing operations
+- Complex error scenarios
 
-- Business logic already tested in core module tests
-- Detailed data processing operations
-- Complex error scenarios handled by business logic
+## Mocking Strategy
 
-**Examples**:
+**Business Logic**: Mock external dependencies (APIs, databases), use real objects for internal logic
+**CLI Tests**: Mock business logic classes (already tested)
 
-- `test_load_commands.py` - Tests CLI argument parsing, exit codes
-- `test_transform_commands.py` - Tests command building, subprocess execution
-- `test_extract_commands.py` - Tests environment setup, argument handling
+## CLI Testing Priority
 
-## Test Implementation Guidelines
+**High Priority** (test these):
 
-### Test Organization
+- Complex argument parsing with validation/security
+- Subprocess execution
+- Security-sensitive operations
 
-```python
-# Business Logic Test Structure
-class TestClassName:
-    """Test business logic functionality."""
+**Low Priority** (may skip):
 
-    def test_core_functionality(self):
-        """Test main business operations."""
+- Simple wrappers around tested business logic
+- Static information display
 
-    def test_configuration_handling(self):
-        """Test configuration and initialization."""
+## Coverage Goals
 
-    def test_error_conditions(self):
-        """Test error handling and edge cases."""
-
-class TestClassNameIntegration:
-    """Integration tests with real systems."""
-
-    @pytest.mark.integration
-    def test_real_system_integration(self):
-        """Test with actual external dependencies."""
-```
-
-```python
-# CLI Test Structure
-class TestCommandName:
-    """Test CLI-specific functionality."""
-
-    def test_argument_parsing(self):
-        """Test CLI argument parsing and validation."""
-
-    def test_exit_codes(self):
-        """Test proper exit codes for different scenarios."""
-
-    def test_error_handling(self):
-        """Test CLI error handling and user messages."""
-```
-
-### Mocking Strategy
-
-**Business Logic Tests**:
-
-- Mock external dependencies (APIs, databases, file systems)
-- Use real objects for internal business logic
-- Create integration tests for end-to-end validation
-
-**CLI Tests**:
-
-- Mock the business logic classes (already tested separately)
-- Focus on testing the CLI framework integration
-- Mock subprocess calls and external command execution
-
-### Test Naming
-
-- Use descriptive test names that explain the scenario
-- Group related tests in classes
-- Use `@pytest.mark.integration` for tests requiring external systems
-- Use `@pytest.mark.slow` for tests that take significant time
-
-### Test Data and Fixtures
-
-- Create reusable fixtures for common test data
-- Use temporary directories for file operations
-- Clean up test artifacts automatically
-- Use `tmp_path` fixture for filesystem tests
-
-## Command Testing Priority
-
-When deciding whether CLI commands need tests, consider:
-
-### High Priority (Should Test)
-
-- **Complex argument parsing** with validation and security concerns
-- **Subprocess execution** with command building
-- **Error handling** that affects user experience
-- **Security-sensitive operations** (input validation, shell injection prevention)
-
-### Low Priority (May Skip)
-
-- **Simple wrappers** around tested business logic
-- **Static information display** commands
-- **Minimal CLI logic** with no complex parsing
-
-### Examples by Command Type
-
-**High Priority Commands**:
-
-- `transform` commands - Complex subprocess execution, input validation
-- `load` commands - Database operations, file handling
-- `extract` commands - Credential handling, environment setup
-
-**Low Priority Commands**:
-
-- `credentials list-services` - Static information display
-- Simple validation commands that just call tested business logic
-
-## Test Execution
-
-### Running Tests
-
-```bash
-# Run all tests
-uv run pytest tests/ -v
-
-# Run only unit tests (exclude integration)
-uv run pytest tests/ -v -m "not integration"
-
-# Run only integration tests
-uv run pytest tests/ -v -m integration
-
-# Run specific test file
-uv run pytest tests/test_parquet_loader.py -v
-
-# Run with coverage
-uv run pytest tests/ --cov=src/moneybin --cov-report=html
-```
-
-### Test Markers
-
-- `@pytest.mark.unit` - Fast unit tests (default)
-- `@pytest.mark.integration` - Tests requiring external systems
-- `@pytest.mark.slow` - Tests that take significant time
-
-## Quality Standards
-
-### Test Quality Checklist
-
-- [ ] Tests are focused and test one thing well
-- [ ] Test names clearly describe the scenario
-- [ ] Appropriate mocking strategy for the test layer
-- [ ] No redundant testing between layers
-- [ ] Error cases and edge cases covered
-- [ ] Integration tests for critical end-to-end flows
-- [ ] Tests are maintainable and not brittle
-
-### Code Coverage Goals
-
-- **Business Logic**: Aim for high coverage (90%+) of core functionality
-- **CLI Commands**: Focus on CLI-specific code paths, not total coverage
-- **Integration**: Cover critical user workflows end-to-end
-
-## Anti-Patterns to Avoid
-
-### ❌ Don't Do This
-
-```python
-# DON'T: Test business logic in CLI tests
-def test_cli_data_processing():
-    result = runner.invoke(app, ["load", "data.parquet"])
-    # Testing detailed data processing logic here - WRONG LAYER
-
-# DON'T: Duplicate business logic tests in CLI tests
-def test_cli_parquet_loading_edge_cases():
-    # These edge cases should be in test_parquet_loader.py
-```
-
-### ✅ Do This Instead
-
-```python
-# DO: Test CLI concerns in CLI tests
-def test_cli_argument_parsing():
-    result = runner.invoke(app, ["load", "--source", "custom/path"])
-    assert result.exit_code == 0
-    mock_loader.assert_called_with(source_path=Path("custom/path"))
-
-# DO: Test business logic in business logic tests
-def test_parquet_loader_edge_cases():
-    loader = ParquetLoader(config)
-    # Test the actual business logic thoroughly
-```
-
-## Maintenance
-
-- Review and update tests when business logic changes
-- Keep CLI tests minimal and focused on interface concerns
-- Regularly run integration tests to catch system-level issues
-- Update this strategy as the project evolves
-
-This focused testing strategy ensures comprehensive coverage while avoiding redundancy and maintaining test suite efficiency.
+- Business Logic: 90%+ coverage
+- CLI Commands: CLI-specific paths only
+- Integration: Critical workflows end-to-end

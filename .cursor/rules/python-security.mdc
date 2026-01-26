@@ -6,424 +6,71 @@ alwaysApply: false
 
 # Python Security Standards
 
-## Core Security Principles
+## Core Principles
 
-- **Never hardcode secrets**: Use environment variables or secure vaults
-- **Validate all inputs**: Sanitize and validate external inputs
-- **Least privilege**: Request only necessary permissions
-- **Defense in depth**: Implement multiple layers of security
-- **Fail securely**: Handle errors without exposing sensitive information
+- Never hardcode secrets - use environment variables
+- Validate all external inputs
+- Use parameterized queries (never string interpolation)
+- Build subprocess commands as lists, not strings
+- Don't expose sensitive info in errors
 
-## Environment Variables & Secrets
-
-### Never Hardcode Secrets
+## Secrets Management
 
 ```python
-# ❌ BAD - Hardcoded secrets
-API_KEY = "sk_live_abc123xyz"
-DATABASE_URL = "postgresql://user:password@localhost/db"
-
-# ✅ GOOD - Environment variables
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-API_KEY = os.getenv("API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
-```
-
-### Use Pydantic Settings for Configuration
-
-```python
-from pydantic import BaseModel, Field, SecretStr
+# ✅ Good - Pydantic Settings with SecretStr
+from pydantic import SecretStr, Field
 from pydantic_settings import BaseSettings
-from pathlib import Path
 
 class Settings(BaseSettings):
-    """Application settings with validation."""
+    plaid_client_id: str
+    plaid_secret: SecretStr  # Use SecretStr for passwords/keys
 
-    model_config = ConfigDict(
-        env_file=".env",
-        case_sensitive=False,
-        extra="forbid"
-    )
-
-    plaid_client_id: str = Field(..., description="Plaid client ID")
-    plaid_secret: SecretStr = Field(..., description="Plaid secret key")  # Use SecretStr for secrets
-    plaid_env: str = Field(default='sandbox', description="Plaid environment")
-    duckdb_path: Path = Field(default=Path('data/duckdb/financial.db'), description="DuckDB database path")
-
-    def validate_required_credentials(self) -> None:
-        """Validate that required credentials are present."""
-        errors = []
-        if not self.plaid_client_id:
-            errors.append("PLAID_CLIENT_ID is required")
-        if not self.plaid_secret:
-            errors.append("PLAID_SECRET is required")
-        if errors:
-            raise ValueError(f"Missing required configuration: {', '.join(errors)}")
-
-# Validate settings on import
-try:
-    settings = Settings()
-    settings.validate_required_credentials()
-except ValidationError as e:
-    raise RuntimeError(f"Configuration error: {e}") from e
+# ❌ Bad - hardcoded
+API_KEY = "sk_live_abc123"
 ```
 
 ## Input Validation
 
-### Sanitize All External Inputs
-
 ```python
-from pathlib import Path
-import re
+# Path validation - prevent traversal
+if ".." in file_path or path.is_absolute():
+    raise ValueError("Invalid path")
 
-def validate_file_path(file_path: str) -> Path:
-    """Validate file path to prevent path traversal attacks.
-
-    Args:
-        file_path: The file path to validate
-
-    Returns:
-        Path: Validated Path object
-
-    Raises:
-        ValueError: If path contains suspicious patterns
-    """
-    # Check for path traversal attempts
-    if ".." in file_path:
-        raise ValueError("Path traversal detected")
-
-    # Check for absolute paths if not expected
-    path = Path(file_path)
-    if path.is_absolute():
-        raise ValueError("Absolute paths not allowed")
-
-    # Ensure path is within expected directory
-    base_dir = Path("data/")
-    try:
-        resolved = (base_dir / path).resolve()
-        if not str(resolved).startswith(str(base_dir.resolve())):
-            raise ValueError("Path outside allowed directory")
-    except Exception as e:
-        raise ValueError(f"Invalid path: {e}")
-
-    return path
-```
-
-### Validate String Inputs
-
-```python
-def validate_account_id(account_id: str) -> str:
-    """Validate account ID format.
-
-    Args:
-        account_id: The account ID to validate
-
-    Returns:
-        str: Validated account ID
-
-    Raises:
-        ValueError: If account ID format is invalid
-    """
-    # Only allow alphanumeric and hyphens
-    if not re.match(r'^[a-zA-Z0-9\-]+$', account_id):
-        raise ValueError("Invalid account ID format")
-
-    # Enforce length limits
-    if len(account_id) > 100:
-        raise ValueError("Account ID too long")
-
-    return account_id
+# String validation - prevent injection
+if any(char in input_str for char in [';', '|', '&', '$', '`']):
+    raise ValueError("Invalid characters")
 ```
 
 ## SQL Injection Prevention
 
-### Always Use Parameterized Queries
-
 ```python
-import duckdb
-from pathlib import Path
+# ✅ Good - parameterized query
+query = "SELECT * FROM transactions WHERE account_id = ?"
+result = conn.execute(query, [account_id]).fetchdf()
 
-def safe_query_transactions(account_id: str, start_date: str, end_date: str):
-    """Execute safe SQL query with parameterized inputs.
-
-    Args:
-        account_id: Account identifier
-        start_date: Start date (YYYY-MM-DD)
-        end_date: End date (YYYY-MM-DD)
-
-    Returns:
-        DataFrame with query results
-    """
-    # Validate inputs first
-    if not account_id or not start_date or not end_date:
-        raise ValueError("All parameters are required")
-
-    # Use parameterized query to prevent SQL injection
-    query = """
-        SELECT * FROM transactions
-        WHERE account_id = ?
-        AND date BETWEEN ? AND ?
-        ORDER BY date DESC
-    """
-
-    conn = duckdb.connect('data/duckdb/financial.db')
-    result = conn.execute(query, [account_id, start_date, end_date]).fetchdf()
-    conn.close()
-
-    return result
-
-# ❌ NEVER DO THIS - String concatenation/interpolation
-def unsafe_query(account_id: str):
-    query = f"SELECT * FROM transactions WHERE account_id = '{account_id}'"  # VULNERABLE!
-    # Attacker could inject: ' OR '1'='1
+# ❌ Bad - string interpolation
+query = f"SELECT * FROM transactions WHERE account_id = '{account_id}'"  # VULNERABLE
 ```
 
 ## Command Injection Prevention
 
-### Safe Subprocess Execution
-
 ```python
-import subprocess
-from pathlib import Path
+# ✅ Good - list format
+cmd = ["dbt", "run", "--project-dir", validated_dir, "--models", models]
+subprocess.run(cmd, check=False)  # Never shell=True with user input
 
-def safe_run_command(project_dir: Path, models: str) -> subprocess.CompletedProcess:
-    """Execute subprocess command safely.
-
-    Args:
-        project_dir: Validated project directory
-        models: Validated models parameter
-
-    Returns:
-        CompletedProcess with execution results
-
-    Raises:
-        ValueError: If validation fails
-    """
-    # Validate project directory
-    if not project_dir.exists():
-        raise ValueError(f"Project directory does not exist: {project_dir}")
-
-    project_dir_str = str(project_dir)
-    if any(char in project_dir_str for char in [';', '|', '&', '$', '`']):
-        raise ValueError("Invalid characters in project directory path")
-
-    # Validate models parameter
-    if any(char in models for char in [';', '|', '&', '$', '`', '(', ')', '<', '>', '"', "'"]):
-        raise ValueError("Invalid characters in models parameter")
-
-    # Build command as list (NOT string)
-    cmd = [
-        "dbt",
-        "run",
-        "--project-dir", project_dir_str,
-        "--models", models
-    ]
-
-    # Execute with check=False to handle errors manually
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False  # Handle return codes manually
-    )
-
-    return result
-
-# ❌ NEVER DO THIS - Shell injection vulnerability
-def unsafe_command(models: str):
-    cmd = f"dbt run --models {models}"  # VULNERABLE!
-    subprocess.run(cmd, shell=True)  # NEVER USE shell=True with user input
+# ❌ Bad - string with shell=True
+cmd = f"dbt run --models {models}"
+subprocess.run(cmd, shell=True)  # VULNERABLE
 ```
 
-## API Security
-
-### Secure API Key Management
+## Error Handling
 
 ```python
-import hashlib
-from typing import Any
-
-def hash_access_token(token: str) -> str:
-    """Hash access token for secure storage.
-
-    Args:
-        token: Access token to hash
-
-    Returns:
-        SHA-256 hash of the token
-    """
-    return hashlib.sha256(token.encode()).hexdigest()
-
-def store_credentials_securely(institution_name: str, access_token: str) -> None:
-    """Store credentials with hashed token.
-
-    Args:
-        institution_name: Name of financial institution
-        access_token: Access token (will be hashed)
-    """
-    hashed_token = hash_access_token(access_token)
-
-    # Store only the hash in database
-    query = """
-        INSERT INTO credentials (institution_name, access_token_hash)
-        VALUES (?, ?)
-    """
-    conn.execute(query, [institution_name, hashed_token])
+# Log detailed errors internally, return generic errors to users
+try:
+    result = sensitive_operation()
+except Exception as e:
+    logger.exception(f"Error for account {account_id}")  # Detailed internal log
+    raise RuntimeError("An error occurred")  # Generic user message
 ```
-
-### Rate Limiting
-
-```python
-import asyncio
-from datetime import datetime, timedelta
-from collections import defaultdict
-
-class RateLimiter:
-    """Rate limiter for API calls."""
-
-    def __init__(self, max_calls: int, time_window: int):
-        """Initialize rate limiter.
-
-        Args:
-            max_calls: Maximum calls allowed in time window
-            time_window: Time window in seconds
-        """
-        self.max_calls = max_calls
-        self.time_window = time_window
-        self.calls = defaultdict(list)
-
-    def is_allowed(self, key: str) -> bool:
-        """Check if call is allowed under rate limit.
-
-        Args:
-            key: Identifier for rate limiting (e.g., API key, user ID)
-
-        Returns:
-            bool: True if call is allowed
-        """
-        now = datetime.now()
-        cutoff = now - timedelta(seconds=self.time_window)
-
-        # Remove old calls outside time window
-        self.calls[key] = [
-            call_time for call_time in self.calls[key]
-            if call_time > cutoff
-        ]
-
-        # Check if under limit
-        if len(self.calls[key]) < self.max_calls:
-            self.calls[key].append(now)
-            return True
-
-        return False
-```
-
-## Error Handling Security
-
-### Don't Expose Sensitive Information in Errors
-
-```python
-import logging
-
-logger = logging.getLogger(__name__)
-
-def safe_error_handling(account_id: str):
-    """Handle errors without exposing sensitive information."""
-    try:
-        # Sensitive operation
-        result = fetch_account_data(account_id)
-        return result
-
-    except ValueError as e:
-        # Log detailed error internally
-        logger.error(f"Validation error for account {account_id}: {e}")
-        # Return generic error to user
-        raise ValueError("Invalid account information") from None
-
-    except Exception as e:
-        # Log detailed error internally (may include stack trace)
-        logger.exception(f"Unexpected error processing account {account_id}")
-        # Return generic error to user
-        raise RuntimeError("An error occurred processing your request") from None
-
-# ❌ BAD - Exposes sensitive information
-def unsafe_error_handling(api_key: str):
-    try:
-        result = call_api(api_key)
-    except Exception as e:
-        # Don't do this - exposes API key in error message
-        raise ValueError(f"API call failed with key {api_key}: {e}")
-```
-
-## Encryption
-
-### Encrypt Sensitive Data at Rest
-
-```python
-from cryptography.fernet import Fernet
-from pathlib import Path
-import os
-
-def get_encryption_key() -> bytes:
-    """Get or generate encryption key.
-
-    Returns:
-        bytes: Encryption key
-    """
-    key_file = Path(".encryption_key")
-
-    if key_file.exists():
-        return key_file.read_bytes()
-
-    # Generate new key
-    key = Fernet.generate_key()
-    key_file.write_bytes(key)
-    # Ensure key file has restricted permissions
-    os.chmod(key_file, 0o600)
-    return key
-
-def encrypt_data(data: str) -> bytes:
-    """Encrypt sensitive data.
-
-    Args:
-        data: Data to encrypt
-
-    Returns:
-        bytes: Encrypted data
-    """
-    key = get_encryption_key()
-    f = Fernet(key)
-    return f.encrypt(data.encode())
-
-def decrypt_data(encrypted_data: bytes) -> str:
-    """Decrypt sensitive data.
-
-    Args:
-        encrypted_data: Data to decrypt
-
-    Returns:
-        str: Decrypted data
-    """
-    key = get_encryption_key()
-    f = Fernet(key)
-    return f.decrypt(encrypted_data).decode()
-```
-
-## Security Checklist
-
-- [ ] No hardcoded secrets or API keys
-- [ ] All external inputs validated and sanitized
-- [ ] Parameterized queries used for all SQL
-- [ ] Command injection prevention for subprocess calls
-- [ ] Rate limiting implemented for API calls
-- [ ] Sensitive data encrypted at rest
-- [ ] Error messages don't expose sensitive information
-- [ ] Least privilege principle applied
-- [ ] Security logging enabled
-- [ ] Regular security audits performed
-
-Follow these security standards to protect sensitive financial data in the MoneyBin project.

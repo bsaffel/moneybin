@@ -1,148 +1,70 @@
 ---
-description: Explicit rules for using correct DuckDB functions and SQL patterns
-globs: ["**/*.sql", "dbt/**/*.sql", "pipelines/**/*.py", "src/**/loaders/**/*.py", "notebooks/**/*.ipynb"]
+description: DuckDB function usage and SQL patterns
+globs: ["**/*.sql", "dbt/**/*.sql", "pipelines/**/*.py", "src/**/loaders/**/*.py"]
 alwaysApply: false
 ---
 
 # DuckDB Function Usage Standards
 
-## CSV Import/Export Functions
+## CSV Operations
 
-### Reading CSV Files
+```sql
+-- Read CSV
+SELECT * FROM read_csv('file.csv', auto_detect=true)
 
-- **Use `read_csv()`**: `SELECT * FROM read_csv('file.csv', header=true)`
-- **Auto-detect types**: `SELECT * FROM read_csv('file.csv', auto_detect=true)`
-- **Specify columns**: `SELECT * FROM read_csv('file.csv', columns={'date': 'DATE', 'amount': 'DECIMAL(10,2)'})`
-
-### Writing CSV Files
-
-- **Use `COPY TO`**: `COPY (SELECT * FROM transactions) TO 'output.csv' (HEADER, DELIMITER ',')`
-- **Parquet for performance**: `COPY transactions TO 'data.parquet' (FORMAT PARQUET)`
+-- Write CSV/Parquet
+COPY (SELECT * FROM transactions) TO 'output.csv' (HEADER, DELIMITER ',')
+COPY transactions TO 'data.parquet' (FORMAT PARQUET)
+```
 
 ## Date/Time Functions
 
-### Date Parsing
+```sql
+-- Parsing: strptime(date_string, '%Y-%m-%d')
+-- Formatting: strftime(date_col, '%Y-%m')
+-- Extract: YEAR(date_col), MONTH(date_col), DAY(date_col)
+-- Truncate: date_trunc('month', date_col)
+-- Range: date_col BETWEEN '2023-01-01' AND '2023-12-31'
+```
 
-- **Use `strptime()`**: `strptime(date_string, '%Y-%m-%d')` for custom formats
-- **Use `DATE`**: `DATE '2024-01-01'` for literals
-- **Avoid `to_date()`**: Use DuckDB-native functions instead
+## Aggregations
 
-### Date Formatting
-
-- **Use `strftime()`**: `strftime(date_col, '%Y-%m')` for formatting
-- **Extract parts**: `YEAR(date_col)`, `MONTH(date_col)`, `DAY(date_col)`
-
-### Date Ranges
-
-- **Use `BETWEEN`**: `date_col BETWEEN '2023-01-01' AND '2023-12-31'`
-- **Use `date_trunc()`**: `date_trunc('month', date_col)` for grouping
-
-## Aggregation Functions
-
-### Financial Calculations
-
-- **Use `SUM()`**: `SUM(amount)` for totals
-- **Use `AVG()`**: `AVG(amount)` for averages
-- **Use `ROUND()`**: `ROUND(amount, 2)` for currency formatting
-
-### Window Functions
-
-- **Running totals**: `SUM(amount) OVER (ORDER BY date ROWS UNBOUNDED PRECEDING)`
-- **Monthly trends**: `LAG(amount, 1) OVER (PARTITION BY account ORDER BY date)`
+```sql
+-- Basic: SUM(amount), AVG(amount), COUNT(*)
+-- Round currency: ROUND(amount, 2)
+-- Running total: SUM(amount) OVER (ORDER BY date ROWS UNBOUNDED PRECEDING)
+-- Previous period: LAG(amount, 1) OVER (PARTITION BY account ORDER BY date)
+```
 
 ## String Functions
 
-### Text Processing
-
-- **Use `regexp_matches()`**: `regexp_matches(description, 'PATTERN')` for pattern matching
-- **Use `LIKE`**: `description LIKE '%MERCHANT%'` for simple patterns
-- **Use `UPPER()`/`LOWER()`**: For case-insensitive comparisons
-
-### Category Mapping
-
 ```sql
-CASE
-    WHEN UPPER(description) LIKE '%GROCERY%' THEN 'Food'
-    WHEN UPPER(description) LIKE '%GAS%' THEN 'Transportation'
-    ELSE 'Other'
-END as category
+-- Pattern match: regexp_matches(description, 'PATTERN')
+-- Simple match: description LIKE '%MERCHANT%'
+-- Case insensitive: UPPER(description), LOWER(description)
 ```
 
-## JSON Functions (for API responses)
+## Performance
 
-### JSON Extraction
+- Create indexes: `CREATE INDEX idx_date ON transactions(date)`
+- Filter early: Apply WHERE before JOINs
+- Use proper types: `DECIMAL(10,2)` for currency, `DATE` for dates
+- Batch inserts: `INSERT INTO ... SELECT`
 
-- **Use `json_extract()`**: `json_extract(api_response, '$.transactions[0].amount')`
-- **Use `->`**: `api_response->'transactions'` for path access
-- **Use `json_transform()`**: For complex JSON restructuring
-
-## Performance Optimization
-
-### Indexing
-
-- **Create indexes**: `CREATE INDEX idx_date ON transactions(date)`
-- **Composite indexes**: `CREATE INDEX idx_date_account ON transactions(date, account_id)`
-
-### Query Patterns
-
-- **Filter early**: Apply WHERE clauses before JOINs when possible
-- **Use appropriate data types**: `DECIMAL(10,2)` for currency, `DATE` for dates
-- **Batch inserts**: Use `INSERT INTO ... SELECT` for bulk operations
-
-## Memory Management
-
-### Large Datasets
-
-- **Use streaming**: `PRAGMA temp_directory='/path/to/temp'`
-- **Chunk processing**: Process large files in batches
-- **Monitor memory**: `PRAGMA memory_limit='4GB'`
-
-## Error Handling Patterns
-
-### Data Validation
-
-```sql
--- Check for null values
-SELECT COUNT(*) FROM transactions WHERE amount IS NULL;
-
--- Validate date ranges
-SELECT COUNT(*) FROM transactions WHERE date < '1900-01-01' OR date > CURRENT_DATE;
-
--- Check for duplicates
-SELECT transaction_id, COUNT(*) FROM transactions GROUP BY transaction_id HAVING COUNT(*) > 1;
-```
-
-### Safe Type Conversion
-
-- **Use `TRY_CAST()`**: `TRY_CAST(amount_string AS DECIMAL(10,2))` to handle conversion errors
-- **Check data types**: `SELECT typeof(column_name) FROM table_name LIMIT 1`
-
-## Connection Management
-
-### Python Integration
+## Python Integration
 
 ```python
 import duckdb
 
-# Use context manager
 with duckdb.connect('financial.db') as conn:
-    result = conn.execute("SELECT * FROM transactions").fetchdf()
-
-# Parameterized queries
-conn.execute("SELECT * FROM transactions WHERE date >= ?", [start_date])
+    result = conn.execute("SELECT * FROM transactions WHERE date >= ?", [start_date]).fetchdf()
 ```
 
-## Common Anti-Patterns to Avoid
+## Anti-Patterns
 
-❌ **Don't use MySQL/PostgreSQL syntax**: DuckDB has its own optimized functions
-❌ **Don't use `LIMIT` without `ORDER BY`**: Results may be non-deterministic
-❌ **Don't ignore data types**: Use proper DECIMAL for currency, not FLOAT
-❌ **Don't concatenate SQL strings**: Use parameterized queries for security
-❌ **Don't forget to close connections**: Use context managers or explicit close()
+❌ Don't use MySQL/PostgreSQL-specific syntax
+❌ Don't use LIMIT without ORDER BY (non-deterministic)
+❌ Don't use FLOAT for currency (use DECIMAL)
+❌ Don't concatenate SQL strings (use parameterized queries)
 
-## Documentation References
-
-- **DuckDB SQL Reference**: <https://duckdb.org/docs/sql/introduction>
-- **Python API**: <https://duckdb.org/docs/api/python/overview>
-- **CSV Import**: <https://duckdb.org/docs/data/csv/overview>
-- **Date Functions**: <https://duckdb.org/docs/sql/functions/date>
+See [DuckDB docs](https://duckdb.org/docs/) for complete reference

@@ -8,353 +8,75 @@ alwaysApply: false
 
 ## Core Principle
 
-CLI commands should be thin wrappers around well-tested business logic, focusing on user experience, argument parsing, and proper error handling rather than implementing complex functionality directly.
+CLI commands are **thin wrappers** around well-tested business logic. Focus on user experience, argument parsing, and error handling - not complex functionality.
 
-## Command Structure
-
-### Standard CLI Command Pattern
+## Standard CLI Pattern
 
 ```python
-"""Command module docstring explaining purpose."""
-
-import logging
-from pathlib import Path
-from typing import Any
-
-import typer
-
-from moneybin.business_module import BusinessClass, ConfigClass
-from moneybin.logging import setup_logging
-
-app = typer.Typer(help="Command group description")
-logger = logging.getLogger(__name__)
-
 @app.command("command-name")
-def command_function(
-    # Use descriptive parameter names and help text
-    source_path: Path = typer.Option(
-        Path("default/path"),
-        "--source", "-s",
-        help="Clear description of what this parameter does"
-    ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v",
-        help="Enable verbose logging"
-    ),
-) -> None:
-    """Command docstring with clear description.
-
-    Explain what the command does, when to use it, and any important
-    considerations for users.
-
-    Args:
-        source_path: Description of parameter
-        verbose: Description of parameter
-    """
-    # 1. Setup logging first
-    setup_logging(cli_mode=True, verbose=verbose)
-
+def command_function(source_path: Path = typer.Option(..., help="Description")) -> None:
+    """Clear command description."""
+    setup_logging(cli_mode=True)  # 1. Setup logging
     try:
-        # 2. Create configuration from CLI arguments
-        config = ConfigClass(
-            source_path=source_path,
-            # Map CLI args to business logic config
-        )
-
-        # 3. Initialize business logic class
-        processor = BusinessClass(config)
-
-        # 4. Execute business operation
-        results = processor.main_operation()
-
-        # 5. Display results to user
-        if results:
-            logger.info("📊 Results:")
-            for key, value in results.items():
-                logger.info(f"  {key}: {value:,}")
-        else:
-            logger.warning("No results found")
-
+        config = ConfigClass(source_path=source_path)  # 2. Create config
+        processor = BusinessClass(config)  # 3. Initialize business logic
+        results = processor.main_operation()  # 4. Execute
+        logger.info(f"✅ Processed {len(results)} records")  # 5. Display results
     except FileNotFoundError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
-    except Exception as e:
-        logger.error(f"❌ Operation failed: {e}")
-        raise typer.Exit(1) from e
 ```
 
-## Input Validation and Security
+## Security - Input Validation
 
-### Path Validation
-
-```python
-def _validate_project_dir(project_dir: Path) -> str:
-    """Validate project directory path to prevent path injection.
-
-    Args:
-        project_dir: The project directory path to validate
-
-    Returns:
-        str: The validated project directory as string
-
-    Raises:
-        typer.Exit: If invalid characters are found or directory doesn't exist
-    """
-    if not project_dir.exists():
-        logger.error(f"Project directory does not exist: {project_dir}")
-        raise typer.Exit(1)
-
-    project_dir_str = str(project_dir)
-    if any(char in project_dir_str for char in [';', '|', '&', '$', '`']):
-        logger.error("❌ Invalid characters in project directory path")
-        raise typer.Exit(1)
-
-    return project_dir_str
-```
-
-### String Parameter Validation
-
-```python
-def _validate_models_parameter(models: str) -> None:
-    """Validate models parameter to prevent shell injection.
-
-    Args:
-        models: The models parameter to validate
-
-    Raises:
-        typer.Exit: If invalid characters are found
-    """
-    if any(char in models for char in [';', '|', '&', '$', '`', '(', ')', '<', '>', '"', "'"]):
-        logger.error("❌ Invalid characters in models parameter")
-        raise typer.Exit(1)
-```
+**Path Validation**: Check for shell injection chars: `;`, `|`, `&`, `$`, `` ` ``
+**String Parameters**: Validate before subprocess execution to prevent injection
+**Command Building**: Use list format `["cmd", "arg"]`, never string interpolation
 
 ## Error Handling
 
-### Standard Error Handling Pattern
-
-```python
-try:
-    # Main operation
-    result = business_operation()
-
-except FileNotFoundError as e:
-    # Handle specific expected errors with user-friendly messages
-    logger.error(f"❌ File not found: {e}")
-    raise typer.Exit(1) from e
-
-except PermissionError as e:
-    logger.error(f"❌ Permission denied: {e}")
-    logger.info("💡 Try running with appropriate permissions")
-    raise typer.Exit(1) from e
-
-except ValidationError as e:
-    logger.error(f"❌ Invalid configuration: {e}")
-    logger.info("💡 Check your configuration and try again")
-    raise typer.Exit(1) from e
-
-except Exception as e:
-    # Catch-all for unexpected errors
-    logger.error(f"❌ Unexpected error: {e}")
-    raise typer.Exit(1) from e
-```
-
-### Exit Code Standards
-
-- **0**: Success
-- **1**: General error (file not found, permission denied, validation error)
-- **2**: Command-specific error (e.g., external tool returned error code 2)
+- Catch **specific exceptions** (FileNotFoundError, PermissionError, etc.)
+- Use `raise typer.Exit(code) from e` for proper error chaining
+- **Exit codes**: 0 (success), 1 (general error), 2+ (command-specific)
+- Provide user-friendly error messages with emoji: ❌, 💡, ✅, ⚠️
 
 ## Subprocess Execution
 
-### Safe Subprocess Patterns
-
 ```python
-import subprocess
-from typing import List
-
-def _build_safe_command(base_cmd: List[str], validated_args: dict[str, str]) -> List[str]:
-    """Build subprocess command with validated arguments.
-
-    Args:
-        base_cmd: Base command parts (e.g., ["dbt", "run"])
-        validated_args: Pre-validated arguments
-
-    Returns:
-        Complete command list for subprocess execution
-    """
-    cmd = base_cmd.copy()
-
-    for key, value in validated_args.items():
-        cmd.extend([f"--{key}", value])
-
-    return cmd
-
-# Execute with proper error handling
-try:
-    cmd = _build_safe_command(["dbt", "run"], {"project-dir": validated_dir})
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False  # Handle return codes manually
-    )
-
-    if result.returncode == 0:
-        logger.info("✅ Command completed successfully")
-    else:
-        logger.error(f"❌ Command failed with return code {result.returncode}")
-        raise typer.Exit(result.returncode)
-
-except FileNotFoundError:
-    logger.error("❌ Command not found. Is the tool installed?")
-    raise typer.Exit(1)
+# Build command safely as list (never string interpolation)
+cmd = ["dbt", "run", "--project-dir", validated_dir]
+result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+if result.returncode != 0:
+    logger.error(f"❌ Failed with code {result.returncode}")
+    raise typer.Exit(result.returncode)
 ```
 
 ## User Experience
 
-### Logging and Output
+- Use emoji in output: 🚀 ✅ ❌ ⚠️ 💡 📊 📥 💾 🔄
+- Provide progress updates for long operations
+- Use kebab-case for command names
+- Clear help text for all commands and options
+- Consistent parameter naming across commands
+
+## Separation of Concerns
+
+**❌ DON'T**: Complex business logic in CLI commands
+**✅ DO**: Delegate to business logic classes
 
 ```python
-# Use emojis and clear formatting for user-friendly output
-logger.info("🚀 Starting data extraction...")
-logger.info("📊 Processing results:")
-logger.info("✅ Operation completed successfully")
-logger.error("❌ Operation failed")
-logger.warning("⚠️  Warning message")
-logger.info("💡 Helpful tip or suggestion")
-```
-
-### Progress Indication
-
-```python
-# For long-running operations, provide progress updates
-logger.info("📥 Loading data from source...")
-logger.info("🔄 Processing 1,234 records...")
-logger.info("💾 Saving results to database...")
-logger.info("✅ Completed processing 1,234 records")
-```
-
-## Command Organization
-
-### File Structure
-
-```
-src/moneybin/cli/commands/
-├── __init__.py
-├── extract.py      # Data extraction commands
-├── load.py         # Data loading commands
-├── transform.py    # Data transformation commands
-└── credentials.py  # Credential management commands
-```
-
-### Command Grouping
-
-- Group related commands in the same file
-- Use descriptive command names with hyphens (kebab-case)
-- Provide clear help text for each command and option
-- Use consistent parameter naming across commands
-
-## Integration with Business Logic
-
-### Separation of Concerns
-
-```python
-# ❌ DON'T: Implement business logic in CLI commands
-@app.command("process")
-def process_data(file_path: Path) -> None:
-    # Don't put complex data processing logic here
-    data = pd.read_csv(file_path)
-    processed = data.groupby('category').sum()
-    # ... complex processing logic
-
-# ✅ DO: Delegate to business logic classes
-@app.command("process")
-def process_data(file_path: Path) -> None:
-    config = ProcessingConfig(source_path=file_path)
-    processor = DataProcessor(config)
-    results = processor.process()
-
-    # CLI only handles user interaction
-    logger.info(f"✅ Processed {len(results)} records")
-```
-
-### Configuration Mapping
-
-```python
-# Map CLI arguments to business logic configuration clearly
+# Good: CLI maps args to config, delegates to business logic
 @app.command("load")
-def load_data(
-    source: Path = typer.Option(...),
-    database: Path = typer.Option(...),
-    incremental: bool = typer.Option(True, "--incremental/--full-refresh"),
-) -> None:
-    # Clear mapping from CLI args to business config
-    config = LoadingConfig(
-        source_path=source,
-        database_path=database,
-        incremental=incremental,
-    )
-
+def load_data(source: Path = typer.Option(...)) -> None:
+    config = LoadingConfig(source_path=source)
     loader = DataLoader(config)
     results = loader.load_all()
+    logger.info(f"✅ Loaded {len(results)} records")
 ```
 
-## Testing Considerations
+## Testing
 
-When designing CLI commands, consider:
-
-- **Argument parsing** - Can be tested with mocked business logic
-- **Error handling** - Test exit codes and error messages
-- **Input validation** - Test security validation functions
-- **User experience** - Test help text and output formatting
-
-Avoid putting complex logic in CLI commands that would require extensive testing at the CLI layer.
-
-## Anti-Patterns
-
-### ❌ Avoid These Patterns
-
-```python
-# DON'T: Complex business logic in CLI commands
-@app.command("analyze")
-def analyze_data(file: Path) -> None:
-    # 100+ lines of data analysis logic - WRONG PLACE
-
-# DON'T: Unsafe string interpolation
-def build_command(user_input: str) -> str:
-    return f"dbt run --models {user_input}"  # SECURITY RISK
-
-# DON'T: Poor error handling
-@app.command("process")
-def process() -> None:
-    result = risky_operation()  # No try/catch - BAD UX
-```
-
-### ✅ Follow These Patterns
-
-```python
-# DO: Thin wrapper around business logic
-@app.command("analyze")
-def analyze_data(file: Path) -> None:
-    analyzer = DataAnalyzer(file)
-    results = analyzer.analyze()
-    display_results(results)
-
-# DO: Safe parameter handling
-def build_command(validated_models: str) -> List[str]:
-    return ["dbt", "run", "--models", validated_models]
-
-# DO: Comprehensive error handling
-@app.command("process")
-def process() -> None:
-    try:
-        result = business_operation()
-        logger.info("✅ Success")
-    except SpecificError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
-```
-
-This approach ensures CLI commands are maintainable, secure, and provide excellent user experience while keeping business logic properly separated and testable.
+- Test argument parsing with mocked business logic
+- Test exit codes and error messages
+- Test input validation functions
+- Don't test business logic in CLI tests (test separately)

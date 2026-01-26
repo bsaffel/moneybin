@@ -1,102 +1,51 @@
 ---
 description: Standards for financial analysis queries and success metrics
-globs: ["**/*.sql", "dbt/models/**/*.sql", "src/analysis/**/*.py", "notebooks/**/*.ipynb"]
+globs: ["**/*.sql", "dbt/models/**/*.sql", "src/analysis/**/*.py"]
 alwaysApply: false
 ---
 
 # Financial Analysis Standards
 
-## Success Metrics & Functionality
+## Core Capabilities
 
-### Core Analysis Capabilities
+System must answer key financial questions:
 
-The system must be able to answer key financial questions:
+- "How much did I pay in taxes last year?"
+- "What did I spend last year by category?"
+- "What was my total income from all sources?"
+- "How has my spending changed over time?"
 
-- **Tax Analysis**: "How much did I pay in taxes last year?"
-- **Spending Analysis**: "What did I spend last year by category?"
-- **Income Analysis**: "What was my total income from all sources?"
-- **Trend Analysis**: "How has my spending changed over time?"
-- **Budget Analysis**: "How much did I spend vs. budget in each category?"
+## Performance Requirements
 
-### Query Performance Requirements
+- Query response < 5 seconds
+- Handle growing data volumes efficiently
+- Consistent, accurate results
 
-- **Fast Response**: Query response times under 5 seconds for typical analysis
-- **Scalable**: Handle growing data volumes efficiently
-- **Reliable**: Consistent, accurate results across all queries
-- **Maintainable**: Easy to update and extend with new analysis types
-
-## SQL Query Standards
-
-### Query Organization
-
-- Use clear, descriptive names for all tables and columns
-- Implement consistent naming conventions across all queries
-- Add comments explaining complex business logic
-- Structure queries for readability and maintainability
-
-### Common Query Patterns
-
-#### Tax Payment Analysis
+## Common Patterns
 
 ```sql
--- Total taxes paid by year
-SELECT
-    strftime('%Y', date) as tax_year,
-    SUM(amount) as total_taxes_paid
+-- Tax payments by year
+SELECT strftime('%Y', date) as year, SUM(amount) as total_taxes
 FROM transactions
-WHERE category IN ('Federal Tax', 'State Tax', 'Property Tax')
-    AND amount > 0  -- Tax payments are positive
-GROUP BY tax_year
-ORDER BY tax_year DESC;
-```
+WHERE category IN ('Federal Tax', 'State Tax')
+GROUP BY year ORDER BY year DESC;
 
-#### Spending Analysis
-
-```sql
 -- Annual spending by category
-SELECT
-    strftime('%Y', date) as year,
-    category,
-    SUM(ABS(amount)) as total_spent
+SELECT strftime('%Y', date) as year, category, SUM(ABS(amount)) as total
 FROM transactions
 WHERE amount < 0  -- Expenses are negative
-    AND date >= '2023-01-01'
-GROUP BY year, category
-ORDER BY year DESC, total_spent DESC;
-```
+GROUP BY year, category ORDER BY year DESC, total DESC;
 
-#### Monthly Trends
-
-```sql
--- Monthly spending trends
-SELECT
-    strftime('%Y-%m', date) as month,
-    SUM(ABS(amount)) as monthly_spending
+-- Monthly trends
+SELECT strftime('%Y-%m', date) as month, SUM(ABS(amount)) as spending
 FROM transactions
 WHERE amount < 0
-GROUP BY month
-ORDER BY month;
+GROUP BY month ORDER BY month;
 ```
 
-## Analysis Best Practices
+## Best Practices
 
-### Data Validation
-
-- Always validate date ranges in analysis queries
-- Check for data completeness before generating reports
-- Handle edge cases like refunds, transfers, and corrections
-- Verify category assignments and merchant data accuracy
-
-### Performance Optimization
-
-- Use appropriate indexes for common query patterns
-- Implement query caching for frequently accessed analyses
-- Optimize aggregation queries for large datasets
-- Consider materialized views for complex recurring analyses
-
-### Report Generation
-
-- Provide clear, actionable insights from analysis
-- Include data quality indicators in reports
+- Validate date ranges in queries
+- Handle edge cases (refunds, transfers, corrections)
+- Use appropriate indexes for common patterns
 - Format financial amounts consistently
-- Add context and explanations for unusual patterns or outliers

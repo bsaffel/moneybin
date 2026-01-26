@@ -6,183 +6,33 @@ alwaysApply: false
 
 # Naming Conventions
 
-## File and Code Naming Standards
+## Standard Naming
 
-### Files
+- **Files**: `snake_case.py` (`plaid_extractor.py`, `ofx_loader.py`)
+- **Classes**: `PascalCase` (`PlaidExtractor`, `DataProcessor`)
+- **Functions/Methods**: `snake_case()` (`extract_transactions`, `load_data`)
+- **Constants**: `UPPER_SNAKE_CASE` (`MAX_RETRY_ATTEMPTS`, `API_BASE_URL`)
+- **Variables**: `snake_case` (`transaction_data`, `account_id`)
 
-- **snake_case**: All Python files use lowercase with underscores
-- **Examples**: `plaid_extractor.py`, `ofx_loader.py`, `data_processor.py`
+## Acronyms
 
-### Classes
+**Use ALL CAPS for well-known acronyms** (follow Python stdlib: `HTTPServer`, `JSONDecoder`, `XMLParser`):
 
-- **PascalCase**: All classes use capitalized words without separators
-- **Examples**: `PlaidExtractor`, `DataProcessor`, `TransactionLoader`
+✅ **Good**: `OFXExtractor`, `CSVReader`, `PDFExtractor`, `HTMLParser`, `URLValidator`
+❌ **Bad**: `OfxExtractor`, `CsvReader`, `PdfExtractor`, `HtmlParser`
 
-### Functions and Methods
+**Common acronyms**: OFX, CSV, PDF, HTML, XML, JSON, HTTP, HTTPS, URL, URI, API, SQL, DB
 
-- **snake_case**: All functions and methods use lowercase with underscores
-- **Examples**: `extract_transactions`, `load_data`, `process_results`
-
-### Constants
-
-- **UPPER_SNAKE_CASE**: Module-level constants use all caps with underscores
-- **Examples**: `MAX_RETRY_ATTEMPTS`, `DEFAULT_TIMEOUT`, `API_BASE_URL`
-
-### Variables
-
-- **snake_case**: All variables use lowercase with underscores
-- **Examples**: `transaction_data`, `account_id`, `user_settings`
-
-## Acronym Naming Standards
-
-### Use ALL CAPS for Well-Known Acronyms
-
-Follow Python standard library conventions (`HTTPServer`, `JSONDecoder`, `XMLParser`, `URLValidator`):
-
-**✅ Good - ALL CAPS for acronyms:**
-```python
-class OFXExtractor:
-    """Extract data from OFX files."""
-    pass
-
-class CSVReader:
-    """Read CSV files."""
-    pass
-
-class PDFExtractor:
-    """Extract data from PDF files."""
-    pass
-
-class HTMLParser:
-    """Parse HTML content."""
-    pass
-
-class URLValidator:
-    """Validate URLs."""
-    pass
-```
-
-**❌ Bad - Mixed case for acronyms:**
-```python
-class OfxExtractor:  # Should be OFXExtractor
-    pass
-
-class CsvReader:  # Should be CSVReader
-    pass
-
-class PdfExtractor:  # Should be PDFExtractor
-    pass
-
-class HtmlParser:  # Should be HTMLParser
-    pass
-```
-
-### Common Acronyms
-
-Use ALL CAPS for these well-known acronyms:
-
-- **OFX** - Open Financial Exchange
-- **CSV** - Comma-Separated Values
-- **PDF** - Portable Document Format
-- **HTML** - HyperText Markup Language
-- **XML** - eXtensible Markup Language
-- **JSON** - JavaScript Object Notation
-- **HTTP** - HyperText Transfer Protocol
-- **HTTPS** - HTTP Secure
-- **URL** - Uniform Resource Locator
-- **URI** - Uniform Resource Identifier
-- **API** - Application Programming Interface
-- **SQL** - Structured Query Language
-- **DB** - Database (e.g., `DuckDB`, `PostgreSQL`)
-
-### Exception: Very Long Acronyms
-
-For very long or less common acronyms, initial cap may be acceptable:
-
-```python
-class SqliteDatabase:  # SQLITE is 6 letters, SqliteDatabase is acceptable
-    pass
-
-class PostgresqlConnection:  # POSTGRESQL is 10 letters
-    pass
-```
+**Exception**: Very long acronyms (6+ letters) may use initial cap: `SqliteDatabase`, `PostgresqlConnection`
 
 ## Import Naming
 
-### Standard Library and Third-Party
-
-Use standard abbreviations:
-
 ```python
+# Standard abbreviations
 import pandas as pd
+import polars as pl
 import numpy as np
-import polars as pl
-from datetime import datetime
-```
 
-### Local Imports
-
-Use full names for clarity:
-
-```python
+# Local imports - use full names
 from moneybin.extractors.ofx_extractor import OFXExtractor
-from moneybin.loaders.csv_loader import CSVLoader
 ```
-
-## Complete Example
-
-```python
-"""Transaction processor module."""
-
-import logging
-from pathlib import Path
-from typing import Any
-
-import polars as pl
-
-from moneybin.extractors.ofx_extractor import OFXExtractor
-from moneybin.loaders.csv_loader import CSVLoader
-
-# Module constants
-MAX_RETRY_ATTEMPTS = 3
-DEFAULT_BATCH_SIZE = 1000
-API_TIMEOUT_SECONDS = 30
-
-logger = logging.getLogger(__name__)
-
-
-class TransactionProcessor:
-    """Process financial transactions from various sources."""
-
-    def __init__(self, config_path: Path):
-        """Initialize processor with configuration."""
-        self.config_path = config_path
-        self.batch_size = DEFAULT_BATCH_SIZE
-
-    def process_ofx_file(self, file_path: Path) -> pl.DataFrame:
-        """Process OFX file and return transaction DataFrame."""
-        extractor = OFXExtractor()
-        raw_data = extractor.extract_from_file(file_path)
-        return self._transform_transactions(raw_data)
-
-    def _transform_transactions(self, raw_data: dict[str, Any]) -> pl.DataFrame:
-        """Transform raw transaction data (private method)."""
-        transaction_count = len(raw_data["transactions"])
-        logger.info(f"Transforming {transaction_count} transactions")
-        return pl.DataFrame(raw_data["transactions"])
-
-
-def load_csv_transactions(file_path: Path) -> pl.DataFrame:
-    """Load transactions from CSV file."""
-    csv_loader = CSVLoader()
-    return csv_loader.load(file_path)
-```
-
-## Summary
-
-- **Files**: `snake_case.py`
-- **Classes**: `PascalCase` (use `OFXLoader`, not `OfxLoader`)
-- **Functions/Methods**: `snake_case()`
-- **Constants**: `UPPER_SNAKE_CASE`
-- **Variables**: `snake_case`
-- **Acronyms**: ALL CAPS for well-known acronyms

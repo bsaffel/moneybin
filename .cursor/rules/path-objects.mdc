@@ -8,116 +8,52 @@ alwaysApply: false
 
 ## Core Principle
 
-All internal or local filesystem references must use `pathlib.Path` objects instead of strings to ensure type safety, cross-platform compatibility, and better code maintainability.
+**Always use `pathlib.Path` for filesystem operations**
 
-## Implementation Requirements
-
-### Path Object Usage
-
-- **Always use `pathlib.Path`** for any filesystem path operations
-- **Never use string concatenation** for path building - use Path's `/` operator or `.joinpath()`
-- **Import Path explicitly**: `from pathlib import Path`
-- **Type annotations**: Use `Path` type for all path parameters and return values
-
-### Code Patterns
-
-#### ✅ Correct Usage
+## Usage
 
 ```python
 from pathlib import Path
 
-# Path creation
+# ✅ Good
 data_dir = Path("data/raw")
 file_path = data_dir / "accounts.parquet"
-
-# Path operations
 if file_path.exists():
-    with file_path.open("r") as f:
-        content = f.read()
+    content = file_path.read_text()
 
-# Function signatures
 def process_file(input_path: Path, output_path: Path) -> Path:
     return output_path
-```
 
-#### ❌ Incorrect Usage
-
-```python
-# Don't use strings for paths
+# ❌ Bad
 data_dir = "data/raw"
 file_path = data_dir + "/accounts.parquet"
-
-# Don't use string concatenation
 file_path = f"{data_dir}/accounts.parquet"
-
-# Don't use os.path.join
-import os
 file_path = os.path.join(data_dir, "accounts.parquet")
-
-# Don't use open() with strings
-with open("data/file.txt", "r") as f:
-    content = f.read()
 ```
 
-### Configuration Classes
+## External APIs
 
-When defining configuration dataclasses or Pydantic models:
+```python
+# Convert to string only at API boundary
+database_path = Path("data/db.duckdb")
+conn = duckdb.connect(database_path)  # Many libs accept Path directly
+
+# If string needed, convert at boundary
+some_library.process(str(database_path))
+```
+
+## Configuration
 
 ```python
 @dataclass
 class Config:
     source_path: Path = Path("data/raw")
-    database_path: Path = Path("data/duckdb/moneybin.duckdb")
-
-class DatabaseCredentials(BaseModel):
-    database_path: Path = Field(..., description="Path to database file")
-    backup_path: Path | None = Field(None, description="Backup directory")
-```
-
-### External API Integration
-
-When interfacing with external libraries that expect strings:
-
-```python
-# Convert Path to string only at the API boundary
-database_path = Path("data/duckdb/moneybin.duckdb")
-
-# DuckDB accepts Path objects directly - preferred
-conn = duckdb.connect(database_path)
-
-# If string conversion is needed, do it at the boundary
-some_library.process_file(str(database_path))
-```
-
-### Environment Variables
-
-When loading paths from environment variables:
-
-```python
-# Convert to Path immediately after loading
-database_path = Path(os.getenv("DUCKDB_PATH", "data/duckdb/financial.db"))
-
-# Handle optional paths
-backup_path_str = os.getenv("DUCKDB_BACKUP_PATH")
-backup_path = Path(backup_path_str) if backup_path_str else None
+    database_path: Path = Path("data/db.duckdb")
 ```
 
 ## Benefits
 
-1. **Type Safety**: Path objects provide compile-time type checking
-2. **Cross-Platform**: Automatic handling of path separators (`/` vs `\`)
-3. **Rich API**: Built-in methods for common operations (`.exists()`, `.mkdir()`, `.glob()`)
-4. **Immutability**: Path operations return new Path objects
-5. **Better Error Messages**: Clear indication when path operations fail
-
-## Migration Guidelines
-
-When updating existing code:
-
-1. Replace string path variables with Path objects
-2. Update function signatures to use Path types
-3. Replace string concatenation with Path `/` operator
-4. Use Path methods instead of os.path functions
-5. Convert to string only when required by external APIs
-
-This standard ensures consistent, maintainable, and cross-platform filesystem operations throughout the MoneyBin codebase.
+- Type safety with compile-time checking
+- Cross-platform path separators
+- Rich API (`.exists()`, `.mkdir()`, `.glob()`, etc.)
+- Better error messages
