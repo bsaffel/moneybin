@@ -24,13 +24,25 @@ snapshot-paths: ["dbt/snapshots"]
 clean-targets:
   - "dbt/target"
   - "dbt/dbt_packages"
-  - "dbt/logs"
+  - "logs"
 
 # Configuring models
 # Full documentation: https://docs.getdbt.com/docs/configuring-models
 
 models:
   moneybin:
+    # OFX staging models (source data preparation)
+    # These models clean and standardize OFX data
+    ofx:
+      +schema: prep
+      +materialized: view
+      +tags:
+        - "staging"
+        - "ofx"
+      +meta:
+        owner: "moneybin"
+        layer: "staging"
+
     # Core data models (facts and dimensions)
     # These are the foundation of the data warehouse
     core:
@@ -43,16 +55,10 @@ models:
 
     # Data marts (analytics and reporting models)
     # Built on top of core models for specific use cases
-    marts:
-      +materialized: view
-      +tags:
-        - "marts"
-      +meta:
-        owner: "moneybin"
-        layer: "marts"
-
-    # Example models (can be removed in production)
-    example:
-      +materialized: view
-      +tags:
-        - "example"
+    # marts:
+    #   +materialized: view
+    #   +tags:
+    #     - "marts"
+    #   +meta:
+    #     owner: "moneybin"
+    #     layer: "marts"

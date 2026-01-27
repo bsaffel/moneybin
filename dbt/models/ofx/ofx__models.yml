@@ -1,0 +1,123 @@
+version: 2
+
+models:
+  - name: stg_ofx__institutions
+    description: |
+      Staging model for financial institution data from OFX files.
+      Provides cleaned institution identifiers for downstream models.
+    columns:
+      - name: institution_name
+        description: Financial institution organization name (e.g., Wells Fargo, Chase)
+        tests:
+          - not_null
+      - name: institution_fid
+        description: Financial institution ID from OFX file
+        tests:
+          - not_null
+      - name: source_file
+        description: Original OFX/QFX file path
+        tests:
+          - not_null
+      - name: extracted_at
+        description: Timestamp when data was extracted from OFX file
+      - name: loaded_at
+        description: Timestamp when data was loaded into DuckDB
+
+  - name: stg_ofx__accounts
+    description: |
+      Staging model for account details from OFX files.
+      Links accounts to institutions with standardized identifiers.
+    columns:
+      - name: account_id
+        description: Unique account identifier from OFX file
+        tests:
+          - not_null
+      - name: routing_number
+        description: Bank routing number (ABA number)
+      - name: account_type
+        description: Account type (e.g., CHECKING, SAVINGS, CREDITCARD)
+        tests:
+          - not_null
+      - name: institution_org
+        description: Financial institution organization name
+        tests:
+          - not_null
+      - name: institution_fid
+        description: Financial institution ID
+      - name: source_file
+        description: Original OFX/QFX file path
+        tests:
+          - not_null
+      - name: extracted_at
+        description: Timestamp when data was extracted
+      - name: loaded_at
+        description: Timestamp when data was loaded into DuckDB
+
+  - name: stg_ofx__transactions
+    description: |
+      Staging model for transaction records from OFX files.
+      Standardizes data types and column names for downstream consumption.
+      Amount signs follow OFX convention (depends on account type).
+    columns:
+      - name: transaction_id
+        description: Unique transaction identifier (FITID) from OFX
+        tests:
+          - not_null
+      - name: account_id
+        description: Account identifier for this transaction
+        tests:
+          - not_null
+      - name: transaction_type
+        description: OFX transaction type (e.g., DEBIT, CREDIT, CHECK)
+      - name: posted_date
+        description: Date transaction was posted (converted to DATE)
+        tests:
+          - not_null
+      - name: amount
+        description: Transaction amount following OFX sign convention
+        tests:
+          - not_null
+      - name: payee
+        description: Payee or merchant name (trimmed)
+      - name: memo
+        description: Transaction description or memo (trimmed)
+      - name: check_number
+        description: Check number if applicable
+      - name: source_file
+        description: Original OFX/QFX file path
+        tests:
+          - not_null
+      - name: extracted_at
+        description: Timestamp when data was extracted
+      - name: loaded_at
+        description: Timestamp when data was loaded into DuckDB
+
+  - name: stg_ofx__balances
+    description: |
+      Staging model for account balance snapshots from OFX files.
+      Contains statement period and point-in-time balance information.
+    columns:
+      - name: account_id
+        description: Account identifier for this balance snapshot
+        tests:
+          - not_null
+      - name: statement_start_date
+        description: Beginning date of statement period
+      - name: statement_end_date
+        description: Ending date of statement period
+        tests:
+          - not_null
+      - name: ledger_balance
+        description: Ledger balance as of balance date
+      - name: ledger_balance_date
+        description: Date the ledger balance was effective
+      - name: available_balance
+        description: Available balance (may differ from ledger)
+      - name: source_file
+        description: Original OFX/QFX file path
+        tests:
+          - not_null
+      - name: extracted_at
+        description: Timestamp when data was extracted
+      - name: loaded_at
+        description: Timestamp when data was loaded into DuckDB

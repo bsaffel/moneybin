@@ -16,20 +16,20 @@ app = typer.Typer(help="Run data transformations using dbt")
 logger = logging.getLogger(__name__)
 
 
-def _validate_models_parameter(models: str) -> None:
-    """Validate models parameter to prevent shell injection.
+def _validate_select_parameter(select: str) -> None:
+    """Validate select parameter to prevent shell injection.
 
     Args:
-        models: The models parameter to validate
+        select: The select parameter to validate
 
     Raises:
         typer.Exit: If invalid characters are found
     """
     if any(
-        char in models
+        char in select
         for char in [";", "|", "&", "$", "`", "(", ")", "<", ">", '"', "'"]
     ):
-        logger.error("❌ Invalid characters in models parameter")
+        logger.error("❌ Invalid characters in select parameter")
         raise typer.Exit(1)
 
 
@@ -59,17 +59,17 @@ def _validate_project_dir(project_dir: Path) -> str:
 
 @app.command("run")
 def run_transformations(
-    models: str = typer.Option(
+    select: str = typer.Option(
         "",
-        "--models",
-        "-m",
-        help="Specific dbt models to run (e.g., 'staging' or 'marts.fct_transactions')",
+        "--select",
+        "-s",
+        help="Specific dbt selector to run (e.g., 'tag:ofx' or 'staging' or 'marts.fct_transactions')",
     ),
     full_refresh: bool = typer.Option(
         False, "--full-refresh", help="Full refresh of incremental models"
     ),
-    project_dir: Path = typer.Option(
-        Path("dbt"), "--project-dir", help="dbt project directory"
+    profiles_dir: Path = typer.Option(
+        Path("dbt"), "--profiles-dir", help="dbt profiles directory"
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose logging"
@@ -77,28 +77,44 @@ def run_transformations(
 ) -> None:
     """Run dbt transformations on the loaded DuckDB data.
 
-    This command is a wrapper around 'dbt run' with proper error handling
-    and integration with MoneyBin's logging system.
+    This command is a wrapper around 'uv run dbt run' with proper error handling
+    and integration with MoneyBin's logging system. Uses profile-specific target
+    and log directories.
 
     Args:
-        models: Specific models to run (optional)
+        select: Specific models/tags to run (optional)
         full_refresh: Whether to do full refresh of incremental models
-        project_dir: dbt project directory
+        profiles_dir: dbt profiles directory
         verbose: Enable debug level logging
     """
     profile = get_current_profile()
     logger.info(f"Starting dbt transformations (Profile: {profile})")
 
     # Validate inputs
-    project_dir_str = _validate_project_dir(project_dir)
+    profiles_dir_str = _validate_project_dir(profiles_dir)
+
+    # Build log path for profile
+    log_path = Path("logs") / profile
+    log_path.mkdir(parents=True, exist_ok=True)
 
     # Build dbt command with input validation
-    cmd = ["dbt", "run", "--project-dir", project_dir_str]
+    cmd = [
+        "uv",
+        "run",
+        "dbt",
+        "run",
+        "--profiles-dir",
+        profiles_dir_str,
+        "--target",
+        profile,
+        "--log-path",
+        str(log_path),
+    ]
 
-    if models:
-        _validate_models_parameter(models)
-        cmd.extend(["--models", models])
-        logger.info(f"Running specific models: {models}")
+    if select:
+        _validate_select_parameter(select)
+        cmd.extend(["--select", select])
+        logger.info(f"Running specific selector: {select}")
     else:
         logger.info("Running all dbt models")
 
@@ -156,7 +172,7 @@ def run_transformations(
             raise typer.Exit(returncode)
 
     except FileNotFoundError as e:
-        logger.error("❌ dbt command not found. Is dbt installed?")
+        logger.error("❌ dbt or uv command not found. Is dbt installed?")
         logger.info("Install with: uv add dbt-core dbt-duckdb")
         raise typer.Exit(1) from e
     except Exception as e:
@@ -192,7 +208,7 @@ def run_tests(
     cmd = ["dbt", "test", "--project-dir", project_dir_str]
 
     if models:
-        _validate_models_parameter(models)
+        _validate_select_parameter(models)
         cmd.extend(["--models", models])
         logger.info(f"Testing specific models: {models}")
     else:
@@ -314,7 +330,7 @@ def compile_models(
     cmd = ["dbt", "compile", "--project-dir", project_dir_str]
 
     if models:
-        _validate_models_parameter(models)
+        _validate_select_parameter(models)
         cmd.extend(["--models", models])
         logger.info(f"Compiling specific models: {models}")
     else:

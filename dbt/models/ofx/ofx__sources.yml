@@ -1,0 +1,97 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw data tables loaded from OFX/QFX files
+    schema: raw
+    tables:
+      - name: ofx_institutions
+        description: |
+          Financial institution information extracted from OFX/QFX files.
+          Contains organization details and unique identifiers for financial institutions.
+        columns:
+          - name: organization
+            description: Financial institution name (e.g., Wells Fargo, Chase)
+          - name: fid
+            description: Financial institution ID provided in OFX file
+          - name: source_file
+            description: Original OFX/QFX file path from which data was extracted
+          - name: extracted_at
+            description: Timestamp when data was extracted from OFX file
+          - name: loaded_at
+            description: Timestamp when data was loaded into DuckDB
+
+      - name: ofx_accounts
+        description: |
+          Account details extracted from OFX/QFX files.
+          Contains account identifiers, types, and institution relationships.
+        columns:
+          - name: account_id
+            description: Unique account identifier from OFX file
+          - name: routing_number
+            description: Bank routing number (ABA number for checking/savings accounts)
+          - name: account_type
+            description: Account type from OFX (e.g., CHECKING, SAVINGS, CREDITCARD)
+          - name: institution_org
+            description: Financial institution organization name
+          - name: institution_fid
+            description: Financial institution ID
+          - name: source_file
+            description: Original OFX/QFX file path from which data was extracted
+          - name: extracted_at
+            description: Timestamp when data was extracted from OFX file
+          - name: loaded_at
+            description: Timestamp when data was loaded into DuckDB
+
+      - name: ofx_transactions
+        description: |
+          Transaction records extracted from OFX/QFX files.
+          Contains all transaction details including amounts, dates, and descriptions.
+          Follows OFX specification where debits/credits depend on account type.
+        columns:
+          - name: transaction_id
+            description: Unique transaction identifier (FITID) from OFX file
+          - name: account_id
+            description: Account identifier this transaction belongs to
+          - name: transaction_type
+            description: OFX transaction type (e.g., DEBIT, CREDIT, CHECK, PAYMENT)
+          - name: date_posted
+            description: Date the transaction was posted to the account
+          - name: amount
+            description: Transaction amount (sign convention per OFX spec)
+          - name: payee
+            description: Payee or merchant name
+          - name: memo
+            description: Transaction description or memo field
+          - name: check_number
+            description: Check number if transaction is a check
+          - name: source_file
+            description: Original OFX/QFX file path from which data was extracted
+          - name: extracted_at
+            description: Timestamp when data was extracted from OFX file
+          - name: loaded_at
+            description: Timestamp when data was loaded into DuckDB
+
+      - name: ofx_balances
+        description: |
+          Account balance snapshots extracted from OFX/QFX files.
+          Contains statement period information and balance details as of specific dates.
+        columns:
+          - name: account_id
+            description: Account identifier for this balance snapshot
+          - name: statement_start_date
+            description: Beginning date of statement period
+          - name: statement_end_date
+            description: Ending date of statement period
+          - name: ledger_balance
+            description: Ledger balance as of balance date
+          - name: ledger_balance_date
+            description: Date the ledger balance was effective
+          - name: available_balance
+            description: Available balance (may differ from ledger for pending transactions)
+          - name: source_file
+            description: Original OFX/QFX file path from which data was extracted
+          - name: extracted_at
+            description: Timestamp when data was extracted from OFX file
+          - name: loaded_at
+            description: Timestamp when data was loaded into DuckDB

@@ -67,34 +67,38 @@ class TestTransformCommands:
     ) -> None:
         """Test CLI argument parsing for run command."""
         # Test default arguments
-        result = runner.invoke(app, ["run", "--project-dir", str(temp_dbt_project)])
+        result = runner.invoke(app, ["run", "--profiles-dir", str(temp_dbt_project)])
         assert result.exit_code == 0
 
         # Verify dbt command was built correctly
         call_args = mock_subprocess_run.call_args[0][0]
-        assert call_args[0] == "dbt"
+        assert call_args[0] == "uv"
         assert call_args[1] == "run"
-        assert "--project-dir" in call_args
+        assert call_args[2] == "dbt"
+        assert call_args[3] == "run"
+        assert "--profiles-dir" in call_args
         assert str(temp_dbt_project) in call_args
+        assert "--target" in call_args
+        assert "--log-path" in call_args
 
-        # Test with models argument (non-verbose to use subprocess.run)
+        # Test with select argument (non-verbose to use subprocess.run)
         mock_subprocess_run.reset_mock()
         result = runner.invoke(
             app,
             [
                 "run",
-                "--project-dir",
+                "--profiles-dir",
                 str(temp_dbt_project),
-                "--models",
-                "staging",
+                "--select",
+                "tag:ofx",
                 "--full-refresh",
             ],
         )
         assert result.exit_code == 0
 
         call_args = mock_subprocess_run.call_args[0][0]
-        assert "--models" in call_args
-        assert "staging" in call_args
+        assert "--select" in call_args
+        assert "tag:ofx" in call_args
         assert "--full-refresh" in call_args
 
     def test_run_command_input_validation(
@@ -103,17 +107,17 @@ class TestTransformCommands:
         mock_subprocess_run: MagicMock,
     ) -> None:
         """Test input validation for run command."""
-        # Test invalid models parameter (shell injection prevention)
+        # Test invalid select parameter (shell injection prevention)
         result = runner.invoke(
             app,
-            ["run", "--models", "staging; rm -rf /"],
+            ["run", "--select", "staging; rm -rf /"],
         )
         assert result.exit_code == 1
 
-        # Test nonexistent project directory
+        # Test nonexistent profiles directory
         result = runner.invoke(
             app,
-            ["run", "--project-dir", "/nonexistent/path"],
+            ["run", "--profiles-dir", "/nonexistent/path"],
         )
         assert result.exit_code == 1
 
@@ -126,18 +130,18 @@ class TestTransformCommands:
         """Test CLI exit codes for run command."""
         # Success case
         mock_subprocess_run.return_value.returncode = 0
-        result = runner.invoke(app, ["run", "--project-dir", str(temp_dbt_project)])
+        result = runner.invoke(app, ["run", "--profiles-dir", str(temp_dbt_project)])
         assert result.exit_code == 0
 
         # dbt failure case
         mock_subprocess_run.return_value.returncode = 1
-        result = runner.invoke(app, ["run", "--project-dir", str(temp_dbt_project)])
+        result = runner.invoke(app, ["run", "--profiles-dir", str(temp_dbt_project)])
         assert result.exit_code == 1
 
-        # FileNotFoundError case (dbt not installed)
+        # FileNotFoundError case (dbt/uv not installed)
         mock_subprocess_run.reset_mock()
-        mock_subprocess_run.side_effect = FileNotFoundError("dbt not found")
-        result = runner.invoke(app, ["run", "--project-dir", str(temp_dbt_project)])
+        mock_subprocess_run.side_effect = FileNotFoundError("uv not found")
+        result = runner.invoke(app, ["run", "--profiles-dir", str(temp_dbt_project)])
         assert result.exit_code == 1
 
     def test_test_command_argument_parsing(
@@ -242,7 +246,7 @@ class TestTransformCommands:
             app,
             [
                 "run",
-                "--project-dir",
+                "--profiles-dir",
                 str(temp_dbt_project),
                 "--verbose",
             ],

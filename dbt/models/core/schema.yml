@@ -64,7 +64,8 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['expense', 'income', 'zero']
+              arguments:
+                values: ['expense', 'income', 'zero']
 
       # Transaction Description
       - name: description
@@ -133,8 +134,9 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ['plaid']
-              # Future values: 'manual_csv', 'cryptocurrency', etc.
+              arguments:
+                values: ['plaid']
+                # Future values: 'manual_csv', 'cryptocurrency', etc.
 
       - name: source_extracted_at
         description: Timestamp when data was extracted from the source system
