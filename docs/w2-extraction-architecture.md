@@ -82,12 +82,14 @@ The W-2 extraction system implements a **dual extraction strategy** combining te
 The system attempts extraction using two methods:
 
 **Text Extraction (pdfplumber)**
+
 - Fast (~1 second per W-2)
 - Works best with text-based PDFs
 - Direct text extraction without image processing
 - Preferred when confidence is high
 
 **OCR Extraction (pytesseract)**
+
 - Slower (~10 seconds per W-2)
 - Works with image-based or scanned PDFs
 - Converts PDF pages to images (300 DPI)
@@ -96,16 +98,19 @@ The system attempts extraction using two methods:
 ### 2. Cropping Strategy
 
 **Problem**: Many W-2 PDFs contain 4 copies in a 2×2 grid layout (employee copy, employer copy, duplicate for each), causing pdfplumber and pytesseract to extract duplicate data like:
+
 ```
 "Okta, Inc Okta, Inc"
 "100 First Street 100 First Street"
 ```
 
 **Solution**: Crop to top-left quadrant before extraction
+
 - **pdfplumber**: Crop page using `page.crop((0, 0, width/2, height/2))`
 - **pytesseract**: Crop PIL image using `image.crop((0, 0, width//2, height//2))`
 
 **Benefits**:
+
 - Eliminates duplicate data at the source
 - Reduces processing time (1/4 of page data)
 - Works consistently for both methods
@@ -114,12 +119,14 @@ The system attempts extraction using two methods:
 ### 3. Method Comparison & Validation
 
 After both extractions complete:
+
 1. Calculate confidence score for each result (0.0 to 1.0)
 2. Compare key fields between methods (SSN, EIN, wages, federal tax)
 3. Check agreement ratio (must be ≥80% for high confidence)
 4. Select result with highest confidence above threshold (default: 0.7)
 
 **Configuration Options**:
+
 ```python
 W2ExtractionConfig(
     require_dual_extraction=True,   # Both methods must succeed
@@ -133,6 +140,7 @@ W2ExtractionConfig(
 ### Typical W-2 PDF Layouts
 
 **Layout 1: Single W-2 (Standard)**
+
 ```
 ┌─────────────────────┐
 │                     │
@@ -143,6 +151,7 @@ W2ExtractionConfig(
 ```
 
 **Layout 2: Side-by-Side Copies**
+
 ```
 ┌─────────────┬─────────────┐
 │   W-2       │   W-2       │
@@ -151,6 +160,7 @@ W2ExtractionConfig(
 ```
 
 **Layout 3: 2×2 Grid (Most Common)**
+
 ```
 ┌─────────────┬─────────────┐
 │   W-2       │   W-2       │
@@ -205,6 +215,7 @@ FAIL: ValueError
 **Challenge**: Distinguishing employee names from employer names, addresses, and city names in unstructured text.
 
 **Strategy**:
+
 1. Find SSN position in text
 2. Search 500 characters after SSN for capitalized word pairs
 3. Filter out false positives:
@@ -215,6 +226,7 @@ FAIL: ValueError
 4. Use first remaining match as employee name
 
 **Example**:
+
 ```
 Text: "26-4175727 Okta, Inc 100 First Street San Francisco, CA 94105 409-53-0099 Brandon Saffel..."
                                                                                     ^^^^^^^ ^^^^^^^
@@ -256,11 +268,13 @@ where:
 ### Field Classification
 
 **Required Fields** (70% weight):
+
 - `tax_year`, `employee_ssn`, `employee_first_name`, `employee_last_name`
 - `employer_ein`, `employer_name`
 - `wages`, `federal_income_tax`
 
 **Important Fields** (30% weight):
+
 - `social_security_wages`, `social_security_tax`
 - `medicare_wages`, `medicare_tax`
 - `employee_address`, `employer_address`
@@ -276,12 +290,14 @@ where:
 The `_check_agreement()` method compares key fields between text and OCR results:
 
 **Comparison Logic**:
+
 - **Numeric fields**: Exact match (1.0) or within 5% (0.5 partial credit)
 - **String fields**: Exact match only (1.0)
 
 **Agreement Threshold**: ≥80% for high confidence
 
 **Example**:
+
 ```python
 # Text extraction result
 text_data = {"wages": 319075.95, "ssn": "409-53-0099", ...}
@@ -310,15 +326,18 @@ The W-2 data model balances **structure** (queryability) with **flexibility** (h
 See `src/moneybin/extractors/w2_extractor.py` for full schema definition.
 
 **Core Fields**:
+
 - Employee: SSN, name, address
 - Employer: EIN, name, address
 - Wages/taxes: All major W-2 boxes (1-11, 13)
 
 **JSON Fields**:
+
 - `state_local_info`: Array of state/local tax records (0-2 states typical)
 - `optional_boxes`: Object with box 12 codes and box 14 other
 
 **Example JSON Structure**:
+
 ```json
 {
   "state_local_info": [
@@ -346,6 +365,7 @@ See `src/moneybin/extractors/w2_extractor.py` for full schema definition.
 **Primary Key**: `(tax_year, employee_ssn, employer_ein, source_file)`
 
 **Design Rationale**:
+
 - Composite key prevents duplicates while allowing re-processing
 - No indexes needed (table typically has <50 rows)
 - JSON columns for sparse data (state_local_info, optional_boxes)
@@ -359,6 +379,7 @@ See `src/moneybin/sql/schema/raw_w2_forms.sql` for complete schema.
 ### Extraction Failures
 
 **Both Methods Fail**:
+
 ```
 ValueError: Both extraction methods failed for {file_path}:
   Text: {text_error}
@@ -366,11 +387,13 @@ ValueError: Both extraction methods failed for {file_path}:
 ```
 
 **Low Confidence**:
+
 ```
 ValueError: Text extraction confidence too low: 0.65 < 0.70
 ```
 
 **Method Disagreement** (with `require_dual_extraction=True`):
+
 ```
 ValueError: Extraction methods disagree (agreement: 0.45).
 Cannot proceed with low confidence.
@@ -379,6 +402,7 @@ Cannot proceed with low confidence.
 ### Required Field Failures
 
 The parser raises `ValueError` if required fields cannot be extracted:
+
 - Tax year (all fallback strategies exhausted)
 - Employee SSN
 - Employer EIN
@@ -427,6 +451,7 @@ Common OCR errors and corrections:
 See `tests/moneybin/test_extractors/test_w2_extractor.py` for full test suite.
 
 **Unit Tests**:
+
 - Text extraction
 - OCR extraction (mocked)
 - Confidence calculation
@@ -435,6 +460,7 @@ See `tests/moneybin/test_extractors/test_w2_extractor.py` for full test suite.
 - Error handling
 
 **Integration Tests**:
+
 - End-to-end extraction
 - Database loading
 - CLI commands
@@ -442,6 +468,7 @@ See `tests/moneybin/test_extractors/test_w2_extractor.py` for full test suite.
 ### Test Fixtures
 
 **Session-scoped fixture** (`cached_w2_extraction`):
+
 ```python
 @pytest.fixture(scope="session")
 def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
@@ -461,6 +488,7 @@ def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
 ```
 
 **Benefits**:
+
 - Extracts PDF once per test session (with OCR)
 - All tests use cached DataFrame
 - First test run: ~11s (includes OCR)
@@ -470,6 +498,7 @@ def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
 ### Mock Strategies
 
 **Configuration Testing**: Test with various config combinations:
+
 - `require_dual_extraction=True/False`
 - `min_confidence_score=0.7/0.8/0.9`
 - `enable_ocr=True` (default for production-like testing)
@@ -511,12 +540,14 @@ def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
 ## References
 
 ### Documentation
+
 - [IRS Form W-2 Specifications](https://www.irs.gov/forms-pubs/about-form-w-2)
 - [pdfplumber Documentation](https://pdfplumber.readthedocs.io/)
 - [pytesseract Documentation](https://github.com/madmaze/pytesseract)
 - [Pydantic Documentation](https://docs.pydantic.dev/)
 
 ### Implementation Files
+
 - `src/moneybin/extractors/w2_extractor.py` - Main extraction logic
 - `src/moneybin/loaders/w2_loader.py` - Database loading
 - `src/moneybin/sql/schema/raw_w2_forms.sql` - Database schema
@@ -524,6 +555,7 @@ def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
 - `tests/moneybin/test_extractors/test_w2_extractor.py` - Tests
 
 ### Related Documentation
+
 - [W-2 Extraction Feature Guide](./w2-extraction-feature.md) - Feature overview, usage examples, and CLI commands
 - [OFX Import Guide](./ofx-import-guide.md) - OFX extraction (similar pattern)
 - [Testing Strategy](./.cursor/rules/python-testing.mdc) - Testing standards
@@ -531,6 +563,7 @@ def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
 ---
 
 **Quick Links**:
+
 - **Getting Started**: See [W-2 Extraction Feature Guide](./w2-extraction-feature.md) for usage examples
 - **Code Reference**: See `src/moneybin/extractors/w2_extractor.py` for implementation
 - **API Reference**: See method docstrings in `W2Extractor` class for detailed parameter descriptions

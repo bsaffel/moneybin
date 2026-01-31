@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: raw
     description: Raw data tables loaded from external sources (Plaid API, CSV files, etc.)
-    schema: main
+    schema: raw
     tables:
       - name: raw_plaid_transactions
         description: |

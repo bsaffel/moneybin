@@ -46,6 +46,7 @@ models:
     # Core data models (facts and dimensions)
     # These are the foundation of the data warehouse
     core:
+      +schema: core
       +materialized: table
       +tags:
         - "core"
