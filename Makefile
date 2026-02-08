@@ -50,7 +50,7 @@ help: ## Show this help message
 	@echo "  make update-deps       # Update all dependencies"
 	@echo ""
 	@echo "$(BLUE)Dependency Management:$(RESET)"
-	@echo "  make sync           # Sync from lockfile (fast, reproducible)"
+	@echo "  make sync           # Sync from lockfile"
 	@echo "  make lock           # Generate/update lockfile"
 	@echo "  make clean          # Clean environment and start fresh"
 
