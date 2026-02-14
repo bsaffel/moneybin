@@ -20,6 +20,40 @@ alwaysApply: false
 - **Bank Transactions**: Aggregate from APIs/CSV/PDF, auto-categorize, deduplicate
 - **Multi-Source**: Consistent normalization, validation, incremental updates, audit trails
 
+## Medallion Architecture (Raw → Staging → Core)
+
+MoneyBin follows a three-layer data architecture modeled after the medallion
+(bronze/silver/gold) and Inmon-style common tables patterns:
+
+| Layer    | Schema | Materialized | Purpose                                    |
+|----------|--------|--------------|--------------------------------------------|
+| **Raw**  | `raw`  | Table        | Untouched data from loaders (Python)       |
+| **Staging** | `prep` | View      | Light cleaning, type casting (dbt `stg_*`) |
+| **Core** | `core` | Table        | Canonical, deduplicated, multi-source      |
+
+### Key Principles
+
+1. **One canonical table per entity** — `dim_accounts`, `fct_transactions`, etc.
+   All downstream consumers (MCP server, reports, analyses) read from core
+   models only. Never query raw or staging tables from interfaces.
+2. **Multi-source union** — Core models `UNION ALL` from every staging source
+   (OFX, Plaid, CSV) with a `source_system` column for provenance.
+3. **Deduplication in core** — `ROW_NUMBER()` windows handle duplicate records
+   from overlapping imports. Cross-source dedup uses mapping tables.
+4. **Standardized conventions** — Amounts follow accounting sign convention
+   (negative=expense, positive=income). Dates are `DATE` type. All amounts
+   are `DECIMAL(18,2)`.
+5. **Source-agnostic consumers** — The MCP server, CLI, and any future UI
+   reference core `TableRef` constants (e.g. `DIM_ACCOUNTS`, `FCT_TRANSACTIONS`)
+   and never embed source-specific logic.
+
+### Adding a New Data Source
+
+1. Create staging models in `dbt/models/<source>/` (views in `prep` schema)
+2. Add a CTE to the relevant core model (`dim_accounts`, `fct_transactions`)
+3. `UNION ALL` the new staging CTE into the `all_*` CTE
+4. No changes needed to MCP server or other consumers
+
 ## Data Quality
 
 - Validate data types, ranges, required fields

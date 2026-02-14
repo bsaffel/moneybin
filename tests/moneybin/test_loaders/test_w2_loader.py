@@ -69,9 +69,10 @@ def test_create_raw_tables(tmp_path: Path) -> None:
     import duckdb
 
     conn = duckdb.connect(str(db_path))
-    result = conn.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'raw' AND table_name = 'w2_forms'"
-    ).fetchall()
+    result = conn.execute("""
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'raw' AND table_name = 'w2_forms'
+    """).fetchall()
     conn.close()
 
     assert len(result) == 1

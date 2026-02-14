@@ -143,7 +143,9 @@ class ParquetLoader:
                 # Pyright reports "Type of 'fetchone' is partially unknown" because DuckDB's stubs
                 # define fetchone() as returning tuple[Unknown, ...] | None. This triggers
                 # reportUnknownMemberType in strict mode. We know COUNT(*) returns an integer.
-                result = conn.sql(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # type: ignore[misc] # noqa: S608  # table_name validated as safe identifier
+                result = conn.sql(
+                    f"""SELECT COUNT(*) FROM {table_name}"""  # noqa: S608  # table_name validated as safe identifier
+                ).fetchone()  # type: ignore[misc]
                 count = result[0] if result else 0
                 status[table_name] = {"row_count": count, "estimated_size": size}
 
@@ -252,7 +254,9 @@ class ParquetLoader:
         # Pyright's reportUnknownMemberType error occurs because DuckDB stubs define
         # fetchone() as returning tuple[Unknown, ...] | None with Unknown tuple elements.
         # We safely handle the None case and know COUNT(*) returns a single integer.
-        result = conn.sql(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # type: ignore[misc] # noqa: S608  # table_name validated as safe identifier
+        result = conn.sql(
+            f"""SELECT COUNT(*) FROM {table_name}"""  # noqa: S608  # table_name validated as safe identifier
+        ).fetchone()  # type: ignore[misc]
         count = result[0] if result else 0
         logger.info(f"✅ Accounts table now contains {count} records")
         return count
@@ -326,7 +330,9 @@ class ParquetLoader:
         # Pyright's reportUnknownMemberType error occurs because DuckDB stubs define
         # fetchone() as returning tuple[Unknown, ...] | None with Unknown tuple elements.
         # We safely handle the None case and know COUNT(*) returns a single integer.
-        result = conn.sql(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # type: ignore[misc] # noqa: S608  # table_name validated as safe identifier
+        result = conn.sql(
+            f"""SELECT COUNT(*) FROM {table_name}"""  # noqa: S608  # table_name validated as safe identifier
+        ).fetchone()  # type: ignore[misc]
         count = result[0] if result else 0
         logger.info(f"✅ Transactions table now contains {count} records")
         return count

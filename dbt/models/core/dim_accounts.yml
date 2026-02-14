@@ -1,0 +1,101 @@
+version: 2
+
+models:
+  - name: dim_accounts
+    description: |
+      Canonical accounts dimension table — the single source of truth for all
+      financial accounts in the data warehouse.
+
+      This model consolidates accounts from every ingestion source (OFX, Plaid,
+      manual imports) into one deduplicated table. Downstream models, MCP tools,
+      and reporting should always read from dim_accounts rather than raw or
+      staging tables.
+
+      **Medallion layer:** Core / Gold
+      **Grain:** One row per unique account_id (most recent extraction wins)
+      **Refresh:** Full rebuild on each dbt run
+
+      ## Sources
+      | Source        | Status  | Staging Model          |
+      |---------------|---------|------------------------|
+      | OFX/QFX files | Active  | stg_ofx__accounts      |
+      | Plaid API     | Planned | stg_plaid__accounts    |
+      | Manual CSV    | Planned | stg_manual__accounts   |
+
+      ## Deduplication Strategy
+      When the same account_id appears in multiple imports (e.g. multiple OFX
+      files over time), only the most recently extracted record is kept. When
+      cross-source deduplication is needed (same real-world account from OFX and
+      Plaid), an account mapping table will be introduced.
+
+    meta:
+      owner: "moneybin"
+      layer: "core"
+      contains_pii: true
+      pii_fields: ["account_id", "routing_number"]
+
+    columns:
+      - name: account_id
+        description: >
+          Unique account identifier as provided by the originating source
+          system. For OFX this is the ACCTID field; for Plaid it is the
+          Plaid account_id.
+        tests:
+          - unique
+          - not_null
+
+      - name: routing_number
+        description: >
+          Bank ABA routing number. Present for checking/savings accounts
+          from OFX imports. NULL for credit cards and non-OFX sources.
+
+      - name: account_type
+        description: >
+          Standardized account type from the source system.
+          OFX values: CHECKING, SAVINGS, CREDITCARD, MONEYMRKT, CREDITLINE.
+          Future Plaid values will be mapped to a common taxonomy.
+        tests:
+          - not_null
+
+      - name: institution_name
+        description: >
+          Human-readable name of the financial institution
+          (e.g. "Wells Fargo", "Chase").
+        tests:
+          - not_null
+
+      - name: institution_fid
+        description: >
+          Financial institution identifier from the source system.
+          For OFX this is the FID element; for Plaid it is institution_id.
+
+      - name: source_system
+        description: >
+          Identifies which ingestion pipeline produced this record.
+          Current values: 'ofx'. Future: 'plaid', 'manual'.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["ofx", "plaid", "manual"]
+
+      - name: source_file
+        description: >
+          Path to the original file from which data was extracted.
+          Present for file-based sources (OFX, CSV); NULL for API sources.
+
+      - name: extracted_at
+        description: >
+          Timestamp when data was extracted from the source file or API.
+        tests:
+          - not_null
+
+      - name: loaded_at
+        description: >
+          Timestamp when the raw record was loaded into DuckDB by the
+          Python loader.
+
+      - name: dbt_updated_at
+        description: >
+          Timestamp of the most recent dbt run that refreshed this record.
+        tests:
+          - not_null

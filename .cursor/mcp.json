@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "moneybin": {
+      "command": "uv",
+      "args": ["run", "--directory", "/Users/bsaffel/Workspace/moneybin", "moneybin", "mcp", "serve"],
+      "env": {
+        "MONEYBIN_PROFILE": "brandon"
+      }
+    }
+  }
+}

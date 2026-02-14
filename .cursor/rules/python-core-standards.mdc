@@ -21,6 +21,7 @@ alwaysApply: true
 - Use `ruff check --fix` to organize imports
 - Prefer absolute imports, use relative only within packages
 - **ALWAYS include reason** for `# noqa:` or `# type: ignore` comments
+- **Triple-quoted strings for inline SQL**: Always use `"""..."""` for SQL embedded in Python
 
 ## Type Hints & Annotations
 

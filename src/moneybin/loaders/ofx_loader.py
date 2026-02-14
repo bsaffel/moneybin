@@ -173,12 +173,16 @@ class OFXLoader:
         # Use DuckDB's parameter binding for LIMIT
         # Note: table_name is validated above, so f-string is safe
         if limit is not None:
-            query = (
-                f"SELECT * FROM raw.ofx_{table_name} ORDER BY loaded_at DESC LIMIT ?"  # noqa: S608
-            )
+            query = f"""
+                SELECT * FROM raw.ofx_{table_name}
+                ORDER BY loaded_at DESC LIMIT ?
+            """  # noqa: S608
             df = conn.execute(query, [limit]).pl()
         else:
-            query = f"SELECT * FROM raw.ofx_{table_name} ORDER BY loaded_at DESC"  # noqa: S608
+            query = f"""
+                SELECT * FROM raw.ofx_{table_name}
+                ORDER BY loaded_at DESC
+            """  # noqa: S608
             df = conn.execute(query).pl()
 
         conn.close()

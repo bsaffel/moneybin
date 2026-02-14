@@ -43,6 +43,8 @@ dependencies = [
     "pytesseract>=0.3.13",
     "pdf2image>=1.17.0",
     "pyyaml>=6.0.3",
+    # MCP server for exposing DuckDB data to AI assistants
+    "mcp[cli]>=1.9.0",
 ]
 
 [tool.setuptools]
@@ -118,6 +120,7 @@ ignore = [
 # Test files should use asserts - this is standard pytest practice
 "tests/**/*.py" = [
     "S101",  # assert used - standard in pytest
+    "D102",  # test methods don't need docstrings
 ]
 # CLI commands and user config use print() for user-facing output
 "src/moneybin/cli/commands/*.py" = [
@@ -125,6 +128,10 @@ ignore = [
 ]
 "src/moneybin/utils/user_config.py" = [
     "T201",  # print() allowed for interactive user prompts
+]
+# MCP tools/resources build SQL with parameterized WHERE clauses from controlled inputs
+"src/moneybin/mcp/*.py" = [
+    "S608",  # SQL injection false positives — all user values are parameterized
 ]
 
 [tool.ruff.lint.pydocstyle]

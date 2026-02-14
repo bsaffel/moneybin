@@ -130,10 +130,16 @@ class W2Loader:
 
         try:
             if limit is not None:
-                query = "SELECT * FROM raw.w2_forms ORDER BY loaded_at DESC LIMIT ?"
+                query = """
+                    SELECT * FROM raw.w2_forms
+                    ORDER BY loaded_at DESC LIMIT ?
+                """
                 df = conn.execute(query, [limit]).pl()
             else:
-                query = "SELECT * FROM raw.w2_forms ORDER BY loaded_at DESC"
+                query = """
+                    SELECT * FROM raw.w2_forms
+                    ORDER BY loaded_at DESC
+                """
                 df = conn.execute(query).pl()
 
             return df

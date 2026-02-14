@@ -1,0 +1,208 @@
+version: 2
+
+models:
+  - name: fct_transactions
+    description: |
+      Canonical transactions fact table — the single source of truth for all
+      financial transactions in the data warehouse.
+
+      This model consolidates transactions from every ingestion source into one
+      standardized table with a uniform schema. All downstream consumers (MCP
+      tools, reports, analyses) should query fct_transactions rather than
+      source-specific raw or staging tables.
+
+      **Medallion layer:** Core / Gold
+      **Grain:** One row per transaction_id + source_system
+      **Refresh:** Full rebuild on each dbt run
+
+      ## Sources
+      | Source        | Status  | Staging Model             |
+      |---------------|---------|---------------------------|
+      | OFX/QFX files | Active  | stg_ofx__transactions     |
+      | Plaid API     | Planned | stg_plaid__transactions   |
+      | Manual CSV    | Planned | stg_manual__transactions  |
+
+      ## Amount Convention
+      All amounts are standardized to accounting sign convention:
+      - **Negative** = expense / debit / money out
+      - **Positive** = income / credit / money in
+      - **Zero** = zero-amount transaction
+
+      Source-specific conventions are normalized in this model:
+      - OFX amounts already follow this convention (no change)
+      - Plaid amounts are sign-flipped (Plaid: positive = expense)
+
+    meta:
+      owner: "moneybin"
+      layer: "core"
+      contains_pii: true
+      pii_fields: ["account_id", "description", "merchant_name", "memo"]
+
+    columns:
+      - name: transaction_id
+        description: >
+          Unique transaction identifier from the source system.
+          For OFX this is the FITID; for Plaid it is the transaction_id.
+        tests:
+          - not_null
+
+      - name: account_id
+        description: >
+          Account this transaction belongs to. References dim_accounts.account_id.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_accounts')
+              field: account_id
+
+      - name: transaction_date
+        description: >
+          Date the transaction was posted to the account. This is the primary
+          date used for reporting and analysis.
+        tests:
+          - not_null
+
+      - name: authorized_date
+        description: >
+          Date the transaction was authorized (Plaid only). NULL for OFX
+          transactions where only the posting date is available.
+
+      - name: amount
+        description: >
+          Standardized transaction amount in the account's currency.
+          Negative = expense/debit, Positive = income/credit.
+        tests:
+          - not_null
+
+      - name: amount_absolute
+        description: >
+          Absolute value of the transaction amount for easier aggregation
+          of spending totals regardless of direction.
+        tests:
+          - not_null
+
+      - name: transaction_direction
+        description: >
+          Human-readable classification of the amount sign:
+          'expense', 'income', or 'zero'.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["expense", "income", "zero"]
+
+      - name: description
+        description: >
+          Primary transaction description. For OFX this is the payee name;
+          for Plaid this is the transaction name.
+
+      - name: merchant_name
+        description: >
+          Normalized merchant name when available (Plaid only).
+          NULL for OFX transactions.
+
+      - name: memo
+        description: >
+          Additional transaction details or memo field.
+          Present in OFX data; NULL for Plaid.
+
+      - name: category
+        description: >
+          Primary spending category. Currently populated by Plaid only;
+          NULL for OFX until categorization models are built.
+
+      - name: subcategory
+        description: >
+          Detailed spending subcategory (Plaid only).
+
+      - name: payment_channel
+        description: >
+          How the transaction was made (e.g. 'online', 'in store').
+          Plaid only; NULL for OFX.
+
+      - name: transaction_type
+        description: >
+          Source-specific transaction type.
+          OFX values: DEBIT, CREDIT, CHECK, PAYMENT, etc.
+          Plaid values: place, digital, special, unresolved.
+
+      - name: check_number
+        description: >
+          Check number for check transactions (OFX only).
+
+      - name: is_pending
+        description: >
+          Whether the transaction is still pending settlement.
+          Always false for OFX (which only reports posted transactions).
+        tests:
+          - not_null
+
+      - name: pending_transaction_id
+        description: >
+          ID of the pending version of this transaction (Plaid only).
+
+      - name: location_address
+        description: Transaction location street address (Plaid only).
+
+      - name: location_city
+        description: Transaction location city (Plaid only).
+
+      - name: location_region
+        description: Transaction location state/region (Plaid only).
+
+      - name: location_postal_code
+        description: Transaction location postal/ZIP code (Plaid only).
+
+      - name: location_country
+        description: Transaction location country code (Plaid only).
+
+      - name: location_latitude
+        description: Transaction location latitude (Plaid only).
+
+      - name: location_longitude
+        description: Transaction location longitude (Plaid only).
+
+      - name: currency_code
+        description: >
+          ISO 4217 currency code. Defaults to 'USD' for OFX transactions.
+        tests:
+          - not_null
+
+      - name: source_system
+        description: >
+          Identifies which ingestion pipeline produced this record.
+          Current values: 'ofx'. Future: 'plaid', 'manual'.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["ofx", "plaid", "manual"]
+
+      - name: source_extracted_at
+        description: >
+          Timestamp when data was extracted from the source file or API.
+
+      - name: dbt_loaded_at
+        description: >
+          Timestamp of the dbt run that produced this record.
+        tests:
+          - not_null
+
+      - name: transaction_year
+        description: Year extracted from transaction_date (e.g. 2025).
+
+      - name: transaction_month
+        description: Month extracted from transaction_date (1-12).
+
+      - name: transaction_day
+        description: Day of month extracted from transaction_date (1-31).
+
+      - name: transaction_day_of_week
+        description: >
+          Day of week (0=Sunday, 6=Saturday) for day-of-week analysis.
+
+      - name: transaction_year_month
+        description: >
+          Year-month string in YYYY-MM format for monthly aggregations.
+
+      - name: transaction_year_quarter
+        description: >
+          Year-quarter string in YYYY-Q# format for quarterly aggregations.

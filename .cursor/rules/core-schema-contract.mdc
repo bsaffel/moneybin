@@ -1,0 +1,28 @@
+---
+description: Enforce schema contract between dbt models and SQL DDL test fixture files
+globs: dbt/models/**/*.yml,dbt/models/**/*.sql,src/moneybin/sql/schema/*.sql
+alwaysApply: false
+---
+
+# dbt ↔ DDL Schema Contract
+
+Any dbt model that has a corresponding SQL DDL file in `src/moneybin/sql/schema/` must keep the two in sync. The DDL files are used by test fixtures to create tables with the correct schema.
+
+- **dbt YAML** (`dbt/models/**/*.yml`) — authoritative column spec
+- **SQL DDL** (`src/moneybin/sql/schema/*.sql`) — test fixture table definitions
+
+## When adding, removing, or renaming columns
+
+1. Update the dbt model YAML and SQL as needed
+2. Update the corresponding DDL file in `src/moneybin/sql/schema/`
+3. Add the new model pair to `_CORE_MODELS` in `tests/moneybin/test_schema_contract.py` if it's a new model
+
+## Contract test
+
+`tests/moneybin/test_schema_contract.py` compares column names between dbt YAML and DDL files. Run it after any schema change:
+
+```bash
+uv run pytest tests/moneybin/test_schema_contract.py -v
+```
+
+If this test fails, the DDL file is out of sync with the dbt YAML.
