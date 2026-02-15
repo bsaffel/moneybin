@@ -64,8 +64,10 @@ def serve(
     logger.info("Starting MCP server with database: %s", db_path)
 
     if transport not in _VALID_TRANSPORTS:
-        print(
-            f"Error: Invalid transport '{transport}'. Must be one of: {', '.join(_VALID_TRANSPORTS)}"
+        logger.error(
+            "Invalid transport '%s'. Must be one of: %s",
+            transport,
+            ", ".join(_VALID_TRANSPORTS),
         )
         raise typer.Exit(1)
 
@@ -74,10 +76,10 @@ def serve(
 
     try:
         init_db(db_path)
-        print(f"MCP server starting (transport={transport}, db={db_path})")
+        logger.info("MCP server starting (transport=%s, db=%s)", transport, db_path)
         mcp.run(transport=validated_transport)
     except FileNotFoundError as e:
-        print(f"Error: {e}")
+        logger.error("Database not found: %s", e)
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
         logger.info("MCP server stopped by user")

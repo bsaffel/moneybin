@@ -126,4 +126,7 @@ def close_db() -> None:
     if _db is not None:
         _db.close()
         _db = None
-        logger.info("DuckDB connection closed")
+        try:
+            logger.info("DuckDB connection closed")
+        except ValueError:
+            pass  # stderr already closed during MCP stdio shutdown

@@ -87,7 +87,7 @@ def setup_logging(
     handlers: list[logging.Handler] = []
 
     # Console handler (always present)
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = logging.StreamHandler(sys.stderr)
     if cli_mode:
         console_handler.setFormatter(logging.Formatter(config.cli_format_string))
     else:

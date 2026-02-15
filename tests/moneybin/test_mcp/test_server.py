@@ -1,6 +1,8 @@
 """Tests for MCP server lifecycle and DuckDB connection management."""
 
+import logging
 from pathlib import Path
+from unittest.mock import patch
 
 import duckdb
 import pytest
@@ -73,6 +75,23 @@ class TestDatabaseLifecycle:
         """close_db() should set _db back to None."""
         server.init_db(test_db_path)
         server.close_db()
+        assert server._db is None  # type: ignore[reportPrivateUsage] — test verification
+
+    @pytest.mark.unit
+    def test_close_db_survives_closed_logging_stream(self, test_db_path: Path) -> None:
+        """close_db() should not raise when logging stream is already closed.
+
+        During MCP stdio shutdown the client closes stdout/stderr before
+        the server's cleanup code runs.  The logger.info() call must be
+        guarded so close_db() completes without error.
+        """
+        server.init_db(test_db_path)
+        with patch.object(
+            logging.getLogger("moneybin.mcp.server"),
+            "info",
+            side_effect=ValueError("I/O operation on closed file."),
+        ):
+            server.close_db()  # should not raise
         assert server._db is None  # type: ignore[reportPrivateUsage] — test verification
 
 
