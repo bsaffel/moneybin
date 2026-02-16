@@ -2,9 +2,8 @@
 
 ## Architecture
 
-MoneyBin uses a **medallion architecture** (Raw → Staging → Core) inspired by
-the Inmon common-tables approach. The core layer serves as the single source
-of truth for all downstream consumers.
+MoneyBin organizes data into three layers (Raw → Staging → Core). The core
+layer serves as the single source of truth for all downstream consumers.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -31,14 +30,14 @@ of truth for all downstream consumers.
 
 ## Model Inventory
 
-### Core (Gold) — `models/core/`
+### Core — `models/core/`
 
 | Model              | Type      | Description                                      |
 |--------------------|-----------|--------------------------------------------------|
 | `dim_accounts`     | Dimension | Canonical accounts from all sources, deduplicated |
 | `fct_transactions` | Fact      | Canonical transactions from all sources           |
 
-### Staging (Silver) — `models/ofx/`
+### Staging — `models/ofx/`
 
 | Model                  | Source | Description                              |
 |------------------------|--------|------------------------------------------|

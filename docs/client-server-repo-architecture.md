@@ -1,355 +1,169 @@
-# client-server-repo-architecture.md
+# Client-Server Architecture & Privacy Tiers
 
-## Goal
+## Overview
 
-Build a **portfolio-friendly public GitHub repo** that supports rapid client + server iteration during proof-of-concept, while preserving the option to later launch a **paid, private “production server”** without awkward refactors, licensing drama, or accidentally open-sourcing differentiators.
+MoneyBin is an open-source, local-first platform. The architecture separates local components from optional server components along clear trust boundaries defined by the [privacy tiers](privacy-tiers-architecture.md).
 
-Core strategy:
+The **MCP server runs locally** -- it is not a remote service. The "server" in this document refers to the optional **Encrypted Sync service** that handles Plaid bank aggregation with E2E encryption.
 
-- Publish a **reference ingestion server** (toy server) that is intentionally “adapter-only.”
-- Keep **contracts + SDK** as the stable integration surface.
-- Later, build a separate **private core/production server** that consumes the same raw data and contracts, but contains all “secret sauce” logic.
+## Architecture by Privacy Tier
 
----
+### Local Only (Default)
 
-## Guiding Principles
+Everything runs on your machine. No network, no cloud, no server.
 
-### 1 Adapter, not brain
+```text
+┌─────────────────────────────────────────────────────────┐
+│                    Your Machine                          │
+│                                                          │
+│  Source Files ──→ Extractors ──→ DuckDB ──→ MCP Server  │
+│  (OFX/CSV/PDF)                              (stdio)     │
+│                                    │                     │
+│                              Data Toolkit                │
+│                         (DuckDB/dbt/Jupyter)             │
+└─────────────────────────────────────────────────────────┘
+```
 
-The public server exists to:
+**Components**:
+- `src/moneybin/` -- Extractors, loaders, CLI, MCP server
+- `dbt/` -- Transformation models
+- `data/{profile}/` -- Profile-isolated DuckDB database
+- No network access required
 
-- connect to aggregators (e.g., Plaid)
-- pull data
-- store raw payloads and minimal normalized primitives
-- expose a small API surface for the client to function
+**Trust boundary**: You trust only your own machine.
 
-It should **not** contain:
+### Encrypted Sync (Future)
 
-- categorization heuristics
-- deduplication rules
-- reconciliation logic
-- enrichment, matching, “fixes,” edge-case handling
-- tax-grade correctness
+A hosted service fetches bank data via Plaid, encrypts it immediately, and syncs the ciphertext to your machine. The service never stores plaintext.
 
-**Ugly is protective.** If something feels like “smart cleanup,” it probably belongs in the private core server later.
+```text
+┌──────────────────────────┐         ┌─────────────────────────────────┐
+│   Encrypted Sync Server  │         │         Your Machine             │
+│                          │         │                                   │
+│  Plaid API ──→ Encrypt ──┼────────→│  Decrypt ──→ DuckDB ──→ MCP     │
+│         (brief plaintext) │  E2E   │  (your key)           (stdio)   │
+│                          │ cipher  │                  │               │
+│  Zero stored plaintext   │  text   │            Data Toolkit          │
+└──────────────────────────┘         └─────────────────────────────────┘
+```
 
-### 2) Contract-first development
+**Components**:
+- `src/moneybin_server/` -- Encrypted Sync service (future)
+- Uses Plaid/Yodlee for bank aggregation
+- Encrypts to device-held public key immediately
+- Stores only opaque ciphertext
+- Client decrypts with master password-derived key
 
-The client depends on:
+**Trust boundary**: Server sees plaintext briefly during Plaid fetch and encryption. See [`architecture/security-tradeoffs.md`](architecture/security-tradeoffs.md) for honest analysis.
 
-- an API contract (OpenAPI / JSON Schema / Protobuf)
-- generated types
-- a generated SDK (or thin hand-written client using generated types)
+### Managed (Future, Low Priority)
 
-The client must not depend on server implementation details.
+Traditional SaaS-style where the server stores readable data for rich server-side analytics.
 
-### 3) Data pipeline boundary
-
-Public server stops at **raw ingestion**.
-
-- Persist “as reported by aggregator” raw events/transactions.
-- Avoid opinionated transformations that are hard to reverse.
-- Prefer append-only event storage where possible.
-
-The private core server later:
-
-- reads raw events
-- applies transformations + logic
-- produces “gold” canonical views
-
-### 4) Make it easy to split later
-
-Even while everything is public during POC, structure the code so the “reference ingestion server” is conceptually separate and can be frozen/deprecated later without breaking the client or contracts.
-
----
-
-## Recommended Repo Layout (Public Portfolio Repo)
-
-Top-level:
-
-repo/
-client/
-server-ingestion/
-shared/
-contracts/
-docs/
-examples/
-scripts/
-docker/
-
-### `client/` (public)
-
-- UI / app that users run
-- Depends ONLY on the contract + SDK (not server internals)
-
-### `server-ingestion/` (public reference server)
-
-A minimal server whose job is ingestion + persistence.
-
-Responsibilities:
-
-- Aggregator auth handshake (e.g., Plaid Link token → exchange public token)
-- Data pull jobs (transactions, accounts, balances)
-- Persist raw payloads + minimal indexing
-- Serve read endpoints required for the client’s basic functionality
-
-Non-responsibilities (explicitly excluded):
-
-- categorization
-- dedupe across sources
-- reconciliation across accounts
-- enrichment (merchant mapping, fuzzy matching, etc.)
-- “correctness” beyond faithfully storing what the aggregator returned
-
-Naming note:
-
-- Call it `server-ingestion` (or `ingestion-server`), NOT `server`.
-- This reduces expectation that it is production-grade.
-
-### `contracts/` (public)
-
-- Source-of-truth API definition and/or data schemas
-- OpenAPI recommended for HTTP/JSON
-- May include JSON Schema for stored raw payload shapes, if helpful
-
-### `shared/` (public)
-
-- Generated types
-- SDK (generated or thin wrapper)
-- Shared constants, but **no business logic**
-- Error codes and response conventions (typed)
-
-### `docs/` (public)
-
-- Architecture docs (this file)
-- API docs generated from contracts
-- “Reference server is not the product” positioning
+**Trust boundary**: You trust the service provider with your data (like Monarch Money, Empower, etc.).
 
 ---
 
-## Public API Surface (POC-Friendly)
+## Repo Structure
 
-Keep the reference server API small and utilitarian:
+The repository contains both the open-source local platform and the scaffolding for the future Encrypted Sync service:
 
-Suggested endpoint categories:
-
-- Auth/session
-  - `POST /auth/login` (optional if local-only)
-  - `POST /auth/logout`
-- Aggregator connection
-  - `POST /aggregators/plaid/link-token`
-  - `POST /aggregators/plaid/exchange-token`
-- Ingestion jobs
-  - `POST /ingest/transactions/sync`
-  - `POST /ingest/accounts/sync`
-- Basic reads for UI
-  - `GET /accounts`
-  - `GET /transactions?start=&end=&account_id=`
-  - `GET /balances`
-
-Optional:
-
-- Health + metadata
-  - `GET /health`
-  - `GET /version`
-
-**Avoid:**
-
-- “categorized transactions” endpoints
-- “canonical merchants” endpoints
-- “reconciled ledger” endpoints
-- advanced analytics endpoints
-
-Those are prime candidates for the private core server.
+```text
+moneybin/
+├── src/moneybin/               # Open-source local platform
+│   ├── mcp/                    # MCP server (runs locally)
+│   ├── cli/                    # CLI interface
+│   ├── extractors/             # File parsers (OFX, PDF, CSV)
+│   ├── loaders/                # DuckDB data loaders
+│   └── connectors/             # API integrations
+├── src/moneybin_server/        # Encrypted Sync service (future)
+│   ├── connectors/             # Plaid/Yodlee integration
+│   ├── api/                    # FastAPI server
+│   └── config.py               # Server configuration
+├── dbt/                        # dbt transformation models
+├── data/{profile}/             # Profile-isolated data
+└── tests/                      # Test suites for both
+```
 
 ---
 
-## Data Storage Contract (Public Reference Server)
+## Design Principles
 
-The public server should store raw data in a durable, inspectable way that can be reused later.
+### 1. MCP Server is Local
 
-Recommended pattern:
+The MCP server is **not a remote service**. It runs as a local process via stdio, connecting directly to the user's DuckDB file in read-only mode. It is part of the open-source `moneybin` package.
 
-- Raw JSON payloads stored as-is
-- Minimal normalized tables for indexing/query
+### 2. Server = Sync Service Only
 
-Example storage domains:
+The "server" component (`moneybin_server`) exists solely for the Encrypted Sync tier:
+- Connect to Plaid/Yodlee
+- Fetch bank data
+- Encrypt immediately
+- Transmit ciphertext to client
+- **No business logic**: No categorization, deduplication, or enrichment
 
-- `raw_aggregator_events` (append-only)
-- `raw_transactions` (as returned)
-- `raw_accounts`
-- `sync_runs` (job metadata)
+All "smart" data processing happens locally via dbt models on the client side.
 
-Rules:
+### 3. Contracts First
 
-- Never delete raw history during POC; prefer append-only + “latest view” derived queries.
-- Avoid applying business rules at ingestion time.
+The Encrypted Sync service will expose a small, well-defined API:
 
-The private core server later should be able to read these raw tables/files directly.
+- `POST /sync/link-token` -- Initiate Plaid Link
+- `POST /sync/exchange-token` -- Exchange public token
+- `POST /sync/trigger` -- Trigger a sync job
+- `GET /sync/status` -- Check sync job status
+- `GET /sync/data` -- Download encrypted payload
 
----
+The client depends on this API contract, not on server internals.
 
-## “Secret Sauce” Private Server (Future)
+### 4. Raw Data Preservation
 
-When ready, create a separate private repo/project:
+The sync service stores data exactly as received from Plaid (encrypted). All transformation and normalization happens locally:
+- Raw Plaid data decrypted and stored in `raw.plaid_*` tables
+- dbt staging models normalize to standard schema
+- Core tables unify all sources
 
-Name ideas:
+### 5. Open Source First
 
-- `server-core`
-- `server-prod`
-- `moneybin-core`
-
-Responsibilities:
-
-- Read from raw ingestion store
-- Apply transformations and “correctness”:
-  - dedupe
-  - reconciliation
-  - categorization
-  - enrichment
-  - backfills
-  - canonical entity modeling
-- Produce canonical “gold” tables and product-quality endpoints
-- Own operational concerns:
-  - rate limiting
-  - queuing
-  - retries and dead-letter handling
-  - tenant isolation
-  - billing/auth plans
-  - observability
-
-Integration surface stays stable via:
-
-- same `contracts/` (or a superset)
-- same client SDK expectations where possible
+The open-source repo is the product. The Encrypted Sync service is a convenience layer for users who want automatic bank feeds without manual OFX/CSV export. The platform must be fully functional without it.
 
 ---
 
-## Guardrails to Prevent Scope Creep (Non-Negotiable)
+## Security Model
 
-### Guardrail A: No smart transforms in public
+See [`architecture/e2e-encryption.md`](architecture/e2e-encryption.md) for the complete encryption design.
 
-If you find yourself writing logic that:
+### Key Points
 
-- “fixes” messy data
-- handles real-world edge cases
-- improves match quality
-- merges across sources
+- **Local Only tier**: No encryption needed -- data never leaves your machine
+- **Encrypted Sync tier**: E2E encryption with user-held keys
+  - Server encrypts to device-held public key
+  - Only the client can decrypt with the master password
+  - Server stores only opaque ciphertext
+  - Brief plaintext exposure during Plaid fetch (honest disclosure)
+- **Managed tier**: Standard server-side security (access controls, encryption at rest)
 
-Stop. Capture raw data and leave a TODO referencing the future core server.
+### What This Protects
 
-### Guardrail B: Shared code must not contain business logic
+- Database breach: Only encrypted data compromised
+- Disk compromise: Encrypted at rest
+- Network sniffing: TLS + E2E encryption
 
-`shared/` should contain:
+### What Requires Trust
 
-- types
-- SDK
-- error codes
-- pagination conventions
-- request/response models
+- Server operator during active Plaid data processing (brief plaintext exposure)
+- This is comparable to email with PGP -- the server handles the message, then encrypts
 
-It must not contain:
-
-- categorization rules
-- fuzzy matching
-- “cleanup helpers” that become core logic
-
-### Guardrail C: Public server is explicitly “reference”
-
-Include strong positioning language in `server-ingestion/README.md`:
-
-- “Reference ingestion server for local development and experimentation.”
-- “Not intended to be production-grade.”
-- “Correctness and advanced logic belong in the core server.”
-
-### Guardrail D: Contract is the boundary
-
-Client changes must be driven by contract changes, not server-internal coupling.
+See [`architecture/security-tradeoffs.md`](architecture/security-tradeoffs.md) for the full threat model.
 
 ---
 
-## Development Workflow (Agent-Friendly)
+## Future: Managed Tier
 
-### Daily loop (contract-first)
+If a managed tier is ever built, it would be a separate service that:
+- Stores readable transaction data (not E2E encrypted)
+- Provides server-side analytics, insights, and dashboards
+- Offers the fastest onboarding experience
+- Requires the most trust from the user
 
-1. Modify `contracts/` (API or schema)
-2. Regenerate `shared/` types + SDK
-3. Update `server-ingestion/` to satisfy the contract (minimal)
-4. Update `client/` to use the SDK/types
-5. Run tests + smoke E2E
-
-### One-command dev
-
-Provide a single entrypoint to run everything locally:
-
-- `make dev` or `./scripts/dev`
-- Starts:
-  - reference ingestion server
-  - client
-  - dependencies (db, redis) via `docker compose` if needed
-
-### Testing
-
-- Contract compatibility (breaking change detection)
-- Basic API tests for reference server
-- Minimal E2E: connect aggregator sandbox → sync → show transactions
-
----
-
-## “Public Now, Private Later” Expectations
-
-Important realities:
-
-- Anything public should be assumed permanently accessible (forks exist).
-- Plan for “stop publishing new server code” rather than “erase history.”
-- Keeping the public server simple and non-differentiating is the safety mechanism.
-
-Deprecation strategy later:
-
-- Freeze `server-ingestion` at a stable reference version
-- Mark as “maintenance mode”
-- Keep contracts compatible where possible
-- Encourage hosted/private core server for production-grade behavior
-
----
-
-## Implementation Checklist (for an Agent)
-
-- [ ] Create repo layout: `client/`, `server-ingestion/`, `contracts/`, `shared/`, `docs/`
-- [ ] Pick contract system: OpenAPI (recommended) + codegen
-- [ ] Create `shared/` generation pipeline (types + SDK)
-- [ ] Implement minimal ingestion server endpoints:
-  - link-token, exchange-token
-  - sync transactions/accounts
-  - read endpoints for UI
-- [ ] Persist raw payloads (append-only preferred)
-- [ ] Add “reference server” disclaimers + guardrails in README
-- [ ] Ensure client uses only SDK/types
-- [ ] Provide `make dev` (or equivalent) + `docker compose` if needed
-- [ ] Add contract-breaking-change checks + basic API/E2E tests
-
----
-
-## Non-Goals (Explicit)
-
-The public portfolio repo does NOT attempt to solve:
-
-- full correctness guarantees
-- sophisticated categorization
-- reconciliation and ledger-quality outputs
-- enterprise security/compliance posture
-- multi-tenant billing and hosted operations
-
-Those belong to the future private core server.
-
----
-
-## Summary
-
-This architecture optimizes for:
-
-- fast POC iteration (client + server together)
-- strong portfolio signal (real integrations + real contracts)
-- future commercialization optionality (core logic remains private)
-
-The key is discipline: **public server = ingestion adapter only**; **private server = the brain**.
+This is **not a near-term priority**. The focus is on the Local Only and Encrypted Sync tiers.

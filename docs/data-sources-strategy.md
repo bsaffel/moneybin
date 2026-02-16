@@ -1,234 +1,158 @@
 # Data Sources Strategy
 
-## Institution-Specific Extraction Approach
+## Overview
 
-### Priority 1: Plaid API (Recommended)
+MoneyBin supports importing financial data from multiple source types. The priority order follows the [privacy tiers](privacy-tiers-architecture.md) -- local file imports are first-class, and API-based aggregation is available through the Encrypted Sync tier.
 
-**Supported Institutions:**
+All data sources flow through the same pipeline:
 
-- ✅ **Wells Fargo**: Full support (checking, savings, credit cards)
-- ✅ **Chase**: Full support (all account types)
-- ✅ **Capital One**: Full support (banking and credit products)
-- ✅ **Fidelity**: Investment accounts and 401(k) support
-- ✅ **E*TRADE**: Brokerage and retirement accounts
-- ❌ **Goldman Sachs Wealth Management**: Limited/No retail API access
-- ❌ **QuickBooks**: Separate API (QuickBooks API, not Plaid)
-
-**Implementation:**
-
-```python
-# Plaid integration for supported institutions
-from plaid.api import plaid_api
-from plaid.model.transactions_get_request import TransactionsGetRequest
-
-def get_plaid_transactions(access_token, start_date, end_date):
-    request = TransactionsGetRequest(
-        access_token=access_token,
-        start_date=start_date,
-        end_date=end_date
-    )
-    response = client.transactions_get(request)
-    return response['transactions']
+```text
+Source ──→ Extractor ──→ Raw Tables ──→ dbt Staging ──→ Core Tables ──→ MCP Server
 ```
 
-### Priority 2: Direct Bank APIs / Yodlee
+---
 
-**Alternative API Options:**
+## Priority 1: OFX/QFX Files (Local Only -- Implemented)
 
-#### Wells Fargo
+The primary data source for the Local Only tier. Most US banks support OFX/QFX file exports.
 
-- **Gateway API**: Limited to business customers
-- **Fallback**: Manual CSV export from online banking
+**Status**: Implemented
 
-#### Chase
+**Import command**:
 
-- **Chase for Business API**: Business accounts only
-- **Fallback**: Manual CSV export or PDF statement processing
-
-#### Capital One
-
-- **DevExchange API**: Limited access, application required
-- **Fallback**: Manual CSV export
-
-#### Goldman Sachs Wealth Management
-
-- **Marcus API**: Limited to Marcus savings products
-- **Private Wealth**: No public API - requires manual processing
-- **Approach**: PDF statement processing + manual CSV export
-
-#### QuickBooks
-
-- **QuickBooks Online API**: Full access to accounting data
-- **Implementation**: Direct API integration separate from banking APIs
-
-```python
-# QuickBooks API integration
-from intuitlib.client import AuthClient
-from quickbooks import QuickBooks
-
-def get_quickbooks_data(access_token):
-    client = QuickBooks(
-        auth_client=auth_client,
-        refresh_token=refresh_token,
-        company_id=company_id
-    )
-    return client.query("SELECT * FROM Item")
+```bash
+moneybin extract ofx path/to/downloads/*.qfx
 ```
 
-### Priority 3: Manual CSV Processing
+**What's extracted**: Institutions, accounts, transactions, balances
 
-**All Institutions Fallback:**
+**Supported institutions** (any bank that supports OFX/QFX export):
 
-#### CSV Export Process
+- Wells Fargo, Chase, Capital One, Bank of America, etc.
+- Credit unions and smaller banks
+- Credit card issuers (Amex, Discover, etc.)
 
-1. **Wells Fargo**: Online Banking → Account Activity → Export → CSV
-2. **Chase**: Account Details → Download Activity → Comma Delimited
-3. **Capital One**: Account Details → Download Transactions → CSV
-4. **Fidelity**: Portfolio → History → Download → CSV
-5. **E*TRADE**: Accounts → History → Export → CSV
-6. **Goldman Sachs**: Private Wealth portal → Export (if available)
+**How to get OFX/QFX files**: Most banks offer "Download transactions" in QFX/OFX format from their online banking portal. Look for "Quicken" or "Money" export options.
 
-#### Standardization Pipeline
+See [`ofx-import-guide.md`](ofx-import-guide.md) for the complete guide.
 
-```python
-# CSV standardization for different bank formats
-def standardize_bank_csv(file_path, bank_type):
-    bank_parsers = {
-        'wells_fargo': parse_wells_fargo_csv,
-        'chase': parse_chase_csv,
-        'capital_one': parse_capital_one_csv,
-        'fidelity': parse_fidelity_csv,
-        'etrade': parse_etrade_csv
-    }
-    return bank_parsers[bank_type](file_path)
+---
+
+## Priority 2: W-2 PDF Extraction (Local Only -- Implemented)
+
+Extract W-2 Wage and Tax Statement data from PDF files using dual extraction (text + OCR).
+
+**Status**: Implemented
+
+**Import command**:
+
+```bash
+moneybin extract w2 path/to/w2.pdf
 ```
 
-### Priority 4: PDF Statement Processing
+**What's extracted**: Tax year, employer info, wages (Box 1), federal/state/FICA taxes, state/local details
 
-**For Institutions Without CSV Export:**
+See [`w2-extraction-architecture.md`](w2-extraction-architecture.md) for the technical design.
 
-#### Modern OCR Strategy
+---
 
-**Primary Tool: pdfplumber (2024 recommendation)**
+## Priority 3: CSV Import (Local Only -- Planned)
 
-- Excellent table extraction
-- Handles complex layouts
-- Active development and maintenance
-- Best performance for financial statements
+Manual CSV import for banks that don't support OFX, or for users who prefer CSV workflows.
 
-**Backup Tools:**
+**Status**: Planned
 
-- **tabula-py**: For table-heavy documents
-- **camelot-py**: For complex table structures
-- **PyMuPDF**: For text-heavy documents
+**Planned command**:
 
-```python
-# PDF processing with pdfplumber
-import pdfplumber
-import polars as pl
-
-def extract_bank_statement(pdf_path):
-    transactions = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                if is_transaction_table(table):
-                    transactions.extend(parse_transaction_table(table))
-    return pd.DataFrame(transactions)
+```bash
+moneybin extract csv path/to/transactions.csv --bank=chase
 ```
 
-## Tax Document Processing
+**Implementation approach**:
+- Bank-specific parsers for common formats (Chase, Capital One, Wells Fargo, Fidelity, etc.)
+- Generic parser with column mapping for unknown formats
+- Raw tables: `raw.csv_transactions`, `raw.csv_accounts`
 
-### IRS.gov Documents
+### CSV Export Locations by Bank
 
-**Supported Forms:**
+| Bank | Path to CSV Export |
+|------|-------------------|
+| Wells Fargo | Account Activity -> Export -> Comma Delimited |
+| Chase | Account Details -> Download Activity -> CSV |
+| Capital One | Account Details -> Download Transactions -> CSV |
+| Fidelity | Portfolio -> History -> Download -> CSV |
+| E*TRADE | Accounts -> History -> Export -> CSV |
 
+---
+
+## Priority 4: PDF Statement Processing (Local Only -- Planned)
+
+For institutions without OFX or CSV export, or for tax forms beyond W-2.
+
+**Status**: Partial (W-2 implemented; other forms planned)
+
+**Primary tool**: pdfplumber (with pytesseract OCR fallback)
+
+**Planned extractors**:
 - Form 1040 (Individual Income Tax Return)
-- Schedule A (Itemized Deductions)
-- Schedule B (Interest and Ordinary Dividends)
-- Schedule C (Profit or Loss from Business)
-- Form W-2 (Wage and Tax Statement)
-- Form 1099 variants (1099-INT, 1099-DIV, 1099-MISC, etc.)
+- 1099 forms (1099-INT, 1099-DIV, 1099-MISC, etc.)
+- Bank statements (multi-bank PDF processing)
+- Investment statements (Fidelity, E*TRADE)
+- State tax forms (Georgia Form 500, etc.)
 
-**OCR Strategy:**
+See [`modern-ocr-strategy.md`](modern-ocr-strategy.md) for the complete PDF processing strategy.
 
-```python
-# Tax form processing with form-specific templates
-def extract_tax_form(pdf_path, form_type):
-    form_extractors = {
-        '1040': extract_form_1040,
-        'w2': extract_w2,
-        '1099': extract_1099_variants
-    }
-    return form_extractors[form_type](pdf_path)
+---
 
-def extract_form_1040(pdf_path):
-    with pdfplumber.open(pdf_path) as pdf:
-        # Extract specific fields by coordinates/patterns
-        data = {
-            'total_income': extract_field_by_pattern(pdf, r'Total income.*(\d+,?\d*)'),
-            'taxable_income': extract_field_by_pattern(pdf, r'Taxable income.*(\d+,?\d*)'),
-            'total_tax': extract_field_by_pattern(pdf, r'Total tax.*(\d+,?\d*)')
-        }
-    return data
-```
+## Priority 5: Plaid API (Encrypted Sync Tier -- Planned)
 
-### Georgia Tax Center
+Automatic bank transaction sync via Plaid, with E2E encryption.
 
-**State-Specific Processing:**
+**Status**: Planned (requires Encrypted Sync service)
 
-- Georgia Form 500 (Individual Income Tax Return)
-- Georgia Schedule 1 (Additional Income and Adjustments)
-- Property tax documents
+**Supported via Plaid**:
+- Wells Fargo, Chase, Capital One (checking, savings, credit cards)
+- Fidelity, E*TRADE (investment accounts)
+- Most US banks and credit unions
 
-**Approach:**
+**Not supported via Plaid**:
+- Goldman Sachs Wealth Management (no retail API access)
+- QuickBooks (separate API)
 
-- PDF processing with state-specific templates
-- Manual fallback for complex forms
-- Validation against known Georgia tax form structures
+**How it works**:
+1. User connects bank accounts via Plaid Link
+2. Encrypted Sync server fetches data from Plaid
+3. Data is encrypted immediately to user's device key
+4. Encrypted payload synced to user's machine
+5. Client decrypts and loads into `raw.plaid_*` tables
+6. dbt transforms into core tables alongside OFX/CSV data
 
-## Implementation Priority Matrix
+See [`architecture/e2e-encryption.md`](architecture/e2e-encryption.md) for the encryption design and [`architecture/security-tradeoffs.md`](architecture/security-tradeoffs.md) for the security analysis.
 
-| Institution | Priority 1 (Plaid) | Priority 2 (Direct API) | Priority 3 (CSV) | Priority 4 (PDF) |
-|-------------|-------------------|------------------------|------------------|------------------|
-| Wells Fargo | ✅ Full Support | ❌ Business Only | ✅ Available | ✅ Fallback |
-| Chase | ✅ Full Support | ❌ Business Only | ✅ Available | ✅ Fallback |
-| Capital One | ✅ Full Support | ❌ Limited Access | ✅ Available | ✅ Fallback |
-| Fidelity | ✅ Full Support | ❌ No Public API | ✅ Available | ✅ Fallback |
-| E*TRADE | ✅ Full Support | ❌ No Public API | ✅ Available | ✅ Fallback |
-| Goldman Sachs | ❌ Not Supported | ❌ Private Wealth Only | ⚠️ Limited | ✅ Primary Method |
-| QuickBooks | ❌ Separate API | ✅ Full API Access | ✅ Export Available | ❌ Not Applicable |
-| IRS.gov | ❌ No API | ❌ No API | ❌ No Export | ✅ PDF Only |
-| Georgia Tax | ❌ No API | ❌ No API | ❌ No Export | ✅ PDF Only |
+---
 
-## Error Handling & Fallback Strategy
+## Data Source Integration Matrix
 
-### Automated Fallback Chain
+| Source | Privacy Tier | Status | Raw Tables |
+|--------|-------------|--------|------------|
+| OFX/QFX files | Local Only | Implemented | `raw.ofx_*` |
+| W-2 PDFs | Local Only | Implemented | `raw.w2_forms` |
+| CSV files | Local Only | Planned | `raw.csv_*` |
+| Other tax PDFs | Local Only | Planned | `raw.tax_*` |
+| Bank statement PDFs | Local Only | Planned | `raw.pdf_*` |
+| Plaid API | Encrypted Sync | Planned | `raw.plaid_*` |
 
-1. **Plaid API** → Connection issues or unsupported account
-2. **Direct Bank API** → Rate limits or access denied
-3. **Manual CSV Import** → User uploads exported files
-4. **PDF Processing** → OCR extraction from statements
-5. **Manual Entry** → Web interface for manual data input
+All sources feed into the same core tables (`core.dim_accounts`, `core.fct_transactions`) via dbt staging models, so the MCP server and data toolkit work identically regardless of how data was imported.
 
-### Data Validation Pipeline
+---
 
-```python
-def validate_extracted_data(data, source_type):
-    validations = [
-        validate_date_ranges,
-        validate_amount_formats,
-        validate_required_fields,
-        detect_duplicates,
-        cross_reference_totals
-    ]
+## Fallback Strategy
 
-    for validation in validations:
-        if not validation(data):
-            raise DataValidationError(f"Validation failed for {source_type}")
+For any given institution, the recommended approach:
 
-    return data
-```
+1. **OFX/QFX** -- Try this first. Most banks support it and it's the cleanest format.
+2. **CSV** -- If OFX isn't available, most banks offer CSV export.
+3. **PDF** -- For institutions with no export options (Goldman Sachs Wealth, tax forms).
+4. **Plaid** -- For automatic ongoing sync (requires Encrypted Sync tier).
 
-This strategy provides comprehensive coverage of all target institutions with appropriate fallback mechanisms and modern tooling.
+The goal is to ensure MoneyBin is fully functional with **zero paid services** -- everything works in the Local Only tier with manual file imports.

@@ -1,344 +1,153 @@
 # DuckDB Data Model - Entity Relationship Diagram
 
-This document contains the Entity Relationship (ER) diagram for the MoneyBin DuckDB data model, showing all tables, their key fields, and relationships.
+This document contains the Entity Relationship (ER) diagram for the MoneyBin DuckDB data model. Source-specific raw tables are transformed through dbt staging views into canonical analytical tables in the core layer.
 
-> **💡 For better rendering:** View the [interactive HTML version](duckdb-er-diagram.html) which renders the Mermaid diagram properly in any web browser.
+For full column definitions, see the DDL files in `src/moneybin/sql/schema/` and dbt models in `dbt/models/`. The diagram below shows primary keys, foreign keys, and key business columns only.
 
 ## Entity Relationship Diagram
 
 ```mermaid
 erDiagram
-    %% Core Institution and Connection Tables
-    institutions {
-        varchar institution_id PK
-        varchar institution_name
-        varchar[] country_codes
-        varchar[] products
-        varchar[] routing_numbers
-        boolean oauth
-        varchar status
-        varchar primary_color
-        varchar logo_url
-        varchar url
-        timestamp created_at
-        timestamp updated_at
+    %% ================================================================
+    %% RAW LAYER -- Source-specific tables, preserved as-is
+    %% ================================================================
+
+    raw_ofx_institutions {
+        varchar organization PK
+        varchar fid PK
     }
 
-    items {
-        varchar item_id PK
-        varchar institution_id FK
-        varchar webhook_url
-        varchar error_code
-        varchar error_type
-        varchar[] available_products
-        varchar[] billed_products
-        timestamp consent_expiration_time
-        varchar update_type
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    %% Account Information
-    accounts {
+    raw_ofx_accounts {
         varchar account_id PK
-        varchar item_id FK
-        varchar institution_id FK
-        varchar account_name
-        varchar official_name
-        varchar account_type
-        varchar account_subtype
-        varchar mask
-        varchar persistent_account_id
-        decimal balance_available
-        decimal balance_current
-        decimal balance_limit
-        varchar balance_iso_currency_code
-        varchar balance_unofficial_currency_code
-        timestamp balance_last_updated_datetime
-        varchar verification_status
-        timestamp created_at
-        timestamp updated_at
-        timestamp extracted_at
+        varchar account_type "CHECKING, SAVINGS, CREDITCARD, etc."
+        varchar institution_org FK
+        varchar institution_fid FK
+        varchar source_file PK
+        timestamp extracted_at PK
     }
 
-    %% Transaction Data
-    transactions {
-        varchar transaction_id PK
-        varchar account_id FK
-        varchar pending_transaction_id
-        decimal amount
-        varchar iso_currency_code
-        varchar unofficial_currency_code
-        date date
-        date authorized_date
-        timestamp authorized_datetime
-        timestamp datetime
-        varchar name
-        varchar merchant_name
-        varchar original_description
-        varchar account_owner
-        varchar category_primary
-        varchar category_detailed
-        varchar category_confidence_level
-        varchar payment_channel
-        varchar transaction_type
-        varchar transaction_code
-        varchar location_address
-        varchar location_city
-        varchar location_region
-        varchar location_postal_code
-        varchar location_country
-        decimal location_lat
-        decimal location_lon
-        varchar location_store_number
-        boolean pending
-        varchar personal_finance_category
-        varchar personal_finance_category_confidence_level
-        varchar website
-        varchar logo_url
-        timestamp created_at
-        timestamp updated_at
-        timestamp extracted_at
+    raw_ofx_transactions {
+        varchar transaction_id PK "Unique FITID"
+        varchar account_id PK_FK
+        decimal amount "OFX sign convention"
+        timestamp date_posted
+        varchar payee
+        varchar source_file PK
     }
 
-    %% Investment Data
-    securities {
-        varchar security_id PK
-        varchar isin
-        varchar cusip
-        varchar sedol
-        varchar institution_security_id
-        varchar institution_id FK
-        varchar proxy_security_id
-        varchar name
-        varchar ticker_symbol
-        boolean is_cash_equivalent
-        varchar type
-        decimal close_price
-        date close_price_as_of
-        varchar iso_currency_code
-        varchar unofficial_currency_code
-        varchar market_identifier_code
-        struct option_contract
-        timestamp created_at
-        timestamp updated_at
-        timestamp extracted_at
-    }
-
-    investment_holdings {
-        varchar holding_id PK
-        varchar account_id FK
-        varchar security_id FK
-        decimal institution_price
-        date institution_price_as_of
-        timestamp institution_price_datetime
-        decimal institution_value
-        decimal cost_basis
-        decimal quantity
-        varchar iso_currency_code
-        varchar unofficial_currency_code
-        decimal vested_quantity
-        decimal vested_value
-        timestamp created_at
-        timestamp updated_at
-        timestamp extracted_at
-    }
-
-    investment_transactions {
-        varchar investment_transaction_id PK
-        varchar account_id FK
-        varchar security_id FK
-        varchar cancel_transaction_id
-        date date
-        varchar name
-        decimal quantity
-        decimal amount
-        decimal price
-        decimal fees
-        varchar type
-        varchar subtype
-        varchar iso_currency_code
-        varchar unofficial_currency_code
-        timestamp created_at
-        timestamp updated_at
-        timestamp extracted_at
-    }
-
-    %% Liability Information
-    liabilities {
-        varchar liability_id PK
-        varchar account_id FK
-        varchar liability_type
-        decimal last_payment_amount
-        date last_payment_date
-        decimal last_statement_balance
-        date last_statement_issue_date
-        decimal minimum_payment_amount
-        date next_payment_due_date
-        decimal apr_percentage
-        varchar apr_type
-        decimal balance_transfer_fee
-        decimal cash_advance_fee
-        decimal foreign_transaction_fee
-        varchar loan_name
-        varchar loan_status_type
-        date loan_status_end_date
-        varchar payment_reference_number
-        date pslf_status_estimated_eligibility_date
-        varchar repayment_plan_description
-        varchar repayment_plan_type
-        varchar sequence_number
-        varchar servicer_address_city
-        varchar servicer_address_country
-        varchar servicer_address_postal_code
-        varchar servicer_address_region
-        varchar servicer_address_street
-        varchar account_number
-        decimal current_late_fee
-        decimal escrow_balance
-        boolean has_pmi
-        boolean has_prepayment_penalty
-        decimal interest_rate_percentage
-        varchar interest_rate_type
-        varchar loan_type_description
-        varchar loan_term
-        date maturity_date
-        decimal next_monthly_payment
-        date origination_date
-        decimal origination_principal_amount
-        decimal past_due_amount
-        varchar property_address_city
-        varchar property_address_country
-        varchar property_address_postal_code
-        varchar property_address_region
-        varchar property_address_street
-        decimal ytd_interest_paid
-        decimal ytd_principal_paid
-        timestamp created_at
-        timestamp updated_at
-        timestamp extracted_at
-    }
-
-    %% Identity Information
-    identity {
-        varchar identity_id PK
-        varchar account_id FK
-        varchar[] owner_names
-        varchar[] phone_numbers
-        varchar[] emails
-        json addresses
-        timestamp created_at
-        timestamp updated_at
-        timestamp extracted_at
-    }
-
-    %% Historical Data
-    balance_history {
-        varchar balance_history_id PK
-        varchar account_id FK
+    raw_ofx_balances {
+        varchar account_id PK_FK
+        timestamp statement_end_date PK
+        decimal ledger_balance
         decimal available_balance
-        decimal current_balance
-        decimal limit_balance
-        varchar iso_currency_code
-        varchar unofficial_currency_code
-        date snapshot_date
-        timestamp snapshot_time
-        timestamp created_at
-        timestamp extracted_at
+        varchar source_file PK
     }
 
-    %% Data Extraction Tracking
-    extraction_jobs {
-        varchar job_id PK
-        varchar job_type
-        varchar institution_id FK
-        varchar item_id FK
-        timestamp start_time
-        timestamp end_time
-        varchar status
-        text error_message
-        integer accounts_extracted
-        integer transactions_extracted
-        integer holdings_extracted
-        integer investment_transactions_extracted
-        json extraction_config
-        timestamp created_at
-        timestamp updated_at
+    raw_w2_forms {
+        integer tax_year PK
+        varchar employee_ssn PK
+        varchar employer_ein PK
+        varchar employer_name
+        decimal wages "Box 1"
+        decimal federal_income_tax "Box 2"
+        varchar source_file PK
     }
 
-    data_quality_metrics {
-        varchar metric_id PK
-        varchar job_id FK
-        varchar table_name
-        integer total_records
-        integer duplicate_records
-        integer null_required_fields
-        integer invalid_amounts
-        integer future_dates
-        varchar validation_status
-        json validation_errors
-        timestamp created_at
+    %% ================================================================
+    %% CORE LAYER -- Canonical tables built by dbt
+    %% ================================================================
+
+    core_dim_accounts {
+        varchar account_id PK
+        varchar account_type
+        varchar institution_name
+        varchar source_system "ofx, plaid, manual"
     }
 
-    %% Relationships
-    institutions ||--o{ items : "has"
-    institutions ||--o{ accounts : "provides"
-    institutions ||--o{ securities : "lists"
-    institutions ||--o{ extraction_jobs : "extracts_from"
+    core_fct_transactions {
+        varchar transaction_id
+        varchar account_id FK
+        date transaction_date
+        decimal amount "Negative is expense"
+        varchar transaction_direction "expense, income, zero"
+        varchar description
+        varchar source_system "ofx, plaid, manual"
+        varchar transaction_year_month "YYYY-MM"
+    }
 
-    items ||--o{ accounts : "contains"
-    items ||--o{ extraction_jobs : "processes"
+    %% ================================================================
+    %% RAW LAYER RELATIONSHIPS
+    %% ================================================================
 
-    accounts ||--o{ transactions : "has"
-    accounts ||--o{ investment_holdings : "holds"
-    accounts ||--o{ investment_transactions : "executes"
-    accounts ||--o{ liabilities : "owes"
-    accounts ||--o{ identity : "belongs_to"
-    accounts ||--o{ balance_history : "tracks"
+    raw_ofx_institutions ||--o{ raw_ofx_accounts : "has"
+    raw_ofx_accounts ||--o{ raw_ofx_transactions : "has"
+    raw_ofx_accounts ||--o{ raw_ofx_balances : "tracks"
 
-    securities ||--o{ investment_holdings : "held_as"
-    securities ||--o{ investment_transactions : "traded_as"
+    %% ================================================================
+    %% CORE LAYER RELATIONSHIPS
+    %% ================================================================
 
-    extraction_jobs ||--o{ data_quality_metrics : "measures"
+    core_dim_accounts ||--o{ core_fct_transactions : "has"
+
+    %% ================================================================
+    %% DATA LINEAGE (raw feeds core via dbt staging views)
+    %% ================================================================
+
+    raw_ofx_accounts }o--|| core_dim_accounts : "feeds_via_dbt"
+    raw_ofx_transactions }o--|| core_fct_transactions : "feeds_via_dbt"
 ```
 
-## Table Relationships Summary
+## Staging Layer (not shown in ERD)
 
-### Core Entity Hierarchy
+Between the raw and core layers, dbt creates **staging views** in the `prep` schema that perform light transformations (renaming, type casting, trimming). These are ephemeral views, not persisted tables:
 
-1. **institutions** → **items** → **accounts**
-   - Institutions provide Items (connections)
-   - Items contain multiple Accounts
+- `prep.stg_ofx__institutions` -- Renames `organization` to `institution_name`
+- `prep.stg_ofx__accounts` -- Standardizes column names
+- `prep.stg_ofx__transactions` -- Casts `date_posted` to DATE, trims strings
+- `prep.stg_ofx__balances` -- Casts timestamps to DATE
 
-2. **accounts** → **transactions**, **investment_holdings**, **liabilities**, **identity**, **balance_history**
-   - Accounts are the central entity for all financial data
+## Data Flow
 
-3. **securities** → **investment_holdings**, **investment_transactions**
-   - Securities define investment instruments
-   - Holdings and transactions reference securities
+```text
+OFX/QFX Files ──→ Extractors ──→ raw.ofx_* tables
+PDF W-2 Forms ──→ Extractors ──→ raw.w2_forms
 
-### Data Lineage and Quality
+raw.ofx_* ──→ prep.stg_ofx__* (views) ──→ core.dim_accounts
+                                        ──→ core.fct_transactions
+```
 
-4. **extraction_jobs** → **data_quality_metrics**
-   - Jobs track extraction operations
-   - Metrics measure data quality per job
+## Planned Source Tables
 
-### Key Design Features
+The core layer is designed to accept data from multiple sources via UNION ALL in the dbt models. Planned raw tables for future data sources:
 
-- **Referential Integrity**: All foreign key relationships maintain data consistency
-- **Audit Trail**: All tables include `created_at`, `updated_at`, and `extracted_at` timestamps
-- **Flexibility**: Support for multiple currencies, account types, and transaction categories
-- **Performance**: Optimized for analytical queries with appropriate indexing
-- **Data Quality**: Built-in tracking and validation mechanisms
+### Plaid API (Encrypted Sync tier)
 
-### Entity Cardinalities
+- `raw.plaid_accounts` -- Account details from Plaid
+- `raw.plaid_transactions` -- Transaction data from Plaid
+- `raw.plaid_balances` -- Balance snapshots from Plaid
+- `raw.plaid_securities` -- Investment security definitions
+- `raw.plaid_holdings` -- Investment positions
+- `raw.plaid_investment_transactions` -- Investment trades
+- `raw.plaid_liabilities` -- Debt and loan details
 
-- One Institution can have many Items (1:N)
-- One Item can have many Accounts (1:N)
+### Manual CSV Import
+
+- `raw.csv_transactions` -- User-provided CSV transaction data
+- `raw.csv_accounts` -- User-provided CSV account data
+
+All planned sources will flow through source-specific staging views into the same `core.dim_accounts` and `core.fct_transactions` tables.
+
+## Key Design Features
+
+- **Multi-source support**: The `source_system` column in core tables identifies the origin of each record (ofx, plaid, manual)
+- **Idempotent loading**: Composite primary keys in raw tables prevent duplicate imports
+- **Amount standardization**: `fct_transactions` normalizes amounts (negative = expense, positive = income) regardless of source convention
+- **Time dimensions**: Derived year/month/quarter columns enable efficient time-based analysis
+- **Deduplication**: `dim_accounts` keeps only the most recent record per account when multiple imports exist
+
+## Entity Cardinalities
+
+- One Institution can have many Accounts (1:N)
 - One Account can have many Transactions (1:N)
-- One Account can have many Investment Holdings (1:N)
-- One Security can be held in many Holdings (1:N)
-- One Account can have one Identity record (1:1)
-- One Account can have many Balance History records (1:N)
-
-This ER diagram provides a complete view of the data model structure, showing how all financial data entities relate to each other in the MoneyBin system.
+- One Account can have many Balance snapshots (1:N)
+- W-2 forms are independent (one per employee per employer per year)
