@@ -261,7 +261,9 @@ class OFXExtractor:
         # Deduplicate institutions
         if institutions_data:
             df = pl.DataFrame(institutions_data)
-            return df.unique(subset=["organization", "fid"], maintain_order=True)
+            return df.unique(  # pyright: ignore[reportUnknownMemberType]  # polars stubs partially unknown
+                subset=["organization", "fid"], maintain_order=True
+            )
         return pl.DataFrame(
             schema={
                 "organization": pl.String,

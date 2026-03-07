@@ -1,8 +1,8 @@
 """MCP prompt templates for MoneyBin.
 
 Prompts are pre-built templates that guide AI assistants through common
-financial analysis workflows. Each prompt is registered with the FastMCP
-server via the @mcp.prompt() decorator.
+financial workflows. Each prompt is registered with the FastMCP server
+via the @mcp.prompt() decorator.
 
 Documentation: https://modelcontextprotocol.github.io/python-sdk/servers/prompts/
 """
@@ -12,6 +12,75 @@ import logging
 from .server import mcp
 
 logger = logging.getLogger(__name__)
+
+
+@mcp.prompt()
+def import_data() -> str:
+    """Help the user import financial data files."""
+    return (
+        "Help me import financial data into MoneyBin.\n\n"
+        "Steps:\n"
+        "1. Ask the user for the file path to import\n"
+        "2. Use the import_file tool with the provided path\n"
+        "3. Review the import summary to confirm what was loaded\n"
+        "4. Use list_accounts and query_transactions to verify the data\n\n"
+        "Supported file types:\n"
+        "- .ofx/.qfx — bank statements (OFX/Quicken format)\n"
+        "- .pdf — W-2 tax forms"
+    )
+
+
+@mcp.prompt()
+def categorize_transactions() -> str:
+    """Help categorize uncategorized transactions."""
+    return (
+        "Help me categorize my transactions.\n\n"
+        "Steps:\n"
+        "1. Use get_uncategorized_transactions to find transactions without categories\n"
+        "2. Review each transaction's description and amount\n"
+        "3. Suggest appropriate categories based on the payee/description\n"
+        "4. Use categorize_transaction to assign categories\n"
+        "5. Common categories: Food, Housing, Transportation, Entertainment, "
+        "Healthcare, Shopping, Utilities, Income, Transfer\n\n"
+        "Ask the user to confirm before categorizing, or offer to auto-categorize "
+        "based on common patterns."
+    )
+
+
+@mcp.prompt()
+def setup_budget() -> str:
+    """Help set up monthly budgets by category."""
+    return (
+        "Help me set up a monthly budget.\n\n"
+        "Steps:\n"
+        "1. Use get_monthly_summary to understand current spending patterns\n"
+        "2. Use get_spending_by_category to see where money is going\n"
+        "3. Discuss reasonable budget amounts for each category\n"
+        "4. Use set_budget to create budgets for each category\n"
+        "5. Use get_budget_status to review the budget vs actual spending\n\n"
+        "Tip: Start with the biggest spending categories first."
+    )
+
+
+@mcp.prompt()
+def monthly_review(month: str = "") -> str:
+    """Conduct a monthly financial review.
+
+    Args:
+        month: Month to review (YYYY-MM). Leave empty for current month.
+    """
+    month_text = f"for {month}" if month else "for the current month"
+    return (
+        f"Conduct a monthly financial review {month_text}.\n\n"
+        "Steps:\n"
+        "1. Use get_monthly_summary to see income vs expenses\n"
+        "2. Use get_spending_by_category to analyze spending breakdown\n"
+        "3. Use get_budget_status to check budget compliance\n"
+        "4. Use find_recurring_transactions to identify subscriptions\n"
+        "5. Highlight any unusual spending or trends\n"
+        "6. Suggest areas for improvement\n\n"
+        "Present a clear, concise summary with actionable insights."
+    )
 
 
 @mcp.prompt()
@@ -29,7 +98,7 @@ def analyze_spending(period: str = "last 30 days") -> str:
         "3. Calculate total spending, average transaction size, and count\n"
         "4. Identify any unusually large transactions\n"
         "5. Summarize findings with actionable insights\n\n"
-        "If categorized data is not available, work with raw payee/merchant names."
+        "If categorized data is available, use get_spending_by_category."
     )
 
 

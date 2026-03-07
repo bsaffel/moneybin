@@ -46,7 +46,6 @@ help: ## Show this help message
 	@echo "  make test              # Run unit tests (fast, recommended)"
 	@echo "  make test-all          # Run all tests including integration tests"
 	@echo "  make check             # Format and validate code (recommended)"
-	@echo "  make dagster-dev       # Start Dagster server"
 	@echo "  make update-deps       # Update all dependencies"
 	@echo ""
 	@echo "$(BLUE)Dependency Management:$(RESET)"
@@ -71,8 +70,6 @@ setup: check-python venv lock sync pre-commit ## Setup & Installation: Complete 
 	@echo "  make test                 # Run unit tests (fast)"
 	@echo "  make test-all             # Run all tests including integration tests"
 	@echo "  make check                # Format and validate code"
-	@echo "  make dagster-dev          # Start Dagster development server"
-	@echo "  moneybin extract plaid    # Extract financial data"
 	@echo ""
 	@echo "$(BLUE)Useful commands:$(RESET)"
 	@echo "  make status               # Check environment status"
@@ -175,13 +172,6 @@ type-check: venv ## Development: Type check with pyright
 check: format lint type-check ## Development: Run all code quality checks
 	@echo "$(GREEN)✅ All code quality checks complete$(RESET)"
 
-jupyter: venv ## Development: Start Jupyter notebook server
-	@echo "$(BLUE)📓 Starting Jupyter notebook server...$(RESET)"
-	@uv run jupyter notebook notebooks/
-
-dagster-dev: venv ## Development: Start Dagster development server
-	@echo "$(BLUE)🚀 Starting Dagster development server...$(RESET)"
-	@cd pipelines && uv run dagster dev
 
 clean-cache: ## Utility: Clean Python cache files
 	@echo "$(BLUE)🧹 Cleaning Python cache files...$(RESET)"
@@ -250,7 +240,7 @@ status: ## Utility: Show development environment status
 	@echo "$(GREEN)Installed Packages:$(RESET)"
 	@if [ -d "$(VENV_DIR)" ]; then \
 		echo "  Core packages:"; \
-		uv pip list 2>/dev/null | grep -E "(dagster|dbt-core|duckdb|polars|ruff|pytest|pyright)" | sed 's/^/    /' || echo "    $(YELLOW)⚠️  No core packages found$(RESET)"; \
+		uv pip list 2>/dev/null | grep -E "(dbt-core|duckdb|polars|mcp|ruff|pytest|pyright)" | sed 's/^/    /' || echo "    $(YELLOW)⚠️  No core packages found$(RESET)"; \
 	else \
 		echo "  $(YELLOW)⚠️  Virtual environment not found$(RESET)"; \
 	fi

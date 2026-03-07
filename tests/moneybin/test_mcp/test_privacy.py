@@ -4,8 +4,8 @@ import pytest
 
 from moneybin.mcp.privacy import (
     check_table_allowed,
-    not_implemented,
     truncate_result,
+    validate_managed_write,
     validate_read_only_query,
 )
 
@@ -153,13 +153,72 @@ class TestTruncateResult:
         assert result.count("x") == 20
 
 
-class TestNotImplemented:
-    """Tests for not-implemented message generation."""
+class TestValidateManagedWrite:
+    """Tests for managed write validation."""
 
     @pytest.mark.unit
-    def test_message_format(self) -> None:
-        result = not_implemented("Test feature", "Run some command")
-        assert "[Not Yet Available]" in result
-        assert "Test feature" in result
-        assert "Run some command" in result
-        assert "MoneyBin docs" in result
+    def test_insert_into_user_schema_allowed(self) -> None:
+        assert (
+            validate_managed_write(
+                "INSERT INTO user.transaction_categories VALUES ('t1', 'Food')"
+            )
+            is None
+        )
+
+    @pytest.mark.unit
+    def test_insert_into_raw_schema_allowed(self) -> None:
+        assert (
+            validate_managed_write(
+                "INSERT INTO raw.ofx_transactions VALUES ('t1', 'a1')"
+            )
+            is None
+        )
+
+    @pytest.mark.unit
+    def test_update_user_schema_allowed(self) -> None:
+        assert (
+            validate_managed_write(
+                "UPDATE user.budgets SET monthly_amount = 500 WHERE budget_id = 'b1'"
+            )
+            is None
+        )
+
+    @pytest.mark.unit
+    def test_drop_rejected(self) -> None:
+        result = validate_managed_write("DROP TABLE user.budgets")
+        assert result is not None
+        assert "DROP" in result
+
+    @pytest.mark.unit
+    def test_alter_rejected(self) -> None:
+        result = validate_managed_write("ALTER TABLE user.budgets ADD COLUMN x INT")
+        assert result is not None
+
+    @pytest.mark.unit
+    def test_truncate_rejected(self) -> None:
+        result = validate_managed_write("TRUNCATE TABLE user.budgets")
+        assert result is not None
+
+    @pytest.mark.unit
+    def test_insert_into_core_rejected(self) -> None:
+        result = validate_managed_write("INSERT INTO core.dim_accounts VALUES ('x')")
+        assert result is not None
+        assert "user" in result or "raw" in result
+
+    @pytest.mark.unit
+    def test_create_or_replace_in_core_allowed(self) -> None:
+        """Core transforms use CREATE OR REPLACE TABLE."""
+        assert (
+            validate_managed_write(
+                "CREATE OR REPLACE TABLE core.dim_accounts AS (SELECT 1)",
+                allow_core_transforms=True,
+            )
+            is None
+        )
+
+    @pytest.mark.unit
+    def test_create_or_replace_core_rejected_without_flag(self) -> None:
+        result = validate_managed_write(
+            "CREATE OR REPLACE TABLE core.dim_accounts AS (SELECT 1)"
+        )
+        assert result is not None

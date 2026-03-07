@@ -3,22 +3,12 @@
 import json
 from typing import Any
 
-import duckdb
 import pytest
 
+from moneybin.mcp import server
 from moneybin.mcp.tools import (
     describe_table,
-    find_recurring_transactions,
     get_account_balances,
-    get_balance_history,
-    get_budget_status,
-    get_investment_holdings,
-    get_investment_performance,
-    get_liabilities_summary,
-    get_monthly_summary,
-    get_net_worth,
-    get_spending_by_category,
-    get_tax_summary,
     get_w2_summary,
     list_accounts,
     list_institutions,
@@ -96,8 +86,9 @@ class TestDescribeTable:
     """Tests for the describe_table tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self, mcp_db: duckdb.DuckDBPyConnection) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        mcp_db.execute(_INSERT_TRANSACTIONS)
+    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+        with server.get_write_db() as db:
+            db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_describes_existing_table(self) -> None:
@@ -135,8 +126,9 @@ class TestQueryTransactions:
     """Tests for the query_transactions tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self, mcp_db: duckdb.DuckDBPyConnection) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        mcp_db.execute(_INSERT_TRANSACTIONS)
+    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+        with server.get_write_db() as db:
+            db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_returns_all_transactions(self) -> None:
@@ -210,8 +202,9 @@ class TestGetW2Summary:
     """Tests for the get_w2_summary tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self, mcp_db: duckdb.DuckDBPyConnection) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        mcp_db.execute(_INSERT_W2)
+    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+        with server.get_write_db() as db:
+            db.execute(_INSERT_W2)
 
     @pytest.mark.unit
     def test_returns_w2_data(self) -> None:
@@ -238,8 +231,9 @@ class TestRunReadQuery:
     """Tests for the run_read_query tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self, mcp_db: duckdb.DuckDBPyConnection) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        mcp_db.execute(_INSERT_TRANSACTIONS)
+    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+        with server.get_write_db() as db:
+            db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_valid_select(self) -> None:
@@ -256,34 +250,3 @@ class TestRunReadQuery:
     def test_rejects_insert(self) -> None:
         result = run_read_query("""INSERT INTO core.dim_accounts VALUES ('x')""")
         assert "Query rejected" in result
-
-
-# ---------------------------------------------------------------------------
-# Not-implemented tool tests
-# ---------------------------------------------------------------------------
-
-
-class TestNotImplementedTools:
-    """Verify all stub tools return the expected format."""
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "tool_fn",
-        [
-            lambda: get_spending_by_category(),
-            lambda: get_monthly_summary(),
-            lambda: get_investment_holdings(),
-            lambda: get_investment_performance(),
-            lambda: get_liabilities_summary(),
-            lambda: get_net_worth(),
-            lambda: get_balance_history(),
-            lambda: find_recurring_transactions(),
-            lambda: get_budget_status(),
-            lambda: get_tax_summary(),
-        ],
-    )
-    def test_returns_not_implemented_message(self, tool_fn: object) -> None:
-        result = tool_fn()  # type: ignore[operator]
-        assert isinstance(result, str)
-        assert "[Not Yet Available]" in result
-        assert "MoneyBin docs" in result

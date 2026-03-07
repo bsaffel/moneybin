@@ -776,7 +776,7 @@ class W2Extractor:
             - W2FormSchema: Pydantic model that validates parsed data
             - _extract_using_text(): Calls this method with pdfplumber text
             - _extract_using_ocr(): Calls this method with pytesseract text
-            - docs/w2-extraction-architecture.md: Detailed extraction documentation
+            - docs/specs/implemented/w2-extraction.md: Detailed extraction documentation
         """
         data: dict[str, Any] = {}
 

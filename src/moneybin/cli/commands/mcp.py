@@ -32,10 +32,10 @@ def serve(
 ) -> None:
     """Start the MoneyBin MCP server.
 
-    This launches an MCP server that gives AI assistants read-only access
-    to your financial data in DuckDB. The server communicates via stdio
-    (standard input/output) by default, which is the standard transport
-    for local MCP integrations.
+    This launches an MCP server that gives AI assistants full access to
+    your financial data in DuckDB — querying, importing, categorizing,
+    and budgeting. The server communicates via stdio (standard input/output)
+    by default, which is the standard transport for local MCP integrations.
 
     The server uses the currently active profile to determine which
     database to connect to.
@@ -55,6 +55,7 @@ def serve(
     # Import tools/resources/prompts to register their decorators with the server
     for module in (
         "moneybin.mcp.tools",
+        "moneybin.mcp.write_tools",
         "moneybin.mcp.resources",
         "moneybin.mcp.prompts",
     ):

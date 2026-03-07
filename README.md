@@ -111,7 +111,7 @@ MoneyBin's MCP server exposes **25 tools** across 11 financial domains, plus res
 | `institutions.*` | 1 | Connected financial institutions |
 | `sql.*` | 1 | Execute arbitrary read-only SQL queries |
 
-All tools are **read-only**. The MCP server opens DuckDB in read-only mode and validates all queries to reject write operations. See [`docs/mcp-server-design.md`](docs/mcp-server-design.md) for the complete specification.
+All tools are **read-only**. The MCP server opens DuckDB in read-only mode and validates all queries to reject write operations. See [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md) for the complete specification.
 
 ### Resources & Prompts
 
@@ -176,7 +176,7 @@ make dagster-dev
 
 ## Privacy & Security
 
-MoneyBin follows a [three-tier data custody model](docs/privacy-tiers-architecture.md) that makes trust boundaries explicit:
+MoneyBin follows a [three-tier data custody model](docs/architecture/002-privacy-tiers.md) that makes trust boundaries explicit:
 
 ### Local Only (Default)
 
@@ -196,7 +196,7 @@ MoneyBin follows a [three-tier data custody model](docs/privacy-tiers-architectu
 - Server stores only opaque ciphertext
 - You hold the encryption keys
 
-See [`docs/architecture/e2e-encryption.md`](docs/architecture/e2e-encryption.md) for the encryption design.
+See [`docs/architecture/004-e2e-encryption.md`](docs/architecture/004-e2e-encryption.md) for the encryption design.
 
 ### Managed (Future)
 
@@ -232,7 +232,7 @@ See [`docs/architecture/e2e-encryption.md`](docs/architecture/e2e-encryption.md)
 | 1099 forms | PDF | Planned |
 | Investment statements | PDF/CSV | Planned |
 
-See [`docs/data-sources-strategy.md`](docs/data-sources-strategy.md) for the full data source roadmap.
+See [`docs/reference/data-sources.md`](docs/reference/data-sources.md) for the full data source roadmap.
 
 ## CLI Reference
 
@@ -335,16 +335,17 @@ make test-unit      # unit tests only
 make test-cov       # with coverage report
 ```
 
-See `.cursor/rules/` for coding standards and conventions.
+See `.claude/rules/` for coding standards and conventions.
 
 ## Documentation
 
-- [`docs/mcp-server-design.md`](docs/mcp-server-design.md) -- Complete MCP server specification
-- [`docs/privacy-tiers-architecture.md`](docs/privacy-tiers-architecture.md) -- Privacy tier design
-- [`docs/duckdb-er-diagram.md`](docs/duckdb-er-diagram.md) -- Data model ER diagram
-- [`docs/application-architecture.md`](docs/application-architecture.md) -- System architecture
-- [`docs/ofx-import-guide.md`](docs/ofx-import-guide.md) -- OFX import guide
-- [`docs/architecture/e2e-encryption.md`](docs/architecture/e2e-encryption.md) -- Encryption design
+- [`docs/README.md`](docs/README.md) -- Documentation index
+- [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md) -- System architecture
+- [`docs/architecture/002-privacy-tiers.md`](docs/architecture/002-privacy-tiers.md) -- Privacy tier design
+- [`docs/reference/data-model.md`](docs/reference/data-model.md) -- Data model and ER diagram
+- [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md) -- MCP server tools
+- [`docs/specs/implemented/ofx-import.md`](docs/specs/implemented/ofx-import.md) -- OFX import guide
+- [`docs/architecture/004-e2e-encryption.md`](docs/architecture/004-e2e-encryption.md) -- Encryption design
 
 ## License
 

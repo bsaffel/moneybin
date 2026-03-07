@@ -27,6 +27,7 @@ _SCHEMA_FILES = [
     "raw_w2_forms.sql",
     "core_dim_accounts.sql",
     "core_fct_transactions.sql",
+    "user_schema.sql",
 ]
 
 
@@ -41,25 +42,28 @@ def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
     - 2 accounts (ACC001 CHECKING, ACC002 SAVINGS)
     - 2 account balances
 
-    Yields a writable connection so test classes can insert additional
-    fixture data via class-level autouse fixtures.
+    Uses a file-backed database so both read-only and read-write connections
+    work (matching production behavior). Sets up server._db as a read-only
+    connection and server._db_path for get_write_db().
     """
     db_path = tmp_path / "test.duckdb"
-    conn = duckdb.connect(str(db_path))
+
+    # Use a read-write connection for setup
+    setup_conn = duckdb.connect(str(db_path))
 
     # Create schemas and tables from canonical SQL files
     for sql_file in _SCHEMA_FILES:
-        conn.execute((_SCHEMA_DIR / sql_file).read_text())
+        setup_conn.execute((_SCHEMA_DIR / sql_file).read_text())
 
     # -- Base reference data: institutions --
-    conn.execute("""
+    setup_conn.execute("""
         INSERT INTO raw.ofx_institutions VALUES
         ('Test Bank', '1234', 'test.qfx', '2025-01-01', CURRENT_TIMESTAMP),
         ('Other Bank', '5678', 'other.qfx', '2025-01-01', CURRENT_TIMESTAMP)
     """)
 
     # -- Base reference data: accounts --
-    conn.execute("""
+    setup_conn.execute("""
         INSERT INTO core.dim_accounts VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
@@ -68,7 +72,7 @@ def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
     """)
 
     # -- Base reference data: account balances --
-    conn.execute("""
+    setup_conn.execute("""
         INSERT INTO raw.ofx_balances VALUES
         ('ACC001', '2025-06-01', '2025-06-30', 5000.00,
          '2025-06-30', 4800.00, 'test.qfx',
@@ -78,6 +82,11 @@ def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
          '2025-01-24', CURRENT_TIMESTAMP)
     """)
 
-    server._db = conn  # type: ignore[reportPrivateUsage] — test fixture
-    yield conn
+    setup_conn.close()
+
+    # Set up server state: read-only connection + db_path for write access
+    read_conn = duckdb.connect(str(db_path), read_only=True)
+    server._db = read_conn  # type: ignore[reportPrivateUsage] — test fixture
+    server._db_path = db_path  # type: ignore[reportPrivateUsage] — test fixture
+    yield read_conn
     server.close_db()

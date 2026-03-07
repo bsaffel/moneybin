@@ -10,7 +10,7 @@ import json
 import logging
 from datetime import date, timedelta
 
-from .privacy import MAX_ROWS, not_implemented, truncate_result
+from .privacy import MAX_ROWS, truncate_result
 from .server import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
@@ -240,28 +240,3 @@ def w2_by_year(tax_year: str) -> str:
         return json.dumps({"message": f"No W-2 data found for tax year {tax_year}."})
 
     return json.dumps(records, indent=2, default=str)
-
-
-# ---------------------------------------------------------------------------
-# Not-yet-implemented resources
-# ---------------------------------------------------------------------------
-
-
-@mcp.resource("moneybin://investments/holdings")
-def investments_holdings() -> str:
-    """Current investment holdings (not yet implemented)."""
-    return not_implemented(
-        "Investment holdings data",
-        "1. Connect investment accounts via Plaid sync\n"
-        "2. Run 'moneybin sync plaid' with an investment-supporting institution",
-    )
-
-
-@mcp.resource("moneybin://spending/categories")
-def spending_categories() -> str:
-    """Spending breakdown by category (not yet implemented)."""
-    return not_implemented(
-        "Spending by category",
-        "1. Run 'moneybin transform run' to build categorization models\n"
-        "2. Ensure transaction data has been imported via OFX or Plaid",
-    )

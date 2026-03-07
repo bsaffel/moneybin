@@ -185,7 +185,7 @@ def test_load_duplicate_data_replaces(
     # Modify data and load again (same primary key)
     modified_data = sample_w2_data.clone()
     # Change a non-key field
-    modified_data = modified_data.with_columns(
+    modified_data = modified_data.with_columns(  # pyright: ignore[reportUnknownMemberType]  # polars stubs partially unknown
         pl.lit(25000.00).alias("federal_income_tax")
     )
 

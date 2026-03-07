@@ -1,7 +1,8 @@
 """Privacy controls and query validation for the MCP server.
 
-This module enforces read-only access, result size limits, and provides
-the not-implemented helper for features not yet available in DuckDB.
+This module enforces query safety: read-only validation for the general
+query tool, managed write validation for dedicated write tools, and
+result size limits.
 """
 
 import logging
@@ -31,6 +32,28 @@ _READ_ONLY_PREFIXES = re.compile(
 # Patterns that indicate write operations (even inside CTEs)
 _WRITE_PATTERNS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|REPLACE|MERGE|COPY|ATTACH|DETACH|EXPORT|IMPORT)\b",
+    re.IGNORECASE,
+)
+
+# Dangerous DDL operations never allowed through managed writes
+_DANGEROUS_OPS = re.compile(
+    r"\b(DROP|ALTER|TRUNCATE|ATTACH|DETACH|EXPORT|COPY)\b",
+    re.IGNORECASE,
+)
+
+# Schemas allowed for managed writes (INSERT/UPDATE/DELETE)
+_WRITABLE_SCHEMAS = {"user", "raw"}
+
+# Pattern to extract target schema from INSERT/UPDATE/DELETE statements
+_WRITE_TARGET = re.compile(
+    r"^\s*(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM)\s+"
+    r"(?:\"?(\w+)\"?\.)",
+    re.IGNORECASE,
+)
+
+# Pattern for CREATE OR REPLACE TABLE in core schema (transforms only)
+_CORE_TRANSFORM = re.compile(
+    r"^\s*CREATE\s+OR\s+REPLACE\s+TABLE\s+(?:\"?core\"?\.)",
     re.IGNORECASE,
 )
 
@@ -105,18 +128,54 @@ def truncate_result(text: str) -> str:
     )
 
 
-def not_implemented(feature: str, enable_hint: str) -> str:
-    """Generate a helpful not-implemented message for unavailable features.
+def validate_managed_write(
+    sql: str, *, allow_core_transforms: bool = False
+) -> str | None:
+    """Validate that a write operation targets only safe schemas.
+
+    Managed writes are limited to INSERT/UPDATE/DELETE on user.* and raw.*
+    schemas. Dangerous DDL (DROP, ALTER, TRUNCATE) is always rejected.
+
+    When allow_core_transforms is True, CREATE OR REPLACE TABLE core.* is
+    also permitted (used by the import service to rebuild core tables).
 
     Args:
-        feature: Description of the feature that isn't available yet.
-        enable_hint: Instructions on how to enable the feature.
+        sql: The SQL statement to validate.
+        allow_core_transforms: Allow CREATE OR REPLACE on core schema.
 
     Returns:
-        A formatted message explaining the feature isn't available.
+        None if the write is valid, or an error message string if rejected.
     """
-    return (
-        f"[Not Yet Available] {feature} has not been loaded into MoneyBin.\n\n"
-        f"To enable this feature:\n{enable_hint}\n\n"
-        "See MoneyBin docs for setup instructions."
-    )
+    stripped = sql.strip()
+
+    if not stripped:
+        return "Empty query is not allowed."
+
+    # Allow core transforms (CREATE OR REPLACE TABLE core.*)
+    if allow_core_transforms and _CORE_TRANSFORM.match(stripped):
+        return None
+
+    # Block dangerous operations unconditionally
+    if _DANGEROUS_OPS.search(stripped):
+        ops = _DANGEROUS_OPS.findall(stripped)
+        return (
+            f"Dangerous operations ({', '.join(ops)}) are not allowed. "
+            f"Only INSERT, UPDATE, and DELETE on user.* and raw.* schemas are permitted."
+        )
+
+    # Extract target schema
+    match = _WRITE_TARGET.match(stripped)
+    if not match:
+        return (
+            "Could not determine target schema. Managed writes must target "
+            "user.* or raw.* schemas with explicit schema qualification."
+        )
+
+    schema = match.group(1).lower()
+    if schema not in _WRITABLE_SCHEMAS:
+        return (
+            f"Writes to '{schema}' schema are not allowed. "
+            f"Only user.* and raw.* schemas can be written to through managed tools."
+        )
+
+    return None

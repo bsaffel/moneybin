@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "mcp__moneybin__get_monthly_summary",
+      "mcp__moneybin__query_transactions"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "moneybin"
+  ]
+}

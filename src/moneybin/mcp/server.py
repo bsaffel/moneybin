@@ -1,12 +1,20 @@
 """MCP server definition with DuckDB lifecycle management.
 
-This module creates the FastMCP server instance and manages the read-only
-DuckDB connection used by all tools and resources.
+This module creates the FastMCP server instance and manages DuckDB connections
+used by all tools and resources. The server uses a **read-only connection by
+default** for queries, and acquires a short-lived read-write connection only
+when write operations (imports, categorization, budgets) are needed.
+
+This allows multiple MCP server instances and other tools (CLI, notebooks)
+to read the database concurrently. DuckDB supports unlimited concurrent
+read-only connections but only one read-write connection at a time.
 
 Documentation: https://modelcontextprotocol.github.io/python-sdk/
 """
 
 import logging
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
@@ -33,7 +41,7 @@ class TableRef(NamedTuple):
         return f"{self.schema}.{self.name}"
 
 
-# -- Core / Gold layer (canonical tables built by dbt) --
+# -- Core / Gold layer (canonical tables built by dbt or inline transforms) --
 DIM_ACCOUNTS = TableRef("core", "dim_accounts")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions")
 
@@ -42,27 +50,33 @@ OFX_BALANCES = TableRef("raw", "ofx_balances")
 OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
 W2_FORMS = TableRef("raw", "w2_forms")
 
+# -- User tables (AI-managed data) --
+TRANSACTION_CATEGORIES = TableRef("user", "transaction_categories")
+BUDGETS = TableRef("user", "budgets")
+TRANSACTION_NOTES = TableRef("user", "transaction_notes")
+
 
 # Global server instance — tools/resources/prompts register against this
 mcp = FastMCP(
-    "MoneyBin Financial Data",
+    "MoneyBin",
     instructions=(
-        "MoneyBin provides read-only access to personal financial data stored "
-        "in a local DuckDB database. You can query transactions, accounts, "
-        "balances, tax forms, and database schema. All data stays local — "
-        "nothing is sent to any external service."
+        "MoneyBin is an AI-powered personal finance app. You can import bank "
+        "statements (OFX/QFX files), query transactions and accounts, categorize "
+        "spending, set budgets, and get financial insights. All data stays local "
+        "in a DuckDB database — nothing is sent to any external service."
     ),
 )
 
-# Module-level DuckDB connection — set by init_db() before the server starts
+# Module-level state — set by init_db() before the server starts
 _db: duckdb.DuckDBPyConnection | None = None
+_db_path: Path | None = None
 
 
 def get_db() -> duckdb.DuckDBPyConnection:
-    """Get the read-only DuckDB connection.
+    """Get the read-only DuckDB connection for queries.
 
     Returns:
-        The active DuckDB connection.
+        The active read-only DuckDB connection.
 
     Raises:
         RuntimeError: If the database has not been initialized.
@@ -70,6 +84,61 @@ def get_db() -> duckdb.DuckDBPyConnection:
     if _db is None:
         raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
     return _db
+
+
+def refresh_read_connection() -> None:
+    """Reopen the read-only connection to pick up changes.
+
+    DuckDB read-only connections get a snapshot at open time. Call this
+    after external writes so subsequent reads see the new data.
+
+    Raises:
+        RuntimeError: If the database has not been initialized.
+    """
+    global _db  # noqa: PLW0603 — module-level singleton is intentional
+
+    if _db_path is None:
+        raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
+
+    if _db is not None:
+        _db.close()
+
+    _db = duckdb.connect(str(_db_path), read_only=True)
+    logger.info("Read-only connection refreshed")
+
+
+@contextmanager
+def get_write_db() -> Generator[duckdb.DuckDBPyConnection, None, None]:
+    """Open a short-lived read-write connection for write operations.
+
+    Closes the read-only connection, opens a read-write connection, yields
+    it, then closes it and reopens the read-only connection. DuckDB does
+    not allow mixed read-only and read-write connections to the same file
+    in the same process.
+
+    Yields:
+        A read-write DuckDB connection.
+
+    Raises:
+        RuntimeError: If the database has not been initialized.
+    """
+    global _db  # noqa: PLW0603 — module-level singleton is intentional
+
+    if _db_path is None:
+        raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
+
+    # Close read-only connection before opening read-write
+    if _db is not None:
+        _db.close()
+        _db = None
+
+    write_conn = duckdb.connect(str(_db_path), read_only=False)
+    try:
+        yield write_conn
+    finally:
+        write_conn.close()
+        _db = duckdb.connect(str(_db_path), read_only=True)
+        logger.info("Read-only connection restored after write")
 
 
 def table_exists(table: TableRef) -> bool:
@@ -96,36 +165,86 @@ def table_exists(table: TableRef) -> bool:
         return False
 
 
+def _init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
+    """Initialize all database schemas and user tables.
+
+    Args:
+        conn: Active DuckDB connection.
+    """
+    sql_dir = Path(__file__).resolve().parents[1] / "sql" / "schema"
+
+    # Create schemas
+    conn.execute("CREATE SCHEMA IF NOT EXISTS raw")
+    conn.execute("CREATE SCHEMA IF NOT EXISTS core")
+    conn.execute("CREATE SCHEMA IF NOT EXISTS user")
+
+    # Create raw and core tables from schema files if they exist
+    schema_files = [
+        "raw_ofx_institutions.sql",
+        "raw_ofx_accounts.sql",
+        "raw_ofx_transactions.sql",
+        "raw_ofx_balances.sql",
+        "raw_w2_forms.sql",
+        "core_dim_accounts.sql",
+        "core_fct_transactions.sql",
+    ]
+    for sql_file in schema_files:
+        sql_path = sql_dir / sql_file
+        if sql_path.exists():
+            conn.execute(sql_path.read_text())
+
+    # Create user schema tables
+    user_schema_path = sql_dir / "user_schema.sql"
+    if user_schema_path.exists():
+        conn.execute(user_schema_path.read_text())
+
+
 def init_db(db_path: Path) -> None:
-    """Open DuckDB in read-only mode for the given profile database.
+    """Initialize the database and open a read-only connection.
+
+    If the database file does not exist, it will be created and initialized
+    with all required schemas (raw, core, user) via a temporary read-write
+    connection. The long-lived connection is always read-only.
 
     Args:
         db_path: Path to the DuckDB database file.
 
     Raises:
-        FileNotFoundError: If the database file does not exist.
         duckdb.IOException: If the database cannot be opened.
     """
-    global _db  # noqa: PLW0603 — module-level singleton is intentional
+    global _db, _db_path  # noqa: PLW0603 — module-level singleton is intentional
 
-    if not db_path.exists():
-        raise FileNotFoundError(
-            f"Database file not found: {db_path}\n"
-            "Run 'moneybin load' to create and populate the database first."
-        )
+    is_new = not db_path.exists()
 
-    logger.info("Opening DuckDB in read-only mode: %s", db_path)
+    if is_new:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("Creating new database: %s", db_path)
+
+    # Initialize schemas via a temporary read-write connection
+    logger.info("Initializing schemas: %s", db_path)
+    init_conn = duckdb.connect(str(db_path), read_only=False)
+    try:
+        _init_schemas(init_conn)
+    finally:
+        init_conn.close()
+
+    if is_new:
+        logger.info("Database initialized with raw, core, and user schemas")
+
+    # Open long-lived read-only connection
+    _db_path = db_path
     _db = duckdb.connect(str(db_path), read_only=True)
-    logger.info("DuckDB connection established")
+    logger.info("DuckDB read-only connection established: %s", db_path)
 
 
 def close_db() -> None:
     """Close the DuckDB connection if open."""
-    global _db  # noqa: PLW0603 — module-level singleton is intentional
+    global _db, _db_path  # noqa: PLW0603 — module-level singleton is intentional
 
     if _db is not None:
         _db.close()
         _db = None
+        _db_path = None
         try:
             logger.info("DuckDB connection closed")
         except ValueError:
