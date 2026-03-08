@@ -31,6 +31,7 @@ Self-contained documents for driving feature development. Follow the [spec templ
 | [Transaction Categorization](specs/transaction-categorization.md) | Category hierarchy, rules engine, bulk operations |
 | [Budget Tracking](specs/budget-tracking.md) | Budget definitions, rollover, status tracking |
 | [Plaid Integration](specs/plaid-integration.md) | Plaid API + E2E encryption for Encrypted Sync tier |
+| [Privacy & Security Roadmap](specs/privacy-security-roadmap.md) | Future privacy tiers (Encrypted Sync, Managed) and security controls |
 
 ### Implemented (Pattern Reference)
 

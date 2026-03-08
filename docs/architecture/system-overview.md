@@ -4,18 +4,11 @@ MoneyBin is an open-source, local-first personal financial analysis platform. Fi
 
 ## Architecture
 
-```text
-                                                    +---------------------------+
-                                                    |       MCP Server          |
-                                                    |  (AI-assisted analysis)   |
-                                                    +-------------+-------------+
-                                                                  |
-Source Files --> Extractors --> Raw Tables --> SQLMesh --> Core Tables -+
-                                                                      |
-                                                    +-------------+---+---------+
-                                                    |      Data Toolkit         |
-                                                    |  DuckDB / SQLMesh / Jupyter|
-                                                    +---------------------------+
+```mermaid
+flowchart LR
+    SF[Source Files] --> E[Extractors] --> RT[Raw Tables] --> SM[SQLMesh] --> CT[Core Tables]
+    CT --> MCP["MCP Server\n(AI-assisted analysis)"]
+    CT --> DT["Data Toolkit\nDuckDB / SQLMesh / Jupyter"]
 ```
 
 ### Primary interface: MCP server

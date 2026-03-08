@@ -50,15 +50,19 @@ Adopt a three-tier data custody model that makes trust boundaries explicit, defe
 
 ### Architecture by tier
 
-```text
-Local Only:
-  Source Files --> Extractors --> DuckDB --> MCP Server (stdio)
+```mermaid
+flowchart LR
+    subgraph Local Only
+        SF[Source Files] --> EX[Extractors] --> DB1[DuckDB] --> MCP["MCP Server (stdio)"]
+    end
 
-Encrypted Sync:
-  Plaid API --> Sync Server (brief plaintext) --> Encrypt --> Client --> Decrypt --> DuckDB
+    subgraph Encrypted Sync
+        PA1[Plaid API] --> SS["Sync Server\n(brief plaintext)"] --> EN[Encrypt] --> CL1[Client] --> DE[Decrypt] --> DB2[DuckDB]
+    end
 
-Managed:
-  Plaid API --> Server (stores plaintext) --> API --> Client
+    subgraph Managed
+        PA2[Plaid API] --> SV["Server\n(stores plaintext)"] --> API --> CL2[Client]
+    end
 ```
 
 ### Design principles

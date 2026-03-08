@@ -4,8 +4,9 @@ MoneyBin supports importing financial data from multiple source types. The prior
 
 All data sources flow through the same pipeline:
 
-```text
-Source --> Extractor --> Raw Tables --> SQLMesh Staging --> Core Tables --> MCP Server
+```mermaid
+flowchart LR
+    Source --> Extractor --> Raw[Raw Tables] --> Staging[SQLMesh Staging] --> Core[Core Tables] --> MCP[MCP Server]
 ```
 
 ## Integration matrix

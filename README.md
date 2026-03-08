@@ -1,44 +1,45 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <img src="docs/assets/moneybin-icon.png" alt="MoneyBin Icon" width="400">
+  <p><strong>Open-source, local-first personal financial analysis platform.</strong></p>
 </div>
 <!-- markdownlint-enable MD033 MD041 -->
 
-# MoneyBin
+## What is MoneyBin?
 
-An open-source, local-first personal financial analysis platform. MoneyBin gives you complete ownership of your financial data with two ways to interact with it:
+MoneyBin gives you complete ownership of your financial data. Import bank statements and tax documents, transform them into a clean analytical model, then interact with your data two ways:
 
-1. **MCP Server** -- Ask your AI assistant about your finances. MoneyBin exposes tools across 11 domains so Claude, Cursor, or any MCP-compatible assistant can query your accounts, transactions, spending, taxes, and more.
-
-2. **Data Toolkit** -- Query your DuckDB database directly with SQL, build SQLMesh transformation models, explore data in Jupyter notebooks, or create Streamlit dashboards. Your data, your tools.
+- **MCP Server** -- Ask your AI assistant about your finances. 25 tools across 11 domains let Claude, Cursor, or any MCP-compatible assistant query your accounts, transactions, spending, taxes, and more.
+- **Data Toolkit** -- Query your DuckDB database directly with SQL, build SQLMesh transformation models, or explore data in Jupyter notebooks.
 
 All data stays on your machine. Nothing is sent to any external service.
 
 ## How It Works
 
-```text
-Bank Files (OFX/CSV/PDF) ──→ Extractors ──→ Raw Tables ──→ SQLMesh ──→ Core Tables
-                                                                        │
-                                                         ┌──────────────┼──────────────┐
-                                                         ▼              ▼              ▼
-                                                    MCP Server     DuckDB SQL      Jupyter
-                                                   (AI assistants) (direct query)  (notebooks)
+```mermaid
+graph LR
+    A["🏦 Bank Files\n(OFX / CSV / PDF)"] --> B["⚙️ Extractors"]
+    B --> C["📦 Raw Tables"]
+    C --> D["🔄 SQLMesh"]
+    D --> E["✨ Core Tables"]
+    E --> F["🤖 MCP Server"]
+    E --> G["🔍 DuckDB SQL"]
+    E --> H["📓 Jupyter"]
 ```
 
-Import your financial data from local files, transform it with SQLMesh into a clean analytical model, then interact with it through AI assistants or hands-on data tools.
+Import your financial data from local files, transform it with SQLMesh into a clean analytical model, then interact through AI assistants or hands-on data tools.
 
-## Quick Start
+## 🚀 Quick Start
 
 ### 1. Install
 
 ```bash
-# Clone and set up
 git clone https://github.com/yourusername/moneybin.git
 cd moneybin
 make setup
 ```
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). The `make setup` command will install uv automatically if needed.
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ### 2. Import Your Data
 
@@ -55,9 +56,7 @@ moneybin transform apply
 
 ### 3. Connect Your AI Assistant
 
-Add MoneyBin to your AI tool's MCP configuration:
-
-**Cursor** (`.cursor/mcp.json`):
+Add MoneyBin to your MCP configuration:
 
 ```json
 {
@@ -70,197 +69,94 @@ Add MoneyBin to your AI tool's MCP configuration:
 }
 ```
 
-**Claude Desktop** (`claude_desktop_config.json`):
+> Works with Claude Desktop (`.claude/claude_desktop_config.json`), Cursor (`.cursor/mcp.json`), and any MCP-compatible client.
 
-```json
-{
-  "mcpServers": {
-    "moneybin": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/moneybin", "moneybin", "mcp", "serve"]
-    }
-  }
-}
-```
-
-Then ask your assistant things like:
+Then ask things like:
 
 - "What are my account balances?"
 - "Show my spending by category for the last 3 months"
 - "Find all recurring subscriptions and their annual cost"
 - "How much did I pay in taxes last year?"
-- "Compare my spending this month vs last month"
 
-## MCP Server
+## 🤖 MCP Server
 
-MoneyBin's MCP server exposes **25 tools** across 11 financial domains, plus resources and prompt templates.
-
-### Tool Domains
+25 read-only tools across 11 financial domains:
 
 | Namespace | Tools | Description |
 |-----------|-------|-------------|
 | `schema.*` | 2 | Database discovery -- list tables, describe columns |
 | `accounts.*` | 4 | Account listing, balances, activity, balance history |
-| `transactions.*` | 3 | Search, find recurring charges, find large outliers |
+| `transactions.*` | 3 | Search, recurring charges, large outliers |
 | `spending.*` | 4 | By category, monthly summary, period comparison, top merchants |
-| `cashflow.*` | 2 | Net cash flow summary, income source identification |
+| `cashflow.*` | 2 | Net cash flow, income sources |
 | `tax.*` | 2 | W-2 summary, comprehensive tax summary |
-| `overview.*` | 2 | Net worth, data status (what's loaded and how fresh) |
-| `investments.*` | 2 | Holdings and performance (requires Plaid data) |
-| `liabilities.*` | 1 | Debt summary (requires Plaid data) |
+| `overview.*` | 2 | Net worth, data freshness |
+| `investments.*` | 2 | Holdings and performance |
+| `liabilities.*` | 1 | Debt summary |
 | `institutions.*` | 1 | Connected financial institutions |
-| `sql.*` | 1 | Execute arbitrary read-only SQL queries |
+| `sql.*` | 1 | Execute arbitrary read-only SQL |
 
-All tools are **read-only**. The MCP server opens DuckDB in read-only mode and validates all queries to reject write operations. See [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md) for the complete specification.
+Plus **8 resources** (schema info, account summaries, recent transactions) and **8 prompt templates** (spending analysis, tax prep, financial health check).
 
-### Resources & Prompts
+Full spec: [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md)
 
-- **8 Resources**: Schema info, account summaries, recent transactions, W-2 data, data status
-- **8 Prompts**: Spending analysis, anomaly detection, tax preparation, financial health check, subscription audit, year-in-review, and more
-
-## Data Toolkit
-
-MoneyBin stores all your financial data in a local [DuckDB](https://duckdb.org/) database that you can access directly with any tool in the modern data stack.
+## 🛠️ Data Toolkit
 
 ### DuckDB
 
-Query your data directly with SQL -- no MCP server needed:
-
 ```bash
-# Interactive SQL shell
-moneybin db shell
-
-# One-off queries
-moneybin db query "SELECT * FROM core.fct_transactions WHERE amount < -500"
-
-# Web UI for visual exploration
-moneybin db ui
+moneybin db shell                    # Interactive SQL shell
+moneybin db query "SELECT ..."       # One-off queries
+moneybin db ui                       # Web UI for exploration
 ```
 
 ### SQLMesh
 
-MoneyBin uses [SQLMesh](https://sqlmesh.com/) to transform raw imported data into a clean analytical model through three layers (raw -> staging -> core):
-
 ```bash
-# Run all transformations
-moneybin transform apply
-
-# Run SQLMesh audits for data quality
-moneybin transform test
-
-# Launch SQLMesh web UI for documentation and lineage
-sqlmesh ui
+moneybin transform apply             # Run all transformations
+moneybin transform test              # Data quality audits
+sqlmesh ui                           # Web UI for docs and lineage
 ```
 
 ### Jupyter
 
-Launch Jupyter for ad-hoc exploration and analysis:
-
 ```bash
-make jupyter
+make jupyter                         # Launch notebook server
 ```
 
-Connect directly to your DuckDB database for exploratory analysis, visualizations, and custom reports.
+## 📊 Data Sources
 
-### Streamlit
+| Source | Format | Status | Command |
+|--------|--------|--------|---------|
+| Bank statements | OFX/QFX | **Supported** | `moneybin extract ofx <file>` |
+| W-2 tax forms | PDF | **Supported** | `moneybin extract w2 <file>` |
+| Bank transactions | CSV | Planned | -- |
+| Bank transactions | Plaid API | Planned | -- |
+| 1099 forms | PDF | Planned | -- |
+| Investment statements | PDF/CSV | Planned | -- |
 
-Build interactive dashboards on top of your DuckDB data. (Dashboard templates coming soon.)
+See [`docs/reference/data-sources.md`](docs/reference/data-sources.md) for the full roadmap.
 
-### Dagster (Optional)
+## 🔒 Privacy
 
-For users who want scheduled data refresh pipelines, [Dagster](https://dagster.io/) is available as an orchestration layer:
+MoneyBin is **local-first by design**. All data stays on your machine in a DuckDB database. The MCP server opens DuckDB in read-only mode, with configurable result limits and optional table allowlists. Each user profile is fully isolated with its own database.
 
-```bash
-make dagster-dev
-```
-
-## Privacy & Security
-
-MoneyBin follows a [three-tier data custody model](docs/architecture/002-privacy-tiers.md) that makes trust boundaries explicit:
-
-### Local Only (Default)
-
-> "Nothing leaves this machine."
-
-- All data stored locally in DuckDB
-- Manual imports only (OFX, CSV, PDF)
-- Fully usable offline
-- Maximum privacy -- no cloud, no sync, no third-party access
-
-### Encrypted Sync (Future)
-
-> "We store it, but we can't read it."
-
-- E2E encrypted cloud backup and multi-device sync
-- Bank sync via Plaid with immediate encryption
-- Server stores only opaque ciphertext
-- You hold the encryption keys
-
-See [`docs/architecture/004-e2e-encryption.md`](docs/architecture/004-e2e-encryption.md) for the encryption design.
-
-### Managed (Future)
-
-> "We manage the data so everything just works."
-
-- Traditional SaaS-style experience
-- Server-readable data for rich analytics
-- Fastest onboarding
-
-### Security Controls
-
-- **Read-only MCP**: DuckDB opened in read-only mode; write operations rejected
-- **Result limits**: Configurable row and character limits on query results
-- **Table allowlist**: Optional restriction on which tables the MCP server can access
-- **Profile isolation**: Each user profile has its own database and credentials
-- **No credential exposure**: Credentials never passed on command line
-
-## Data Sources
-
-### Currently Supported
-
-| Source | Format | Import Command |
-|--------|--------|----------------|
-| Bank statements | OFX/QFX | `moneybin extract ofx <file>` |
-| W-2 tax forms | PDF | `moneybin extract w2 <file>` |
-
-### Planned
-
-| Source | Format | Status |
-|--------|--------|--------|
-| Bank transactions | CSV | Coming soon |
-| Bank transactions | Plaid API | Encrypted Sync tier |
-| 1099 forms | PDF | Planned |
-| Investment statements | PDF/CSV | Planned |
-
-See [`docs/reference/data-sources.md`](docs/reference/data-sources.md) for the full data source roadmap.
+Future tiers (encrypted sync, managed hosting) are on the roadmap. See [`docs/specs/privacy-security-roadmap.md`](docs/specs/privacy-security-roadmap.md) for details.
 
 ## CLI Reference
 
-```bash
-# Main help
-moneybin --help
-
-# Import data
-moneybin extract ofx <file>         # Import OFX/QFX bank files
-moneybin extract w2 <file>          # Extract W-2 from PDF
-
-# Transform data
-moneybin transform apply            # Run SQLMesh transformations
-moneybin transform test             # Run SQLMesh data quality audits
-
-# Explore data
-moneybin db shell                   # Interactive SQL shell
-moneybin db ui                      # Web UI for data exploration
-moneybin db query "SELECT ..."      # Run a SQL query
-
-# MCP server
-moneybin mcp serve                  # Start MCP server (stdio)
-moneybin mcp serve --transport sse  # Start with SSE transport
-
-# Profile management
-moneybin --profile=alice extract ofx <file>  # Use a specific profile
-moneybin -p alice transform run              # Short flag
-```
+| Command | Description |
+|---------|-------------|
+| `moneybin extract ofx <file>` | Import OFX/QFX bank files |
+| `moneybin extract w2 <file>` | Extract W-2 from PDF |
+| `moneybin transform apply` | Run SQLMesh transformations |
+| `moneybin transform test` | Run data quality audits |
+| `moneybin db shell` | Interactive SQL shell |
+| `moneybin db ui` | Web UI for data exploration |
+| `moneybin db query "SQL"` | Run a SQL query |
+| `moneybin mcp serve` | Start MCP server (stdio) |
+| `moneybin mcp serve --transport sse` | Start with SSE transport |
+| `moneybin --profile=NAME ...` | Use a specific profile |
 
 ## Project Structure
 
@@ -285,55 +181,14 @@ moneybin/
 └── docs/                   # Documentation
 ```
 
-## Setup Details
-
-### Prerequisites
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) package manager
-- Git
-
-### Installing uv
+## Development
 
 ```bash
-# macOS / Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# macOS (Homebrew)
-brew install uv
-
-# Windows
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-### Profile System
-
-MoneyBin uses profiles to isolate data for different users or environments:
-
-```bash
-# Each profile gets its own DuckDB database
-moneybin --profile=alice extract ofx bank-files/*.qfx
-moneybin --profile=bob extract ofx other-files/*.qfx
-
-# Set a default profile via environment variable
-export MONEYBIN_PROFILE=alice
-```
-
-Profiles support individual family members, personal vs business separation, or dev vs production environments.
-
-## Contributing
-
-```bash
-# Setup development environment
-make setup
-
-# Run code quality checks
-make check          # format + lint + type-check
-
-# Run tests
-make test           # all tests
-make test-unit      # unit tests only
-make test-cov       # with coverage report
+make setup              # Set up development environment
+make check              # Format + lint + type-check
+make test               # All tests
+make test-unit          # Unit tests only
+make test-cov           # With coverage report
 ```
 
 See `.claude/rules/` for coding standards and conventions.
@@ -342,11 +197,9 @@ See `.claude/rules/` for coding standards and conventions.
 
 - [`docs/README.md`](docs/README.md) -- Documentation index
 - [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md) -- System architecture
-- [`docs/architecture/002-privacy-tiers.md`](docs/architecture/002-privacy-tiers.md) -- Privacy tier design
 - [`docs/reference/data-model.md`](docs/reference/data-model.md) -- Data model and ER diagram
 - [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md) -- MCP server tools
-- [`docs/specs/implemented/ofx-import.md`](docs/specs/implemented/ofx-import.md) -- OFX import guide
-- [`docs/architecture/004-e2e-encryption.md`](docs/architecture/004-e2e-encryption.md) -- Encryption design
+- [`docs/specs/privacy-security-roadmap.md`](docs/specs/privacy-security-roadmap.md) -- Privacy & security roadmap
 
 ## License
 

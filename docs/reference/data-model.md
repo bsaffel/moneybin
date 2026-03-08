@@ -129,13 +129,14 @@ AI-managed tables for categorization, budgeting, and notes:
 
 ## Data flow
 
-```text
-OFX/QFX files  --> ofx_extractor --> raw.ofx_*     --> prep.stg_ofx__*  --+
-                                                                          +--> core.dim_accounts
-PDF W-2 forms  --> w2_extractor  --> raw.w2_forms                         |    core.fct_transactions
-                                                                          |
-CSV files      --> (planned)     --> raw.csv_*     --> prep.stg_csv__*  --+
-Plaid API      --> (planned)     --> raw.plaid_*   --> prep.stg_plaid__*--+
+```mermaid
+flowchart LR
+    OFX[OFX/QFX files] --> OE[ofx_extractor] --> OR[raw.ofx_*] --> OS[prep.stg_ofx__*] --> Core
+    W2[PDF W-2 forms] --> WE[w2_extractor] --> WR[raw.w2_forms] --> Core
+    CSV[CSV files] --> CE["(planned)"] --> CR[raw.csv_*] --> CS[prep.stg_csv__*] --> Core
+    Plaid[Plaid API] --> PE["(planned)"] --> PR[raw.plaid_*] --> PS[prep.stg_plaid__*] --> Core
+
+    Core["core.dim_accounts\ncore.fct_transactions"]
 ```
 
 ## Planned source tables

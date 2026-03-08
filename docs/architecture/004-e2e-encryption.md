@@ -33,20 +33,26 @@ Use **age** encryption (via `pyrage` Python bindings) with **Argon2** key deriva
 
 ### Trust boundaries
 
-```text
-User Device (Trusted)
-  - Master password (never leaves device)
-  - Encryption keys (derived locally)
-  - Plaintext financial data (decrypted locally)
+```mermaid
+flowchart TB
+    subgraph "User Device (Trusted)"
+        MP[Master password\nnever leaves device]
+        EK[Encryption keys\nderived locally]
+        PD[Plaintext financial data\ndecrypted locally]
+    end
 
-Network (Untrusted)
-  - TLS encrypted transport
+    subgraph "Network (Untrusted)"
+        TLS[TLS encrypted transport]
+    end
 
-Sync Server (Semi-Trusted)
-  - Sees plaintext transiently during Plaid fetch
-  - Encrypts immediately with user's session public key
-  - NEVER stores plaintext (no database, no disk, no logs)
-  - Cannot decrypt stored/transmitted data (lacks private key)
+    subgraph "Sync Server (Semi-Trusted)"
+        ST["Sees plaintext transiently during Plaid fetch"]
+        EI["Encrypts immediately with user's session public key"]
+        NS["NEVER stores plaintext\n(no database, no disk, no logs)"]
+        CD["Cannot decrypt stored/transmitted data\n(lacks private key)"]
+    end
+
+    MP & EK & PD <--> TLS <--> ST
 ```
 
 ### Key management
