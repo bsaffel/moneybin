@@ -10,16 +10,10 @@ import json
 import logging
 from datetime import date, timedelta
 
+from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, OFX_BALANCES, W2_FORMS
+
 from .privacy import MAX_ROWS, truncate_result
-from .server import (
-    DIM_ACCOUNTS,
-    FCT_TRANSACTIONS,
-    OFX_BALANCES,
-    W2_FORMS,
-    get_db,
-    mcp,
-    table_exists,
-)
+from .server import get_db, mcp, table_exists
 
 logger = logging.getLogger(__name__)
 

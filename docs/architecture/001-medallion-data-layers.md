@@ -16,7 +16,7 @@ Adopt a three-layer medallion architecture with distinct schemas:
 | Layer | Schema | Materialization | Purpose |
 |-------|--------|-----------------|---------|
 | Raw | `raw` | Table | Untouched data from loaders (Python extractors). Source-specific tables preserved exactly as extracted. |
-| Staging | `prep` | View | Light cleaning, type casting, column renaming (dbt `stg_*` models). |
+| Staging | `prep` | View | Light cleaning, type casting, column renaming (SQLMesh `stg_*` models). |
 | Core | `core` | Table | Canonical, deduplicated, multi-source fact and dimension tables. |
 
 ### Key principles
@@ -29,7 +29,7 @@ Adopt a three-layer medallion architecture with distinct schemas:
 
 ### Adding a new data source
 
-1. Create staging models in `dbt/models/<source>/` (views in `prep` schema)
+1. Create staging models in `sqlmesh/models/<source>/` (views in `prep` schema)
 2. Add a CTE to the relevant core model and `UNION ALL` into the `all_*` CTE
 3. No changes needed to consumers
 
@@ -38,9 +38,9 @@ Adopt a three-layer medallion architecture with distinct schemas:
 - Clear data lineage from source to consumption.
 - Raw data is never modified, enabling full replay and auditing.
 - New sources can be added without changing downstream consumers.
-- dbt handles all transformation logic, keeping Python extractors focused on extraction.
+- SQLMesh handles all transformation logic, keeping Python extractors focused on extraction.
 - The `prep` schema uses views (not tables) to avoid data duplication.
-- Core tables must be rebuilt (`dbt run`) after raw data changes.
+- Core tables must be rebuilt (`sqlmesh plan --auto-apply`) after raw data changes.
 
 ## References
 

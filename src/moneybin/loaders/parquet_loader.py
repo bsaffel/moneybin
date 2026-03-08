@@ -1,7 +1,7 @@
 """Parquet file loader for DuckDB.
 
 This module provides functionality to load Parquet files from raw data directories
-into DuckDB staging tables for further processing by dbt transformations.
+into DuckDB staging tables for further processing by SQLMesh transforms.
 """
 
 import logging

@@ -16,44 +16,13 @@ import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import NamedTuple
 
 import duckdb
 from mcp.server.fastmcp import FastMCP
 
+from moneybin.tables import TableRef
+
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Table registry — single source of truth for schema-qualified table names
-# ---------------------------------------------------------------------------
-
-
-class TableRef(NamedTuple):
-    """Reference to a database table with schema and name."""
-
-    schema: str
-    name: str
-
-    @property
-    def full_name(self) -> str:
-        """Schema-qualified table name for use in SQL queries."""
-        return f"{self.schema}.{self.name}"
-
-
-# -- Core / Gold layer (canonical tables built by dbt or inline transforms) --
-DIM_ACCOUNTS = TableRef("core", "dim_accounts")
-FCT_TRANSACTIONS = TableRef("core", "fct_transactions")
-
-# -- Raw tables (used until core models are built for these entities) --
-OFX_BALANCES = TableRef("raw", "ofx_balances")
-OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
-W2_FORMS = TableRef("raw", "w2_forms")
-
-# -- User tables (AI-managed data) --
-TRANSACTION_CATEGORIES = TableRef("user", "transaction_categories")
-BUDGETS = TableRef("user", "budgets")
-TRANSACTION_NOTES = TableRef("user", "transaction_notes")
 
 
 # Global server instance — tools/resources/prompts register against this
@@ -70,6 +39,20 @@ mcp = FastMCP(
 # Module-level state — set by init_db() before the server starts
 _db: duckdb.DuckDBPyConnection | None = None
 _db_path: Path | None = None
+
+
+def get_db_path() -> Path:
+    """Get the path to the DuckDB database file.
+
+    Returns:
+        The database file path.
+
+    Raises:
+        RuntimeError: If the database has not been initialized.
+    """
+    if _db_path is None:
+        raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
+    return _db_path
 
 
 def get_db() -> duckdb.DuckDBPyConnection:
@@ -171,32 +154,9 @@ def _init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     Args:
         conn: Active DuckDB connection.
     """
-    sql_dir = Path(__file__).resolve().parents[1] / "sql" / "schema"
+    from moneybin.schema import init_schemas
 
-    # Create schemas
-    conn.execute("CREATE SCHEMA IF NOT EXISTS raw")
-    conn.execute("CREATE SCHEMA IF NOT EXISTS core")
-    conn.execute("CREATE SCHEMA IF NOT EXISTS user")
-
-    # Create raw and core tables from schema files if they exist
-    schema_files = [
-        "raw_ofx_institutions.sql",
-        "raw_ofx_accounts.sql",
-        "raw_ofx_transactions.sql",
-        "raw_ofx_balances.sql",
-        "raw_w2_forms.sql",
-        "core_dim_accounts.sql",
-        "core_fct_transactions.sql",
-    ]
-    for sql_file in schema_files:
-        sql_path = sql_dir / sql_file
-        if sql_path.exists():
-            conn.execute(sql_path.read_text())
-
-    # Create user schema tables
-    user_schema_path = sql_dir / "user_schema.sql"
-    if user_schema_path.exists():
-        conn.execute(user_schema_path.read_text())
+    init_schemas(conn)
 
 
 def init_db(db_path: Path) -> None:
@@ -220,15 +180,12 @@ def init_db(db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Creating new database: %s", db_path)
 
-    # Initialize schemas via a temporary read-write connection
-    logger.info("Initializing schemas: %s", db_path)
-    init_conn = duckdb.connect(str(db_path), read_only=False)
-    try:
-        _init_schemas(init_conn)
-    finally:
-        init_conn.close()
-
-    if is_new:
+        # Initialize schemas via a temporary read-write connection
+        init_conn = duckdb.connect(str(db_path), read_only=False)
+        try:
+            _init_schemas(init_conn)
+        finally:
+            init_conn.close()
         logger.info("Database initialized with raw, core, and user schemas")
 
     # Open long-lived read-only connection

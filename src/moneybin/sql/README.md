@@ -19,7 +19,7 @@ sql/
 2. **SQL linting with SQLFluff** (configured in `pyproject.toml`)
 3. **Version control friendly** - clear diffs for schema changes
 4. **Reusable** - Can execute directly with DuckDB CLI
-5. **Aligns with dbt** - Consistent with transformation SQL files
+5. **Aligns with SQLMesh** - Consistent with transformation SQL files
 6. **Editor support** - Works with SQL formatter extensions
 
 ## Schema Naming Convention
@@ -79,7 +79,7 @@ uv run sqlfluff lint src/moneybin/sql/schema/raw_ofx_transactions.sql
 SQLFluff configuration is in `pyproject.toml`:
 
 - Dialect: DuckDB
-- Templater: Jinja (for dbt compatibility)
+- Templater: Jinja (for SQLMesh compatibility)
 - Max line length: 88 characters
 
 ## Adding New Tables
@@ -116,4 +116,4 @@ CREATE TABLE IF NOT EXISTS raw.<source>_<entity> (
 - [DuckDB Data Types](https://duckdb.org/docs/sql/data_types/overview)
 - [DuckDB CREATE TABLE](https://duckdb.org/docs/sql/statements/create_table)
 - [SQLFluff Documentation](https://docs.sqlfluff.com/)
-- [MoneyBin dbt Models](../../dbt/models/)
+- [MoneyBin SQLMesh Models](../../models/)

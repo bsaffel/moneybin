@@ -1,12 +1,12 @@
 ---
-globs: ["**/*.sql", "dbt/**", "src/moneybin/sql/**"]
+globs: ["**/*.sql", "sqlmesh/models/**", "src/moneybin/sql/**"]
 ---
 
 # DuckDB & SQL Standards
 
 ## SQLFluff
 
-All SQL linted with SQLFluff (config in `pyproject.toml`). Dialect: DuckDB. Templater: jinja. Max line: 88.
+All SQL linted with SQLFluff (config in `pyproject.toml`). Dialect: DuckDB. Templater: raw. Max line: 88.
 
 ```bash
 uv run sqlfluff lint src/moneybin/sql/
@@ -15,8 +15,8 @@ uv run sqlfluff fix src/moneybin/sql/
 
 ## File Types
 
-- **Raw schema** (`src/moneybin/sql/schema/*.sql`): Plain SQL, no Jinja.
-- **dbt models** (`dbt/models/**/*.sql`): Jinja templating (`{{ config() }}`, `{{ source() }}`, etc.)
+- **Raw schema** (`src/moneybin/sql/schema/*.sql`): Plain SQL DDL.
+- **SQLMesh models** (`sqlmesh/models/**/*.sql`): Plain SQL with `MODEL()` block header.
 
 ## DuckDB Function Reference
 

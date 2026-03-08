@@ -240,7 +240,7 @@ status: ## Utility: Show development environment status
 	@echo "$(GREEN)Installed Packages:$(RESET)"
 	@if [ -d "$(VENV_DIR)" ]; then \
 		echo "  Core packages:"; \
-		uv pip list 2>/dev/null | grep -E "(dbt-core|duckdb|polars|mcp|ruff|pytest|pyright)" | sed 's/^/    /' || echo "    $(YELLOW)⚠️  No core packages found$(RESET)"; \
+		uv pip list 2>/dev/null | grep -E "(sqlmesh|duckdb|polars|mcp|typer|pydantic|ruff|pytest|pyright)" | sed 's/^/    /' || echo "    $(YELLOW)⚠️  No core packages found$(RESET)"; \
 	else \
 		echo "  $(YELLOW)⚠️  Virtual environment not found$(RESET)"; \
 	fi

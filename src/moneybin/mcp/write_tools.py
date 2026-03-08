@@ -9,15 +9,9 @@ import json
 import logging
 import uuid
 
-from .server import (
-    BUDGETS,
-    FCT_TRANSACTIONS,
-    TRANSACTION_CATEGORIES,
-    get_db,
-    get_write_db,
-    mcp,
-    table_exists,
-)
+from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
+
+from .server import get_db, get_db_path, get_write_db, mcp, table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +37,11 @@ def import_file(file_path: str) -> str:
     from moneybin.services.import_service import import_file as do_import
 
     try:
-        with get_write_db() as db:
-            result = do_import(db, file_path)
+        db_path = get_db_path()
+        # Close read-only conn so import_service + SQLMesh can write;
+        # get_write_db reopens read conn when the context exits.
+        with get_write_db():
+            result = do_import(db_path, file_path)
         return result.summary()
     except FileNotFoundError as e:
         return f"Error: {e}"

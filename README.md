@@ -10,14 +10,14 @@ An open-source, local-first personal financial analysis platform. MoneyBin gives
 
 1. **MCP Server** -- Ask your AI assistant about your finances. MoneyBin exposes tools across 11 domains so Claude, Cursor, or any MCP-compatible assistant can query your accounts, transactions, spending, taxes, and more.
 
-2. **Data Toolkit** -- Query your DuckDB database directly with SQL, build dbt transformation models, explore data in Jupyter notebooks, or create Streamlit dashboards. Your data, your tools.
+2. **Data Toolkit** -- Query your DuckDB database directly with SQL, build SQLMesh transformation models, explore data in Jupyter notebooks, or create Streamlit dashboards. Your data, your tools.
 
 All data stays on your machine. Nothing is sent to any external service.
 
 ## How It Works
 
 ```text
-Bank Files (OFX/CSV/PDF) ──→ Extractors ──→ Raw Tables ──→ dbt ──→ Core Tables
+Bank Files (OFX/CSV/PDF) ──→ Extractors ──→ Raw Tables ──→ SQLMesh ──→ Core Tables
                                                                         │
                                                          ┌──────────────┼──────────────┐
                                                          ▼              ▼              ▼
@@ -25,7 +25,7 @@ Bank Files (OFX/CSV/PDF) ──→ Extractors ──→ Raw Tables ──→ dbt
                                                    (AI assistants) (direct query)  (notebooks)
 ```
 
-Import your financial data from local files, transform it with dbt into a clean analytical model, then interact with it through AI assistants or hands-on data tools.
+Import your financial data from local files, transform it with SQLMesh into a clean analytical model, then interact with it through AI assistants or hands-on data tools.
 
 ## Quick Start
 
@@ -49,8 +49,8 @@ moneybin extract ofx path/to/downloads/*.qfx
 # Extract W-2 tax forms from PDF
 moneybin extract w2 path/to/w2.pdf
 
-# Run dbt to build the core analytical model
-moneybin transform run
+# Run SQLMesh to build the core analytical model
+moneybin transform apply
 ```
 
 ### 3. Connect Your AI Assistant
@@ -137,19 +137,19 @@ moneybin db query "SELECT * FROM core.fct_transactions WHERE amount < -500"
 moneybin db ui
 ```
 
-### dbt
+### SQLMesh
 
-MoneyBin uses [dbt](https://www.getdbt.com/) to transform raw imported data into a clean analytical model through three layers (raw -> staging -> core):
+MoneyBin uses [SQLMesh](https://sqlmesh.com/) to transform raw imported data into a clean analytical model through three layers (raw -> staging -> core):
 
 ```bash
 # Run all transformations
-moneybin transform run
+moneybin transform apply
 
-# Run dbt tests for data quality
+# Run SQLMesh audits for data quality
 moneybin transform test
 
-# Generate and serve dbt docs
-cd dbt && dbt docs generate && dbt docs serve
+# Launch SQLMesh web UI for documentation and lineage
+sqlmesh ui
 ```
 
 ### Jupyter
@@ -245,8 +245,8 @@ moneybin extract ofx <file>         # Import OFX/QFX bank files
 moneybin extract w2 <file>          # Extract W-2 from PDF
 
 # Transform data
-moneybin transform run              # Run dbt transformations
-moneybin transform test             # Run dbt data quality tests
+moneybin transform apply            # Run SQLMesh transformations
+moneybin transform test             # Run SQLMesh data quality audits
 
 # Explore data
 moneybin db shell                   # Interactive SQL shell
@@ -278,7 +278,8 @@ moneybin/
 │   ├── loaders/            # DuckDB data loaders
 │   ├── connectors/         # External API integrations
 │   └── utils/              # Shared utilities
-├── dbt/                    # dbt transformation models
+├── sqlmesh/                # SQLMesh project
+│   └── models/             # Transformation models (prep + core)
 ├── data/{profile}/         # Profile-isolated data storage
 ├── tests/                  # Test suite
 └── docs/                   # Documentation

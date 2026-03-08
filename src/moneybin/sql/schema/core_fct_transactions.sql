@@ -1,6 +1,5 @@
 -- Core transactions fact table
 -- Canonical standardized transaction records from all data sources
--- Schema mirrors the output of dbt/models/core/fct_transactions.sql
 CREATE TABLE IF NOT EXISTS core.fct_transactions (
     transaction_id VARCHAR,
     account_id VARCHAR,
@@ -29,7 +28,7 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     currency_code VARCHAR,
     source_system VARCHAR,
     source_extracted_at TIMESTAMP,
-    dbt_loaded_at TIMESTAMP,
+    loaded_at TIMESTAMP,
     transaction_year INTEGER,
     transaction_month INTEGER,
     transaction_day INTEGER,

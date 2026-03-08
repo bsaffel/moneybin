@@ -1,7 +1,7 @@
 """Unified import service for financial data files.
 
 This service handles the full import pipeline: detect file type, extract
-data, load to raw tables, and run core transforms. Both CLI commands and
+data, load to raw tables, and run SQLMesh transforms. Both CLI commands and
 MCP tools call this same service — no duplication.
 """
 
@@ -13,7 +13,7 @@ import duckdb
 
 logger = logging.getLogger(__name__)
 
-_TRANSFORM_DIR = Path(__file__).resolve().parents[1] / "sql" / "transforms"
+_SQLMESH_ROOT = Path(__file__).resolve().parents[3] / "sqlmesh"
 
 
 @dataclass
@@ -73,37 +73,37 @@ def _detect_file_type(file_path: Path) -> str:
     )
 
 
-def _run_core_transforms(conn: duckdb.DuckDBPyConnection) -> bool:
-    """Run inline SQL transforms to rebuild core tables.
+def _run_transforms(db_path: Path) -> bool:
+    """Run SQLMesh transforms to rebuild core tables.
+
+    SQLMesh manages its own connection — the caller must close any
+    existing connections before calling this.
 
     Args:
-        conn: Active DuckDB connection.
+        db_path: Path to the DuckDB database file.
 
     Returns:
         True if transforms ran successfully.
     """
-    transform_files = [
-        "core_dim_accounts.sql",
-        "core_fct_transactions.sql",
-    ]
+    from sqlmesh import Context  # type: ignore[import-untyped]
 
-    for sql_file in transform_files:
-        sql_path = _TRANSFORM_DIR / sql_file
-        if not sql_path.exists():
-            logger.warning("Transform file not found: %s", sql_path)
-            return False
-
-        logger.info("Running transform: %s", sql_file)
-        conn.execute(sql_path.read_text())
-
+    logger.info("Running SQLMesh transforms")
+    ctx = Context(
+        paths=str(_SQLMESH_ROOT),
+        gateway={  # type: ignore[reportArgumentType] — SQLMesh accepts dict at runtime
+            "connection": {"type": "duckdb", "database": str(db_path)},
+        },
+    )
+    ctx.plan(auto_apply=True, no_prompts=True)
+    logger.info("SQLMesh transforms completed")
     return True
 
 
-def _import_ofx(conn: duckdb.DuckDBPyConnection, file_path: Path) -> ImportResult:
+def _import_ofx(db_path: Path, file_path: Path) -> ImportResult:
     """Import an OFX/QFX file.
 
     Args:
-        conn: Active DuckDB connection.
+        db_path: Path to the DuckDB database file.
         file_path: Path to the OFX/QFX file.
 
     Returns:
@@ -119,7 +119,6 @@ def _import_ofx(conn: duckdb.DuckDBPyConnection, file_path: Path) -> ImportResul
     data = extractor.extract_from_file(file_path)
 
     # Load using OFXLoader (which manages its own connection)
-    db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])  # type: ignore[index]
     loader = OFXLoader(db_path)
     row_counts = loader.load_data(data)
 
@@ -132,25 +131,29 @@ def _import_ofx(conn: duckdb.DuckDBPyConnection, file_path: Path) -> ImportResul
     # Get date range from transactions
     if result.transactions > 0:
         try:
-            date_result = conn.execute("""
-                SELECT
-                    MIN(CAST(date_posted AS DATE)) AS min_date,
-                    MAX(CAST(date_posted AS DATE)) AS max_date
-                FROM raw.ofx_transactions
-            """).fetchone()
-            if date_result and date_result[0]:
-                result.date_range = f"{date_result[0]} to {date_result[1]}"
+            conn = duckdb.connect(str(db_path), read_only=True)
+            try:
+                date_result = conn.execute("""
+                    SELECT
+                        MIN(CAST(date_posted AS DATE)) AS min_date,
+                        MAX(CAST(date_posted AS DATE)) AS max_date
+                    FROM raw.ofx_transactions
+                """).fetchone()
+                if date_result and date_result[0]:
+                    result.date_range = f"{date_result[0]} to {date_result[1]}"
+            finally:
+                conn.close()
         except Exception:
             logger.debug("Could not determine date range from transactions")
 
     return result
 
 
-def _import_w2(conn: duckdb.DuckDBPyConnection, file_path: Path) -> ImportResult:
+def _import_w2(db_path: Path, file_path: Path) -> ImportResult:
     """Import a W-2 PDF file.
 
     Args:
-        conn: Active DuckDB connection.
+        db_path: Path to the DuckDB database file.
         file_path: Path to the W-2 PDF.
 
     Returns:
@@ -166,7 +169,6 @@ def _import_w2(conn: duckdb.DuckDBPyConnection, file_path: Path) -> ImportResult
     data = extractor.extract_from_file(file_path)
 
     # Load
-    db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])  # type: ignore[index]
     loader = W2Loader(db_path)
     row_count = loader.load_data(data)
 
@@ -177,16 +179,16 @@ def _import_w2(conn: duckdb.DuckDBPyConnection, file_path: Path) -> ImportResult
 
 
 def import_file(
-    conn: duckdb.DuckDBPyConnection,
+    db_path: Path,
     file_path: str | Path,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
     Auto-detects file type by extension and runs the appropriate
-    extract → load → transform pipeline.
+    extract -> load -> transform pipeline.
 
     Args:
-        conn: Active DuckDB connection.
+        db_path: Path to the DuckDB database file.
         file_path: Path to the file to import.
 
     Returns:
@@ -205,15 +207,15 @@ def import_file(
     logger.info("Importing %s file: %s", file_type, path)
 
     if file_type == "ofx":
-        result = _import_ofx(conn, path)
+        result = _import_ofx(db_path, path)
     elif file_type == "w2":
-        result = _import_w2(conn, path)
+        result = _import_w2(db_path, path)
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
-    # Run core transforms after loading raw data
+    # Run SQLMesh transforms after loading raw data
     if file_type == "ofx":
-        result.core_tables_rebuilt = _run_core_transforms(conn)
+        result.core_tables_rebuilt = _run_transforms(db_path)
 
     logger.info("Import complete: %s", result.summary())
     return result

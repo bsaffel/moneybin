@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS raw.csv_transactions (
 );
 ```
 
-### Staging views (dbt)
+### Staging views (SQLMesh)
 
 - `prep.stg_csv__accounts` -- Standardize column names to match OFX staging
 - `prep.stg_csv__transactions` -- Normalize amounts, standardize dates
@@ -69,16 +69,16 @@ Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `sou
 - `src/moneybin/loaders/csv_loader.py` -- DuckDB loading
 - `src/moneybin/sql/schema/raw_csv_transactions.sql` -- DDL
 - `src/moneybin/sql/schema/raw_csv_accounts.sql` -- DDL
-- `dbt/models/csv/stg_csv__accounts.sql` -- Staging view
-- `dbt/models/csv/stg_csv__transactions.sql` -- Staging view
-- `dbt/models/csv/schema.yml` -- dbt tests
+- `sqlmesh/models/csv/stg_csv__accounts.sql` -- Staging view
+- `sqlmesh/models/csv/stg_csv__transactions.sql` -- Staging view
+- `sqlmesh/models/csv/schema.yml` -- SQLMesh audits
 - `tests/moneybin/test_extractors/test_csv_extractor.py`
 - `tests/moneybin/test_loaders/test_csv_loader.py`
 
 ### Files to modify
 - `src/moneybin/cli/commands/extract.py` -- Add `extract csv` command
-- `dbt/models/core/dim_accounts.sql` -- Add CSV CTE + UNION ALL
-- `dbt/models/core/fct_transactions.sql` -- Add CSV CTE + UNION ALL
+- `sqlmesh/models/core/dim_accounts.sql` -- Add CSV CTE + UNION ALL
+- `sqlmesh/models/core/fct_transactions.sql` -- Add CSV CTE + UNION ALL
 
 ### Key decisions
 
@@ -117,7 +117,7 @@ Write tool `import_file` should be extended to detect `.csv` extension and route
 - Test synthetic transaction ID generation (deterministic, collision-resistant)
 - Test amount normalization (different sign conventions)
 - Test idempotent loading (import same file twice)
-- Test integration with dbt staging and core models
+- Test integration with SQLMesh staging and core models
 
 ## Dependencies
 

@@ -16,7 +16,7 @@ The Model Context Protocol (MCP) allows AI assistants (Claude, Cursor, etc.) to 
 
 ## Decision
 
-Make the MCP server the **primary** interface, with the data toolkit (DuckDB SQL, dbt, Jupyter) as a parallel secondary interface for power users.
+Make the MCP server the **primary** interface, with the data toolkit (DuckDB SQL, SQLMesh, Jupyter) as a parallel secondary interface for power users.
 
 ### MCP server characteristics
 
@@ -42,7 +42,7 @@ The same DuckDB database is directly accessible via:
 
 - `moneybin db shell` -- Interactive SQL
 - `moneybin db ui` -- Web UI
-- dbt models -- Transformation logic
+- SQLMesh models -- Transformation logic
 - Jupyter notebooks -- Ad-hoc analysis
 
 ## Consequences

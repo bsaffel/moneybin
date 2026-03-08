@@ -1,0 +1,48 @@
+# External models: raw tables created by Python loaders, not managed by SQLMesh.
+# These must exist in the database before running `sqlmesh plan`.
+# Run `moneybin schema init` or import data to create them.
+
+- name: '"moneybin"."raw"."ofx_accounts"'
+  columns:
+    account_id: VARCHAR
+    routing_number: VARCHAR
+    account_type: VARCHAR
+    institution_org: VARCHAR
+    institution_fid: VARCHAR
+    source_file: VARCHAR
+    extracted_at: TIMESTAMP
+    loaded_at: TIMESTAMP
+
+- name: '"moneybin"."raw"."ofx_transactions"'
+  columns:
+    transaction_id: VARCHAR
+    account_id: VARCHAR
+    transaction_type: VARCHAR
+    date_posted: TIMESTAMP
+    amount: DECIMAL(18, 2)
+    payee: VARCHAR
+    memo: VARCHAR
+    check_number: VARCHAR
+    source_file: VARCHAR
+    extracted_at: TIMESTAMP
+    loaded_at: TIMESTAMP
+
+- name: '"moneybin"."raw"."ofx_balances"'
+  columns:
+    account_id: VARCHAR
+    statement_start_date: TIMESTAMP
+    statement_end_date: TIMESTAMP
+    ledger_balance: DECIMAL(18, 2)
+    ledger_balance_date: TIMESTAMP
+    available_balance: DECIMAL(18, 2)
+    source_file: VARCHAR
+    extracted_at: TIMESTAMP
+    loaded_at: TIMESTAMP
+
+- name: '"moneybin"."raw"."ofx_institutions"'
+  columns:
+    organization: VARCHAR
+    fid: VARCHAR
+    source_file: VARCHAR
+    extracted_at: TIMESTAMP
+    loaded_at: TIMESTAMP

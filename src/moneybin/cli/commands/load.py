@@ -1,7 +1,7 @@
 """Data loading commands for MoneyBin CLI.
 
 This module provides commands for loading raw data files into DuckDB
-for further processing by dbt transformations.
+for further processing by SQLMesh transforms.
 """
 
 import logging
@@ -43,7 +43,7 @@ def load_parquet(
     """Load Parquet files from raw data directories into DuckDB staging tables.
 
     This command scans for Parquet files in the source directory and loads them
-    into appropriately named DuckDB tables for processing by dbt.
+    into appropriately named DuckDB tables for processing by SQLMesh.
 
     Args:
         source_path: Directory containing raw Parquet files

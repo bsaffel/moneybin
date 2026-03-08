@@ -8,22 +8,21 @@ via the @mcp.tool() decorator.
 import json
 import logging
 
+from moneybin.tables import (
+    DIM_ACCOUNTS,
+    FCT_TRANSACTIONS,
+    OFX_BALANCES,
+    OFX_INSTITUTIONS,
+    W2_FORMS,
+)
+
 from .privacy import (
     MAX_ROWS,
     check_table_allowed,
     truncate_result,
     validate_read_only_query,
 )
-from .server import (
-    DIM_ACCOUNTS,
-    FCT_TRANSACTIONS,
-    OFX_BALANCES,
-    OFX_INSTITUTIONS,
-    W2_FORMS,
-    get_db,
-    mcp,
-    table_exists,
-)
+from .server import get_db, mcp, table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -144,8 +143,8 @@ def list_accounts() -> str:
 
     if not table_exists(DIM_ACCOUNTS):
         return (
-            "No accounts found. Run 'dbt run' to build the core data models "
-            "after importing data with 'moneybin extract ofx'."
+            "No accounts found. Import data first with the import_file tool "
+            "or 'moneybin extract ofx' — core tables are rebuilt automatically."
         )
 
     return _query_to_json(f"""
@@ -185,8 +184,8 @@ def query_transactions(
 
     if not table_exists(FCT_TRANSACTIONS):
         return (
-            "No transactions found. Run 'dbt run' to build the core data models "
-            "after importing data with 'moneybin extract ofx'."
+            "No transactions found. Import data first with the import_file tool "
+            "or 'moneybin extract ofx' — core tables are rebuilt automatically."
         )
 
     conditions: list[str] = []

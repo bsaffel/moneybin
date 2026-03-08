@@ -8,7 +8,7 @@ import duckdb
 import pytest
 
 from moneybin.mcp import server
-from moneybin.mcp.server import DIM_ACCOUNTS, TableRef
+from moneybin.tables import DIM_ACCOUNTS, TableRef
 
 
 @pytest.fixture

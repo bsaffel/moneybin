@@ -5,7 +5,7 @@ MoneyBin supports importing financial data from multiple source types. The prior
 All data sources flow through the same pipeline:
 
 ```text
-Source --> Extractor --> Raw Tables --> dbt Staging --> Core Tables --> MCP Server
+Source --> Extractor --> Raw Tables --> SQLMesh Staging --> Core Tables --> MCP Server
 ```
 
 ## Integration matrix
@@ -19,7 +19,7 @@ Source --> Extractor --> Raw Tables --> dbt Staging --> Core Tables --> MCP Serv
 | Bank statement PDFs | Local Only | Planned | `raw.pdf_*` | -- |
 | Plaid API | Encrypted Sync | Planned | `raw.plaid_*` | Automatic sync |
 
-All sources feed into the same core tables (`core.dim_accounts`, `core.fct_transactions`) via dbt staging models.
+All sources feed into the same core tables (`core.dim_accounts`, `core.fct_transactions`) via SQLMesh staging models.
 
 ## Priority 1: OFX/QFX files (Implemented)
 
@@ -83,7 +83,7 @@ Automatic bank sync with E2E encryption.
 3. Data encrypted immediately to user's device key
 4. Encrypted payload synced to user's machine
 5. Client decrypts and loads into `raw.plaid_*` tables
-6. dbt transforms into core tables alongside OFX/CSV data
+6. SQLMesh transforms into core tables alongside OFX/CSV data
 
 See [Plaid Integration Spec](../specs/plaid-integration.md) and [ADR-004: E2E Encryption](../architecture/004-e2e-encryption.md).
 

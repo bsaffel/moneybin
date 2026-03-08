@@ -1,6 +1,6 @@
 # MoneyBin
 
-Personal financial data platform. Python + DuckDB + dbt + Typer CLI + MCP server.
+Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP server.
 
 ## Critical Rules
 
@@ -30,7 +30,7 @@ Personal financial data platform. Python + DuckDB + dbt + Typer CLI + MCP server
 | Layer | Schema | Materialized | Purpose |
 |-------|--------|-------------|---------|
 | Raw | `raw` | Table | Untouched data from loaders (Python) |
-| Staging | `prep` | View | Light cleaning, type casting (dbt `stg_*`) |
+| Staging | `prep` | View | Light cleaning, type casting (SQLMesh `stg_*`) |
 | Core | `core` | Table | Canonical, deduplicated, multi-source |
 
 ### Key Principles
@@ -43,7 +43,7 @@ Personal financial data platform. Python + DuckDB + dbt + Typer CLI + MCP server
 
 ### Adding a New Data Source
 
-1. Create staging models in `dbt/models/<source>/` (views in `prep` schema)
+1. Create staging models in `sqlmesh/models/prep/` (views in `prep` schema)
 2. Add a CTE to the relevant core model and `UNION ALL` into the `all_*` CTE
 3. No changes needed to consumers
 

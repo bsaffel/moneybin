@@ -1,7 +1,7 @@
 """Database exploration commands for MoneyBin CLI.
 
 This module provides commands for interacting with the DuckDB database,
-including opening the web UI and running SQL queries.
+including opening the web UI, running SQL queries, and initializing schemas.
 """
 
 import logging
@@ -10,6 +10,7 @@ import subprocess  # noqa: S404
 import sys
 from pathlib import Path
 
+import duckdb
 import typer
 
 from moneybin.config import get_database_path
@@ -25,6 +26,35 @@ def _check_duckdb_cli() -> str | None:
         str | None: Path to DuckDB CLI executable, or None if not found
     """
     return shutil.which("duckdb")
+
+
+@app.command("init")
+def init_schemas(
+    database: Path | None = typer.Option(
+        None,
+        "--database",
+        "-d",
+        help="Path to DuckDB database file (default: profile config)",
+    ),
+) -> None:
+    """Create all database schemas and tables.
+
+    Ensures the raw, core, and user schemas exist with all required tables.
+    Uses CREATE IF NOT EXISTS so it is safe to run multiple times.
+
+    This must be run before `sqlmesh plan` if no data has been imported yet.
+    """
+    from moneybin.schema import init_schemas
+
+    db_path = database or get_database_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = duckdb.connect(str(db_path))
+    try:
+        init_schemas(conn)
+        logger.info("✅ Database schemas initialized")
+    finally:
+        conn.close()
 
 
 @app.command("ui")

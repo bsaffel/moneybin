@@ -1,6 +1,6 @@
 # Data Model
 
-MoneyBin stores all financial data in a local DuckDB database organized into three layers. Column-level definitions live in code (DDL in `src/moneybin/sql/schema/`, dbt models in `dbt/models/`), not in this document. Use `moneybin db shell` or the MCP `schema.describe` tool to inspect the live schema.
+MoneyBin stores all financial data in a local DuckDB database organized into three layers. Column-level definitions live in code (DDL in `src/moneybin/sql/schema/`, SQLMesh models in `sqlmesh/models/`), not in this document. Use `moneybin db shell` or the MCP `schema.describe` tool to inspect the live schema.
 
 ## Entity Relationship Diagram
 
@@ -21,14 +21,14 @@ erDiagram
     }
     raw_ofx_transactions {
         varchar transaction_id PK
-        varchar account_id PK_FK
+        varchar account_id FK
         decimal amount
         timestamp date_posted
         varchar payee
         varchar source_file PK
     }
     raw_ofx_balances {
-        varchar account_id PK_FK
+        varchar account_id FK
         timestamp statement_end_date PK
         decimal ledger_balance
         decimal available_balance
@@ -67,8 +67,8 @@ erDiagram
     raw_ofx_accounts ||--o{ raw_ofx_transactions : "has"
     raw_ofx_accounts ||--o{ raw_ofx_balances : "tracks"
     core_dim_accounts ||--o{ core_fct_transactions : "has"
-    raw_ofx_accounts }o--|| core_dim_accounts : "feeds_via_dbt"
-    raw_ofx_transactions }o--|| core_fct_transactions : "feeds_via_dbt"
+    raw_ofx_accounts }o--|| core_dim_accounts : "feeds_via_sqlmesh"
+    raw_ofx_transactions }o--|| core_fct_transactions : "feeds_via_sqlmesh"
 ```
 
 ## Schemas
@@ -76,8 +76,8 @@ erDiagram
 | Schema | Purpose | Materialization |
 |--------|---------|-----------------|
 | `raw` | Source-specific tables, preserved as-is | Tables (created by Python loaders) |
-| `prep` | Staging transformations | Views (created by dbt) |
-| `core` | Canonical analytical tables | Tables (created by dbt) |
+| `prep` | Staging transformations | Views (created by SQLMesh) |
+| `core` | Canonical analytical tables | Tables (created by SQLMesh) |
 | `user` | AI-managed data (categories, budgets, notes) | Tables (created by MCP write tools) |
 
 ## Raw layer
@@ -94,7 +94,7 @@ Raw tables preserve source data exactly as extracted. All include `source_file`,
 
 ## Staging layer
 
-dbt views in `prep` schema performing light transformations (renaming, type casting, trimming):
+SQLMesh views in `prep` schema performing light transformations (renaming, type casting, trimming):
 
 | View | Source | Key Transformations |
 |------|--------|---------------------|

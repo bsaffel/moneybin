@@ -7,7 +7,7 @@ globs: ["src/moneybin/mcp/**"]
 ## Data Access
 
 - Read from **core schema only** (`dim_accounts`, `fct_transactions`, etc.)
-- Use `TableRef` constants for table references, never hardcoded strings.
+- Use `TableRef` constants from `moneybin.tables` for table references, never hardcoded strings.
 - Never query raw or staging tables from the MCP server.
 
 ## Connection Model

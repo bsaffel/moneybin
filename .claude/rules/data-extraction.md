@@ -49,5 +49,5 @@ SELECT * FROM read_parquet('data/*.parquet');
 
 1. Create extractor/connector in `src/moneybin/extractors/` or `src/moneybin/connectors/`
 2. Create loader in `src/moneybin/loaders/`
-3. Add staging models in `dbt/models/<source>/`
+3. Add staging models in `sqlmesh/models/prep/`
 4. Add CTE + `UNION ALL` in the relevant core model

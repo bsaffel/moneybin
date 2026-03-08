@@ -46,13 +46,10 @@ logs/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# dbt
-dbt_packages/
-target/
-profiles.yml
-
-# Dagster
-.dagster/
+# SQLMesh
+sqlmesh/.cache/
+sqlmesh/logs/
+sqlmesh/data/
 
 # Environment variables and secrets
 .env
@@ -66,6 +63,9 @@ htmlcov/
 .coverage
 .coverage.*
 .pytest_cache/
+
+# dbt build artifacts
+target/
 
 # Pyright type checking
 pyrightconfig.json

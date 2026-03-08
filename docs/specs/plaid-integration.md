@@ -20,7 +20,7 @@ Enable automatic bank transaction sync via Plaid with E2E encryption, so users c
 3. Data encrypted immediately to user's session public key (never stored as plaintext).
 4. Encrypted payload transmitted to client.
 5. Client decrypts with master password-derived key and loads into `raw.plaid_*` tables.
-6. dbt transforms Plaid data into core tables alongside OFX/CSV data.
+6. SQLMesh transforms Plaid data into core tables alongside OFX/CSV data.
 7. Incremental sync: only fetch new transactions since last sync.
 8. Support accounts, transactions, balances, and (future) investments/liabilities.
 
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
 );
 ```
 
-### Staging views (dbt)
+### Staging views (SQLMesh)
 
 - `prep.stg_plaid__accounts` -- Standardize to match OFX staging schema
 - `prep.stg_plaid__transactions` -- **Flip amount sign** (Plaid: positive = expense; MoneyBin: negative = expense)
@@ -110,12 +110,12 @@ Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `sou
 - `src/moneybin/connectors/plaid_sync.py` -- Sync client (modify existing)
 - `src/moneybin/loaders/plaid_loader.py` -- DuckDB loading
 - `src/moneybin/sql/schema/raw_plaid_*.sql` -- DDL
-- `dbt/models/plaid/stg_plaid__*.sql` -- Staging views
-- `dbt/models/plaid/schema.yml` -- dbt tests
+- `sqlmesh/models/plaid/stg_plaid__*.sql` -- Staging views
+- `sqlmesh/models/plaid/schema.yml` -- SQLMesh audits
 
 **Files to modify**:
-- `dbt/models/core/dim_accounts.sql` -- Add Plaid CTE + UNION ALL
-- `dbt/models/core/fct_transactions.sql` -- Add Plaid CTE + UNION ALL
+- `sqlmesh/models/core/dim_accounts.sql` -- Add Plaid CTE + UNION ALL
+- `sqlmesh/models/core/fct_transactions.sql` -- Add Plaid CTE + UNION ALL
 - `src/moneybin/cli/commands/sync.py` -- Sync CLI commands
 
 ### Phase 4: Key management and UX

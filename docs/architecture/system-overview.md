@@ -1,6 +1,6 @@
 # System Overview
 
-MoneyBin is an open-source, local-first personal financial analysis platform. Financial data flows from source files through extractors into DuckDB, is transformed by dbt into canonical analytical tables, and is accessible through two parallel interfaces.
+MoneyBin is an open-source, local-first personal financial analysis platform. Financial data flows from source files through extractors into DuckDB, is transformed by SQLMesh into canonical analytical tables, and is accessible through two parallel interfaces.
 
 ## Architecture
 
@@ -10,11 +10,11 @@ MoneyBin is an open-source, local-first personal financial analysis platform. Fi
                                                     |  (AI-assisted analysis)   |
                                                     +-------------+-------------+
                                                                   |
-Source Files --> Extractors --> Raw Tables --> dbt --> Core Tables -+
-                                                                  |
-                                                    +-------------+-------------+
+Source Files --> Extractors --> Raw Tables --> SQLMesh --> Core Tables -+
+                                                                      |
+                                                    +-------------+---+---------+
                                                     |      Data Toolkit         |
-                                                    |  DuckDB / dbt / Jupyter   |
+                                                    |  DuckDB / SQLMesh / Jupyter|
                                                     +---------------------------+
 ```
 
@@ -26,7 +26,7 @@ The MCP server gives AI assistants (Claude, Cursor, etc.) secure access to finan
 
 The same DuckDB database is directly accessible with standard data tools:
 - **DuckDB** -- `moneybin db shell` or any DuckDB client
-- **dbt** -- `moneybin transform run` for staging and core models
+- **SQLMesh** -- `moneybin transform apply` for staging and core models
 - **Jupyter** -- `make jupyter` for ad-hoc exploration
 - **Streamlit** -- Interactive dashboards (templates planned)
 - **Dagster** -- Optional orchestration for scheduled pipelines
@@ -38,7 +38,7 @@ Data flows through three layers ([ADR-001](001-medallion-data-layers.md)):
 | Layer | Schema | Materialized | Purpose |
 |-------|--------|-------------|---------|
 | Raw | `raw` | Table | Source-specific tables preserved exactly as extracted |
-| Staging | `prep` | View | Light cleaning, type casting, column renaming (dbt) |
+| Staging | `prep` | View | Light cleaning, type casting, column renaming (SQLMesh) |
 | Core | `core` | Table | Canonical fact and dimension tables unifying all sources |
 
 See [Data Model](../reference/data-model.md) for schema definitions.
@@ -60,7 +60,7 @@ See [Data Sources](../reference/data-sources.md) for the full roadmap.
 |-----------|-----------|---------|
 | Database | DuckDB 1.4+ | Local analytical database |
 | MCP Server | FastMCP (mcp[cli]) | AI assistant integration |
-| Transformations | dbt-duckdb | Data modeling and transformation |
+| Transformations | SQLMesh | Data modeling and transformation |
 | CLI | Typer | Command line interface |
 | Data Processing | Polars | DataFrame operations |
 | PDF Extraction | pdfplumber + pytesseract | W-2 and statement parsing |
@@ -93,7 +93,8 @@ moneybin/
     sql/schema/             # DDL definitions
     utils/                  # Shared utilities
     config.py               # Centralized configuration
-  dbt/                      # dbt transformation project
+  sqlmesh/                  # SQLMesh project
+    models/                 # Transformation models (prep + core)
   data/{profile}/           # Profile-isolated data storage
   tests/                    # Test suite
   docs/                     # Documentation

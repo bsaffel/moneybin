@@ -26,7 +26,7 @@ _INSERT_TRANSACTIONS = """
         transaction_id, account_id, transaction_date, amount,
         amount_absolute, transaction_direction, description, memo,
         transaction_type, is_pending, currency_code, source_system,
-        source_extracted_at, dbt_loaded_at,
+        source_extracted_at, loaded_at,
         transaction_year, transaction_month, transaction_day,
         transaction_day_of_week, transaction_year_month,
         transaction_year_quarter
