@@ -26,6 +26,11 @@ class TestCLIProfileHandling:
 
     def test_default_profile_from_config(self, mocker: MockerFixture) -> None:
         """Test that CLI uses saved default profile when no flag is provided."""
+        # Remove MONEYBIN_PROFILE env var so Typer doesn't pick it up and bypass
+        # ensure_default_profile(). mocker.patch.dict will restore the original state.
+        mocker.patch.dict(os.environ, {})
+        os.environ.pop("MONEYBIN_PROFILE", None)
+
         # Mock the user config to return 'test' as the default profile
         mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="test")
 

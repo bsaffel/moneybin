@@ -96,9 +96,25 @@ Then ask things like:
 | `institutions.*` | 1 | Connected financial institutions |
 | `sql.*` | 1 | Execute arbitrary read-only SQL |
 
-Plus **8 resources** (schema info, account summaries, recent transactions) and **8 prompt templates** (spending analysis, tax prep, financial health check).
+Plus **8 resources** (schema info, account summaries, recent transactions) and **9 prompt templates** for guided financial workflows.
 
-Full spec: [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md)
+### Prompt Templates
+
+Pre-built conversation starters that guide your AI assistant through multi-step financial workflows:
+
+| Prompt | Description |
+|--------|-------------|
+| [`import_data`](docs/reference/prompts/import-data.md) | Import financial data files (OFX, PDF) |
+| [`categorize_transactions`](docs/reference/prompts/categorize-transactions.md) | Assign categories to transactions |
+| [`setup_budget`](docs/reference/prompts/setup-budget.md) | Create monthly budgets from spending patterns |
+| [`monthly_review`](docs/reference/prompts/monthly-review.md) | Comprehensive monthly financial review |
+| [`analyze_spending`](docs/reference/prompts/analyze-spending.md) | Analyze spending patterns and top categories |
+| [`find_anomalies`](docs/reference/prompts/find-anomalies.md) | Detect unusual or suspicious transactions |
+| [`account_overview`](docs/reference/prompts/account-overview.md) | Overview of all accounts and balances |
+| [`transaction_search`](docs/reference/prompts/transaction-search.md) | Find transactions matching a description |
+| [`tax_preparation`](docs/reference/prompts/tax-preparation.md) | Gather tax-related information for filing |
+
+Full prompt docs: [`docs/reference/prompts/`](docs/reference/prompts/README.md) | Tool spec: [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md)
 
 ## 🛠️ Data Toolkit
 
@@ -198,6 +214,7 @@ See `.claude/rules/` for coding standards and conventions.
 - [`docs/README.md`](docs/README.md) -- Documentation index
 - [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md) -- System architecture
 - [`docs/reference/data-model.md`](docs/reference/data-model.md) -- Data model and ER diagram
+- [`docs/reference/prompts/`](docs/reference/prompts/README.md) -- MCP prompt templates
 - [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md) -- MCP server tools
 - [`docs/specs/privacy-security-roadmap.md`](docs/specs/privacy-security-roadmap.md) -- Privacy & security roadmap
 

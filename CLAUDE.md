@@ -53,6 +53,7 @@ Use Pydantic Settings as single source of truth. Never hardcode paths or credent
 
 ```python
 from moneybin.config import get_database_path, get_settings
+
 conn = duckdb.connect(str(get_database_path()))
 ```
 

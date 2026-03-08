@@ -9,7 +9,9 @@ globs: ["src/moneybin/extractors/**", "src/moneybin/connectors/**", "src/moneybi
 Only extract complete days. Calculate range from last extraction date to yesterday.
 
 ```python
-def get_incremental_date_range(access_token: str) -> tuple[datetime | None, datetime | None]:
+def get_incremental_date_range(
+    access_token: str,
+) -> tuple[datetime | None, datetime | None]:
     last = get_last_extraction_date(access_token)
     yesterday = datetime.now().date() - timedelta(days=1)
     if last:

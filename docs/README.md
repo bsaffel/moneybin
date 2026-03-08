@@ -50,6 +50,7 @@ Lookup material -- not specs, not decisions.
 |----------|-------------|
 | [Data Model](reference/data-model.md) | Schema definitions, ER diagram, example queries |
 | [Data Sources](reference/data-sources.md) | Data source roadmap and priorities |
+| [MCP Prompts](reference/prompts/README.md) | 9 prompt templates for guided financial workflows |
 
 ## Coding Standards
 

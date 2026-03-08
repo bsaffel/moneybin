@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 ```python
 from dagster import asset, get_dagster_logger
 
+
 @asset
 def my_asset():
     logger = get_dagster_logger()  # Use Dagster's own logger
@@ -57,9 +58,7 @@ def my_asset():
 from moneybin.logging import LoggingConfig, setup_logging
 
 config = LoggingConfig(
-    level="DEBUG",
-    log_to_file=True,
-    log_file_path=Path("custom/path.log")
+    level="DEBUG", log_to_file=True, log_file_path=Path("custom/path.log")
 )
 
 setup_logging(config)

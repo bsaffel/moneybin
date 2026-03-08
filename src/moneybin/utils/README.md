@@ -14,9 +14,7 @@ from moneybin.utils.file import copy_to_raw
 
 # Copy any file to raw data directory
 copy_to_raw(
-    source_file="~/Downloads/bank.qfx",
-    file_type="ofx",
-    base_data_path="data/raw"
+    source_file="~/Downloads/bank.qfx", file_type="ofx", base_data_path="data/raw"
 )
 ```
 
