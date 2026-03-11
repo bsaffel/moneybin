@@ -19,7 +19,7 @@ The MCP server gives AI assistants (Claude, Cursor, etc.) secure access to finan
 
 The same DuckDB database is directly accessible with standard data tools:
 - **DuckDB** -- `moneybin db shell` or any DuckDB client
-- **SQLMesh** -- `moneybin transform apply` for staging and core models
+- **SQLMesh** -- `moneybin data transform apply` for staging and core models
 - **Jupyter** -- `make jupyter` for ad-hoc exploration
 - **Streamlit** -- Interactive dashboards (templates planned)
 - **Dagster** -- Optional orchestration for scheduled pipelines
@@ -40,9 +40,9 @@ See [Data Model](../reference/data-model.md) for schema definitions.
 
 | Source | Status | Raw Tables | Import |
 |--------|--------|------------|--------|
-| OFX/QFX files | Implemented | `raw.ofx_*` | `moneybin extract ofx` |
-| W-2 PDF forms | Implemented | `raw.w2_forms` | `moneybin extract w2` |
-| CSV files | Planned | `raw.csv_*` | `moneybin extract csv` |
+| OFX/QFX files | Implemented | `raw.ofx_*` | `moneybin data extract ofx` |
+| W-2 PDF forms | Implemented | `raw.w2_forms` | `moneybin data extract w2` |
+| CSV files | Planned | `raw.csv_*` | `moneybin data extract csv` |
 | Plaid API | Planned (Encrypted Sync) | `raw.plaid_*` | Automatic sync |
 
 See [Data Sources](../reference/data-sources.md) for the full roadmap.

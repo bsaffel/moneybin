@@ -18,7 +18,7 @@ Replace dbt with SQLMesh as the transform engine:
 - SQLMesh project lives in `sqlmesh/` (`sqlmesh/config.yaml`, `sqlmesh/models/`)
 - Transforms run automatically on import via the Python API (`Context.plan(auto_apply=True)`)
 - Prep views are added for the full medallion pipeline (`sqlmesh/models/prep/` maps to the `prep` schema)
-- CLI commands (`moneybin transform plan/apply/ui`) wrap SQLMesh for development and exploration
+- CLI commands (`moneybin data transform plan/apply/ui`) wrap SQLMesh for development and exploration
 
 ## Alternatives Considered
 

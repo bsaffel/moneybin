@@ -4,11 +4,11 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 
 ## Critical Rules
 
-- **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.
-- **Linting/formatting**: Ruff (line length 88). Run `ruff format . && ruff check .` before committing.
+- **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.  Use `uv add` and similar commands.
+- **Linting/formatting**: Ruff (line length 88). Run `uv run ruff format . && uv run ruff check .` before committing.
 - **Type checking**: Pyright (not mypy). Run `uv run pyright` on modified files.
 - **Tests**: `uv run pytest tests/ -v`
-- **Pre-commit checklist**: `ruff format . && ruff check . && uv run pyright && uv run pytest tests/`
+- **Pre-commit checklist**: `uv run ruff format . && uv run ruff check . && uv run pyright && uv run pytest tests/`
 - **SQL linting**: SQLFluff with DuckDB dialect. Config in `pyproject.toml` only (no `.sqlfluff` files).
 
 ## Library Preference
@@ -25,7 +25,7 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 - Always include a reason for `# noqa:` or `# type: ignore` comments.
 - Acronyms use ALL CAPS in class names: `OFXExtractor`, `CSVReader`, `PDFExtractor` (follows stdlib convention like `HTTPServer`).
 
-## Architecture: Medallion Layers
+## Architecture: Data Layers
 
 | Layer | Schema | Materialized | Purpose |
 |-------|--------|-------------|---------|

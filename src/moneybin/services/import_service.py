@@ -99,12 +99,18 @@ def _run_transforms(db_path: Path) -> bool:
     return True
 
 
-def _import_ofx(db_path: Path, file_path: Path) -> ImportResult:
+def _import_ofx(
+    db_path: Path,
+    file_path: Path,
+    *,
+    institution_name: str | None = None,
+) -> ImportResult:
     """Import an OFX/QFX file.
 
     Args:
         db_path: Path to the DuckDB database file.
         file_path: Path to the OFX/QFX file.
+        institution_name: Optional institution name override.
 
     Returns:
         ImportResult with summary of imported data.
@@ -116,7 +122,7 @@ def _import_ofx(db_path: Path, file_path: Path) -> ImportResult:
 
     # Extract
     extractor = OFXExtractor()
-    data = extractor.extract_from_file(file_path)
+    data = extractor.extract_from_file(file_path, institution_name)
 
     # Load using OFXLoader (which manages its own connection)
     loader = OFXLoader(db_path)
@@ -149,12 +155,18 @@ def _import_ofx(db_path: Path, file_path: Path) -> ImportResult:
     return result
 
 
-def _import_w2(db_path: Path, file_path: Path) -> ImportResult:
+def _import_w2(
+    db_path: Path,
+    file_path: Path,
+    *,
+    tax_year: int | None = None,
+) -> ImportResult:
     """Import a W-2 PDF file.
 
     Args:
         db_path: Path to the DuckDB database file.
         file_path: Path to the W-2 PDF.
+        tax_year: Optional tax year override.
 
     Returns:
         ImportResult with summary of imported data.
@@ -166,7 +178,7 @@ def _import_w2(db_path: Path, file_path: Path) -> ImportResult:
 
     # Extract
     extractor = W2Extractor()
-    data = extractor.extract_from_file(file_path)
+    data = extractor.extract_from_file(file_path, tax_year)
 
     # Load
     loader = W2Loader(db_path)
@@ -181,6 +193,10 @@ def _import_w2(db_path: Path, file_path: Path) -> ImportResult:
 def import_file(
     db_path: Path,
     file_path: str | Path,
+    *,
+    run_transforms: bool = True,
+    institution_name: str | None = None,
+    tax_year: int | None = None,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -190,6 +206,10 @@ def import_file(
     Args:
         db_path: Path to the DuckDB database file.
         file_path: Path to the file to import.
+        run_transforms: Whether to run SQLMesh transforms after loading.
+            Defaults to True.
+        institution_name: Optional institution name override (OFX only).
+        tax_year: Optional tax year override (W-2 only).
 
     Returns:
         ImportResult with summary of what was imported.
@@ -207,14 +227,14 @@ def import_file(
     logger.info("Importing %s file: %s", file_type, path)
 
     if file_type == "ofx":
-        result = _import_ofx(db_path, path)
+        result = _import_ofx(db_path, path, institution_name=institution_name)
     elif file_type == "w2":
-        result = _import_w2(db_path, path)
+        result = _import_w2(db_path, path, tax_year=tax_year)
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
     # Run SQLMesh transforms after loading raw data
-    if file_type == "ofx":
+    if run_transforms and file_type == "ofx":
         result.core_tables_rebuilt = _run_transforms(db_path)
 
     logger.info("Import complete: %s", result.summary())

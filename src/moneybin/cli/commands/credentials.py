@@ -16,35 +16,6 @@ app = typer.Typer(help="Manage API credentials and environment configuration")
 logger = logging.getLogger(__name__)
 
 
-@app.command("setup")
-def setup() -> None:
-    """Initialize MoneyBin configuration directories.
-
-    Creates necessary profile-specific directories for data and logs.
-    Configuration directories are automatically created when needed.
-
-    Note: This command is now largely unnecessary as directories are created
-    automatically on first use. It's maintained for explicit initialization
-    if desired, or to verify directory structure.
-    """
-    from moneybin.config import get_settings
-
-    profile = get_current_profile()
-    logger.info(f"Initializing MoneyBin environment for profile: {profile}")
-
-    # Get settings to trigger automatic directory creation
-    settings = get_settings()
-    settings.create_directories()
-
-    logger.info("✅ Configuration directories initialized")
-    logger.info(f"   Database: {settings.database.path}")
-    logger.info(f"   Raw data: {settings.data.raw_data_path}")
-    logger.info(f"   Logs: {settings.logging.log_file_path}")
-    logger.info("")
-    logger.info("📝 For configuration, see: .env.example or docs/")
-    logger.info("⚠️  Store sensitive credentials in environment variables or .env")
-
-
 @app.command("validate")
 def validate() -> None:
     """Validate all configured credentials and API connections."""
@@ -71,7 +42,7 @@ def validate() -> None:
     else:
         logger.warning(f"⚠️  {valid_count}/{total_count} credential(s) are valid")
         logger.info(
-            "Check your .env file or run 'moneybin credentials setup' to create a template"
+            "Check your .env file and run 'moneybin config credentials list-services' for details"
         )
 
 

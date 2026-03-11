@@ -4,14 +4,14 @@
       "Bash(wc:*)",
       "mcp__moneybin__get_monthly_summary",
       "mcp__moneybin__query_transactions",
+      "mcp__moneybin__find_recurring_transactions",
       "WebFetch(domain:sqlmesh.readthedocs.io)",
       "WebSearch",
       "Bash(ls:*)",
-      "Bash(uv run:ruff:*)",
-      "Bash(uv run:pyright:*)",
-      "Bash(uv run:pytest:*)",
-      "Bash(uv sync)",
-      "mcp__moneybin__find_recurring_transactions"
+      "Bash(uv run ruff:*)",
+      "Bash(uv run pyright:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv sync)"
     ]
   },
   "enabledMcpjsonServers": [

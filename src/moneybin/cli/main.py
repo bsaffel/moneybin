@@ -1,8 +1,7 @@
 """Main CLI application for MoneyBin.
 
 This module provides the unified entry point for all MoneyBin CLI operations,
-organizing commands into logical groups for data extraction, credential management,
-and system utilities.
+organizing commands into six groups: config, import, sync, data, db, mcp.
 """
 
 import logging
@@ -13,7 +12,7 @@ import typer
 from ..config import set_current_profile
 from ..logging import setup_logging
 from ..utils.user_config import ensure_default_profile
-from .commands import config, credentials, db, extract, load, mcp, sync, transform
+from .commands import config, data, db, import_cmd, mcp, sync
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +54,10 @@ def main_callback(
     - Profile names are normalized to lowercase with hyphens
 
     Examples:
-      moneybin sync plaid                        # Use default profile
-      moneybin --profile=alice sync plaid        # Sync Alice's bank accounts
-      moneybin --profile=bob load parquet        # Load Bob's transactions
-      moneybin --profile=household transform run # Transform household data
+      moneybin sync plaid                            # Use default profile
+      moneybin --profile=alice sync plaid            # Sync Alice's bank accounts
+      moneybin --profile=bob import file stmt.ofx    # Import Bob's statement
+      moneybin --profile=household data transform apply  # Transform household data
 
     Can also be set via MONEYBIN_PROFILE environment variable.
     Priority: --profile flag > MONEYBIN_PROFILE > saved default > prompt
@@ -90,16 +89,36 @@ def main_callback(
 
 
 # Add command groups
-app.add_typer(config.app, name="config", help="User configuration management")
-app.add_typer(sync.app, name="sync", help="Sync data from external services")
-app.add_typer(extract.app, name="extract", help="Extract data from local files")
 app.add_typer(
-    credentials.app, name="credentials", help="Credential management commands"
+    config.app,
+    name="config",
+    help="Manage profiles, settings, and API credentials",
 )
-app.add_typer(load.app, name="load", help="Data loading commands")
-app.add_typer(transform.app, name="transform", help="Data transformation commands")
-app.add_typer(db.app, name="db", help="Database exploration and query commands")
-app.add_typer(mcp.app, name="mcp", help="MCP server for AI assistant integration")
+app.add_typer(
+    mcp.app,
+    name="mcp",
+    help="Run the MCP server for AI app integrations (Claude, etc.)",
+)
+app.add_typer(
+    import_cmd.app,
+    name="import",
+    help="Import financial files (OFX/QFX bank statements, W-2 PDFs) into MoneyBin",
+)
+app.add_typer(
+    sync.app,
+    name="sync",
+    help="Sync transactions from Moneybin servers.",
+)
+app.add_typer(
+    data.app,
+    name="data",
+    help="Fine-grained data pipeline commands like extract, load, and transform",
+)
+app.add_typer(
+    db.app,
+    name="db",
+    help="Explore and query your DuckDB database directly",
+)
 
 
 def main() -> None:

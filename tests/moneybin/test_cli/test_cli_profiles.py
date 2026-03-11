@@ -35,7 +35,7 @@ class TestCLIProfileHandling:
         mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="test")
 
         # Run a command without --profile flag (credentials list-services doesn't need Plaid)
-        result = runner.invoke(app, ["credentials", "list-services"])
+        result = runner.invoke(app, ["config", "credentials", "list-services"])
 
         # Should succeed and use test profile from config
         assert result.exit_code == 0
@@ -46,7 +46,7 @@ class TestCLIProfileHandling:
         with temp_profile("alice"):
             # Run with explicit --profile=alice
             result = runner.invoke(
-                app, ["--profile=alice", "credentials", "list-services"]
+                app, ["--profile=alice", "config", "credentials", "list-services"]
             )
 
             assert result.exit_code == 0
@@ -57,7 +57,7 @@ class TestCLIProfileHandling:
         with temp_profile("bob"):
             # Run with explicit --profile=bob
             result = runner.invoke(
-                app, ["--profile=bob", "credentials", "list-services"]
+                app, ["--profile=bob", "config", "credentials", "list-services"]
             )
 
             assert result.exit_code == 0
@@ -67,7 +67,9 @@ class TestCLIProfileHandling:
         """Test using short -p flag for profile."""
         with temp_profile("alice"):
             # Run with short flag -p
-            result = runner.invoke(app, ["-p", "alice", "credentials", "list-services"])
+            result = runner.invoke(
+                app, ["-p", "alice", "config", "credentials", "list-services"]
+            )
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
@@ -77,7 +79,8 @@ class TestCLIProfileHandling:
         with temp_profile("invalid/profile"):
             # Run with profile containing slash - slash gets removed during normalization
             result = runner.invoke(
-                app, ["--profile=invalid/profile", "credentials", "list-services"]
+                app,
+                ["--profile=invalid/profile", "config", "credentials", "list-services"],
             )
 
             # Should succeed after normalization
@@ -90,7 +93,7 @@ class TestCLIProfileHandling:
         with temp_profile("bad profile"):
             # Run with profile containing space - space gets converted to hyphen
             result = runner.invoke(
-                app, ["--profile=bad profile", "credentials", "list-services"]
+                app, ["--profile=bad profile", "config", "credentials", "list-services"]
             )
 
             # Should succeed after normalization
@@ -109,7 +112,7 @@ class TestCLIProfileHandling:
             )
 
             # Run without explicit flag (should use env var)
-            result = runner.invoke(app, ["credentials", "list-services"])
+            result = runner.invoke(app, ["config", "credentials", "list-services"])
 
             # Should use alice profile from environment variable
             assert result.exit_code == 0
@@ -129,7 +132,7 @@ class TestCLIProfileHandling:
 
             # Run with explicit --profile=bob (should override env var)
             result = runner.invoke(
-                app, ["--profile=bob", "credentials", "list-services"]
+                app, ["--profile=bob", "config", "credentials", "list-services"]
             )
 
             assert result.exit_code == 0
@@ -140,7 +143,7 @@ class TestCLIProfileHandling:
         """Test that profile is set correctly in the config system."""
         with temp_profile("alice"):
             result = runner.invoke(
-                app, ["--profile=alice", "credentials", "list-services"]
+                app, ["--profile=alice", "config", "credentials", "list-services"]
             )
 
             assert result.exit_code == 0
@@ -159,7 +162,8 @@ class TestCLIProfileHandling:
         """Test that profile names with dashes are valid."""
         with temp_profile("alice-personal"):
             result = runner.invoke(
-                app, ["--profile=alice-personal", "credentials", "list-services"]
+                app,
+                ["--profile=alice-personal", "config", "credentials", "list-services"],
             )
 
             assert result.exit_code == 0
@@ -169,7 +173,7 @@ class TestCLIProfileHandling:
         """Test that profile names with underscores get normalized to hyphens."""
         with temp_profile("alice_work"):
             result = runner.invoke(
-                app, ["--profile=alice_work", "credentials", "list-services"]
+                app, ["--profile=alice_work", "config", "credentials", "list-services"]
             )
 
             assert result.exit_code == 0

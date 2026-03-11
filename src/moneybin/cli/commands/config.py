@@ -1,7 +1,7 @@
 """Configuration management commands for MoneyBin.
 
 This module provides CLI commands for managing user-level configuration
-including default profile settings.
+including default profile settings and API credentials.
 """
 
 import logging
@@ -16,12 +16,20 @@ from moneybin.utils.user_config import (
     set_default_profile,
 )
 
+from . import credentials
+
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="config",
-    help="User configuration management",
+    help="Manage profiles, settings, and API credentials",
     no_args_is_help=True,
+)
+
+app.add_typer(
+    credentials.app,
+    name="credentials",
+    help="Validate and inspect API credentials for connected services",
 )
 
 

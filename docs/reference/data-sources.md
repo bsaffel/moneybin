@@ -13,9 +13,9 @@ flowchart LR
 
 | Source | Privacy Tier | Status | Raw Tables | Import Command |
 |--------|-------------|--------|------------|----------------|
-| OFX/QFX files | Local Only | Implemented | `raw.ofx_*` | `moneybin extract ofx <file>` |
-| W-2 PDFs | Local Only | Implemented | `raw.w2_forms` | `moneybin extract w2 <file>` |
-| CSV files | Local Only | Planned | `raw.csv_*` | `moneybin extract csv <file>` |
+| OFX/QFX files | Local Only | Implemented | `raw.ofx_*` | `moneybin data extract ofx <file>` |
+| W-2 PDFs | Local Only | Implemented | `raw.w2_forms` | `moneybin data extract w2 <file>` |
+| CSV files | Local Only | Planned | `raw.csv_*` | `moneybin data extract csv <file>` |
 | Other tax PDFs | Local Only | Planned | `raw.tax_*` | -- |
 | Bank statement PDFs | Local Only | Planned | `raw.pdf_*` | -- |
 | Plaid API | Encrypted Sync | Planned | `raw.plaid_*` | Automatic sync |
@@ -27,7 +27,7 @@ All sources feed into the same core tables (`core.dim_accounts`, `core.fct_trans
 The primary data source for the Local Only tier. Most US banks support OFX/QFX file exports.
 
 ```bash
-moneybin extract ofx path/to/downloads/*.qfx
+moneybin data extract ofx path/to/downloads/*.qfx
 ```
 
 Extracts institutions, accounts, transactions, and balances. Supports both SGML and XML OFX formats. Idempotent -- safe to re-import the same file.
@@ -41,7 +41,7 @@ See [OFX Import Spec](../specs/implemented/ofx-import.md) for details.
 Dual extraction strategy (text + OCR) for W-2 tax forms.
 
 ```bash
-moneybin extract w2 path/to/w2.pdf --year 2024
+moneybin data extract w2 path/to/w2.pdf --year 2024
 ```
 
 Extracts tax year, employer info, wages, federal/state/FICA taxes. Confidence scoring validates extraction quality.
@@ -53,7 +53,7 @@ See [W-2 Extraction Spec](../specs/implemented/w2-extraction.md) for details.
 Manual CSV import for banks that don't support OFX, or for users who prefer CSV workflows.
 
 ```bash
-moneybin extract csv path/to/transactions.csv --bank=chase
+moneybin data extract csv path/to/transactions.csv --bank=chase
 ```
 
 Bank-specific parsers for common formats plus a generic parser with column mapping. See [CSV Import Spec](../specs/csv-import.md).

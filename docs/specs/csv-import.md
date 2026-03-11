@@ -91,16 +91,16 @@ Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `sou
 
 ```bash
 # Import with explicit bank
-moneybin extract csv transactions.csv --bank=chase --account-id=chase-checking
+moneybin data extract csv transactions.csv --bank=chase --account-id=chase-checking
 
 # Auto-detect bank format
-moneybin extract csv transactions.csv --account-id=wf-savings
+moneybin data extract csv transactions.csv --account-id=wf-savings
 
 # Generic import with column mapping
-moneybin extract csv data.csv --date-col=Date --amount-col=Amount --desc-col=Description
+moneybin data extract csv data.csv --date-col=Date --amount-col=Amount --desc-col=Description
 
 # Skip database load
-moneybin extract csv data.csv --bank=chase --no-load
+moneybin data extract csv data.csv --bank=chase --no-load
 ```
 
 ## MCP Interface

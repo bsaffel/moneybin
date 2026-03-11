@@ -58,13 +58,13 @@ All monetary values use `DECIMAL(18,2)`.
 
 ```bash
 # Extract and load
-moneybin extract w2 ~/Downloads/W2.pdf --year 2024
+moneybin data extract w2 ~/Downloads/W2.pdf --year 2024
 
 # Extract without loading
-moneybin extract w2 W2.pdf --no-load
+moneybin data extract w2 W2.pdf --no-load
 
 # Skip source file copy
-moneybin extract w2 W2.pdf --no-copy
+moneybin data extract w2 W2.pdf --no-copy
 ```
 
 ## MCP Interface

@@ -57,16 +57,16 @@ All tables include `source_file`, `extracted_at`, and `loaded_at` metadata colum
 
 ```bash
 # Basic import
-moneybin extract ofx ~/Downloads/WellsFargo_2025.qfx
+moneybin data extract ofx ~/Downloads/WellsFargo_2025.qfx
 
 # With custom institution name
-moneybin extract ofx file.qfx --institution "Wells Fargo"
+moneybin data extract ofx file.qfx --institution "Wells Fargo"
 
 # Extract only (skip database load)
-moneybin extract ofx file.qfx --no-load
+moneybin data extract ofx file.qfx --no-load
 
 # Skip source file copy
-moneybin extract ofx file.qfx --no-copy
+moneybin data extract ofx file.qfx --no-copy
 ```
 
 ## MCP Interface

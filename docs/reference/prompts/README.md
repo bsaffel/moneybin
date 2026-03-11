@@ -66,10 +66,7 @@ Any MCP client can list and invoke prompts:
 prompts = await client.list_prompts()
 
 # Get a specific prompt with arguments
-result = await client.get_prompt(
-    "monthly_review",
-    arguments={"month": "2025-01"}
-)
+result = await client.get_prompt("monthly_review", arguments={"month": "2025-01"})
 ```
 
 ## Source
