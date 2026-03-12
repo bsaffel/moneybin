@@ -1,0 +1,1 @@
+"""MoneyBin core package tests."""

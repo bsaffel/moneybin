@@ -1,0 +1,604 @@
+"""Tests for the categorization service.
+
+Covers merchant normalization, pattern matching, rule engine, merchant
+matching, prompt construction, and response parsing.
+"""
+
+from pathlib import Path
+
+import duckdb
+import pytest
+
+from moneybin.schema import init_schemas
+from moneybin.services.categorization_service import (
+    apply_deterministic_categorization,
+    apply_merchant_categories,
+    apply_rules,
+    build_categorization_prompt,
+    create_merchant,
+    get_active_categories,
+    get_categorization_stats,
+    match_merchant,
+    normalize_description,
+    parse_categorization_response,
+    seed_categories,
+)
+from tests.moneybin.db_helpers import create_core_tables
+
+
+@pytest.fixture()
+def db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
+    """Create a DuckDB with all schemas for testing."""
+    db_path = tmp_path / "test.duckdb"
+    conn = duckdb.connect(str(db_path))
+    init_schemas(conn)
+    # Core tables are managed by SQLMesh in production; create concrete
+    # tables here so tests can INSERT fixture data directly.
+    create_core_tables(conn)
+    return conn
+
+
+@pytest.fixture()
+def db_with_transactions(db: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+    """DB with sample transactions in core.fct_transactions."""
+    db.execute("""
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description, memo,
+            transaction_type, is_pending, currency_code, source_system,
+            source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month,
+            transaction_year_quarter
+        ) VALUES
+        ('TXN001', 'ACC001', '2025-06-15', -4.50, 4.50, 'expense',
+         'SQ *STARBUCKS #1234 SEATTLE WA', 'Coffee', 'DEBIT', false,
+         'USD', 'ofx', '2025-01-24', CURRENT_TIMESTAMP,
+         2025, 6, 15, 0, '2025-06', '2025-Q2'),
+        ('TXN002', 'ACC001', '2025-06-20', 3000.00, 3000.00, 'income',
+         'ACME CORP PAYROLL', 'Payroll', 'CREDIT', false, 'USD', 'ofx',
+         '2025-01-24', CURRENT_TIMESTAMP,
+         2025, 6, 20, 5, '2025-06', '2025-Q2'),
+        ('TXN003', 'ACC001', '2025-06-25', -52.13, 52.13, 'expense',
+         'AMZN MKTP US*ABC123', 'Amazon order', 'DEBIT', false, 'USD', 'ofx',
+         '2025-01-24', CURRENT_TIMESTAMP,
+         2025, 6, 25, 3, '2025-06', '2025-Q2'),
+        ('TXN004', 'ACC002', '2025-06-26', -150.00, 150.00, 'expense',
+         'WHOLEFDS MKT 10234 AUSTIN TX 78701', 'Groceries', 'DEBIT', false,
+         'USD', 'ofx', '2025-01-24', CURRENT_TIMESTAMP,
+         2025, 6, 26, 4, '2025-06', '2025-Q2')
+    """)
+    return db
+
+
+# ---------------------------------------------------------------------------
+# Merchant name normalization
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeDescription:
+    """Tests for normalize_description()."""
+
+    @pytest.mark.unit
+    def test_strips_square_prefix(self) -> None:
+        assert normalize_description("SQ *STARBUCKS #1234") == "STARBUCKS"
+
+    @pytest.mark.unit
+    def test_strips_toast_prefix(self) -> None:
+        assert normalize_description("TST*PIZZA PLACE") == "PIZZA PLACE"
+
+    @pytest.mark.unit
+    def test_strips_paypal_prefix(self) -> None:
+        assert normalize_description("PP*SPOTIFY") == "SPOTIFY"
+
+    @pytest.mark.unit
+    def test_strips_trailing_state_zip(self) -> None:
+        result = normalize_description("WHOLEFDS MKT AUSTIN TX 78701")
+        assert "78701" not in result
+
+    @pytest.mark.unit
+    def test_strips_trailing_city_state(self) -> None:
+        result = normalize_description("STARBUCKS SEATTLE WA")
+        assert "SEATTLE" not in result
+        assert "WA" not in result
+
+    @pytest.mark.unit
+    def test_strips_trailing_store_id(self) -> None:
+        result = normalize_description("TARGET 00012345")
+        assert "00012345" not in result
+
+    @pytest.mark.unit
+    def test_preserves_core_name(self) -> None:
+        assert "STARBUCKS" in normalize_description("SQ *STARBUCKS #1234 SEATTLE WA")
+
+    @pytest.mark.unit
+    def test_empty_string(self) -> None:
+        assert normalize_description("") == ""
+
+    @pytest.mark.unit
+    def test_none_handled(self) -> None:
+        # normalize_description expects str but should handle edge cases
+        assert normalize_description("   ") == ""
+
+    @pytest.mark.unit
+    def test_normalizes_whitespace(self) -> None:
+        result = normalize_description("SQ  *  COFFEE   SHOP")
+        assert "  " not in result
+
+
+# ---------------------------------------------------------------------------
+# Pattern matching
+# ---------------------------------------------------------------------------
+
+
+class TestMatchesPattern:
+    """Tests for _matches_pattern() via match_merchant."""
+
+    @pytest.mark.unit
+    def test_exact_match(self, db: duckdb.DuckDBPyConnection) -> None:
+        create_merchant(
+            db,
+            "starbucks",
+            "Starbucks",
+            match_type="exact",
+            category="Food & Drink",
+        )
+        result = match_merchant(db, "starbucks")
+        assert result is not None
+        assert result["canonical_name"] == "Starbucks"
+
+    @pytest.mark.unit
+    def test_exact_case_insensitive(self, db: duckdb.DuckDBPyConnection) -> None:
+        create_merchant(
+            db,
+            "STARBUCKS",
+            "Starbucks",
+            match_type="exact",
+            category="Food & Drink",
+        )
+        result = match_merchant(db, "starbucks")
+        assert result is not None
+
+    @pytest.mark.unit
+    def test_contains_match(self, db: duckdb.DuckDBPyConnection) -> None:
+        create_merchant(
+            db,
+            "AMZN",
+            "Amazon",
+            match_type="contains",
+            category="Shopping",
+        )
+        result = match_merchant(db, "AMZN MKTP US*ABC123")
+        assert result is not None
+        assert result["canonical_name"] == "Amazon"
+
+    @pytest.mark.unit
+    def test_regex_match(self, db: duckdb.DuckDBPyConnection) -> None:
+        create_merchant(
+            db,
+            r"UBER\s*(TRIP|EATS)",
+            "Uber",
+            match_type="regex",
+            category="Transportation",
+        )
+        result = match_merchant(db, "UBER TRIP")
+        assert result is not None
+        assert result["canonical_name"] == "Uber"
+
+    @pytest.mark.unit
+    def test_no_match_returns_none(self, db: duckdb.DuckDBPyConnection) -> None:
+        create_merchant(db, "STARBUCKS", "Starbucks", match_type="exact")
+        result = match_merchant(db, "DUNKIN DONUTS")
+        assert result is None
+
+    @pytest.mark.unit
+    def test_exact_takes_priority_over_contains(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        create_merchant(
+            db,
+            "AMZN",
+            "Amazon General",
+            match_type="contains",
+            category="Shopping",
+            subcategory="Online Marketplaces",
+        )
+        create_merchant(
+            db,
+            "amzn mktp",
+            "Amazon Marketplace",
+            match_type="exact",
+            category="Shopping",
+            subcategory="Online Marketplaces",
+        )
+        result = match_merchant(db, "AMZN MKTP")
+        assert result is not None
+        # exact match should win
+        assert result["canonical_name"] == "Amazon Marketplace"
+
+
+# ---------------------------------------------------------------------------
+# Rule engine
+# ---------------------------------------------------------------------------
+
+
+class TestApplyRules:
+    """Tests for rule-based categorization."""
+
+    @pytest.mark.unit
+    def test_basic_rule(self, db_with_transactions: duckdb.DuckDBPyConnection) -> None:
+        db = db_with_transactions
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, category, subcategory,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Starbucks -> Coffee', 'STARBUCKS', 'contains',
+                    'Food & Drink', 'Coffee Shops', 10, true, 'user',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        count = apply_rules(db)
+        assert count >= 1
+
+        # Verify the categorization was applied
+        row = db.execute("""
+            SELECT category, subcategory, categorized_by, rule_id
+            FROM app.transaction_categories
+            WHERE transaction_id = 'TXN001'
+        """).fetchone()
+        assert row is not None
+        assert row[0] == "Food & Drink"
+        assert row[1] == "Coffee Shops"
+        assert row[2] == "rule"
+        assert row[3] == "R001"
+
+    @pytest.mark.unit
+    def test_rule_priority_ordering(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        # Two rules match TXN003 (Amazon), but lower priority wins
+        db.execute("""
+            INSERT INTO app.categorization_rules VALUES
+            ('R001', 'Amazon General', 'AMZN', 'contains', NULL, NULL,
+             NULL, 'Shopping', 'Other Shopping', 100, true, 'user',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('R002', 'Amazon Electronics', 'AMZN', 'contains', NULL, NULL,
+             NULL, 'Shopping', 'Electronics', 10, true, 'user',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        apply_rules(db)
+
+        row = db.execute("""
+            SELECT subcategory FROM app.transaction_categories
+            WHERE transaction_id = 'TXN003'
+        """).fetchone()
+        assert row is not None
+        assert row[0] == "Electronics"  # priority 10 wins over 100
+
+    @pytest.mark.unit
+    def test_amount_filter(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        # Rule only matches expenses > $100 (amount < -100)
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type,
+             min_amount, max_amount, category, priority, is_active,
+             created_by, created_at, updated_at)
+            VALUES ('R001', 'Large grocery', 'WHOLEFDS', 'contains',
+                    NULL, -100.00, 'Food & Drink', 10, true,
+                    'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        count = apply_rules(db)
+        assert count == 1  # Only TXN004 (-150) matches
+
+    @pytest.mark.unit
+    def test_account_filter(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, account_id,
+             category, priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Account-specific', 'STARBUCKS', 'contains',
+                    'ACC002', 'Food & Drink', 10, true, 'user',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        count = apply_rules(db)
+        # TXN001 has STARBUCKS but is in ACC001, not ACC002
+        assert count == 0
+
+    @pytest.mark.unit
+    def test_idempotent(self, db_with_transactions: duckdb.DuckDBPyConnection) -> None:
+        db = db_with_transactions
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, category,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Amazon', 'AMZN', 'contains', 'Shopping',
+                    10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        first = apply_rules(db)
+        second = apply_rules(db)
+        assert first > 0
+        assert second == 0  # Already categorized, no duplicates
+
+    @pytest.mark.unit
+    def test_inactive_rules_skipped(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, category,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Amazon', 'AMZN', 'contains', 'Shopping',
+                    10, false, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        count = apply_rules(db)
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Merchant categories
+# ---------------------------------------------------------------------------
+
+
+class TestApplyMerchantCategories:
+    """Tests for merchant-based auto-categorization."""
+
+    @pytest.mark.unit
+    def test_applies_merchant_category(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        create_merchant(
+            db,
+            "STARBUCKS",
+            "Starbucks",
+            match_type="contains",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        count = apply_merchant_categories(db)
+        assert count >= 1
+
+    @pytest.mark.unit
+    def test_skips_merchants_without_category(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        create_merchant(db, "STARBUCKS", "Starbucks", match_type="contains")
+        count = apply_merchant_categories(db)
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Deterministic categorization pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestApplyDeterministicCategorization:
+    """Tests for the combined merchant + rules pipeline."""
+
+    @pytest.mark.unit
+    def test_merchants_then_rules(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        # Merchant matches Starbucks
+        create_merchant(
+            db,
+            "STARBUCKS",
+            "Starbucks",
+            match_type="contains",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        # Rule matches Amazon
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, category,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Amazon', 'AMZN', 'contains', 'Shopping',
+                    10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        stats = apply_deterministic_categorization(db)
+        assert stats["merchant"] >= 1
+        assert stats["rule"] >= 1
+        assert stats["total"] >= 2
+
+
+# ---------------------------------------------------------------------------
+# Categorization stats
+# ---------------------------------------------------------------------------
+
+
+class TestGetCategorizationStats:
+    """Tests for categorization coverage stats."""
+
+    @pytest.mark.unit
+    def test_all_uncategorized(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        stats = get_categorization_stats(db_with_transactions)
+        assert stats["total"] == 4
+        assert stats["categorized"] == 0
+        assert stats["uncategorized"] == 4
+
+    @pytest.mark.unit
+    def test_with_categorized(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        db = db_with_transactions
+        db.execute("""
+            INSERT INTO app.transaction_categories
+            (transaction_id, category, categorized_by)
+            VALUES ('TXN001', 'Food & Drink', 'user')
+        """)
+        stats = get_categorization_stats(db)
+        assert stats["total"] == 4
+        assert stats["categorized"] == 1
+        assert stats["by_user"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Prompt construction
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCategorizationPrompt:
+    """Tests for LLM prompt construction."""
+
+    @pytest.mark.unit
+    def test_includes_categories(self) -> None:
+        categories: list[dict[str, str | bool | None]] = [
+            {
+                "category": "Food & Drink",
+                "subcategory": "Coffee Shops",
+                "category_id": "FND-COF",
+                "description": "",
+                "is_default": True,
+                "plaid_detailed": "",
+            },
+        ]
+        prompt = build_categorization_prompt(categories, ["STARBUCKS"])
+        assert "Food & Drink" in prompt
+        assert "Coffee Shops" in prompt
+
+    @pytest.mark.unit
+    def test_includes_descriptions(self) -> None:
+        categories: list[dict[str, str | bool | None]] = [
+            {
+                "category": "Other",
+                "subcategory": None,
+                "category_id": "OTH",
+                "description": "",
+                "is_default": True,
+                "plaid_detailed": "",
+            },
+        ]
+        prompt = build_categorization_prompt(categories, ["STARBUCKS", "AMAZON"])
+        assert "STARBUCKS" in prompt
+        assert "AMAZON" in prompt
+
+    @pytest.mark.unit
+    def test_requests_json_response(self) -> None:
+        prompt = build_categorization_prompt([], ["TEST"])
+        assert "JSON" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Response parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseCategorizationResponse:
+    """Tests for LLM response parsing."""
+
+    @pytest.mark.unit
+    def test_valid_json(self) -> None:
+        response = """[
+            {"description": "STARBUCKS", "category": "Food & Drink",
+             "subcategory": "Coffee Shops", "confidence": 0.95,
+             "merchant_name": "Starbucks"}
+        ]"""
+        results = parse_categorization_response(response)
+        assert len(results) == 1
+        assert results[0]["category"] == "Food & Drink"
+        assert results[0]["confidence"] == 0.95
+
+    @pytest.mark.unit
+    def test_markdown_code_fence(self) -> None:
+        response = """```json
+[{"description": "AMAZON", "category": "Shopping", "confidence": 0.8}]
+```"""
+        results = parse_categorization_response(response)
+        assert len(results) == 1
+
+    @pytest.mark.unit
+    def test_extra_text_around_json(self) -> None:
+        response = """Here are the categorizations:
+[{"description": "TEST", "category": "Other", "confidence": 0.5}]
+Hope that helps!"""
+        results = parse_categorization_response(response)
+        assert len(results) == 1
+
+    @pytest.mark.unit
+    def test_invalid_json_returns_empty(self) -> None:
+        results = parse_categorization_response("not json at all")
+        assert results == []
+
+    @pytest.mark.unit
+    def test_missing_required_fields_skipped(self) -> None:
+        response = """[
+            {"description": "VALID", "category": "Shopping"},
+            {"only_description": "INVALID"}
+        ]"""
+        results = parse_categorization_response(response)
+        assert len(results) == 1
+
+    @pytest.mark.unit
+    def test_out_of_taxonomy_still_parsed(self) -> None:
+        response = (
+            '[{"description": "X", "category": "Fake Category", "confidence": 0.2}]'
+        )
+        results = parse_categorization_response(response)
+        assert len(results) == 1
+        assert results[0]["category"] == "Fake Category"
+
+    @pytest.mark.unit
+    def test_default_confidence(self) -> None:
+        response = '[{"description": "X", "category": "Other"}]'
+        results = parse_categorization_response(response)
+        assert results[0]["confidence"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Seed categories
+# ---------------------------------------------------------------------------
+
+
+class TestSeedCategories:
+    """Tests for category seeding (requires SQLMesh seed table mock)."""
+
+    @pytest.mark.unit
+    def test_seed_idempotent(self, db: duckdb.DuckDBPyConnection) -> None:
+        # Create a mock seed table
+        db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+        db.execute("""
+            CREATE TABLE seeds.seed_categories (
+                category_id VARCHAR,
+                category VARCHAR,
+                subcategory VARCHAR,
+                description VARCHAR,
+                plaid_detailed VARCHAR
+            )
+        """)
+        db.execute("""
+            INSERT INTO seeds.seed_categories VALUES
+            ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK'),
+            ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'FOOD_AND_DRINK_COFFEE')
+        """)
+
+        first = seed_categories(db)
+        assert first == 2
+
+        second = seed_categories(db)
+        assert second == 0  # Idempotent
+
+    @pytest.mark.unit
+    def test_get_active_categories(self, db: duckdb.DuckDBPyConnection) -> None:
+        db.execute("""
+            INSERT INTO app.categories
+            (category_id, category, subcategory, is_default, is_active)
+            VALUES
+            ('FND', 'Food & Drink', NULL, true, true),
+            ('FND-COF', 'Food & Drink', 'Coffee Shops', true, true),
+            ('OLD', 'Deprecated', NULL, true, false)
+        """)
+        categories = get_active_categories(db)
+        assert len(categories) == 2
+        assert all(c["category"] == "Food & Drink" for c in categories)

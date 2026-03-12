@@ -39,7 +39,7 @@ def init_schemas(
 ) -> None:
     """Create all database schemas and tables.
 
-    Ensures the raw, core, and user schemas exist with all required tables.
+    Ensures the raw, core, and app schemas exist with all required tables.
     Uses CREATE IF NOT EXISTS so it is safe to run multiple times.
 
     This must be run before `sqlmesh plan` if no data has been imported yet.

@@ -32,6 +32,8 @@ data/
 *.pdf
 *.xlsx
 *.xls
+# SQLMesh seed data is safe to track (static reference data, not financial)
+!sqlmesh/models/seeds/*.csv
 
 # Database files
 *.duckdb

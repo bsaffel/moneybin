@@ -149,7 +149,7 @@ def table_exists(table: TableRef) -> bool:
 
 
 def _init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
-    """Initialize all database schemas and user tables.
+    """Initialize all database schemas and app tables.
 
     Args:
         conn: Active DuckDB connection.
@@ -163,7 +163,7 @@ def init_db(db_path: Path) -> None:
     """Initialize the database and open a read-only connection.
 
     If the database file does not exist, it will be created and initialized
-    with all required schemas (raw, core, user) via a temporary read-write
+    with all required schemas (raw, core, app) via a temporary read-write
     connection. The long-lived connection is always read-only.
 
     Args:
@@ -186,7 +186,7 @@ def init_db(db_path: Path) -> None:
             _init_schemas(init_conn)
         finally:
             init_conn.close()
-        logger.info("Database initialized with raw, core, and user schemas")
+        logger.info("Database initialized with raw, core, and app schemas")
 
     # Open long-lived read-only connection
     _db_path = db_path

@@ -61,26 +61,13 @@ duckdb moneybin.duckdb < src/moneybin/sql/schema/raw_ofx_transactions.sql
 cat src/moneybin/sql/schema/*.sql | duckdb moneybin.duckdb
 ```
 
-## Linting
+## Formatting
 
-All SQL files are linted with SQLFluff:
+All SQL files are formatted with SQLMesh's built-in formatter (uses sqlglot, natively understands `MODEL()` blocks):
 
 ```bash
-# Check all SQL files
-uv run sqlfluff lint src/moneybin/sql/
-
-# Fix auto-fixable issues
-uv run sqlfluff fix src/moneybin/sql/
-
-# Check specific file
-uv run sqlfluff lint src/moneybin/sql/schema/raw_ofx_transactions.sql
+uv run sqlmesh format
 ```
-
-SQLFluff configuration is in `pyproject.toml`:
-
-- Dialect: DuckDB
-- Templater: Jinja (for SQLMesh compatibility)
-- Max line length: 88 characters
 
 ## Adding New Tables
 
@@ -115,5 +102,5 @@ CREATE TABLE IF NOT EXISTS raw.<source>_<entity> (
 
 - [DuckDB Data Types](https://duckdb.org/docs/sql/data_types/overview)
 - [DuckDB CREATE TABLE](https://duckdb.org/docs/sql/statements/create_table)
-- [SQLFluff Documentation](https://docs.sqlfluff.com/)
+- [SQLMesh Format Documentation](https://sqlmesh.readthedocs.io/en/stable/reference/cli/#format)
 - [MoneyBin SQLMesh Models](../../models/)

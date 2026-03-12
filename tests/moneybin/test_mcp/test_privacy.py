@@ -157,10 +157,10 @@ class TestValidateManagedWrite:
     """Tests for managed write validation."""
 
     @pytest.mark.unit
-    def test_insert_into_user_schema_allowed(self) -> None:
+    def test_insert_into_app_schema_allowed(self) -> None:
         assert (
             validate_managed_write(
-                "INSERT INTO user.transaction_categories VALUES ('t1', 'Food')"
+                "INSERT INTO app.transaction_categories VALUES ('t1', 'Food')"
             )
             is None
         )
@@ -175,35 +175,35 @@ class TestValidateManagedWrite:
         )
 
     @pytest.mark.unit
-    def test_update_user_schema_allowed(self) -> None:
+    def test_update_app_schema_allowed(self) -> None:
         assert (
             validate_managed_write(
-                "UPDATE user.budgets SET monthly_amount = 500 WHERE budget_id = 'b1'"
+                "UPDATE app.budgets SET monthly_amount = 500 WHERE budget_id = 'b1'"
             )
             is None
         )
 
     @pytest.mark.unit
     def test_drop_rejected(self) -> None:
-        result = validate_managed_write("DROP TABLE user.budgets")
+        result = validate_managed_write("DROP TABLE app.budgets")
         assert result is not None
         assert "DROP" in result
 
     @pytest.mark.unit
     def test_alter_rejected(self) -> None:
-        result = validate_managed_write("ALTER TABLE user.budgets ADD COLUMN x INT")
+        result = validate_managed_write("ALTER TABLE app.budgets ADD COLUMN x INT")
         assert result is not None
 
     @pytest.mark.unit
     def test_truncate_rejected(self) -> None:
-        result = validate_managed_write("TRUNCATE TABLE user.budgets")
+        result = validate_managed_write("TRUNCATE TABLE app.budgets")
         assert result is not None
 
     @pytest.mark.unit
     def test_insert_into_core_rejected(self) -> None:
         result = validate_managed_write("INSERT INTO core.dim_accounts VALUES ('x')")
         assert result is not None
-        assert "user" in result or "raw" in result
+        assert "app" in result or "raw" in result
 
     @pytest.mark.unit
     def test_create_or_replace_in_core_allowed(self) -> None:

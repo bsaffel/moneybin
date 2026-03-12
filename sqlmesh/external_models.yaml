@@ -1,4 +1,5 @@
-# External models: raw tables created by Python loaders, not managed by SQLMesh.
+# External models: tables created by Python loaders or the app layer,
+# not managed by SQLMesh.
 # These must exist in the database before running `sqlmesh plan`.
 # Run `moneybin schema init` or import data to create them.
 
@@ -46,3 +47,29 @@
     source_file: VARCHAR
     extracted_at: TIMESTAMP
     loaded_at: TIMESTAMP
+
+# App layer: tables managed by MCP tools and CLI, not by SQLMesh.
+# Referenced by core views for category enrichment.
+
+- name: '"moneybin"."app"."transaction_categories"'
+  columns:
+    transaction_id: VARCHAR
+    category: VARCHAR
+    subcategory: VARCHAR
+    categorized_at: TIMESTAMP
+    categorized_by: VARCHAR
+    merchant_id: VARCHAR
+    confidence: DECIMAL(3, 2)
+    rule_id: VARCHAR
+
+- name: '"moneybin"."app"."merchants"'
+  columns:
+    merchant_id: VARCHAR
+    raw_pattern: VARCHAR
+    match_type: VARCHAR
+    canonical_name: VARCHAR
+    category: VARCHAR
+    subcategory: VARCHAR
+    created_by: VARCHAR
+    created_at: TIMESTAMP
+    updated_at: TIMESTAMP

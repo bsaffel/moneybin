@@ -9,8 +9,11 @@ import json
 import logging
 
 from moneybin.tables import (
+    CATEGORIES,
+    CATEGORIZATION_RULES,
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
+    MERCHANTS,
     OFX_BALANCES,
     OFX_INSTITUTIONS,
     W2_FORMS,
@@ -325,6 +328,89 @@ def get_w2_summary(tax_year: int | None = None) -> str:
         ORDER BY tax_year DESC, employer_name
     """
     return _query_to_json(sql, params if params else None)
+
+
+@mcp.tool()
+def list_categories() -> str:
+    """List all active transaction categories.
+
+    Returns the category taxonomy including category ID, name, subcategory,
+    and description. Use seed_categories first if no categories exist.
+    """
+    logger.info("Tool called: list_categories")
+
+    if not table_exists(CATEGORIES):
+        return "No categories found. Use seed_categories to initialize defaults."
+
+    return _query_to_json(f"""
+        SELECT category_id, category, subcategory, description,
+               is_default, plaid_detailed
+        FROM {CATEGORIES.full_name}
+        WHERE is_active = true
+        ORDER BY category, subcategory
+    """)
+
+
+@mcp.tool()
+def list_categorization_rules() -> str:
+    """List all active categorization rules.
+
+    Shows rules that auto-categorize transactions based on merchant patterns,
+    amount ranges, and account filters.
+    """
+    logger.info("Tool called: list_categorization_rules")
+
+    if not table_exists(CATEGORIZATION_RULES):
+        return "No categorization rules found."
+
+    return _query_to_json(f"""
+        SELECT rule_id, name, merchant_pattern, match_type,
+               min_amount, max_amount, account_id,
+               category, subcategory, priority, created_by
+        FROM {CATEGORIZATION_RULES.full_name}
+        WHERE is_active = true
+        ORDER BY priority ASC, name
+    """)
+
+
+@mcp.tool()
+def list_merchants() -> str:
+    """List all known merchant mappings.
+
+    Shows how raw transaction descriptions are mapped to canonical merchant
+    names and default categories.
+    """
+    logger.info("Tool called: list_merchants")
+
+    if not table_exists(MERCHANTS):
+        return "No merchant mappings found."
+
+    return _query_to_json(f"""
+        SELECT merchant_id, raw_pattern, match_type, canonical_name,
+               category, subcategory, created_by
+        FROM {MERCHANTS.full_name}
+        ORDER BY canonical_name
+    """)
+
+
+@mcp.tool()
+def get_categorization_stats() -> str:
+    """Get summary statistics about transaction categorization coverage.
+
+    Shows total transactions, how many are categorized vs uncategorized,
+    and a breakdown by categorization source (user, rule, ai, plaid).
+    """
+    logger.info("Tool called: get_categorization_stats")
+
+    import json
+
+    from moneybin.services.categorization_service import (
+        get_categorization_stats as _get_stats,
+    )
+
+    db = get_db()
+    stats = _get_stats(db)
+    return json.dumps(stats, indent=2, default=str)
 
 
 @mcp.tool()

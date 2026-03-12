@@ -18,14 +18,15 @@ _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
 _SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
     "core_schema.sql",
-    "user_schema.sql",
+    "app_schema.sql",
     "raw_ofx_institutions.sql",
     "raw_ofx_accounts.sql",
     "raw_ofx_transactions.sql",
     "raw_ofx_balances.sql",
     "raw_w2_forms.sql",
-    "core_dim_accounts.sql",
-    "core_fct_transactions.sql",
+    "app_categories.sql",
+    "app_merchants.sql",
+    "app_categorization_rules.sql",
 ]
 
 

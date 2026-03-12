@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import os
 
-from conftest import temp_profile
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.config import get_current_profile
+from tests.moneybin.conftest import temp_profile
 
 runner = CliRunner()
 

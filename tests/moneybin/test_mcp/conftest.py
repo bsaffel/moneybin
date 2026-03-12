@@ -12,23 +12,8 @@ import duckdb
 import pytest
 
 from moneybin.mcp import server
-
-_SCHEMA_DIR = (
-    Path(__file__).resolve().parents[3] / "src" / "moneybin" / "sql" / "schema"
-)
-
-_SCHEMA_FILES = [
-    "raw_schema.sql",
-    "core_schema.sql",
-    "raw_ofx_institutions.sql",
-    "raw_ofx_accounts.sql",
-    "raw_ofx_transactions.sql",
-    "raw_ofx_balances.sql",
-    "raw_w2_forms.sql",
-    "core_dim_accounts.sql",
-    "core_fct_transactions.sql",
-    "user_schema.sql",
-]
+from moneybin.schema import init_schemas
+from tests.moneybin.db_helpers import create_core_tables
 
 
 @pytest.fixture(autouse=True)
@@ -51,9 +36,12 @@ def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
     # Use a read-write connection for setup
     setup_conn = duckdb.connect(str(db_path))
 
-    # Create schemas and tables from canonical SQL files
-    for sql_file in _SCHEMA_FILES:
-        setup_conn.execute((_SCHEMA_DIR / sql_file).read_text())
+    # Create app/raw schemas and tables via production init_schemas
+    init_schemas(setup_conn)
+
+    # Core tables are managed by SQLMesh in production; create test-only
+    # concrete tables so we can INSERT fixture data directly.
+    create_core_tables(setup_conn)
 
     # -- Base reference data: institutions --
     setup_conn.execute("""

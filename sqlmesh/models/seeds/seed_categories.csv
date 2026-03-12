@@ -1,0 +1,109 @@
+category_id,category,subcategory,description,plaid_detailed
+INC,Income,,All income sources,INCOME
+INC-SAL,Income,Salary & Wages,Regular employment income,INCOME_WAGES
+INC-FRE,Income,Freelance & Contract,Self-employment and contract work,INCOME_OTHER
+INC-INT,Income,Interest,Interest earned on accounts,INCOME_INTEREST_EARNED
+INC-DIV,Income,Dividends,Dividend income from investments,INCOME_DIVIDENDS
+INC-REF,Income,Refunds,Refunds and reimbursements,INCOME_OTHER
+INC-REN,Income,Rental Income,Income from rental properties,INCOME_OTHER
+INC-OTH,Income,Other Income,Miscellaneous income,INCOME_OTHER
+TRN,Transfer,,Money movement between accounts,TRANSFER_IN
+TRN-INT,Transfer,Internal Transfer,Between own accounts,TRANSFER_IN
+TRN-PAY,Transfer,Payment,Bill payments and transfers to others,TRANSFER_OUT
+TRN-ATM,Transfer,ATM,ATM withdrawals and deposits,TRANSFER_OUT
+TRN-WIR,Transfer,Wire Transfer,Wire transfers,TRANSFER_OUT
+LNP,Loan Payments,,Loan and debt payments,LOAN_PAYMENTS
+LNP-MTG,Loan Payments,Mortgage,Mortgage payments,LOAN_PAYMENTS_MORTGAGE_PAYMENT
+LNP-CAR,Loan Payments,Car Payment,Auto loan payments,LOAN_PAYMENTS_CAR_PAYMENT
+LNP-STU,Loan Payments,Student Loan,Student loan payments,LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT
+LNP-CRD,Loan Payments,Credit Card,Credit card payments,LOAN_PAYMENTS_CREDIT_CARD_PAYMENT
+LNP-PER,Loan Payments,Personal Loan,Personal loan payments,LOAN_PAYMENTS_OTHER_PAYMENT
+BNK,Bank Fees,,Fees charged by financial institutions,BANK_FEES
+BNK-OVR,Bank Fees,Overdraft,Overdraft fees,BANK_FEES_OVERDRAFT_FEES
+BNK-ATM,Bank Fees,ATM Fees,ATM usage fees,BANK_FEES_ATM_FEES
+BNK-INT,Bank Fees,Interest Charged,Interest on loans or credit,BANK_FEES_INTEREST_CHARGE
+BNK-OTH,Bank Fees,Other Fees,Miscellaneous bank fees,BANK_FEES_OTHER_BANK_FEES
+ENT,Entertainment,,Leisure and entertainment,ENTERTAINMENT
+ENT-MOV,Entertainment,Movies & TV,Movie theaters and streaming,ENTERTAINMENT_TV_AND_MOVIES
+ENT-MUS,Entertainment,Music,Concerts and music streaming,ENTERTAINMENT_MUSIC_AND_AUDIO
+ENT-GAM,Entertainment,Games,Video games and gaming,ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS
+ENT-EVT,Entertainment,Events & Attractions,Concerts events museums amusement parks,ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS
+ENT-OTH,Entertainment,Other Entertainment,Miscellaneous entertainment,ENTERTAINMENT_OTHER_ENTERTAINMENT
+FND,Food & Drink,,Food and beverage expenses,FOOD_AND_DRINK
+FND-GRC,Food & Drink,Groceries,Grocery stores and supermarkets,FOOD_AND_DRINK_GROCERIES
+FND-RST,Food & Drink,Restaurants,Dining out,FOOD_AND_DRINK_RESTAURANT
+FND-COF,Food & Drink,Coffee Shops,Coffee and tea shops,FOOD_AND_DRINK_COFFEE
+FND-DEL,Food & Drink,Delivery,Food delivery services,FOOD_AND_DRINK_FAST_FOOD
+FND-FST,Food & Drink,Fast Food,Quick service restaurants,FOOD_AND_DRINK_FAST_FOOD
+FND-BAR,Food & Drink,Bars & Alcohol,Bars liquor stores,FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR
+FND-OTH,Food & Drink,Other Food & Drink,Miscellaneous food and drink,FOOD_AND_DRINK_OTHER_FOOD_AND_DRINK
+SHP,Shopping,,Retail purchases,GENERAL_MERCHANDISE
+SHP-CLO,Shopping,Clothing & Accessories,Apparel and accessories,GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES
+SHP-ELE,Shopping,Electronics,Electronics and gadgets,GENERAL_MERCHANDISE_ELECTRONICS
+SHP-ONL,Shopping,Online Marketplaces,Amazon eBay and other online retailers,GENERAL_MERCHANDISE_ONLINE_MARKETPLACES
+SHP-DEP,Shopping,Department Stores,Department and big-box stores,GENERAL_MERCHANDISE_DEPARTMENT_STORES
+SHP-SPT,Shopping,Sporting Goods,Sports equipment and outdoor gear,GENERAL_MERCHANDISE_SPORTING_GOODS
+SHP-BOK,Shopping,Books & Media,Books magazines and media,GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS
+SHP-PET,Shopping,Pet Supplies,Pet food and supplies,GENERAL_MERCHANDISE_PET_SUPPLIES
+SHP-GFT,Shopping,Gifts,Gifts and gift cards,GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+SHP-OTH,Shopping,Other Shopping,Miscellaneous retail,GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+HMI,Home Improvement,,Home maintenance and improvement,HOME_IMPROVEMENT
+HMI-HRD,Home Improvement,Hardware,Hardware stores and tools,HOME_IMPROVEMENT_HARDWARE
+HMI-FRN,Home Improvement,Furniture,Furniture and home decor,HOME_IMPROVEMENT_FURNITURE
+HMI-LND,Home Improvement,Landscaping,Lawn and garden,HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT
+HMI-CNT,Home Improvement,Contractors,Home repair contractors,HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT
+HMI-OTH,Home Improvement,Other Home Improvement,Miscellaneous home improvement,HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT
+HLC,Healthcare,,Medical and health expenses,MEDICAL
+HLC-DOC,Healthcare,Doctor,Doctor visits and copays,MEDICAL_DENTISTS_AND_OPTOMETRISTS
+HLC-DNT,Healthcare,Dental,Dental care,MEDICAL_DENTISTS_AND_OPTOMETRISTS
+HLC-VIS,Healthcare,Vision,Eye care and eyewear,MEDICAL_DENTISTS_AND_OPTOMETRISTS
+HLC-PHR,Healthcare,Pharmacy,Prescriptions and medications,MEDICAL_PHARMACIES_AND_SUPPLEMENTS
+HLC-INS,Healthcare,Health Insurance,Health insurance premiums,MEDICAL_OTHER_MEDICAL
+HLC-OTH,Healthcare,Other Healthcare,Miscellaneous healthcare,MEDICAL_OTHER_MEDICAL
+PRC,Personal Care,,Personal care and wellness,PERSONAL_CARE
+PRC-HAR,Personal Care,Hair & Beauty,Haircuts salons and beauty,PERSONAL_CARE_HAIR_AND_BEAUTY
+PRC-GYM,Personal Care,Gym & Fitness,Gym memberships and fitness,PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS
+PRC-SPA,Personal Care,Spa & Wellness,Spa treatments and wellness,PERSONAL_CARE_OTHER_PERSONAL_CARE
+PRC-OTH,Personal Care,Other Personal Care,Miscellaneous personal care,PERSONAL_CARE_OTHER_PERSONAL_CARE
+SVC,Services,,General services,GENERAL_SERVICES
+SVC-EDU,Services,Education,Tuition and education expenses,GENERAL_SERVICES_EDUCATION
+SVC-LGL,Services,Legal,Legal services,GENERAL_SERVICES_OTHER_GENERAL_SERVICES
+SVC-ACT,Services,Accounting & Tax,Accounting and tax preparation,GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING
+SVC-FIN,Services,Financial Planning,Financial advisory services,GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING
+SVC-INS,Services,Insurance,General insurance services,GENERAL_SERVICES_INSURANCE
+SVC-SUB,Services,Subscriptions,Recurring subscriptions,GENERAL_SERVICES_OTHER_GENERAL_SERVICES
+SVC-STR,Services,Storage,Storage unit rentals,GENERAL_SERVICES_STORAGE
+SVC-OTH,Services,Other Services,Miscellaneous services,GENERAL_SERVICES_OTHER_GENERAL_SERVICES
+GOV,Government & Nonprofit,,Government and charitable,GOVERNMENT_AND_NON_PROFIT
+GOV-TAX,Government & Nonprofit,Taxes,Tax payments,GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT
+GOV-DNT,Government & Nonprofit,Donations,Charitable donations,GOVERNMENT_AND_NON_PROFIT_DONATIONS
+GOV-FIN,Government & Nonprofit,Fines & Fees,Government fines and fees,GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES
+GOV-OTH,Government & Nonprofit,Other Government,Miscellaneous government,GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT
+TRP,Transportation,,Getting around,TRANSPORTATION
+TRP-GAS,Transportation,Gas & Fuel,Fuel purchases,TRANSPORTATION_GAS
+TRP-PRK,Transportation,Parking,Parking fees,TRANSPORTATION_PARKING
+TRP-PUB,Transportation,Public Transit,Bus train subway,TRANSPORTATION_PUBLIC_TRANSIT
+TRP-RDE,Transportation,Rideshare & Taxi,Uber Lyft taxis,TRANSPORTATION_TAXIS_AND_RIDE_SHARES
+TRP-TOL,Transportation,Tolls,Road and bridge tolls,TRANSPORTATION_TOLLS
+TRP-MNT,Transportation,Auto Maintenance,Car repairs and maintenance,TRANSPORTATION_OTHER_TRANSPORTATION
+TRP-INS,Transportation,Auto Insurance,Vehicle insurance,TRANSPORTATION_OTHER_TRANSPORTATION
+TRP-OTH,Transportation,Other Transportation,Miscellaneous transportation,TRANSPORTATION_OTHER_TRANSPORTATION
+TRV,Travel,,Travel and vacation expenses,TRAVEL
+TRV-AIR,Travel,Flights,Airline tickets,TRAVEL_FLIGHTS
+TRV-HTL,Travel,Lodging,Hotels and accommodations,TRAVEL_LODGING
+TRV-CAR,Travel,Car Rental,Rental cars,TRAVEL_RENTAL_CARS
+TRV-OTH,Travel,Other Travel,Miscellaneous travel,TRAVEL_OTHER_TRAVEL
+HSG,Housing & Utilities,,Housing and utility costs,RENT_AND_UTILITIES
+HSG-RNT,Housing & Utilities,Rent,Rent payments,RENT_AND_UTILITIES_RENT
+HSG-MTG,Housing & Utilities,Mortgage,Mortgage payments (housing cost),RENT_AND_UTILITIES_RENT
+HSG-ELC,Housing & Utilities,Electric,Electricity bills,RENT_AND_UTILITIES_ELECTRICITY
+HSG-GAS,Housing & Utilities,Gas (Utility),Natural gas bills,RENT_AND_UTILITIES_GAS
+HSG-WTR,Housing & Utilities,Water & Sewer,Water and sewer bills,RENT_AND_UTILITIES_WATER
+HSG-INT,Housing & Utilities,Internet & Cable,Internet and cable TV,RENT_AND_UTILITIES_INTERNET_AND_CABLE
+HSG-PHN,Housing & Utilities,Phone,Phone bills,RENT_AND_UTILITIES_TELEPHONE
+HSG-TRS,Housing & Utilities,Trash & Recycling,Waste management,RENT_AND_UTILITIES_OTHER_UTILITIES
+HSG-SEC,Housing & Utilities,Home Security,Security systems and monitoring,RENT_AND_UTILITIES_OTHER_UTILITIES
+HSG-OTH,Housing & Utilities,Other Utilities,Miscellaneous utilities,RENT_AND_UTILITIES_OTHER_UTILITIES
+OTH,Other,,Uncategorized transactions,OTHER
+OTH-UNC,Other,Uncategorized,Not yet categorized,OTHER
+OTH-MSC,Other,Miscellaneous,Does not fit other categories,OTHER

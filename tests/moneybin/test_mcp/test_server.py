@@ -108,7 +108,7 @@ class TestDatabaseLifecycle:
             # Schemas should be initialized
             result = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.schemata "
-                "WHERE schema_name IN ('raw', 'core', 'user')"
+                "WHERE schema_name IN ('raw', 'core', 'app')"
             ).fetchone()
             assert result is not None
             assert result[0] == 3

@@ -42,7 +42,7 @@ _DANGEROUS_OPS = re.compile(
 )
 
 # Schemas allowed for managed writes (INSERT/UPDATE/DELETE)
-_WRITABLE_SCHEMAS = {"user", "raw"}
+_WRITABLE_SCHEMAS = {"app", "raw"}
 
 # Pattern to extract target schema from INSERT/UPDATE/DELETE statements
 _WRITE_TARGET = re.compile(
@@ -133,7 +133,7 @@ def validate_managed_write(
 ) -> str | None:
     """Validate that a write operation targets only safe schemas.
 
-    Managed writes are limited to INSERT/UPDATE/DELETE on user.* and raw.*
+    Managed writes are limited to INSERT/UPDATE/DELETE on app.* and raw.*
     schemas. Dangerous DDL (DROP, ALTER, TRUNCATE) is always rejected.
 
     When allow_core_transforms is True, CREATE OR REPLACE TABLE core.* is
@@ -160,7 +160,7 @@ def validate_managed_write(
         ops = _DANGEROUS_OPS.findall(stripped)
         return (
             f"Dangerous operations ({', '.join(ops)}) are not allowed. "
-            f"Only INSERT, UPDATE, and DELETE on user.* and raw.* schemas are permitted."
+            f"Only INSERT, UPDATE, and DELETE on app.* and raw.* schemas are permitted."
         )
 
     # Extract target schema
@@ -168,14 +168,14 @@ def validate_managed_write(
     if not match:
         return (
             "Could not determine target schema. Managed writes must target "
-            "user.* or raw.* schemas with explicit schema qualification."
+            "app.* or raw.* schemas with explicit schema qualification."
         )
 
     schema = match.group(1).lower()
     if schema not in _WRITABLE_SCHEMAS:
         return (
             f"Writes to '{schema}' schema are not allowed. "
-            f"Only user.* and raw.* schemas can be written to through managed tools."
+            f"Only app.* and raw.* schemas can be written to through managed tools."
         )
 
     return None

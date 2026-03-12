@@ -9,7 +9,7 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 - **Type checking**: Pyright (not mypy). Run `uv run pyright` on modified files.
 - **Tests**: `uv run pytest tests/ -v`
 - **Pre-commit checklist**: `uv run ruff format . && uv run ruff check . && uv run pyright && uv run pytest tests/`
-- **SQL linting**: SQLFluff with DuckDB dialect. Config in `pyproject.toml` only (no `.sqlfluff` files).
+- **SQL formatting**: `uv run sqlmesh format` (uses sqlglot, understands SQLMesh `MODEL()` syntax).
 
 ## Library Preference
 

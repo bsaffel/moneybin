@@ -9,12 +9,12 @@ Allow AI assistants to modify data through the MCP server: importing files, cate
 ## Background
 - [ADR-003: MCP Primary Interface](../../architecture/003-mcp-primary-interface.md)
 - Source: `src/moneybin/mcp/write_tools.py`
-- User schema: `src/moneybin/sql/schema/user_schema.sql`
+- App schema: `src/moneybin/sql/schema/app_schema.sql`
 
 ## Requirements
 
 1. Write tools are opt-in (enabled via `--allow-writes` flag or config).
-2. Write tools operate on the `user` schema (categories, budgets, notes), not raw/core schemas.
+2. Write tools operate on the `app` schema (categories, budgets, notes), not raw/core schemas.
 3. The `import_file` tool delegates to the service layer for extraction and loading.
 4. All write operations are logged for auditability.
 5. Analytical tools that depend on user data (categories, budgets) are included in this module.
@@ -51,13 +51,13 @@ Allow AI assistants to modify data through the MCP server: importing files, cate
 
 ## Data Model
 
-### User schema tables
+### App schema tables
 
 ```sql
-CREATE SCHEMA IF NOT EXISTS "user";
+CREATE SCHEMA IF NOT EXISTS app;
 
 -- Transaction categories assigned by user or AI
-CREATE TABLE IF NOT EXISTS "user".transaction_categories (
+CREATE TABLE IF NOT EXISTS app.transaction_categories (
     transaction_id VARCHAR PRIMARY KEY,
     category VARCHAR NOT NULL,
     subcategory VARCHAR,
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS "user".transaction_categories (
 );
 
 -- Monthly budget targets by category
-CREATE TABLE IF NOT EXISTS "user".budgets (
+CREATE TABLE IF NOT EXISTS app.budgets (
     budget_id VARCHAR PRIMARY KEY,
     category VARCHAR NOT NULL,
     monthly_amount DECIMAL(18, 2) NOT NULL,
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS "user".budgets (
 );
 
 -- Free-form notes on transactions
-CREATE TABLE IF NOT EXISTS "user".transaction_notes (
+CREATE TABLE IF NOT EXISTS app.transaction_notes (
     transaction_id VARCHAR PRIMARY KEY,
     note VARCHAR NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -88,15 +88,15 @@ CREATE TABLE IF NOT EXISTS "user".transaction_notes (
 
 ### Files created
 - `src/moneybin/mcp/write_tools.py` -- Write tool implementations
-- `src/moneybin/sql/schema/user_schema.sql` -- User schema DDL
+- `src/moneybin/sql/schema/app_schema.sql` -- App schema DDL
 - `src/moneybin/services/import_service.py` -- Import business logic
 
 ### Key decisions
 
-- **`user` schema isolation**: Write tools only modify `user.*` tables, keeping raw and core schemas immutable from the MCP server.
+- **`app` schema isolation**: Write tools only modify `app.*` tables, keeping raw and core schemas immutable from the MCP server.
 - **`INSERT OR REPLACE`**: Categories and budgets use upsert semantics for idempotency.
 - **`categorized_by` column**: Tracks whether a category was assigned by `'ai'` or `'user'` for auditability.
-- **Budget status uses JOINs**: `get_budget_status` joins `user.budgets` with `core.fct_transactions` via `user.transaction_categories` to calculate spending vs budget.
+- **Budget status uses JOINs**: `get_budget_status` joins `app.budgets` with `core.fct_transactions` via `app.transaction_categories` to calculate spending vs budget.
 - **Service layer for imports**: `import_file` delegates to `import_service.py` rather than implementing import logic directly in the tool.
 
 ## CLI Interface

@@ -62,7 +62,6 @@ dev = [
     "ruff>=0.14.6",
     "pyright>=1.1.407",
     "pre-commit>=4.4.0",
-    "sqlfluff>=3.5.0",
     "sqlmesh[lsp]>=0.200.0",
     "sqlparse>=0.5.3",
     # Testing framework and tools
@@ -127,6 +126,14 @@ ignore = [
 # MCP tools/resources build SQL with parameterized WHERE clauses from controlled inputs
 "src/moneybin/mcp/*.py" = [
     "S608",  # SQL injection false positives — all user values are parameterized
+]
+# Services and CLI use TableRef constants in SQL, not user input
+"src/moneybin/services/*.py" = [
+    "S608",  # SQL injection false positives — TableRef constants, parameterized values
+]
+"src/moneybin/cli/commands/categorize.py" = [
+    "T201",  # print() allowed in CLI commands for user output
+    "S608",  # SQL injection false positives — TableRef constants
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -238,16 +245,3 @@ exclude_lines = [
     "class .*\\bProtocol\\):",
     "@(abc\\.)?abstractmethod",
 ]
-
-
-[tool.sqlfluff.core]
-# Documentation: https://docs.sqlfluff.com/en/stable/configuration.html
-dialect = "duckdb"
-templater = "raw"
-exclude_rules = ["L034"]  # Disable "Select wildcards then simple targets before calculations and aggregates"
-max_line_length = 88
-
-[tool.sqlfluff.indentation]
-indented_joins = false
-indented_using_on = true
-template_blocks_indent = true

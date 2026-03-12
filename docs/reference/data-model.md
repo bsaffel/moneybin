@@ -78,7 +78,7 @@ erDiagram
 | `raw` | Source-specific tables, preserved as-is | Tables (created by Python loaders) |
 | `prep` | Staging transformations | Views (created by SQLMesh) |
 | `core` | Canonical analytical tables | Tables (created by SQLMesh) |
-| `user` | AI-managed data (categories, budgets, notes) | Tables (created by MCP write tools) |
+| `app` | Application-managed data (categories, budgets, notes) | Tables (created by MCP write tools) |
 
 ## Raw layer
 
@@ -117,15 +117,18 @@ Canonical fact table for all transactions. Standardizes amounts (negative = expe
 
 **Current sources**: OFX. **Planned**: Plaid, CSV.
 
-## User schema
+## App schema
 
-AI-managed tables for categorization, budgeting, and notes:
+Application-managed tables for categorization, budgeting, and notes. Separated from the raw/prep/core pipeline which holds externally-imported data.
 
 | Table | Purpose |
 |-------|---------|
-| `user.transaction_categories` | Category/subcategory assignments per transaction |
-| `user.budgets` | Monthly budget targets by category |
-| `user.transaction_notes` | Free-form notes on transactions |
+| `app.transaction_categories` | Category/subcategory assignments per transaction |
+| `app.budgets` | Monthly budget targets by category |
+| `app.transaction_notes` | Free-form notes on transactions |
+| `app.categories` | Category taxonomy (seeded from Plaid PFCv2) |
+| `app.merchants` | Merchant name normalization and category cache |
+| `app.categorization_rules` | Pattern-based auto-categorization rules |
 
 ## Data flow
 

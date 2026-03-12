@@ -9,7 +9,7 @@ Enable users to define monthly budgets by category and track spending against th
 ## Background
 - [MCP Write Tools](implemented/mcp-write-tools.md) -- `set_budget` and `get_budget_status` already implemented
 - [Transaction Categorization](transaction-categorization.md) -- Prerequisite for meaningful budgets
-- User schema: `src/moneybin/sql/schema/user_schema.sql`
+- App schema: `src/moneybin/sql/schema/app_schema.sql`
 
 ## Requirements
 
@@ -26,7 +26,7 @@ Enable users to define monthly budgets by category and track spending against th
 ### Existing table (already created)
 
 ```sql
--- user.budgets (exists)
+-- app.budgets (exists)
 -- PK: budget_id, columns: category, monthly_amount, start_month, end_month, created_at, updated_at
 ```
 
@@ -34,9 +34,9 @@ Enable users to define monthly budgets by category and track spending against th
 
 ```sql
 -- Budget rollover tracking
-CREATE TABLE IF NOT EXISTS "user".budget_rollovers (
+CREATE TABLE IF NOT EXISTS app.budget_rollovers (
     rollover_id VARCHAR PRIMARY KEY,
-    budget_id VARCHAR NOT NULL REFERENCES "user".budgets(budget_id),
+    budget_id VARCHAR NOT NULL REFERENCES app.budgets(budget_id),
     month VARCHAR NOT NULL,          -- YYYY-MM
     rollover_amount DECIMAL(18, 2),  -- positive = unspent, negative = overspent
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

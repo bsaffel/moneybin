@@ -4,13 +4,12 @@ globs: ["**/*.sql", "sqlmesh/models/**", "src/moneybin/sql/**"]
 
 # DuckDB & SQL Standards
 
-## SQLFluff
+## SQL Formatting
 
-All SQL linted with SQLFluff (config in `pyproject.toml`). Dialect: DuckDB. Templater: raw. Max line: 88.
+All SQL formatted with `sqlmesh format` (uses sqlglot, understands `MODEL()` blocks natively).
 
 ```bash
-uv run sqlfluff lint src/moneybin/sql/
-uv run sqlfluff fix src/moneybin/sql/
+uv run sqlmesh format
 ```
 
 ## File Types

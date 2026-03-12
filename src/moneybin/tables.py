@@ -27,7 +27,10 @@ OFX_BALANCES = TableRef("raw", "ofx_balances")
 OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
 W2_FORMS = TableRef("raw", "w2_forms")
 
-# -- User tables (AI-managed data) --
-TRANSACTION_CATEGORIES = TableRef("user", "transaction_categories")
-BUDGETS = TableRef("user", "budgets")
-TRANSACTION_NOTES = TableRef("user", "transaction_notes")
+# -- App tables (application-managed data) --
+TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories")
+BUDGETS = TableRef("app", "budgets")
+TRANSACTION_NOTES = TableRef("app", "transaction_notes")
+CATEGORIES = TableRef("app", "categories")
+MERCHANTS = TableRef("app", "merchants")
+CATEGORIZATION_RULES = TableRef("app", "categorization_rules")

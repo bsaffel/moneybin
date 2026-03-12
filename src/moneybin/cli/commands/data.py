@@ -6,7 +6,7 @@ under a single ``data`` command group for power users.
 
 import typer
 
-from . import extract, load, transform
+from . import categorize, extract, load, transform
 
 app = typer.Typer(
     help="Fine-grained data pipeline: extract, load, and transform steps individually",
@@ -27,4 +27,9 @@ app.add_typer(
     transform.app,
     name="transform",
     help="Run SQLMesh models to rebuild staging and core tables",
+)
+app.add_typer(
+    categorize.app,
+    name="categorize",
+    help="Manage transaction categories, rules, and merchants",
 )

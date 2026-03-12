@@ -5,7 +5,7 @@
 
 MODEL (
     name core.fct_transactions,
-    kind FULL,
+    kind VIEW,
     grain transaction_id
 );
 
@@ -46,45 +46,54 @@ all_transactions AS (
 
 standardized AS (
     SELECT
-        transaction_id,
-        account_id,
-        transaction_date,
-        authorized_date,
-        amount,
-        ABS(amount) AS amount_absolute,
+        t.transaction_id,
+        t.account_id,
+        t.transaction_date,
+        t.authorized_date,
+        t.amount,
+        ABS(t.amount) AS amount_absolute,
         CASE
-            WHEN amount < 0 THEN 'expense'
-            WHEN amount > 0 THEN 'income'
+            WHEN t.amount < 0 THEN 'expense'
+            WHEN t.amount > 0 THEN 'income'
             ELSE 'zero'
         END AS transaction_direction,
-        description,
-        merchant_name,
-        memo,
-        category,
-        subcategory,
-        payment_channel,
-        transaction_type,
-        check_number,
-        is_pending,
-        pending_transaction_id,
-        location_address,
-        location_city,
-        location_region,
-        location_postal_code,
-        location_country,
-        location_latitude,
-        location_longitude,
-        currency_code,
-        source_system,
-        source_extracted_at,
-        loaded_at,
-        DATE_PART('year', transaction_date) AS transaction_year,
-        DATE_PART('month', transaction_date) AS transaction_month,
-        DATE_PART('day', transaction_date) AS transaction_day,
-        DATE_PART('dayofweek', transaction_date) AS transaction_day_of_week,
-        STRFTIME(transaction_date, '%Y-%m') AS transaction_year_month,
-        STRFTIME(transaction_date, '%Y') || '-Q' || QUARTER(transaction_date) AS transaction_year_quarter
-    FROM all_transactions
+        t.description,
+        COALESCE(m.canonical_name, t.merchant_name) AS merchant_name,
+        t.memo,
+        COALESCE(c.category, t.category) AS category,
+        COALESCE(c.subcategory, t.subcategory) AS subcategory,
+        c.categorized_by,
+        t.payment_channel,
+        t.transaction_type,
+        t.check_number,
+        t.is_pending,
+        t.pending_transaction_id,
+        t.location_address,
+        t.location_city,
+        t.location_region,
+        t.location_postal_code,
+        t.location_country,
+        t.location_latitude,
+        t.location_longitude,
+        t.currency_code,
+        t.source_system,
+        t.source_extracted_at,
+        t.loaded_at,
+        DATE_PART('year', t.transaction_date) AS transaction_year,
+        DATE_PART('month', t.transaction_date) AS transaction_month,
+        DATE_PART('day', t.transaction_date) AS transaction_day,
+        DATE_PART('dayofweek', t.transaction_date)
+            AS transaction_day_of_week,
+        STRFTIME(t.transaction_date, '%Y-%m')
+            AS transaction_year_month,
+        STRFTIME(t.transaction_date, '%Y') || '-Q'
+            || QUARTER(t.transaction_date)
+            AS transaction_year_quarter
+    FROM all_transactions t
+    LEFT JOIN app.transaction_categories c
+        ON t.transaction_id = c.transaction_id
+    LEFT JOIN app.merchants m
+        ON c.merchant_id = m.merchant_id
 )
 
 SELECT * FROM standardized

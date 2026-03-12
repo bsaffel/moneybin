@@ -237,5 +237,41 @@ def import_file(
     if run_transforms and file_type == "ofx":
         result.core_tables_rebuilt = _run_transforms(db_path)
 
+        # Apply deterministic categorization to new transactions
+        _apply_categorization(db_path)
+
     logger.info("Import complete: %s", result.summary())
     return result
+
+
+def _apply_categorization(db_path: Path) -> None:
+    """Run deterministic categorization on uncategorized transactions.
+
+    Called after SQLMesh transforms complete. Applies merchant lookups
+    and active rules — no LLM dependency.
+
+    Args:
+        db_path: Path to the DuckDB database file.
+    """
+    from moneybin.services.categorization_service import (
+        apply_deterministic_categorization,
+    )
+
+    try:
+        conn = duckdb.connect(str(db_path), read_only=False)
+        try:
+            stats = apply_deterministic_categorization(conn)
+            if stats["total"] > 0:
+                logger.info(
+                    "Auto-categorized %d transactions (%d merchant, %d rule)",
+                    stats["total"],
+                    stats["merchant"],
+                    stats["rule"],
+                )
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug(
+            "Categorization skipped (tables may not exist yet)",
+            exc_info=True,
+        )

@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from conftest import temp_profile
 from pytest_mock import MockerFixture
 
 from moneybin.config import (
@@ -21,6 +20,7 @@ from moneybin.config import (
     reload_settings,
     set_current_profile,
 )
+from tests.moneybin.conftest import temp_profile
 
 
 class TestProfileConfiguration:
