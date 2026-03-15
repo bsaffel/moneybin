@@ -68,6 +68,7 @@ dev = [
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
     "pytest-mock>=3.15.1",
+    "pytest-asyncio>=1.3.0",
 ]
 
 docs = [
@@ -134,6 +135,9 @@ ignore = [
 "src/moneybin/cli/commands/categorize.py" = [
     "T201",  # print() allowed in CLI commands for user output
     "S608",  # SQL injection false positives — TableRef constants
+]
+"scripts/*.py" = [
+    "S608",  # SQL injection false positives — TableRef constants, parameterized values
 ]
 
 [tool.ruff.lint.pydocstyle]

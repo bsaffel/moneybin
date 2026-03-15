@@ -11,7 +11,8 @@
       "Bash(uv run ruff:*)",
       "Bash(uv run pyright:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv sync)"
+      "Bash(uv sync)",
+      "Bash(uv run python -c \":*)"
     ]
   },
   "enabledMcpjsonServers": [

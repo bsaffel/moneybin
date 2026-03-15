@@ -7,11 +7,10 @@ the test suite, including profile cleanup and configuration management.
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 
 import pytest
 
-from moneybin.config import clear_settings_cache, set_current_profile
+from moneybin.config import clear_settings_cache, get_base_dir, set_current_profile
 
 
 @contextmanager
@@ -49,14 +48,15 @@ def temp_profile(profile: str) -> Generator[str, None, None]:
     finally:
         # Clean up data directory for this profile
         # Don't check exists() because tests may mock it - just try to remove
-        data_dir = Path.cwd() / "data" / normalized
+        base = get_base_dir()
+        data_dir = base / "data" / normalized
         try:
             shutil.rmtree(data_dir)
         except FileNotFoundError:
             pass  # Directory doesn't exist, nothing to clean up
 
         # Clean up logs directory for this profile
-        logs_dir = Path.cwd() / "logs" / normalized
+        logs_dir = base / "logs" / normalized
         try:
             shutil.rmtree(logs_dir)
         except FileNotFoundError:

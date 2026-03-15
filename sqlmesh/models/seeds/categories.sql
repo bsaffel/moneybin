@@ -4,9 +4,9 @@
 -- Edit the CSV to add/modify defaults; SQLMesh detects changes automatically.
 
 MODEL (
-    name seeds.seed_categories,
+    name seeds.categories,
     kind SEED (
-        path 'seed_categories.csv'
+        path 'categories.csv'
     ),
     columns (
         category_id VARCHAR,

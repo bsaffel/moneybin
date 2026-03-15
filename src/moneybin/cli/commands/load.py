@@ -13,7 +13,7 @@ from moneybin.config import get_current_profile, get_database_path, get_raw_data
 from moneybin.loaders import ParquetLoader
 from moneybin.loaders.parquet_loader import LoadingConfig
 
-app = typer.Typer(help="Load raw data files into DuckDB")
+app = typer.Typer(help="Load raw data files into DuckDB", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 

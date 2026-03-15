@@ -11,7 +11,7 @@ import typer
 
 from moneybin.config import get_database_path
 
-app = typer.Typer(help="Run data transformations using SQLMesh")
+app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 _SQLMESH_ROOT = Path(__file__).resolve().parents[4] / "sqlmesh"

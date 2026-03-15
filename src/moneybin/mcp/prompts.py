@@ -39,33 +39,19 @@ def categorize_transactions() -> str:
         "1. Use get_categorization_stats to see how many are uncategorized\n"
         "2. Use list_categories to see the available taxonomy\n"
         "   - If no categories exist, use seed_categories first\n"
-        "3. Use get_uncategorized_transactions to find transactions without categories\n"
-        "4. Review each transaction's description and amount\n"
-        "5. Suggest appropriate categories based on the payee/description\n"
-        "6. Use categorize_transaction to assign categories\n"
-        "7. Offer to create categorization rules for recurring patterns\n\n"
+        "3. Use get_uncategorized_transactions to fetch a batch of transactions\n"
+        "4. Review all transactions and decide categories for each\n"
+        "5. Use bulk_categorize to assign categories to all transactions at once\n"
+        "6. For recurring patterns, use bulk_create_categorization_rules to\n"
+        "   create rules so future imports are categorized automatically\n"
+        "7. Optionally use bulk_create_merchant_mappings to normalize\n"
+        "   merchant names and associate them with categories\n"
+        "8. Repeat from step 3 if more uncategorized transactions remain\n\n"
+        "IMPORTANT: Always use the bulk tools (bulk_categorize,\n"
+        "bulk_create_categorization_rules, bulk_create_merchant_mappings)\n"
+        "instead of their single-item equivalents to avoid tool-call limits.\n\n"
         "Category priority: user manual > user rules > plaid > AI.\n"
         "Ask the user to confirm before categorizing."
-    )
-
-
-@mcp.prompt()
-def auto_categorize_transactions() -> str:
-    """Guide the LLM through automatic transaction categorization."""
-    return (
-        "Automatically categorize uncategorized transactions.\n\n"
-        "Steps:\n"
-        "1. Use get_categorization_stats to check current coverage\n"
-        "2. Use list_categories to verify taxonomy is seeded\n"
-        "   - If no categories exist, use seed_categories first\n"
-        "3. Use auto_categorize with dry_run=true to preview the scope\n"
-        "4. Ask user to confirm, then run auto_categorize with dry_run=false\n"
-        "5. Review results and use get_categorization_stats to see new coverage\n"
-        "6. For any low-confidence results, offer to review and adjust\n"
-        "7. Suggest creating rules for frequently occurring merchants\n\n"
-        "The auto_categorize tool uses MCP sampling to classify transactions "
-        "using your connected LLM. High-confidence results also create "
-        "merchant mappings for future automatic categorization."
     )
 
 

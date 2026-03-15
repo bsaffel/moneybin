@@ -13,6 +13,9 @@ from moneybin.mcp.tools import (
     list_merchants,
 )
 from moneybin.mcp.write_tools import (
+    bulk_categorize,
+    bulk_create_categorization_rules,
+    bulk_create_merchant_mappings,
     categorize_transaction,
     create_categorization_rule,
     create_category,
@@ -269,3 +272,219 @@ class TestDeleteCategorizationRule:
             """)
         result = delete_categorization_rule("R001")
         assert "Deleted" in result
+
+
+# ---------------------------------------------------------------------------
+# Bulk categorization
+# ---------------------------------------------------------------------------
+
+
+class TestBulkCategorize:
+    """Tests for bulk_categorize tool."""
+
+    @pytest.fixture(autouse=True)
+    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+        with server.get_write_db() as db:
+            db.execute(_INSERT_TRANSACTIONS)
+
+    @pytest.mark.unit
+    def test_categorizes_multiple_transactions(self) -> None:
+        result = bulk_categorize([
+            {
+                "transaction_id": "TXN001",
+                "category": "Food & Drink",
+                "subcategory": "Coffee Shops",
+                "merchant_name": "Starbucks",
+            },
+            {
+                "transaction_id": "TXN002",
+                "category": "Income",
+                "subcategory": "Payroll",
+            },
+            {
+                "transaction_id": "TXN003",
+                "category": "Shopping",
+                "merchant_name": "Amazon",
+            },
+        ])
+        assert "Categorized 3" in result
+        db = server.get_db()
+        count = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories WHERE categorized_by = 'ai'"
+        ).fetchone()[0]
+        assert count == 3
+
+    @pytest.mark.unit
+    def test_creates_merchant_mappings(self) -> None:
+        bulk_categorize([
+            {
+                "transaction_id": "TXN001",
+                "category": "Food & Drink",
+                "merchant_name": "Starbucks",
+            },
+        ])
+        db = server.get_db()
+        count = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()[0]
+        assert count >= 1
+
+    @pytest.mark.unit
+    def test_skips_merchant_mapping_when_disabled(self) -> None:
+        bulk_categorize(
+            [
+                {
+                    "transaction_id": "TXN001",
+                    "category": "Food & Drink",
+                    "merchant_name": "Starbucks",
+                }
+            ],
+            create_merchant_mappings=False,
+        )
+        db = server.get_db()
+        count = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()[0]
+        assert count == 0
+
+    @pytest.mark.unit
+    def test_empty_list_returns_early(self) -> None:
+        result = bulk_categorize([])
+        assert "No categorizations" in result
+
+    @pytest.mark.unit
+    def test_skips_items_missing_required_fields(self) -> None:
+        result = bulk_categorize([
+            {"transaction_id": "TXN001", "category": "Food & Drink"},
+            {"transaction_id": "TXN002"},  # missing category
+            {"category": "Shopping"},  # missing transaction_id
+        ])
+        assert "Categorized 1" in result
+        assert "Warnings" in result
+
+    @pytest.mark.unit
+    def test_idempotent_replace(self) -> None:
+        bulk_categorize([{"transaction_id": "TXN001", "category": "Food & Drink"}])
+        bulk_categorize([{"transaction_id": "TXN001", "category": "Shopping"}])
+        db = server.get_db()
+        row = db.execute(
+            "SELECT category FROM app.transaction_categories WHERE transaction_id = 'TXN001'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "Shopping"
+
+
+# ---------------------------------------------------------------------------
+# Bulk rule creation
+# ---------------------------------------------------------------------------
+
+
+class TestBulkCreateCategorizationRules:
+    """Tests for bulk_create_categorization_rules tool."""
+
+    @pytest.mark.unit
+    def test_creates_multiple_rules(self) -> None:
+        result = bulk_create_categorization_rules([
+            {
+                "name": "Starbucks -> Coffee",
+                "merchant_pattern": "STARBUCKS",
+                "category": "Food & Drink",
+                "subcategory": "Coffee Shops",
+            },
+            {
+                "name": "Amazon -> Shopping",
+                "merchant_pattern": "AMZN",
+                "category": "Shopping",
+            },
+            {
+                "name": "Netflix -> Entertainment",
+                "merchant_pattern": "NETFLIX",
+                "category": "Entertainment",
+                "subcategory": "Streaming",
+            },
+        ])
+        assert "Created 3" in result
+        db = server.get_db()
+        count = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()[
+            0
+        ]
+        assert count == 3
+
+    @pytest.mark.unit
+    def test_empty_list_returns_early(self) -> None:
+        result = bulk_create_categorization_rules([])
+        assert "No rules" in result
+
+    @pytest.mark.unit
+    def test_skips_items_missing_required_fields(self) -> None:
+        result = bulk_create_categorization_rules([
+            {"name": "Good Rule", "merchant_pattern": "TEST", "category": "Other"},
+            {"name": "Missing Pattern", "category": "Other"},  # no merchant_pattern
+            {"merchant_pattern": "TEST", "category": "Other"},  # no name
+        ])
+        assert "Created 1" in result
+        assert "Warnings" in result
+
+    @pytest.mark.unit
+    def test_respects_priority_and_match_type(self) -> None:
+        bulk_create_categorization_rules([
+            {
+                "name": "High Priority",
+                "merchant_pattern": "VIP",
+                "category": "VIP",
+                "priority": 10,
+                "match_type": "exact",
+            },
+        ])
+        db = server.get_db()
+        row = db.execute(
+            "SELECT priority, match_type FROM app.categorization_rules WHERE name = 'High Priority'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 10
+        assert row[1] == "exact"
+
+
+# ---------------------------------------------------------------------------
+# Bulk merchant mapping creation
+# ---------------------------------------------------------------------------
+
+
+class TestBulkCreateMerchantMappings:
+    """Tests for bulk_create_merchant_mappings tool."""
+
+    @pytest.mark.unit
+    def test_creates_multiple_mappings(self) -> None:
+        result = bulk_create_merchant_mappings([
+            {
+                "raw_pattern": "STARBUCKS",
+                "canonical_name": "Starbucks",
+                "category": "Food & Drink",
+                "subcategory": "Coffee Shops",
+            },
+            {
+                "raw_pattern": "AMZN MKTP",
+                "canonical_name": "Amazon",
+                "category": "Shopping",
+            },
+            {
+                "raw_pattern": "NETFLIX",
+                "canonical_name": "Netflix",
+                "category": "Entertainment",
+            },
+        ])
+        assert "Created 3" in result
+        db = server.get_db()
+        count = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()[0]
+        assert count == 3
+
+    @pytest.mark.unit
+    def test_empty_list_returns_early(self) -> None:
+        result = bulk_create_merchant_mappings([])
+        assert "No mappings" in result
+
+    @pytest.mark.unit
+    def test_skips_items_missing_required_fields(self) -> None:
+        result = bulk_create_merchant_mappings([
+            {"raw_pattern": "GOOD", "canonical_name": "Good"},
+            {"raw_pattern": "BAD"},  # missing canonical_name
+            {"canonical_name": "Also Bad"},  # missing raw_pattern
+        ])
+        assert "Created 1" in result
+        assert "Warnings" in result

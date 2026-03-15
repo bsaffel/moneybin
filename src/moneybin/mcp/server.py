@@ -32,7 +32,12 @@ mcp = FastMCP(
         "MoneyBin is an AI-powered personal finance app. You can import bank "
         "statements (OFX/QFX files), query transactions and accounts, categorize "
         "spending, set budgets, and get financial insights. All data stays local "
-        "in a DuckDB database — nothing is sent to any external service."
+        "in a DuckDB database — nothing is sent to any external service.\n\n"
+        "IMPORTANT: When categorizing transactions or creating rules/merchant "
+        "mappings, always prefer the bulk tools (bulk_categorize, "
+        "bulk_create_categorization_rules, bulk_create_merchant_mappings) over "
+        "their single-item equivalents. Fetch a batch with a read tool, reason "
+        "about all items, then submit the full list in one bulk call."
     ),
 )
 
@@ -180,13 +185,15 @@ def init_db(db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Creating new database: %s", db_path)
 
-        # Initialize schemas via a temporary read-write connection
-        init_conn = duckdb.connect(str(db_path), read_only=False)
-        try:
-            _init_schemas(init_conn)
-        finally:
-            init_conn.close()
-        logger.info("Database initialized with raw, core, and app schemas")
+    # Initialize schemas via a temporary read-write connection.
+    # Runs on every startup (all DDL uses IF NOT EXISTS) so that
+    # newly added tables are created in existing databases.
+    init_conn = duckdb.connect(str(db_path), read_only=False)
+    try:
+        _init_schemas(init_conn)
+    finally:
+        init_conn.close()
+    logger.info("Database schemas initialized: %s", db_path)
 
     # Open long-lived read-only connection
     _db_path = db_path

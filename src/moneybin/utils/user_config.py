@@ -240,8 +240,11 @@ def ensure_default_profile() -> str:
     # Save as default
     set_default_profile(profile_name)
 
+    from moneybin.config import get_base_dir
+
+    base = get_base_dir()
     print(f"\n🎉 Your default profile '{profile_name}' has been created!")
-    print(f"    Data will be stored in: data/{profile_name}/\n")
+    print(f"    Data will be stored in: {base / 'data' / profile_name}/\n")
 
     return profile_name
 

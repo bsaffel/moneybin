@@ -94,16 +94,8 @@ def categorize_transaction(
 
     try:
         with get_write_db() as db:
-            db.execute(
-                f"""
-                INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory, categorized_at, categorized_by)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-                """,
-                [transaction_id, category, subcategory, categorized_by],
-            )
-
-            # Auto-create merchant mapping if description available
+            # Resolve merchant_id before inserting the category record
+            merchant_id = None
             try:
                 txn = db.execute(
                     f"""
@@ -116,10 +108,12 @@ def categorize_transaction(
                 if txn and txn[0]:
                     description = txn[0]
                     existing = match_merchant(db, description)
-                    if not existing:
+                    if existing:
+                        merchant_id = existing["merchant_id"]
+                    else:
                         normalized = normalize_description(description)
                         if normalized:
-                            create_merchant(
+                            merchant_id = create_merchant(
                                 db,
                                 normalized,
                                 normalized,
@@ -130,9 +124,19 @@ def categorize_transaction(
                             )
             except Exception:
                 logger.debug(
-                    "Could not auto-create merchant mapping",
+                    "Could not resolve merchant mapping",
                     exc_info=True,
                 )
+
+            db.execute(
+                f"""
+                INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
+                (transaction_id, category, subcategory,
+                 categorized_at, categorized_by, merchant_id)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+                """,
+                [transaction_id, category, subcategory, categorized_by, merchant_id],
+            )
 
         sub = f" / {subcategory}" if subcategory else ""
         return f"Transaction {transaction_id} categorized as: {category}{sub}"
@@ -193,7 +197,7 @@ def seed_categories() -> str:
     are not overwritten.
 
     Requires SQLMesh transforms to have been run at least once so the
-    seeds.seed_categories table exists.
+    seeds.categories table exists.
     """
     logger.info("Tool called: seed_categories")
 
@@ -427,201 +431,276 @@ def delete_categorization_rule(rule_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Auto-categorization (MCP sampling)
+# Bulk categorization
 # ---------------------------------------------------------------------------
 
 
 @mcp.tool()
-async def auto_categorize(
-    limit: int = 100,
-    confidence_threshold: float = 0.7,
-    batch_size: int = 25,
-    dry_run: bool = False,
+def bulk_categorize(
+    categorizations: list[dict[str, str]],
+    create_merchant_mappings: bool = True,
 ) -> str:
-    """Auto-categorize transactions using the connected LLM via MCP sampling.
+    """Apply categorizations to multiple transactions in a single call.
 
-    Fetches uncategorized transactions, groups by description, sends batches
-    to the LLM for classification, and applies results. High-confidence
-    results also create merchant mappings for future deterministic matching.
-
-    This tool uses MCP sampling — it works with whatever LLM the user has
-    connected (Claude, GPT, Gemini, local models, etc.).
+    Use this after calling get_uncategorized_transactions: review the list,
+    decide categories for each, then submit them all here in one call.
+    High-confidence assignments also create merchant mappings so future
+    imports are categorized automatically by the rule engine.
 
     Args:
-        limit: Maximum transactions to process (default 100).
-        confidence_threshold: Minimum confidence to auto-create merchant
-            mappings (default 0.7). Results below this are still applied
-            but flagged for review.
-        batch_size: Descriptions per LLM call (default 25).
-        dry_run: If True, show what would be categorized without applying.
+        categorizations: List of dicts, each with:
+            - transaction_id: the transaction to categorize
+            - category: category name (e.g. 'Food & Drink')
+            - subcategory: optional subcategory (e.g. 'Coffee Shops')
+            - merchant_name: optional clean merchant name for mapping
+        create_merchant_mappings: If True (default), auto-create merchant
+            mappings from transaction descriptions so future similar
+            transactions are categorized automatically.
     """
-    from mcp.server.fastmcp import Context
-    from mcp.types import SamplingMessage, TextContent
-
-    logger.info("Tool called: auto_categorize(limit=%d, dry_run=%s)", limit, dry_run)
+    logger.info("Tool called: bulk_categorize(%d items)", len(categorizations))
 
     from moneybin.services.categorization_service import (
-        build_categorization_prompt,
         create_merchant,
-        get_active_categories,
         match_merchant,
         normalize_description,
-        parse_categorization_response,
     )
 
-    db = get_db()
-    categories = get_active_categories(db)
-    if not categories:
-        return (
-            "No categories found. Run seed_categories first to "
-            "initialize the default taxonomy."
-        )
+    if not categorizations:
+        return "No categorizations provided."
 
-    # Fetch uncategorized transactions
-    if not table_exists(FCT_TRANSACTIONS):
-        return "No transactions found. Import data first."
-
-    try:
-        rows = db.execute(
-            f"""
-            SELECT t.transaction_id, t.description
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                ON t.transaction_id = c.transaction_id
-            WHERE c.transaction_id IS NULL
-                AND t.description IS NOT NULL
-                AND t.description != ''
-            ORDER BY t.transaction_date DESC
-            LIMIT ?
-            """,
-            [limit],
-        ).fetchall()
-    except Exception as e:
-        return f"Error fetching transactions: {e}"
-
-    if not rows:
-        return "All transactions are already categorized!"
-
-    # Group by normalized description to deduplicate
-    desc_to_txns: dict[str, list[str]] = {}
-    for txn_id, description in rows:
-        normalized = normalize_description(description)
-        if normalized:
-            desc_to_txns.setdefault(normalized, []).append(txn_id)
-
-    unique_descriptions = list(desc_to_txns.keys())
-    total_txns = sum(len(v) for v in desc_to_txns.values())
-
-    if dry_run:
-        return (
-            f"Would categorize {total_txns} transactions "
-            f"({len(unique_descriptions)} unique descriptions) "
-            f"in {(len(unique_descriptions) + batch_size - 1) // batch_size} "
-            f"batch(es)."
-        )
-
-    # Process in batches via MCP sampling
-    ctx = Context()
-    results_summary: list[str] = []
     categorized_count = 0
     merchant_count = 0
+    errors: list[str] = []
 
-    for i in range(0, len(unique_descriptions), batch_size):
-        batch = unique_descriptions[i : i + batch_size]
-        prompt = build_categorization_prompt(categories, batch)
-
-        try:
-            response = await ctx.session.create_message(
-                messages=[
-                    SamplingMessage(
-                        role="user",
-                        content=TextContent(type="text", text=prompt),
+    try:
+        with get_write_db() as db:
+            for item in categorizations:
+                txn_id = item.get("transaction_id", "").strip()
+                category = item.get("category", "").strip()
+                if not txn_id or not category:
+                    errors.append(
+                        f"Skipped item missing transaction_id or category: {item}"
                     )
-                ],
-                max_tokens=4096,
-            )
-            # Extract text content from response
-            response_text = ""
-            content = response.content
-            if isinstance(content, TextContent):
-                response_text = content.text
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, TextContent):
-                        response_text += block.text
-        except Exception as e:
-            logger.warning("MCP sampling failed for batch %d: %s", i, e)
-            results_summary.append(
-                f"Batch {i // batch_size + 1}: sampling failed ({e})"
-            )
-            continue
+                    continue
 
-        parsed = parse_categorization_response(response_text)
+                subcategory = item.get("subcategory", "").strip() or None
+                merchant_name = item.get("merchant_name", "").strip() or None
 
-        # Apply results
-        try:
-            with get_write_db() as write_db:
-                for item in parsed:
-                    desc = str(item["description"])
-                    cat = str(item["category"])
-                    subcat = str(item.get("subcategory", "")) or None
-                    conf = float(item.get("confidence", 0.5))
-                    merchant_name = str(item.get("merchant_name", "")) or None
+                # Resolve merchant_id before inserting
+                merchant_id = None
+                try:
+                    txn = db.execute(
+                        f"""
+                        SELECT description FROM {FCT_TRANSACTIONS.full_name}
+                        WHERE transaction_id = ?
+                        """,
+                        [txn_id],
+                    ).fetchone()
+                    if txn and txn[0]:
+                        existing = match_merchant(db, txn[0])
+                        if existing:
+                            merchant_id = existing["merchant_id"]
+                        elif create_merchant_mappings and merchant_name:
+                            normalized = normalize_description(txn[0])
+                            if normalized:
+                                merchant_id = create_merchant(
+                                    db,
+                                    normalized,
+                                    merchant_name,
+                                    match_type="contains",
+                                    category=category,
+                                    subcategory=subcategory,
+                                    created_by="ai",
+                                )
+                                merchant_count += 1
+                except Exception:
+                    logger.debug(
+                        "Could not resolve merchant mapping for %s",
+                        txn_id,
+                        exc_info=True,
+                    )
 
-                    # Find matching transactions
-                    matching_txns = desc_to_txns.get(desc, [])
-                    if not matching_txns:
-                        # Try fuzzy match on normalized descriptions
-                        for norm_desc, txns in desc_to_txns.items():
-                            if (
-                                desc.lower() in norm_desc.lower()
-                                or norm_desc.lower() in desc.lower()
-                            ):
-                                matching_txns = txns
-                                break
+                db.execute(
+                    f"""
+                    INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
+                    (transaction_id, category, subcategory,
+                     categorized_at, categorized_by, merchant_id)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
+                    """,
+                    [txn_id, category, subcategory, merchant_id],
+                )
+                categorized_count += 1
 
-                    for txn_id in matching_txns:
-                        write_db.execute(
-                            f"""
-                            INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                            (transaction_id, category, subcategory,
-                             categorized_at, categorized_by, confidence)
-                            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
-                            """,
-                            [txn_id, cat, subcat, conf],
-                        )
-                        categorized_count += 1
+    except Exception as e:
+        logger.exception("bulk_categorize failed")
+        return f"Error: {e}"
 
-                    # Create merchant mapping for high-confidence results
-                    if conf >= confidence_threshold and merchant_name and desc:
-                        existing = match_merchant(write_db, desc)
-                        if not existing:
-                            create_merchant(
-                                write_db,
-                                desc,
-                                merchant_name,
-                                match_type="contains",
-                                category=cat,
-                                subcategory=subcat,
-                                created_by="ai",
-                            )
-                            merchant_count += 1
-        except Exception as e:
-            logger.exception("Failed to apply batch results")
-            results_summary.append(f"Batch {i // batch_size + 1}: apply failed ({e})")
-            continue
+    summary = f"Categorized {categorized_count} transactions"
+    if merchant_count:
+        summary += f", created {merchant_count} merchant mappings"
+    if errors:
+        summary += "\nWarnings:\n" + "\n".join(errors)
+    return summary + "."
 
-        results_summary.append(
-            f"Batch {i // batch_size + 1}: {len(parsed)} descriptions classified"
-        )
 
-    summary = (
-        f"Auto-categorized {categorized_count} transactions, "
-        f"created {merchant_count} merchant mappings.\n"
+# ---------------------------------------------------------------------------
+# Bulk rule & merchant creation
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def bulk_create_categorization_rules(
+    rules: list[dict[str, str | float | int | None]],
+) -> str:
+    """Create multiple categorization rules in a single call.
+
+    Use this after reviewing uncategorized transactions to set up rules
+    that will automatically categorize future imports. Each rule matches
+    transactions by description pattern and assigns a category.
+
+    Args:
+        rules: List of dicts, each with:
+            - name: Human-readable rule name (e.g. 'Starbucks -> Coffee')
+            - merchant_pattern: Pattern to match in descriptions
+            - category: Category to assign
+            - subcategory: optional subcategory
+            - match_type: 'contains' (default), 'exact', or 'regex'
+            - min_amount: optional minimum amount filter
+            - max_amount: optional maximum amount filter
+            - account_id: optional account ID filter
+            - priority: rule priority (default 100, lower = higher priority)
+    """
+    logger.info("Tool called: bulk_create_categorization_rules(%d items)", len(rules))
+
+    if not rules:
+        return "No rules provided."
+
+    created_count = 0
+    errors: list[str] = []
+
+    try:
+        with get_write_db() as db:
+            for item in rules:
+                name = str(item.get("name", "")).strip()
+                pattern = str(item.get("merchant_pattern", "")).strip()
+                category = str(item.get("category", "")).strip()
+                if not name or not pattern or not category:
+                    errors.append(
+                        f"Skipped rule missing name, merchant_pattern, or category: {item}"
+                    )
+                    continue
+
+                subcategory = str(item.get("subcategory", "")).strip() or None
+                match_type = str(item.get("match_type", "contains")).strip()
+                min_amount = item.get("min_amount")
+                max_amount = item.get("max_amount")
+                account_id = item.get("account_id")
+                priority = int(item.get("priority", 100) or 100)
+
+                rule_id = str(uuid.uuid4())[:8]
+                db.execute(
+                    f"""
+                    INSERT INTO {CATEGORIZATION_RULES.full_name}
+                    (rule_id, name, merchant_pattern, match_type,
+                     min_amount, max_amount, account_id,
+                     category, subcategory, priority, is_active,
+                     created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
+                            'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    [
+                        rule_id,
+                        name,
+                        pattern,
+                        match_type,
+                        min_amount,
+                        max_amount,
+                        account_id,
+                        category,
+                        subcategory,
+                        priority,
+                    ],
+                )
+                created_count += 1
+
+    except Exception as e:
+        logger.exception("bulk_create_categorization_rules failed")
+        return f"Error: {e}"
+
+    summary = f"Created {created_count} categorization rules"
+    if errors:
+        summary += "\nWarnings:\n" + "\n".join(errors)
+    return summary + "."
+
+
+@mcp.tool()
+def bulk_create_merchant_mappings(
+    mappings: list[dict[str, str | None]],
+) -> str:
+    """Create multiple merchant name mappings in a single call.
+
+    Merchant mappings normalize messy transaction descriptions and cache
+    the merchant-to-category association for automatic categorization of
+    future imports. Use this after reviewing transactions to set up
+    merchant recognition in bulk.
+
+    Args:
+        mappings: List of dicts, each with:
+            - raw_pattern: Pattern to match in descriptions
+            - canonical_name: Clean merchant name for display
+            - match_type: 'contains' (default), 'exact', or 'regex'
+            - category: optional default category
+            - subcategory: optional default subcategory
+    """
+    logger.info("Tool called: bulk_create_merchant_mappings(%d items)", len(mappings))
+
+    from moneybin.services.categorization_service import (
+        create_merchant,
     )
-    if results_summary:
-        summary += "\n".join(results_summary)
-    return summary
+
+    if not mappings:
+        return "No mappings provided."
+
+    created_count = 0
+    errors: list[str] = []
+
+    try:
+        with get_write_db() as db:
+            for item in mappings:
+                raw_pattern = str(item.get("raw_pattern", "")).strip()
+                canonical_name = str(item.get("canonical_name", "")).strip()
+                if not raw_pattern or not canonical_name:
+                    errors.append(
+                        f"Skipped mapping missing raw_pattern or canonical_name: {item}"
+                    )
+                    continue
+
+                match_type = str(item.get("match_type", "contains")).strip()
+                category = str(item.get("category", "")).strip() or None
+                subcategory = str(item.get("subcategory", "")).strip() or None
+
+                try:
+                    create_merchant(
+                        db,
+                        raw_pattern,
+                        canonical_name,
+                        match_type=match_type,
+                        category=category,
+                        subcategory=subcategory,
+                        created_by="ai",
+                    )
+                    created_count += 1
+                except Exception as e:
+                    errors.append(f"Failed to create mapping '{canonical_name}': {e}")
+
+    except Exception as e:
+        logger.exception("bulk_create_merchant_mappings failed")
+        return f"Error: {e}"
+
+    summary = f"Created {created_count} merchant mappings"
+    if errors:
+        summary += "\nWarnings:\n" + "\n".join(errors)
+    return summary + "."
 
 
 # ---------------------------------------------------------------------------

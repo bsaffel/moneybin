@@ -1,5 +1,5 @@
 ---
-globs: ["src/moneybin/mcp/**"]
+paths: ["src/moneybin/mcp/**"]
 ---
 
 # MCP Server
@@ -23,6 +23,12 @@ The MCP server exposes financial data through privacy tiers:
 - Aggregated data (summaries, totals) is lowest sensitivity.
 - Individual transaction details require higher trust.
 - Account identifiers and credentials are highest sensitivity.
+
+## Bulk operations
+
+- Prefer tools that accept lists over tools that operate on one item at a time. Single-item tools hit turn tool-call limits for bulk workflows.
+- The standard pattern: one read tool to fetch candidates → LLM reasons about all of them → one write tool submits the full list.
+- Example: `get_uncategorized_transactions` → Claude classifies → `bulk_categorize([...])`.
 
 ## Principles
 

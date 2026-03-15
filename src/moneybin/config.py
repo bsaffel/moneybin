@@ -13,6 +13,41 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def get_base_dir() -> Path:
+    """Determine the base directory for resolving relative data/log paths.
+
+    Resolution order:
+        1. MONEYBIN_HOME env var (explicit override, always wins)
+        2. development environment (default): current working directory
+        3. staging/production: ~/.moneybin/
+
+    Returns:
+        Path: Absolute base directory for the application
+    """
+    moneybin_home = os.getenv("MONEYBIN_HOME")
+    if moneybin_home:
+        return Path(moneybin_home).expanduser().resolve()
+
+    environment = os.getenv("MONEYBIN_ENVIRONMENT", "development")
+    if environment == "development":
+        return Path.cwd().resolve()
+
+    return (Path.home() / ".moneybin").resolve()
+
+
+def _resolve_path(base: Path, p: Path) -> Path:
+    """Resolve a path against base if it is relative; return as-is if absolute.
+
+    Args:
+        base: Base directory to resolve against
+        p: Path to resolve
+
+    Returns:
+        Path: Absolute path
+    """
+    return p if p.is_absolute() else base / p
+
+
 class DatabaseConfig(BaseModel):
     """Database configuration settings."""
 
@@ -193,8 +228,9 @@ class MoneyBinSettings(BaseSettings):
         # Update kwargs with normalized profile name
         kwargs["profile"] = profile
 
-        # Make paths profile-aware if not explicitly provided
-        # Structure: data/{profile}/[raw, temp]
+        # Resolve all relative paths against the base directory so they work
+        # regardless of the process's working directory (e.g. Claude Desktop MCP).
+        base = get_base_dir()
 
         # Check for legacy DUCKDB_PATH environment variable
         duckdb_path = os.getenv("DUCKDB_PATH")
@@ -205,24 +241,23 @@ class MoneyBinSettings(BaseSettings):
             and kwargs["database"].path == Path("data/default/moneybin.duckdb")
         ):
             if duckdb_path:
-                kwargs["database"] = DatabaseConfig(path=Path(duckdb_path))
-            else:
-                # Use profile-aware path
                 kwargs["database"] = DatabaseConfig(
-                    path=Path(f"data/{profile}/moneybin.duckdb")
+                    path=_resolve_path(base, Path(duckdb_path))
+                )
+            else:
+                kwargs["database"] = DatabaseConfig(
+                    path=base / f"data/{profile}/moneybin.duckdb"
                 )
 
         if "data" not in kwargs:
-            # Use profile-aware data paths
             kwargs["data"] = DataConfig(
-                raw_data_path=Path(f"data/{profile}/raw"),
-                temp_data_path=Path(f"data/{profile}/temp"),
+                raw_data_path=base / f"data/{profile}/raw",
+                temp_data_path=base / f"data/{profile}/temp",
             )
 
         if "logging" not in kwargs:
-            # Use profile-aware log path
             kwargs["logging"] = LoggingConfig(
-                log_file_path=Path(f"logs/{profile}/moneybin.log")
+                log_file_path=base / f"logs/{profile}/moneybin.log"
             )
 
         super().__init__(**kwargs)
@@ -248,12 +283,13 @@ class MoneyBinSettings(BaseSettings):
         profile = init_dict.get("profile", "dev")  # type: ignore[reportUnknownMemberType]
 
         # Determine which env file to load based on profile
-        profile_env_file = Path(f".env.{profile}")
+        base = get_base_dir()
+        profile_env_file = base / f".env.{profile}"
         if profile_env_file.exists():
             env_file = str(profile_env_file)
         else:
             # Fall back to .env for backward compatibility
-            env_file = ".env"
+            env_file = str(base / ".env")
 
         # Create custom dotenv settings with the profile-specific file
         from pydantic_settings import DotEnvSettingsSource

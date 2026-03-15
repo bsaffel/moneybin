@@ -12,7 +12,9 @@ import typer
 from moneybin.config import get_current_profile
 from moneybin.utils.secrets_manager import SecretsManager
 
-app = typer.Typer(help="Manage API credentials and environment configuration")
+app = typer.Typer(
+    help="Manage API credentials and environment configuration", no_args_is_help=True
+)
 logger = logging.getLogger(__name__)
 
 

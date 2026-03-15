@@ -8,19 +8,19 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.schema import init_schemas
 from moneybin.services.categorization_service import (
+    _ensure_seed_table,
     apply_deterministic_categorization,
     apply_merchant_categories,
     apply_rules,
-    build_categorization_prompt,
     create_merchant,
     get_active_categories,
     get_categorization_stats,
     match_merchant,
     normalize_description,
-    parse_categorization_response,
     seed_categories,
 )
 from tests.moneybin.db_helpers import create_core_tables
@@ -445,131 +445,59 @@ class TestGetCategorizationStats:
 
 
 # ---------------------------------------------------------------------------
-# Prompt construction
-# ---------------------------------------------------------------------------
-
-
-class TestBuildCategorizationPrompt:
-    """Tests for LLM prompt construction."""
-
-    @pytest.mark.unit
-    def test_includes_categories(self) -> None:
-        categories: list[dict[str, str | bool | None]] = [
-            {
-                "category": "Food & Drink",
-                "subcategory": "Coffee Shops",
-                "category_id": "FND-COF",
-                "description": "",
-                "is_default": True,
-                "plaid_detailed": "",
-            },
-        ]
-        prompt = build_categorization_prompt(categories, ["STARBUCKS"])
-        assert "Food & Drink" in prompt
-        assert "Coffee Shops" in prompt
-
-    @pytest.mark.unit
-    def test_includes_descriptions(self) -> None:
-        categories: list[dict[str, str | bool | None]] = [
-            {
-                "category": "Other",
-                "subcategory": None,
-                "category_id": "OTH",
-                "description": "",
-                "is_default": True,
-                "plaid_detailed": "",
-            },
-        ]
-        prompt = build_categorization_prompt(categories, ["STARBUCKS", "AMAZON"])
-        assert "STARBUCKS" in prompt
-        assert "AMAZON" in prompt
-
-    @pytest.mark.unit
-    def test_requests_json_response(self) -> None:
-        prompt = build_categorization_prompt([], ["TEST"])
-        assert "JSON" in prompt
-
-
-# ---------------------------------------------------------------------------
-# Response parsing
-# ---------------------------------------------------------------------------
-
-
-class TestParseCategorizationResponse:
-    """Tests for LLM response parsing."""
-
-    @pytest.mark.unit
-    def test_valid_json(self) -> None:
-        response = """[
-            {"description": "STARBUCKS", "category": "Food & Drink",
-             "subcategory": "Coffee Shops", "confidence": 0.95,
-             "merchant_name": "Starbucks"}
-        ]"""
-        results = parse_categorization_response(response)
-        assert len(results) == 1
-        assert results[0]["category"] == "Food & Drink"
-        assert results[0]["confidence"] == 0.95
-
-    @pytest.mark.unit
-    def test_markdown_code_fence(self) -> None:
-        response = """```json
-[{"description": "AMAZON", "category": "Shopping", "confidence": 0.8}]
-```"""
-        results = parse_categorization_response(response)
-        assert len(results) == 1
-
-    @pytest.mark.unit
-    def test_extra_text_around_json(self) -> None:
-        response = """Here are the categorizations:
-[{"description": "TEST", "category": "Other", "confidence": 0.5}]
-Hope that helps!"""
-        results = parse_categorization_response(response)
-        assert len(results) == 1
-
-    @pytest.mark.unit
-    def test_invalid_json_returns_empty(self) -> None:
-        results = parse_categorization_response("not json at all")
-        assert results == []
-
-    @pytest.mark.unit
-    def test_missing_required_fields_skipped(self) -> None:
-        response = """[
-            {"description": "VALID", "category": "Shopping"},
-            {"only_description": "INVALID"}
-        ]"""
-        results = parse_categorization_response(response)
-        assert len(results) == 1
-
-    @pytest.mark.unit
-    def test_out_of_taxonomy_still_parsed(self) -> None:
-        response = (
-            '[{"description": "X", "category": "Fake Category", "confidence": 0.2}]'
-        )
-        results = parse_categorization_response(response)
-        assert len(results) == 1
-        assert results[0]["category"] == "Fake Category"
-
-    @pytest.mark.unit
-    def test_default_confidence(self) -> None:
-        response = '[{"description": "X", "category": "Other"}]'
-        results = parse_categorization_response(response)
-        assert results[0]["confidence"] == 0.5
-
-
-# ---------------------------------------------------------------------------
 # Seed categories
 # ---------------------------------------------------------------------------
 
 
+class TestEnsureSeedTable:
+    """Tests for lazy SQLMesh seed initialization."""
+
+    @pytest.mark.unit
+    def test_skips_when_table_exists(self, db: duckdb.DuckDBPyConnection) -> None:
+        """No SQLMesh call when seed table already exists."""
+        db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+        db.execute("CREATE TABLE seeds.categories (category_id VARCHAR)")
+        # Should return without calling SQLMesh
+        _ensure_seed_table(db)
+
+    @pytest.mark.unit
+    def test_calls_sqlmesh_when_missing(
+        self, db: duckdb.DuckDBPyConnection, mocker: MockerFixture
+    ) -> None:
+        """Runs targeted SQLMesh apply when seed table is missing."""
+        mock_ctx = mocker.MagicMock()
+        mock_context_cls = mocker.patch(
+            "sqlmesh.Context",
+            return_value=mock_ctx,
+        )
+        # Table doesn't exist, but after plan() it would — simulate by
+        # having plan() create the table as a side effect
+
+        def create_table(*args: object, **kwargs: object) -> None:
+            db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+            db.execute("CREATE TABLE seeds.categories (category_id VARCHAR)")
+
+        mock_ctx.plan.side_effect = create_table
+
+        _ensure_seed_table(db)
+
+        mock_context_cls.assert_called_once()
+        mock_ctx.plan.assert_called_once_with(
+            auto_apply=True,
+            no_prompts=True,
+            select_models=["seeds.categories"],  # SEED_CATEGORIES.full_name
+        )
+
+
 class TestSeedCategories:
-    """Tests for category seeding (requires SQLMesh seed table mock)."""
+    """Tests for category seeding."""
 
     @pytest.mark.unit
     def test_seed_idempotent(self, db: duckdb.DuckDBPyConnection) -> None:
         # Create a mock seed table
         db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
         db.execute("""
-            CREATE TABLE seeds.seed_categories (
+            CREATE TABLE seeds.categories (
                 category_id VARCHAR,
                 category VARCHAR,
                 subcategory VARCHAR,
@@ -578,7 +506,7 @@ class TestSeedCategories:
             )
         """)
         db.execute("""
-            INSERT INTO seeds.seed_categories VALUES
+            INSERT INTO seeds.categories VALUES
             ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK'),
             ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'FOOD_AND_DRINK_COFFEE')
         """)

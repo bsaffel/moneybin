@@ -15,7 +15,7 @@ import typer
 
 from moneybin.config import get_database_path
 
-app = typer.Typer(help="Database exploration and query commands")
+app = typer.Typer(help="Database exploration and query commands", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 

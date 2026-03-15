@@ -1,10 +1,11 @@
 # Feature: Transaction Categorization
 
 ## Status
-**Phase 1-3 implemented** | Phase 4 in progress
+
+Fully implemented
 
 ## Goal
-Provide a layered categorization system that works from day one without training data, works with any LLM (not just Claude), and improves over time. Rules first, then LLM for the remainder, with user corrections feeding back into rules.
+Provide a layered categorization system that works from day one without training data, improves over time via merchant mappings and rules, and supports bulk LLM-assisted categorization in a single tool call.
 
 ## Categorization Priority
 
@@ -13,7 +14,7 @@ Provide a layered categorization system that works from day one without training
 | 1 | User manual | `'user'` | Nothing |
 | 2 | User-defined rules | `'rule'` | User only |
 | 3 | Plaid-provided categories | `'plaid'` | User, rules |
-| 4 | MCP sampling / LLM | `'ai'` | All above |
+| 4 | LLM via `bulk_categorize` | `'ai'` | All above |
 
 ## Data Model
 
@@ -62,26 +63,27 @@ After SQLMesh transforms complete, `import_service.py` calls `apply_deterministi
 Fast, no LLM dependency, works from CLI and MCP.
 
 ### B. LLM classification (explicit, user-initiated)
-The `auto_categorize` MCP tool is invoked separately. Uses MCP sampling to delegate classification to whatever LLM the user has connected — no vendor lock-in.
+The LLM calls `get_uncategorized_transactions`, classifies the returned list in its own reasoning, then submits all results in a single `bulk_categorize` call. Two tool calls total regardless of transaction count.
 
 Over time, as merchants and rules accumulate from LLM results and user corrections, the deterministic layer handles an increasing share.
 
-## MCP Sampling Auto-Categorization Flow
+## Bulk Categorization Flow
 
-The `auto_categorize` tool (async):
-1. Fetch uncategorized transactions
-2. Group by normalized description (deduplicate)
-3. Build prompt with active taxonomy + batch of descriptions (~25 per call)
-4. Call MCP sampling via `ctx.session.create_message()`
-5. Parse JSON response: `[{description, category, subcategory, confidence, merchant_name}]`
-6. Create merchant mappings for high-confidence results (>= 0.7)
-7. Apply categories, return summary
+```text
+get_uncategorized_transactions(limit=100)
+  → LLM reviews descriptions and decides categories
+  → bulk_categorize([{transaction_id, category, subcategory, merchant_name}, ...])
+      → INSERT OR REPLACE into app.transaction_categories (categorized_by='ai')
+      → for each item with merchant_name: normalize description, create merchant
+          mapping if one doesn't exist
+      → return "Categorized N transactions, created M merchant mappings."
+```
 
-Prompt is terse, LLM-agnostic, requests JSON output (not tool use).
+This avoids MCP sampling (not supported by Claude Code or Claude Desktop) and avoids per-transaction tool calls (hits turn limits ~30).
 
 ## Default Taxonomy
 
-SQLMesh seed model (`sqlmesh/models/seeds/seed_categories.sql` + `.csv`) with Plaid PFCv2:
+SQLMesh seed model (`sqlmesh/models/seeds/categories.sql` + `.csv`) with Plaid PFCv2:
 
 **16 primary categories:** Income, Transfer, Loan Payments, Bank Fees, Entertainment, Food & Drink, Shopping, Home Improvement, Healthcare, Personal Care, Services, Government & Nonprofit, Transportation, Travel, Housing & Utilities, Other
 
@@ -96,22 +98,23 @@ Each with detailed subcategories (~100 total). `plaid_detailed` column enables d
 | `list_categorization_rules` | Active rules |
 | `list_merchants` | Known merchants |
 | `get_categorization_stats` | Categorized vs uncategorized summary |
+| `get_uncategorized_transactions` | Fetch transactions without a category |
 
 ### Write tools (`write_tools.py`)
 | Tool | Description |
 |------|-------------|
-| `auto_categorize` | Full LLM pipeline (async) |
+| `bulk_categorize` | Apply LLM-decided categories to a list of transactions in one call |
+| `categorize_transaction` | Categorize a single transaction (user-initiated corrections) |
 | `create_categorization_rule` | Create pattern-based rule |
 | `delete_categorization_rule` | Remove rule |
 | `create_merchant_mapping` | Add merchant mapping |
 | `seed_categories` | Copy PFCv2 defaults from seed table |
 | `toggle_category` | Enable/disable category |
 | `create_category` | Add custom category |
-| `categorize_transaction` | Updated: accepts `categorized_by`, auto-creates merchant mapping |
 
 ### Prompts (`prompts.py`)
 - `categorize_transactions` — Updated to reference new tools
-- `auto_categorize_transactions` — New: guides LLM through auto-categorization workflow
+- `auto_categorize_transactions` — Guides LLM through bulk categorization workflow
 
 ## CLI Commands
 
@@ -127,8 +130,8 @@ Under `data categorize`:
 - `src/moneybin/sql/schema/app_categories.sql`
 - `src/moneybin/sql/schema/app_merchants.sql`
 - `src/moneybin/sql/schema/app_categorization_rules.sql`
-- `sqlmesh/models/seeds/seed_categories.sql`
-- `sqlmesh/models/seeds/seed_categories.csv`
+- `sqlmesh/models/seeds/categories.sql`
+- `sqlmesh/models/seeds/categories.csv`
 - `src/moneybin/services/categorization_service.py`
 - `src/moneybin/cli/commands/categorize.py`
 - `tests/moneybin/test_services/test_categorization_service.py`
@@ -140,26 +143,22 @@ Under `data categorize`:
 - `src/moneybin/schema.py` — Register new DDL files
 - `src/moneybin/services/import_service.py` — Call deterministic categorization after transforms
 - `src/moneybin/mcp/tools.py` — 4 new read tools
-- `src/moneybin/mcp/write_tools.py` — 7 new write tools, updated categorize_transaction
+- `src/moneybin/mcp/write_tools.py` — 8 write tools (bulk_categorize replaces auto_categorize)
 - `src/moneybin/mcp/prompts.py` — Updated + new prompt
 - `src/moneybin/cli/commands/data.py` — Registered categorize subgroup
 
 ## Testing
 
-56 new tests covering:
+54 tests covering:
 - **Normalization:** POS prefix stripping, trailing location/numbers, whitespace
 - **Pattern matching:** exact, contains, regex, case insensitive, priority ordering
 - **Rule engine:** basic rules, priority ordering, amount filters, account filters, idempotency, inactive rules
 - **Merchant matching:** category application, skip without category, combined pipeline
 - **Stats:** uncategorized counts, source breakdown
-- **Prompt construction:** taxonomy inclusion, description inclusion, JSON format
-- **Response parsing:** valid JSON, markdown fences, extra text, invalid JSON, missing fields, default confidence
 - **Seed idempotency:** duplicate runs don't create duplicates
-- **MCP tools:** all CRUD operations, argument parsing, DB reads/writes
+- **MCP tools:** all CRUD operations, argument parsing, DB reads/writes, bulk categorization
 
 ## Key Design Decisions
 - **Merchants separate from rules** — merchants normalize names + cache categories; rules express policies with conditions
-- **Async `auto_categorize`** — MCP sampling is async; first async tool in the codebase
-- **JSON output from LLM** — simpler, more portable across providers than tool use
-- **Low-confidence results still applied** — better than uncategorized; flagged via confidence score
+- **`bulk_categorize` instead of MCP sampling** — MCP sampling (`sampling/createMessage`) is not supported by Claude Code or Claude Desktop; bulk tool is simpler, faster, and avoids per-transaction tool-call overhead
 - **Seed data via SQLMesh** — taxonomy in version-controlled CSV, leverages existing infrastructure

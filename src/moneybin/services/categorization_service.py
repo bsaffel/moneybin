@@ -8,6 +8,7 @@ auto-categorization lives in the MCP layer (auto_categorize tool).
 import logging
 import re
 import uuid
+from pathlib import Path
 
 import duckdb
 
@@ -16,6 +17,7 @@ from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
     MERCHANTS,
+    SEED_CATEGORIES,
     TRANSACTION_CATEGORIES,
 )
 
@@ -390,11 +392,47 @@ def apply_deterministic_categorization(
     }
 
 
-def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
-    """Populate user.categories from the SQLMesh seed table.
+_SQLMESH_ROOT = Path(__file__).resolve().parents[3] / "sqlmesh"
 
-    Copies default categories from seeds.seed_categories into user.categories,
-    skipping any that already exist. Safe to run multiple times.
+
+def _ensure_seed_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Materialize the SQLMesh seed table if it doesn't exist yet.
+
+    Runs a targeted ``sqlmesh plan --auto-apply`` scoped to just the
+    ``seeds.categories`` model so the MCP server works without a
+    prior CLI invocation of ``sqlmesh apply``.
+
+    Args:
+        conn: DuckDB connection (used only to check table existence).
+    """
+    result = conn.execute(
+        """
+        SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_schema = ? AND table_name = ?
+        """,
+        [SEED_CATEGORIES.schema, SEED_CATEGORIES.name],
+    ).fetchone()
+    if result and result[0] > 0:
+        return  # already exists
+
+    logger.info("Seed table missing — running targeted SQLMesh apply")
+    from sqlmesh import Context  # type: ignore[import-untyped]
+
+    ctx = Context(paths=str(_SQLMESH_ROOT))
+    ctx.plan(
+        auto_apply=True,
+        no_prompts=True,
+        select_models=[SEED_CATEGORIES.full_name],
+    )
+    logger.info("SQLMesh seed apply completed")
+
+
+def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
+    """Populate app.categories from the SQLMesh seed table.
+
+    If the seed table does not yet exist, a targeted SQLMesh apply is
+    run automatically to materialize it. Skips any categories that
+    already exist. Safe to run multiple times.
 
     Args:
         conn: DuckDB read-write connection.
@@ -402,6 +440,8 @@ def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
     Returns:
         Number of categories inserted.
     """
+    _ensure_seed_table(conn)
+
     count_before = 0
     try:
         result = conn.execute(f"SELECT COUNT(*) FROM {CATEGORIES.full_name}").fetchone()
@@ -423,7 +463,7 @@ def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
             true AS is_active,
             plaid_detailed,
             CURRENT_TIMESTAMP
-        FROM seeds.seed_categories
+        FROM {SEED_CATEGORIES.full_name}
         """
     )
 
@@ -526,114 +566,3 @@ def get_categorization_stats(
         pass
 
     return stats
-
-
-def build_categorization_prompt(
-    categories: list[dict[str, str | bool | None]],
-    descriptions: list[str],
-) -> str:
-    """Build a prompt for LLM-based transaction categorization.
-
-    Args:
-        categories: Active category list from get_active_categories().
-        descriptions: Unique normalized transaction descriptions to classify.
-
-    Returns:
-        Prompt string suitable for any LLM.
-    """
-    # Build compact taxonomy
-    cat_lines: list[str] = []
-    current_primary = ""
-    for cat in categories:
-        primary = str(cat["category"])
-        sub = cat.get("subcategory")
-        if primary != current_primary:
-            current_primary = primary
-            cat_lines.append(f"\n{primary}:")
-        if sub:
-            cat_lines.append(f"  - {sub}")
-
-    taxonomy = "\n".join(cat_lines)
-
-    # Build description list
-    desc_list = "\n".join(f"- {d}" for d in descriptions)
-
-    return (
-        "Categorize these transaction descriptions. "
-        "Reply with ONLY a JSON array, no other text.\n\n"
-        f"Categories:\n{taxonomy}\n\n"
-        f"Transactions:\n{desc_list}\n\n"
-        "For each transaction, return:\n"
-        '[{"description": "...", "category": "...", "subcategory": "...", '
-        '"confidence": 0.0-1.0, "merchant_name": "..."}]\n\n'
-        "Rules:\n"
-        "- Use exact category/subcategory names from the list above\n"
-        "- confidence: 1.0 = certain, 0.5 = guess\n"
-        "- merchant_name: clean merchant name (e.g., 'Starbucks' not "
-        "'SQ *STARBUCKS #1234 SEATTLE WA')\n"
-        "- If unsure, use category 'Other' subcategory 'Uncategorized' "
-        "with low confidence"
-    )
-
-
-def parse_categorization_response(
-    response: str,
-) -> list[dict[str, str | float]]:
-    """Parse LLM response into categorization results.
-
-    Handles common LLM response quirks: markdown code fences, trailing
-    commas, extra text before/after JSON.
-
-    Args:
-        response: Raw LLM response text.
-
-    Returns:
-        List of parsed categorization dicts. Empty list if parsing fails.
-    """
-    import json
-
-    # Strip markdown code fences
-    text = response.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first line (```json or ```) and last line (```)
-        lines = [line for line in lines if not line.strip().startswith("```")]
-        text = "\n".join(lines)
-
-    # Find JSON array in the text
-    start = text.find("[")
-    end = text.rfind("]")
-    if start == -1 or end == -1:
-        logger.warning("No JSON array found in LLM response")
-        return []
-
-    json_text = text[start : end + 1]
-
-    try:
-        results = json.loads(json_text)
-    except json.JSONDecodeError as e:
-        logger.warning("Failed to parse LLM categorization response: %s", e)
-        return []
-
-    if not isinstance(results, list):
-        logger.warning("LLM response is not a list")
-        return []
-
-    # Validate and normalize each result
-    valid: list[dict[str, str | float]] = []
-    for raw_item in results:
-        if not isinstance(raw_item, dict):
-            continue
-        item: dict[str, object] = raw_item  # type: ignore[reportUnknownVariableType]
-        if "description" not in item or "category" not in item:
-            continue
-
-        valid.append({
-            "description": str(item["description"]),
-            "category": str(item["category"]),
-            "subcategory": str(item.get("subcategory", "")),
-            "confidence": float(item.get("confidence", 0.5)),  # type: ignore[reportArgumentType]
-            "merchant_name": str(item.get("merchant_name", "")),
-        })
-
-    return valid

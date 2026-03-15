@@ -14,6 +14,7 @@ from pytest_mock import MockerFixture
 from moneybin.config import (
     MoneyBinSettings,
     clear_settings_cache,
+    get_base_dir,
     get_current_profile,
     get_settings,
     get_settings_for_profile,
@@ -214,8 +215,9 @@ class TestProfileConfiguration:
 
             settings = MoneyBinSettings(profile="dev")
 
-            # Legacy DUCKDB_PATH should still work
-            assert settings.database.path == Path("custom/path/db.duckdb")
+            # Legacy DUCKDB_PATH should still work (resolved against base dir)
+            base = get_base_dir()
+            assert settings.database.path == base / "custom/path/db.duckdb"
 
     def test_profile_field_in_settings(self, mocker: MockerFixture) -> None:
         """Test that profile field is properly set and normalized in settings."""
@@ -264,21 +266,24 @@ class TestProfileConfiguration:
             # Create settings for alice profile
             alice_settings = MoneyBinSettings(profile="alice")
 
-            # Check that paths include the profile name
-            assert alice_settings.database.path == Path("data/alice/moneybin.duckdb")
-            assert alice_settings.data.raw_data_path == Path("data/alice/raw")
-            assert alice_settings.data.temp_data_path == Path("data/alice/temp")
-            assert alice_settings.logging.log_file_path == Path(
-                "logs/alice/moneybin.log"
+            # Paths should be absolute and include the profile name
+            base = get_base_dir()
+            assert alice_settings.database.path == base / "data/alice/moneybin.duckdb"
+            assert alice_settings.data.raw_data_path == base / "data/alice/raw"
+            assert alice_settings.data.temp_data_path == base / "data/alice/temp"
+            assert alice_settings.logging.log_file_path == (
+                base / "logs/alice/moneybin.log"
             )
 
             # Create settings for bob profile
             bob_settings = MoneyBinSettings(profile="bob")
 
             # Check that bob has different paths
-            assert bob_settings.database.path == Path("data/bob/moneybin.duckdb")
-            assert bob_settings.data.raw_data_path == Path("data/bob/raw")
-            assert bob_settings.logging.log_file_path == Path("logs/bob/moneybin.log")
+            assert bob_settings.database.path == base / "data/bob/moneybin.duckdb"
+            assert bob_settings.data.raw_data_path == base / "data/bob/raw"
+            assert bob_settings.logging.log_file_path == (
+                base / "logs/bob/moneybin.log"
+            )
 
     def test_profile_isolation(self, mocker: MockerFixture) -> None:
         """Test that different profiles have completely isolated paths."""

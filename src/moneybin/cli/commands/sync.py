@@ -11,7 +11,9 @@ import typer
 from moneybin.config import get_current_profile
 from moneybin.connectors.plaid_sync import PlaidConnectionManager
 
-app = typer.Typer(help="Sync financial data from external services")
+app = typer.Typer(
+    help="Sync financial data from external services", no_args_is_help=True
+)
 logger = logging.getLogger(__name__)
 
 

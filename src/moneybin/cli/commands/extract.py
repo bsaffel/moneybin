@@ -10,7 +10,10 @@ import logging
 
 import typer
 
-app = typer.Typer(help="Parse local files (OFX, W-2) into structured data and Parquet")
+app = typer.Typer(
+    help="Parse local files (OFX, W-2) into structured data and Parquet",
+    no_args_is_help=True,
+)
 logger = logging.getLogger(__name__)
 
 
