@@ -30,15 +30,46 @@ logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
-def import_file(file_path: str) -> str:
+def import_file(
+    file_path: str,
+    account_id: str | None = None,
+    institution: str | None = None,
+) -> str:
     """Import a financial data file into MoneyBin.
 
-    Supports OFX/QFX bank statements and W-2 PDF forms. The file is
-    automatically detected by extension, extracted, loaded into raw tables,
-    and core tables are rebuilt.
+    Supported formats (detected automatically by extension):
+      - .ofx / .qfx — OFX/Quicken bank statements
+      - .pdf        — W-2 tax forms
+      - .csv        — bank transaction exports (see CSV workflow below)
+
+    CSV workflow:
+      CSVs do not contain account identifiers, so ``account_id`` must be
+      supplied by the caller (e.g. 'chase-checking-1234'). The institution
+      profile is auto-detected from the file's header row; use
+      ``csv_list_profiles`` to see what is installed.
+
+      If this tool returns a "Could not auto-detect CSV format" error:
+        1. Call ``csv_preview_file`` to inspect the headers and sample rows
+        2. Determine the column mapping:
+             - date_column and date_format (e.g. '%m/%d/%Y', '%Y-%m-%d')
+             - description_column (payee / merchant name)
+             - sign_convention: 'negative_is_expense' (single col, most common),
+               'negative_is_income' (single col, inverted), or
+               'split_debit_credit' (separate debit/credit columns)
+             - amount_column (single-col) OR debit_column + credit_column
+             - Optional: post_date_column, memo_column, category_column,
+               type_column, balance_column, reference_column, check_number_column
+        3. Propose a profile name (e.g. 'wellsfargo_checking') and confirm
+           with the user; set header_signature to the minimal set of columns
+           that uniquely fingerprint this institution's format
+        4. Call ``csv_save_profile`` with the confirmed mapping
+        5. Retry this tool with the original file_path and account_id
 
     Args:
         file_path: Absolute path to the file to import.
+        account_id: Account identifier (required for CSV files).
+        institution: Institution name (OFX) or CSV profile name (optional,
+            auto-detects for CSV).
     """
     logger.info("Tool called: import_file(%s)", file_path)
 
@@ -46,10 +77,10 @@ def import_file(file_path: str) -> str:
 
     try:
         db_path = get_db_path()
-        # Close read-only conn so import_service + SQLMesh can write;
-        # get_write_db reopens read conn when the context exits.
         with get_write_db():
-            result = do_import(db_path, file_path)
+            result = do_import(
+                db_path, file_path, account_id=account_id, institution=institution
+            )
         return result.summary()
     except FileNotFoundError as e:
         return f"Error: {e}"
@@ -984,3 +1015,191 @@ def find_recurring_transactions(min_occurrences: int = 3) -> str:
     except Exception as e:
         logger.exception("Recurring transactions query failed")
         return json.dumps({"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# CSV profile management
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def csv_preview_file(file_path: str) -> str:
+    """Preview a CSV file's headers and first few rows.
+
+    Use this to understand the structure of an unknown CSV before
+    creating a column mapping profile. Returns headers and 3 sample rows.
+
+    Args:
+        file_path: Absolute path to the CSV file.
+    """
+    logger.info("Tool called: csv_preview_file(%s)", file_path)
+
+    import csv as csv_mod
+    from pathlib import Path
+
+    path = Path(file_path)
+    if not path.exists():
+        return f"Error: File not found: {file_path}"
+
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            reader = csv_mod.reader(f)
+            headers = next(reader)
+            sample_rows: list[list[str]] = []
+            for i, row in enumerate(reader):
+                if i >= 3:
+                    break
+                sample_rows.append(row)
+
+        clean_headers = [h.strip() for h in headers]
+        preview: dict[str, object] = {
+            "file": path.name,
+            "headers": clean_headers,
+            "column_count": len(headers),
+            "sample_rows": [
+                dict(zip(clean_headers, row, strict=False)) for row in sample_rows
+            ],
+        }
+        return json.dumps(preview, indent=2)
+    except Exception as e:
+        return f"Error reading CSV: {e}"
+
+
+@mcp.tool()
+def csv_list_profiles() -> str:
+    """List all available CSV institution profiles.
+
+    Shows built-in and user-created profiles with their institution names
+    and header signatures for auto-detection.
+    """
+    logger.info("Tool called: csv_list_profiles")
+
+    from moneybin.config import get_raw_data_path
+    from moneybin.extractors.csv_profiles import load_profiles
+
+    user_profiles_dir = get_raw_data_path().parent / "csv_profiles"
+    profiles = load_profiles(user_profiles_dir)
+
+    if not profiles:
+        return json.dumps({
+            "profiles": [],
+            "message": "No profiles found. Use csv_save_profile to create one.",
+        })
+
+    profile_list: list[dict[str, object]] = []
+    for name, profile in sorted(profiles.items()):
+        profile_list.append({
+            "name": name,
+            "institution_name": profile.institution_name,
+            "header_signature": profile.header_signature,
+            "sign_convention": profile.sign_convention.value,
+            "date_format": profile.date_format,
+        })
+
+    return json.dumps({"profiles": profile_list}, indent=2)
+
+
+@mcp.tool()
+def csv_save_profile(
+    name: str,
+    institution_name: str,
+    header_signature: list[str],
+    date_column: str,
+    date_format: str,
+    description_column: str,
+    sign_convention: str,
+    amount_column: str | None = None,
+    debit_column: str | None = None,
+    credit_column: str | None = None,
+    post_date_column: str | None = None,
+    memo_column: str | None = None,
+    category_column: str | None = None,
+    subcategory_column: str | None = None,
+    type_column: str | None = None,
+    status_column: str | None = None,
+    check_number_column: str | None = None,
+    reference_column: str | None = None,
+    balance_column: str | None = None,
+    member_name_column: str | None = None,
+    skip_rows: int = 0,
+    encoding: str = "utf-8",
+) -> str:
+    """Create or update a CSV institution profile for importing transactions.
+
+    A profile maps an institution's CSV column names to MoneyBin's canonical schema.
+    Once saved, the profile is auto-detected when importing CSVs with
+    matching headers.
+
+    For sign_convention, use one of:
+      - "negative_is_expense": Single amount column, negative = expense (most common)
+      - "negative_is_income": Single amount column, negative = income (rare)
+      - "split_debit_credit": Separate debit and credit columns
+
+    Args:
+        name: Machine identifier (e.g. 'chase_credit', 'wellsfargo_checking').
+        institution_name: Human-readable name (e.g. 'Chase', 'Wells Fargo').
+        header_signature: Column names that uniquely identify this format.
+        date_column: Column containing the transaction date.
+        date_format: Date format string (e.g. '%m/%d/%Y').
+        description_column: Column containing the transaction description.
+        sign_convention: How amounts are represented (see above).
+        amount_column: Single amount column (required unless split).
+        debit_column: Debit column (required for split_debit_credit).
+        credit_column: Credit column (required for split_debit_credit).
+        post_date_column: Optional posting date column.
+        memo_column: Optional memo/notes column.
+        category_column: Optional category column.
+        subcategory_column: Optional subcategory column.
+        type_column: Optional transaction type column.
+        status_column: Optional status column.
+        check_number_column: Optional check number column.
+        reference_column: Optional reference number column.
+        balance_column: Optional running balance column.
+        member_name_column: Optional member/account holder name column.
+        skip_rows: Rows to skip before header (default 0).
+        encoding: File encoding (default 'utf-8').
+    """
+    logger.info("Tool called: csv_save_profile(%s)", name)
+
+    from moneybin.config import get_raw_data_path
+    from moneybin.extractors.csv_profiles import CSVProfile, save_profile
+
+    user_profiles_dir = get_raw_data_path().parent / "csv_profiles"
+
+    try:
+        # Build kwargs, excluding None optional columns
+        kwargs: dict[str, object] = {
+            "name": name,
+            "institution_name": institution_name,
+            "header_signature": header_signature,
+            "date_column": date_column,
+            "date_format": date_format,
+            "description_column": description_column,
+            "sign_convention": sign_convention,
+            "skip_rows": skip_rows,
+            "encoding": encoding,
+        }
+        optional_fields = {
+            "amount_column": amount_column,
+            "debit_column": debit_column,
+            "credit_column": credit_column,
+            "post_date_column": post_date_column,
+            "memo_column": memo_column,
+            "category_column": category_column,
+            "subcategory_column": subcategory_column,
+            "type_column": type_column,
+            "status_column": status_column,
+            "check_number_column": check_number_column,
+            "reference_column": reference_column,
+            "balance_column": balance_column,
+            "member_name_column": member_name_column,
+        }
+        for key, value in optional_fields.items():
+            if value is not None:
+                kwargs[key] = value
+
+        profile = CSVProfile(**kwargs)  # type: ignore[arg-type]
+        output_path = save_profile(profile, user_profiles_dir)
+        return f"Saved CSV profile '{name}' for {institution_name} to {output_path}"
+    except Exception as e:
+        return f"Error saving profile: {e}"

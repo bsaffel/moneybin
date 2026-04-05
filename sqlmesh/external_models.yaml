@@ -48,6 +48,36 @@
     extracted_at: TIMESTAMP
     loaded_at: TIMESTAMP
 
+- name: '"moneybin"."raw"."csv_accounts"'
+  columns:
+    account_id: VARCHAR
+    account_type: VARCHAR
+    institution_name: VARCHAR
+    source_file: VARCHAR
+    extracted_at: TIMESTAMP
+    loaded_at: TIMESTAMP
+
+- name: '"moneybin"."raw"."csv_transactions"'
+  columns:
+    transaction_id: VARCHAR
+    account_id: VARCHAR
+    transaction_date: DATE
+    post_date: DATE
+    amount: DECIMAL(18, 2)
+    description: VARCHAR
+    memo: VARCHAR
+    category: VARCHAR
+    subcategory: VARCHAR
+    transaction_type: VARCHAR
+    transaction_status: VARCHAR
+    check_number: VARCHAR
+    reference_number: VARCHAR
+    balance: DECIMAL(18, 2)
+    member_name: VARCHAR
+    source_file: VARCHAR
+    extracted_at: TIMESTAMP
+    loaded_at: TIMESTAMP
+
 # App layer: tables managed by MCP tools and CLI, not by SQLMesh.
 # Referenced by core views for category enrichment.
 

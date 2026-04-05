@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     import duckdb
 
 app = typer.Typer(
-    help="Import financial files (OFX/QFX bank statements, W-2 PDFs) into MoneyBin",
+    help="Import financial files (OFX/QFX, CSV bank exports, W-2 PDFs) into MoneyBin",
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
@@ -33,25 +33,28 @@ def import_file(
         "--skip-transform",
         help="Skip rebuilding core tables after import",
     ),
-    institution_name: str = typer.Option(
-        None, "--institution", "-i", help="Institution name override (OFX only)"
+    institution: str = typer.Option(
+        None,
+        "--institution",
+        "-i",
+        help="Institution name (OFX) or CSV profile name (auto-detects if omitted)",
     ),
-    tax_year: int = typer.Option(
-        None, "--year", "-y", help="Tax year override (W-2 only)"
+    account_id: str = typer.Option(
+        None, "--account-id", "-a", help="Account identifier (CSV only, required)"
     ),
 ) -> None:
     """Import a financial data file — auto-detects type, loads into DuckDB, and rebuilds core tables.
 
     Supported file types:
       - OFX/QFX: Bank and credit card statements
+      - CSV: Bank transaction exports (Chase, Citi, etc.)
       - PDF: IRS Form W-2 wage and tax statements
 
     Examples:
         moneybin import file ~/Downloads/WellsFargo_2025.qfx
+        moneybin import file ~/Downloads/chase_activity.csv --account-id chase-7022
         moneybin import file ~/Downloads/2024_W2.pdf
-        moneybin import file statement.ofx --skip-transform
-        moneybin import file file.qfx --institution "Wells Fargo"
-        moneybin import file W2.pdf --year 2024
+        moneybin import file statement.ofx --institution "Wells Fargo"
     """
     from moneybin.config import get_database_path
     from moneybin.services.import_service import import_file as do_import
@@ -67,8 +70,8 @@ def import_file(
             db_path=get_database_path(),
             file_path=source,
             run_transforms=not skip_transform,
-            institution_name=institution_name,
-            tax_year=tax_year,
+            institution=institution,
+            account_id=account_id,
         )
         logger.info("✅ %s", result.summary())
     except ValueError as e:

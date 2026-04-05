@@ -259,9 +259,7 @@ class W2Extractor:
             f"Initialized W2 extractor with output: {self.config.raw_data_path}"
         )
 
-    def extract_from_file(
-        self, file_path: Path, tax_year: int | None = None
-    ) -> pl.DataFrame:
+    def extract_from_file(self, file_path: Path) -> pl.DataFrame:
         """Extract W2 data from a PDF file using dual extraction strategy.
 
         This method attempts both text extraction and OCR, then compares results
@@ -269,8 +267,6 @@ class W2Extractor:
 
         Args:
             file_path: Path to the W2 PDF file
-            tax_year: Optional tax year (e.g., 2024). If not provided, will attempt
-                     to extract from PDF or derive from metadata.
 
         Returns:
             pl.DataFrame: DataFrame containing extracted W2 data
@@ -290,11 +286,11 @@ class W2Extractor:
             logger.info("Using text-only extraction (OCR disabled)")
 
         # Attempt text extraction
-        text_result = self._extract_using_text(file_path, tax_year)
+        text_result = self._extract_using_text(file_path)
 
         # Attempt OCR extraction (if enabled)
         if self.config.enable_ocr:
-            ocr_result = self._extract_using_ocr(file_path, tax_year)
+            ocr_result = self._extract_using_ocr(file_path)
         else:
             # Create a "not attempted" result
             ocr_result = ExtractionResult(
@@ -337,14 +333,11 @@ class W2Extractor:
             logger.error(f"Failed to validate W2 data: {e}")
             raise ValueError(f"Invalid W2 data: {e}") from e
 
-    def _extract_using_text(
-        self, file_path: Path, tax_year: int | None
-    ) -> ExtractionResult:
+    def _extract_using_text(self, file_path: Path) -> ExtractionResult:
         """Extract W2 data using text extraction (pdfplumber).
 
         Args:
             file_path: Path to PDF file
-            tax_year: Optional explicit tax year
 
         Returns:
             ExtractionResult: Result of text extraction attempt
@@ -389,8 +382,7 @@ class W2Extractor:
                 w2_data = self._parse_w2_text(
                     full_text,
                     file_path,
-                    tax_year,
-                    pdf_metadata,  # type: ignore[reportUnknownArgumentType] - pdfplumber metadata type
+                    pdf_metadata=pdf_metadata,  # type: ignore[reportUnknownArgumentType] - pdfplumber metadata type
                 )
 
                 # Calculate confidence score based on completeness
@@ -414,14 +406,11 @@ class W2Extractor:
                 confidence_score=0.0,
             )
 
-    def _extract_using_ocr(
-        self, file_path: Path, tax_year: int | None
-    ) -> ExtractionResult:
+    def _extract_using_ocr(self, file_path: Path) -> ExtractionResult:
         """Extract W2 data using OCR (pytesseract).
 
         Args:
             file_path: Path to PDF file
-            tax_year: Optional explicit tax year
 
         Returns:
             ExtractionResult: Result of OCR extraction attempt
@@ -464,7 +453,7 @@ class W2Extractor:
             logger.debug(f"Extracted {len(full_text)} characters via OCR")  # type: ignore[reportUnknownArgumentType] - pytesseract returns str
 
             # Parse W2 data (without PDF metadata since we're using images)
-            w2_data = self._parse_w2_text(full_text, file_path, tax_year, None)  # type: ignore[reportUnknownArgumentType] - pytesseract returns str
+            w2_data = self._parse_w2_text(full_text, file_path)  # type: ignore[reportUnknownArgumentType] - pytesseract returns str
 
             # Calculate confidence score
             confidence = self._calculate_confidence(w2_data)
@@ -711,7 +700,7 @@ class W2Extractor:
         self,
         text: str,
         source_file: Path | None = None,
-        tax_year: int | None = None,
+        *,
         pdf_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Parse W2 form data from extracted text using regex-based pattern matching.
@@ -723,7 +712,7 @@ class W2Extractor:
 
         Extraction Strategy:
             1. Text Cleanup: Normalize whitespace to handle multi-line text
-            2. Tax Year: Multi-tier fallback (explicit param → text → OCR correction →
+            2. Tax Year: Multi-tier fallback (text → OCR correction →
                filename → PDF metadata creation date)
             3. Identifiers: Extract SSN (employee) and EIN (employer) using fixed formats
             4. Monetary Amounts: Find all decimal amounts and map to W-2 boxes in order
@@ -746,7 +735,6 @@ class W2Extractor:
         Args:
             text: Extracted text from PDF (already preprocessed/cropped)
             source_file: Source file path (used for tax year extraction from filename)
-            tax_year: Explicit tax year (bypasses extraction if provided)
             pdf_metadata: PDF metadata dict (used for tax year derivation from creation date)
 
         Returns:
@@ -766,7 +754,7 @@ class W2Extractor:
 
         Example:
             >>> text = pdf_page.extract_text()
-            >>> data = self._parse_w2_text(text, tax_year=2024)
+            >>> data = self._parse_w2_text(text)
             >>> data['employee_first_name']
             'Brandon'
             >>> data['wages']
@@ -784,33 +772,27 @@ class W2Extractor:
         text = " ".join(text.split())
 
         # Extract tax year (multiple strategies)
-        if tax_year:
-            data["tax_year"] = tax_year
-            logger.debug(f"Using provided tax year: {tax_year}")
+        # Try text extraction - look for standard 4-digit year (2000-2099)
+        year_match = re.search(r"\b(20[0-9]{2})\b", text)
+        if year_match:
+            data["tax_year"] = int(year_match.group(1))
+            logger.debug(f"Extracted tax year {data['tax_year']} from text")
         else:
-            # Try text extraction - look for standard 4-digit year
-            year_match = re.search(r"\b(202[0-9]|203[0-9])\b", text)
-            if year_match:
-                data["tax_year"] = int(year_match.group(1))
-                logger.debug(f"Extracted tax year {data['tax_year']} from text")
-            else:
-                # Try OCR error correction - '2024' often becomes 'e024', 'o024', etc.
-                # Pattern: letter/digit + '0' + two digits (24, 25, etc.)
-                ocr_year_match = re.search(r"\b[eEoO0]0(2[0-9]|3[0-9])\b", text)
-                if ocr_year_match:
-                    # Extract last 2 digits and prepend '20'
-                    year_suffix = ocr_year_match.group(1)
-                    data["tax_year"] = int(f"20{year_suffix}")
-                    logger.info(
-                        f"Extracted tax year {data['tax_year']} from OCR text "
-                        f"(corrected '{ocr_year_match.group(0)}' → '{data['tax_year']}')"
-                    )
+            # Try OCR error correction - '2024' often becomes 'e024', 'o024', etc.
+            # Pattern: letter/digit + '0' + two digits (24, 25, etc.)
+            ocr_year_match = re.search(r"\b[eEoO0]0(2[0-9]|3[0-9])\b", text)
+            if ocr_year_match:
+                # Extract last 2 digits and prepend '20'
+                year_suffix = ocr_year_match.group(1)
+                data["tax_year"] = int(f"20{year_suffix}")
+                logger.info(
+                    f"Extracted tax year {data['tax_year']} from OCR text "
+                    f"(corrected '{ocr_year_match.group(0)}' → '{data['tax_year']}')"
+                )
 
             if "tax_year" not in data and source_file:
                 # Try filename
-                year_from_filename = re.search(
-                    r"\b(202[0-9]|203[0-9])\b", source_file.name
-                )
+                year_from_filename = re.search(r"\b(20[0-9]{2})\b", source_file.name)
                 if year_from_filename:
                     data["tax_year"] = int(year_from_filename.group(1))
                     logger.debug(f"Extracted tax year {data['tax_year']} from filename")
@@ -1085,15 +1067,14 @@ class W2Extractor:
         logger.info(f"Saved W2 data ({len(df)} rows) to {output_path}")
 
 
-def extract_w2_file(file_path: Path | str, tax_year: int | None = None) -> pl.DataFrame:
+def extract_w2_file(file_path: Path | str) -> pl.DataFrame:
     """Convenience function to extract W2 data from a PDF file.
 
     Args:
         file_path: Path to the W2 PDF file
-        tax_year: Optional tax year (e.g., 2024)
 
     Returns:
         pl.DataFrame: DataFrame containing extracted W2 data
     """
     extractor = W2Extractor()
-    return extractor.extract_from_file(Path(file_path), tax_year)
+    return extractor.extract_from_file(Path(file_path))

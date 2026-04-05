@@ -47,6 +47,16 @@ CREATE OR REPLACE TABLE transactions AS
 SELECT * FROM read_parquet('data/*.parquet');
 ```
 
+## Parameter Design
+
+Only expose parameters for values that **cannot be reliably determined from the document content itself**. If a value (e.g., tax year, account number, institution name) is present in or derivable from the source file, the parser should extract it — not require the caller to provide it.
+
+- **Extractors**: Parse all available metadata from the document. Use multi-tier fallback strategies (content → filename → file metadata).
+- **CLI/MCP callers**: Do not expose options for extractor-derivable fields. Only surface parameters for truly external context (e.g., `account_id` for CSV files that lack one).
+- **MCP prompts**: When a workflow requires values that can't be extracted, the prompt template should explicitly ask the user for them rather than silently defaulting.
+
+This captures the principle you're applying with the tax_year removal and generalizes it. The CSV account_id is a good counter-example — CSVs genuinely don't contain account identifiers, so that parameter is justified.
+
 ## Adding a New Data Source
 
 1. Create extractor/connector in `src/moneybin/extractors/` or `src/moneybin/connectors/`

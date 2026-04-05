@@ -67,9 +67,12 @@ def _detect_file_type(file_path: Path) -> str:
         return "ofx"
     if suffix == ".pdf":
         return "w2"
+    if suffix == ".csv":
+        return "csv"
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx (bank statements), .pdf (W-2 forms)"
+        f"Supported: .ofx, .qfx (bank statements), .pdf (W-2 forms), "
+        f".csv (bank transaction exports)"
     )
 
 
@@ -103,14 +106,14 @@ def _import_ofx(
     db_path: Path,
     file_path: Path,
     *,
-    institution_name: str | None = None,
+    institution: str | None = None,
 ) -> ImportResult:
     """Import an OFX/QFX file.
 
     Args:
         db_path: Path to the DuckDB database file.
         file_path: Path to the OFX/QFX file.
-        institution_name: Optional institution name override.
+        institution: Optional institution name override.
 
     Returns:
         ImportResult with summary of imported data.
@@ -122,7 +125,7 @@ def _import_ofx(
 
     # Extract
     extractor = OFXExtractor()
-    data = extractor.extract_from_file(file_path, institution_name)
+    data = extractor.extract_from_file(file_path, institution)
 
     # Load using OFXLoader (which manages its own connection)
     loader = OFXLoader(db_path)
@@ -158,15 +161,12 @@ def _import_ofx(
 def _import_w2(
     db_path: Path,
     file_path: Path,
-    *,
-    tax_year: int | None = None,
 ) -> ImportResult:
     """Import a W-2 PDF file.
 
     Args:
         db_path: Path to the DuckDB database file.
         file_path: Path to the W-2 PDF.
-        tax_year: Optional tax year override.
 
     Returns:
         ImportResult with summary of imported data.
@@ -178,7 +178,7 @@ def _import_w2(
 
     # Extract
     extractor = W2Extractor()
-    data = extractor.extract_from_file(file_path, tax_year)
+    data = extractor.extract_from_file(file_path)
 
     # Load
     loader = W2Loader(db_path)
@@ -190,13 +190,89 @@ def _import_w2(
     return result
 
 
+def _import_csv(
+    db_path: Path,
+    file_path: Path,
+    *,
+    account_id: str | None = None,
+    institution: str | None = None,
+) -> ImportResult:
+    """Import a CSV file.
+
+    Args:
+        db_path: Path to the DuckDB database file.
+        file_path: Path to the CSV file.
+        account_id: Account identifier (required for CSV).
+        institution: Optional profile name to use instead of auto-detection.
+
+    Returns:
+        ImportResult with summary of imported data.
+    """
+    from moneybin.config import get_raw_data_path
+    from moneybin.extractors.csv_extractor import CSVExtractor
+    from moneybin.extractors.csv_profiles import load_profiles
+    from moneybin.loaders.csv_loader import CSVLoader
+
+    result = ImportResult(file_path=str(file_path), file_type="csv")
+
+    user_profiles_dir = get_raw_data_path().parent / "csv_profiles"
+
+    # Resolve profile if institution name provided
+    profile = None
+    if institution:
+        profiles = load_profiles(user_profiles_dir)
+        if institution not in profiles:
+            available = ", ".join(sorted(profiles.keys())) or "(none)"
+            raise ValueError(
+                f"Unknown institution profile: '{institution}'. Available: {available}"
+            )
+        profile = profiles[institution]
+
+    # Extract
+    extractor = CSVExtractor()
+    data = extractor.extract_from_file(
+        file_path,
+        profile=profile,
+        account_id=account_id,
+        user_profiles_dir=user_profiles_dir,
+    )
+
+    # Load
+    loader = CSVLoader(db_path)
+    row_counts = loader.load_data(data)
+
+    result.accounts = row_counts.get("accounts", 0)
+    result.transactions = row_counts.get("transactions", 0)
+    result.details = row_counts
+
+    # Get date range from transactions
+    if result.transactions > 0:
+        try:
+            conn = duckdb.connect(str(db_path), read_only=True)
+            try:
+                date_result = conn.execute("""
+                    SELECT
+                        MIN(transaction_date) AS min_date,
+                        MAX(transaction_date) AS max_date
+                    FROM raw.csv_transactions
+                """).fetchone()
+                if date_result and date_result[0]:
+                    result.date_range = f"{date_result[0]} to {date_result[1]}"
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Could not determine date range from CSV transactions")
+
+    return result
+
+
 def import_file(
     db_path: Path,
     file_path: str | Path,
     *,
     run_transforms: bool = True,
-    institution_name: str | None = None,
-    tax_year: int | None = None,
+    institution: str | None = None,
+    account_id: str | None = None,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -208,8 +284,9 @@ def import_file(
         file_path: Path to the file to import.
         run_transforms: Whether to run SQLMesh transforms after loading.
             Defaults to True.
-        institution_name: Optional institution name override (OFX only).
-        tax_year: Optional tax year override (W-2 only).
+        institution: Institution name (OFX) or CSV profile name. Auto-detected
+            for CSV if omitted.
+        account_id: Account identifier (CSV only, required).
 
     Returns:
         ImportResult with summary of what was imported.
@@ -227,14 +304,18 @@ def import_file(
     logger.info("Importing %s file: %s", file_type, path)
 
     if file_type == "ofx":
-        result = _import_ofx(db_path, path, institution_name=institution_name)
+        result = _import_ofx(db_path, path, institution=institution)
     elif file_type == "w2":
-        result = _import_w2(db_path, path, tax_year=tax_year)
+        result = _import_w2(db_path, path)
+    elif file_type == "csv":
+        result = _import_csv(
+            db_path, path, account_id=account_id, institution=institution
+        )
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
     # Run SQLMesh transforms after loading raw data
-    if run_transforms and file_type == "ofx":
+    if run_transforms and file_type in ("ofx", "csv"):
         result.core_tables_rebuilt = _run_transforms(db_path)
 
         # Apply deterministic categorization to new transactions
