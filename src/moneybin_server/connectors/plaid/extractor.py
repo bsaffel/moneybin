@@ -63,8 +63,8 @@ class PlaidExtractor:
         self.credentials = PlaidCredentials.from_environment()
         self.database_path = database_path
 
-        # Validate that raw_data_path is set (should come from caller)
-        if self.config.raw_data_path is None:
+        # Validate that raw_data_path is set when saving is enabled
+        if self.config.save_raw_data and self.config.raw_data_path is None:
             raise ValueError(
                 "PlaidExtractionConfig.raw_data_path must be set explicitly. "
                 "It should use the profile-aware path from the calling context."
@@ -83,7 +83,8 @@ class PlaidExtractor:
         self.client: Any = plaid_api.PlaidApi(api_client)
 
         # Ensure output directory exists
-        self.config.raw_data_path.mkdir(parents=True, exist_ok=True)
+        if self.config.raw_data_path is not None:
+            self.config.raw_data_path.mkdir(parents=True, exist_ok=True)
 
         logger.info(
             f"Initialized Plaid extractor for {self.credentials.environment} environment"

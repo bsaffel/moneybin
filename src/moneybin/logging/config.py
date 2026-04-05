@@ -132,8 +132,7 @@ def setup_logging(
             return "Shutting down the event dispatcher" not in record.getMessage()
 
     suppress = _SuppressFilter()
-    for handler in logging.root.handlers:
-        handler.addFilter(suppress)
+    logging.root.addFilter(suppress)
 
 
 def setup_dagster_logging(profile: str | None = None) -> None:

@@ -158,7 +158,9 @@ def test_integration_plaid_sandbox_extracts_accounts_and_transactions(
     monkeypatch.setenv("PLAID_ENV", "sandbox")
 
     # Use extractor helper to create a sandbox access token
-    extractor_for_token = PlaidExtractor()
+    extractor_for_token = PlaidExtractor(
+        config=PlaidExtractionConfig(save_raw_data=False)
+    )
     access_token = extractor_for_token.create_sandbox_access_token()
 
     # Do not write files during integration run

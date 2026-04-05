@@ -309,10 +309,11 @@ class TestBulkCategorize:
         ])
         assert "Categorized 3" in result
         db = server.get_db()
-        count = db.execute(
+        row = db.execute(
             "SELECT COUNT(*) FROM app.transaction_categories WHERE categorized_by = 'ai'"
-        ).fetchone()[0]
-        assert count == 3
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 3
 
     @pytest.mark.unit
     def test_creates_merchant_mappings(self) -> None:
@@ -324,8 +325,9 @@ class TestBulkCategorize:
             },
         ])
         db = server.get_db()
-        count = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()[0]
-        assert count >= 1
+        row = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()
+        assert row is not None
+        assert row[0] >= 1
 
     @pytest.mark.unit
     def test_skips_merchant_mapping_when_disabled(self) -> None:
@@ -340,8 +342,9 @@ class TestBulkCategorize:
             create_merchant_mappings=False,
         )
         db = server.get_db()
-        count = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()[0]
-        assert count == 0
+        row = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()
+        assert row is not None
+        assert row[0] == 0
 
     @pytest.mark.unit
     def test_empty_list_returns_early(self) -> None:
@@ -401,10 +404,9 @@ class TestBulkCreateCategorizationRules:
         ])
         assert "Created 3" in result
         db = server.get_db()
-        count = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()[
-            0
-        ]
-        assert count == 3
+        row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
+        assert row is not None
+        assert row[0] == 3
 
     @pytest.mark.unit
     def test_empty_list_returns_early(self) -> None:
@@ -471,8 +473,9 @@ class TestBulkCreateMerchantMappings:
         ])
         assert "Created 3" in result
         db = server.get_db()
-        count = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()[0]
-        assert count == 3
+        row = db.execute("SELECT COUNT(*) FROM app.merchants").fetchone()
+        assert row is not None
+        assert row[0] == 3
 
     @pytest.mark.unit
     def test_empty_list_returns_early(self) -> None:
