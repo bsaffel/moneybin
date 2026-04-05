@@ -115,5 +115,39 @@ WITH ofx_transactions AS (
     ON c.merchant_id = m.merchant_id
 )
 SELECT
-  *
+  transaction_id, -- Unique transaction identifier; stable across re-imports from the same source
+  account_id, -- Foreign key to core.dim_accounts
+  transaction_date, -- Date the transaction posted or settled
+  authorized_date, -- Date the transaction was authorized; NULL for OFX and CSV sources
+  amount, -- Transaction amount; negative = expense, positive = income
+  amount_absolute, -- Absolute value of amount; avoids sign handling in aggregations
+  transaction_direction, -- Derived from amount sign: expense, income, or zero
+  description, -- Raw payee or merchant description from the source
+  merchant_name, -- Normalized merchant name from app.merchants; falls back to source value
+  memo, -- Additional notes from the source, e.g. OFX memo field
+  category, -- Spending category; from app.transaction_categories when categorized, else source value
+  subcategory, -- Spending subcategory; from app.transaction_categories when categorized, else source value
+  categorized_by, -- How the category was assigned: rule, ai, user, or NULL if uncategorized
+  payment_channel, -- Payment channel (online, in store, other); NULL for OFX and CSV sources
+  transaction_type, -- Source-specific transaction type code, e.g. DEBIT, CREDIT, CHECK
+  check_number, -- Check number for check transactions; NULL otherwise
+  is_pending, -- True if the transaction has not yet settled; always FALSE for OFX and CSV sources
+  pending_transaction_id, -- ID of the pending transaction this record resolved; NULL for OFX and CSV sources
+  location_address, -- Merchant street address; NULL for OFX and CSV sources
+  location_city, -- Merchant city; NULL for OFX and CSV sources
+  location_region, -- Merchant state or region; NULL for OFX and CSV sources
+  location_postal_code, -- Merchant postal code; NULL for OFX and CSV sources
+  location_country, -- Merchant country code; NULL for OFX and CSV sources
+  location_latitude, -- Merchant latitude coordinate; NULL for OFX and CSV sources
+  location_longitude, -- Merchant longitude coordinate; NULL for OFX and CSV sources
+  currency_code, -- ISO 4217 currency code; hardcoded USD for OFX and CSV sources
+  source_system, -- Origin of the record: ofx or csv
+  source_extracted_at, -- When the data was parsed from the source file
+  loaded_at, -- When this record was last written to the core view
+  transaction_year, -- Calendar year extracted from transaction_date
+  transaction_month, -- Calendar month (1-12) extracted from transaction_date
+  transaction_day, -- Calendar day (1-31) extracted from transaction_date
+  transaction_day_of_week, -- Day of week where 0 = Sunday and 6 = Saturday
+  transaction_year_month, -- Year-month in YYYY-MM format for period grouping
+  transaction_year_quarter -- Year-quarter in YYYY-QN format for period grouping
 FROM standardized

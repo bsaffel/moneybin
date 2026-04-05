@@ -52,7 +52,7 @@ def load_parquet(
         verbose: Enable debug level logging
     """
     profile = get_current_profile()
-    logger.info(f"Loading Parquet files (Profile: {profile})")
+    logger.info(f"⚙️  Loading Parquet files (Profile: {profile})")
 
     try:
         # Create configuration with centralized defaults
@@ -68,11 +68,12 @@ def load_parquet(
 
         # Display results
         if results:
-            logger.info("📊 Loading Results:")
+            logger.info("Loading results:")
             for table_name, count in results.items():
                 logger.info(f"  {table_name}: {count:,} records")
+            logger.info("✅ Load complete")
         else:
-            logger.warning("No data was loaded")
+            logger.warning("⚠️  No data was loaded")
 
     except FileNotFoundError as e:
         logger.error(f"❌ {e}")

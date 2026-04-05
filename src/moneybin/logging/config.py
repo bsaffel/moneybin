@@ -123,6 +123,17 @@ def setup_logging(
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("plaid").setLevel(logging.INFO)
+    logging.getLogger("sqlmesh.core.analytics.dispatcher").setLevel(logging.WARNING)
+
+    # SQLMesh analytics shutdown message uses the root logger directly (not a named logger),
+    # so suppress its shutdown message via a filter on all handlers.
+    class _SuppressFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "Shutting down the event dispatcher" not in record.getMessage()
+
+    suppress = _SuppressFilter()
+    for handler in logging.root.handlers:
+        handler.addFilter(suppress)
 
 
 def setup_dagster_logging(profile: str | None = None) -> None:
