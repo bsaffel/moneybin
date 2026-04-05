@@ -26,6 +26,8 @@ FCT_TRANSACTIONS = TableRef("core", "fct_transactions")
 OFX_BALANCES = TableRef("raw", "ofx_balances")
 OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
 W2_FORMS = TableRef("raw", "w2_forms")
+CSV_ACCOUNTS = TableRef("raw", "csv_accounts")
+CSV_TRANSACTIONS = TableRef("raw", "csv_transactions")
 
 # -- App tables (application-managed data) --
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories")

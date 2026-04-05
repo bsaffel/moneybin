@@ -72,7 +72,7 @@ def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
         enable_ocr=True,  # Enable OCR to match production behavior
     )
     extractor = W2Extractor(config)
-    return extractor.extract_from_file(sample_w2_file, tax_year=2024)
+    return extractor.extract_from_file(sample_w2_file)
 
 
 @pytest.mark.unit
@@ -223,7 +223,7 @@ def test_extract_w2_data(cached_w2_extraction: pl.DataFrame) -> None:
         assert col in w2
 
     # Validate basic data types and values
-    assert w2["tax_year"] == 2024
+    assert w2["tax_year"] == 2018
     assert isinstance(w2["employee_ssn"], str)
     assert isinstance(w2["employee_first_name"], str)
     assert isinstance(w2["employee_last_name"], str)
@@ -396,7 +396,7 @@ def test_convenience_function(cached_w2_extraction: pl.DataFrame) -> None:
 
     # Check basic fields
     w2 = result.row(0, named=True)
-    assert w2["tax_year"] == 2024
+    assert w2["tax_year"] == 2018
     assert w2["employee_first_name"] == "Howard"
 
 
@@ -429,7 +429,7 @@ def test_extract_tax_year_validation(cached_w2_extraction: pl.DataFrame) -> None
     assert w2["tax_year"] >= 2000
     assert w2["tax_year"] <= 2100
     # Should match sample (2024)
-    assert w2["tax_year"] == 2024
+    assert w2["tax_year"] == 2018
 
 
 @pytest.mark.unit
@@ -439,8 +439,8 @@ def test_extract_without_year_parameter(
     """Test that year can be extracted from document without explicit parameter."""
     extractor = W2Extractor(extractor_config)
 
-    # Extract WITHOUT providing tax_year parameter
-    result = extractor.extract_from_file(sample_w2_file, tax_year=None)
+    # Extract — tax year is always auto-detected from document content
+    result = extractor.extract_from_file(sample_w2_file)
 
     # Should still extract year from document (Google Cloud sample is from 2018)
     w2 = result.row(0, named=True)

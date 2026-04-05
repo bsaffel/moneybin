@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS raw.csv_transactions (
+    transaction_id VARCHAR NOT NULL,
+    account_id VARCHAR NOT NULL,
+    transaction_date DATE NOT NULL,
+    post_date DATE,
+    amount DECIMAL(18, 2) NOT NULL,
+    description VARCHAR,
+    memo VARCHAR,
+    category VARCHAR,
+    subcategory VARCHAR,
+    transaction_type VARCHAR,
+    transaction_status VARCHAR,
+    check_number VARCHAR,
+    reference_number VARCHAR,
+    balance DECIMAL(18, 2),
+    member_name VARCHAR,
+    source_file VARCHAR NOT NULL,
+    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (transaction_id, account_id, source_file)
+);

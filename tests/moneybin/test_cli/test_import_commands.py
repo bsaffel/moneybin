@@ -63,8 +63,8 @@ class TestImportFileCommand:
             db_path=mock_get_database_path.return_value,
             file_path=test_file,
             run_transforms=True,
-            institution_name=None,
-            tax_year=None,
+            institution=None,
+            account_id=None,
         )
 
     def test_import_file_skip_transform(
@@ -84,8 +84,8 @@ class TestImportFileCommand:
             db_path=mock_get_database_path.return_value,
             file_path=test_file,
             run_transforms=False,
-            institution_name=None,
-            tax_year=None,
+            institution=None,
+            account_id=None,
         )
 
     def test_import_file_with_institution(
@@ -107,29 +107,8 @@ class TestImportFileCommand:
             db_path=mock_get_database_path.return_value,
             file_path=test_file,
             run_transforms=True,
-            institution_name="Wells Fargo",
-            tax_year=None,
-        )
-
-    def test_import_file_with_tax_year(
-        self,
-        runner: CliRunner,
-        mock_import_file: MagicMock,
-        mock_get_database_path: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """Test --year flag is passed through."""
-        test_file = tmp_path / "test.pdf"
-        test_file.touch()
-
-        result = runner.invoke(app, ["file", str(test_file), "--year", "2024"])
-        assert result.exit_code == 0
-        mock_import_file.assert_called_once_with(
-            db_path=mock_get_database_path.return_value,
-            file_path=test_file,
-            run_transforms=True,
-            institution_name=None,
-            tax_year=2024,
+            institution="Wells Fargo",
+            account_id=None,
         )
 
     def test_import_file_not_found(
@@ -148,9 +127,9 @@ class TestImportFileCommand:
         tmp_path: Path,
     ) -> None:
         """Test exit code 1 for unsupported file type."""
-        test_file = tmp_path / "test.csv"
+        test_file = tmp_path / "test.xlsx"
         test_file.touch()
-        mock_import_file.side_effect = ValueError("Unsupported file type: .csv")
+        mock_import_file.side_effect = ValueError("Unsupported file type: .xlsx")
 
         result = runner.invoke(app, ["file", str(test_file)])
         assert result.exit_code == 1
