@@ -60,7 +60,7 @@ logger.warning("⚠️  No new data to sync")
 logger.info("💡 Run 'moneybin db init' to create the database first")
 
 # Bad — wrong icon semantics or decorative noise
-logger.info("📈 Beginning incremental sync...")   # chart ≠ working
-logger.info("📊 Loading results:")               # chart ≠ working
-logger.info("📁 Data saved to: %s", path)        # no icon needed for paths
+logger.info("📈 Beginning incremental sync...")  # chart ≠ working
+logger.info("📊 Loading results:")  # chart ≠ working
+logger.info("📁 Data saved to: %s", path)  # no icon needed for paths
 ```

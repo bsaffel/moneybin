@@ -64,6 +64,8 @@ dev = [
     "pre-commit>=4.4.0",
     "sqlmesh[lsp]>=0.200.0",
     "sqlparse>=0.5.3",
+    # Security auditing
+    "pip-audit>=2.7",
     # Testing framework and tools
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
@@ -228,6 +230,14 @@ markers = [
 filterwarnings = [
     # Ignore deprecation warnings from third-party libraries we don't control
     "ignore:Call to deprecated method findAll:DeprecationWarning:ofxparse",
+    # astor 0.8.1 uses ast.Num which is removed in Python 3.14; remove when astor is updated
+    "ignore:ast.Num is deprecated:DeprecationWarning:astor",
+    # pydantic 2.12.5 still triggers json_encoders warning from an indirect dependency;
+    # remove once the offending dependency migrates to custom_serializers
+    "ignore:`json_encoders` is deprecated:pydantic.warnings.PydanticDeprecatedSince20",
+    # Python 3.12+ warns about fork() in multi-threaded processes (from MCP test fixtures);
+    # remove once the test infrastructure switches to spawn or forkserver
+    "ignore:This process.*is multi-threaded.*use of fork:DeprecationWarning:multiprocessing",
 ]
 
 [tool.coverage.run]
