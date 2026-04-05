@@ -1,6 +1,7 @@
 name: AI Code Review
 
 on:
+  workflow_dispatch:
   pull_request:
     types: [opened, ready_for_review]
   issue_comment:
