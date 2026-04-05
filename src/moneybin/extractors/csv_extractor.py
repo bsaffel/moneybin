@@ -263,7 +263,6 @@ class CSVExtractor:
                 amount=f"{amount:.2f}",
                 description=description,
                 account_id=account_id,
-                row_index=row_index,
             )
 
             tx: dict[str, Any] = {
@@ -413,25 +412,27 @@ def _generate_transaction_id(
     amount: str,
     description: str,
     account_id: str,
-    row_index: int,
 ) -> str:
     """Generate a deterministic synthetic transaction ID.
 
-    The hash excludes ``source_file`` so that the same logical transaction
-    produces the same ID regardless of which CSV export it appears in.
-    This enables cross-file dedup in the staging layer.
+    The hash is derived solely from the transaction's logical fields, so the
+    same transaction produces the same ID regardless of which CSV export it
+    appears in or its row position. This enables cross-file dedup in the
+    staging layer (``PARTITION BY transaction_id, account_id``).
+
+    Two transactions that are identical in every field are indistinguishable
+    from CSV data alone and are correctly collapsed by dedup.
 
     Args:
         date: Transaction date as string.
         amount: Normalised amount as string.
         description: Transaction description.
         account_id: Account identifier.
-        row_index: Zero-based row position in the CSV.
 
     Returns:
         Transaction ID prefixed with ``csv_``.
     """
-    raw = f"{date}|{amount}|{description}|{account_id}|{row_index}"
+    raw = f"{date}|{amount}|{description}|{account_id}"
     digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
     return f"csv_{digest}"
 

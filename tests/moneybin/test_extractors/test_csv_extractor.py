@@ -113,22 +113,23 @@ class TestTransactionIDGeneration:
     """Test deterministic transaction ID generation."""
 
     def test_deterministic(self) -> None:
-        id1 = _generate_transaction_id("2025-12-16", "-41.67", "TARGET", "acct1", 0)
-        id2 = _generate_transaction_id("2025-12-16", "-41.67", "TARGET", "acct1", 0)
+        id1 = _generate_transaction_id("2025-12-16", "-41.67", "TARGET", "acct1")
+        id2 = _generate_transaction_id("2025-12-16", "-41.67", "TARGET", "acct1")
         assert id1 == id2
 
     def test_prefix(self) -> None:
-        tid = _generate_transaction_id("2025-12-16", "-41.67", "TARGET", "acct1", 0)
+        tid = _generate_transaction_id("2025-12-16", "-41.67", "TARGET", "acct1")
         assert tid.startswith("csv_")
 
-    def test_different_rows_different_ids(self) -> None:
-        id1 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct1", 0)
-        id2 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct1", 1)
-        assert id1 != id2
+    def test_stable_across_row_positions(self) -> None:
+        """Same logical transaction at different row offsets yields the same ID."""
+        id_row0 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct1")
+        id_row5 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct1")
+        assert id_row0 == id_row5
 
     def test_different_accounts_different_ids(self) -> None:
-        id1 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct1", 0)
-        id2 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct2", 0)
+        id1 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct1")
+        id2 = _generate_transaction_id("2025-12-16", "-5.00", "COFFEE", "acct2")
         assert id1 != id2
 
 
