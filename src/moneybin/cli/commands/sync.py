@@ -52,16 +52,13 @@ def sync_plaid(
 
         # Sync from all configured institutions
         if force:
-            logger.info("🔄 Starting FORCED sync from all configured institutions...")
-            logger.info(
+            logger.info("⚙️  Starting FORCED sync from all configured institutions...")
+            logger.warning(
                 "⚠️  This will sync the full lookback period regardless of previous syncs"
             )
         else:
             logger.info(
-                "📈 Starting INCREMENTAL sync from all configured institutions..."
-            )
-            logger.info(
-                "✨ Only new complete days will be synced (use --force for full sync)"
+                "⚙️  Starting INCREMENTAL sync from all configured institutions..."
             )
 
         all_data = manager.extract_all_institutions(force_extraction=force)
@@ -74,7 +71,7 @@ def sync_plaid(
 
         # Display summary
         logger.info("✅ Sync completed successfully")
-        logger.info(f"📁 Raw data saved to: data/{profile}/raw/plaid/")
+        logger.info(f"Raw data saved to: data/{profile}/raw/plaid/")
 
     except Exception as e:
         logger.error(f"❌ Sync failed: {e}")

@@ -34,6 +34,33 @@ def command_function(source_path: Path = typer.Option(..., help="Description")) 
 ## Conventions
 
 - Kebab-case for command names
-- Emoji in user-facing output: `[checkmark]` `[x]` `[warning]` `[rocket]`
 - Clear help text for all commands and options
 - Progress updates for long operations
+
+## Icon Usage
+
+Use icons **sparingly** — only where they add scanability, not decoration.
+
+| Signal | Icon | When to use |
+|--------|------|-------------|
+| Success | `✅` | Final line of a successful action command |
+| Error | `❌` | `logger.error(...)` messages |
+| Warning | `⚠️` | `logger.warning(...)` messages |
+| Working | `⚙️` | Start of a long-running operation (sync, load, transform) |
+| Hint | `💡` | Optional follow-up tips after an error |
+
+Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data.
+
+```python
+# Good
+logger.info("⚙️  Starting sync from all institutions...")
+logger.info("✅ Imported %d transactions", count)
+logger.error("❌ File not found: %s", path)
+logger.warning("⚠️  No new data to sync")
+logger.info("💡 Run 'moneybin db init' to create the database first")
+
+# Bad — wrong icon semantics or decorative noise
+logger.info("📈 Beginning incremental sync...")   # chart ≠ working
+logger.info("📊 Loading results:")               # chart ≠ working
+logger.info("📁 Data saved to: %s", path)        # no icon needed for paths
+```

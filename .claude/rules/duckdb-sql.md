@@ -9,7 +9,7 @@ globs: ["**/*.sql", "sqlmesh/models/**", "src/moneybin/sql/**"]
 All SQL formatted with `sqlmesh format` (uses sqlglot, understands `MODEL()` blocks natively).
 
 ```bash
-uv run sqlmesh format
+uv run sqlmesh -p sqlmesh format
 ```
 
 ## File Types

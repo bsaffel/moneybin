@@ -36,9 +36,9 @@ def plan_transforms(
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
-        logger.info("SQLMesh plan completed")
+        logger.info("✅ SQLMesh plan completed")
     except Exception as e:
-        logger.error("SQLMesh plan failed: %s", e)
+        logger.error("❌ SQLMesh plan failed: %s", e)
         raise typer.Exit(1) from e
 
 
@@ -57,7 +57,7 @@ def apply_transforms() -> None:
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=True, no_prompts=True)
-        logger.info("SQLMesh transforms applied successfully")
+        logger.info("✅ SQLMesh transforms applied")
     except Exception as e:
-        logger.error("SQLMesh apply failed: %s", e)
+        logger.error("❌ SQLMesh apply failed: %s", e)
         raise typer.Exit(1) from e
