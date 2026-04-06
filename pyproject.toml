@@ -44,7 +44,7 @@ package-dir = { "" = "src" }
 [tool.setuptools.packages.find]
 # Find packages in src/ directory
 where = ["src"]
-include = ["moneybin*", "moneybin_server*"]
+include = ["moneybin*"]
 
 [tool.setuptools.package-data]
 # Include SQLMesh project files in distribution

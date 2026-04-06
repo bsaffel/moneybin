@@ -78,5 +78,4 @@ target/
 pyrightconfig.json
 
 # moneybin_server will be extracted into its own project
-src/moneybin_server/
-tests/moneybin_server/
+moneybin_server/
