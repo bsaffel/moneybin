@@ -1,0 +1,17 @@
+name: citi_credit
+institution_name: Citi
+header_signature:
+  - Status
+  - Date
+  - Description
+  - Debit
+  - Credit
+  - Member Name
+date_column: Date
+date_format: '%m/%d/%Y'
+debit_column: Debit
+credit_column: Credit
+sign_convention: split_debit_credit
+description_column: Description
+status_column: Status
+member_name_column: Member Name

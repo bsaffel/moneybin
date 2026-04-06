@@ -109,9 +109,9 @@ def _apply_inline_column_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> 
             continue
 
         try:
+            safe_comment = comment.strip().replace("'", "''")
             conn.execute(
-                f"COMMENT ON COLUMN {current_table}.{col_name} IS ?",
-                [comment.strip()],
+                f"COMMENT ON COLUMN {current_table}.{col_name} IS '{safe_comment}'"
             )
             logger.debug("Applied comment to %s.%s", current_table, col_name)
         except duckdb.CatalogException:

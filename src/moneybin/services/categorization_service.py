@@ -395,7 +395,7 @@ def apply_deterministic_categorization(
 _SQLMESH_ROOT = Path(__file__).resolve().parents[3] / "sqlmesh"
 
 
-def _ensure_seed_table(conn: duckdb.DuckDBPyConnection) -> None:
+def ensure_seed_table(conn: duckdb.DuckDBPyConnection) -> None:
     """Materialize the SQLMesh seed table if it doesn't exist yet.
 
     Runs a targeted ``sqlmesh plan --auto-apply`` scoped to just the
@@ -440,7 +440,7 @@ def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
     Returns:
         Number of categories inserted.
     """
-    _ensure_seed_table(conn)
+    ensure_seed_table(conn)
 
     count_before = 0
     try:

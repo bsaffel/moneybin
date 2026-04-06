@@ -63,37 +63,3 @@ def list_services() -> None:
     logger.info("\n💡 Example institution tokens:")
     logger.info("    PLAID_TOKEN_WELLS_FARGO=access-sandbox-xxx")
     logger.info("    PLAID_TOKEN_CHASE=access-sandbox-yyy")
-
-
-@app.command("validate-plaid")
-def validate_plaid() -> None:
-    """Validate Plaid API credentials specifically."""
-    import os
-
-    from moneybin.connectors.plaid_sync import PlaidSyncConnector
-
-    try:
-        # Initialize connector (validates credentials on init)
-        _ = PlaidSyncConnector()
-        logger.info("✅ Plaid credentials validated successfully")
-
-        # Check for configured tokens by looking at environment variables
-        token_vars = [
-            key for key in os.environ.keys() if key.startswith("PLAID_TOKEN_")
-        ]
-
-        if token_vars:
-            logger.info(f"✅ Found {len(token_vars)} configured institution(s)")
-            for token_var in token_vars:
-                institution_name = (
-                    token_var.replace("PLAID_TOKEN_", "").replace("_", " ").title()
-                )
-                logger.info(f"  - {institution_name}")
-        else:
-            logger.warning("⚠️  No access tokens configured")
-            logger.info("To add institutions, set environment variables like:")
-            logger.info("PLAID_TOKEN_WELLS_FARGO=access-sandbox-xxx")
-
-    except Exception as e:
-        logger.error(f"❌ Plaid credential validation failed: {e}")
-        raise typer.Exit(1) from e

@@ -34,6 +34,11 @@ data/
 *.xls
 # SQLMesh seed data is safe to track (static reference data, not financial)
 !sqlmesh/models/seeds/*.csv
+# Test fixtures are synthetic/non-sensitive and must be tracked for CI
+!tests/fixtures/*.csv
+!tests/fixtures/*.pdf
+# Built-in CSV profiles are static config bundled with the package (not financial data)
+!src/moneybin/data/
 
 # Database files
 *.duckdb
@@ -71,3 +76,6 @@ target/
 
 # Pyright type checking
 pyrightconfig.json
+
+# moneybin_server will be extracted into its own project
+moneybin_server/

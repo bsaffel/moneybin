@@ -12,11 +12,11 @@ from pytest_mock import MockerFixture
 
 from moneybin.schema import init_schemas
 from moneybin.services.categorization_service import (
-    _ensure_seed_table,
     apply_deterministic_categorization,
     apply_merchant_categories,
     apply_rules,
     create_merchant,
+    ensure_seed_table,
     get_active_categories,
     get_categorization_stats,
     match_merchant,
@@ -458,7 +458,7 @@ class TestEnsureSeedTable:
         db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
         db.execute("CREATE TABLE seeds.categories (category_id VARCHAR)")
         # Should return without calling SQLMesh
-        _ensure_seed_table(db)
+        ensure_seed_table(db)
 
     @pytest.mark.unit
     def test_calls_sqlmesh_when_missing(
@@ -479,7 +479,7 @@ class TestEnsureSeedTable:
 
         mock_ctx.plan.side_effect = create_table
 
-        _ensure_seed_table(db)
+        ensure_seed_table(db)
 
         mock_context_cls.assert_called_once()
         mock_ctx.plan.assert_called_once_with(
