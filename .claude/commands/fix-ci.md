@@ -44,7 +44,7 @@ Find and fix failures in the latest CI run for a branch.
 
 8. **Verify locally** by running the full pre-commit checklist:
    ```
-   uv run ruff format . && uv run ruff check . && uv run pyright && uv run pytest tests/ -v
+   make check test-all
    ```
    If anything still fails, fix it before proceeding.
 

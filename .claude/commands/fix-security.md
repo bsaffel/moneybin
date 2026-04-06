@@ -34,7 +34,7 @@ Find and fix open security findings from CodeQL and pip-audit.
 
 7. **Verify**:
    ```
-   uv run ruff format . && uv run ruff check . && uv run pyright && uv run pytest tests/ -v
+   make check test-all
    ```
 
 8. **Show a summary** of every finding — what it was, whether it was fixed or suppressed as a false positive and why, and any findings that require human judgment (e.g. a CVE with no available fix). Ask the user to confirm before committing.
