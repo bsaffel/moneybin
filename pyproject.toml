@@ -24,7 +24,7 @@ dependencies = [
     # API integrations
     "plaid-python>=36.0.0",
     "ofxparse>=0.21",
-    "requests>=2.32.5",
+    "requests>=2.33.0",
     "python-dotenv>=1.1.1",
     # Data validation and utilities
     "pydantic>=2.11.7",
@@ -35,6 +35,16 @@ dependencies = [
     "typer>=0.15.0",
     # MCP server — primary AI assistant interface
     "mcp[cli]>=1.9.0",
+    # Security: transitive dependency version overrides to address CVEs.
+    # These packages are not imported directly by moneybin; pins are here solely to
+    # force safe versions that uv would otherwise resolve from transitive constraints.
+    # Review and remove each pin once the pulling package updates its own lower bound.
+    #   cryptography: CVE-2026-34073 (via mcp[crypto], pdfminer-six) — fixed in 46.0.6
+    #   pygments:     CVE-2026-4539  (via rich → sqlmesh/mcp, ipython) — fixed in 2.20.0
+    #   pyjwt:        CVE-2026-32597 (via mcp[crypto])                 — fixed in 2.12.0
+    "cryptography>=46.0.6",
+    "pygments>=2.20.0",
+    "pyjwt>=2.12.0",
 ]
 
 [tool.setuptools]

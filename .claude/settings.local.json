@@ -19,7 +19,9 @@
       "Bash(gh pr:*)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:www.tobikodata.com)",
-      "Bash(uv sync:*)"
+      "Bash(uv sync:*)",
+      "Bash(gh repo view:*)",
+      "Bash(uv tree:*)"
     ]
   },
   "enabledMcpjsonServers": [

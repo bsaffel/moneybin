@@ -32,7 +32,7 @@ Fetch open code review comments on the current branch's PR and address them.
 
 6. **Verify**:
    ```
-   uv run ruff format . && uv run ruff check . && uv run pyright && uv run pytest tests/ -v
+   make check test-all
    ```
 
 7. **Show a summary** organized by comment:

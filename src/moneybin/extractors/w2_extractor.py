@@ -318,10 +318,7 @@ class W2Extractor:
             )
             df = pl.DataFrame([df_data])
 
-            logger.info(
-                f"✅ Extracted W2 for {w2_schema.tax_year}: "
-                f"{w2_schema.employee_first_name} {w2_schema.employee_last_name}"
-            )
+            logger.info("✅ Extracted W2 for tax year %s", w2_schema.tax_year)
 
             # Save raw data if configured
             if self.config.save_raw_data:
