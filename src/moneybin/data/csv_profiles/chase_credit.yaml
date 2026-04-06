@@ -1,0 +1,19 @@
+name: chase_credit
+institution_name: Chase
+header_signature:
+  - Transaction Date
+  - Post Date
+  - Description
+  - Category
+  - Type
+  - Amount
+  - Memo
+date_column: Transaction Date
+date_format: '%m/%d/%Y'
+post_date_column: Post Date
+amount_column: Amount
+sign_convention: negative_is_expense
+description_column: Description
+memo_column: Memo
+category_column: Category
+type_column: Type
