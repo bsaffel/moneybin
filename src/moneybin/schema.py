@@ -47,6 +47,9 @@ _SCHEMA_FILES: list[str] = [
     "app_categories.sql",
     "app_merchants.sql",
     "app_categorization_rules.sql",
+    "app_transaction_categories.sql",
+    "app_budgets.sql",
+    "app_transaction_notes.sql",
 ]
 
 
@@ -78,9 +81,11 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
             continue
         table_name = table.sql(dialect="duckdb")
 
-        # Table-level comment: /* description */ on the line before CREATE TABLE
+        # Table-level comment: /* description */ on the line before CREATE TABLE.
+        # Use [-1] (the closest comment) to match SQLMesh's own pattern and avoid
+        # picking up unrelated -- notes that may also precede the /* */ block.
         if statement.comments:
-            description = " ".join(c.strip() for c in statement.comments if c.strip())
+            description = statement.comments[-1].strip()
             if description:
                 try:
                     safe_desc = description.replace("'", "''")
