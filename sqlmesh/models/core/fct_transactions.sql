@@ -1,4 +1,4 @@
-/* Canonical Transactions Fact Table */ /* Consolidates financial transactions from all data sources into a single, */ /* standardized format. Sign convention: negative = expense, positive = income. */
+/* Canonical transactions fact view; consolidates OFX and CSV transactions into a standardized format with categorization and merchant joins; negative amount = expense, positive = income */
 MODEL (
   name core.fct_transactions,
   kind VIEW,

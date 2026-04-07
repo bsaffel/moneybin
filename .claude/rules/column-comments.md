@@ -1,30 +1,37 @@
-# Column Comments
+# Table and Column Comments
 
 ## Approach by Table Type
 
-| Table type | Mechanism | Where |
-|---|---|---|
-| `core.*` SQLMesh models | Inline `-- comment` on final SELECT columns | `sqlmesh/models/core/*.sql` |
-| `app.*`, `raw.*` schema DDL | Inline `-- comment` on CREATE TABLE columns | `src/moneybin/sql/schema/*.sql` |
-| `prep.*` staging views | None | Internal transformation layer; not for direct consumption |
+| Table type | Table comment | Column comments | Where |
+|---|---|---|---|
+| `core.*` SQLMesh models | `/* description */` on the line before `MODEL()` | Inline `-- comment` on final SELECT columns | `sqlmesh/models/core/*.sql` |
+| `app.*`, `raw.*` schema DDL | `/* description */` on the line before `CREATE TABLE` | Inline `-- comment` on column definitions | `src/moneybin/sql/schema/*.sql` |
+| `prep.*` staging views | None | None | Internal transformation layer; not for direct consumption |
+
+Both file types use the same `/* description */` placement pattern — immediately before the main DDL statement. `sqlmesh format` produces this same style from `--` comment lines in model files.
 
 ## How Comments Reach DuckDB's Catalog
 
-**SQLMesh models:** SQLMesh's `register_comments` setting (enabled by default) reads inline SQL comments on SELECT columns and issues `COMMENT ON COLUMN` to DuckDB automatically on every `sqlmesh run`. Important: if a `column_descriptions` block is present in the MODEL(), auto-detection of inline comments is disabled — use one or the other, not both.
+**SQLMesh models:** SQLMesh's `register_comments` (enabled by default) auto-detects the `/* */` block comment before `MODEL()` as the table description and applies it as `COMMENT ON TABLE` on every `sqlmesh run`. Inline SQL comments on outermost SELECT columns are applied as `COMMENT ON COLUMN` the same way. Important: if a `column_descriptions` block is present in the MODEL(), auto-detection of inline comments is disabled — use one or the other, not both.
 
-**Schema DDL files:** `schema.py:_apply_inline_column_comments()` parses inline `-- comments` from `CREATE TABLE` column definitions and runs `COMMENT ON COLUMN` after each file executes during `init_schemas`. This runs on every app startup, so comments are always current.
+**Schema DDL files:** `schema.py:_apply_comments()` uses sqlglot to parse each file and reads comments directly from the AST — the same mechanism SQLMesh uses internally. sqlglot attaches `/* */` block comments to adjacent `Create` expressions and trailing `--` comments to `ColumnDef` expressions. `COMMENT ON TABLE` and `COMMENT ON COLUMN` are then applied on every app startup via `init_schemas`.
 
 ## SQLMesh Model Pattern
 
-Add inline comments to the final SELECT only — not to CTEs. SQLMesh reads from the outermost SELECT:
+**Table comment:** add a `/* description */` block comment on the line immediately before `MODEL()` (this is also the style `sqlmesh format` produces):
 
 ```sql
+/* Canonical accounts dimension; deduplicated accounts from all sources */
 MODEL (
   name core.dim_accounts,
   kind FULL,
   grain account_id
 );
+```
 
+**Column comments:** add inline comments to the final SELECT only — not to CTEs. SQLMesh reads from the outermost SELECT:
+
+```sql
 WITH ... (CTEs)
 SELECT
   account_id, -- Unique account identifier; stable across imports; foreign key in fct_transactions
@@ -39,9 +46,10 @@ FROM ...
 
 ## Schema DDL Pattern
 
-Add `-- comment` at the end of each column definition line:
+**Table comment:** add a `/* description */` block comment on the line immediately before `CREATE TABLE`. `schema.py` extracts and applies it as `COMMENT ON TABLE`:
 
 ```sql
+/* Transaction records extracted from OFX/QFX files; one record per transaction per account per source file */
 CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     transaction_id VARCHAR, -- Unique transaction identifier from OFX <FITID> element; part of primary key
     amount DECIMAL(18, 2), -- OFX TRNAMT element; negative = expense, positive = income
@@ -50,7 +58,7 @@ CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
 );
 ```
 
-The `-- comment` is the single source of truth. Do **not** add a separate `COMMENT ON COLUMN` block — `schema.py` extracts and applies the inline comments automatically.
+**Column comments:** add `-- comment` at the end of each column definition line. Do **not** add separate `COMMENT ON COLUMN` blocks — `schema.py` extracts and applies the inline comments automatically.
 
 ## What to Comment
 

@@ -21,7 +21,11 @@
       "WebFetch(domain:www.tobikodata.com)",
       "Bash(uv sync:*)",
       "Bash(gh repo view:*)",
-      "Bash(uv tree:*)"
+      "Bash(uv tree:*)",
+      "WebFetch(domain:duckdb.org)",
+      "WebFetch(domain:ducklake.select)",
+      "Bash(uv run moneybin:*)",
+      "Bash(git log:*)"
     ]
   },
   "enabledMcpjsonServers": [

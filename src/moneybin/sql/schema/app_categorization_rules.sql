@@ -1,5 +1,4 @@
--- Auto-categorization rules with conditions
--- Rules are evaluated in priority order (lower number = higher priority)
+/* Auto-categorization rules evaluated in priority order; assign categories based on description patterns, amount bounds, and account filters */
 CREATE TABLE IF NOT EXISTS app.categorization_rules (
     rule_id VARCHAR PRIMARY KEY, -- Unique identifier for this rule
     name VARCHAR NOT NULL, -- Human-readable label for this rule, e.g. Starbucks coffee purchases

@@ -1,4 +1,4 @@
-/* Canonical Accounts Dimension Table */ /* Consolidates financial accounts from all data sources into a single, */ /* deduplicated table. Accounts appearing across multiple imports or sources */ /* are deduplicated by account_id, keeping the most recently extracted record. */
+/* Canonical accounts dimension; deduplicated accounts from all sources, keeping the most recently extracted record per account_id */
 MODEL (
   name core.dim_accounts,
   kind FULL,

@@ -1,5 +1,4 @@
--- Raw OFX accounts table
--- Stores account details from OFX/QFX files
+/* Account details extracted from OFX/QFX files; one record per account per source file per extraction timestamp */
 CREATE TABLE IF NOT EXISTS raw.ofx_accounts (
     account_id VARCHAR, -- Unique account identifier from OFX <ACCTID> element; part of primary key
     routing_number VARCHAR, -- ABA bank routing number from OFX <BANKID> element; NULL when not present in file

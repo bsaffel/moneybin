@@ -1,5 +1,4 @@
--- Merchant name normalization and category cache
--- Dual purpose: cleans messy descriptions AND caches merchant-to-category mappings
+/* Merchant normalization patterns matched against transaction descriptions to canonicalize merchant names and cache category assignments */
 CREATE TABLE IF NOT EXISTS app.merchants (
     merchant_id VARCHAR PRIMARY KEY, -- Unique identifier for this merchant record
     raw_pattern VARCHAR NOT NULL, -- Pattern matched against fct_transactions.description to identify this merchant

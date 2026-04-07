@@ -1,5 +1,4 @@
--- Raw OFX transactions table
--- Stores transaction records from OFX/QFX files
+/* Transaction records extracted from OFX/QFX files; one record per transaction per account per source file */
 CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     transaction_id VARCHAR, -- Unique transaction identifier from OFX <FITID> element; part of primary key
     account_id VARCHAR, -- Account this transaction belongs to; foreign key to raw.ofx_accounts; part of primary key
