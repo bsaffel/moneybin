@@ -108,10 +108,11 @@ def describe_table(table_name: str, schema_name: str = "raw") -> str:
             column_name,
             data_type,
             is_nullable,
-            column_default
-        FROM information_schema.columns
-        WHERE table_schema = ? AND table_name = ?
-        ORDER BY ordinal_position
+            column_default,
+            comment
+        FROM duckdb_columns()
+        WHERE schema_name = ? AND table_name = ?
+        ORDER BY column_index
     """
     columns_json = _query_to_json(sql, [schema_name, table_name])
 
