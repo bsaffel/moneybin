@@ -1,5 +1,4 @@
--- Raw OFX balances table
--- Stores account balance snapshots from OFX/QFX files
+/* Account balance snapshots from OFX/QFX files; one record per account per statement period per source file */
 CREATE TABLE IF NOT EXISTS raw.ofx_balances (
     account_id VARCHAR, -- Account this balance snapshot belongs to; foreign key to raw.ofx_accounts; part of primary key
     statement_start_date TIMESTAMP, -- Start of the statement period covered by this OFX file

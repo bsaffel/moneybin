@@ -1,12 +1,10 @@
--- Raw W2 forms table
--- Stores IRS Form W-2 Wage and Tax Statement data from PDF extractions
---
 -- Data Model Design:
 -- - Core fields (employee, employer, wages, taxes) as typed columns for easy querying
 -- - State/local tax info as JSON (supports 0-2 states per W2)
 -- - Optional boxes (12, 14) as JSON (only stored when present)
 -- - This balances queryability with flexibility for sparse/variable data
 
+/* IRS Form W-2 data extracted from PDF files; typed columns for core wage/tax fields, JSON for variable state/local info and optional boxes */
 CREATE TABLE IF NOT EXISTS raw.w2_forms (
     tax_year INTEGER NOT NULL, -- Tax year this W-2 covers; part of primary key
     employee_ssn VARCHAR NOT NULL, -- Employee Social Security Number; part of primary key

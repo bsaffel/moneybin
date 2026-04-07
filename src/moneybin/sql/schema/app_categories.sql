@@ -1,5 +1,4 @@
--- Category definitions with hierarchy
--- Seeded with Plaid PFCv2 taxonomy; users can add custom categories
+/* Spending category definitions; seeded from Plaid PFCv2 taxonomy and extended with user-defined categories */
 CREATE TABLE IF NOT EXISTS app.categories (
     category_id VARCHAR PRIMARY KEY, -- Slug-style identifier derived from category and subcategory, e.g. food_and_drink.coffee
     category VARCHAR NOT NULL, -- Top-level spending category name, e.g. Food and Drink

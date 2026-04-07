@@ -1,3 +1,4 @@
+/* Account metadata from CSV imports; account_id, account_type, and institution_name are caller-supplied since CSV files lack account context */
 CREATE TABLE IF NOT EXISTS raw.csv_accounts (
     account_id VARCHAR NOT NULL, -- Caller-supplied identifier; not present in the CSV file itself; part of primary key
     account_type VARCHAR, -- Account classification, e.g. CHECKING, SAVINGS; caller-supplied alongside account_id

@@ -43,4 +43,4 @@ jobs:
         run: uv sync
 
       - name: Audit dependencies for CVEs
-        run: uv run pip-audit
+        run: uv run pip-audit --skip-editable

@@ -4,18 +4,29 @@ Creates all schemas and tables required by MoneyBin. Every DDL statement
 uses ``CREATE … IF NOT EXISTS`` so the function is idempotent and safe to
 call on every startup.
 
-Column comments are written as inline SQL comments (``-- text``) on each
-column definition inside ``CREATE TABLE`` blocks. This module extracts those
-comments and applies them to the DuckDB catalog via ``COMMENT ON COLUMN``
-after each file executes, so they are always up to date without requiring a
-separate comment-maintenance file.
+Table and column comments are written as inline SQL comments in each schema
+file and applied to DuckDB's catalog after each file executes. sqlglot parses
+the SQL and extracts comments from the AST — the same mechanism SQLMesh uses
+internally via ``register_comments`` for its own model files.
+
+Table comments
+--------------
+A ``/* description */`` block comment on the line immediately before
+``CREATE TABLE`` is attached by sqlglot to the ``Create`` expression and
+applied as ``COMMENT ON TABLE``.
+
+Column comments
+---------------
+A trailing ``-- text`` on a column definition line is attached by sqlglot to
+the ``ColumnDef`` expression and applied as ``COMMENT ON COLUMN``.
 """
 
 import logging
-import re
 from pathlib import Path
 
 import duckdb
+import sqlglot
+import sqlglot.expressions as exp
 
 logger = logging.getLogger(__name__)
 
@@ -38,92 +49,74 @@ _SCHEMA_FILES: list[str] = [
     "app_categorization_rules.sql",
 ]
 
-# Matches: CREATE TABLE [IF NOT EXISTS] schema.table (
-_TABLE_RE = re.compile(
-    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w.]+)\s*\(",
-    re.IGNORECASE,
-)
 
-# Matches a column definition line with a trailing inline comment:
-#   column_name TYPE [constraints][,]  -- comment text
-#   column_name TYPE [constraints][,]  /* comment text */
-_COL_COMMENT_RE = re.compile(
-    r"^\s+(\w+)\s+\S.*?(?:--\s*(.+?)\s*$|/\*\s*(.+?)\s*\*/)",
-)
+def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
+    """Parse SQL with sqlglot and apply table and column comments to DuckDB catalog.
 
-# Lines starting with these keywords are table-level constraints, not columns
-_CONSTRAINT_KEYWORDS = frozenset({
-    "PRIMARY",
-    "UNIQUE",
-    "FOREIGN",
-    "CHECK",
-    "CONSTRAINT",
-    "INDEX",
-})
+    sqlglot attaches SQL comments to adjacent AST nodes during parsing:
 
+    - A ``/* description */`` block comment immediately before ``CREATE TABLE``
+      is attached to the ``Create`` expression and applied as
+      ``COMMENT ON TABLE``.
+    - A trailing ``-- text`` on a column definition line is attached to the
+      ``ColumnDef`` expression and applied as ``COMMENT ON COLUMN``.
 
-def _apply_inline_column_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
-    """Extract inline SQL comments from CREATE TABLE columns and apply as COMMENT ON COLUMN.
-
-    Scans each line of ``sql`` for column definitions of the form::
-
-        column_name TYPE [constraints],  -- comment text
-
-    inside ``CREATE TABLE`` blocks and executes ``COMMENT ON COLUMN`` for each
-    one found. Tables that do not exist yet (e.g. core tables before SQLMesh
-    runs its first plan) are silently skipped.
+    This is the same mechanism SQLMesh uses internally for its own models.
+    Tables that do not exist yet (e.g. core tables before SQLMesh has run) are
+    silently skipped.
 
     Args:
         conn: An active read-write DuckDB connection.
         sql: Full SQL text of a schema file.
     """
-    current_table: str | None = None
-    paren_depth = 0
-
-    for line in sql.splitlines():
-        # Detect start of a CREATE TABLE block
-        table_match = _TABLE_RE.match(line)
-        if table_match:
-            current_table = table_match.group(1)
-            paren_depth = line.count("(") - line.count(")")
+    for statement in sqlglot.parse(sql, dialect="duckdb"):
+        if not isinstance(statement, exp.Create) or statement.kind != "TABLE":
             continue
 
-        if current_table is None:
+        table = statement.find(exp.Table)
+        if table is None:
             continue
+        table_name = table.sql(dialect="duckdb")
 
-        paren_depth += line.count("(") - line.count(")")
-        if paren_depth <= 0:
-            current_table = None
-            continue
+        # Table-level comment: /* description */ on the line before CREATE TABLE
+        if statement.comments:
+            description = " ".join(c.strip() for c in statement.comments if c.strip())
+            if description:
+                try:
+                    safe_desc = description.replace("'", "''")
+                    conn.execute(f"COMMENT ON TABLE {table_name} IS '{safe_desc}'")
+                    logger.debug("Applied table comment to %s", table_name)
+                except duckdb.CatalogException:
+                    logger.debug(
+                        "Skipping table comment for %s — table does not exist yet",
+                        table_name,
+                    )
 
-        col_match = _COL_COMMENT_RE.match(line)
-        if not col_match:
-            continue
-
-        col_name = col_match.group(1)
-        if col_name.upper() in _CONSTRAINT_KEYWORDS:
-            continue
-
-        comment = col_match.group(2) or col_match.group(3)
-        if not comment:
-            continue
-
-        try:
-            safe_comment = comment.strip().replace("'", "''")
-            conn.execute(
-                f"COMMENT ON COLUMN {current_table}.{col_name} IS '{safe_comment}'"
-            )
-            logger.debug("Applied comment to %s.%s", current_table, col_name)
-        except duckdb.CatalogException:
-            logger.debug(
-                "Skipping column comment for %s.%s — table does not exist yet",
-                current_table,
-                col_name,
-            )
+        # Column-level comments: trailing -- text on each column definition
+        for col_def in statement.find_all(exp.ColumnDef):
+            if not col_def.comments:
+                continue
+            comment = col_def.comments[-1].strip()
+            if not comment:
+                continue
+            try:
+                safe_comment = comment.replace("'", "''")
+                conn.execute(
+                    f"COMMENT ON COLUMN {table_name}.{col_def.name} IS '{safe_comment}'"
+                )
+                logger.debug(
+                    "Applied column comment to %s.%s", table_name, col_def.name
+                )
+            except duckdb.CatalogException:
+                logger.debug(
+                    "Skipping column comment for %s.%s — table does not exist yet",
+                    table_name,
+                    col_def.name,
+                )
 
 
 def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
-    """Create all database schemas and tables, then apply inline column comments.
+    """Create all database schemas and tables, then apply inline comments.
 
     Args:
         conn: An active read-write DuckDB connection.
@@ -135,7 +128,7 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
-        _apply_inline_column_comments(conn, sql)
+        _apply_comments(conn, sql)
         logger.debug("Executed %s", sql_file)
 
     logger.debug("Executed %d schema files from %s", len(_SCHEMA_FILES), _SQL_DIR)

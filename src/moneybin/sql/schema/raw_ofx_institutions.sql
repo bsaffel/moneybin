@@ -1,5 +1,4 @@
--- Raw OFX institutions table
--- Stores financial institution information from OFX/QFX files
+/* Financial institution metadata from OFX/QFX files; maps institution org name (ORG) to numeric routing identifier (FID) */
 CREATE TABLE IF NOT EXISTS raw.ofx_institutions (
     organization VARCHAR, -- OFX <ORG> element; human-readable institution name; part of primary key
     fid VARCHAR, -- OFX <FID> element; numeric identifier used in OFX routing; part of primary key
