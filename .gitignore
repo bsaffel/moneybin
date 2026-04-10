@@ -79,3 +79,6 @@ pyrightconfig.json
 
 # moneybin_server will be extracted into its own project
 moneybin_server/
+
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json

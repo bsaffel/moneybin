@@ -32,6 +32,7 @@ Self-contained documents for driving feature development. Follow the [spec templ
 | [Budget Tracking](specs/budget-tracking.md) | Budget definitions, rollover, status tracking |
 | [Plaid Integration](specs/plaid-integration.md) | Plaid API + E2E encryption for Encrypted Sync tier |
 | [Privacy & Security Roadmap](specs/privacy-security-roadmap.md) | Future privacy tiers (Encrypted Sync, Managed) and security controls |
+| [Distribution Roadmap](specs/distribution-roadmap.md) | What needs to change before pip distribution: path defaults, SQLMesh packaging, first-run UX |
 
 ### Implemented (Pattern Reference)
 
