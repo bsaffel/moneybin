@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 class CSVExtractionConfig:
     """Configuration for CSV file extraction."""
 
-    save_raw_data: bool = True
     raw_data_path: Path | None = None
 
 
@@ -122,9 +121,6 @@ class CSVExtractor:
             account_id,
             profile.institution_name,
         )
-
-        if self.config.save_raw_data:
-            self._save_raw_data(results, file_path)
 
         return results
 
@@ -380,31 +376,6 @@ class CSVExtractor:
                 "extracted_at": extraction_timestamp.isoformat(),
             }
         ])
-
-    def _save_raw_data(
-        self, results: dict[str, pl.DataFrame], source_file: Path
-    ) -> None:
-        """Save extracted data to Parquet files.
-
-        Args:
-            results: Dictionary of DataFrames to save.
-            source_file: Original source file path (for naming).
-        """
-        assert self.config.raw_data_path is not None  # noqa: S101 — set in __init__
-        file_stem = source_file.stem
-        extraction_dir = self.config.raw_data_path / "extracted" / file_stem
-        extraction_dir.mkdir(parents=True, exist_ok=True)
-
-        for table_name, df in results.items():
-            if len(df) > 0:
-                output_path = extraction_dir / f"{table_name}.parquet"
-                df.write_parquet(output_path)
-                logger.info(
-                    "Saved %s data (%d rows) to %s",
-                    table_name,
-                    len(df),
-                    output_path,
-                )
 
 
 def _generate_transaction_id(

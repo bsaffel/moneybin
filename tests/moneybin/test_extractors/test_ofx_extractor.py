@@ -38,7 +38,6 @@ def sample_ofx_file() -> Path:
 def extractor_config(tmp_path: Path) -> OFXExtractionConfig:
     """Create test extraction configuration."""
     return OFXExtractionConfig(
-        save_raw_data=True,
         raw_data_path=tmp_path / "raw_ofx",
         preserve_source_files=True,
         validate_balances=True,
@@ -224,37 +223,6 @@ def test_extract_balances_data(
     assert first_row["account_id"] == "9876543210"
     assert first_row["ledger_balance"] == 5000.00
     assert first_row["available_balance"] == 4800.00
-
-
-@pytest.mark.unit
-def test_extract_saves_raw_parquet_files(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
-) -> None:
-    """Test that raw parquet files are saved in organized directory structure."""
-    extractor = OFXExtractor(extractor_config)
-    extractor.extract_from_file(sample_ofx_file)
-
-    # Check that extraction directory was created
-    assert extractor_config.raw_data_path is not None  # Set during extractor init
-    extraction_dir = extractor_config.raw_data_path / "extracted" / sample_ofx_file.stem
-    assert extraction_dir.exists()
-    assert extraction_dir.is_dir()
-
-    # Check that all expected parquet files exist
-    expected_files = [
-        "institutions.parquet",
-        "accounts.parquet",
-        "transactions.parquet",
-        "balances.parquet",
-    ]
-    for filename in expected_files:
-        file_path = extraction_dir / filename
-        assert file_path.exists(), f"Expected file not found: {filename}"
-
-    # Verify we can read the transaction parquet file
-    transactions_path = extraction_dir / "transactions.parquet"
-    df = pl.read_parquet(transactions_path)
-    assert len(df) == 3
 
 
 @pytest.mark.unit

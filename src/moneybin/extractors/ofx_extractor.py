@@ -98,7 +98,6 @@ class OFXStatementSchema(BaseModel):
 class OFXExtractionConfig:
     """Configuration for OFX file extraction."""
 
-    save_raw_data: bool = True
     raw_data_path: Path | None = None  # Will use profile-aware path if None
     preserve_source_files: bool = True
     validate_balances: bool = True
@@ -226,10 +225,6 @@ class OFXExtractor:
                 f"{len(results['accounts'])} account(s), "
                 f"{len(results['transactions'])} transaction(s)"
             )
-
-            # Save raw data if configured
-            if self.config.save_raw_data:
-                self._save_raw_data(results, file_path)
 
             return results
 
@@ -411,37 +406,6 @@ class OFXExtractor:
                 "extracted_at": pl.String,
             }
         )
-
-    def _save_raw_data(
-        self, results: dict[str, pl.DataFrame], source_file: Path
-    ) -> None:
-        """Save extracted data to parquet files in an organized directory structure.
-
-        Creates a directory structure like:
-            data/raw/ofx/extracted/WellsFargo_2025/
-                institutions.parquet
-                accounts.parquet
-                transactions.parquet
-                balances.parquet
-
-        Args:
-            results: Dictionary of DataFrames to save
-            source_file: Original source file path (for naming)
-        """
-        # Create extraction directory named after source file (without extension)
-        assert self.config.raw_data_path is not None  # noqa: S101 - Set in __init__, safe for type narrowing
-        file_stem = source_file.stem
-        extraction_dir = self.config.raw_data_path / "extracted" / file_stem
-        extraction_dir.mkdir(parents=True, exist_ok=True)
-
-        for table_name, df in results.items():
-            if len(df) > 0:
-                # Simple filename without timestamps - idempotent extraction
-                output_path = extraction_dir / f"{table_name}.parquet"
-                df.write_parquet(output_path)
-                logger.info(
-                    f"Saved {table_name} data ({len(df)} rows) to {output_path}"
-                )
 
 
 def extract_ofx_file(
