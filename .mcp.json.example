@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "moneybin": {
+      "command": "uv",
+      "args": ["run", "moneybin", "--profile", "default", "mcp", "serve"],
+      "cwd": "/path/to/moneybin"
+    }
+  }
+}

@@ -82,3 +82,7 @@ moneybin_server/
 
 # Claude Code local settings (personal, not shared)
 .claude/settings.local.json
+
+# MCP config (contains local paths and credentials)
+.mcp.json
+.cursor/mcp.json
