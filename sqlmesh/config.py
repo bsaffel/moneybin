@@ -19,6 +19,11 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, os.path.join(_project_root, "src"))
 
+# Anchor MONEYBIN_HOME to the project root so get_base_dir() resolves paths
+# correctly regardless of the working directory SQLMesh was invoked from.
+if "MONEYBIN_HOME" not in os.environ:
+    os.environ["MONEYBIN_HOME"] = _project_root
+
 from moneybin.config import get_database_path  # noqa: E402
 
 _sqlmesh_dir = os.path.dirname(os.path.abspath(__file__))

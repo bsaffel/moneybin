@@ -2,6 +2,11 @@
 
 Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP server.
 
+## Design Philosophy
+
+- **Production-grade quality.** Prefer design patterns that align with industry standards over shortcuts or hobby-project patterns. Features can be phased, but what ships should follow the same conventions as established open source tools.
+- **Sync server is opaque.** When integrating with moneybin-server (optional sync service), the client communicates only with the server's API surface. External service providers are implementation details hidden behind the server.
+
 ## Critical Rules
 
 - **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.  Use `uv add` and similar commands.
