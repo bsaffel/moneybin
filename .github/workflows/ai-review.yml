@@ -24,7 +24,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          allowed_tools: "Bash,Read,Grep,Glob"
+          claude_args: "--allowedTools Bash,Read,Grep,Glob"
           prompt: |
             Review this pull request for code quality, correctness, security, and adherence to
             project conventions (see CLAUDE.md and .claude/rules/). Focus on:
