@@ -1,0 +1,44 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# MCP config (contains credentials and local paths)
+.mcp.json
+.cursor/mcp.json
+
+# Database files (contain financial data)
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+
+# Financial data files
+data/
+
+# Virtual environment
+.venv/
+
+# Build artifacts and caches
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+sqlmesh/.cache/
+
+# Logs
+*.log
+logs/
+# allow claude to see the test logs so it can debug any issues found during testing
+!logs/test/**/*.log
+
+# Jupyter checkpoints
+.ipynb_checkpoints/

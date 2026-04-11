@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,34 @@ class LoggingConfig:
         )
 
 
+def session_log_path(
+    configured_path: Path,
+    prefix: str = "moneybin",
+    now: datetime | None = None,
+) -> Path:
+    """Derive a daily/session log path from the configured log file path.
+
+    Transforms ``logs/{profile}/moneybin.log`` into
+    ``logs/{profile}/YYYY-MM-DD/{prefix}_HH_MM_SS.log`` so that logs are
+    grouped by day and each application session gets its own file.
+
+    Args:
+        configured_path: The log_file_path from configuration (used to find
+            the profile log directory).
+        prefix: Filename prefix (e.g. "moneybin", "sqlmesh").
+        now: Timestamp to use for the path; defaults to the current time.
+            Pass a fixed value in tests to avoid timing coupling.
+
+    Returns:
+        Path to the session-specific log file.
+    """
+    if now is None:
+        now = datetime.now()
+    profile_log_dir = configured_path.parent
+    daily_dir = profile_log_dir / now.strftime("%Y-%m-%d")
+    return daily_dir / f"{prefix}_{now.strftime('%H_%M_%S')}.log"
+
+
 def setup_logging(
     config: LoggingConfig | None = None,
     cli_mode: bool = False,
@@ -99,16 +128,10 @@ def setup_logging(
 
     # File handler (if enabled)
     if config.log_to_file:
-        # Ensure log directory exists
-        config.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = session_log_path(config.log_file_path, prefix="moneybin")
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
-        from logging.handlers import RotatingFileHandler
-
-        file_handler = RotatingFileHandler(
-            config.log_file_path,
-            maxBytes=config.max_file_size_mb * 1024 * 1024,
-            backupCount=config.backup_count,
-        )
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         file_handler.setFormatter(logging.Formatter(config.format_string))
         handlers.append(file_handler)
 
@@ -163,10 +186,22 @@ def get_log_config_summary() -> dict[str, Any]:
     config = LoggingConfig.from_environment()
     root_logger = logging.getLogger()
 
+    # Read the active log path from the live handler rather than generating a new
+    # timestamp, which would produce a fictitious path that was never opened.
+    active_log_file = next(
+        (
+            h.baseFilename
+            for h in root_logger.handlers
+            if isinstance(h, logging.FileHandler)
+        ),
+        None,
+    )
+
     return {
         "level": logging.getLevelName(root_logger.level),
         "handlers": [type(h).__name__ for h in root_logger.handlers],
         "log_to_file": config.log_to_file,
-        "log_file_path": str(config.log_file_path),
+        "log_file_path": str(active_log_file) if active_log_file else None,
+        "log_dir": str(config.log_file_path.parent),
         "format_string": config.format_string,
     }

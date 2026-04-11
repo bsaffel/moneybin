@@ -7,7 +7,6 @@ when running sqlmesh commands directly.
 import logging
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from sqlmesh.core.config import (  # type: ignore[import-untyped]
@@ -16,8 +15,6 @@ from sqlmesh.core.config import (  # type: ignore[import-untyped]
     GatewayConfig,
     ModelDefaultsConfig,
 )
-
-from sqlmesh import LOG_FILENAME_PREFIX, LOG_FORMAT  # type: ignore[import-untyped]
 
 # Add project root to path so moneybin is importable
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,31 +40,20 @@ _sqlmesh_dir = os.path.dirname(os.path.abspath(__file__))
 # sys.modules), so the logic below must be idempotent.
 _profile_log_dir = get_settings().logging.log_file_path.parent
 _profile_log_dir.mkdir(parents=True, exist_ok=True)
+# Resolve to absolute so is_relative_to comparisons work correctly against
+# handler.baseFilename (which is always absolute).
+_profile_log_dir_abs = _profile_log_dir.resolve()
 
 _root_logger = logging.getLogger()
 
 # Drop any file handlers that don't already point to the profile log dir.
 for _h in _root_logger.handlers[:]:
     if isinstance(_h, logging.FileHandler) and not Path(_h.baseFilename).is_relative_to(
-        _profile_log_dir
+        _profile_log_dir_abs
     ):
         _root_logger.removeHandler(_h)
         _h.close()
 
-# Add a profile-specific file handler when none exists yet.
-if not any(
-    isinstance(_h, logging.FileHandler)
-    and Path(_h.baseFilename).is_relative_to(_profile_log_dir)
-    for _h in _root_logger.handlers
-):
-    _log_file = (
-        _profile_log_dir
-        / f"{LOG_FILENAME_PREFIX}{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.log"
-    )
-    _fh = logging.FileHandler(str(_log_file), mode="w", encoding="utf-8")
-    _fh.setLevel(logging.INFO)
-    _fh.setFormatter(logging.Formatter(LOG_FORMAT))
-    _root_logger.addHandler(_fh)
 
 config = Config(
     gateways={
