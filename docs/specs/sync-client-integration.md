@@ -150,7 +150,7 @@ class SyncDataResponse(BaseModel):
 
 
 class ConnectedInstitution(BaseModel):
-    id: str                   # internal UUID; required for DELETE /institutions/:id
+    id: str  # internal UUID; required for DELETE /institutions/:id
     item_id: str
     institution_name: str | None
     status: str
@@ -200,7 +200,11 @@ conn.execute(
         }
     )
     """,
-    {"source_file": source_file, "extracted_at": extracted_at, "temp_path": str(temp_path)},
+    {
+        "source_file": source_file,
+        "extracted_at": extracted_at,
+        "temp_path": str(temp_path),
+    },
 )
 ```
 
