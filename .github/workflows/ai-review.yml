@@ -34,6 +34,20 @@ jobs:
             - Test coverage gaps for new business logic
             Post inline comments on specific lines where relevant. Summarize findings as a PR comment.
 
+            After completing your review, resolve any previously-posted review threads whose
+            issues are now fixed in the current code. Use the gh CLI and environment variables
+            already present in the runner — do not interpolate untrusted event payload fields
+            into shell commands. Steps:
+            1. Determine the PR number: gh pr view --json number -q .number
+            2. Parse owner and repo from the GITHUB_REPOSITORY environment variable.
+            3. Fetch open threads via gh api graphql, passing owner, repo, and number as
+               -f variables so no user-controlled data is shell-interpolated.
+            4. For each unresolved thread, read its comment body, check whether the current
+               code addresses the issue, and if so resolve it via the resolveReviewThread
+               GraphQL mutation.
+            Only resolve threads where the fix is clearly present — leave threads open if
+            the issue is partially addressed or still present.
+
       - name: Interactive @claude mentions
         if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
         uses: anthropics/claude-code-action@v1
