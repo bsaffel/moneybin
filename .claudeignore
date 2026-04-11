@@ -38,7 +38,7 @@ sqlmesh/.cache/
 *.log
 logs/
 # allow claude to see the test logs so it can debug any issues found during testing
-!logs/test/*.log
+!logs/test/**/*.log
 
 # Jupyter checkpoints
 .ipynb_checkpoints/

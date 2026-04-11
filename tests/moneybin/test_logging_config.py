@@ -3,12 +3,13 @@
 import logging
 import sys
 from collections.abc import Generator
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from moneybin.logging.config import LoggingConfig, setup_logging
+from moneybin.logging.config import LoggingConfig, session_log_path, setup_logging
 
 
 def _force_config(
@@ -23,6 +24,28 @@ def _force_config(
 
 def _file_handlers(root: logging.Logger) -> list[logging.FileHandler]:
     return [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+
+
+class TestSessionLogPath:
+    """Tests for session_log_path() path structure."""
+
+    @pytest.mark.unit
+    def test_path_structure(self) -> None:
+        """Path follows logs/{profile}/YYYY-MM-DD/prefix_HH_MM_SS.log format."""
+        now = datetime(2025, 4, 11, 13, 57, 18)
+        result = session_log_path(
+            Path("logs/test/moneybin.log"), prefix="moneybin", now=now
+        )
+        assert result == Path("logs/test/2025-04-11/moneybin_13_57_18.log")
+
+    @pytest.mark.unit
+    def test_prefix_is_applied(self) -> None:
+        """Custom prefix appears in the filename."""
+        now = datetime(2025, 4, 11, 13, 57, 18)
+        result = session_log_path(
+            Path("logs/prod/moneybin.log"), prefix="sqlmesh", now=now
+        )
+        assert result == Path("logs/prod/2025-04-11/sqlmesh_13_57_18.log")
 
 
 class TestSetupLogging:
