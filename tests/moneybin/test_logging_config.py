@@ -3,6 +3,7 @@
 import logging
 import sys
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -10,9 +11,18 @@ import pytest
 from moneybin.logging.config import LoggingConfig, setup_logging
 
 
-def _force_config(log_to_file: bool = False) -> LoggingConfig:
+def _force_config(
+    log_to_file: bool = False, tmp_path: Path | None = None
+) -> LoggingConfig:
     """Return a LoggingConfig that forces handler replacement."""
-    return LoggingConfig(log_to_file=log_to_file, force_reconfigure=True)
+    kwargs: dict[str, Any] = {"log_to_file": log_to_file, "force_reconfigure": True}
+    if tmp_path is not None:
+        kwargs["log_file_path"] = tmp_path / "moneybin.log"
+    return LoggingConfig(**kwargs)
+
+
+def _file_handlers(root: logging.Logger) -> list[logging.FileHandler]:
+    return [h for h in root.handlers if isinstance(h, logging.FileHandler)]
 
 
 class TestSetupLogging:
@@ -24,6 +34,9 @@ class TestSetupLogging:
         root = logging.getLogger()
         original_handlers = list(root.handlers)
         yield
+        for h in root.handlers[:]:
+            if h not in original_handlers:
+                h.close()
         root.handlers = original_handlers
 
     @pytest.mark.unit
@@ -63,3 +76,32 @@ class TestSetupLogging:
         for h in stream_handlers:
             stream: object = getattr(cast(Any, h), "stream", None)
             assert stream is sys.stderr
+
+    @pytest.mark.unit
+    def test_file_handler_is_catch_all(self, tmp_path: Path) -> None:
+        """Moneybin file handler is a catch-all: no filters applied.
+
+        It must accept records from moneybin.*, sqlmesh.*, third-party
+        libraries, and the root logger so that a single file contains the
+        complete session log.
+        """
+        setup_logging(config=_force_config(log_to_file=True, tmp_path=tmp_path))
+        root = logging.getLogger()
+
+        fhs = _file_handlers(root)
+        assert fhs, "Expected at least one FileHandler"
+
+        for name in ("moneybin.mcp.server", "sqlmesh.core.context", "urllib3", "root"):
+            record = logging.LogRecord(
+                name=name,
+                level=logging.INFO,
+                pathname="",
+                lineno=0,
+                msg="test",
+                args=(),
+                exc_info=None,
+            )
+            for fh in fhs:
+                assert fh.filter(record), (
+                    f"FileHandler {fh} should accept records from '{name}'"
+                )

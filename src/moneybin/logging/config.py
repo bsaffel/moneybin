@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,27 @@ class LoggingConfig:
         )
 
 
+def session_log_path(configured_path: Path, prefix: str = "moneybin") -> Path:
+    """Derive a daily/session log path from the configured log file path.
+
+    Transforms ``logs/{profile}/moneybin.log`` into
+    ``logs/{profile}/YYYY-MM-DD/{prefix}_HH_MM_SS.log`` so that logs are
+    grouped by day and each application session gets its own file.
+
+    Args:
+        configured_path: The log_file_path from configuration (used to find
+            the profile log directory).
+        prefix: Filename prefix (e.g. "moneybin", "sqlmesh").
+
+    Returns:
+        Path to the session-specific log file.
+    """
+    now = datetime.now()
+    profile_log_dir = configured_path.parent
+    daily_dir = profile_log_dir / now.strftime("%Y-%m-%d")
+    return daily_dir / f"{prefix}_{now.strftime('%H_%M_%S')}.log"
+
+
 def setup_logging(
     config: LoggingConfig | None = None,
     cli_mode: bool = False,
@@ -99,13 +121,13 @@ def setup_logging(
 
     # File handler (if enabled)
     if config.log_to_file:
-        # Ensure log directory exists
-        config.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = session_log_path(config.log_file_path, prefix="moneybin")
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
         from logging.handlers import RotatingFileHandler
 
         file_handler = RotatingFileHandler(
-            config.log_file_path,
+            log_file,
             maxBytes=config.max_file_size_mb * 1024 * 1024,
             backupCount=config.backup_count,
         )
@@ -163,10 +185,14 @@ def get_log_config_summary() -> dict[str, Any]:
     config = LoggingConfig.from_environment()
     root_logger = logging.getLogger()
 
+    # Show the actual session log path (daily/session), not the config template
+    log_file_path = session_log_path(config.log_file_path, prefix="moneybin")
+
     return {
         "level": logging.getLevelName(root_logger.level),
         "handlers": [type(h).__name__ for h in root_logger.handlers],
         "log_to_file": config.log_to_file,
-        "log_file_path": str(config.log_file_path),
+        "log_file_path": str(log_file_path),
+        "log_dir": str(config.log_file_path.parent),
         "format_string": config.format_string,
     }

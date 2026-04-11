@@ -16,6 +16,6 @@ Standard usage:
     ```
 """
 
-from .config import LoggingConfig, setup_logging
+from .config import LoggingConfig, session_log_path, setup_logging
 
-__all__ = ["LoggingConfig", "setup_logging"]
+__all__ = ["LoggingConfig", "session_log_path", "setup_logging"]
