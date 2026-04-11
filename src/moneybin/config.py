@@ -84,9 +84,6 @@ class DataConfig(BaseModel):
     temp_data_path: Path = Field(
         default=Path("data/temp"), description="Path to temporary data directory"
     )
-    save_raw_data: bool = Field(
-        default=True, description="Whether to save raw extracted data"
-    )
     incremental_loading: bool = Field(
         default=True, description="Use incremental loading by default"
     )

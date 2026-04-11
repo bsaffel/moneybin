@@ -75,7 +75,6 @@ def citi_profile() -> CSVProfile:
 def extractor(tmp_path: Path) -> CSVExtractor:
     """A CSVExtractor configured with a temp directory."""
     config = CSVExtractionConfig(
-        save_raw_data=False,
         raw_data_path=tmp_path / "raw" / "csv",
     )
     return CSVExtractor(config)
@@ -264,9 +263,7 @@ class TestAutoDetection:
         profiles_dir = tmp_path / "csv_profiles"
         save_profile(chase_profile, profiles_dir)
 
-        config = CSVExtractionConfig(
-            save_raw_data=False, raw_data_path=tmp_path / "raw" / "csv"
-        )
+        config = CSVExtractionConfig(raw_data_path=tmp_path / "raw" / "csv")
         extractor = CSVExtractor(config)
 
         csv_path = FIXTURES_DIR / "sample_chase_credit.csv"
@@ -284,9 +281,7 @@ class TestAutoDetection:
         profiles_dir = tmp_path / "csv_profiles"
         profiles_dir.mkdir()
 
-        config = CSVExtractionConfig(
-            save_raw_data=False, raw_data_path=tmp_path / "raw" / "csv"
-        )
+        config = CSVExtractionConfig(raw_data_path=tmp_path / "raw" / "csv")
         extractor = CSVExtractor(config)
 
         csv_path = FIXTURES_DIR / "sample_chase_credit.csv"

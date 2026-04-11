@@ -227,7 +227,6 @@ class ExtractionResult:
 class W2ExtractionConfig:
     """Configuration for W2 PDF extraction."""
 
-    save_raw_data: bool = True
     raw_data_path: Path | None = None  # Will use profile-aware path if None
     preserve_source_files: bool = True
     require_dual_extraction: bool = True  # Require both methods to agree
@@ -319,10 +318,6 @@ class W2Extractor:
             df = pl.DataFrame([df_data])
 
             logger.info("✅ Extracted W2 for tax year %s", w2_schema.tax_year)
-
-            # Save raw data if configured
-            if self.config.save_raw_data:
-                self._save_raw_data(df, file_path)
 
             return df
 
@@ -1042,26 +1037,6 @@ class W2Extractor:
             "source_file": source_file,
             "extracted_at": extraction_timestamp.isoformat(),
         }
-
-    def _save_raw_data(self, df: pl.DataFrame, source_file: Path) -> None:
-        """Save extracted W2 data to parquet file.
-
-        Creates a directory structure like:
-            data/raw/w2/extracted/<filename>/
-                w2_form.parquet
-
-        Args:
-            df: DataFrame containing W2 data
-            source_file: Original source file path
-        """
-        assert self.config.raw_data_path is not None  # noqa: S101 - Set in __init__, safe for type narrowing
-        file_stem = source_file.stem
-        extraction_dir = self.config.raw_data_path / "extracted" / file_stem
-        extraction_dir.mkdir(parents=True, exist_ok=True)
-
-        output_path = extraction_dir / "w2_form.parquet"
-        df.write_parquet(output_path)
-        logger.info(f"Saved W2 data ({len(df)} rows) to {output_path}")
 
 
 def extract_w2_file(file_path: Path | str) -> pl.DataFrame:

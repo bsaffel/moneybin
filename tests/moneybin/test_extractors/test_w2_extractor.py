@@ -44,7 +44,6 @@ def extractor_config(tmp_path: Path) -> W2ExtractionConfig:
     is maintained via session-scoped fixture caching (see cached_w2_extraction).
     """
     return W2ExtractionConfig(
-        save_raw_data=True,
         raw_data_path=tmp_path / "raw_w2",
         preserve_source_files=True,
         require_dual_extraction=True,  # Require both methods to succeed by default
@@ -66,7 +65,6 @@ def cached_w2_extraction(sample_w2_file: Path) -> pl.DataFrame:
     production-like behavior.
     """
     config = W2ExtractionConfig(
-        save_raw_data=False,  # Don't save during test caching
         require_dual_extraction=False,  # Allow either method to succeed
         min_confidence_score=0.7,
         enable_ocr=True,  # Enable OCR to match production behavior
@@ -332,29 +330,6 @@ def test_extract_optional_boxes(cached_w2_extraction: pl.DataFrame) -> None:
             assert isinstance(box_12, dict)
             # Should have extracted some codes
             assert len(box_12) > 0
-
-
-@pytest.mark.unit
-def test_extract_saves_raw_parquet_file(
-    sample_w2_file: Path, extractor_config: W2ExtractionConfig
-) -> None:
-    """Test that raw parquet file is saved in organized directory structure."""
-    extractor = W2Extractor(extractor_config)
-    extractor.extract_from_file(sample_w2_file)
-
-    # Check that extraction directory was created
-    assert extractor_config.raw_data_path is not None  # Set during extractor init
-    extraction_dir = extractor_config.raw_data_path / "extracted" / sample_w2_file.stem
-    assert extraction_dir.exists()
-    assert extraction_dir.is_dir()
-
-    # Check that parquet file exists
-    parquet_file = extraction_dir / "w2_form.parquet"
-    assert parquet_file.exists(), "Expected parquet file not found"
-
-    # Verify we can read the parquet file
-    df = pl.read_parquet(parquet_file)
-    assert len(df) == 1
 
 
 @pytest.mark.unit
