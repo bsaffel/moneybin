@@ -13,7 +13,7 @@ Enable the moneybin Python client to authenticate with moneybin-server, sync ban
 - [ADR-002: Privacy Tiers](https://github.com/bsaffel/moneybin/blob/main/docs/architecture/002-privacy-tiers.md) -- Encrypted Sync tier
 - [ADR-007: JSON over Parquet](https://github.com/bsaffel/moneybin/blob/main/docs/architecture/007-json-over-parquet-for-sync.md) -- Why JSON instead of Parquet
 - Server API endpoints: `POST /sync/link-token`, `POST /sync/exchange-token`, `POST /sync/trigger`, `GET /sync/status`, `GET /sync/data`
-- All changes in this phase are made in the **moneybin** Python project at `/Users/bsaffel/Workspace/moneybin/`
+- All changes in this phase are made in the **moneybin** Python project.
 
 ## Requirements
 
@@ -90,7 +90,7 @@ Column schemas match `docs/specs/plaid-integration.md` in the moneybin project. 
 - `login() -> AuthToken` -- Device Authorization Flow: POST to `/auth/device/code`, display verification URL and user code, poll `/auth/device/token` for token.
 - `create_link_token() -> LinkTokenResponse` -- POST `/sync/link-token`. Returns link token and expiration for Plaid Link.
 - `exchange_token(public_token: str, institution: InstitutionInfo) -> ExchangeResponse` -- POST `/sync/exchange-token`. Sends public token from Plaid Link callback.
-- `trigger_sync(item_id: str | None = None, force: bool = False) -> SyncJobResponse` -- POST `/sync/trigger`. Starts a sync job on the server.
+- `trigger_sync(item_id: str | None = None, force: bool = False) -> SyncJobResponse` -- POST `/sync/trigger`. Starts a sync job on the server. When `force=True`, passes `reset_cursor: true` to the server, which resets the Plaid transaction cursor and re-fetches all available history.
 - `get_status(job_id: str) -> SyncStatusResponse` -- GET `/sync/status?job_id={job_id}`. Polls sync job status.
 - `download_data(job_id: str) -> SyncDataResponse` -- GET `/sync/data?job_id={job_id}`. Downloads JSON sync payload.
 
@@ -123,7 +123,6 @@ class InstitutionInfo(BaseModel):
 
 class ExchangeResponse(BaseModel):
     item_id: str
-    institution_name: str
 
 
 class SyncJobResponse(BaseModel):
@@ -151,11 +150,12 @@ class SyncDataResponse(BaseModel):
 
 
 class ConnectedInstitution(BaseModel):
+    id: str                   # internal UUID; required for DELETE /institutions/:id
     item_id: str
-    institution_id: str | None
     institution_name: str | None
     status: str
     last_sync: datetime | None
+    created_at: datetime
 ```
 
 #### 2. Plaid data loader -- `src/moneybin/loaders/plaid_loader.py`
@@ -178,16 +178,17 @@ with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
     json.dump(sync_data.transactions, f)
     temp_path = f.name
 
-conn.execute(f"""
+conn.execute(
+    """
     INSERT OR REPLACE INTO raw.plaid_transactions
     SELECT
         transaction_id, account_id, transaction_date::DATE,
         amount, description, merchant_name, category, pending,
-        '{source_file}' AS source_file,
-        '{extracted_at}'::TIMESTAMP AS extracted_at,
+        $source_file AS source_file,
+        $extracted_at::TIMESTAMP AS extracted_at,
         CURRENT_TIMESTAMP AS loaded_at
-    FROM read_json('{temp_path}',
-        columns = {{
+    FROM read_json($temp_path,
+        columns = {
             transaction_id: 'VARCHAR',
             account_id: 'VARCHAR',
             transaction_date: 'VARCHAR',
@@ -196,9 +197,11 @@ conn.execute(f"""
             merchant_name: 'VARCHAR',
             category: 'VARCHAR',
             pending: 'BOOLEAN'
-        }}
+        }
     )
-""")
+    """,
+    {"source_file": source_file, "extracted_at": extracted_at, "temp_path": str(temp_path)},
+)
 ```
 
 #### 3. Raw table DDL -- `src/moneybin/sql/schema/`
@@ -424,7 +427,7 @@ Chase (connected 2026-03-15)
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `sync.trigger` | Trigger a data sync from connected banks | `institution_name: str \| None` (optional filter) |
+| `sync.trigger` | Trigger a data sync from connected banks | `institution_name: str \| None` (optional filter; the tool resolves this to `item_id` via `GET /institutions` before calling `POST /sync/trigger`) |
 | `sync.status` | Show connected institutions and sync status | None |
 | `sync.connect` | Start bank connection flow | None; returns link token URL for user to visit |
 
@@ -482,7 +485,7 @@ Plaid data flows through existing core tables after sync, so all existing MCP re
 ## Verification
 
 ```bash
-cd /Users/bsaffel/Workspace/moneybin
+# From the moneybin project root:
 
 # Authenticate
 uv run moneybin sync login

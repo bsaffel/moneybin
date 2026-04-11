@@ -37,7 +37,8 @@ The `details` field is optional and included only when additional context is ava
 | 401 | Unauthorized (missing or invalid JWT) |
 | 403 | Forbidden (valid JWT but insufficient permissions) |
 | 404 | Not Found |
-| 422 | Unprocessable Entity (valid JSON but failed validation) |
+| 409 | Conflict (resource exists but is in the wrong state, e.g. job not yet complete) |
+| 422 | Unprocessable Entity (valid JSON but failed semantic validation) |
 | 500 | Internal Server Error |
 | 501 | Not Implemented (stub endpoints during phased rollout) |
 
@@ -124,6 +125,8 @@ Polls for a device token after the user has authorized the device. The server pr
   "status": "slow_down"
 }
 ```
+
+> **RFC 8628 §3.5 compliance:** On a `slow_down` response, the client MUST increase its polling interval by at least 5 seconds and use that new interval for all subsequent polls in the same flow.
 
 **Errors**
 
@@ -236,13 +239,15 @@ Triggers a sync job. If `item_id` is provided, syncs only that institution. If o
 
 ```json
 {
-  "item_id": "item_abc123..."
+  "item_id": "item_abc123...",
+  "reset_cursor": false
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `item_id` | string | no | Specific Plaid Item to sync. Omit to sync all institutions in parallel. |
+| `reset_cursor` | boolean | no | If `true`, resets the Plaid transaction cursor and re-fetches all available history. Default `false`. |
 
 **Response** `201`
 
@@ -330,7 +335,9 @@ See [Sync Data Format](#sync-data-format) for the full response shape.
 
 - `400` if `job_id` query parameter is missing.
 - `404` if the job does not exist, belongs to another user, or has expired from the TTL store.
-- `422` if the job has not completed yet.
+- `409` if the job has not completed yet.
+
+> **TTL recovery:** Data expires from the in-memory store 30 minutes after the job completes. If the client misses this window (e.g. crashes after `POST /sync/trigger`), it can recover by calling `POST /sync/trigger` again — triggering a new sync is idempotent with respect to the underlying Plaid cursor state.
 
 ---
 
@@ -379,6 +386,8 @@ Disconnects an institution. Revokes the Plaid access token and removes the conne
 **Errors**
 
 - `404` if the institution does not exist or belongs to another user.
+
+> **Finding the `id`:** `POST /sync/exchange-token` returns only `item_id` (the Plaid identifier). The internal UUID required here is different — it can be obtained from the `id` field in the `GET /institutions` response. Clients that need to disconnect must call `GET /institutions` first to resolve `item_id → id`.
 
 ---
 
