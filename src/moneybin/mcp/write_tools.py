@@ -12,6 +12,14 @@ from pathlib import Path
 
 import duckdb
 
+from moneybin.services.categorization_service import (
+    create_merchant,
+    match_merchant,
+    normalize_description,
+)
+from moneybin.services.categorization_service import (
+    seed_categories as seed_categories_svc,
+)
 from moneybin.services.import_service import import_file as do_import
 from moneybin.tables import (
     BUDGETS,
@@ -126,12 +134,6 @@ def categorize_transaction(
     """
     logger.info("Tool called: categorize_transaction(%s, %s)", transaction_id, category)
 
-    from moneybin.services.categorization_service import (
-        create_merchant,
-        match_merchant,
-        normalize_description,
-    )
-
     try:
         with get_write_db() as db:
             # Resolve merchant_id before inserting the category record
@@ -241,13 +243,9 @@ def seed_categories() -> str:
     """
     logger.info("Tool called: seed_categories")
 
-    from moneybin.services.categorization_service import (
-        seed_categories as _seed,
-    )
-
     try:
         with get_write_db() as db:
-            count = _seed(db)
+            count = seed_categories_svc(db)
         return f"Seeded {count} new categories."
     except Exception as e:
         logger.exception("Failed to seed categories")
@@ -355,13 +353,9 @@ def create_merchant_mapping(
     """
     logger.info("Tool called: create_merchant_mapping(%s)", canonical_name)
 
-    from moneybin.services.categorization_service import (
-        create_merchant as _create,
-    )
-
     try:
         with get_write_db() as db:
-            merchant_id = _create(
+            merchant_id = create_merchant(
                 db,
                 raw_pattern,
                 canonical_name,
@@ -499,12 +493,6 @@ def bulk_categorize(
             transactions are categorized automatically.
     """
     logger.info("Tool called: bulk_categorize(%d items)", len(categorizations))
-
-    from moneybin.services.categorization_service import (
-        create_merchant,
-        match_merchant,
-        normalize_description,
-    )
 
     if not categorizations:
         return "No categorizations provided."
@@ -694,10 +682,6 @@ def bulk_create_merchant_mappings(
             - subcategory: optional default subcategory
     """
     logger.info("Tool called: bulk_create_merchant_mappings(%d items)", len(mappings))
-
-    from moneybin.services.categorization_service import (
-        create_merchant,
-    )
 
     if not mappings:
         return "No mappings provided."

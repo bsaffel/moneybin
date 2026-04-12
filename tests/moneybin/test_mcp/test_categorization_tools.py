@@ -203,6 +203,11 @@ class TestToggleCategory:
         result = toggle_category("TST", False)
         assert "disabled" in result
 
+    @pytest.mark.unit
+    def test_not_found(self) -> None:
+        result = toggle_category("NONEXISTENT-ID", False)
+        assert "not found" in result.lower()
+
 
 class TestSeedCategories:
     """Tests for seed_categories tool."""
