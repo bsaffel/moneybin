@@ -25,7 +25,7 @@ dependencies = [
     "plaid-python>=36.0.0",
     "ofxparse>=0.21",
     "requests>=2.33.0",
-    "python-dotenv>=1.1.1",
+    "python-dotenv>=1.2.2",
     # Data validation and utilities
     "pydantic>=2.11.7",
     "pydantic-settings>=2.11.0",
