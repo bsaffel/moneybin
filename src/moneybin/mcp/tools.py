@@ -7,6 +7,7 @@ via the @mcp.tool() decorator.
 
 import json
 import logging
+import re
 
 from moneybin.tables import (
     CATEGORIES,
@@ -28,6 +29,11 @@ from .privacy import (
 from .server import get_db, mcp, table_exists
 
 logger = logging.getLogger(__name__)
+
+# Validates that a schema or table name is a safe SQL identifier before
+# interpolating into a COUNT(*) query. Allows letters, digits, and underscores
+# only (no dots, quotes, or special characters).
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -103,6 +109,9 @@ def describe_table(table_name: str, schema_name: str = "raw") -> str:
     if error:
         return error
 
+    if not _IDENTIFIER_RE.match(schema_name) or not _IDENTIFIER_RE.match(table_name):
+        return "Error: schema_name and table_name must be valid SQL identifiers."
+
     sql = """
         SELECT
             column_name,
@@ -116,14 +125,12 @@ def describe_table(table_name: str, schema_name: str = "raw") -> str:
     """
     columns_json = _query_to_json(sql, [schema_name, table_name])
 
-    # Get row count
+    # Exact COUNT(*) works for both tables and views; safe because both names
+    # are validated against _IDENTIFIER_RE above before interpolation.
     db = get_db()
     try:
         count_result = db.execute(
-            f"""
-            SELECT COUNT(*) AS row_count
-            FROM "{schema_name}"."{table_name}"
-            """
+            f'SELECT COUNT(*) FROM "{schema_name}"."{table_name}"'
         ).fetchone()
         row_count = count_result[0] if count_result else 0
     except Exception:
@@ -148,7 +155,7 @@ def list_accounts() -> str:
     if not table_exists(DIM_ACCOUNTS):
         return (
             "No accounts found. Import data first with the import_file tool "
-            "or 'moneybin extract ofx' — core tables are rebuilt automatically."
+            "or 'moneybin data extract ofx' — core tables are rebuilt automatically."
         )
 
     return _query_to_json(f"""
@@ -189,7 +196,7 @@ def query_transactions(
     if not table_exists(FCT_TRANSACTIONS):
         return (
             "No transactions found. Import data first with the import_file tool "
-            "or 'moneybin extract ofx' — core tables are rebuilt automatically."
+            "or 'moneybin data extract ofx' — core tables are rebuilt automatically."
         )
 
     conditions: list[str] = []
@@ -239,7 +246,7 @@ def get_account_balances(account_id: str | None = None) -> str:
     if not table_exists(OFX_BALANCES):
         return (
             "No balance data found. "
-            "Import OFX/QFX files with 'moneybin extract ofx' first."
+            "Import OFX/QFX files with 'moneybin data extract ofx' first."
         )
 
     conditions: list[str] = []
@@ -282,7 +289,7 @@ def list_institutions() -> str:
     if not table_exists(OFX_INSTITUTIONS):
         return (
             "No institution data found. "
-            "Import OFX/QFX files with 'moneybin extract ofx' first."
+            "Import OFX/QFX files with 'moneybin data extract ofx' first."
         )
 
     return _query_to_json(f"""
@@ -302,7 +309,7 @@ def get_w2_summary(tax_year: int | None = None) -> str:
     logger.info("Tool called: get_w2_summary")
 
     if not table_exists(W2_FORMS):
-        return "No W-2 data found. Extract W-2 forms with 'moneybin extract w2' first."
+        return "No W-2 data found. Extract W-2 forms with 'moneybin data extract w2' first."
 
     conditions: list[str] = []
     params: list[object] = []

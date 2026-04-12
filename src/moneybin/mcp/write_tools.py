@@ -8,9 +8,19 @@ layer with privacy validation.
 import json
 import logging
 import uuid
+from pathlib import Path
 
 import duckdb
 
+from moneybin.services.categorization_service import (
+    create_merchant,
+    match_merchant,
+    normalize_description,
+)
+from moneybin.services.categorization_service import (
+    seed_categories as seed_categories_svc,
+)
+from moneybin.services.import_service import import_file as do_import
 from moneybin.tables import (
     BUDGETS,
     CATEGORIES,
@@ -73,13 +83,20 @@ def import_file(
     """
     logger.info("Tool called: import_file(%s)", file_path)
 
-    from moneybin.services.import_service import import_file as do_import
+    # Expand ~ and resolve to canonical path (collapses '..' and follows
+    # symlinks), then verify the result stays within the user's home directory.
+    resolved = Path(file_path).expanduser().resolve()
+    if not resolved.is_relative_to(Path.home()):
+        return (
+            "Error: file_path must be within the user's home directory. "
+            "Path traversal and symlinks that escape the home directory are not allowed."
+        )
 
     try:
         db_path = get_db_path()
         with get_write_db():
             result = do_import(
-                db_path, file_path, account_id=account_id, institution=institution
+                db_path, str(resolved), account_id=account_id, institution=institution
             )
         return result.summary()
     except FileNotFoundError as e:
@@ -116,12 +133,6 @@ def categorize_transaction(
         categorized_by: Who is categorizing: 'user' (default), 'ai', 'rule', 'plaid'.
     """
     logger.info("Tool called: categorize_transaction(%s, %s)", transaction_id, category)
-
-    from moneybin.services.categorization_service import (
-        create_merchant,
-        match_merchant,
-        normalize_description,
-    )
 
     try:
         with get_write_db() as db:
@@ -197,7 +208,7 @@ def get_uncategorized_transactions(limit: int = 50) -> str:
             SELECT t.transaction_id, t.transaction_date, t.amount,
                    t.description, t.memo, t.account_id
             FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN app.transaction_categories c
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                 ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
             ORDER BY t.transaction_date DESC
@@ -232,13 +243,9 @@ def seed_categories() -> str:
     """
     logger.info("Tool called: seed_categories")
 
-    from moneybin.services.categorization_service import (
-        seed_categories as _seed,
-    )
-
     try:
         with get_write_db() as db:
-            count = _seed(db)
+            count = seed_categories_svc(db)
         return f"Seeded {count} new categories."
     except Exception as e:
         logger.exception("Failed to seed categories")
@@ -260,15 +267,16 @@ def toggle_category(category_id: str, is_active: bool) -> str:
 
     try:
         with get_write_db() as db:
-            result = db.execute(
+            row = db.execute(
                 f"""
                 UPDATE {CATEGORIES.full_name}
                 SET is_active = ?
                 WHERE category_id = ?
+                RETURNING category_id
                 """,
                 [is_active, category_id],
-            )
-            if result.fetchone is not None:
+            ).fetchone()
+            if row is not None:
                 action = "enabled" if is_active else "disabled"
                 return f"Category {category_id} {action}."
             return f"Category {category_id} not found."
@@ -345,13 +353,9 @@ def create_merchant_mapping(
     """
     logger.info("Tool called: create_merchant_mapping(%s)", canonical_name)
 
-    from moneybin.services.categorization_service import (
-        create_merchant as _create,
-    )
-
     try:
         with get_write_db() as db:
-            merchant_id = _create(
+            merchant_id = create_merchant(
                 db,
                 raw_pattern,
                 canonical_name,
@@ -489,12 +493,6 @@ def bulk_categorize(
             transactions are categorized automatically.
     """
     logger.info("Tool called: bulk_categorize(%d items)", len(categorizations))
-
-    from moneybin.services.categorization_service import (
-        create_merchant,
-        match_merchant,
-        normalize_description,
-    )
 
     if not categorizations:
         return "No categorizations provided."
@@ -684,10 +682,6 @@ def bulk_create_merchant_mappings(
             - subcategory: optional default subcategory
     """
     logger.info("Tool called: bulk_create_merchant_mappings(%d items)", len(mappings))
-
-    from moneybin.services.categorization_service import (
-        create_merchant,
-    )
 
     if not mappings:
         return "No mappings provided."

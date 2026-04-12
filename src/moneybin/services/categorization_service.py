@@ -263,9 +263,10 @@ def apply_rules(
 ) -> int:
     """Apply active categorization rules to uncategorized transactions.
 
-    Rules are evaluated in priority order (lower number = higher priority).
-    The first matching rule wins. Rules can filter by merchant pattern,
-    amount range, and account ID.
+    Runs before merchant mapping in apply_deterministic_categorization so that
+    explicit rules take priority. Rules are evaluated in priority order (lower
+    number = higher priority); the first matching rule wins. Rules can filter
+    by merchant pattern, amount range, and account ID.
 
     Args:
         conn: DuckDB read-write connection.
@@ -362,7 +363,11 @@ def apply_rules(
 def apply_deterministic_categorization(
     conn: duckdb.DuckDBPyConnection,
 ) -> dict[str, int]:
-    """Run all deterministic categorization: merchants first, then rules.
+    """Run all deterministic categorization: rules first, then merchant fallback.
+
+    Rules run first in priority order so explicit user-defined rules (which can
+    filter by amount, account, and pattern) take precedence over generic merchant
+    mappings. Merchant mappings apply only to transactions not matched by any rule.
 
     Called after import/transform to automatically categorize new transactions
     without any LLM dependency.
@@ -373,8 +378,8 @@ def apply_deterministic_categorization(
     Returns:
         Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
     """
-    merchant_count = apply_merchant_categories(conn)
     rule_count = apply_rules(conn)
+    merchant_count = apply_merchant_categories(conn)
     total = merchant_count + rule_count
 
     if total:

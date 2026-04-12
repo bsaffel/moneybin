@@ -384,7 +384,7 @@ class TestApplyDeterministicCategorization:
     """Tests for the combined merchant + rules pipeline."""
 
     @pytest.mark.unit
-    def test_merchants_then_rules(
+    def test_rules_then_merchants(
         self, db_with_transactions: duckdb.DuckDBPyConnection
     ) -> None:
         db = db_with_transactions
@@ -409,6 +409,39 @@ class TestApplyDeterministicCategorization:
         assert stats["merchant"] >= 1
         assert stats["rule"] >= 1
         assert stats["total"] >= 2
+
+    @pytest.mark.unit
+    def test_rule_takes_precedence_over_merchant(
+        self, db_with_transactions: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A transaction matched by both a rule and a merchant mapping.
+
+        Should receive the rule's category, not the merchant's.
+        """
+        db = db_with_transactions
+        # Merchant mapping matches AMZN → Shopping
+        create_merchant(
+            db,
+            "AMZN",
+            "Amazon",
+            match_type="contains",
+            category="Shopping",
+        )
+        # Rule also matches AMZN → Business (higher precedence)
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, category,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Amazon Business', 'AMZN', 'contains', 'Business',
+                    10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        apply_deterministic_categorization(db)
+        row = db.execute("""
+            SELECT category FROM app.transaction_categories
+            WHERE transaction_id = 'TXN003'
+        """).fetchone()
+        assert row is not None
+        assert row[0] == "Business"  # rule wins over merchant mapping
 
 
 # ---------------------------------------------------------------------------
