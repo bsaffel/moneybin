@@ -113,7 +113,7 @@ class TestValidateReadOnlyQuery:
             "scan_csv_auto",
             "scan_json",
         ]:
-            result = validate_read_only_query(f"SELECT * FROM {fn}('data.csv')")  # noqa: S608
+            result = validate_read_only_query(f"SELECT * FROM {fn}('data.csv')")  # noqa: S608  # building test input string, not executing SQL
             assert result is not None, f"{fn} should be blocked"
             assert "File-access" in result
 
@@ -126,7 +126,7 @@ class TestValidateReadOnlyQuery:
             "az://store/container/file",
             "gcs://bucket/file",
         ]:
-            result = validate_read_only_query(f"SELECT * FROM '{url}'")  # noqa: S608
+            result = validate_read_only_query(f"SELECT * FROM '{url}'")  # noqa: S608  # building test input string, not executing SQL
             assert result is not None, f"URL {url!r} should be blocked"
             assert "URL" in result
 

@@ -28,7 +28,7 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 - Catch specific exceptions, not bare `Exception`.
 - Structured logging: `logger = logging.getLogger(__name__)` with appropriate levels. Use f-strings in log messages (e.g. `logger.info(f"Loaded {n} records")`), not `%`-style formatting.
 - Triple-quoted strings (`"""..."""`) for inline SQL.
-- Always include a reason for `# noqa:` or `# type: ignore` comments.
+- Always include a reason for `# noqa:` or `# type: ignore` comments. The reason goes inline after the rule code, e.g. `# noqa: S608  # building test input string, not executing SQL`.
 - Acronyms use ALL CAPS in class names: `OFXExtractor`, `CSVReader`, `PDFExtractor` (follows stdlib convention like `HTTPServer`).
 
 ## Architecture: Data Layers
