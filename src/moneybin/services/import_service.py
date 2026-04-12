@@ -142,12 +142,16 @@ def _import_ofx(
         try:
             conn = duckdb.connect(str(db_path), read_only=True)
             try:
-                date_result = conn.execute("""
+                date_result = conn.execute(
+                    """
                     SELECT
                         MIN(CAST(date_posted AS DATE)) AS min_date,
                         MAX(CAST(date_posted AS DATE)) AS max_date
                     FROM raw.ofx_transactions
-                """).fetchone()
+                    WHERE source_file = ?
+                    """,
+                    [str(file_path)],
+                ).fetchone()
                 if date_result and date_result[0]:
                     result.date_range = f"{date_result[0]} to {date_result[1]}"
             finally:
@@ -250,12 +254,16 @@ def _import_csv(
         try:
             conn = duckdb.connect(str(db_path), read_only=True)
             try:
-                date_result = conn.execute("""
+                date_result = conn.execute(
+                    """
                     SELECT
                         MIN(transaction_date) AS min_date,
                         MAX(transaction_date) AS max_date
                     FROM raw.csv_transactions
-                """).fetchone()
+                    WHERE source_file = ?
+                    """,
+                    [str(file_path)],
+                ).fetchone()
                 if date_result and date_result[0]:
                     result.date_range = f"{date_result[0]} to {date_result[1]}"
             finally:

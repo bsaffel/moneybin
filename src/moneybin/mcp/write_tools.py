@@ -73,7 +73,13 @@ def import_file(
     """
     logger.info("Tool called: import_file(%s)", file_path)
 
+    from pathlib import Path as _Path
+
     from moneybin.services.import_service import import_file as do_import
+
+    # Reject path traversal sequences before any filesystem access
+    if ".." in _Path(file_path).parts:
+        return "Error: path traversal sequences ('..') are not allowed in file_path."
 
     try:
         db_path = get_db_path()
@@ -197,7 +203,7 @@ def get_uncategorized_transactions(limit: int = 50) -> str:
             SELECT t.transaction_id, t.transaction_date, t.amount,
                    t.description, t.memo, t.account_id
             FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN app.transaction_categories c
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                 ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
             ORDER BY t.transaction_date DESC
@@ -260,15 +266,16 @@ def toggle_category(category_id: str, is_active: bool) -> str:
 
     try:
         with get_write_db() as db:
-            result = db.execute(
+            row = db.execute(
                 f"""
                 UPDATE {CATEGORIES.full_name}
                 SET is_active = ?
                 WHERE category_id = ?
+                RETURNING category_id
                 """,
                 [is_active, category_id],
-            )
-            if result.fetchone is not None:
+            ).fetchone()
+            if row is not None:
                 action = "enabled" if is_active else "disabled"
                 return f"Category {category_id} {action}."
             return f"Category {category_id} not found."

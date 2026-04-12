@@ -26,7 +26,7 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 - Type hints on all function parameters and return values. Modern syntax: `str | None`, `list[str]`.
 - Google-style docstrings with Args/Returns/Raises.
 - Catch specific exceptions, not bare `Exception`.
-- Structured logging: `logger = logging.getLogger(__name__)` with appropriate levels.
+- Structured logging: `logger = logging.getLogger(__name__)` with appropriate levels. Use f-strings in log messages (e.g. `logger.info(f"Loaded {n} records")`), not `%`-style formatting.
 - Triple-quoted strings (`"""..."""`) for inline SQL.
 - Always include a reason for `# noqa:` or `# type: ignore` comments.
 - Acronyms use ALL CAPS in class names: `OFXExtractor`, `CSVReader`, `PDFExtractor` (follows stdlib convention like `HTTPServer`).

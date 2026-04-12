@@ -23,6 +23,14 @@ ALLOWED_TABLES: set[str] | None = (
     else None
 )
 
+# DuckDB table-valued functions that read local files or make network requests.
+# These pass the read-only prefix check (SELECT/WITH) but can exfiltrate data.
+_FILE_ACCESS_FUNCTIONS = re.compile(
+    r"\b(read_csv|read_csv_auto|read_parquet|read_json|read_json_auto|"
+    r"read_ndjson|read_text|read_blob|glob|httpfs|read_delta|read_iceberg)\b",
+    re.IGNORECASE,
+)
+
 # Patterns that indicate read-only SQL statements
 _READ_ONLY_PREFIXES = re.compile(
     r"^\s*(SELECT|WITH|DESCRIBE|SHOW|PRAGMA|EXPLAIN)\b",
@@ -76,6 +84,12 @@ def validate_read_only_query(sql: str) -> str | None:
         return (
             "Only read-only queries are allowed. "
             "Queries must start with SELECT, WITH, DESCRIBE, SHOW, PRAGMA, or EXPLAIN."
+        )
+
+    if _FILE_ACCESS_FUNCTIONS.search(stripped):
+        return (
+            "File-access functions (read_csv, read_parquet, read_json, glob, etc.) "
+            "are not allowed through the MCP server."
         )
 
     if _WRITE_PATTERNS.search(stripped):

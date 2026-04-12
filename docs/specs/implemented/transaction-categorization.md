@@ -57,8 +57,8 @@ When any source categorizes a transaction, a merchant mapping is auto-created if
 
 ### A. On import (automatic, deterministic)
 After SQLMesh transforms complete, `import_service.py` calls `apply_deterministic_categorization()`:
-1. Merchant lookups — match descriptions against `app.merchants`
-2. Rule engine — evaluate active rules in priority order
+1. Rule engine — evaluate active rules in priority order (rules take precedence so specific filters like amount ranges or account IDs are honoured first)
+2. Merchant lookups — match remaining uncategorized descriptions against `app.merchants` (fallback for anything rules didn't cover)
 
 Fast, no LLM dependency, works from CLI and MCP.
 
