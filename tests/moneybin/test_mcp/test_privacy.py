@@ -112,10 +112,19 @@ class TestValidateReadOnlyQuery:
             "scan_parquet",
             "scan_csv_auto",
             "scan_json",
+            "parquet_scan",
         ]:
             result = validate_read_only_query(f"SELECT * FROM {fn}('data.csv')")  # noqa: S608  # building test input string, not executing SQL
             assert result is not None, f"{fn} should be blocked"
             assert "File-access" in result
+
+    @pytest.mark.unit
+    def test_glob_operator_allowed(self) -> None:
+        """DuckDB GLOB infix operator must not be blocked by the file-access check."""
+        result = validate_read_only_query(
+            "SELECT * FROM core.fct_transactions WHERE description GLOB '*AMAZON*'"
+        )
+        assert result is None
 
     @pytest.mark.unit
     def test_url_literals_rejected(self) -> None:

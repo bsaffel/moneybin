@@ -88,7 +88,7 @@ def import_file(
         db_path = get_db_path()
         with get_write_db():
             result = do_import(
-                db_path, file_path, account_id=account_id, institution=institution
+                db_path, str(resolved), account_id=account_id, institution=institution
             )
         return result.summary()
     except FileNotFoundError as e:

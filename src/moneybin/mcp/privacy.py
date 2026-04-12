@@ -25,11 +25,14 @@ ALLOWED_TABLES: set[str] | None = (
 
 # DuckDB table-valued functions that read local files or make network requests.
 # These pass the read-only prefix check (SELECT/WITH) but can exfiltrate data.
-# Includes scan_* aliases (resolve identically to read_* in DuckDB).
+# Includes scan_* and legacy parquet_scan aliases (resolve identically to read_*).
+# glob() is matched as a function call only — \bglob\b would false-positive on
+# DuckDB's GLOB infix comparison operator (e.g. WHERE desc GLOB '*AMAZON*').
 _FILE_ACCESS_FUNCTIONS = re.compile(
     r"\b(read_csv|read_csv_auto|read_parquet|read_json|read_json_auto|"
-    r"read_ndjson|read_text|read_blob|glob|read_delta|read_iceberg|"
-    r"scan_parquet|scan_csv|scan_csv_auto|scan_json|scan_ndjson)\b",
+    r"read_ndjson|read_text|read_blob|read_delta|read_iceberg|"
+    r"scan_parquet|scan_csv|scan_csv_auto|scan_json|scan_ndjson|parquet_scan|"
+    r"glob)\s*\(",
     re.IGNORECASE,
 )
 
