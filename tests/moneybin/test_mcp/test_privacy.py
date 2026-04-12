@@ -102,6 +102,34 @@ class TestValidateReadOnlyQuery:
         result = validate_read_only_query("ATTACH 'other.db'")
         assert result is not None
 
+    @pytest.mark.unit
+    def test_file_access_functions_rejected(self) -> None:
+        for fn in [
+            "read_csv",
+            "read_parquet",
+            "read_json",
+            "glob",
+            "scan_parquet",
+            "scan_csv_auto",
+            "scan_json",
+        ]:
+            result = validate_read_only_query(f"SELECT * FROM {fn}('data.csv')")  # noqa: S608
+            assert result is not None, f"{fn} should be blocked"
+            assert "File-access" in result
+
+    @pytest.mark.unit
+    def test_url_literals_rejected(self) -> None:
+        for url in [
+            "https://evil.com/data.parquet",
+            "http://evil.com/data.parquet",
+            "s3://bucket/file.parquet",
+            "az://store/container/file",
+            "gcs://bucket/file",
+        ]:
+            result = validate_read_only_query(f"SELECT * FROM '{url}'")  # noqa: S608
+            assert result is not None, f"URL {url!r} should be blocked"
+            assert "URL" in result
+
 
 class TestCheckTableAllowed:
     """Tests for table allowlist checking."""

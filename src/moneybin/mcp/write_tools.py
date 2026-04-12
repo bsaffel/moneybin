@@ -12,6 +12,7 @@ from pathlib import Path
 
 import duckdb
 
+from moneybin.services.import_service import import_file as do_import
 from moneybin.tables import (
     BUDGETS,
     CATEGORIES,
@@ -74,12 +75,10 @@ def import_file(
     """
     logger.info("Tool called: import_file(%s)", file_path)
 
-    from moneybin.services.import_service import import_file as do_import
-
     # Resolve to canonical path (collapses '..' and follows symlinks), then
     # verify the result stays within the user's home directory.
     resolved = Path(file_path).resolve()
-    if not str(resolved).startswith(str(Path.home())):
+    if not resolved.is_relative_to(Path.home()):
         return (
             "Error: file_path must be within the user's home directory. "
             "Path traversal and symlinks that escape the home directory are not allowed."
