@@ -75,9 +75,9 @@ def import_file(
     """
     logger.info("Tool called: import_file(%s)", file_path)
 
-    # Resolve to canonical path (collapses '..' and follows symlinks), then
-    # verify the result stays within the user's home directory.
-    resolved = Path(file_path).resolve()
+    # Expand ~ and resolve to canonical path (collapses '..' and follows
+    # symlinks), then verify the result stays within the user's home directory.
+    resolved = Path(file_path).expanduser().resolve()
     if not resolved.is_relative_to(Path.home()):
         return (
             "Error: file_path must be within the user's home directory. "
