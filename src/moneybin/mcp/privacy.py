@@ -25,9 +25,19 @@ ALLOWED_TABLES: set[str] | None = (
 
 # DuckDB table-valued functions that read local files or make network requests.
 # These pass the read-only prefix check (SELECT/WITH) but can exfiltrate data.
+# Includes scan_* aliases (resolve identically to read_* in DuckDB).
 _FILE_ACCESS_FUNCTIONS = re.compile(
     r"\b(read_csv|read_csv_auto|read_parquet|read_json|read_json_auto|"
-    r"read_ndjson|read_text|read_blob|glob|httpfs|read_delta|read_iceberg)\b",
+    r"read_ndjson|read_text|read_blob|glob|read_delta|read_iceberg|"
+    r"scan_parquet|scan_csv|scan_csv_auto|scan_json|scan_ndjson)\b",
+    re.IGNORECASE,
+)
+
+# URL scheme literals used as path arguments to DuckDB table scans when httpfs
+# is loaded. These bypass function-name matching because DuckDB accepts
+# `SELECT * FROM 'https://evil.com/data.parquet'` with no function keyword.
+_URL_SCHEME_PATTERNS = re.compile(
+    r"(https?://|s3://|az://|gcs://)",
     re.IGNORECASE,
 )
 
@@ -90,6 +100,12 @@ def validate_read_only_query(sql: str) -> str | None:
         return (
             "File-access functions (read_csv, read_parquet, read_json, glob, etc.) "
             "are not allowed through the MCP server."
+        )
+
+    if _URL_SCHEME_PATTERNS.search(stripped):
+        return (
+            "URL literals (https://, s3://, etc.) are not allowed. "
+            "Queries must read from database tables only."
         )
 
     if _WRITE_PATTERNS.search(stripped):

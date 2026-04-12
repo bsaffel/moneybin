@@ -7,6 +7,7 @@ via the @mcp.tool() decorator.
 
 import json
 import logging
+import re
 
 from moneybin.tables import (
     CATEGORIES,
@@ -28,6 +29,11 @@ from .privacy import (
 from .server import get_db, mcp, table_exists
 
 logger = logging.getLogger(__name__)
+
+# Validates that a schema or table name is a safe SQL identifier before
+# interpolating into a COUNT(*) query. Allows letters, digits, and underscores
+# only (no dots, quotes, or special characters).
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -103,6 +109,9 @@ def describe_table(table_name: str, schema_name: str = "raw") -> str:
     if error:
         return error
 
+    if not _IDENTIFIER_RE.match(schema_name) or not _IDENTIFIER_RE.match(table_name):
+        return "Error: schema_name and table_name must be valid SQL identifiers."
+
     sql = """
         SELECT
             column_name,
@@ -116,16 +125,12 @@ def describe_table(table_name: str, schema_name: str = "raw") -> str:
     """
     columns_json = _query_to_json(sql, [schema_name, table_name])
 
-    # Get row count via parameterized system catalog query
+    # Exact COUNT(*) works for both tables and views; safe because both names
+    # are validated against _IDENTIFIER_RE above before interpolation.
     db = get_db()
     try:
         count_result = db.execute(
-            """
-            SELECT estimated_size
-            FROM duckdb_tables()
-            WHERE schema_name = ? AND table_name = ?
-            """,
-            [schema_name, table_name],
+            f'SELECT COUNT(*) FROM "{schema_name}"."{table_name}"'
         ).fetchone()
         row_count = count_result[0] if count_result else 0
     except Exception:

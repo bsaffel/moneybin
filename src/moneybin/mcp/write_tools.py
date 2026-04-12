@@ -8,6 +8,7 @@ layer with privacy validation.
 import json
 import logging
 import uuid
+from pathlib import Path
 
 import duckdb
 
@@ -73,13 +74,16 @@ def import_file(
     """
     logger.info("Tool called: import_file(%s)", file_path)
 
-    from pathlib import Path as _Path
-
     from moneybin.services.import_service import import_file as do_import
 
-    # Reject path traversal sequences before any filesystem access
-    if ".." in _Path(file_path).parts:
-        return "Error: path traversal sequences ('..') are not allowed in file_path."
+    # Resolve to canonical path (collapses '..' and follows symlinks), then
+    # verify the result stays within the user's home directory.
+    resolved = Path(file_path).resolve()
+    if not str(resolved).startswith(str(Path.home())):
+        return (
+            "Error: file_path must be within the user's home directory. "
+            "Path traversal and symlinks that escape the home directory are not allowed."
+        )
 
     try:
         db_path = get_db_path()
