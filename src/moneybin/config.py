@@ -277,7 +277,7 @@ class MoneyBinSettings(BaseSettings):
         # Pyright reports "Type of 'get' is partially unknown" because init_settings
         # from Pydantic doesn't have well-defined types in the stubs.
         init_dict = init_settings.init_kwargs if init_settings else {}
-        profile = init_dict.get("profile", "dev")  # type: ignore[reportUnknownMemberType]
+        profile = init_dict.get("profile", "dev")  # type: ignore[reportUnknownMemberType] — Pydantic init_settings has incomplete type stubs
 
         # Determine which env file to load based on profile
         base = get_base_dir()

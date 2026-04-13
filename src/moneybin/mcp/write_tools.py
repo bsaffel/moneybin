@@ -746,13 +746,13 @@ def set_budget(
         monthly_amount: Monthly budget amount in dollars.
         start_month: Starting month (YYYY-MM). Defaults to current month.
     """
-    logger.info("Tool called: set_budget(%s, %.2f)", category, monthly_amount)
+    logger.info("Tool called: set_budget(%s)", category)
 
     if start_month is None:
         read_db = get_db()
         start_month = read_db.execute(
             "SELECT STRFTIME(CURRENT_DATE, '%Y-%m')"
-        ).fetchone()[0]  # type: ignore[index]
+        ).fetchone()[0]  # type: ignore[index] — fetchone() returns a row here, not None
 
     try:
         with get_write_db() as db:
@@ -762,7 +762,7 @@ def set_budget(
                 SELECT budget_id FROM app.budgets
                 WHERE category = ? AND (end_month IS NULL OR end_month >= ?)
                 """,
-                [category, start_month],  # type: ignore[reportUnknownArgumentType]
+                [category, start_month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
             ).fetchone()
 
             if existing:
@@ -772,7 +772,7 @@ def set_budget(
                     SET monthly_amount = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE budget_id = ?
                     """,
-                    [monthly_amount, existing[0]],  # type: ignore[reportUnknownArgumentType]
+                    [monthly_amount, existing[0]],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
                 )
                 return f"Updated budget for '{category}': ${monthly_amount:.2f}/month"
             else:
@@ -783,7 +783,7 @@ def set_budget(
                     (budget_id, category, monthly_amount, start_month, created_at, updated_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
-                    [budget_id, category, monthly_amount, start_month],  # type: ignore[reportUnknownArgumentType]
+                    [budget_id, category, monthly_amount, start_month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
                 )
                 return f"Created budget for '{category}': ${monthly_amount:.2f}/month starting {start_month}"
     except Exception as e:
@@ -805,7 +805,7 @@ def get_budget_status(month: str | None = None) -> str:
         return "No budgets set yet. Use set_budget to create one."
 
     if month is None:
-        month = db.execute("SELECT STRFTIME(CURRENT_DATE, '%Y-%m')").fetchone()[0]  # type: ignore[index]
+        month = db.execute("SELECT STRFTIME(CURRENT_DATE, '%Y-%m')").fetchone()[0]  # type: ignore[index] — fetchone() returns a row here, not None
 
     try:
         result = db.execute(
@@ -837,7 +837,7 @@ def get_budget_status(month: str | None = None) -> str:
                 AND (b.end_month IS NULL OR b.end_month >= ?)
             ORDER BY b.category
             """,
-            [month, month, month],  # type: ignore[reportUnknownArgumentType]
+            [month, month, month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of str params
         )
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
@@ -916,7 +916,7 @@ def get_spending_by_category(month: str | None = None) -> str:
     db = get_db()
 
     if month is None:
-        month = db.execute("SELECT STRFTIME(CURRENT_DATE, '%Y-%m')").fetchone()[0]  # type: ignore[index]
+        month = db.execute("SELECT STRFTIME(CURRENT_DATE, '%Y-%m')").fetchone()[0]  # type: ignore[index] — fetchone() returns a row here, not None
 
     try:
         result = db.execute(
@@ -934,7 +934,7 @@ def get_spending_by_category(month: str | None = None) -> str:
             GROUP BY c.category, c.subcategory
             ORDER BY total_spent DESC
             """,
-            [month],  # type: ignore[reportUnknownArgumentType]
+            [month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of str params
         )
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
@@ -1192,7 +1192,7 @@ def csv_save_profile(
             if value is not None:
                 kwargs[key] = value
 
-        profile = CSVProfile(**kwargs)  # type: ignore[arg-type]
+        profile = CSVProfile(**kwargs)  # type: ignore[arg-type] — kwargs built dynamically from validated MCP tool inputs
         output_path = save_profile(profile, user_profiles_dir)
         return f"Saved CSV profile '{name}' for {institution_name} to {output_path}"
     except Exception as e:

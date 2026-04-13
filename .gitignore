@@ -82,3 +82,6 @@ pyrightconfig.json
 # MCP config (contains local paths and credentials)
 .mcp.json
 .cursor/mcp.json
+
+# Private docs (strategy, specs, notes — not for open source)
+private/

@@ -28,7 +28,9 @@ def plan_transforms(
     Shows which models would be rebuilt based on changes since the last run.
     Use --apply to apply the plan immediately.
     """
-    from sqlmesh import Context  # type: ignore[import-untyped]
+    from sqlmesh import (
+        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
+    )
 
     db_path = get_database_path()
     logger.info("Running SQLMesh plan against %s", db_path)
@@ -49,7 +51,9 @@ def apply_transforms() -> None:
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
     models since the last run.
     """
-    from sqlmesh import Context  # type: ignore[import-untyped]
+    from sqlmesh import (
+        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
+    )
 
     db_path = get_database_path()
     logger.info("Applying SQLMesh transforms against %s", db_path)

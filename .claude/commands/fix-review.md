@@ -46,3 +46,13 @@ Fetch open code review comments on the current branch's PR and address them.
    - Commit message: `Address PR review comments` with a bulleted body listing what was changed
    - Include `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
    - Push to the current branch's remote tracking branch
+
+9. **Resolve addressed threads** via the GitHub GraphQL API:
+   - Fetch unresolved thread node IDs: `gh api graphql -f query='{ repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {number}) { reviewThreads(first: 50) { nodes { id isResolved comments(first: 1) { nodes { databaseId } } } } } } }'`
+   - For each thread that corresponds to an issue fixed in this session, resolve it: `gh api graphql -f query='mutation { resolveReviewThread(input: { threadId: "{id}" }) { thread { isResolved } } }'`
+
+10. **Approve if all issues are resolved**: After resolving threads, if this review found no new issues (or all previously-raised issues are now resolved with none remaining), submit an approval:
+    ```
+    gh pr review {number} --approve --body "All issues resolved."
+    ```
+    If new issues remain open, do not approve.

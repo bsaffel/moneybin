@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from sqlmesh.core.config import (  # type: ignore[import-untyped]
+from sqlmesh.core.config import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
     Config,
     DuckDBConnectionConfig,
     GatewayConfig,
@@ -26,7 +26,10 @@ if _project_root not in sys.path:
 if "MONEYBIN_HOME" not in os.environ:
     os.environ["MONEYBIN_HOME"] = _project_root
 
-from moneybin.config import get_database_path, get_settings  # noqa: E402
+from moneybin.config import (  # noqa: E402 — must follow sys.path setup above
+    get_database_path,
+    get_settings,
+)
 
 _sqlmesh_dir = os.path.dirname(os.path.abspath(__file__))
 

@@ -88,7 +88,9 @@ def _run_transforms(db_path: Path) -> bool:
     Returns:
         True if transforms ran successfully.
     """
-    from sqlmesh import Context  # type: ignore[import-untyped]
+    from sqlmesh import (
+        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
+    )
 
     logger.info("Running SQLMesh transforms")
     ctx = Context(
