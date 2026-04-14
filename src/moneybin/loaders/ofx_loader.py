@@ -176,13 +176,13 @@ class OFXLoader:
             query = f"""
                 SELECT * FROM raw.ofx_{table_name}
                 ORDER BY loaded_at DESC LIMIT ?
-            """  # noqa: S608
+            """  # noqa: S608 — table_name is validated against VALID_TABLES allowlist above
             df = conn.execute(query, [limit]).pl()
         else:
             query = f"""
                 SELECT * FROM raw.ofx_{table_name}
                 ORDER BY loaded_at DESC
-            """  # noqa: S608
+            """  # noqa: S608 — table_name is validated against VALID_TABLES allowlist above
             df = conn.execute(query).pl()
 
         conn.close()

@@ -198,7 +198,7 @@ class OFXExtractor:
             from io import BytesIO
 
             # ofxparse library has incomplete type annotations
-            ofx = ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
+            ofx = ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType] — ofxparse has no type stubs
 
             # Extract data into structured tables
             extraction_timestamp = datetime.now()

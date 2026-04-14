@@ -6,7 +6,7 @@ including opening the web UI, running SQL queries, and initializing schemas.
 
 import logging
 import shutil
-import subprocess  # noqa: S404
+import subprocess  # noqa: S404 — subprocess used with static args for DuckDB CLI invocation
 import sys
 from pathlib import Path
 
@@ -115,7 +115,7 @@ def open_ui(
         cmd = ["duckdb", str(database), "-ui"]
 
         # Run with output to terminal so user sees the URL
-        subprocess.run(cmd, check=True)  # noqa: S603
+        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args and validated db path
 
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ DuckDB UI failed to start: {e}")
@@ -197,7 +197,7 @@ def run_query(
             )
 
         # Run query and stream output
-        subprocess.run(cmd, check=True)  # noqa: S603
+        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args, validated db path, and format flag
 
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Query failed: {e}")
@@ -254,7 +254,7 @@ def open_shell(
 
         # Run duckdb in interactive mode
         cmd = ["duckdb", str(database)]
-        subprocess.run(cmd, check=True)  # noqa: S603
+        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args and validated db path
 
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ DuckDB shell failed: {e}")

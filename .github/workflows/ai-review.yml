@@ -49,6 +49,10 @@ jobs:
             Only resolve threads where the fix is clearly present — leave threads open if
             the issue is partially addressed or still present.
 
+            After resolving threads, if your review found no new issues and all previously-raised
+            threads are now resolved, submit an approval: gh pr review --approve --body "All issues resolved."
+            If any threads remain open or you found new issues, do not approve.
+
       - name: Interactive @claude mentions
         if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
         uses: anthropics/claude-code-action@v1

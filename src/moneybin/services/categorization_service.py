@@ -421,7 +421,9 @@ def ensure_seed_table(conn: duckdb.DuckDBPyConnection) -> None:
         return  # already exists
 
     logger.info("Seed table missing — running targeted SQLMesh apply")
-    from sqlmesh import Context  # type: ignore[import-untyped]
+    from sqlmesh import (
+        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
+    )
 
     ctx = Context(paths=str(_SQLMESH_ROOT))
     ctx.plan(

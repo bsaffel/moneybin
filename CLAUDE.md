@@ -68,7 +68,7 @@ Env vars use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_PLAID__CLIENT_I
 ## Security
 
 - `SecretStr` for passwords/API keys in Pydantic Settings.
-- Parameterized SQL queries (never string interpolation).
 - Subprocess commands as lists (`["cmd", "arg"]`), never `shell=True` with user input.
-- Validate paths against traversal (`..`, absolute paths).
 - Log detailed errors internally; return generic messages to users.
+- **No PII or financial data in logs**: Never log account numbers, routing numbers, balances, transaction amounts, or full descriptions. Log record counts, IDs, and status codes instead. Use masked or truncated values if context is needed (e.g., `account ...1234`).
+- **Parameterized SQL** with `?` placeholders for all values. Validate dynamic identifiers against allowlists (e.g., `TableRef` constants). See `.claude/rules/security.md` for DuckDB-specific patterns and test conventions.

@@ -8,7 +8,7 @@ assistants like Cursor, Claude Desktop, and ChatGPT Desktop.
 import importlib
 import logging
 import os
-import subprocess  # noqa: S404
+import subprocess  # noqa: S404 — subprocess used with static args for lsof/ps process inspection
 from pathlib import Path
 from typing import Annotated, Literal, get_args
 
@@ -30,7 +30,7 @@ def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     own_pid = os.getpid()
     try:
         result = subprocess.run(  # noqa: S603 — lsof with static args, db_path is a validated Path
-            ["lsof", "-F", "pcn", str(db_path)],  # noqa: S607
+            ["lsof", "-F", "pcn", str(db_path)],  # noqa: S607 — lsof is a standard system utility
             capture_output=True,
             text=True,
             timeout=5,
@@ -66,7 +66,7 @@ def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
             if current_pid == own_pid:
                 continue
             ps_result = subprocess.run(  # noqa: S603 — ps with static args and validated int PID
-                ["ps", "-p", str(current_pid), "-o", "args="],  # noqa: S607
+                ["ps", "-p", str(current_pid), "-o", "args="],  # noqa: S607 — ps is a standard system utility
                 capture_output=True,
                 text=True,
             )
