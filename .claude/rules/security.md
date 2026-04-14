@@ -15,7 +15,9 @@ conn.execute("SELECT * FROM fct_transactions WHERE account_id = ?", [account_id]
 VALID_COLUMNS = {"date", "amount", "description", "category"}
 if sort_col not in VALID_COLUMNS:
     raise ValueError(f"Invalid column: {sort_col}")
-conn.execute(f"SELECT * FROM fct_transactions ORDER BY {sort_col} WHERE amount > ?", [min_amount])
+conn.execute(
+    f"SELECT * FROM fct_transactions WHERE amount > ? ORDER BY {sort_col}", [min_amount]
+)
 
 # WRONG — string interpolation
 conn.execute(f"SELECT * FROM fct_transactions WHERE account_id = '{account_id}'")

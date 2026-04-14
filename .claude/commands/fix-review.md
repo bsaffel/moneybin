@@ -48,11 +48,37 @@ Fetch open code review comments on the current branch's PR and address them.
    - Push to the current branch's remote tracking branch
 
 9. **Resolve addressed threads** via the GitHub GraphQL API:
-   - Fetch unresolved thread node IDs: `gh api graphql -f query='{ repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {number}) { reviewThreads(first: 50) { nodes { id isResolved comments(first: 1) { nodes { databaseId } } } } } } }'`
-   - For each thread that corresponds to an issue fixed in this session, resolve it: `gh api graphql -f query='mutation { resolveReviewThread(input: { threadId: "{id}" }) { thread { isResolved } } }'`
+   - Fetch unresolved thread node IDs:
+     ```
+     gh api graphql \
+       -F owner="$OWNER" \
+       -F repo="$REPO" \
+       -F number="$NUMBER" \
+       -f query='
+         query($owner: String!, $repo: String!, $number: Int!) {
+           repository(owner: $owner, name: $repo) {
+             pullRequest(number: $number) {
+               reviewThreads(first: 50) {
+                 nodes { id isResolved comments(first: 1) { nodes { databaseId } } }
+               }
+             }
+           }
+         }'
+     ```
+   - For each thread that corresponds to an issue fixed in this session, resolve it:
+     ```
+     gh api graphql \
+       -F threadId="$THREAD_ID" \
+       -f query='
+         mutation($threadId: ID!) {
+           resolveReviewThread(input: { threadId: $threadId }) {
+             thread { isResolved }
+           }
+         }'
+     ```
 
 10. **Approve if all issues are resolved**: After resolving threads, if this review found no new issues (or all previously-raised issues are now resolved with none remaining), submit an approval:
     ```
-    gh pr review {number} --approve --body "All issues resolved."
+    gh pr review "$NUMBER" --approve --body "All issues resolved."
     ```
     If new issues remain open, do not approve.
