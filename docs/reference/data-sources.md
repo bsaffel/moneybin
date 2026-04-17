@@ -1,6 +1,6 @@
 # Data Sources
 
-MoneyBin supports importing financial data from multiple source types. The priority order follows the [privacy tiers](../architecture/002-privacy-tiers.md) -- local file imports are first-class, API-based aggregation is available through the Encrypted Sync tier.
+MoneyBin supports importing financial data from multiple source types. The priority order follows the [privacy tiers](../decisions/002-privacy-tiers.md) -- local file imports are first-class, API-based aggregation is available through the Encrypted Sync tier.
 
 All data sources flow through the same pipeline:
 
@@ -86,7 +86,7 @@ Automatic bank sync with E2E encryption.
 5. Client decrypts and loads into `raw.plaid_*` tables
 6. SQLMesh transforms into core tables alongside OFX/CSV data
 
-See [Plaid Integration Spec](../specs/plaid-integration.md) and [ADR-004: E2E Encryption](../architecture/004-e2e-encryption.md).
+See [Plaid Integration Spec](../specs/plaid-integration.md) and [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md).
 
 ## Fallback strategy
 

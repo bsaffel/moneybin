@@ -212,7 +212,8 @@ See `.claude/rules/` for coding standards and conventions.
 ## Documentation
 
 - [`docs/README.md`](docs/README.md) -- Documentation index
-- [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md) -- System architecture
+- [`docs/reference/system-overview.md`](docs/reference/system-overview.md) -- System architecture
+- [`docs/decisions/`](docs/decisions/) -- Architecture Decision Records
 - [`docs/reference/data-model.md`](docs/reference/data-model.md) -- Data model and ER diagram
 - [`docs/reference/prompts/`](docs/reference/prompts/README.md) -- MCP prompt templates
 - [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md) -- MCP server tools

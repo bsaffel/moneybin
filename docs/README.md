@@ -1,17 +1,18 @@
 # MoneyBin Documentation
 
-## Architecture
+## Decisions (ADRs)
 
-Architecture Decision Records and system design.
+Architecture Decision Records.
 
 | Document | Description |
 |----------|-------------|
-| [System Overview](architecture/system-overview.md) | Consolidated system architecture, tech stack, directory structure |
-| [ADR-001: Medallion Data Layers](architecture/001-medallion-data-layers.md) | Raw/prep/core layer design |
-| [ADR-002: Privacy Tiers](architecture/002-privacy-tiers.md) | Local Only / Encrypted Sync / Managed custody models |
-| [ADR-003: MCP Primary Interface](architecture/003-mcp-primary-interface.md) | MCP server as main consumer interface |
-| [ADR-004: E2E Encryption](architecture/004-e2e-encryption.md) | Encryption design for Encrypted Sync tier (proposed) |
-| [ADR-005: Security Tradeoffs](architecture/005-security-tradeoffs.md) | Threat model and honest security analysis (proposed) |
+| [ADR-001: Medallion Data Layers](decisions/001-medallion-data-layers.md) | Raw/prep/core layer design |
+| [ADR-002: Privacy Tiers](decisions/002-privacy-tiers.md) | Local Only / Encrypted Sync / Managed custody models |
+| [ADR-003: MCP Primary Interface](decisions/003-mcp-primary-interface.md) | MCP server as main consumer interface |
+| [ADR-004: E2E Encryption](decisions/004-e2e-encryption.md) | Encryption design for Encrypted Sync tier (proposed) |
+| [ADR-005: Security Tradeoffs](decisions/005-security-tradeoffs.md) | Threat model and honest security analysis (proposed) |
+| [ADR-006: SQLMesh Replaces dbt](decisions/006-sqlmesh-replaces-dbt.md) | Transformation engine choice |
+| [ADR-007: JSON Over Parquet for Sync](decisions/007-json-over-parquet-for-sync.md) | Sync payload format |
 
 ## Feature Specs
 
@@ -49,6 +50,7 @@ Lookup material -- not specs, not decisions.
 
 | Document | Description |
 |----------|-------------|
+| [System Overview](reference/system-overview.md) | Consolidated system architecture, tech stack, directory structure |
 | [Data Model](reference/data-model.md) | Schema definitions, ER diagram, example queries |
 | [Data Sources](reference/data-sources.md) | Data source roadmap and priorities |
 | [MCP Prompts](reference/prompts/README.md) | 9 prompt templates for guided financial workflows |

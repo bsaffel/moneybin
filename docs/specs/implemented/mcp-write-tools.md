@@ -7,7 +7,7 @@ implemented
 Allow AI assistants to modify data through the MCP server: importing files, categorizing transactions, managing budgets, and running analytical queries that depend on user-created data.
 
 ## Background
-- [ADR-003: MCP Primary Interface](../../architecture/003-mcp-primary-interface.md)
+- [ADR-003: MCP Primary Interface](../../decisions/003-mcp-primary-interface.md)
 - Source: `src/moneybin/mcp/write_tools.py`
 - App schema: `src/moneybin/sql/schema/app_schema.sql`
 

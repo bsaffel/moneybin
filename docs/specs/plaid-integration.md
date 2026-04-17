@@ -7,9 +7,9 @@ draft
 Enable automatic bank transaction sync via Plaid with E2E encryption, so users can get ongoing transaction data without manual file exports.
 
 ## Background
-- [ADR-002: Privacy Tiers](../architecture/002-privacy-tiers.md) -- Encrypted Sync tier
-- [ADR-004: E2E Encryption](../architecture/004-e2e-encryption.md) -- Encryption design
-- [ADR-005: Security Tradeoffs](../architecture/005-security-tradeoffs.md) -- Threat model
+- [ADR-002: Privacy Tiers](../decisions/002-privacy-tiers.md) -- Encrypted Sync tier
+- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md) -- Encryption design
+- [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md) -- Threat model
 - [Data Sources](../reference/data-sources.md) -- Priority 5 source
 - Existing connector: `src/moneybin/connectors/plaid_sync.py`
 

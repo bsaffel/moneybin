@@ -9,7 +9,7 @@ Implement 11 analytical MCP tools that can be built now with the existing data m
 ## Background
 - [MCP Read Tools](implemented/mcp-read-tools.md) -- Existing tool patterns
 - [MCP Write Tools](implemented/mcp-write-tools.md) -- Some overlap (monthly_summary, recurring already implemented here)
-- [ADR-003: MCP Primary Interface](../architecture/003-mcp-primary-interface.md)
+- [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 - Source: `src/moneybin/mcp/tools.py` (read tools), `src/moneybin/mcp/write_tools.py` (write tools)
 
 ## Requirements
