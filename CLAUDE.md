@@ -53,6 +53,16 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 2. Add a CTE to the relevant core model and `UNION ALL` into the `all_*` CTE
 3. No changes needed to consumers
 
+## Specs & Implementation Tracking
+
+Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** is the single source of truth for what's been designed, what's in progress, and what's shipped.
+
+- **Before implementing a feature**, check `docs/specs/INDEX.md` to see if a spec exists and what its status is.
+- **When starting implementation**, update the spec's status to `in-progress` (both in the spec file and in `INDEX.md`).
+- **When implementation is complete**, update the spec's status to `implemented` and move the file to `docs/specs/implemented/`.
+- **When writing a new spec**, add it to the Active specs table in `INDEX.md`.
+- Statuses: `draft` → `ready` → `in-progress` → `implemented`.
+
 ## Configuration
 
 Use Pydantic Settings as single source of truth. Never hardcode paths or credentials.
