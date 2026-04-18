@@ -56,20 +56,25 @@ rebaseline process, not by automation.
 - **`MigrationRunner`** — owns versioned upgrades. Receives an open connection.
   Encryption-unaware. Lives in the service layer (`src/moneybin/services/`) following
   the existing pattern alongside `CategorizationService`, `ImportService`, etc.
-- **Connection infrastructure** — shared factory that handles opening the DB with the
-  right key and loading encryption extensions. Used by CLI, MCP, and any future entry
-  point. Formal contract deferred to `data-protection.md`; until then, each entry point
-  opens its own connection.
-- **Entry points** (CLI, MCP) — thin wrappers that orchestrate the sequence
-  (connect → init → migrate → prompt) and handle interactive vs non-interactive behavior.
+- **`Database` class** (`src/moneybin/database.py`) — owns the full initialization
+  sequence: key retrieval → in-memory connect → attach encrypted file → load extensions
+  → `init_schemas()` → `MigrationRunner.apply_all()` → SQLMesh version check →
+  `sqlmesh migrate` if needed → record version state. Defined in
+  [`data-protection.md`](data-protection.md). The `Database` class is the single entry
+  point for all database access — CLI, MCP, loaders, and services all use it.
+- **Entry points** (CLI, MCP) — call `get_database()` to obtain the initialized
+  `Database` instance. The auto-upgrade sequence runs inside `Database.__init__`, not in
+  per-entry-point callbacks.
 
 ### Auto-Upgrade on First Invocation
 
-Every CLI/MCP invocation runs a lightweight version check before executing the
-requested command:
+The `Database` class ([`data-protection.md`](data-protection.md)) runs the full
+initialization sequence — including version check and migrations — every time
+`get_database()` is called. This replaces the need for separate per-entry-point
+callbacks:
 
 1. Compare installed `moneybin` package version against `app.versions` stored version.
-2. If they match, proceed to the command (negligible latency — one SELECT).
+2. If they match, proceed (negligible latency — one SELECT).
 3. If they differ, run the full upgrade sequence:
    a. `init_schemas()` — idempotent baseline DDL
    b. `MigrationRunner.apply_all()` — pending schema migrations
@@ -78,7 +83,10 @@ requested command:
 4. On success, proceed to the command with a brief console summary.
 5. On failure, block the command with an error, log path, and issue tracker link.
 
-The check lives in a Typer app-level callback (CLI) or server startup hook (MCP).
+The version check and upgrade sequence live in `Database.__init__()`. CLI commands and
+MCP server startup both trigger it by calling `get_database()`. Skip with
+`MONEYBIN_NO_AUTO_UPGRADE=1` (encryption and schema init still run; only versioned
+migrations and SQLMesh migrate are skipped).
 
 **Console output (success):**
 ```
@@ -235,9 +243,12 @@ Migrations may alter:
 
 ### Files to Modify
 - `src/moneybin/schema.py` — add new schema files to `_SCHEMA_FILES`, add `analytics` schema
-- `src/moneybin/cli/commands/db.py` — `db init` auto-runs `MigrationRunner.apply_all()`
+- `src/moneybin/cli/commands/db.py` — `db init` delegates to `Database` class
+  ([`data-protection.md`](data-protection.md)) which orchestrates init_schemas +
+  migrations + version recording
 - `src/moneybin/cli/commands/data.py` — register `migrate` subcommand group
-- `src/moneybin/cli/main.py` — add auto-upgrade callback to the root Typer app
+- `src/moneybin/cli/main.py` — no app-level callback needed; auto-upgrade runs inside
+  `Database.__init__()` when any command calls `get_database()`
 
 ### Key Decisions
 - **Architecture**: Rails dual-path — `init_schemas` for fresh installs, migrations for
@@ -261,10 +272,14 @@ Migrations may alter:
   migration takes the version of the last absorbed migration. Old files deleted from
   codebase, preserved in git history.
 - **Encryption**: migration runner is encryption-unaware. Receives an open connection
-  from the caller. Connection management is shared infrastructure formalized in
-  `data-protection.md`.
+  from `Database.__init__()`. Connection management, key retrieval, and encrypted
+  attachment are owned by the `Database` class
+  ([`data-protection.md`](data-protection.md)).
+- **Orchestration**: the auto-upgrade sequence (init_schemas → migrations → sqlmesh
+  migrate → version recording) is orchestrated by `Database.__init__()`, not by
+  per-entry-point callbacks. Entry points call `get_database()`.
 - **Service layer**: `MigrationRunner` follows the existing service pattern in
-  `src/moneybin/services/`, consumed by both CLI and MCP entry points.
+  `src/moneybin/services/`, consumed by `Database.__init__()` during initialization.
 
 ## CLI Interface
 

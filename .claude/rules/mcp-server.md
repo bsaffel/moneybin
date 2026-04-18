@@ -77,9 +77,7 @@ The `detail` parameter (`summary`, `standard`, `full`) lets the AI self-select v
 
 ## Connection Model
 
-- **Read tools** use `get_db()` — long-lived read-only connection.
-- **Write tools** use `get_write_db()` — context manager that swaps to read-write, then restores read-only.
-- DuckDB doesn't allow mixed read-only and read-write connections in the same process.
+All tools use `get_database()` from `src/moneybin/database.py` — a single long-lived read-write connection per process. The `Database` class handles encryption, schema init, and migrations transparently. See [`data-protection.md`](../../docs/specs/data-protection.md).
 
 ## Data Access
 

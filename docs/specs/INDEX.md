@@ -33,6 +33,7 @@ Implemented specs are historical records of what was designed and shipped. They 
 | [MCP Architecture & Design](mcp-architecture.md) | Architecture | draft | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness |
 | [MCP Tool Surface](mcp-tool-surface.md) | Architecture | draft | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (45 tools, 4 prompts, 4 resources) |
 | [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers |
+| [Data Protection](data-protection.md) | Feature | draft | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
 | [Database Migration](database-migration.md) | Feature | ready | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
 | [Plaid Integration](plaid-integration.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
 | [Sync Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |

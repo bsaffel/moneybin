@@ -68,17 +68,21 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 Use Pydantic Settings as single source of truth. Never hardcode paths or credentials.
 
 ```python
-from moneybin.config import get_database_path, get_settings
+from moneybin.database import get_database
 
-conn = duckdb.connect(str(get_database_path()))
+db = get_database()
+db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [account_id])
 ```
+
+**Never call `duckdb.connect()` directly.** The `Database` class (`src/moneybin/database.py`) is the sole entry point for all database access. It handles encryption key retrieval, encrypted file attachment, schema initialization, and migrations. See [`data-protection.md`](docs/specs/data-protection.md).
 
 Env vars use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_PLAID__CLIENT_ID`.
 
 ## Security
 
+- **Encryption at rest**: All DuckDB databases are encrypted with AES-256-GCM by default. The `Database` class handles key retrieval and encrypted attachment transparently. See [`data-protection.md`](docs/specs/data-protection.md) for threat model, key management, and CLI commands.
 - `SecretStr` for passwords/API keys in Pydantic Settings.
 - Subprocess commands as lists (`["cmd", "arg"]`), never `shell=True` with user input.
 - Log detailed errors internally; return generic messages to users.
-- **No PII or financial data in logs**: Never log account numbers, routing numbers, balances, transaction amounts, or full descriptions. Log record counts, IDs, and status codes instead. Use masked or truncated values if context is needed (e.g., `account ...1234`).
+- **No PII or financial data in logs**: Never log account numbers, routing numbers, balances, transaction amounts, or full descriptions. Log record counts, IDs, and status codes instead. Use masked or truncated values if context is needed (e.g., `account ...1234`). A `SanitizedLogFormatter` provides runtime detection and masking as a safety net.
 - **Parameterized SQL** with `?` placeholders for all values. Validate dynamic identifiers against allowlists (e.g., `TableRef` constants). See `.claude/rules/security.md` for DuckDB-specific patterns and test conventions.

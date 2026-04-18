@@ -4,6 +4,19 @@ globs: ["**/*.sql", "sqlmesh/models/**", "src/moneybin/sql/**", "src/moneybin/**
 
 # Database Standards
 
+## Connection Management
+
+**Never call `duckdb.connect()` directly.** Use the `Database` class (`src/moneybin/database.py`) via `get_database()` for all database access. The `Database` class handles encryption key retrieval, encrypted file attachment, extension loading, schema initialization, and migrations. One long-lived read-write connection per process.
+
+```python
+from moneybin.database import get_database
+
+db = get_database()
+result = db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id])
+```
+
+See [`data-protection.md`](../../docs/specs/data-protection.md) for the full design.
+
 ## Column Name Consistency Across Layers
 
 A column name — especially identifiers — must contain the same logical values in every table and view where it appears. Any column named `X` should be joinable to any other column named `X` across raw, prep, core, and app schemas. When a new layer introduces a new concept (e.g., a synthetic key), give it a new name. Never reuse an existing column name with different semantics.
@@ -51,7 +64,7 @@ Both SQLMesh models and schema DDL use the same pattern: `/* description */` blo
 
 - Column comments go on the **final SELECT only** in SQLMesh models, not CTEs.
 - `sqlmesh format` converts `--` to `/* */` — both styles work.
-- **Do not use** the `columns` block with `COMMENT` keyword — SQLMesh silently swallows it without writing to DuckDB's catalog. Use inline comments or `column_descriptions (col = 'text')` instead.
+- **Do not use** the `columns` block with `COMMENT` keyword — SQLMesh silently swallows it without writing to DuckDB's catalog. Use inline comments instead.
 
 ### Authoritative References
 
