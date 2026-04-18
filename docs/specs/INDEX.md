@@ -27,6 +27,7 @@ Implemented specs are historical records of what was designed and shipped. They 
 |---|---|---|---|
 | [Smart Import Overview](smart-import-overview.md) | Umbrella | draft | Six-pillar initiative: smart CSV/TSV detection, Excel, PDF, ML categorization, auto-rules, AI-assisted parsing |
 | [Transaction Matching](transaction-matching.md) | Umbrella | draft | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
+| [Categorization](categorization-overview.md) | Umbrella | draft | Auto-rule generation, ML categorization, priority hierarchy, bootstrap strategies |
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | draft | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
 | [CSV Import](csv-import.md) | Feature | ready | Profile-based CSV extraction and loading (existing system) |
 | [MCP Architecture & Design](mcp-architecture.md) | Architecture | draft | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness |
@@ -74,9 +75,11 @@ These are referenced by umbrella specs but don't exist yet. Create from `_templa
 - `smart-csv-detection.md` — Pillar A: heuristic column inference for unknown CSVs
 - `excel-import.md` — Pillar B: XLSX/XLS import
 - `structured-pdf-import.md` — Pillar C: native-text PDF import
-- `ml-categorization.md` — Pillar D: local ML-powered categorization
-- `auto-rule-generation.md` — Pillar E: auto-generate rules from user edits
 - `ai-assisted-parsing.md` — Pillar F: LLM fallback for file parsing
+
+### Categorization children
+- `auto-rule-generation.md` — Pillar E: auto-generate rules from user edits (absorbed from Smart Import)
+- `ml-categorization.md` — Pillar D: local ML-powered categorization (absorbed from Smart Import)
 
 ### Transaction Matching children
 - `same-record-dedup.md` — Pillar A: cross-source deduplication

@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-16
 > Status: Draft — umbrella doc for the smart-import initiative. Child specs listed in [Pillars](#pillars) are written separately.
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance), [`transaction-matching.md`](transaction-matching.md) (peer initiative), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance), [`transaction-matching.md`](transaction-matching.md) (peer initiative), [`categorization-overview.md`](categorization-overview.md) (owns pillars D & E), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose
 
@@ -38,8 +38,8 @@ Smart Import decomposes into six independent subsystems. Each has its own child 
 | **A.** Smart CSV/TSV detection | Heuristic column inference when no built-in profile matches. Produces a `CSVProfile` that feeds the existing extractor. | No | `smart-csv-detection.md` |
 | **B.** Excel import | XLSX/XLS with multi-sheet handling, cell-format awareness, non-row-1 headers. Reuses the detection framework from A. | No | `excel-import.md` |
 | **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Extends the `w2_extractor` pattern to statements and brokerage reports. | No | `structured-pdf-import.md` |
-| **D.** ML-powered categorization | Local scikit-learn (TF-IDF + SVM) trained on the user's own `transaction_categories`. High-confidence → auto-apply; medium → suggest; low → defer. | No | `ml-categorization.md` |
-| **E.** Auto-rule generation | Hook `categorize_transaction()` / `bulk_categorize()` to synthesize rules and merchant mappings from user edits and high-confidence ML picks. | No | `auto-rule-generation.md` |
+| **D.** ML-powered categorization | Local scikit-learn (TF-IDF + SVM) trained on the user's own `transaction_categories`. High-confidence → auto-apply; medium → suggest; low → defer. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
+| **E.** Auto-rule generation | Hook `categorize_transaction()` / `bulk_categorize()` to synthesize rules and merchant mappings from user edits and high-confidence ML picks. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **F.** AI-assisted parsing | LLM fallback for files A/B/C can't crack. Extracts structured data from document content. | **Yes — consent-gated** | `ai-assisted-parsing.md`, gated by `docs/specs/privacy-and-ai-trust.md` |
 
 All six pillars share one architectural property: they operate at or above the extractor layer. The `raw` / `prep` / `core` pipeline is unchanged. Every pillar's output is normalized to the canonical raw schema before anything hits DuckDB.
@@ -107,9 +107,8 @@ Detailed rules — redaction fields, supported backends, audit log schema, conse
 1. **`docs/specs/privacy-and-ai-trust.md`** — foundational. Defines the consent model and audit schema that pillar F must conform to. Worth writing even though F is built last: locks in the privacy contract before any AI-touching code exists.
 2. **`transaction-matching.md`** (umbrella + at least `same-record-dedup.md` child) — foundational peer spec. Defines the provenance contract every ingestion surface must produce and owns the `source_system` taxonomy. Pillars A/B/C/F can't finalize their raw-row output until this lands.
 3. **Pillar A — `smart-csv-detection.md`** — most concrete, extends the existing `CSVProfile` system directly, zero privacy risk. Proves the architecture and unblocks B.
-4. **Pillar E — `auto-rule-generation.md`** — smallest scope, highest leverage on existing code, independent of everything else. Delivers a visible "the tool learns" win quickly.
+4. **Pillars E & D** — now owned by [`categorization-overview.md`](categorization-overview.md). Build order: E (auto-rules) first, then D (ML). See that spec for rationale and sequencing.
 5. **Pillar B — `excel-import.md`** — reuses A's detection framework; mostly a file-format adapter.
-6. **Pillar D — `ml-categorization.md`** — benefits from E being in place (more categorized transactions = better training signal).
 7. **Pillar C — `structured-pdf-import.md`** — independent; follows the `w2_extractor` pattern.
 8. **Pillar F — `ai-assisted-parsing.md`** — last. Depends on the privacy framework and benefits from A/B/C being the trusted non-AI fallback when the user declines AI.
 
