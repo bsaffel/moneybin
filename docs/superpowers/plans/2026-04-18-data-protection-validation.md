@@ -196,14 +196,14 @@ rm -rf "$TESTDIR"
 
 | Test | Description | Status |
 |---|---|---|
-| 1 | Create encrypted database | |
-| 2 | Unreadable without key | |
-| 3 | Readable with key | |
-| 4 | `-init` flag with CLI | |
-| 5 | `-init` flag with `-ui` | |
-| 6 | Temp files encrypted | |
-| 7 | Python in-memory + ATTACH | |
-| 8 | COPY FROM DATABASE (rotation) | |
+| 1 | Create encrypted database | PASS |
+| 2 | Unreadable without key | PASS |
+| 3 | Readable with key | PASS |
+| 4 | `-init` flag with CLI | PASS |
+| 5 | `-init` flag with `-ui` | PASS |
+| 6 | Temp files encrypted | INCONCLUSIVE |
+| 7 | Python in-memory + ATTACH | PASS |
+| 8 | COPY FROM DATABASE (rotation) | PASS |
 
 ## Decision Points
 
@@ -213,3 +213,12 @@ rm -rf "$TESTDIR"
   documented by DuckDB but not independently verified for small datasets.
 - **If all pass:** Spec can be promoted to `ready` after resolving any remaining
   review comments.
+
+## Outcome (2026-04-18)
+
+All 7 functional tests passed. Test 6 (temp file encryption) was inconclusive —
+DuckDB handled 10M rows without creating spill files, so temp encryption couldn't
+be independently verified. This is consistent with the test plan's prediction and
+DuckDB's documented behavior.
+
+**Decision:** Spec promoted to `ready`.

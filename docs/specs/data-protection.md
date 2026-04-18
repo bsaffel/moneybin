@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-draft
+ready
 
 ## Goal
 Protect financial data at rest through DuckDB encryption, centralized connection
