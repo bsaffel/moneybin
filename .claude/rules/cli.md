@@ -48,6 +48,8 @@ Use icons **sparingly** — only where they add scanability, not decoration.
 | Warning | `⚠️` | `logger.warning(...)` messages |
 | Working | `⚙️` | Start of a long-running operation (sync, load, transform) |
 | Hint | `💡` | Optional follow-up tips after an error |
+| Bug report | `🐛` | Link to issue tracker after an unexpected error |
+| Review | `👀` | Items that need user attention or review |
 
 Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data.
 
@@ -58,6 +60,8 @@ logger.info("✅ Imported %d transactions", count)
 logger.error("❌ File not found: %s", path)
 logger.warning("⚠️  No new data to sync")
 logger.info("💡 Run 'moneybin db init' to create the database first")
+logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
+logger.info("👀 3 auto-generated rules need review")
 
 # Bad — wrong icon semantics or decorative noise
 logger.info("📈 Beginning incremental sync...")  # chart ≠ working
