@@ -56,7 +56,7 @@ Match decisions themselves — user confirmations, rejections, auto-merge logs �
 |---|---|---|---|
 | **A. Same-record dedup** | When multiple raw rows describe the same real-world transaction, resolve to one canonical gold record | Three tiers: ≥0.95 auto-merge, 0.70–0.95 review queue, <0.70 drop. Thresholds configurable in settings. | `same-record-dedup.md` |
 | **B. Transfer detection** | When two rows describe two sides of a money movement across accounts, link them with a transfer pair | v1: every fuzzy pair queues for review (no auto-merge). v2 (deferred): learned promotions for confirmed patterns. | `transfer-detection.md` |
-| **C. Golden-record merge rules** | When pillar A merges records, determine which source's fields win per-column | Per-field merge policy (e.g., prefer Plaid description, prefer user-set category, prefer earliest `transaction_date`) | `mastered-record-merge-rules.md` |
+| **C. Golden-record merge rules** | When pillar A merges records, determine which source's fields win per-column | Per-field merge policy (e.g., prefer Plaid description, prefer user-set category, prefer earliest `transaction_date`) | Absorbed into `same-record-dedup.md` (pillars A+C ship together) |
 
 Pillars A and C are tightly coupled — you can't ship dedup without merge rules for the fields of the merged record. They share a build phase.
 
@@ -153,7 +153,7 @@ Three sibling initiatives feed the matcher. Matching defines the provenance cont
 ## Build order & rationale
 
 1. **Provenance & audit schema** — foundational DDL. Defines the tables every pillar writes to (`app.match_decisions`, `core.fct_transaction_provenance`, `core.bridge_transfers`). Written first as a schema PR or as part of pillar A's child spec.
-2. **Pillars A + C** (`same-record-dedup.md` + `mastered-record-merge-rules.md`) — ship together. Dedup without merge rules leaves the gold record undefined; merge rules without dedup have nothing to merge. This is the build phase that fixes the latent duplicate bug in `fct_transactions`.
+2. **Pillars A + C** (`same-record-dedup.md`) — ship together in one spec. Dedup without merge rules leaves the gold record undefined; merge rules without dedup have nothing to merge. This is the build phase that fixes the latent duplicate bug in `fct_transactions`.
 3. **Pillar B** (`transfer-detection.md`) — layers on once A/C are solid. Different semantics (link two records, don't collapse them), different review posture (always-review in v1).
 4. **[Deferred] Learned promotions for transfer auto-merge** — Phase 2 enhancement. Not a v1 spec.
 
