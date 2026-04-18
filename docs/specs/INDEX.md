@@ -33,9 +33,10 @@ Implemented specs are historical records of what was designed and shipped. They 
 | [MCP Architecture & Design](mcp-architecture.md) | Architecture | draft | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness |
 | [MCP Tool Surface](mcp-tool-surface.md) | Architecture | draft | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (45 tools, 4 prompts, 4 resources) |
 | [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers |
-| [Database Migration](database-migration.md) | Feature | draft | Schema migration system for DuckDB |
+| [Database Migration](database-migration.md) | Feature | ready | Versioned DDL migrations with drift detection; SQLMesh auto-migrate in v2 |
 | [Plaid Integration](plaid-integration.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
 | [Sync Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |
+| [Same-Record Dedup](same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (transaction-matching pillars A+C) |
 
 ## Roadmaps (not feature specs)
 
@@ -82,6 +83,5 @@ These are referenced by umbrella specs but don't exist yet. Create from `_templa
 - `ml-categorization.md` — Pillar D: local ML-powered categorization (absorbed from Smart Import)
 
 ### Transaction Matching children
-- `same-record-dedup.md` — Pillar A: cross-source deduplication
-- `mastered-record-merge-rules.md` — Pillar C: per-field merge policy for golden records
+- `same-record-dedup.md` — Pillars A + C: cross-source deduplication and per-field merge policy for golden records
 - `transfer-detection.md` — Pillar B: transfer pair detection across accounts
