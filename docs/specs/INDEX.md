@@ -30,6 +30,7 @@ Implemented specs are historical records of what was designed and shipped. They 
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | draft | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
 | [CSV Import](csv-import.md) | Feature | ready | Profile-based CSV extraction and loading (existing system) |
 | [MCP Architecture & Design](mcp-architecture.md) | Architecture | draft | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness |
+| [MCP Tool Surface](mcp-tool-surface.md) | Architecture | draft | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (45 tools, 4 prompts, 4 resources) |
 | [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers |
 | [Database Migration](database-migration.md) | Feature | draft | Schema migration system for DuckDB |
 | [Plaid Integration](plaid-integration.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
@@ -60,7 +61,6 @@ Specs in `implemented/` are complete. Listed here for reference.
 These are referenced by umbrella specs but don't exist yet. Create from `_template.md` when ready.
 
 ### MCP children
-- `mcp-tool-surface.md` — Concrete tool, prompt, and resource definitions for MCP v1
 - MCP Apps spec (name TBD) — First MCP App MVP, consuming the tool surface
 
 ### Privacy infrastructure children
