@@ -38,6 +38,7 @@ Implemented specs are historical records of what was designed and shipped. They 
 | [Plaid Integration](plaid-integration.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
 | [Sync Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |
 | [Same-Record Dedup](same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (transaction-matching pillars A+C) |
+| [Testing & Validation](testing-and-validation-overview.md) | Umbrella | draft | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
 
 ## Roadmaps (not feature specs)
 
@@ -86,3 +87,9 @@ These are referenced by umbrella specs but don't exist yet. Create from `_templa
 ### Transaction Matching children
 - `same-record-dedup.md` — Pillars A + C: cross-source deduplication and per-field merge policy for golden records
 - `transfer-detection.md` — Pillar B: transfer pair detection across accounts
+
+### Testing & Validation children
+- `synthetic-data-generator.md` — Persona-based + anonymized synthetic data generation with ground-truth labels
+- `csv-fixture-library.md` — Curated bank export samples with expected-result JSON for format detection testing
+- `format-compatibility-testing.md` — Extractor verification against fixture files
+- `migration-safety-testing.md` — Pre/post migration data integrity assertions
