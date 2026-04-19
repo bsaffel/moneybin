@@ -37,6 +37,17 @@ def command_function(source_path: Path = typer.Option(..., help="Description")) 
 - Clear help text for all commands and options
 - Progress updates for long operations
 
+## Non-Interactive Parity
+
+Every interactive prompt (confirmation, selection, wizard step) must have a flag equivalent that expresses the same intent in a single invocation. AI agents and scripts cannot navigate interactive prompts.
+
+- **Confirmations** → `--yes` / `-y` to auto-accept
+- **Field selection** → named flags (e.g., `--date-col=X`, `--amount-col=Y`)
+- **Declining/skipping** → `--skip` or equivalent
+- **Multi-step wizards** → each step's choice expressible as a flag; all flags combinable in one invocation
+
+Combined with `--output json` (see `mcp-architecture.md` §7), this makes every CLI command fully automatable by AI agents (Claude Code, Codex) and shell scripts.
+
 ## Icon Usage
 
 Use icons **sparingly** — only where they add scanability, not decoration.
