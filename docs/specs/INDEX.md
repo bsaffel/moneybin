@@ -38,7 +38,7 @@ Implemented specs are historical records of what was designed and shipped. They 
 | [Plaid Integration](plaid-integration.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
 | [Sync Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |
 | [Same-Record Dedup](same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (transaction-matching pillars A+C) |
-| [Testing & Validation](testing-and-validation-overview.md) | Umbrella | draft | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
+| [Testing & Validation](testing-and-validation-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
 
 ## Roadmaps (not feature specs)
 

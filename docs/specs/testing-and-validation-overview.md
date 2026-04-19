@@ -1,7 +1,7 @@
 # Testing & Validation — Overview
 
 > Last updated: 2026-04-18
-> Status: Draft — umbrella doc for the testing & validation initiative. Child specs listed in [Child Specs](#child-specs) are written separately.
+> Status: Ready — umbrella doc for the testing & validation initiative. Child specs listed in [Child Specs](#child-specs) are written separately.
 > Companions: `private/specs/core-concerns.md` §10 (original requirements, not checked in), `CLAUDE.md` "Architecture: Data Layers", [`sync-client-integration.md`](sync-client-integration.md) (owns Plaid Sandbox testing)
 
 ## Purpose
@@ -106,7 +106,7 @@ Key assertions from the catalog are also expressed as SQLMesh audits so they fir
 
 Six personas representing distinct financial lives. The umbrella defines *what* each persona represents and *which code paths it exercises*. The generator child spec owns *how* to produce life-like data for each.
 
-Each persona uses a named profile to keep its data isolated.
+Each persona uses a named profile to keep its data isolated. The existing profile system (`MoneyBinSettings.profile`) already supports this — each profile gets its own database, data directory, logs, and env file. The persona-to-profile name mapping (`basic` → `alice`, etc.) is a recommended convention, not enforced; any persona can be generated into any profile name.
 
 ### V1 Personas (existing schema)
 
