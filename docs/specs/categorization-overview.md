@@ -329,6 +329,25 @@ Ship a curated set of ~200–500 common merchant name-to-category mappings (STAR
 
 The seed merchant list is loaded alongside the existing Plaid PFCv2 category seed. Users can disable or override any seed mapping.
 
+### Migration-imported categories as bootstrap (v1)
+
+When users import data from competing tools (Mint, YNAB, Tiller, Monarch) via the
+[smart tabular importer](smart-tabular-import.md), source-provided categories are
+preserved in `raw.tabular_transactions.category`. These migrated categories are
+a powerful bootstrap signal:
+
+1. **Direct rule seeding.** Each unique (merchant, category) pair in the migrated data
+   becomes a candidate auto-rule. Import 3 years of Mint data where every Kroger
+   transaction is "Groceries," and MoneyBin can instantly generate a rule for Kroger.
+2. **Category mapping.** Source tool categories (e.g., Mint's "Food & Dining > Restaurants")
+   are mapped to MoneyBin categories via a one-time mapping table per source tool.
+3. **ML training data.** Migrated categorizations are pre-labeled training data for the
+   ML model. A user who imports 5 years of history has a corpus that makes the ML model
+   useful from day one.
+
+This is the highest-leverage bootstrap strategy for users switching from another tool.
+See `private/specs/strategic-analysis.md` §6 for the full migration strategy.
+
 ### Synthetic training data from seed merchants (v1)
 
 Generate synthetic transaction descriptions from the seed merchant list (e.g., "SQ *STARBUCKS #1234", "AMZN MKTP US*AB1CD2") with their known categories. Train the initial ML model on this synthetic corpus as a cold-start strategy. Accuracy will be moderate but better than no model.
@@ -426,4 +445,4 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **ML retraining trigger.** Should the system suggest retraining when accuracy metrics decline or when a significant number of new categorizations have accumulated since the last training? v1 is on-demand only; automatic suggestions are a possible enhancement.
 - **Auto-rule deduplication.** When multiple transactions trigger proposals for overlapping patterns (e.g., "STARBUCKS" and "STARBUCKS RESERVE"), how should the proposal engine handle it? Merge into the broader pattern? Keep both and let the user decide?
 - **ML confidence calibration.** SVM confidence scores are not always well-calibrated probabilities. Should the spec require Platt scaling or isotonic regression to improve calibration? Defer to experimentation.
-- **Interaction with Smart Import pillar F.** AI-parsed transactions enter the system with `source_system='csv_ai_parsed'` or `'pdf_ai_parsed'`. Should these be treated differently by the ML model (e.g., lower weight), or the same as any other source? The `categorized_by` hierarchy is independent of `source_system`, but the ML training pipeline could weight by source system as well as categorization source.
+- **Interaction with Smart Import pillar F.** AI-parsed transactions enter the system with a pillar-F-specific `source_type` value (TBD). Should these be treated differently by the ML model (e.g., lower weight), or the same as any other source? The `categorized_by` hierarchy is independent of `source_type`, but the ML training pipeline could weight by source type as well as categorization source.

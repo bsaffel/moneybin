@@ -1,6 +1,6 @@
 # Smart Import — Overview
 
-> Last updated: 2026-04-16
+> Last updated: 2026-04-19
 > Status: Draft — umbrella doc for the smart-import initiative. Child specs listed in [Pillars](#pillars) are written separately.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance), [`transaction-matching.md`](transaction-matching.md) (peer initiative), [`categorization-overview.md`](categorization-overview.md) (owns pillars D & E), `CLAUDE.md` "Architecture: Data Layers"
 
@@ -35,8 +35,7 @@ Smart Import decomposes into six independent subsystems. Each has its own child 
 
 | Pillar | Purpose | Touches cloud? | Child spec |
 |---|---|---|---|
-| **A.** Smart CSV/TSV detection | Heuristic column inference when no built-in profile matches. Produces a `CSVProfile` that feeds the existing extractor. | No | `smart-csv-detection.md` |
-| **B.** Excel import | XLSX/XLS with multi-sheet handling, cell-format awareness, non-row-1 headers. Reuses the detection framework from A. | No | `excel-import.md` |
+| **A+B.** Smart tabular import | Universal tabular importer: CSV, TSV, Excel, Parquet, Feather with heuristic column detection, multi-account support, and migration profiles (Tiller, Mint, YNAB). Pillars A and B merged — Excel is just another format reader feeding the same detection engine. JSON/JSONL deferred to a separate spec (nested types → DuckDB native STRUCT/LIST/MAP). | No | [`smart-tabular-import.md`](smart-tabular-import.md) |
 | **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Extends the `w2_extractor` pattern to statements and brokerage reports. | No | `structured-pdf-import.md` |
 | **D.** ML-powered categorization | Local scikit-learn (TF-IDF + SVM) trained on the user's own `transaction_categories`. High-confidence → auto-apply; medium → suggest; low → defer. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **E.** Auto-rule generation | Hook `categorize_transaction()` / `bulk_categorize()` to synthesize rules and merchant mappings from user edits and high-confidence ML picks. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
@@ -76,7 +75,7 @@ Two concerns touch Smart Import but are scoped to separate peer specs. Calling t
 
 **Scope:** Cross-source deduplication of the same transaction (e.g., the same txn appears in a CSV statement, an OFX export, and Plaid), transfer pair detection (money out of account A matches money into account B), and golden-record merge rules when multiple sources describe the same transaction with slightly different fields.
 
-**Why it's a peer, not a child:** Matching is shared infrastructure consumed by every ingestion surface — Smart Import, Plaid sync (`sync-client-integration.md`), and manual entry all feed it. Design choices in the matching spec constrain what each ingestion surface must produce (provenance columns, candidate keys, fuzzy-match signals). It also owns the `source_system` taxonomy.
+**Why it's a peer, not a child:** Matching is shared infrastructure consumed by every ingestion surface — Smart Import, Plaid sync (`sync-client-integration.md`), and manual entry all feed it. Design choices in the matching spec constrain what each ingestion surface must produce (provenance columns, candidate keys, fuzzy-match signals). It also owns the `source_type` taxonomy.
 
 **Contract with Smart Import:** Every pillar in this initiative must produce raw records that conform to whatever provenance schema the matching spec defines. Pillars A/B/C/F cannot finalize their raw-row output shape until the matching spec lands.
 
@@ -105,12 +104,11 @@ Detailed rules — redaction fields, supported backends, audit log schema, conse
 ## Build order & rationale
 
 1. **`docs/specs/privacy-and-ai-trust.md`** — foundational. Defines the consent model and audit schema that pillar F must conform to. Worth writing even though F is built last: locks in the privacy contract before any AI-touching code exists.
-2. **`transaction-matching.md`** (umbrella + at least `same-record-dedup.md` child) — foundational peer spec. Defines the provenance contract every ingestion surface must produce and owns the `source_system` taxonomy. Pillars A/B/C/F can't finalize their raw-row output until this lands.
-3. **Pillar A — `smart-csv-detection.md`** — most concrete, extends the existing `CSVProfile` system directly, zero privacy risk. Proves the architecture and unblocks B.
-4. **Pillars E & D** — now owned by [`categorization-overview.md`](categorization-overview.md). Build order: E (auto-rules) first, then D (ML). See that spec for rationale and sequencing.
-5. **Pillar B — `excel-import.md`** — reuses A's detection framework; mostly a file-format adapter.
-7. **Pillar C — `structured-pdf-import.md`** — independent; follows the `w2_extractor` pattern.
-8. **Pillar F — `ai-assisted-parsing.md`** — last. Depends on the privacy framework and benefits from A/B/C being the trusted non-AI fallback when the user declines AI.
+2. **`transaction-matching.md`** (umbrella + at least `same-record-dedup.md` child) — foundational peer spec. Defines the provenance contract every ingestion surface must produce and owns the `source_type` taxonomy. Pillars A/B/C/F can't finalize their raw-row output until this lands.
+3. **Pillars A+B — [`smart-tabular-import.md`](smart-tabular-import.md)** — merged into a universal tabular importer. CSV, TSV, Excel, Parquet, Feather all handled by one detection engine. Establishes the format-agnostic architecture, `TabularProfile` system, `ingest_dataframe()` Database primitive, and multi-account support. Zero privacy risk. Proves the architecture for everything downstream. JSON/JSONL deferred to a separate spec — nested types map better to DuckDB's native STRUCT/LIST/MAP than to tabular flattening.
+4. **Pillars E & D** — now owned by [`categorization-overview.md`](categorization-overview.md). Build order: E (auto-rules) first, then D (ML). See that spec for rationale and sequencing. Migration-imported categories from the tabular importer serve as a bootstrap accelerator for both pillars.
+5. **Pillar C — `structured-pdf-import.md`** — independent; follows the `w2_extractor` pattern.
+6. **Pillar F — `ai-assisted-parsing.md`** — last. Depends on the privacy framework and benefits from A+B/C being the trusted non-AI fallback when the user declines AI.
 
 ## Success criteria
 

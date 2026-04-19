@@ -19,7 +19,8 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 
 - [transaction-matching.md](transaction-matching.md) — umbrella vision, scope, build order
 - [fct_transactions.sql](../../sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no dedup)
-- [stg_csv__transactions.sql](../../sqlmesh/models/prep/stg_csv__transactions.sql) — CSV staging with within-source dedup
+- [smart-tabular-import.md](smart-tabular-import.md) — universal tabular importer that produces `raw.tabular_*` records with `source_transaction_id`, per-format `source_type` values, and `source_origin` (institution/profile identifier)
+- [stg_tabular__transactions.sql](../../sqlmesh/models/tabular/stg_tabular__transactions.sql) — tabular staging (replaces CSV staging) with within-source dedup
 - [stg_ofx__transactions.sql](../../sqlmesh/models/prep/stg_ofx__transactions.sql) — OFX staging without within-source dedup (gap)
 
 ## Requirements
@@ -27,7 +28,7 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 ### Dedup
 
 1. Transactions from different sources that describe the same real-world event resolve to one gold record in `core.fct_transactions`.
-2. The matcher never matches within the same `source_system`. Two rows from OFX with different `source_transaction_id` values are always treated as distinct transactions.
+2. The matcher matches within the same source type only for Tier 2b (overlapping statements without source-native IDs). Within-source matches require high confidence — no review queue. Two rows from the same source with different `source_transaction_id` values are always treated as distinct transactions (Tier 2a handles those deterministically).
 3. Each source row participates in at most one match (1:1 bipartite assignment).
 4. Matches are scored with a confidence value. Three tiers determine behavior:
    - `>= high_confidence_threshold` (default 0.95): auto-merge, logged, reversible
@@ -40,15 +41,15 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 
 ### Merge rules
 
-9. When source rows merge, per-field values are selected by a single source-priority ranking (configurable, default: `plaid > csv > ofx`).
+9. When source rows merge, per-field values are selected by a single source-priority ranking (configurable, default: `plaid > csv > excel > tsv > parquet > feather > pipe > ofx`).
 10. For each field, the value from the highest-priority source with a non-NULL value wins.
 11. `transaction_date` is an exception: earliest non-NULL posted date across sources (most accurate settlement date).
-12. The source-priority list must include every supported `source_system`. Adding a new source type requires inserting it into this list.
+12. The source-priority list must include every supported `source_type`. The smart tabular importer produces format-specific `source_type` values (`csv`, `tsv`, `excel`, `parquet`, `feather`, `pipe`) rather than a single `tabular` value. Adding a new source type requires inserting it into this list.
 
 ### Identity
 
 13. Gold records are keyed by `transaction_id` — a deterministic UUID v5 derived from the contributing source rows.
-14. Source-native IDs are carried as `source_transaction_id`, with the same logical meaning everywhere the column appears (raw, prep, provenance).
+14. Source-native IDs are carried as `source_transaction_id`, with the same logical meaning everywhere the column appears (raw, prep, provenance). The smart tabular importer populates this from institution-assigned IDs when present in the source file (e.g., Tiller's Transaction ID, bank reference numbers identified as unique IDs).
 15. Unmatched records get a `transaction_id` derived from `(source_system, source_transaction_id, account_id)` — stable across SQLMesh reruns.
 16. Matched groups get a `transaction_id` derived from the sorted set of contributing `(source_system, source_transaction_id, account_id)` tuples — also stable.
 
@@ -57,21 +58,39 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 17. `meta.fct_transaction_provenance` links every gold record to every contributing source row.
 18. Provenance rows are never deleted, only superseded (a reversal appends a new row).
 
-## Three-Tier Dedup Taxonomy
+## Dedup Taxonomy
 
 Each tier has a strictly simpler matching problem than the next:
 
 | Tier | Scope | Method | Owner |
 |---|---|---|---|
 | 1. Same-file re-import | Same source, same file | Raw table PKs prevent duplicate inserts | `raw.*` INSERT logic |
-| 2. Overlapping statements | Same source, different files, same source-native ID | `ROW_NUMBER()` on `(source_transaction_id, account_id)`, latest load wins | `prep.stg_*` views |
-| 3. Cross-source | Different `source_system` values | Python matcher with confidence scoring, 1:1 assignment | Python → `app.match_decisions` |
+| 2a. Overlapping statements (ID-based) | Same source type, different files, same source-native ID | `ROW_NUMBER()` on `(source_transaction_id, account_id)`, latest load wins | `prep.stg_*` views |
+| 2b. Overlapping statements (hash-based) | Same `source_origin` + `source_type`, different files, no source-native ID | Same matching logic as Tier 3 but within a single origin; restricted to high-confidence only | Python → `app.match_decisions` |
+| 3. Cross-source | Different `source_type` or different `source_origin` | Python matcher with confidence scoring, 1:1 assignment | Python → `app.match_decisions` |
 
-Tiers 1 and 2 are deterministic SQL prerequisites. Tier 3 is the fuzzy matching engine this spec primarily designs.
+Tiers 1 and 2a are deterministic SQL prerequisites. Tiers 2b and 3 use the same Python matching engine with the same scoring and persistence model.
 
-### Tier 2 gap
+### Tier 2a gap
 
 OFX staging (`stg_ofx__transactions`) currently has no within-source dedup. This spec adds `ROW_NUMBER() OVER (PARTITION BY source_transaction_id, account_id ORDER BY loaded_at DESC)` to match what CSV staging already does.
+
+### Tier 2b: overlapping statements without source-native IDs
+
+Many bank CSV exports lack institution-assigned transaction IDs. When a user imports overlapping statements from the same source type (e.g., `chase-march.csv` and `chase-q1.csv`), the hash-based `transaction_id` in raw includes `row_number` and `source_file`, producing different IDs for the same real-world transaction. Tier 2a can't help because there's no `source_transaction_id` to deduplicate on.
+
+Tier 2b addresses this by running the same matching engine used in Tier 3, but relaxing the "different source type" constraint. The key differences from Tier 3:
+
+- **Same source origin and type required.** Pairs must share the same `source_origin` and `source_type`. Two CSVs from the same institution (`source_origin = 'chase_credit'`) are candidates; two CSVs from different institutions are not — those go to Tier 3.
+- **Same account required.** `account_id` must match exactly (same as Tier 3).
+- **Exact amount required.** `amount` must match to the penny (same as Tier 3).
+- **Date within window.** `transaction_date` within `±date_window_days` (same as Tier 3).
+- **High confidence only.** Only pairs scoring `>= high_confidence_threshold` are auto-merged. No review queue for within-source matches — if confidence isn't high enough, both rows survive. This is conservative: same-day, same-amount transactions from the same source (two coffees at Starbucks) have different descriptions and won't score high enough to merge.
+- **Description similarity is the discriminator.** Since amount and date are already exact-matched, description similarity (`jaro_winkler_similarity`) is what separates genuine duplicates (high similarity) from distinct same-day same-amount transactions (different descriptions).
+
+**Execution order:** Tier 2b runs before Tier 3. Within-source duplicates are resolved first so that Tier 3 sees a clean set of distinct transactions per source type.
+
+**Match decisions:** Persisted in the same `app.match_decisions` table as Tier 3, with a `match_tier = '2b'` marker for auditability. Same reversal and re-proposal semantics.
 
 ## Data Model
 
@@ -86,12 +105,15 @@ Raw tables rename `transaction_id` → `source_transaction_id` to free up `trans
 CREATE TABLE IF NOT EXISTS app.match_decisions (
     match_id VARCHAR NOT NULL,           -- UUID, primary key
     source_transaction_id_a VARCHAR NOT NULL, -- Source-native ID of first row
-    source_system_a VARCHAR NOT NULL,    -- source_system of first row
+    source_system_a VARCHAR NOT NULL,    -- source_type of first row
+    source_origin_a VARCHAR NOT NULL,    -- source_origin of first row (institution/connection/profile)
     source_transaction_id_b VARCHAR NOT NULL, -- Source-native ID of second row
-    source_system_b VARCHAR NOT NULL,    -- source_system of second row
+    source_system_b VARCHAR NOT NULL,    -- source_type of second row
+    source_origin_b VARCHAR NOT NULL,    -- source_origin of second row (institution/connection/profile)
     account_id VARCHAR NOT NULL,         -- Shared account (blocking requirement)
     confidence_score DECIMAL(5, 4),      -- 0.0000 to 1.0000
     match_signals JSON,                  -- Per-signal scores: {"date_distance": 0, "description_similarity": 0.87}
+    match_tier VARCHAR NOT NULL,          -- '2b' (within-source overlap) or '3' (cross-source)
     match_status VARCHAR NOT NULL,       -- pending, accepted, rejected
     match_reason VARCHAR,                -- Human-readable explanation of why this match was proposed
     decided_by VARCHAR NOT NULL,         -- auto, user, system
@@ -117,7 +139,8 @@ CREATE TABLE IF NOT EXISTS app.source_priority (
 |---|---|---|
 | `transaction_id` | VARCHAR | FK to gold record in `core.fct_transactions` |
 | `source_transaction_id` | VARCHAR | Source-native ID, joinable to raw/prep |
-| `source_system` | VARCHAR | Origin system |
+| `source_system` | VARCHAR | Origin system (source_type) |
+| `source_origin` | VARCHAR | Institution/connection/profile that produced this row |
 | `source_file` | VARCHAR | File that produced this source row |
 | `source_extracted_at` | TIMESTAMP | When the source row was parsed |
 | `match_id` | VARCHAR | FK to `app.match_decisions`; NULL for unmatched records |
@@ -126,7 +149,7 @@ CREATE TABLE IF NOT EXISTS app.source_priority (
 
 **`prep.stg_ofx__transactions`** (modified) — add tier 2 dedup via `ROW_NUMBER()`.
 
-**`prep.int_transactions__unioned`** (new) — `UNION ALL` of all `stg_*__transactions` with standardized column names and types. Replaces the CTEs in today's `fct_transactions`. Each row carries `source_transaction_id` and `source_system`.
+**`prep.int_transactions__unioned`** (new) — `UNION ALL` of all `stg_*__transactions` with standardized column names and types. Replaces the CTEs in today's `fct_transactions`. Each row carries `source_transaction_id`, `source_system`, and `source_origin`.
 
 **`prep.int_transactions__matched`** (new) — joins `int_transactions__unioned` with `app.match_decisions` to assign `transaction_id` (gold key). Unmatched rows get a deterministic UUID from `(source_system, source_transaction_id, account_id)`. Matched groups get a deterministic UUID from the sorted contributing tuple set. Output has both `transaction_id` and `source_transaction_id`.
 
@@ -154,22 +177,25 @@ Python orchestrator, DuckDB compute engine. The matcher sends SQL queries to Duc
 ```
 1. Python loader         → writes to raw.*
 2. Python matcher        → reads prep.stg_* views (always current — views over raw)
-                         → blocking query (DuckDB SQL)
-                         → scoring query (DuckDB SQL)
-                         → 1:1 assignment (Python, small candidate set)
-                         → writes to app.match_decisions
+                         → Tier 2b: within-source overlap matching (high-confidence only)
+                         → Tier 3: cross-source matching (full confidence tiers)
+                         → each tier: blocking → scoring → 1:1 assignment
+                         → writes to app.match_decisions (with match_tier marker)
 3. sqlmesh run           → int_*__unioned → __matched → __merged
                          → core.fct_transactions
                          → meta.fct_transaction_provenance
 ```
 
+Tier 2b runs first so that within-source duplicates are resolved before Tier 3 sees the data. This prevents a cross-source match from competing with a within-source duplicate.
+
 ### Candidate blocking
 
 SQL query against prep views. Returns pairs where:
-- `source_system` differs
 - `account_id` matches exactly
 - `amount` matches exactly (to the penny, same-currency only)
 - `transaction_date` within `±date_window_days` (default 3)
+- **Tier 2b:** same `source_origin` and `source_type`, different `source_file`, no `source_transaction_id` on at least one row (rows with source-native IDs are already handled by Tier 2a)
+- **Tier 3:** different `source_type` OR different `source_origin` (cross-source matching)
 
 This produces a narrow candidate set. No fuzzy logic at this stage.
 
@@ -192,15 +218,17 @@ When multiple candidates compete (e.g., two CSV rows could match the same OFX ro
 
 Every scored pair above `review_threshold` is written to `app.match_decisions`:
 - `>= high_confidence_threshold`: `match_status = 'accepted'`, `decided_by = 'auto'`
-- `>= review_threshold`: `match_status = 'pending'`, `decided_by = 'auto'`
+- `>= review_threshold` (Tier 3 only): `match_status = 'pending'`, `decided_by = 'auto'`
 
-Pairs below `review_threshold` are not persisted (logged at DEBUG level only).
+Tier 2b writes only high-confidence matches (`match_tier = '2b'`). Pairs below `high_confidence_threshold` are discarded — no review queue for within-source overlaps, since a false positive would silently drop a real transaction.
+
+Tier 3 pairs below `review_threshold` are not persisted (logged at DEBUG level only).
 
 ## Golden-Record Merge Rules
 
 ### Source-priority ranking
 
-A single ordered list stored in `app.source_priority`. Default: `plaid (1) > csv (2) > ofx (3)`. Extended as sources ship. The list must include every supported `source_system` value.
+A single ordered list stored in `app.source_priority`. Default: `plaid (1) > csv (2) > excel (3) > tsv (4) > parquet (5) > feather (6) > pipe (7) > ofx (8)`. The tabular import formats are individually ranked per `smart-tabular-import.md` — CSV is most common and gets highest priority among tabular formats. The list must include every supported `source_type` value.
 
 ### Field selection
 
@@ -280,20 +308,24 @@ class MatchingSettings(BaseModel):
     high_confidence_threshold: float = 0.95
     review_threshold: float = 0.70
     date_window_days: int = 3
-    source_priority: list[str] = ["plaid", "csv", "ofx"]
-    # Extended as sources ship. Must include every supported source_system.
+    source_priority: list[str] = [
+        "plaid", "csv", "excel", "tsv", "parquet",
+        "feather", "pipe", "ofx",
+    ]
+    # Must include every supported source_type. Tabular formats are
+    # format-specific per smart-tabular-import.md.
 ```
 
 Env var overrides follow the `MONEYBIN_` convention:
 - `MONEYBIN_MATCHING__HIGH_CONFIDENCE_THRESHOLD=0.90`
 - `MONEYBIN_MATCHING__DATE_WINDOW_DAYS=5`
-- `MONEYBIN_MATCHING__SOURCE_PRIORITY='["csv", "plaid", "ofx"]'`
+- `MONEYBIN_MATCHING__SOURCE_PRIORITY='["plaid", "csv", "excel", "tsv", "parquet", "feather", "pipe", "ofx"]'`
 
 ### What is not configurable
 
 | Invariant | Rationale |
 |---|---|
-| Cross-source only (never match within same source) | Same-source rows with different IDs are genuinely different transactions |
+| Source-scoped blocking (`source_origin` + `source_type` for Tier 2b, cross-source for Tier 3) | Same-origin rows with different source-native IDs are genuinely different; Tier 2b only handles hash-ID overlaps |
 | Exact account match as blocking requirement | Transactions can't match across accounts |
 | Exact amount match as blocking requirement | Amount is the strongest identity signal |
 | 1:1 assignment | Each source row describes at most one real-world transaction |
@@ -341,12 +373,13 @@ Env var overrides follow the `MONEYBIN_` convention:
 
 ## Checklist: Adding a New Data Source
 
-When a new `source_system` is added to MoneyBin, the following must be updated for matching to work correctly:
+When a new source is added to MoneyBin, the following must be updated for matching to work correctly:
 
 1. Create staging model in `sqlmesh/models/prep/` with tier 2 dedup (`ROW_NUMBER`)
-2. Add a CTE to `int_transactions__unioned` and `UNION ALL` into the combined set
-3. Insert the new `source_system` into the default `source_priority` list at the appropriate position
-4. Add the new source to matching integration tests (load + match against existing sources)
+2. Add a CTE to `int_transactions__unioned` and `UNION ALL` into the combined set — include `source_origin` column
+3. Insert the new `source_type` into the default `source_priority` list at the appropriate position
+4. Define `source_origin` population logic (profile name, institution ID, item ID, etc.)
+5. Add the new source to matching integration tests (load + match against existing sources)
 
 ## Open Questions
 

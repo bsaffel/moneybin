@@ -25,11 +25,12 @@ Implemented specs are historical records of what was designed and shipped. They 
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Smart Import Overview](smart-import-overview.md) | Umbrella | draft | Six-pillar initiative: smart CSV/TSV detection, Excel, PDF, ML categorization, auto-rules, AI-assisted parsing |
+| [Smart Import Overview](smart-import-overview.md) | Umbrella | draft | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
+| [Smart Tabular Import](smart-tabular-import.md) | Feature | draft | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration profiles (Tiller, Mint, YNAB) |
 | [Transaction Matching](transaction-matching.md) | Umbrella | draft | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
 | [Categorization](categorization-overview.md) | Umbrella | draft | Auto-rule generation, ML categorization, priority hierarchy, bootstrap strategies |
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | draft | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
-| [CSV Import](csv-import.md) | Feature | ready | Profile-based CSV extraction and loading (existing system) |
+| [CSV Import](implemented/csv-import.md) | Feature | implemented | Profile-based CSV extraction and loading (superseded by smart-tabular-import.md) |
 | [MCP Architecture & Design](mcp-architecture.md) | Architecture | draft | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness |
 | [MCP Tool Surface](mcp-tool-surface.md) | Architecture | draft | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (45 tools, 4 prompts, 4 resources) |
 | [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers |
@@ -75,8 +76,8 @@ These are referenced by umbrella specs but don't exist yet. Create from `_templa
 - AIConfig spec — `MoneyBinSettings.ai` configuration block, backend selection
 
 ### Smart Import children
-- `smart-csv-detection.md` — Pillar A: heuristic column inference for unknown CSVs
-- `excel-import.md` — Pillar B: XLSX/XLS import
+- ~~`smart-csv-detection.md`~~ — Absorbed into `smart-tabular-import.md` (Pillars A + B merged)
+- ~~`excel-import.md`~~ — Absorbed into `smart-tabular-import.md` (Pillars A + B merged)
 - `structured-pdf-import.md` — Pillar C: native-text PDF import
 - `ai-assisted-parsing.md` — Pillar F: LLM fallback for file parsing
 

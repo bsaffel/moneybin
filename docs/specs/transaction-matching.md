@@ -145,7 +145,7 @@ v2 (deferred): **learned promotions.** After the user confirms N matches of the 
 
 Three sibling initiatives feed the matcher. Matching defines the provenance contract; siblings conform to it.
 
-- **Smart Import** (`smart-import-overview.md`) — produces raw rows from CSV, Excel, PDF. Every Smart Import pillar must output rows that conform to the provenance schema and `source_system` taxonomy defined here.
+- **Smart Import** (`smart-import-overview.md`) — produces raw rows from CSV, TSV, Excel, Parquet, Feather, and (future) PDF. Every Smart Import pillar must output rows that conform to the provenance schema and `source_type` taxonomy defined here.
 - **Plaid sync** (`sync-client-integration.md`, pending) — produces raw rows from Plaid API. Also the source of deterministic retro-mutation handling (Plaid provides stable `transaction_id`).
 - **Manual entry** (pending) — produces raw rows from user input. Reconciliation of a manual entry with a later-imported file is a matching case, not a manual-entry case.
 - **Multi-currency** (pending) — owns cross-currency transfer amount matching (FX-aware tolerance). This spec defers that case.
@@ -178,4 +178,4 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **Backfill UX at release.** One-shot migration on first upgrade (automatic, potentially slow), or explicit `moneybin matches backfill` command (user-triggered, predictable)?
 - **Interaction with Smart Import pillar F.** AI-parsed transactions — should they enter matching with lower default confidence, or be treated the same as any other source?
 - **Match metadata on the fact table.** Resolved: analytics-relevant columns (`is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_system`, `source_count`) go directly on `core.fct_transactions` for query ergonomics. Detailed match metadata (decision logs, match reasons, signal scores, reversal history) lives in supplemental tables (`app.match_decisions`, `core.fct_transaction_provenance`). Child specs define the exact column list per table.
-- **`source_system` taxonomy.** This spec owns the taxonomy. Current values are `ofx` and `csv`. Smart Import adds `csv_smart_detected`, `csv_ai_parsed`, `pdf_ai_parsed`. Plaid adds `plaid`. Manual entry adds `manual`. The canonical gold record needs a `canonical_source_system` that records which source "won" the merge.
+- **`source_type` taxonomy.** This spec owns the taxonomy. Renamed from `source_system` — `source_type` is neutral enough for both file formats and API/sync sources. Current values: `ofx` and `csv`. Smart tabular import adds format-specific values (`csv`, `tsv`, `excel`, `parquet`, `feather`, `pipe`) per `smart-tabular-import.md`. Plaid adds `plaid`. Future: `pdf_statement`, `pdf_ai_parsed`, `manual`. The canonical gold record carries `canonical_source_type` recording which source "won" the merge. See `.claude/rules/database.md` for the column naming rule.

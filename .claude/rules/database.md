@@ -17,9 +17,22 @@ result = db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", 
 
 See [`data-protection.md`](../../docs/specs/data-protection.md) for the full design.
 
+## Bulk Data Loading
+
+Use `Database.ingest_dataframe()` for loading Polars DataFrames into DuckDB. This method converts the DataFrame to Arrow (`df.to_arrow()` — zero-copy) and writes via the encrypted connection. All loaders should use this method rather than constructing INSERT statements manually.
+
+```python
+db = get_database()
+db.ingest_dataframe("raw.tabular_transactions", df, on_conflict="replace")
+```
+
+See [`smart-tabular-import.md`](../../docs/specs/smart-tabular-import.md) for the full design.
+
 ## Column Name Consistency Across Layers
 
 A column name — especially identifiers — must contain the same logical values in every table and view where it appears. Any column named `X` should be joinable to any other column named `X` across raw, prep, core, and app schemas. When a new layer introduces a new concept (e.g., a synthetic key), give it a new name. Never reuse an existing column name with different semantics.
+
+**One concept, one column name.** If two columns across layers carry the same semantic (same values, same meaning), they must share the same name. Don't introduce a layer-specific alias (e.g., `source_format` in raw vs `source_type` in core) — use one name throughout. The canonical provenance column is `source_type` (values: `csv`, `tsv`, `excel`, `parquet`, `ofx`, `plaid`, etc.) — neutral enough for both file formats and API/sync sources. If a trivial mapping is needed (e.g., `xlsx` → `excel`), resolve it at write time so downstream layers never see the raw variant.
 
 ## Model Naming Conventions
 

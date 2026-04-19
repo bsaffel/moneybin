@@ -1,7 +1,11 @@
 # Feature: CSV Import
 
+> **Superseded by [`smart-tabular-import.md`](../smart-tabular-import.md)** — the universal
+> tabular importer that replaces the profile-based CSV system with heuristic detection,
+> multi-format support, and migration profiles.
+
 ## Status
-ready
+implemented
 
 ## Goal
 Import bank transaction data from CSV files into MoneyBin, supporting common bank formats with a fallback generic parser for unknown formats.
