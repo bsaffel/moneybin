@@ -39,6 +39,8 @@ Implemented specs are historical records of what was designed and shipped. They 
 | [Plaid Integration](plaid-integration.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
 | [Sync Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |
 | [Same-Record Dedup](same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (transaction-matching pillars A+C) |
+| [Transfer Detection](transfer-detection.md) | Feature | draft | Transfer pair detection across accounts (transaction-matching pillar B); shared matching engine, bridge table, always-review v1 |
+| [Auto-Rule Generation](auto-rule-generation.md) | Feature | draft | Auto-generate categorization rules from user edits (categorization pillar E); merchant-first pattern extraction, proposal review queue |
 | [Testing & Validation](testing-and-validation-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
 
 ## Roadmaps (not feature specs)
@@ -82,12 +84,12 @@ These are referenced by umbrella specs but don't exist yet. Create from `_templa
 - `ai-assisted-parsing.md` — Pillar F: LLM fallback for file parsing
 
 ### Categorization children
-- `auto-rule-generation.md` — Pillar E: auto-generate rules from user edits (absorbed from Smart Import)
+- ~~`auto-rule-generation.md`~~ — Written (2026-04-19). Pillar E: auto-generate rules from user edits
 - `ml-categorization.md` — Pillar D: local ML-powered categorization (absorbed from Smart Import)
 
 ### Transaction Matching children
 - `same-record-dedup.md` — Pillars A + C: cross-source deduplication and per-field merge policy for golden records
-- `transfer-detection.md` — Pillar B: transfer pair detection across accounts
+- ~~`transfer-detection.md`~~ — Written (2026-04-19). Pillar B: transfer pair detection across accounts
 
 ### Testing & Validation children
 - `synthetic-data-generator.md` — Persona-based + anonymized synthetic data generation with ground-truth labels

@@ -559,16 +559,15 @@ Update `dim_accounts.sql` and `fct_transactions.sql`:
 
 ### Column rename: `source_system` → `source_type`
 
-Existing specs and code use `source_system`. This spec introduces `source_type` as the
-canonical name — neutral enough for both file formats (`csv`, `excel`) and API/sync
-sources (`plaid`, `ofx`). The rename applies to all layers: raw, staging, core, and
-application code.
+Existing code uses `source_system`. This spec introduces `source_type` as the canonical
+name — neutral enough for both file formats (`csv`, `excel`) and API/sync sources
+(`plaid`, `ofx`). The rename applies to all layers: raw, staging, core, and application
+code. All specs now use `source_type` consistently.
 
 **Migration path:** Rename happens as part of this spec's implementation since we are
 already replacing the CSV pipeline. All references in SQLMesh models (`dim_accounts`,
 `fct_transactions`), MCP tools, and staging views are touched anyway. A database
-migration renames the column in existing tables. Other specs' references update when
-those specs reach implementation.
+migration renames the column in existing tables.
 
 ### source_type taxonomy
 

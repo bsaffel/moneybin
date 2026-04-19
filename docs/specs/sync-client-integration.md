@@ -23,7 +23,7 @@ Enable the moneybin Python client to authenticate with moneybin-server, sync ban
 4. Client downloads JSON payload and loads into `raw.plaid_*` DuckDB tables.
 5. Deduplication on primary keys prevents duplicate records on re-sync.
 6. SQLMesh staging views standardize Plaid data and flip amount sign (Plaid positive = expense becomes MoneyBin negative = expense).
-7. Core models include Plaid data via `UNION ALL` with `source_system = 'plaid'`.
+7. Core models include Plaid data via `UNION ALL` with `source_type = 'plaid'`.
 8. CLI commands provide full sync workflow (login, link, run, status).
 9. MCP tools expose sync operations to AI assistants.
 
@@ -75,8 +75,8 @@ Column schemas match `docs/specs/plaid-integration.md` in the moneybin project. 
 
 | Model | Change |
 |-------|--------|
-| `core.dim_accounts` | Add `plaid_accounts` CTE selecting from `prep.stg_plaid__accounts` with `source_system = 'plaid'`, UNION ALL into `all_accounts` |
-| `core.fct_transactions` | Add `plaid_transactions` CTE selecting from `prep.stg_plaid__transactions` with `source_system = 'plaid'`, UNION ALL into `all_transactions` |
+| `core.dim_accounts` | Add `plaid_accounts` CTE selecting from `prep.stg_plaid__accounts` with `source_type = 'plaid'`, UNION ALL into `all_accounts` |
+| `core.fct_transactions` | Add `plaid_transactions` CTE selecting from `prep.stg_plaid__transactions` with `source_type = 'plaid'`, UNION ALL into `all_transactions` |
 
 ## Implementation Plan
 
@@ -452,8 +452,8 @@ Plaid data flows through existing core tables after sync, so all existing MCP re
 
 - `stg_plaid__transactions`: Verify amount sign flip (-1 * positive becomes negative)
 - `stg_plaid__accounts`: Verify column mapping to core-compatible schema
-- `dim_accounts`: Verify Plaid accounts appear with `source_system = 'plaid'`
-- `fct_transactions`: Verify Plaid transactions appear with correct sign convention and `source_system = 'plaid'`
+- `dim_accounts`: Verify Plaid accounts appear with `source_type = 'plaid'`
+- `fct_transactions`: Verify Plaid transactions appear with correct sign convention and `source_type = 'plaid'`
 - Dedup: Load same JSON twice, verify no duplicate rows in raw tables
 
 ### CLI tests
@@ -503,10 +503,10 @@ uv run moneybin sync run
 # Verify data loaded
 uv run moneybin db shell
 # SELECT COUNT(*) FROM raw.plaid_transactions;
-# SELECT * FROM core.fct_transactions WHERE source_system = 'plaid' LIMIT 5;
+# SELECT * FROM core.fct_transactions WHERE source_type = 'plaid' LIMIT 5;
 # Verify amounts are negative for expenses:
 # SELECT amount, description FROM core.fct_transactions
-#   WHERE source_system = 'plaid' AND amount > 0 LIMIT 5;
+#   WHERE source_type = 'plaid' AND amount > 0 LIMIT 5;
 # (should be income transactions only)
 
 # Run pre-commit checks

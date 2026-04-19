@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
 
 ### Core integration
 
-Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `source_system = 'plaid'`.
+Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `source_type = 'plaid'`.
 
 ## Implementation Plan
 

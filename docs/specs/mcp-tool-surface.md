@@ -218,7 +218,7 @@ class TransactionService:
 | `uncategorized_only` | `bool` | `false` | Only return uncategorized transactions |
 | `limit` | `int` | `100` | Max results (capped at `MAX_ROWS`) |
 | `offset` | `int` | `0` | Pagination offset |
-| `detail` | `str` | `"standard"` | `summary` (aggregates), `standard` (core fields), `full` (all fields including memo, source_system, merchant_name) |
+| `detail` | `str` | `"standard"` | `summary` (aggregates), `standard` (core fields), `full` (all fields including memo, source_type, merchant_name) |
 
 - **Response `data` shape (`standard`):**
 
@@ -408,7 +408,7 @@ List all known accounts with type and institution.
 
 - **Sensitivity:** `low` — account metadata only, no balances or numbers.
 - **Unique parameters:** None.
-- **Behavior:** Returns array of `{account_id, account_type, institution_name, source_system, currency}`. No pagination — account count is always small.
+- **Behavior:** Returns array of `{account_id, account_type, institution_name, source_type, currency}`. No pagination — account count is always small.
 - **Service:** `AccountService.list() -> list[Account]`
 - **CLI:** `moneybin accounts list`
 
@@ -574,7 +574,7 @@ Show import history and data freshness per source.
 
 - **Sensitivity:** `low` — metadata only (dates, counts, source types).
 - **Unique parameters:** None.
-- **Behavior:** Returns array of `{source_system, source_file, imported_at, record_count, date_range_start, date_range_end}` sorted by most recent.
+- **Behavior:** Returns array of `{source_type, source_file, imported_at, record_count, date_range_start, date_range_end}` sorted by most recent.
 - **Service:** `ImportService.status() -> list[ImportRecord]`
 - **CLI:** `moneybin import status`
 

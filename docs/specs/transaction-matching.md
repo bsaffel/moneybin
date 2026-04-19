@@ -30,7 +30,7 @@ The existing `raw` → `prep` → `core` architecture maps naturally to a layere
 | Layer | Schema | Role | Quality guarantee |
 |---|---|---|---|
 | Raw | `raw` | Immutable ingestion records — every row ever loaded | Append-only, never modified, no dedup |
-| Staging | `prep` | Cleaned, typed, within-source deduplicated views | One row per (`source_id`, `source_system`) pair |
+| Staging | `prep` | Cleaned, typed, within-source deduplicated views | One row per (`source_id`, `source_type`) pair |
 | Core | `core` | Mastered, cross-source deduplicated, analytics-ready | **One row per real-world transaction**, regardless of how many sources reported it |
 
 ### Gold layer contract
@@ -44,7 +44,7 @@ The existing `raw` → `prep` → `core` architecture maps naturally to a layere
 
 | Table/view | Type | Grain | Purpose |
 |---|---|---|---|
-| `core.fct_transactions` (modified) | Fact | One real-world transaction | Gains: `is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_system`, `source_count` (number of raw rows that contributed to this gold record) |
+| `core.fct_transactions` (modified) | Fact | One real-world transaction | Gains: `is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_type`, `source_count` (number of raw rows that contributed to this gold record) |
 | `core.fct_transaction_provenance` | Fact | One (canonical_txn, contributing_raw_row) pair | Full lineage: which raw rows from which sources contributed to each gold record |
 | `core.bridge_transfers` | Bridge | One transfer pair | Links two `fct_transactions` rows as a matched pair; carries direction, date offset, amount delta |
 
@@ -177,5 +177,5 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **Review queue persistence.** Does the queue live in `app.*` (user-authored state) or `core.*` (model-derived)? `app.*` is more natural for mutable user decisions but doesn't participate in SQLMesh refresh. Likely `app.*` for decisions, `core.*` for derived provenance.
 - **Backfill UX at release.** One-shot migration on first upgrade (automatic, potentially slow), or explicit `moneybin matches backfill` command (user-triggered, predictable)?
 - **Interaction with Smart Import pillar F.** AI-parsed transactions — should they enter matching with lower default confidence, or be treated the same as any other source?
-- **Match metadata on the fact table.** Resolved: analytics-relevant columns (`is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_system`, `source_count`) go directly on `core.fct_transactions` for query ergonomics. Detailed match metadata (decision logs, match reasons, signal scores, reversal history) lives in supplemental tables (`app.match_decisions`, `core.fct_transaction_provenance`). Child specs define the exact column list per table.
+- **Match metadata on the fact table.** Resolved: analytics-relevant columns (`is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_type`, `source_count`) go directly on `core.fct_transactions` for query ergonomics. Detailed match metadata (decision logs, match reasons, signal scores, reversal history) lives in supplemental tables (`app.match_decisions`, `core.fct_transaction_provenance`). Child specs define the exact column list per table.
 - **`source_type` taxonomy.** This spec owns the taxonomy. Renamed from `source_system` — `source_type` is neutral enough for both file formats and API/sync sources. Current values: `ofx` and `csv`. Smart tabular import adds format-specific values (`csv`, `tsv`, `excel`, `parquet`, `feather`, `pipe`) per `smart-tabular-import.md`. Plaid adds `plaid`. Future: `pdf_statement`, `pdf_ai_parsed`, `manual`. The canonical gold record carries `canonical_source_type` recording which source "won" the merge. See `.claude/rules/database.md` for the column naming rule.

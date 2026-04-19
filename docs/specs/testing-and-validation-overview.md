@@ -37,7 +37,7 @@ Invariants that must hold regardless of the specific data. These are the workhor
 Example properties:
 
 - Every `fct_transactions.account_id` exists in `dim_accounts`
-- No duplicate `transaction_id` within a `source_system`
+- No duplicate `transaction_id` within a `source_type`
 - All amounts are non-NULL `DECIMAL(18,2)`
 - Date ranges are contiguous (no gaps in monthly coverage for a given account)
 - Sign convention: expenses negative, income positive
@@ -142,7 +142,7 @@ requires:
 snapshots:
   - query: "SELECT count(*) FROM core.fct_transactions"
     expect: 4532
-  - query: "SELECT DISTINCT source_system FROM core.fct_transactions ORDER BY 1"
+  - query: "SELECT DISTINCT source_type FROM core.fct_transactions ORDER BY 1"
     expect: ["csv", "ofx"]
 
 # Tier 2 — Property assertions

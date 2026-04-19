@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS raw.csv_transactions (
 
 ### Core integration
 
-Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `source_system = 'csv'`.
+Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `source_type = 'csv'`.
 
 ## Implementation Plan
 

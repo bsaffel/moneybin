@@ -529,7 +529,7 @@ This spec's job is to ensure that when the Apps spec arrives, it finds a tool su
 | **Provider Profiles** (new spec) | `AIBackend` interface, provider metadata, verified-local detection | Not yet written |
 | **AIConfig** (new spec) | `MoneyBinSettings.ai` configuration block, backend selection | Not yet written |
 | **Privacy & AI Trust** | Framework spec — the design authority for all of the above | Draft |
-| **Transaction Matching** | Provenance schema, `source_system` taxonomy, match review UX | Draft |
+| **Transaction Matching** | Provenance schema, `source_type` taxonomy, match review UX | Draft |
 
 ### Q1 12-month plan interactions
 

@@ -50,8 +50,8 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 
 13. Gold records are keyed by `transaction_id` — a deterministic UUID v5 derived from the contributing source rows.
 14. Source-native IDs are carried as `source_transaction_id`, with the same logical meaning everywhere the column appears (raw, prep, provenance). The smart tabular importer populates this from institution-assigned IDs when present in the source file (e.g., Tiller's Transaction ID, bank reference numbers identified as unique IDs).
-15. Unmatched records get a `transaction_id` derived from `(source_system, source_transaction_id, account_id)` — stable across SQLMesh reruns.
-16. Matched groups get a `transaction_id` derived from the sorted set of contributing `(source_system, source_transaction_id, account_id)` tuples — also stable.
+15. Unmatched records get a `transaction_id` derived from `(source_type, source_transaction_id, account_id)` — stable across SQLMesh reruns.
+16. Matched groups get a `transaction_id` derived from the sorted set of contributing `(source_type, source_transaction_id, account_id)` tuples — also stable.
 
 ### Provenance
 
@@ -105,15 +105,17 @@ Raw tables rename `transaction_id` → `source_transaction_id` to free up `trans
 CREATE TABLE IF NOT EXISTS app.match_decisions (
     match_id VARCHAR NOT NULL,           -- UUID, primary key
     source_transaction_id_a VARCHAR NOT NULL, -- Source-native ID of first row
-    source_system_a VARCHAR NOT NULL,    -- source_type of first row
+    source_type_a VARCHAR NOT NULL,      -- source_type of first row
     source_origin_a VARCHAR NOT NULL,    -- source_origin of first row (institution/connection/profile)
     source_transaction_id_b VARCHAR NOT NULL, -- Source-native ID of second row
-    source_system_b VARCHAR NOT NULL,    -- source_type of second row
+    source_type_b VARCHAR NOT NULL,      -- source_type of second row
     source_origin_b VARCHAR NOT NULL,    -- source_origin of second row (institution/connection/profile)
     account_id VARCHAR NOT NULL,         -- Shared account (blocking requirement)
     confidence_score DECIMAL(5, 4),      -- 0.0000 to 1.0000
     match_signals JSON,                  -- Per-signal scores: {"date_distance": 0, "description_similarity": 0.87}
-    match_tier VARCHAR NOT NULL,          -- '2b' (within-source overlap) or '3' (cross-source)
+    match_type VARCHAR NOT NULL DEFAULT 'dedup', -- 'dedup' or 'transfer' (transfer-detection.md adds transfer mode)
+    match_tier VARCHAR,                   -- Dedup-specific: '2b' (within-source overlap) or '3' (cross-source); NULL for transfers
+    account_id_b VARCHAR,                -- Second account; NULL for dedup (same account); populated for transfers (different accounts)
     match_status VARCHAR NOT NULL,       -- pending, accepted, rejected
     match_reason VARCHAR,                -- Human-readable explanation of why this match was proposed
     decided_by VARCHAR NOT NULL,         -- auto, user, system
@@ -125,9 +127,9 @@ CREATE TABLE IF NOT EXISTS app.match_decisions (
 
 /* Source-priority ranking for golden-record merge rules; lower priority value = higher precedence */
 CREATE TABLE IF NOT EXISTS app.source_priority (
-    source_system VARCHAR NOT NULL,      -- e.g. plaid, csv, ofx
+    source_type VARCHAR NOT NULL,         -- e.g. plaid, csv, ofx
     priority INTEGER NOT NULL,           -- Lower = higher precedence (1 = best)
-    PRIMARY KEY (source_system)
+    PRIMARY KEY (source_type)
 );
 ```
 
@@ -139,7 +141,7 @@ CREATE TABLE IF NOT EXISTS app.source_priority (
 |---|---|---|
 | `transaction_id` | VARCHAR | FK to gold record in `core.fct_transactions` |
 | `source_transaction_id` | VARCHAR | Source-native ID, joinable to raw/prep |
-| `source_system` | VARCHAR | Origin system (source_type) |
+| `source_type` | VARCHAR | Import pathway / origin system |
 | `source_origin` | VARCHAR | Institution/connection/profile that produced this row |
 | `source_file` | VARCHAR | File that produced this source row |
 | `source_extracted_at` | TIMESTAMP | When the source row was parsed |
@@ -149,22 +151,22 @@ CREATE TABLE IF NOT EXISTS app.source_priority (
 
 **`prep.stg_ofx__transactions`** (modified) — add tier 2 dedup via `ROW_NUMBER()`.
 
-**`prep.int_transactions__unioned`** (new) — `UNION ALL` of all `stg_*__transactions` with standardized column names and types. Replaces the CTEs in today's `fct_transactions`. Each row carries `source_transaction_id`, `source_system`, and `source_origin`.
+**`prep.int_transactions__unioned`** (new) — `UNION ALL` of all `stg_*__transactions` with standardized column names and types. Replaces the CTEs in today's `fct_transactions`. Each row carries `source_transaction_id`, `source_type`, and `source_origin`.
 
-**`prep.int_transactions__matched`** (new) — joins `int_transactions__unioned` with `app.match_decisions` to assign `transaction_id` (gold key). Unmatched rows get a deterministic UUID from `(source_system, source_transaction_id, account_id)`. Matched groups get a deterministic UUID from the sorted contributing tuple set. Output has both `transaction_id` and `source_transaction_id`.
+**`prep.int_transactions__matched`** (new) — joins `int_transactions__unioned` with `app.match_decisions` to assign `transaction_id` (gold key). Unmatched rows get a deterministic UUID from `(source_type, source_transaction_id, account_id)`. Matched groups get a deterministic UUID from the sorted contributing tuple set. Output has both `transaction_id` and `source_transaction_id`.
 
-**`prep.int_transactions__merged`** (new) — collapses matched groups to one row per `transaction_id`. Applies source-priority merge: for each field, COALESCE in priority order across the group's source rows. Exception: `transaction_date` takes the earliest non-NULL value. Adds `canonical_source_system` and `source_count`.
+**`prep.int_transactions__merged`** (new) — collapses matched groups to one row per `transaction_id`. Applies source-priority merge: for each field, COALESCE in priority order across the group's source rows. Exception: `transaction_date` takes the earliest non-NULL value. Adds `canonical_source_type` and `source_count`.
 
 ### Modified core model
 
 **`core.fct_transactions`** (modified) — grain changes to `transaction_id` (gold key). Becomes a thin enrichment layer over `int_transactions__merged`:
 - JOINs `app.transaction_categories` and `app.merchants` (same as today)
 - Adds derived columns: `transaction_direction`, `amount_absolute`, date-part extractions (same as today)
-- New columns from merged layer: `canonical_source_system`, `source_count`, `match_confidence`
+- New columns from merged layer: `canonical_source_type`, `source_count`, `match_confidence`
 
 ### App table FK migration
 
-`app.transaction_categories` and `app.transaction_notes` rename their FK from `transaction_id` (source-native) to `transaction_id` (gold key). Values are backfilled as deterministic UUID v5 from each row's `(source_system, source_transaction_id, account_id)` — a 1:1 mapping since no merges exist yet.
+`app.transaction_categories` and `app.transaction_notes` rename their FK from `transaction_id` (source-native) to `transaction_id` (gold key). Values are backfilled as deterministic UUID v5 from each row's `(source_type, source_transaction_id, account_id)` — a 1:1 mapping since no merges exist yet.
 
 ## Matching Engine
 
@@ -250,13 +252,13 @@ In `int_transactions__merged`, matched groups collapse to one row per `transacti
 | `check_number` | Any non-NULL value |
 | `location_*` fields | Highest-priority non-NULL value |
 | `currency_code` | Identical across group (same-currency matching only) |
-| `canonical_source_system` | The highest-priority source present in the group |
+| `canonical_source_type` | The highest-priority source present in the group |
 | `source_count` | Count of contributing source rows |
 | `match_confidence` | Confidence score from `app.match_decisions`; NULL for unmatched records |
 
 ### Unmatched records
 
-Pass through `int_transactions__merged` unchanged. They get a deterministic `transaction_id`, `source_count = 1`, `canonical_source_system` = their own `source_system`, and `match_confidence = NULL`.
+Pass through `int_transactions__merged` unchanged. They get a deterministic `transaction_id`, `source_count = 1`, `canonical_source_type` = their own `source_type`, and `match_confidence = NULL`.
 
 ## CLI Interface
 
@@ -289,17 +291,23 @@ Standard import commands gain matching output:
 👀 Run 'moneybin matches review' when ready
 ```
 
-## MCP Interface (Phase 2)
+## MCP Interface
 
-Not part of the initial build. Planned tools from the umbrella spec:
+Designed alongside CLI. Implementation may be sequenced after CLI, but the data model and `app.match_decisions` schema support MCP from day one. These tools are shared with transfer detection (`transfer-detection.md`) — a `match_type` filter distinguishes dedup from transfer proposals.
 
 | Tool | Type | Description |
 |---|---|---|
-| `list_pending_matches` | Read | Show pending match proposals with confidence scores |
-| `confirm_match` | Write | Accept a pending match |
-| `reject_match` | Write | Reject a pending match |
+| `list_pending_matches` | Read | Show pending match proposals with confidence scores. `match_type` filter for `dedup` or `transfer`. |
+| `confirm_match` | Write | Accept a pending match by `match_id` |
+| `reject_match` | Write | Reject a pending match by `match_id` |
 | `undo_match` | Write | Reverse a previously accepted match |
-| `get_match_log` | Read | Recent match decisions |
+| `get_match_log` | Read | Recent match decisions with signal breakdown. `match_type` and `match_status` filters. |
+
+### Prompt
+
+| Prompt | Purpose |
+|---|---|
+| `review_matches` | "Help me review pending transaction matches. Show dedup and transfer proposals, explain why each was proposed, and let me accept or reject them." |
 
 ## Configuration
 
