@@ -7,7 +7,7 @@ draft
 Enable users to define monthly budgets by category and track spending against those budgets, with rollover support and status alerts.
 
 ## Background
-- [MCP Write Tools](implemented/mcp-write-tools.md) -- `set_budget` and `get_budget_status` already implemented
+- [MCP Write Tools](archived/mcp-write-tools.md) -- `set_budget` and `get_budget_status` already implemented
 - [Transaction Categorization](transaction-categorization.md) -- Prerequisite for meaningful budgets
 - App schema: `src/moneybin/sql/schema/app_schema.sql`
 

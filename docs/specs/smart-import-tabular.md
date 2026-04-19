@@ -14,7 +14,7 @@ for confirmation, and saves the result for next time. Multi-account files (Tille
 Monarch) are handled natively. The system learns from every import and turns competitor
 data into a bootstrap accelerator for MoneyBin's categorization engine.
 
-This spec supersedes [`csv-import.md`](implemented/csv-import.md) (the shipped
+This spec supersedes [`csv-import.md`](archived/csv-import.md) (the shipped
 profile-based system) and absorbs Pillar B (Excel import) from
 [`smart-import-overview.md`](smart-import-overview.md).
 
@@ -23,16 +23,16 @@ profile-based system) and absorbs Pillar B (Excel import) from
 - [`smart-import-overview.md`](smart-import-overview.md) — umbrella spec; this
   implements Pillars A + B and establishes the format-agnostic architecture that
   Pillars C and F will reuse.
-- [`csv-import.md`](implemented/csv-import.md) — the existing profile-based CSV
+- [`csv-import.md`](archived/csv-import.md) — the existing profile-based CSV
   system this replaces. Historical reference for what's already shipped.
-- [`transaction-matching.md`](transaction-matching.md) — defines the provenance
+- [`matching-overview.md`](matching-overview.md) — defines the provenance
   contract (`source_type` taxonomy) and cross-source dedup that operates downstream
   of this importer.
-- [`same-record-dedup.md`](same-record-dedup.md) — consumes `source_transaction_id`
+- [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — consumes `source_transaction_id`
   and `source_type` from raw records this spec produces.
 - [`categorization-overview.md`](categorization-overview.md) — migration-imported
   categories seed the auto-rule engine (Pillar E).
-- [`data-protection.md`](data-protection.md) — encryption at rest; all writes go
+- [`privacy-data-protection.md`](privacy-data-protection.md) — encryption at rest; all writes go
   through the encrypted `Database` class. `ingest_dataframe()` added by this spec
   is part of that contract.
 - [`database-migration.md`](database-migration.md) — schema migration from
@@ -400,7 +400,7 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
     source origin and type (e.g., `chase-march.csv` and `chase-q1.csv`, both
     `source_origin = 'chase_credit'`), hash-based IDs differ across files even for the
     same real-world transaction. This is handled by Tier 2b in
-    [`same-record-dedup.md`](same-record-dedup.md) — a within-origin fuzzy matcher
+    [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — a within-origin fuzzy matcher
     scoped to `(account_id, source_origin, source_type)` that runs before cross-source
     matching. Only high-confidence matches are auto-merged; ambiguous cases (same-day,
     same-amount but different descriptions) are left as distinct records.
@@ -1319,8 +1319,8 @@ is catastrophic. Fixtures are the primary defense against regression.
 
 | Item | Rationale |
 |---|---|
-| Scanned/image PDFs | Requires OCR + vision model; different trust profile. See `structured-pdf-import.md` (Pillar C). |
-| AI-assisted parsing (Pillar F) | Consent-gated cloud dependency; separate spec. See `ai-assisted-parsing.md`. |
+| Scanned/image PDFs | Requires OCR + vision model; different trust profile. See `smart-import-pdf.md` (Pillar C). |
+| AI-assisted parsing (Pillar F) | Consent-gated cloud dependency; separate spec. See `smart-import-ai-parsing.md`. |
 | ML-powered detection | Rules-based heuristics cover the 80% case. Add ML if heuristics hit a ceiling in practice. |
 | JSON / JSONL import | JSON's nested data types (objects, arrays) map better to DuckDB's native STRUCT/LIST/MAP types than to a flattened tabular DataFrame. A future JSON importer should leverage `duckdb.read_json_auto()` for native type inference rather than squeezing through the tabular pipeline. Separate spec when needed. |
 | Investment transaction routing | Architecture supports it (field alias table, routing hook). Implementation deferred to Level 2. |

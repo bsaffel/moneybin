@@ -59,7 +59,7 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 
 - **Before implementing a feature**, check `docs/specs/INDEX.md` to see if a spec exists and what its status is.
 - **When starting implementation**, update the spec's status to `in-progress` (both in the spec file and in `INDEX.md`).
-- **When implementation is complete**, update the spec's status to `implemented` and move the file to `docs/specs/implemented/`.
+- **When implementation is complete**, update the spec's status to `implemented` and move the file to `docs/specs/archived/`.
 - **When writing a new spec**, add it to the Active specs table in `INDEX.md`.
 - Statuses: `draft` → `ready` → `in-progress` → `implemented`.
 
@@ -74,13 +74,13 @@ db = get_database()
 db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [account_id])
 ```
 
-**Never call `duckdb.connect()` directly.** The `Database` class (`src/moneybin/database.py`) is the sole entry point for all database access. It handles encryption key retrieval, encrypted file attachment, schema initialization, and migrations. See [`data-protection.md`](docs/specs/data-protection.md).
+**Never call `duckdb.connect()` directly.** The `Database` class (`src/moneybin/database.py`) is the sole entry point for all database access. It handles encryption key retrieval, encrypted file attachment, schema initialization, and migrations. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
 
 Env vars use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_PLAID__CLIENT_ID`.
 
 ## Security
 
-- **Encryption at rest**: All DuckDB databases are encrypted with AES-256-GCM by default. The `Database` class handles key retrieval and encrypted attachment transparently. See [`data-protection.md`](docs/specs/data-protection.md) for threat model, key management, and CLI commands.
+- **Encryption at rest**: All DuckDB databases are encrypted with AES-256-GCM by default. The `Database` class handles key retrieval and encrypted attachment transparently. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md) for threat model, key management, and CLI commands.
 - `SecretStr` for passwords/API keys in Pydantic Settings.
 - Subprocess commands as lists (`["cmd", "arg"]`), never `shell=True` with user input.
 - Log detailed errors internally; return generic messages to users.

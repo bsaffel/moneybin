@@ -29,6 +29,12 @@
 
 ## Testing Strategy
 
+## Synthetic Data Requirements
+<!-- Optional. What should the synthetic data generator produce to exercise this feature?
+     Describe realistic patterns, edge cases, and ground-truth labels needed.
+     This section informs the generator's persona/merchant YAML and ground-truth schema.
+     See testing-synthetic-data.md for the generator architecture. -->
+
 ## Dependencies
 <!-- Packages, system deps, prerequisite features -->
 

@@ -60,7 +60,7 @@ rebaseline process, not by automation.
   sequence: key retrieval → in-memory connect → attach encrypted file → load extensions
   → `init_schemas()` → `MigrationRunner.apply_all()` → SQLMesh version check →
   `sqlmesh migrate` if needed → record version state. Defined in
-  [`data-protection.md`](data-protection.md). The `Database` class is the single entry
+  [`privacy-data-protection.md`](privacy-data-protection.md). The `Database` class is the single entry
   point for all database access — CLI, MCP, loaders, and services all use it.
 - **Entry points** (CLI, MCP) — call `get_database()` to obtain the initialized
   `Database` instance. The auto-upgrade sequence runs inside `Database.__init__`, not in
@@ -68,7 +68,7 @@ rebaseline process, not by automation.
 
 ### Auto-Upgrade on First Invocation
 
-The `Database` class ([`data-protection.md`](data-protection.md)) runs the full
+The `Database` class ([`privacy-data-protection.md`](privacy-data-protection.md)) runs the full
 initialization sequence — including version check and migrations — every time
 `get_database()` is called. This replaces the need for separate per-entry-point
 callbacks:
@@ -244,7 +244,7 @@ Migrations may alter:
 ### Files to Modify
 - `src/moneybin/schema.py` — add new schema files to `_SCHEMA_FILES`, add `analytics` schema
 - `src/moneybin/cli/commands/db.py` — `db init` delegates to `Database` class
-  ([`data-protection.md`](data-protection.md)) which orchestrates init_schemas +
+  ([`privacy-data-protection.md`](privacy-data-protection.md)) which orchestrates init_schemas +
   migrations + version recording
 - `src/moneybin/cli/commands/data.py` — register `migrate` subcommand group
 - `src/moneybin/cli/main.py` — no app-level callback needed; auto-upgrade runs inside
@@ -274,7 +274,7 @@ Migrations may alter:
 - **Encryption**: migration runner is encryption-unaware. Receives an open connection
   from `Database.__init__()`. Connection management, key retrieval, and encrypted
   attachment are owned by the `Database` class
-  ([`data-protection.md`](data-protection.md)).
+  ([`privacy-data-protection.md`](privacy-data-protection.md)).
 - **Orchestration**: the auto-upgrade sequence (init_schemas → migrations → sqlmesh
   migrate → version recording) is orchestrated by `Database.__init__()`, not by
   per-entry-point callbacks. Entry points call `get_database()`.
@@ -359,7 +359,7 @@ N/A — migrations are an infrastructure concern, not exposed via MCP tools.
 - **Python-only migration format** — SQL-default with Python escape hatch; data
   engineering conventions win.
 - **Encryption handling** — runner receives an open connection; encryption is
-  `data-protection.md`'s responsibility.
+  `privacy-data-protection.md`'s responsibility.
 - **`sqlmesh plan` execution** — different concern ("is your data up to date" vs "is
   your schema correct"). May be added to the auto-upgrade sequence later if users
   consistently forget.

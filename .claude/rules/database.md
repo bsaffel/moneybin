@@ -15,7 +15,7 @@ db = get_database()
 result = db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id])
 ```
 
-See [`data-protection.md`](../../docs/specs/data-protection.md) for the full design.
+See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full design.
 
 ## Bulk Data Loading
 
@@ -26,7 +26,7 @@ db = get_database()
 db.ingest_dataframe("raw.tabular_transactions", df, on_conflict="replace")
 ```
 
-See [`smart-tabular-import.md`](../../docs/specs/smart-tabular-import.md) for the full design.
+See [`smart-import-tabular.md`](../../docs/specs/smart-import-tabular.md) for the full design.
 
 ## Column Name Consistency Across Layers
 

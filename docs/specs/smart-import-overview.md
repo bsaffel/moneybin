@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-19
 > Status: Draft — umbrella doc for the smart-import initiative. Child specs listed in [Pillars](#pillars) are written separately.
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance), [`transaction-matching.md`](transaction-matching.md) (peer initiative), [`categorization-overview.md`](categorization-overview.md) (owns pillars D & E), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance), [`matching-overview.md`](matching-overview.md) (peer initiative), [`categorization-overview.md`](categorization-overview.md) (owns pillars D & E), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose
 
@@ -35,11 +35,11 @@ Smart Import decomposes into six independent subsystems. Each has its own child 
 
 | Pillar | Purpose | Touches cloud? | Child spec |
 |---|---|---|---|
-| **A+B.** Smart tabular import | Universal tabular importer: CSV, TSV, Excel, Parquet, Feather with heuristic column detection, multi-account support, and migration profiles (Tiller, Mint, YNAB). Pillars A and B merged — Excel is just another format reader feeding the same detection engine. JSON/JSONL deferred to a separate spec (nested types → DuckDB native STRUCT/LIST/MAP). | No | [`smart-tabular-import.md`](smart-tabular-import.md) |
-| **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Extends the `w2_extractor` pattern to statements and brokerage reports. | No | `structured-pdf-import.md` |
+| **A+B.** Smart tabular import | Universal tabular importer: CSV, TSV, Excel, Parquet, Feather with heuristic column detection, multi-account support, and migration profiles (Tiller, Mint, YNAB). Pillars A and B merged — Excel is just another format reader feeding the same detection engine. JSON/JSONL deferred to a separate spec (nested types → DuckDB native STRUCT/LIST/MAP). | No | [`smart-import-tabular.md`](smart-import-tabular.md) |
+| **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Extends the `w2_extractor` pattern to statements and brokerage reports. | No | `smart-import-pdf.md` |
 | **D.** ML-powered categorization | Local scikit-learn (TF-IDF + SVM) trained on the user's own `transaction_categories`. High-confidence → auto-apply; medium → suggest; low → defer. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **E.** Auto-rule generation | Hook `categorize_transaction()` / `bulk_categorize()` to synthesize rules and merchant mappings from user edits and high-confidence ML picks. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
-| **F.** AI-assisted parsing | LLM fallback for files A/B/C can't crack. Extracts structured data from document content. | **Yes — consent-gated** | `ai-assisted-parsing.md`, gated by `docs/specs/privacy-and-ai-trust.md` |
+| **F.** AI-assisted parsing | LLM fallback for files A/B/C can't crack. Extracts structured data from document content. | **Yes — consent-gated** | `smart-import-ai-parsing.md`, gated by `docs/specs/privacy-and-ai-trust.md` |
 
 All six pillars share one architectural property: they operate at or above the extractor layer. The `raw` / `prep` / `core` pipeline is unchanged. Every pillar's output is normalized to the canonical raw schema before anything hits DuckDB.
 
@@ -71,7 +71,7 @@ Two semantic non-goals worth stating explicitly:
 
 Two concerns touch Smart Import but are scoped to separate peer specs. Calling them out here so downstream child specs can assume the contract exists.
 
-### Transaction matching — `transaction-matching.md`
+### Transaction matching — `matching-overview.md`
 
 **Scope:** Cross-source deduplication of the same transaction (e.g., the same txn appears in a CSV statement, an OFX export, and Plaid), transfer pair detection (money out of account A matches money into account B), and golden-record merge rules when multiple sources describe the same transaction with slightly different fields.
 
@@ -79,11 +79,11 @@ Two concerns touch Smart Import but are scoped to separate peer specs. Calling t
 
 **Contract with Smart Import:** Every pillar in this initiative must produce raw records that conform to whatever provenance schema the matching spec defines. Pillars A/B/C/F cannot finalize their raw-row output shape until the matching spec lands.
 
-**Children (tentative):** `same-record-dedup.md`, `transfer-detection.md`, `mastered-record-merge-rules.md`.
+**Children (tentative):** `matching-same-record-dedup.md`, `matching-transfer-detection.md`, `mastered-record-merge-rules.md`.
 
 ### Privacy & AI trust — `docs/specs/privacy-and-ai-trust.md`
 
-Already referenced throughout this doc. Constrains pillar F. Foundational alongside `transaction-matching.md`.
+Already referenced throughout this doc. Constrains pillar F. Foundational alongside `matching-overview.md`.
 
 ## Default privacy posture
 
@@ -104,11 +104,11 @@ Detailed rules — redaction fields, supported backends, audit log schema, conse
 ## Build order & rationale
 
 1. **`docs/specs/privacy-and-ai-trust.md`** — foundational. Defines the consent model and audit schema that pillar F must conform to. Worth writing even though F is built last: locks in the privacy contract before any AI-touching code exists.
-2. **`transaction-matching.md`** (umbrella + at least `same-record-dedup.md` child) — foundational peer spec. Defines the provenance contract every ingestion surface must produce and owns the `source_type` taxonomy. Pillars A/B/C/F can't finalize their raw-row output until this lands.
-3. **Pillars A+B — [`smart-tabular-import.md`](smart-tabular-import.md)** — merged into a universal tabular importer. CSV, TSV, Excel, Parquet, Feather all handled by one detection engine. Establishes the format-agnostic architecture, `TabularProfile` system, `ingest_dataframe()` Database primitive, and multi-account support. Zero privacy risk. Proves the architecture for everything downstream. JSON/JSONL deferred to a separate spec — nested types map better to DuckDB's native STRUCT/LIST/MAP than to tabular flattening.
+2. **`matching-overview.md`** (umbrella + at least `matching-same-record-dedup.md` child) — foundational peer spec. Defines the provenance contract every ingestion surface must produce and owns the `source_type` taxonomy. Pillars A/B/C/F can't finalize their raw-row output until this lands.
+3. **Pillars A+B — [`smart-import-tabular.md`](smart-import-tabular.md)** — merged into a universal tabular importer. CSV, TSV, Excel, Parquet, Feather all handled by one detection engine. Establishes the format-agnostic architecture, `TabularProfile` system, `ingest_dataframe()` Database primitive, and multi-account support. Zero privacy risk. Proves the architecture for everything downstream. JSON/JSONL deferred to a separate spec — nested types map better to DuckDB's native STRUCT/LIST/MAP than to tabular flattening.
 4. **Pillars E & D** — now owned by [`categorization-overview.md`](categorization-overview.md). Build order: E (auto-rules) first, then D (ML). See that spec for rationale and sequencing. Migration-imported categories from the tabular importer serve as a bootstrap accelerator for both pillars.
-5. **Pillar C — `structured-pdf-import.md`** — independent; follows the `w2_extractor` pattern.
-6. **Pillar F — `ai-assisted-parsing.md`** — last. Depends on the privacy framework and benefits from A+B/C being the trusted non-AI fallback when the user declines AI.
+5. **Pillar C — `smart-import-pdf.md`** — independent; follows the `w2_extractor` pattern.
+6. **Pillar F — `smart-import-ai-parsing.md`** — last. Depends on the privacy framework and benefits from A+B/C being the trusted non-AI fallback when the user declines AI.
 
 ## Success criteria
 
@@ -128,4 +128,4 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **Profile precedence.** When a built-in profile and an auto-detected profile *could* both match a file, which wins? Proposal: built-in always wins; auto-detected profiles are only consulted when no built-in matches. Confirm in `smart-csv-detection.md`.
 - **MCP Apps wizard timing.** The import-wizard MCP App is planned for Phase 2. Does pillar A v1 include any MCP-side interaction, or is it CLI-only until the wizard lands?
 - **Batch folder UX.** For folder imports, how is per-file AI consent handled? Single batch prompt, per-file prompts, or all-or-nothing? Resolve in `smart-csv-detection.md` or a dedicated batch-import note.
-- **Match-review hooks in import flow.** "No silent failures" means the user should see when a newly imported file produces likely duplicates against existing data. How the import CLI/MCP surfaces match-review prompts is a coordination point between this initiative and `transaction-matching.md`.
+- **Match-review hooks in import flow.** "No silent failures" means the user should see when a newly imported file produces likely duplicates against existing data. How the import CLI/MCP surfaces match-review prompts is a coordination point between this initiative and `matching-overview.md`.

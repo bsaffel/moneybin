@@ -1,5 +1,20 @@
 # System Overview
 
+## Name and branding
+
+The project name is **MoneyBin** (camel case, one word). This applies to all marketing, logos, documentation prose, and UI text. The name references Scrooge McDuck's Money Bin from DuckTales.
+
+| Context | Form | Example |
+|---------|------|---------|
+| Branding / prose | MoneyBin | "MoneyBin is a local-first financial platform" |
+| CLI command | `moneybin` | `moneybin data extract ofx` |
+| Python package | `moneybin` | `import moneybin` |
+| GitHub repo | `moneybin` | `github.com/bsaffel/moneybin` |
+
+Lowercase forms (`moneybin`) are technical conventions (CLI, package, repo). The canonical marketing name is always **MoneyBin** with a capital B.
+
+## Overview
+
 MoneyBin is an open-source, local-first personal financial analysis platform. Financial data flows from source files through extractors into DuckDB, is transformed by SQLMesh into canonical analytical tables, and is accessible through two parallel interfaces.
 
 ## Architecture

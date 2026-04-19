@@ -77,7 +77,7 @@ The `detail` parameter (`summary`, `standard`, `full`) lets the AI self-select v
 
 ## Connection Model
 
-All tools use `get_database()` from `src/moneybin/database.py` — a single long-lived read-write connection per process. The `Database` class handles encryption, schema init, and migrations transparently. See [`data-protection.md`](../../docs/specs/data-protection.md).
+All tools use `get_database()` from `src/moneybin/database.py` — a single long-lived read-write connection per process. The `Database` class handles encryption, schema init, and migrations transparently. See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
 
 ## Data Access
 

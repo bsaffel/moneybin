@@ -3,7 +3,7 @@
 > Last updated: 2026-04-17
 > Status: Draft
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`mcp-tool-surface.md`](mcp-tool-surface.md) (concrete tool/prompt/resource definitions), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
-> Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`implemented/mcp-read-tools.md`](implemented/mcp-read-tools.md), [`implemented/mcp-write-tools.md`](implemented/mcp-write-tools.md)
+> Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
 
@@ -571,8 +571,8 @@ These decisions and their rationale should be documented in the 12-month plan.
 | Spec | Disposition |
 |---|---|
 | [`mcp-tier1-tools.md`](mcp-tier1-tools.md) | Superseded. Prototype-era tool list designed before the privacy framework. Tool concepts that survive are redesigned in `mcp-tool-surface.md`. |
-| [`implemented/mcp-read-tools.md`](implemented/mcp-read-tools.md) | Historical record of the prototype. Implementation will be replaced. |
-| [`implemented/mcp-write-tools.md`](implemented/mcp-write-tools.md) | Historical record of the prototype. Implementation will be replaced. |
+| [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md) | Historical record of the prototype. Implementation will be replaced. |
+| [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md) | Historical record of the prototype. Implementation will be replaced. |
 
 ### Companion specs (planned)
 
@@ -587,7 +587,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 |---|---|
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
-| [`transaction-matching.md`](transaction-matching.md) | Match review tools (`transactions.review-matches`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
+| [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions.review-matches`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
 
 ## Open Questions
 

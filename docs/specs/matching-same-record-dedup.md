@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-18
 > Status: Draft
-> Parent: [`transaction-matching.md`](transaction-matching.md) (pillars A + C)
+> Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
 
 ## Goal
@@ -13,13 +13,13 @@ When multiple raw rows from different sources describe the same real-world trans
 
 Today `core.fct_transactions` is a `UNION ALL` of OFX and CSV staging CTEs with no cross-source dedup. If the same transaction appears in both an OFX download and a CSV export, it counts twice. This spec fixes that by introducing a matching engine and a layered prep pipeline that produces deduplicated, merged gold records.
 
-This spec covers pillars A (same-record dedup) and C (golden-record merge rules) from the [transaction-matching umbrella](transaction-matching.md). They ship together because dedup without merge rules leaves the gold record undefined, and merge rules without dedup have nothing to merge.
+This spec covers pillars A (same-record dedup) and C (golden-record merge rules) from the [transaction-matching umbrella](matching-overview.md). They ship together because dedup without merge rules leaves the gold record undefined, and merge rules without dedup have nothing to merge.
 
 ### Relevant prior art
 
-- [transaction-matching.md](transaction-matching.md) — umbrella vision, scope, build order
+- [matching-overview.md](matching-overview.md) — umbrella vision, scope, build order
 - [fct_transactions.sql](../../sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no dedup)
-- [smart-tabular-import.md](smart-tabular-import.md) — universal tabular importer that produces `raw.tabular_*` records with `source_transaction_id`, per-format `source_type` values, and `source_origin` (institution/profile identifier)
+- [smart-import-tabular.md](smart-import-tabular.md) — universal tabular importer that produces `raw.tabular_*` records with `source_transaction_id`, per-format `source_type` values, and `source_origin` (institution/profile identifier)
 - [stg_tabular__transactions.sql](../../sqlmesh/models/tabular/stg_tabular__transactions.sql) — tabular staging (replaces CSV staging) with within-source dedup
 - [stg_ofx__transactions.sql](../../sqlmesh/models/prep/stg_ofx__transactions.sql) — OFX staging without within-source dedup (gap)
 
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS app.match_decisions (
     account_id VARCHAR NOT NULL,         -- Shared account (blocking requirement)
     confidence_score DECIMAL(5, 4),      -- 0.0000 to 1.0000
     match_signals JSON,                  -- Per-signal scores: {"date_distance": 0, "description_similarity": 0.87}
-    match_type VARCHAR NOT NULL DEFAULT 'dedup', -- 'dedup' or 'transfer' (transfer-detection.md adds transfer mode)
+    match_type VARCHAR NOT NULL DEFAULT 'dedup', -- 'dedup' or 'transfer' (matching-transfer-detection.md adds transfer mode)
     match_tier VARCHAR,                   -- Dedup-specific: '2b' (within-source overlap) or '3' (cross-source); NULL for transfers
     account_id_b VARCHAR,                -- Second account; NULL for dedup (same account); populated for transfers (different accounts)
     match_status VARCHAR NOT NULL,       -- pending, accepted, rejected
@@ -230,7 +230,7 @@ Tier 3 pairs below `review_threshold` are not persisted (logged at DEBUG level o
 
 ### Source-priority ranking
 
-A single ordered list stored in `app.source_priority`. Default: `plaid (1) > csv (2) > excel (3) > tsv (4) > parquet (5) > feather (6) > pipe (7) > ofx (8)`. The tabular import formats are individually ranked per `smart-tabular-import.md` — CSV is most common and gets highest priority among tabular formats. The list must include every supported `source_type` value.
+A single ordered list stored in `app.source_priority`. Default: `plaid (1) > csv (2) > excel (3) > tsv (4) > parquet (5) > feather (6) > pipe (7) > ofx (8)`. The tabular import formats are individually ranked per `smart-import-tabular.md` — CSV is most common and gets highest priority among tabular formats. The list must include every supported `source_type` value.
 
 ### Field selection
 
@@ -293,7 +293,7 @@ Standard import commands gain matching output:
 
 ## MCP Interface
 
-Designed alongside CLI. Implementation may be sequenced after CLI, but the data model and `app.match_decisions` schema support MCP from day one. These tools are shared with transfer detection (`transfer-detection.md`) — a `match_type` filter distinguishes dedup from transfer proposals.
+Designed alongside CLI. Implementation may be sequenced after CLI, but the data model and `app.match_decisions` schema support MCP from day one. These tools are shared with transfer detection (`matching-transfer-detection.md`) — a `match_type` filter distinguishes dedup from transfer proposals.
 
 | Tool | Type | Description |
 |---|---|---|
@@ -321,7 +321,7 @@ class MatchingSettings(BaseModel):
         "feather", "pipe", "ofx",
     ]
     # Must include every supported source_type. Tabular formats are
-    # format-specific per smart-tabular-import.md.
+    # format-specific per smart-import-tabular.md.
 ```
 
 Env var overrides follow the `MONEYBIN_` convention:
@@ -372,7 +372,7 @@ Env var overrides follow the `MONEYBIN_` convention:
 ## Out of Scope
 
 - **Cross-currency matching** — deferred to multi-currency initiative. This spec requires exact amount match in same currency.
-- **Transfer detection** — pillar B, separate spec (`transfer-detection.md`). Different semantics: links two records rather than collapsing them.
+- **Transfer detection** — pillar B, separate spec (`matching-transfer-detection.md`). Different semantics: links two records rather than collapsing them.
 - **Per-field or per-transaction merge overrides** — v1 uses a single global source-priority ranking. Enhancement spec if needed.
 - **ML/learned matching** — v1 uses deterministic scoring. Learned promotions deferred per umbrella spec.
 - **Investment transaction dedup** — depends on investment-tracking spec.

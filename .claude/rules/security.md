@@ -61,4 +61,4 @@ conn.execute(f"SELECT * FROM fct_transactions WHERE account_id = '{account_id}'"
 - **Never log** account numbers, routing numbers, SSNs, transaction amounts, balances, full descriptions, or merchant names. Log record counts, entity IDs, status codes, and masked values only.
 - A `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) provides runtime detection and masking of PII patterns (SSNs, account numbers, dollar amounts) as a safety net. It masks and warns — it never suppresses log entries.
 - **Error messages** returned to users (CLI, MCP) must be generic. Catch specific exceptions and return clean messages — never let stack traces with financial data in local variables propagate to output.
-- See [`data-protection.md`](../../docs/specs/data-protection.md) for the full list of allowed vs prohibited log content.
+- See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full list of allowed vs prohibited log content.

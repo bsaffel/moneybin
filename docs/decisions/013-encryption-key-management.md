@@ -6,7 +6,7 @@ proposed
 ## Context
 
 MoneyBin encrypts all local DuckDB databases at rest using AES-256-GCM
-([`data-protection.md`](../specs/data-protection.md)). The encryption extension takes a
+([`privacy-data-protection.md`](../specs/privacy-data-protection.md)). The encryption extension takes a
 key string via the `ATTACH` statement's `ENCRYPTION_KEY` parameter and derives the
 actual AES key internally. This ADR decides how MoneyBin generates, stores, and
 retrieves the key string that feeds into DuckDB's encryption.
@@ -107,7 +107,7 @@ KDF derives the AES key material.
 
 ## References
 
-- [`data-protection.md`](../specs/data-protection.md) — encryption at rest spec
+- [`privacy-data-protection.md`](../specs/privacy-data-protection.md) — encryption at rest spec
 - [ADR-004: E2E Encryption](004-e2e-encryption.md) — sync-tier encryption (same KDF)
 - [ADR-005: Security Tradeoffs](005-security-tradeoffs.md) — threat model
 - [Argon2 RFC 9106](https://datatracker.ietf.org/doc/html/rfc9106)

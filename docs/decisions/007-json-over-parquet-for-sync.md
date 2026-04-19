@@ -41,4 +41,4 @@ The data contract is enforced by Zod schemas on the server and Pydantic models o
 - Client-side `PlaidLoader` uses `read_json()` or direct INSERTs instead of `read_parquet()`.
 - Raw table DDL in the client (`raw_plaid_*.sql`) is unchanged -- the schema contract is the same, only the loading mechanism changes.
 - If data volumes ever grow to the point where Parquet matters (millions of rows, multi-MB payloads), this decision can be revisited. The JSON schema maps 1:1 to the Parquet schema, so migration would be additive.
-- The `plaid-integration.md` spec in this project should be updated to reflect JSON loading instead of Parquet loading in the raw table pipeline.
+- The `sync-plaid.md` spec in this project should be updated to reflect JSON loading instead of Parquet loading in the raw table pipeline.

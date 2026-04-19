@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-17
 > Status: Draft — framework spec for MoneyBin's privacy model across all AI data flows.
-> Companions: [`privacy-security-roadmap.md`](privacy-security-roadmap.md) (data custody tiers), [`ADR-002: Privacy Tiers`](../decisions/002-privacy-tiers.md) (data custody architecture), [`smart-import-overview.md`](smart-import-overview.md) (pillar F depends on this), [`transaction-matching.md`](transaction-matching.md) (audit log shared), `CLAUDE.md` Security section, `.claude/rules/security.md`
+> Companions: [`privacy-security-roadmap.md`](privacy-security-roadmap.md) (data custody tiers), [`ADR-002: Privacy Tiers`](../decisions/002-privacy-tiers.md) (data custody architecture), [`smart-import-overview.md`](smart-import-overview.md) (pillar F depends on this), [`matching-overview.md`](matching-overview.md) (audit log shared), `CLAUDE.md` Security section, `.claude/rules/security.md`
 
 ### Relationship to existing privacy docs
 
@@ -65,7 +65,7 @@ Every path where data might leave the user's machine falls into one of four tier
 - `mcp-data-sharing` — MCP tools returning real transaction/account data
 - `smart-import-parsing` — Smart Import sending file content to AI for format detection or parsing
 - `ml-categorization` — ML categorization service sending descriptions to a cloud model (if using a cloud backend instead of local scikit-learn)
-- `transaction-matching` — Matching engine sending transaction details to AI for fuzzy matching assistance
+- `matching-overview` — Matching engine sending transaction details to AI for fuzzy matching assistance
 
 **Consent prompt example:**
 > MoneyBin MCP tools can share transaction details (descriptions, amounts, dates) with **Anthropic (Claude)** to answer your questions.

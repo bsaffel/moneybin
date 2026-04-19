@@ -125,6 +125,6 @@ User password change triggers: derive old key, decrypt all data, derive new key,
 
 - [ADR-002: Privacy Tiers](002-privacy-tiers.md) -- Custody model context
 - [ADR-005: Security Tradeoffs](005-security-tradeoffs.md) -- Threat model analysis
-- [Plaid Integration Spec](../specs/plaid-integration.md) -- Implementation plan
+- [Plaid Integration Spec](../specs/sync-plaid.md) -- Implementation plan
 - [age specification](https://age-encryption.org/v1)
 - [Argon2 RFC 9106](https://datatracker.ietf.org/doc/html/rfc9106)

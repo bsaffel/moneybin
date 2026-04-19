@@ -2,6 +2,16 @@
 
 Single source of truth for spec status. Update this table when a spec's status changes.
 
+## Spec types
+
+| Type | Purpose |
+|---|---|
+| **Umbrella** | High-level overview that defines the vision, pillars, and child specs for a major initiative. Not directly implementable — decomposes into Feature specs. |
+| **Feature** | A single implementable unit of work with concrete schema, API, CLI, and test surface. The primary spec type. |
+| **Architecture** | Cross-cutting design decisions, patterns, and contracts that multiple features depend on. |
+| **Framework** | Policy and governance specs (privacy, security) that constrain how features are built rather than defining features themselves. |
+| **Roadmap** | Strategic sequencing and phasing docs. Not implementable — inform prioritization and ordering of Feature specs. |
+
 ## Status definitions
 
 | Status | Meaning |
@@ -9,90 +19,78 @@ Single source of truth for spec status. Update this table when a spec's status c
 | `draft` | Design written, not yet reviewed or ready for implementation |
 | `ready` | Design reviewed and approved; ready for implementation |
 | `in-progress` | Implementation underway |
-| `implemented` | Shipped; spec moved to `implemented/` |
+| `implemented` | Shipped; spec moved to `archived/` |
 
 ## Updating implemented features
-
-Implemented specs are historical records of what was designed and shipped. They don't get edited after the fact.
 
 | Change size | Action |
 |---|---|
 | **Bug fix / minor tweak** | No spec needed. Code change speaks for itself. |
-| **Enhancement to existing feature** | New spec referencing the original as context. Original stays in `implemented/` untouched. |
+| **Enhancement to existing feature** | New spec referencing the original as context. Original stays in `archived/` untouched. |
 | **Full redesign / replacement** | New spec. Original gets a note at the top pointing to the replacement. |
 
-## Active specs
+## Smart Import
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Smart Import Overview](smart-import-overview.md) | Umbrella | draft | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
-| [Smart Tabular Import](smart-tabular-import.md) | Feature | draft | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration profiles (Tiller, Mint, YNAB) |
-| [Transaction Matching](transaction-matching.md) | Umbrella | draft | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
-| [Categorization](categorization-overview.md) | Umbrella | draft | Auto-rule generation, ML categorization, priority hierarchy, bootstrap strategies |
+| [Overview](smart-import-overview.md) | Umbrella | draft | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
+| [Tabular Import](smart-import-tabular.md) | Feature | draft | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration profiles (Tiller, Mint, YNAB). Supersedes archived `csv-import` spec. |
+| `smart-import-pdf.md` | Feature | planned | Pillar C: native-text PDF import |
+| `smart-import-ai-parsing.md` | Feature | planned | Pillar F: LLM fallback for file parsing |
+
+## Transaction Matching
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Overview](matching-overview.md) | Umbrella | draft | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
+| [Same-Record Dedup](matching-same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (pillars A+C) |
+| [Transfer Detection](matching-transfer-detection.md) | Feature | draft | Transfer pair detection across accounts (pillar B); shared matching engine, bridge table, always-review v1 |
+
+## Categorization
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Overview](categorization-overview.md) | Umbrella | draft | Auto-rule generation, ML categorization, priority hierarchy, bootstrap strategies. Supersedes archived `transaction-categorization` spec. |
+| [Auto-Rule Generation](categorization-auto-rules.md) | Feature | draft | Auto-generate categorization rules from user edits (pillar E); merchant-first pattern extraction, proposal review queue |
+| `categorization-ml.md` | Feature | planned | Pillar D: local ML-powered categorization |
+
+## Privacy & Security
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | draft | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
-| [CSV Import](implemented/csv-import.md) | Feature | implemented | Profile-based CSV extraction and loading (superseded by smart-tabular-import.md) |
-| [MCP Architecture & Design](mcp-architecture.md) | Architecture | draft | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness |
-| [MCP Tool Surface](mcp-tool-surface.md) | Architecture | draft | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (45 tools, 4 prompts, 4 resources) |
-| [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers |
-| [Data Protection](data-protection.md) | Feature | ready | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
+| [Data Protection](privacy-data-protection.md) | Feature | ready | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
+| [Privacy & Security Roadmap](privacy-security-roadmap.md) | Roadmap | — | Three-tier data custody model overview |
+
+## MCP
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Architecture & Design](mcp-architecture.md) | Architecture | draft | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness. Supersedes archived `mcp-read-tools` and `mcp-write-tools` specs. |
+| [Tool Surface](mcp-tool-surface.md) | Architecture | draft | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (45 tools, 4 prompts, 4 resources) |
+
+## Sync
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Plaid Integration](sync-plaid.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
+| [Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |
+
+## Testing & Validation
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Overview](testing-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
+| [Synthetic Data Generator](testing-synthetic-data.md) | Feature | draft | Persona-based synthetic financial data: YAML-driven personas/merchants, deterministic seeding, ground-truth labels, Level 2 realism |
+| `testing-anonymized-data.md` | Feature | planned | Structure-preserving anonymization of real databases with statistical similarity guarantees |
+| `testing-csv-fixtures.md` | Feature | planned | Curated bank export samples with expected-result JSON for format detection testing |
+| `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |
+| `testing-migration-safety.md` | Feature | planned | Pre/post migration data integrity assertions |
+
+## Standalone
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
 | [Database Migration](database-migration.md) | Feature | ready | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
-| [Plaid Integration](plaid-integration.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
-| [Sync Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |
-| [Same-Record Dedup](same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (transaction-matching pillars A+C) |
-| [Transfer Detection](transfer-detection.md) | Feature | draft | Transfer pair detection across accounts (transaction-matching pillar B); shared matching engine, bridge table, always-review v1 |
-| [Auto-Rule Generation](auto-rule-generation.md) | Feature | draft | Auto-generate categorization rules from user edits (categorization pillar E); merchant-first pattern extraction, proposal review queue |
-| [Testing & Validation](testing-and-validation-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
-
-## Roadmaps (not feature specs)
-
-| Doc | Summary |
-|---|---|
-| [Privacy & Security Roadmap](privacy-security-roadmap.md) | Three-tier data custody model overview |
-| [Distribution Roadmap](distribution-roadmap.md) | Packaging and distribution strategy |
-
-## Implemented
-
-Specs in `implemented/` are complete. Listed here for reference.
-
-| Spec | Summary |
-|---|---|
-| [OFX Import](implemented/ofx-import.md) | OFX/QFX file extraction and loading |
-| [CSV Import (original)](implemented/ofx-import.md) | Initial CSV import implementation |
-| [MCP Read Tools](implemented/mcp-read-tools.md) | 8 read-only MCP tools + 5 resources + 5 prompts |
-| [MCP Write Tools](implemented/mcp-write-tools.md) | 9 write MCP tools (import, categorization, budgets) |
-| [Transaction Categorization](implemented/transaction-categorization.md) | Rule-based + LLM categorization with merchant normalization |
-| [W-2 Extraction](implemented/w2-extraction.md) | PDF W-2 form extraction and loading |
-
-## Planned child specs (not yet written)
-
-These are referenced by umbrella specs but don't exist yet. Create from `_template.md` when ready.
-
-### MCP children
-- MCP Apps spec (name TBD) — First MCP App MVP, consuming the tool surface
-
-### Privacy infrastructure children
-- Redaction engine spec — Field-level masking rules, deterministic redaction, reverse-lookup
-- Consent management spec — `app.ai_consent_grants` schema, grant/revoke lifecycle
-- Audit log spec — `app.ai_audit_log` schema, logging contract, query API
-- Provider profiles spec — `AIBackend` interface, provider metadata, verified-local detection
-- AIConfig spec — `MoneyBinSettings.ai` configuration block, backend selection
-
-### Smart Import children
-- ~~`smart-csv-detection.md`~~ — Absorbed into `smart-tabular-import.md` (Pillars A + B merged)
-- ~~`excel-import.md`~~ — Absorbed into `smart-tabular-import.md` (Pillars A + B merged)
-- `structured-pdf-import.md` — Pillar C: native-text PDF import
-- `ai-assisted-parsing.md` — Pillar F: LLM fallback for file parsing
-
-### Categorization children
-- ~~`auto-rule-generation.md`~~ — Written (2026-04-19). Pillar E: auto-generate rules from user edits
-- `ml-categorization.md` — Pillar D: local ML-powered categorization (absorbed from Smart Import)
-
-### Transaction Matching children
-- `same-record-dedup.md` — Pillars A + C: cross-source deduplication and per-field merge policy for golden records
-- ~~`transfer-detection.md`~~ — Written (2026-04-19). Pillar B: transfer pair detection across accounts
-
-### Testing & Validation children
-- `synthetic-data-generator.md` — Persona-based + anonymized synthetic data generation with ground-truth labels
-- `csv-fixture-library.md` — Curated bank export samples with expected-result JSON for format detection testing
-- `format-compatibility-testing.md` — Extractor verification against fixture files
-- `migration-safety-testing.md` — Pre/post migration data integrity assertions
+| [Net Worth & Balance Tracking](net-worth.md) | Feature | draft | Authoritative balance tracking per account, daily carry-forward interpolation, reconciliation deltas, `agg_net_worth` aggregation; cash-only v1 |
+| [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers |

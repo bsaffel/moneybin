@@ -2,7 +2,7 @@
 
 > Purpose: Validate key technical assumptions in the data-protection spec before
 > promoting to `ready` status. Run by an agent in a fresh session.
-> Spec: `docs/specs/data-protection.md`
+> Spec: `docs/specs/privacy-data-protection.md`
 > ADR: `docs/decisions/013-encryption-key-management.md`
 
 ## Prerequisites
@@ -207,7 +207,7 @@ rm -rf "$TESTDIR"
 
 ## Decision Points
 
-- **If Test 5 fails:** Update `data-protection.md` to document the fallback approach
+- **If Test 5 fails:** Update `privacy-data-protection.md` to document the fallback approach
   (print `ATTACH` statement for manual paste) as the primary `db ui` UX.
 - **If Test 6 is inconclusive:** Note in the spec that temp file encryption is
   documented by DuckDB but not independently verified for small datasets.

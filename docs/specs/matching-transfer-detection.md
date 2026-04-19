@@ -2,8 +2,8 @@
 
 > Last updated: 2026-04-19
 > Status: Draft
-> Parent: [`transaction-matching.md`](transaction-matching.md) (pillar B)
-> Companions: [`same-record-dedup.md`](same-record-dedup.md) (sibling spec, pillars A+C), [`categorization-overview.md`](categorization-overview.md) (independent axis), `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
+> Parent: [`matching-overview.md`](matching-overview.md) (pillar B)
+> Companions: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (sibling spec, pillars A+C), [`categorization-overview.md`](categorization-overview.md) (independent axis), `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
 
 ## Goal
 
@@ -13,12 +13,12 @@ When two transactions from different accounts describe opposite sides of a money
 
 Without transfer detection, a $500 move from checking to savings counts as both a $500 expense and $500 income. Spending totals, budget actuals, and category breakdowns are all wrong. This spec fixes that by extending the matching engine (shared with same-record dedup) with a transfer detection mode.
 
-This spec covers pillar B from the [transaction-matching umbrella](transaction-matching.md). It builds on the matching infrastructure defined in [`same-record-dedup.md`](same-record-dedup.md) — shared engine, shared `app.match_decisions` table, shared review CLI.
+This spec covers pillar B from the [transaction-matching umbrella](matching-overview.md). It builds on the matching infrastructure defined in [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — shared engine, shared `app.match_decisions` table, shared review CLI.
 
 ### Relevant prior art
 
-- [transaction-matching.md](transaction-matching.md) — umbrella vision, scope, build order
-- [same-record-dedup.md](same-record-dedup.md) — pillars A+C, defines the matching engine, `app.match_decisions`, review CLI
+- [matching-overview.md](matching-overview.md) — umbrella vision, scope, build order
+- [matching-same-record-dedup.md](matching-same-record-dedup.md) — pillars A+C, defines the matching engine, `app.match_decisions`, review CLI
 - [fct_transactions.sql](../../sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no transfer detection)
 - [categorization-overview.md](categorization-overview.md) — independent axis; matching does not gate categorization
 
@@ -88,7 +88,7 @@ These are derived via LEFT JOIN in the existing `fct_transactions` model, not st
 
 Transfer detection reuses the existing table from same-record dedup. Two columns are added to support transfers:
 
-- `match_type` — `'dedup'` (default) or `'transfer'`. Added to the DDL in `same-record-dedup.md` to support both modes from day one.
+- `match_type` — `'dedup'` (default) or `'transfer'`. Added to the DDL in `matching-same-record-dedup.md` to support both modes from day one.
 - `account_id_b` — second account for transfers (dedup matches have the same account on both sides, so this is NULL for dedup rows).
 
 Transfer-specific values in existing columns:
@@ -101,7 +101,7 @@ Transfer-specific values in existing columns:
 
 ### Shared engine architecture
 
-Transfer detection is a mode of the same Python matching engine defined in `same-record-dedup.md`. The engine dispatches based on `match_type`:
+Transfer detection is a mode of the same Python matching engine defined in `matching-same-record-dedup.md`. The engine dispatches based on `match_type`:
 
 - **Dedup mode** (Tiers 2b, 3): same amount, same sign, different sources
 - **Transfer mode** (Tier 4): same amount, opposite signs, different accounts
@@ -261,7 +261,7 @@ Imported 142 transactions from chase_checking_2026-03.csv
 
 ### Match commands (extended)
 
-Transfer detection extends the commands defined in `same-record-dedup.md` — no new subcommands:
+Transfer detection extends the commands defined in `matching-same-record-dedup.md` — no new subcommands:
 
 | Command | Transfer behavior |
 |---|---|
@@ -320,7 +320,7 @@ The AI can walk the user through the review queue conversationally — showing b
 
 ```python
 class MatchingSettings(BaseModel):
-    # ... existing dedup settings from same-record-dedup.md ...
+    # ... existing dedup settings from matching-same-record-dedup.md ...
 
     # Transfer-specific settings
     transfer_review_threshold: float = 0.70
@@ -374,7 +374,7 @@ Env var overrides:
 
 ## Synthetic Data Contract
 
-Requirements for the synthetic data generator (`synthetic-data-generator.md`) to support transfer detection testing.
+Requirements for the synthetic data generator (`testing-synthetic-data.md`) to support transfer detection testing.
 
 ### Happy path scenarios
 
@@ -409,7 +409,7 @@ Requirements for the synthetic data generator (`synthetic-data-generator.md`) to
 
 ## Dependencies
 
-- Same-record dedup spec (`same-record-dedup.md`) — provides the shared matching engine, `app.match_decisions` table, review CLI, 1:1 assignment algorithm
+- Same-record dedup spec (`matching-same-record-dedup.md`) — provides the shared matching engine, `app.match_decisions` table, review CLI, 1:1 assignment algorithm
 - DuckDB `jaro_winkler_similarity()` (available since DuckDB 0.8.0) — not used for transfer scoring directly, but available in the shared engine
 - Database migration system (`database-migration.md`) — for `core.bridge_transfers` table creation and `fct_transactions` column additions
 - Existing prep staging views and raw schema

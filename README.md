@@ -114,7 +114,7 @@ Pre-built conversation starters that guide your AI assistant through multi-step 
 | [`transaction_search`](docs/reference/prompts/transaction-search.md) | Find transactions matching a description |
 | [`tax_preparation`](docs/reference/prompts/tax-preparation.md) | Gather tax-related information for filing |
 
-Full prompt docs: [`docs/reference/prompts/`](docs/reference/prompts/README.md) | Tool spec: [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md)
+Full prompt docs: [`docs/reference/prompts/`](docs/reference/prompts/README.md) | Tool spec: [`docs/specs/archived/mcp-read-tools.md`](docs/specs/archived/mcp-read-tools.md)
 
 ## 🛠️ Data Toolkit
 
@@ -216,7 +216,7 @@ See `.claude/rules/` for coding standards and conventions.
 - [`docs/decisions/`](docs/decisions/) -- Architecture Decision Records
 - [`docs/reference/data-model.md`](docs/reference/data-model.md) -- Data model and ER diagram
 - [`docs/reference/prompts/`](docs/reference/prompts/README.md) -- MCP prompt templates
-- [`docs/specs/implemented/mcp-read-tools.md`](docs/specs/implemented/mcp-read-tools.md) -- MCP server tools
+- [`docs/specs/archived/mcp-read-tools.md`](docs/specs/archived/mcp-read-tools.md) -- MCP server tools
 - [`docs/specs/privacy-security-roadmap.md`](docs/specs/privacy-security-roadmap.md) -- Privacy & security roadmap
 
 ## License

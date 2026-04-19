@@ -7,7 +7,7 @@ draft
 Enable the moneybin Python client to authenticate with moneybin-server, sync bank data via the REST API, load JSON payloads into DuckDB `raw.plaid_*` tables, and transform Plaid data through SQLMesh staging views into core tables alongside existing OFX and CSV sources.
 
 ## Background
-- [moneybin plaid-integration spec](https://github.com/bsaffel/moneybin/blob/main/docs/specs/plaid-integration.md) -- Raw table schemas, staging views, core integration plan
+- [moneybin plaid-integration spec](https://github.com/bsaffel/moneybin/blob/main/docs/specs/sync-plaid.md) -- Raw table schemas, staging views, core integration plan
 - [moneybin CLAUDE.md](https://github.com/bsaffel/moneybin/blob/main/CLAUDE.md) -- Python code standards, architecture layers, sign convention
 - [server-api-contract.md](../reference/server-api-contract.md) -- Full API surface; build against this
 - [ADR-002: Privacy Tiers](https://github.com/bsaffel/moneybin/blob/main/docs/decisions/002-privacy-tiers.md) -- Encrypted Sync tier
@@ -58,7 +58,7 @@ Three tables in the `raw` schema, matching the JSON payload from moneybin-server
 -- raw.plaid_balances (PK: account_id, balance_date, source_file)
 ```
 
-Column schemas match `docs/specs/plaid-integration.md` in the moneybin project. Note: `source_file`, `extracted_at`, and `loaded_at` are client-side fields not present in the JSON response -- the client generates them:
+Column schemas match `docs/specs/sync-plaid.md` in the moneybin project. Note: `source_file`, `extracted_at`, and `loaded_at` are client-side fields not present in the JSON response -- the client generates them:
 - `source_file`: logical identifier, e.g. `sync_{job_id}`
 - `extracted_at`: from `metadata.synced_at` in the JSON response
 - `loaded_at`: current timestamp at DuckDB insertion time

@@ -108,5 +108,5 @@ The Local Only tier's promise — "nothing leaves this machine" — remains inta
 
 - [ADR-004: E2E Encryption](004-e2e-encryption.md) -- Encryption design for Sync tier
 - [ADR-005: Security Tradeoffs](005-security-tradeoffs.md) -- Threat model analysis
-- [Plaid Integration Spec](../specs/plaid-integration.md) -- Implementation plan for Encrypted Sync
+- [Plaid Integration Spec](../specs/sync-plaid.md) -- Implementation plan for Encrypted Sync
 - [Privacy & AI Trust](../specs/privacy-and-ai-trust.md) -- AI data flow tiers, consent model, and provider profiles

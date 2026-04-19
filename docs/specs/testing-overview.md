@@ -90,7 +90,7 @@ The catalog grows organically — when a new child spec or feature needs a check
 
 | Context | When | Who triggers | What runs | What you see |
 |---|---|---|---|---|
-| **Development** | Agent or human building a feature | `moneybin dev test` or direct assertion calls | Everything — unit tests, audits, assertions, evaluations | Structured pass/fail/score report |
+| **Development** | Agent or human building a feature | `moneybin synthetic verify` or direct assertion calls | Everything — unit tests, audits, assertions, evaluations | Structured pass/fail/score report |
 | **Pipeline** | `sqlmesh run` transforms data | Automatic | SQLMesh audits + unit tests fire as part of the run | Pipeline halts or warns on failure |
 | **CI** | PR or commit | GitHub Actions (future) | Full scenario suite against synthetic data | Pass/fail gate on the PR |
 | **Runtime** | After a real data load or import | `moneybin data verify` or post-load hook | Assertions against the live database | User-facing health report |
@@ -184,7 +184,7 @@ The scenario runner orchestrates: generate data → load to raw → `sqlmesh run
 | 2 | `family-full-pipeline` | `family` | Multi-account, transfers, shared expenses |
 | 3 | `freelancer-full-pipeline` | `freelancer` | Irregular income, business vs personal categorization |
 | 4 | `categorization-accuracy` | `family` | Generate labeled data, run categorizer, score precision/recall |
-| 5 | `transfer-detection` | `family` | Generate known transfer pairs, run detector, score F1 |
+| 5 | `matching-transfer-detection` | `family` | Generate known transfer pairs, run detector, score F1 |
 | 6 | `csv-format-compatibility` | N/A (fixtures) | Parse each CSV fixture, compare to `.expected.json` |
 | 7 | `migration-safety` | `basic` | Populate DB, migrate schema, assert data integrity preserved |
 | 8 | `idempotent-loading` | `basic` | Load same files twice, assert zero duplicate rows |
@@ -197,10 +197,10 @@ Four child specs under this umbrella. Each is independently useful, designed kno
 
 | Child spec | Purpose | V1 scope | Key design concerns |
 |---|---|---|---|
-| `synthetic-data-generator.md` | Produce life-like financial histories | Three fictional personas (`basic`, `family`, `freelancer`); anonymized mode from real DB; direct DuckDB insert + CSV output modes; deterministic seeding; ground-truth labels | Two generation modes: persona-based (fiction) and anonymization-based (structure-preserving). How to achieve life-like data is a major concern — merchant catalogs, spending distributions, temporal realism, income patterns. Anonymization techniques (merchant substitution, amount perturbation, date shifting) are a second major concern. |
-| `csv-fixture-library.md` | Curated bank export samples for format compatibility testing | Directory convention (`tests/fixtures/csv_formats/`), naming schema (`<institution>_<account_type>_<year>.csv` + `.expected.json`), initial fixtures from anonymized real exports | Anonymization checklist, contribution path, expected-result format for scoring smart detection |
-| `format-compatibility-testing.md` | Verify parsers handle all known file formats correctly | Test harness that runs each extractor against its fixtures, compares to expected output | Assertion integration, how to add a new format test, failure reporting |
-| `migration-safety-testing.md` | Verify schema migrations preserve data integrity | Pre/post migration assertions (row counts, checksums, no orphaned FKs, no NULLed fields) | Requires synthetic data to populate a DB before migration; depends on generator |
+| `testing-synthetic-data.md` | Produce life-like financial histories | Three fictional personas (`basic`, `family`, `freelancer`); anonymized mode from real DB; direct DuckDB insert + CSV output modes; deterministic seeding; ground-truth labels | Two generation modes: persona-based (fiction) and anonymization-based (structure-preserving). How to achieve life-like data is a major concern — merchant catalogs, spending distributions, temporal realism, income patterns. Anonymization techniques (merchant substitution, amount perturbation, date shifting) are a second major concern. |
+| `testing-csv-fixtures.md` | Curated bank export samples for format compatibility testing | Directory convention (`tests/fixtures/csv_formats/`), naming schema (`<institution>_<account_type>_<year>.csv` + `.expected.json`), initial fixtures from anonymized real exports | Anonymization checklist, contribution path, expected-result format for scoring smart detection |
+| `testing-format-compat.md` | Verify parsers handle all known file formats correctly | Test harness that runs each extractor against its fixtures, compares to expected output | Assertion integration, how to add a new format test, failure reporting |
+| `testing-migration-safety.md` | Verify schema migrations preserve data integrity | Pre/post migration assertions (row counts, checksums, no orphaned FKs, no NULLed fields) | Requires synthetic data to populate a DB before migration; depends on generator |
 
 ### Sequencing
 
@@ -231,10 +231,11 @@ These grow as needed. No upfront framework — add an assertion when a new cross
 
 | Command | Purpose |
 |---|---|
-| `moneybin dev generate --persona=family --profile=bob --years=3 --seed=42` | Generate persona-based synthetic data into a named profile |
-| `moneybin dev generate --from-db --profile=anon --seed=42` | Generate anonymized synthetic data from current profile into a named profile |
-| `moneybin dev test --scenario=family-full-pipeline` | Run a pinned scenario (generate + pipeline + assertions + evaluation) |
-| `moneybin dev test --quick --profile=bob` | Run property assertions only against a profile |
+| `moneybin synthetic generate --persona=family --profile=bob --years=3 --seed=42` | Generate persona-based synthetic data into a named profile |
+| `moneybin synthetic generate --from-db --profile=anon --seed=42` | Generate anonymized synthetic data from current profile into a named profile (see `testing-anonymized-data.md`) |
+| `moneybin synthetic reset --persona=family --seed=42` | Wipe a generated profile and regenerate to clean state |
+| `moneybin synthetic verify --scenario=family-full-pipeline` | Run a pinned scenario (generate + pipeline + assertions + evaluation) |
+| `moneybin synthetic verify --quick --profile=bob` | Run property assertions only against a profile |
 | `moneybin data verify` | User-facing health check — core assertions against the active profile |
 
 ## Dependencies

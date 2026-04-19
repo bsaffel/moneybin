@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-18
 > Status: Draft — umbrella doc for the categorization initiative. Child specs listed in [Pillars](#pillars) are written separately.
-> Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`transaction-matching.md`](transaction-matching.md) (peer initiative, owns transfer detection), [`implemented/transaction-categorization.md`](implemented/transaction-categorization.md) (existing implementation this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose
 
@@ -69,8 +69,8 @@ Categorization decomposes into two independent subsystems. Each has its own chil
 
 | Pillar | Purpose | Child spec |
 |---|---|---|
-| **E.** Auto-rule generation | When a user categorizes a transaction, identify the pattern and propose a rule so future matching transactions are categorized automatically. User confirms before activation. | `auto-rule-generation.md` |
-| **D.** ML-powered categorization | Local scikit-learn model trained on the user's own categorization history. Provides confidence-scored predictions for uncategorized transactions. | `ml-categorization.md` |
+| **E.** Auto-rule generation | When a user categorizes a transaction, identify the pattern and propose a rule so future matching transactions are categorized automatically. User confirms before activation. | `categorization-auto-rules.md` |
+| **D.** ML-powered categorization | Local scikit-learn model trained on the user's own categorization history. Provides confidence-scored predictions for uncategorized transactions. | `categorization-ml.md` |
 
 Both pillars share one architectural property: they operate within the existing categorization pipeline. Their output is a `categorized_by` value and a `confidence` score written to `app.transaction_categories`. No changes to the raw/prep/core pipeline.
 
@@ -332,7 +332,7 @@ The seed merchant list is loaded alongside the existing Plaid PFCv2 category see
 ### Migration-imported categories as bootstrap (v1)
 
 When users import data from competing tools (Mint, YNAB, Tiller, Monarch) via the
-[smart tabular importer](smart-tabular-import.md), source-provided categories are
+[smart tabular importer](smart-import-tabular.md), source-provided categories are
 preserved in `raw.tabular_transactions.category`. These migrated categories are
 a powerful bootstrap signal:
 
@@ -390,7 +390,7 @@ This is a future initiative with real privacy design work. The architecture supp
 Explicitly deferred or owned elsewhere.
 
 - **Split transactions** — removed per import-first philosophy (see `mcp-architecture.md` section 9). Transaction annotations (`transactions.annotate` with `cash_breakdown`) cover the ATM-cash use case without creating phantom records.
-- **Transfer detection** — owned by `transaction-matching.md`. Different concern (record identity, not labeling).
+- **Transfer detection** — owned by `matching-overview.md`. Different concern (record identity, not labeling).
 - **Category taxonomy seed data** — Plaid PFCv2 seed is already implemented. This spec references it; it is not redesigned here.
 - **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Future direction (see below).
 - **Provider category mapping table** — the current `plaid_detailed` column on `app.categories` is provider-specific. When a second provider (Nordigen, etc.) is integrated, this column should be extracted to a generic `app.category_mappings` table. Future direction (see below).
@@ -403,7 +403,7 @@ Explicitly deferred or owned elsewhere.
 
 Peer initiative. Originally listed ML categorization and auto-rule generation as its pillars D and E. This spec absorbs those pillars because categorization is a broader concern than import — rules, ML, and auto-rules apply regardless of how transactions entered the system. `smart-import-overview.md` has been updated to reference this spec for pillars D and E.
 
-### Transaction Matching — `transaction-matching.md`
+### Transaction Matching — `matching-overview.md`
 
 Peer initiative. Owns transfer detection, cross-source deduplication, and golden-record merge rules. Transfer detection is a record-identity concern, not a labeling concern — it stays with transaction matching.
 

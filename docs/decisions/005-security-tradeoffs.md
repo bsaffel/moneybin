@@ -91,4 +91,4 @@ The user must trust that the server:
 
 - [ADR-002: Privacy Tiers](002-privacy-tiers.md) -- Custody model
 - [ADR-004: E2E Encryption](004-e2e-encryption.md) -- Encryption architecture
-- [Plaid Integration Spec](../specs/plaid-integration.md) -- Implementation plan
+- [Plaid Integration Spec](../specs/sync-plaid.md) -- Implementation plan

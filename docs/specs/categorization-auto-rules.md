@@ -3,7 +3,7 @@
 > Last updated: 2026-04-19
 > Status: Draft
 > Parent: [`categorization-overview.md`](categorization-overview.md) (pillar E)
-> Companions: [`implemented/transaction-categorization.md`](implemented/transaction-categorization.md) (existing rule engine this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Goal
 
@@ -18,7 +18,7 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 ### Relevant prior art
 
 - [categorization-overview.md](categorization-overview.md) — umbrella vision, priority hierarchy, pipeline, build order
-- [implemented/transaction-categorization.md](implemented/transaction-categorization.md) — existing rule engine and merchant normalization
+- [archived/transaction-categorization.md](archived/transaction-categorization.md) — existing rule engine and merchant normalization
 - [app_categorization_rules.sql](../../src/moneybin/sql/schema/app_categorization_rules.sql) — existing rule schema with `created_by` column
 - [app_transaction_categories.sql](../../src/moneybin/sql/schema/app_transaction_categories.sql) — categorization output table
 - [app_merchants.sql](../../src/moneybin/sql/schema/app_merchants.sql) — merchant normalization mappings
@@ -278,7 +278,7 @@ Env var overrides:
 
 ## Out of Scope
 
-- **ML-powered categorization** — pillar D, separate spec (`ml-categorization.md`). Auto-rules are deterministic; ML is statistical. ML proposals will feed into the same `app.proposed_rules` table with `source = 'ml'`.
+- **ML-powered categorization** — pillar D, separate spec (`categorization-ml.md`). Auto-rules are deterministic; ML is statistical. ML proposals will feed into the same `app.proposed_rules` table with `source = 'ml'`.
 - **Amount/account-aware rule proposals** — v1 generates simple `merchant_pattern -> category` proposals. When the same merchant is categorized two ways depending on amount range, the conflict is surfaced in review and the user manually creates filtered rules. See Future Enhancements.
 - **Overlapping pattern merging** — when proposals exist for both "STARBUCKS" and "STARBUCKS RESERVE", both survive. The user decides during review.
 - **Auto-rule expiry** — rules don't expire in v1. Deactivation only happens via correction threshold or explicit user action.

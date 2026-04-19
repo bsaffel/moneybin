@@ -31,18 +31,18 @@ Self-contained documents for driving feature development. Follow the [spec templ
 |------|-------------|
 | [Transaction Categorization](specs/transaction-categorization.md) | Category hierarchy, rules engine, bulk operations |
 | [Budget Tracking](specs/budget-tracking.md) | Budget definitions, rollover, status tracking |
-| [Plaid Integration](specs/plaid-integration.md) | Plaid API + E2E encryption for Encrypted Sync tier |
+| [Plaid Integration](specs/sync-plaid.md) | Plaid API + E2E encryption for Encrypted Sync tier |
 | [Privacy & Security Roadmap](specs/privacy-security-roadmap.md) | Future privacy tiers (Encrypted Sync, Managed) and security controls |
-| [Distribution Roadmap](specs/distribution-roadmap.md) | What needs to change before pip distribution: path defaults, SQLMesh packaging, first-run UX |
+
 
 ### Implemented (Pattern Reference)
 
 | Spec | Description |
 |------|-------------|
-| [OFX Import](specs/implemented/ofx-import.md) | OFX/QFX bank file import |
-| [W-2 Extraction](specs/implemented/w2-extraction.md) | W-2 PDF extraction with dual strategy |
-| [MCP Read Tools](specs/implemented/mcp-read-tools.md) | 8 read-only MCP tools, 5 resources, 5 prompts |
-| [MCP Write Tools](specs/implemented/mcp-write-tools.md) | Import, categorization, budgets, analytics tools |
+| [OFX Import](specs/archived/ofx-import.md) | OFX/QFX bank file import |
+| [W-2 Extraction](specs/archived/w2-extraction.md) | W-2 PDF extraction with dual strategy |
+| [MCP Read Tools](specs/archived/mcp-read-tools.md) | 8 read-only MCP tools, 5 resources, 5 prompts |
+| [MCP Write Tools](specs/archived/mcp-write-tools.md) | Import, categorization, budgets, analytics tools |
 
 ## Reference
 

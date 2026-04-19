@@ -3,7 +3,7 @@
 > Last updated: 2026-04-17
 > Status: Draft
 > Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
-> Supersedes: [`implemented/mcp-read-tools.md`](implemented/mcp-read-tools.md), [`implemented/mcp-write-tools.md`](implemented/mcp-write-tools.md)
+> Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
 
