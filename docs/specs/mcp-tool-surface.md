@@ -560,7 +560,7 @@ Trigger the matching engine on-demand.
 
 ### `import.file`
 
-Import a financial data file. Format detected automatically from extension (OFX/QFX, CSV, PDF/W-2, XLSX/XLS). CSV files require `account_id` and an existing profile (see `import.csv_profiles`).
+Import a financial data file. Format detected automatically from extension (OFX/QFX, CSV, PDF/W-2, XLSX/XLS). CSV files require `account_id` and an existing format (see `import.list_formats`).
 
 - **Sensitivity:** `medium` — import results reference transaction descriptions and amounts.
 - **Unique parameters:** `file_path: str` (required), `account_id: str?` (required for CSV), `institution: str?` (override auto-detection).
@@ -599,25 +599,15 @@ Preview a CSV file's headers and sample rows before importing.
 - **Service:** `ImportService.csv_preview() -> CSVPreview`
 - **CLI:** `moneybin import csv-preview PATH`
 
-### `import.csv_profiles`
+### `import.list_formats`
 
-List available CSV institution profiles.
+List available tabular import formats.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
-- **Behavior:** Returns array of `{name, institution_name, header_signature, sign_convention, date_format}` for all built-in and user-created profiles.
-- **Service:** `ImportService.csv_profiles() -> list[CSVProfileSummary]`
-- **CLI:** `moneybin import csv-profiles`
-
-### `import.csv_save_profile`
-
-Create or update a CSV institution profile. Maps an institution's CSV column names to MoneyBin's canonical schema.
-
-- **Sensitivity:** `low` — profile metadata, no financial data.
-- **Unique parameters:** All column mapping fields: `name`, `institution_name`, `header_signature`, `date_column`, `date_format`, `description_column`, `sign_convention`, `amount_column?`, `debit_column?`, `credit_column?`, `post_date_column?`, `memo_column?`, `category_column?`, `subcategory_column?`, `type_column?`, `status_column?`, `check_number_column?`, `reference_column?`, `balance_column?`, `member_name_column?`, `skip_rows?`, `encoding?`. See current `csv_save_profile` tool for full parameter definitions.
-- **Behavior:** Validates the profile, saves to user profiles directory. Returns the saved profile path.
-- **Service:** `ImportService.csv_save_profile() -> Path`
-- **CLI:** `moneybin import csv-save-profile --name NAME ...`
+- **Behavior:** Returns array of `{name, institution_name, file_type, sign_convention, date_format, times_used, last_used_at, source}` for all built-in and user-saved formats.
+- **Service:** `ImportService.list_formats() -> list[FormatSummary]`
+- **CLI:** `moneybin import list-formats`
 
 ### `import.ai_preview`
 
@@ -1045,18 +1035,18 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Guide a first-time user from empty database to imported, transformed, and categorized data.
 
-**Relevant tools:** `overview.status`, `import.file`, `import.csv_preview`, `import.csv_profiles`, `import.csv_save_profile`, `categorize.seed`, `categorize.stats`
+**Relevant tools:** `overview.status`, `import.file`, `import.preview`, `import.list_formats`, `categorize.seed`, `categorize.stats`
 
 **Guardrails:**
 
 - Start by checking `overview.status` — if data already exists, acknowledge and ask what the user wants to do next rather than re-running onboarding
 - Ask the user for file paths — don't assume locations
-- For CSV files, guide through the profile creation flow if auto-detection fails
+- For tabular files, guide through the format creation flow if auto-detection fails
 - After import, explain what happened (records loaded, accounts discovered) and what's available next
 - Seed categories and mention categorization as a natural next step, but don't force it
 - Keep the tone welcoming, not overwhelming — this is a first impression
 
-**Decision points:** User provides file paths. User confirms CSV profile mappings. User decides whether to proceed to categorization.
+**Decision points:** User provides file paths. User confirms column mappings. User decides whether to proceed to categorization.
 
 ### `tax-prep` (Review)
 
@@ -1138,8 +1128,8 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `get_spending_by_category` | `spending.by_category` | |
 | `find_recurring_transactions` | `transactions.recurring` | |
 | `csv_preview_file` | `import.csv_preview` | |
-| `csv_list_profiles` | `import.csv_profiles` | |
-| `csv_save_profile` | `import.csv_save_profile` | |
+| `csv_list_profiles` | `import.list_formats` | |
+| `csv_save_profile` | Absorbed into `import.file` via `save_format` flag | |
 
 ### Prototype prompts
 
@@ -1184,7 +1174,7 @@ These tools can be fully implemented with the current codebase and existing infr
 **`cashflow.*`**: `summary`, `income`
 **`accounts.*`**: `list`, `balances`, `networth`
 **`transactions.*`**: `search`, `recurring`
-**`import.*`**: `file`, `status`, `csv_preview`, `csv_profiles`, `csv_save_profile`
+**`import.*`**: `file`, `status`, `csv_preview`, `list_formats`
 **`categorize.*`**: `uncategorized`, `bulk`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `seed`, `stats`
 **`budget.*`**: `set`, `status`, `delete`
 **`tax.*`**: `w2`

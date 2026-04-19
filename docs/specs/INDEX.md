@@ -33,8 +33,8 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Overview](smart-import-overview.md) | Umbrella | draft | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
-| [Tabular Import](smart-import-tabular.md) | Feature | draft | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration profiles (Tiller, Mint, YNAB). Supersedes archived `csv-import` spec. |
+| [Overview](smart-import-overview.md) | Umbrella | ready | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
+| [Tabular Import](smart-import-tabular.md) | Feature | draft | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB). Supersedes archived `csv-import` spec. |
 | `smart-import-pdf.md` | Feature | planned | Pillar C: native-text PDF import |
 | `smart-import-ai-parsing.md` | Feature | planned | Pillar F: LLM fallback for file parsing |
 
@@ -42,7 +42,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Overview](matching-overview.md) | Umbrella | draft | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
+| [Overview](matching-overview.md) | Umbrella | ready | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
 | [Same-Record Dedup](matching-same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (pillars A+C) |
 | [Transfer Detection](matching-transfer-detection.md) | Feature | draft | Transfer pair detection across accounts (pillar B); shared matching engine, bridge table, always-review v1 |
 
@@ -58,7 +58,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | draft | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
+| [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | ready | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
 | [Data Protection](privacy-data-protection.md) | Feature | ready | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
 | [Privacy & Security Roadmap](privacy-security-roadmap.md) | Roadmap | — | Three-tier data custody model overview |
 
@@ -73,8 +73,10 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Plaid Integration](sync-plaid.md) | Feature | draft | Bank sync via Plaid through the Encrypted Sync tier |
-| [Client Integration](sync-client-integration.md) | Feature | draft | Client-side sync service integration (auth, data flow, CLI) |
+| [Overview](sync-overview.md) | Umbrella | draft | Provider-agnostic sync framework: interaction model, SyncClient, CLI/MCP surface, E2E encryption design, provider contract. Supersedes archived `sync-client-integration` spec. |
+| [Plaid Provider](sync-plaid.md) | Feature | draft | First sync provider: Plaid Transactions. Raw schemas, staging views, core integration, Plaid Link flow, error codes. |
+| `sync-simplefin.md` | Feature | planned | SimpleFIN aggregator provider (alternative to Plaid) |
+| `sync-plaid-investments.md` | Feature | planned | Plaid Investments product (gated on `investment-tracking.md`) |
 
 ## Testing & Validation
 

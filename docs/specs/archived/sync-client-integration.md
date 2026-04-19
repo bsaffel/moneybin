@@ -1,7 +1,9 @@
 # Sync Client Integration
 
+> **Archived.** Replaced by [`sync-overview.md`](../sync-overview.md) (umbrella) and [`sync-plaid.md`](../sync-plaid.md) (Plaid provider) as of 2026-04-19.
+
 ## Status
-draft
+archived
 
 ## Goal
 Enable the moneybin Python client to authenticate with moneybin-server, sync bank data via the REST API, load JSON payloads into DuckDB `raw.plaid_*` tables, and transform Plaid data through SQLMesh staging views into core tables alongside existing OFX and CSV sources.

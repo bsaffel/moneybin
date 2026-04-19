@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-18
 > Status: Ready — umbrella doc for the testing & validation initiative. Child specs listed in [Child Specs](#child-specs) are written separately.
-> Companions: `private/specs/core-concerns.md` §10 (original requirements, not checked in), `CLAUDE.md` "Architecture: Data Layers", [`sync-client-integration.md`](sync-client-integration.md) (owns Plaid Sandbox testing)
+> Companions: `private/specs/core-concerns.md` §10 (original requirements, not checked in), `CLAUDE.md` "Architecture: Data Layers", [`sync-overview.md`](sync-overview.md) (owns Plaid Sandbox testing)
 
 ## Purpose
 
@@ -210,7 +210,7 @@ Four child specs under this umbrella. Each is independently useful, designed kno
 
 ### Deferred (with pointers)
 
-- **Plaid Sandbox testing** — addressed in sync-client integration spec overhaul
+- **Plaid Sandbox testing** — addressed in sync spec (`sync-overview.md`)
 - **`investor` persona** — added when investment schema lands
 - **`international` persona** — added when multi-currency schema lands
 
@@ -250,5 +250,5 @@ These grow as needed. No upfront framework — add an assertion when a new cross
 
 - CI/CD pipeline configuration — implementation detail for later
 - MCP tool testing — covered by MCP specs' own test plans
-- Plaid Sandbox testing — deferred to sync-client integration spec
+- Plaid Sandbox testing — deferred to sync spec (`sync-overview.md`)
 - UI/visual testing — not applicable to current CLI/MCP architecture

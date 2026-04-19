@@ -8,14 +8,14 @@ draft
 
 Build the definitive tabular data importer for personal finance: any CSV, TSV, Excel,
 Parquet, or delimited text file goes in, correctly mapped and normalized
-transactions come out. When a built-in or saved profile matches, import is instant. When
-no profile matches, a heuristic detection engine infers the column mapping, presents it
+transactions come out. When a built-in or saved format matches, import is instant. When
+no format matches, a heuristic detection engine infers the column mapping, presents it
 for confirmation, and saves the result for next time. Multi-account files (Tiller, Mint,
 Monarch) are handled natively. The system learns from every import and turns competitor
 data into a bootstrap accelerator for MoneyBin's categorization engine.
 
 This spec supersedes [`csv-import.md`](archived/csv-import.md) (the shipped
-profile-based system) and absorbs Pillar B (Excel import) from
+format-based system) and absorbs Pillar B (Excel import) from
 [`smart-import-overview.md`](smart-import-overview.md).
 
 ## Background
@@ -23,7 +23,7 @@ profile-based system) and absorbs Pillar B (Excel import) from
 - [`smart-import-overview.md`](smart-import-overview.md) — umbrella spec; this
   implements Pillars A + B and establishes the format-agnostic architecture that
   Pillars C and F will reuse.
-- [`csv-import.md`](archived/csv-import.md) — the existing profile-based CSV
+- [`csv-import.md`](archived/csv-import.md) — the existing format-based CSV
   system this replaces. Historical reference for what's already shipped.
 - [`matching-overview.md`](matching-overview.md) — defines the provenance
   contract (`source_type` taxonomy) and cross-source dedup that operates downstream
@@ -41,7 +41,7 @@ profile-based system) and absorbs Pillar B (Excel import) from
 - `.claude/rules/cli.md` — non-interactive parity requirement (every interactive
   prompt has a flag equivalent).
 - `private/specs/strategic-analysis.md` §6 — data portability and migration strategy
-  that motivates the built-in profiles and category migration flow.
+  that motivates the built-in formats and category migration flow.
 
 ### Competitive context
 
@@ -70,11 +70,11 @@ the full migration path matrix.
 8. Assign a confidence tier (high / medium / low) to every detection result.
 9. Present detected mappings for user confirmation before importing. High confidence
    with `--yes` auto-confirms. Low confidence refuses with actionable guidance.
-10. Auto-save successful detections as profiles in `app.tabular_profiles` for reuse.
-11. Support profile override and update via `--override` + `--save-profile` in a single
-    invocation — no separate "edit profile" step required.
-12. Match imported profiles against built-in YAML profiles (shipped with releases) and
-    user-saved DB profiles. User profiles always override built-ins of the same name.
+10. Auto-save successful detections as formats in `app.tabular_formats` for reuse.
+11. Support format override and update via `--override` + `--save-format` in a single
+    invocation — no separate "edit format" step required.
+12. Match imported formats against built-in YAML formats (shipped with releases) and
+    user-saved DB formats. User formats always override built-ins of the same name.
 13. Handle multi-account files (Tiller, Mint, Monarch) by detecting account-identifying
     columns and matching/creating accounts per row.
 14. Handle single-account files by requiring `--account-name` and generating a
@@ -93,15 +93,15 @@ the full migration path matrix.
 21. Record `source_type` (csv, tsv, excel, parquet, feather, pipe) on every
     raw record. Same column name and values from raw through core — no layer-specific
     aliases. The value `excel` (not `xlsx`) is resolved at write time.
-22. Record `source_origin` on every raw record — the institution, connection, or profile
-    that produced the data. For tabular imports: the profile name (e.g., `chase_credit`,
+22. Record `source_origin` on every raw record — the institution, connection, or format
+    that produced the data. For tabular imports: the format name (e.g., `chase_credit`,
     `tiller`). For OFX: the institution from the file. For Plaid: the `item_id`. Scopes
     within-source dedup (Tier 2b) so that files from the same bank merge while files
     from different banks don't.
 23. Record `row_number` (1-based source file line/row) on every raw record.
 24. Provide `ingest_dataframe()` on the `Database` class as the standard write path:
     Polars → Arrow zero-copy → DuckDB. All loaders use this method.
-25. Ship built-in profiles for Tiller, Mint, YNAB, Chase, and Citi.
+25. Ship built-in formats for Tiller, Mint, YNAB, Chase, and Citi.
 26. Every interactive CLI prompt has a non-interactive flag equivalent for AI agents and
     scripts (non-interactive parity).
 27. CLI and MCP surfaces share the same service layer — neither contains business logic.
@@ -124,9 +124,9 @@ flowchart LR
 
     A -.- A1["extension, magic bytes,\ndelimiter sniffing"]
     B -.- B1["delimiter, encoding,\nskip-rows, sheet select"]
-    C -.- C1["header match,\ncontent validation,\nconfidence tier,\nprofile lookup"]
+    C -.- C1["header match,\ncontent validation,\nconfidence tier,\nformat lookup"]
     D -.- D1["parse dates,\nnormalize amounts,\nsign convention,\nvalidate, row_number"]
-    E -.- E1["raw.tabular_*\napp.tabular_profiles\nArrow zero-copy"]
+    E -.- E1["raw.tabular_*\napp.tabular_formats\nArrow zero-copy"]
 ```
 
 **Key principle:** Stages 1–2 are format-specific (different code paths for CSV vs
@@ -157,7 +157,7 @@ Converts the file into a format-agnostic Polars DataFrame.
 
 - Header row detection: scan for first row where values look like column names — multiple
   short strings, low numeric ratio, high uniqueness. Skip preceding rows (bank summaries,
-  export timestamps, blank lines). Record the detected `skip_rows` count for the profile.
+  export timestamps, blank lines). Record the detected `skip_rows` count for the format.
 - Handle trailing summary/total rows: detect and exclude rows after the data that contain
   aggregates ("Total", "Sum") or metadata ("Export Date", "Record Count").
 - Handle repeated header rows mid-file (copy-paste from paginated web views).
@@ -197,15 +197,15 @@ is the format-agnostic boundary.
 The core of the "smart" part. Takes a DataFrame (headers + sample rows), produces a
 field mapping with a confidence tier.
 
-#### Step 1 — Profile lookup
+#### Step 1 — Format lookup
 
-Check `app.tabular_profiles` (DB) then built-in YAML files (package). If a profile's
+Check `app.tabular_formats` (DB) then built-in YAML files (package). If a format's
 `header_signature` is a case-insensitive subset of the file's headers, use that
-profile's `field_mapping` directly. Skip to Stage 4.
+format's `field_mapping` directly. Skip to Stage 4.
 
-User DB profiles override built-in YAML profiles of the same name. This allows users to
-customize their way out of a built-in profile that doesn't work for their format variant.
-The system guides toward editing over shadowing — prompts to update the existing profile
+User DB formats override built-in YAML formats of the same name. This allows users to
+customize their way out of a built-in format that doesn't work for their variant.
+The system guides toward editing over shadowing — prompts to update the existing format
 rather than creating a near-duplicate.
 
 #### Step 2 — Header-to-destination matching
@@ -423,8 +423,8 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
 - Write to `raw.tabular_transactions` and `raw.tabular_accounts` via the `Database`
   class's new `ingest_dataframe()` method (Polars → Arrow zero-copy → DuckDB).
 - Dedup via primary key (`INSERT OR REPLACE`).
-- Update profile usage metadata (`times_used`, `last_used_at`) in `app.tabular_profiles`.
-- Auto-save detected profile if `save_profile=True` (default).
+- Update format usage metadata (`times_used`, `last_used_at`) in `app.tabular_formats`.
+- Auto-save detected format if `save_format=True` (default).
 - Trigger SQLMesh transforms unless `--skip-transform` is specified.
 - Apply deterministic categorization post-transform (merchant lookups + rules).
 
@@ -461,7 +461,7 @@ CREATE TABLE raw.tabular_transactions (
     member_name VARCHAR,                        -- Account holder, cardholder, or member name if present in source
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file at time of extraction
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe
-    source_origin VARCHAR NOT NULL,             -- Institution/connection/profile that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
+    source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
     row_number INTEGER,                         -- 1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
@@ -478,28 +478,28 @@ CREATE TABLE raw.tabular_accounts (
     account_number VARCHAR,                     -- Full account number if available in source; stored encrypted at rest, masked at application layer for all output
     account_number_masked VARCHAR,              -- Last 4 digits for display (e.g. "...4521"); derived from account_number or extracted directly if source only provides masked
     account_type VARCHAR,                       -- Account type if known (e.g. checking, savings, credit, brokerage, investment)
-    institution_name VARCHAR,                   -- Financial institution name from profile metadata, source file content, or user input
+    institution_name VARCHAR,                   -- Financial institution name from format metadata, source file content, or user input
     currency VARCHAR,                           -- Default currency for this account if known (ISO 4217 code)
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file that created or updated this account record
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe
-    source_origin VARCHAR NOT NULL,             -- Institution/connection/profile that produced this data; matches the profile name for tabular imports
+    source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data; matches the format name for tabular imports
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
     PRIMARY KEY (account_id, source_file)
 );
 ```
 
-### Profile table
+### Format table
 
 ```sql
-CREATE TABLE app.tabular_profiles (
-    /* Saved column mappings for known tabular file formats. Built-in profiles (Chase,
-       Citi, Tiller, Mint, YNAB) are seeded from YAML files on db init. User profiles
+CREATE TABLE app.tabular_formats (
+    /* Saved column mappings for known tabular file formats. Built-in formats (Chase,
+       Citi, Tiller, Mint, YNAB) are seeded from YAML files on db init. User formats
        are auto-saved after successful heuristic detection or created via --override +
-       --save-profile. User profiles override built-ins of the same name. */
-    name VARCHAR PRIMARY KEY,                   -- Machine identifier for this profile (e.g. "chase_credit", "tiller", "mint")
+       --save-format. User formats override built-ins of the same name. */
+    name VARCHAR PRIMARY KEY,                   -- Machine identifier for this format (e.g. "chase_credit", "tiller", "mint")
     institution_name VARCHAR NOT NULL,          -- Human-readable institution or tool name (e.g. "Chase", "Tiller", "Mint")
-    format VARCHAR NOT NULL DEFAULT 'auto',     -- Expected file format: csv, tsv, xlsx, parquet, feather, pipe, or "auto" for any format
+    file_type VARCHAR NOT NULL DEFAULT 'auto',  -- Expected file type: csv, tsv, xlsx, parquet, feather, pipe, or "auto" for any type
     delimiter VARCHAR,                          -- Explicit delimiter character for text formats; NULL means auto-detected at import time
     encoding VARCHAR NOT NULL DEFAULT 'utf-8',  -- Character encoding for text formats (e.g. utf-8, latin-1, windows-1252)
     skip_rows INTEGER NOT NULL DEFAULT 0,       -- Number of non-data rows to skip before the header row in the source file
@@ -508,12 +508,12 @@ CREATE TABLE app.tabular_profiles (
     field_mapping JSON NOT NULL,                -- Mapping of destination field names to source column names (e.g. {"transaction_date": "Trans Date", "amount": "Amount"})
     sign_convention VARCHAR NOT NULL,           -- How amounts are represented in the source: negative_is_expense, negative_is_income, split_debit_credit
     date_format VARCHAR NOT NULL,               -- strftime format string for parsing date values (e.g. "%m/%d/%Y", "%Y-%m-%d")
-    multi_account BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this profile expects per-row account identification (Tiller, Mint, Monarch)
-    source VARCHAR NOT NULL DEFAULT 'detected', -- How this profile was created: "detected" (auto-saved), "manual" (user-created), "built-in-override" (customized built-in)
-    times_used INTEGER NOT NULL DEFAULT 0,      -- Number of successful imports completed using this profile
-    last_used_at TIMESTAMP,                     -- Timestamp of the most recent successful import using this profile
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this profile was first created
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this profile was last modified (override, re-detection, or manual edit)
+    multi_account BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this format expects per-row account identification (Tiller, Mint, Monarch)
+    source VARCHAR NOT NULL DEFAULT 'detected', -- How this format was created: "detected" (auto-saved), "manual" (user-created), "built-in-override" (customized built-in)
+    times_used INTEGER NOT NULL DEFAULT 0,      -- Number of successful imports completed using this format
+    last_used_at TIMESTAMP,                     -- Timestamp of the most recent successful import using this format
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this format was first created
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this format was last modified (override, re-detection, or manual edit)
 );
 ```
 
@@ -590,15 +590,15 @@ concept, one name, per the column consistency rule.
 
 ### source_origin
 
-`source_origin` identifies the institution, connection, or profile that produced data.
+`source_origin` identifies the institution, connection, or format that produced data.
 Where `source_type` answers "how did this data arrive?" (CSV, Excel, Plaid API),
 `source_origin` answers "where did it come from?" (Chase credit card, Tiller export,
 Plaid Item `item_abc123`).
 
 | Source | `source_origin` value |
 |---|---|
-| Tabular import with profile | Profile name (e.g., `chase_credit`, `tiller`, `mint`) |
-| Tabular import without profile | Derived from `--account-name` slug (e.g., `first-national`) |
+| Tabular import with format | Format name (e.g., `chase_credit`, `tiller`, `mint`) |
+| Tabular import without format | Derived from `--account-name` slug (e.g., `first-national`) |
 | OFX import | Institution identifier from OFX file data |
 | Plaid sync | Plaid `item_id` |
 
@@ -694,11 +694,11 @@ The primary command is `moneybin import file` — format-agnostic, handles all t
 formats through the same entry point.
 
 ```bash
-# Happy path — profile matches or detection succeeds
+# Happy path — format matches or detection succeeds
 moneybin import file statement.csv --account-name "Chase Checking"
 
-# Explicit profile
-moneybin import file statement.csv --account-name "Chase Checking" --profile chase_credit
+# Explicit format
+moneybin import file statement.csv --account-name "Chase Checking" --format chase_credit
 
 # Multi-account file (no --account-name needed)
 moneybin import file tiller-export.csv
@@ -707,10 +707,10 @@ moneybin import file tiller-export.csv
 moneybin import file statement.csv --account-name "Chase Checking" \
   --override date="Post Date" \
   --override amount="Debit" \
-  --yes --save-profile
+  --yes --save-format
 
-# Skip confirmation, don't save profile
-moneybin import file statement.csv --account-name "Chase Checking" --yes --no-save-profile
+# Skip confirmation, don't save format
+moneybin import file statement.csv --account-name "Chase Checking" --yes --no-save-format
 
 # Format/delimiter override for edge cases
 moneybin import file data.txt --account-name "Acme Checking" --delimiter="|" --encoding=latin-1
@@ -732,7 +732,7 @@ moneybin import file statement.csv --account-name "Checking" --skip-transform
 ```
 $ moneybin import file first-national-march-2026.csv --account-name "FN Checking"
 
-⚙️  No matching profile found. Analyzing columns...
+⚙️  No matching format found. Analyzing columns...
 
 Detected mapping for first-national-march-2026.csv (confidence: high):
 ┌───────────────────────┬─────────────────┬───────────────────────────┐
@@ -753,7 +753,7 @@ Detected mapping for first-national-march-2026.csv (confidence: high):
 > y
 
 ✅ Imported 347 transactions from first-national-march-2026.csv
-   Profile "first_national" saved for future imports.
+   Format "first_national" saved for future imports.
 ```
 
 **Medium confidence (flagged fields):**
@@ -794,7 +794,7 @@ Accept this mapping? [Y/edit/skip]
 ```
 $ moneybin import file tiller-export.csv
 
-⚙️  Detected Tiller format (built-in profile).
+⚙️  Detected Tiller format (built-in).
    Multi-account file: 4 accounts found.
 
 ┌──────────────────────┬────────────────┬────────────┬──────┬──────────────────────────┐
@@ -826,23 +826,23 @@ $ moneybin import file statement.csv --account-name "Chase Check"
 ✅ Imported 347 transactions to account "Chase Checking"
 ```
 
-### Profile management subcommands
+### Format management subcommands
 
 ```bash
 # Preview file structure without importing
 moneybin import preview statement.csv
 
-# List all profiles (built-in + user-saved)
-moneybin import list-profiles
+# List all formats (built-in + user-saved)
+moneybin import list-formats
 
-# Show profile details
-moneybin import show-profile chase_credit
+# Show format details
+moneybin import show-format chase_credit
 
-# Delete a user profile
-moneybin import delete-profile my_bank
+# Delete a user format
+moneybin import delete-format my_bank
 
-# Diff user profile against built-in (when user overrode a built-in)
-moneybin import diff-profile chase_credit
+# Diff user format against built-in (when user overrode a built-in)
+moneybin import diff-format chase_credit
 ```
 
 ### Non-interactive parity summary
@@ -851,7 +851,7 @@ moneybin import diff-profile chase_credit
 |---|---|
 | "Accept this mapping? [Y/edit/skip]" | `--yes` (accept), `--skip` (decline) |
 | "edit → Which field?" | `--override date="Col Name"` (per-field) |
-| "Save as profile?" | `--save-profile` / `--no-save-profile` |
+| "Save as format?" | `--save-format` / `--no-save-format` |
 | "Did you mean [1]...[2]...[3] new?" | `--account-id acct-id` (bypass) |
 | "Create N new accounts?" | `--yes` (auto-create) |
 | Sheet selection | `--sheet="Sheet Name"` |
@@ -870,9 +870,9 @@ def import_file(
     file_path: str,
     account_name: str | None = None,
     account_id: str | None = None,
-    profile: str | None = None,
+    format_name: str | None = None,
     overrides: dict[str, str] | None = None,
-    save_profile: bool = True,
+    save_format: bool = True,
     auto_confirm: bool = False,
     sheet: str | None = None,
     delimiter: str | None = None,
@@ -881,7 +881,7 @@ def import_file(
 ```
 
 Returns one of:
-- `{"status": "success", "rows_imported": 347, "profile_used": "chase_credit", "accounts": [...]}`
+- `{"status": "success", "rows_imported": 347, "format_used": "chase_credit", "accounts": [...]}`
 - `{"status": "confirmation_required", "confidence": "high|medium", "detection": {...}, "accounts": [...], "token": "..."}`
 - `{"status": "failed", "confidence": "low", "reason": "...", "suggestions": [...]}`
 
@@ -892,7 +892,7 @@ def import_confirm(
     token: str,
     accept: bool = True,
     overrides: dict[str, str] | None = None,
-    save_profile: bool = True,
+    save_format: bool = True,
     account_selections: dict[str, str] | None = None,
 ) -> ImportResult:
 ```
@@ -905,28 +905,28 @@ def import_preview(file_path: str) -> PreviewResult:
     #          sheet_names (Excel), row_count_estimate
 ```
 
-### `list_profiles` — list available profiles
+### `list_formats` — list available formats
 
 ```python
-def list_profiles() -> list[ProfileSummary]:
-    # Returns: name, institution_name, format, times_used, last_used_at, source
+def list_formats() -> list[FormatSummary]:
+    # Returns: name, institution_name, file_type, times_used, last_used_at, source
 ```
 
 ### Renamed/replaced MCP tools
 
 | Current tool | New tool | Notes |
 |---|---|---|
-| `csv_list_profiles` | `list_profiles` | Format-neutral |
-| `csv_save_profile` | Absorbed into `import_file` via `save_profile` flag | No standalone save — profiles are saved as part of import |
+| `csv_list_profiles` | `list_formats` | Format-neutral |
+| `csv_save_profile` | Absorbed into `import_file` via `save_format` flag | No standalone save — formats are saved as part of import |
 | `csv_preview_file` | `import_preview` | Format-neutral |
 
 ---
 
-## Built-In Profiles
+## Built-In Formats
 
-### v1 profiles
+### v1 formats
 
-| Profile | Institution/Tool | Format | Multi-account | Key features |
+| Format | Institution/Tool | File type | Multi-account | Key features |
 |---|---|---|---|---|
 | `chase_credit` | Chase | CSV | No | Single Amount column, negative=expense, includes Category and Type |
 | `citi_credit` | Citi | CSV | No | Split debit/credit columns, includes Status and Member Name |
@@ -934,12 +934,12 @@ def list_profiles() -> list[ProfileSummary]:
 | `mint` | Mint (legacy) | CSV | **Yes** | Account Name, Original Description, Labels, Notes, Tags |
 | `ynab` | YNAB | CSV | No (per-account export) | Outflow/Inflow (split), Payee, Category Group/Category, Cleared |
 
-Built-in profiles ship as YAML files in `src/moneybin/data/tabular_profiles/` and are
-seeded into `app.tabular_profiles` on `moneybin db init`. They serve as fallback when
-the database doesn't have a profile — built-in YAML files are always available even
+Built-in formats ship as YAML files in `src/moneybin/data/tabular_formats/` and are
+seeded into `app.tabular_formats` on `moneybin db init`. They serve as fallback when
+the database doesn't have a format — built-in YAML files are always available even
 before `db init` runs.
 
-### Profile YAML format
+### Format YAML structure
 
 ```yaml
 name: tiller
@@ -985,8 +985,8 @@ date_format: "%m/%d/%Y"
 | Amount parsing | Polars string expressions | `str.replace` chains + `cast(Decimal)` |
 | Transaction ID hash | `hashlib.sha256` (stdlib) | Deterministic; via `map_elements` or pre-computed expression |
 | Arrow bridge | `df.to_arrow()` → DuckDB | Zero-copy (Polars stores data in Arrow format internally) |
-| Profile seed files | `pyyaml` | Already a dependency; YAML for human-readable profiles |
-| Profile storage | DuckDB `app.tabular_profiles` | Encrypted with the rest of the database |
+| Format seed files | `pyyaml` | Already a dependency; YAML for human-readable format definitions |
+| Format storage | DuckDB `app.tabular_formats` | Encrypted with the rest of the database |
 | Account fuzzy match | Levenshtein on slugs (stdlib or `difflib.SequenceMatcher`) | Small candidate set; no library needed |
 
 **No Pandas anywhere.** The entire pipeline is Polars for DataFrames and DuckDB for
@@ -1034,7 +1034,7 @@ storage. The format-agnostic boundary is a Polars DataFrame.
 - Confidence tier assignment for known high/medium/low scenarios
 - `source_transaction_id` vs `reference_number` disambiguation
 - Conflict resolution: multiple date candidates, multiple text candidates
-- Profile lookup: DB match, built-in YAML fallback, user overrides built-in
+- Format lookup: DB match, built-in YAML fallback, user overrides built-in
 
 **Transform & validate (Stage 4):**
 - Date parsing for all supported format strings
@@ -1050,13 +1050,13 @@ storage. The format-agnostic boundary is a Polars DataFrame.
 - Structural validation: null density, amount range, date range
 - Malformed row rejection with row number and reason
 
-**Profile system:**
-- Profile save and load round-trip (DB)
+**Format system:**
+- Format save and load round-trip (DB)
 - Built-in YAML seeding on db init
-- User profile overrides built-in of same name
-- Profile update via overrides
+- User format overrides built-in of same name
+- Format update via overrides
 - Usage tracking (times_used, last_used_at)
-- Multi-account profile flag
+- Multi-account format flag
 
 **Account matching:**
 - Exact name match across all source types
@@ -1069,8 +1069,8 @@ storage. The format-agnostic boundary is a Polars DataFrame.
 ### Integration tests
 
 - End-to-end import: file → detection → extract → load → verify raw rows
-- Profile round-trip: unknown file → auto-saved profile → re-import → profile match
-- Override round-trip: import with `--override` + `--save-profile` → re-import uses
+- Format round-trip: unknown file → auto-saved format → re-import → format match
+- Override round-trip: import with `--override` + `--save-format` → re-import uses
   saved overrides
 - Re-import idempotency: same file twice → same row count, no duplicates
 - Multi-format consistency: same data as CSV, TSV, and Excel → identical raw records
@@ -1103,13 +1103,13 @@ a bulletproof importer matters more than shipping early.
 | 6 | Parquet with typed columns | Schema preservation, minimal detection |
 | 7 | Feather/Arrow IPC with typed columns | Arrow-native reading, schema preservation |
 
-#### Built-in profile fixtures (5 fixtures)
+#### Built-in format fixtures (5 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 8 | Chase credit card CSV | Built-in profile match, negative-is-expense, Category/Type |
-| 9 | Citi credit card CSV | Built-in profile match, split debit/credit, Status |
-| 10 | Tiller transactions export | Multi-account detection, Transaction ID, built-in profile |
+| 8 | Chase credit card CSV | Built-in format match, negative-is-expense, Category/Type |
+| 9 | Citi credit card CSV | Built-in format match, split debit/credit, Status |
+| 10 | Tiller transactions export | Multi-account detection, Transaction ID, built-in format |
 | 11 | Mint transactions export | Multi-account, Original Description, Labels/Tags |
 | 12 | YNAB transactions export | Per-account, Outflow/Inflow split, Category Group/Category |
 
@@ -1176,7 +1176,7 @@ a bulletproof importer matters more than shipping early.
 |---|---|---|
 | 50 | Tiller multi-institution (5+ accounts) | Per-row account extraction, cross-institution |
 | 51 | Mint multi-account export | Different column layout from Tiller, account name matching |
-| 52 | Generic multi-account CSV | Account column detection without built-in profile |
+| 52 | Generic multi-account CSV | Account column detection without built-in format |
 | 53 | Multi-account with fuzzy account names | "Did you mean?" flow for near-matches |
 | 54 | Multi-account with account numbers | Account number matching across source types |
 | 55 | Multi-account with mixed known/unknown accounts | Some matched, some new — partial match flow |
@@ -1236,9 +1236,9 @@ is catastrophic. Fixtures are the primary defense against regression.
 |---|---|
 | `polars` | DataFrame operations, all file readers (existing dependency) |
 | `openpyxl` | Excel .xlsx reading via `polars.read_excel()` (**new dependency**) |
-| `pyyaml` | Built-in profile YAML files (existing dependency) |
+| `pyyaml` | Built-in format YAML files (existing dependency) |
 | `duckdb` | Database storage and queries (existing dependency) |
-| `pydantic` | `TabularProfile` model, validation (existing dependency) |
+| `pydantic` | `TabularFormat` model, validation (existing dependency) |
 
 ### Likely already transitive
 
@@ -1261,19 +1261,19 @@ is catastrophic. Fixtures are the primary defense against regression.
 | File | Purpose |
 |---|---|
 | `src/moneybin/extractors/tabular_extractor.py` | Format detection, reading, column mapping engine (Stages 1–3) |
-| `src/moneybin/extractors/tabular_profiles.py` | `TabularProfile` Pydantic model, profile DB operations, built-in YAML loading |
+| `src/moneybin/extractors/tabular_formats.py` | `TabularFormat` Pydantic model, format DB operations, built-in YAML loading |
 | `src/moneybin/extractors/field_aliases.py` | `FIELD_ALIASES` constant and header normalization utilities |
 | `src/moneybin/loaders/tabular_loader.py` | Transform, validate, and load (Stages 4–5) |
 | `src/moneybin/sql/schema/raw_tabular_transactions.sql` | DDL for `raw.tabular_transactions` |
 | `src/moneybin/sql/schema/raw_tabular_accounts.sql` | DDL for `raw.tabular_accounts` |
-| `src/moneybin/sql/schema/app_tabular_profiles.sql` | DDL for `app.tabular_profiles` |
-| `src/moneybin/data/tabular_profiles/tiller.yaml` | Built-in Tiller profile |
-| `src/moneybin/data/tabular_profiles/mint.yaml` | Built-in Mint profile |
-| `src/moneybin/data/tabular_profiles/ynab.yaml` | Built-in YNAB profile |
+| `src/moneybin/sql/schema/app_tabular_formats.sql` | DDL for `app.tabular_formats` |
+| `src/moneybin/data/tabular_formats/tiller.yaml` | Built-in Tiller format |
+| `src/moneybin/data/tabular_formats/mint.yaml` | Built-in Mint format |
+| `src/moneybin/data/tabular_formats/ynab.yaml` | Built-in YNAB format |
 | `sqlmesh/models/tabular/stg_tabular__accounts.sql` | Staging view replacing `stg_csv__accounts` |
 | `sqlmesh/models/tabular/stg_tabular__transactions.sql` | Staging view replacing `stg_csv__transactions` |
 | `tests/moneybin/test_extractors/test_tabular_extractor.py` | Unit tests for detection engine |
-| `tests/moneybin/test_extractors/test_tabular_profiles.py` | Unit tests for profile system |
+| `tests/moneybin/test_extractors/test_tabular_formats.py` | Unit tests for format system |
 | `tests/moneybin/test_loaders/test_tabular_loader.py` | Unit tests for transform and load |
 | `tests/fixtures/tabular/` | 75 fixture files organized by category |
 
@@ -1283,7 +1283,7 @@ is catastrophic. Fixtures are the primary defense against regression.
 |---|---|
 | `src/moneybin/database.py` | Add `ingest_dataframe()` method |
 | `src/moneybin/services/import_service.py` | Replace CSV-specific import with tabular import pipeline |
-| `src/moneybin/cli/commands/import_cmd.py` | Update flags, add profile management subcommands |
+| `src/moneybin/cli/commands/import_cmd.py` | Update flags, add format management subcommands |
 | `src/moneybin/mcp/write_tools.py` | Replace `csv_*` tools with format-neutral tools |
 | `sqlmesh/models/core/dim_accounts.sql` | Replace `csv` CTE with `tabular` |
 | `sqlmesh/models/core/fct_transactions.sql` | Replace `csv` CTE with `tabular` |
@@ -1293,9 +1293,9 @@ is catastrophic. Fixtures are the primary defense against regression.
 | File | Action |
 |---|---|
 | `src/moneybin/extractors/csv_extractor.py` | Remove (replaced by `tabular_extractor.py`) |
-| `src/moneybin/extractors/csv_profiles.py` | Remove (replaced by `tabular_profiles.py`) |
+| `src/moneybin/extractors/csv_profiles.py` | Remove (replaced by `tabular_formats.py`) |
 | `src/moneybin/loaders/csv_loader.py` | Remove (replaced by `tabular_loader.py`) |
-| `src/moneybin/data/csv_profiles/` | Remove directory (replaced by `tabular_profiles/`) |
+| `src/moneybin/data/csv_profiles/` | Remove directory (replaced by `tabular_formats/`) |
 | `src/moneybin/sql/schema/raw_csv_transactions.sql` | Remove (replaced by `raw_tabular_transactions.sql`) |
 | `src/moneybin/sql/schema/raw_csv_accounts.sql` | Remove (replaced by `raw_tabular_accounts.sql`) |
 | `sqlmesh/models/csv/` | Remove directory (replaced by `sqlmesh/models/tabular/`) |
@@ -1304,7 +1304,7 @@ is catastrophic. Fixtures are the primary defense against regression.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Profile storage | Database (`app.tabular_profiles`) with YAML seed files | Profiles are user data; DB gives encryption, usage tracking, queryability |
+| Format storage | Database (`app.tabular_formats`) with YAML seed files | Formats are user data; DB gives encryption, usage tracking, queryability |
 | Detection approach | Header alias table + content validation (rules-based) | Deterministic, debuggable, extensible; ML deferred to v2 if needed |
 | Format-agnostic boundary | Polars DataFrame after Stage 2 | Single representation for all formats; Stages 3–5 are format-unaware |
 | Write path | `Database.ingest_dataframe()` via Arrow zero-copy | Centralized, encrypted, validated; all loaders benefit |

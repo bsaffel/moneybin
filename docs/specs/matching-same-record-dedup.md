@@ -19,7 +19,7 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 
 - [matching-overview.md](matching-overview.md) — umbrella vision, scope, build order
 - [fct_transactions.sql](../../sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no dedup)
-- [smart-import-tabular.md](smart-import-tabular.md) — universal tabular importer that produces `raw.tabular_*` records with `source_transaction_id`, per-format `source_type` values, and `source_origin` (institution/profile identifier)
+- [smart-import-tabular.md](smart-import-tabular.md) — universal tabular importer that produces `raw.tabular_*` records with `source_transaction_id`, per-format `source_type` values, and `source_origin` (institution/format identifier)
 - [stg_tabular__transactions.sql](../../sqlmesh/models/tabular/stg_tabular__transactions.sql) — tabular staging (replaces CSV staging) with within-source dedup
 - [stg_ofx__transactions.sql](../../sqlmesh/models/prep/stg_ofx__transactions.sql) — OFX staging without within-source dedup (gap)
 
@@ -106,10 +106,10 @@ CREATE TABLE IF NOT EXISTS app.match_decisions (
     match_id VARCHAR NOT NULL,           -- UUID, primary key
     source_transaction_id_a VARCHAR NOT NULL, -- Source-native ID of first row
     source_type_a VARCHAR NOT NULL,      -- source_type of first row
-    source_origin_a VARCHAR NOT NULL,    -- source_origin of first row (institution/connection/profile)
+    source_origin_a VARCHAR NOT NULL,    -- source_origin of first row (institution/connection/format)
     source_transaction_id_b VARCHAR NOT NULL, -- Source-native ID of second row
     source_type_b VARCHAR NOT NULL,      -- source_type of second row
-    source_origin_b VARCHAR NOT NULL,    -- source_origin of second row (institution/connection/profile)
+    source_origin_b VARCHAR NOT NULL,    -- source_origin of second row (institution/connection/format)
     account_id VARCHAR NOT NULL,         -- Shared account (blocking requirement)
     confidence_score DECIMAL(5, 4),      -- 0.0000 to 1.0000
     match_signals JSON,                  -- Per-signal scores: {"date_distance": 0, "description_similarity": 0.87}
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS app.source_priority (
 | `transaction_id` | VARCHAR | FK to gold record in `core.fct_transactions` |
 | `source_transaction_id` | VARCHAR | Source-native ID, joinable to raw/prep |
 | `source_type` | VARCHAR | Import pathway / origin system |
-| `source_origin` | VARCHAR | Institution/connection/profile that produced this row |
+| `source_origin` | VARCHAR | Institution/connection/format that produced this row |
 | `source_file` | VARCHAR | File that produced this source row |
 | `source_extracted_at` | TIMESTAMP | When the source row was parsed |
 | `match_id` | VARCHAR | FK to `app.match_decisions`; NULL for unmatched records |
@@ -386,7 +386,7 @@ When a new source is added to MoneyBin, the following must be updated for matchi
 1. Create staging model in `sqlmesh/models/prep/` with tier 2 dedup (`ROW_NUMBER`)
 2. Add a CTE to `int_transactions__unioned` and `UNION ALL` into the combined set — include `source_origin` column
 3. Insert the new `source_type` into the default `source_priority` list at the appropriate position
-4. Define `source_origin` population logic (profile name, institution ID, item ID, etc.)
+4. Define `source_origin` population logic (format name, institution ID, item ID, etc.)
 5. Add the new source to matching integration tests (load + match against existing sources)
 
 ## Open Questions

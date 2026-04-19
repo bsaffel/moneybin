@@ -726,7 +726,7 @@ The spec template (`_template.md`) includes this as an optional section. See
 - **Scenario runner** — peer spec; orchestrates generator + assertions + evaluations
 - **CSV fixture library** — sibling child spec (`testing-csv-fixtures.md`)
 - **Institution-formatted CSV output** — fixture library concern
-- **Plaid Sandbox fixtures** — deferred to sync-client integration spec
+- **Plaid Sandbox fixtures** — deferred to sync spec (`sync-overview.md`)
 - **Investment/multi-currency personas** — gated on schema additions (Level 2/3)
 - **Merchant ground-truth scoring** — documented extension point; awaits merchant
   quality spec

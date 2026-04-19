@@ -1,7 +1,7 @@
 # Privacy & AI Trust
 
-> Last updated: 2026-04-17
-> Status: Draft — framework spec for MoneyBin's privacy model across all AI data flows.
+> Last updated: 2026-04-19 — promoted to ready
+> Status: Ready — framework spec for MoneyBin's privacy model across all AI data flows.
 > Companions: [`privacy-security-roadmap.md`](privacy-security-roadmap.md) (data custody tiers), [`ADR-002: Privacy Tiers`](../decisions/002-privacy-tiers.md) (data custody architecture), [`smart-import-overview.md`](smart-import-overview.md) (pillar F depends on this), [`matching-overview.md`](matching-overview.md) (audit log shared), `CLAUDE.md` Security section, `.claude/rules/security.md`
 
 ### Relationship to existing privacy docs
@@ -164,7 +164,7 @@ The redaction engine transforms data before it leaves the machine. It is the mec
 
 ### Open design question
 
-**Redaction for format detection specifically.** Can Smart Import pillar F's format detection work with fully synthetic sample rows (tier 1), or does it need real descriptions and amounts (tier 2) to detect patterns like European decimal commas, institution-specific description formats, or date ambiguity (MM/DD vs DD/MM)? Deferred to `smart-csv-detection.md` — the answer depends on the detection algorithm's sensitivity to real vs synthetic data.
+**Redaction for format detection specifically.** Can Smart Import pillar F's format detection work with fully synthetic sample rows (tier 1), or does it need real descriptions and amounts (tier 2) to detect patterns like European decimal commas, institution-specific description formats, or date ambiguity (MM/DD vs DD/MM)? Deferred to `smart-import-tabular.md` — the answer depends on the detection algorithm's sensitivity to real vs synthetic data.
 
 ## Audit log — "the receipt"
 
@@ -367,5 +367,5 @@ The privacy spec's mission is awareness and control, not restriction. When data 
 ## Open questions
 
 - **MCP Apps and provider capability framing.** MCP Apps currently requires Anthropic. The provider profile documents this as a capability. How should this be presented to users — as a neutral capability difference, or with guidance? The spec should avoid appearing to recommend a provider while being honest about feature gaps.
-- **Redaction for format detection.** Deferred to `smart-csv-detection.md`. The detection algorithm's sensitivity to real vs synthetic data determines whether format detection is tier 1 (masked) or tier 2 (consent needed).
+- **Redaction for format detection.** Deferred to `smart-import-tabular.md`. The detection algorithm's sensitivity to real vs synthetic data determines whether format detection is tier 1 (masked) or tier 2 (consent needed).
 - **Future: per-provider consent.** v1 ties consent to feature categories, not providers. If a user consents to `mcp-data-sharing` with Anthropic, does that consent transfer when they switch to OpenAI? Probably not — different privacy stances. Future enhancement: consent is per (category, provider) tuple.

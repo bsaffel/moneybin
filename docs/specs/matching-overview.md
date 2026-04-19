@@ -1,7 +1,7 @@
 # Transaction Matching — Overview
 
-> Last updated: 2026-04-17
-> Status: Draft — umbrella doc for the transaction-matching initiative. Child specs listed in [Pillars](#the-three-pillars) are written separately.
+> Last updated: 2026-04-19 — promoted to ready
+> Status: Ready — umbrella doc for the transaction-matching initiative. Child specs listed in [Pillars](#the-three-pillars) are written separately.
 > Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative), [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (audit log shared), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose
@@ -146,7 +146,7 @@ v2 (deferred): **learned promotions.** After the user confirms N matches of the 
 Three sibling initiatives feed the matcher. Matching defines the provenance contract; siblings conform to it.
 
 - **Smart Import** (`smart-import-overview.md`) — produces raw rows from CSV, TSV, Excel, Parquet, Feather, and (future) PDF. Every Smart Import pillar must output rows that conform to the provenance schema and `source_type` taxonomy defined here.
-- **Plaid sync** (`sync-client-integration.md`, pending) — produces raw rows from Plaid API. Also the source of deterministic retro-mutation handling (Plaid provides stable `transaction_id`).
+- **Plaid sync** (`sync-overview.md` / `sync-plaid.md`) — produces raw rows from Plaid API. Also the source of deterministic retro-mutation handling (Plaid provides stable `transaction_id`).
 - **Manual entry** (pending) — produces raw rows from user input. Reconciliation of a manual entry with a later-imported file is a matching case, not a manual-entry case.
 - **Multi-currency** (pending) — owns cross-currency transfer amount matching (FX-aware tolerance). This spec defers that case.
 
