@@ -5,11 +5,21 @@ W2 data into DuckDB raw tables.
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
 
+from moneybin.database import Database
 from moneybin.loaders.w2_loader import W2Loader
+
+
+@pytest.fixture
+def test_db(tmp_path: Path) -> Database:
+    """Create a temporary test Database instance."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-key"
+    return Database(tmp_path / "test.duckdb", secret_store=mock_store)
 
 
 @pytest.fixture
@@ -48,42 +58,34 @@ def sample_w2_data() -> pl.DataFrame:
 
 
 @pytest.mark.unit
-def test_loader_initialization(tmp_path: Path) -> None:
+def test_loader_initialization(test_db: Database) -> None:
     """Test that W2 loader initializes correctly."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
-
-    assert loader.database_path == db_path
+    loader = W2Loader(test_db)
+    assert loader.db is test_db
 
 
 @pytest.mark.unit
-def test_create_raw_tables(tmp_path: Path) -> None:
+def test_create_raw_tables(test_db: Database) -> None:
     """Test that raw tables are created successfully."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Create tables
     loader.create_raw_tables()
 
     # Verify table exists by querying
-    import duckdb
-
-    conn = duckdb.connect(str(db_path))
-    result = conn.execute("""
+    result = test_db.conn.execute("""
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'raw' AND table_name = 'w2_forms'
     """).fetchall()
-    conn.close()
 
     assert len(result) == 1
     assert result[0][0] == "w2_forms"
 
 
 @pytest.mark.unit
-def test_load_data(tmp_path: Path, sample_w2_data: pl.DataFrame) -> None:
+def test_load_data(test_db: Database, sample_w2_data: pl.DataFrame) -> None:
     """Test that W2 data is loaded correctly."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Load data
     row_count = loader.load_data(sample_w2_data)
@@ -92,10 +94,11 @@ def test_load_data(tmp_path: Path, sample_w2_data: pl.DataFrame) -> None:
 
 
 @pytest.mark.unit
-def test_load_data_creates_tables(tmp_path: Path, sample_w2_data: pl.DataFrame) -> None:
+def test_load_data_creates_tables(
+    test_db: Database, sample_w2_data: pl.DataFrame
+) -> None:
     """Test that loading data creates tables if they don't exist."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Load data without explicitly creating tables first
     row_count = loader.load_data(sample_w2_data)
@@ -108,10 +111,9 @@ def test_load_data_creates_tables(tmp_path: Path, sample_w2_data: pl.DataFrame) 
 
 
 @pytest.mark.unit
-def test_query_raw_data(tmp_path: Path, sample_w2_data: pl.DataFrame) -> None:
+def test_query_raw_data(test_db: Database, sample_w2_data: pl.DataFrame) -> None:
     """Test querying W2 data from database."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Load data first
     loader.load_data(sample_w2_data)
@@ -132,10 +134,9 @@ def test_query_raw_data(tmp_path: Path, sample_w2_data: pl.DataFrame) -> None:
 
 
 @pytest.mark.unit
-def test_query_with_limit(tmp_path: Path, sample_w2_data: pl.DataFrame) -> None:
+def test_query_with_limit(test_db: Database, sample_w2_data: pl.DataFrame) -> None:
     """Test querying with limit parameter."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Load data
     loader.load_data(sample_w2_data)
@@ -147,10 +148,9 @@ def test_query_with_limit(tmp_path: Path, sample_w2_data: pl.DataFrame) -> None:
 
 
 @pytest.mark.unit
-def test_load_empty_dataframe(tmp_path: Path) -> None:
+def test_load_empty_dataframe(test_db: Database) -> None:
     """Test that loading empty DataFrame doesn't raise errors."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Create empty DataFrame with correct schema
     empty_df = pl.DataFrame(
@@ -173,11 +173,10 @@ def test_load_empty_dataframe(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_load_duplicate_data_replaces(
-    tmp_path: Path, sample_w2_data: pl.DataFrame
+    test_db: Database, sample_w2_data: pl.DataFrame
 ) -> None:
     """Test that loading duplicate data uses INSERT OR REPLACE."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Load data first time
     loader.load_data(sample_w2_data)
@@ -204,29 +203,21 @@ def test_load_duplicate_data_replaces(
 
 @pytest.mark.unit
 def test_json_fields_stored_correctly(
-    tmp_path: Path, sample_w2_data: pl.DataFrame
+    test_db: Database, sample_w2_data: pl.DataFrame
 ) -> None:
     """Test that JSON fields (state_local_info, optional_boxes) are stored correctly."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Load data
     loader.load_data(sample_w2_data)
 
-    # Query data
-    import duckdb
-
-    conn = duckdb.connect(str(db_path))
-
-    # Query and validate JSON fields
-    result = conn.execute("""
+    # Query and validate JSON fields via the shared connection
+    result = test_db.conn.execute("""
         SELECT
             state_local_info,
             optional_boxes
         FROM raw.w2_forms
     """).fetchone()
-
-    conn.close()
 
     # Check that JSON fields are stored as JSON (not string)
     assert result is not None, "Expected to find W2 data in database"
@@ -239,13 +230,12 @@ def test_json_fields_stored_correctly(
 
 
 @pytest.mark.unit
-def test_missing_sql_file_raises_error(tmp_path: Path) -> None:
+def test_missing_sql_file_raises_error(test_db: Database) -> None:
     """Test that missing SQL schema file raises appropriate error."""
-    db_path = tmp_path / "test.duckdb"
-    loader = W2Loader(db_path)
+    loader = W2Loader(test_db)
 
     # Temporarily change sql_dir to non-existent path
-    loader.sql_dir = tmp_path / "nonexistent"
+    loader.sql_dir = test_db.path.parent / "nonexistent"
 
     with pytest.raises(FileNotFoundError, match="SQL schema file not found"):
         loader.create_raw_tables()

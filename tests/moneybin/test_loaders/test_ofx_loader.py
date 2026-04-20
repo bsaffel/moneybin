@@ -1,19 +1,21 @@
 """Tests for OFX raw data loader to DuckDB."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
-import duckdb
 import polars as pl
 import pytest
 
+from moneybin.database import Database
 from moneybin.loaders.ofx_loader import OFXLoader
 
 
 @pytest.fixture
-def test_database(tmp_path: Path) -> Path:
-    """Create a temporary test database."""
-    db_path = tmp_path / "test.duckdb"
-    return db_path
+def test_db(tmp_path: Path) -> Database:
+    """Create a temporary test Database instance."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-key"
+    return Database(tmp_path / "test.duckdb", secret_store=mock_store)
 
 
 @pytest.fixture
@@ -61,20 +63,19 @@ def sample_ofx_data() -> dict[str, pl.DataFrame]:
 
 
 @pytest.mark.unit
-def test_loader_initialization(test_database: Path) -> None:
+def test_loader_initialization(test_db: Database) -> None:
     """Test that loader initializes correctly."""
-    loader = OFXLoader(test_database)
-    assert loader.database_path == test_database
+    loader = OFXLoader(test_db)
+    assert loader.db is test_db
 
 
 @pytest.mark.unit
-def test_create_raw_tables(test_database: Path) -> None:
+def test_create_raw_tables(test_db: Database) -> None:
     """Test that raw tables are created in DuckDB."""
-    loader = OFXLoader(test_database)
+    loader = OFXLoader(test_db)
     loader.create_raw_tables()
 
-    # Verify tables were created
-    conn = duckdb.connect(str(test_database))
+    conn = test_db.conn
 
     # Check schema exists
     schemas = conn.execute(
@@ -96,15 +97,11 @@ def test_create_raw_tables(test_database: Path) -> None:
     assert "ofx_transactions" in table_names
     assert "ofx_balances" in table_names
 
-    conn.close()
-
 
 @pytest.mark.unit
-def test_load_data(
-    test_database: Path, sample_ofx_data: dict[str, pl.DataFrame]
-) -> None:
+def test_load_data(test_db: Database, sample_ofx_data: dict[str, pl.DataFrame]) -> None:
     """Test that data is loaded into raw tables."""
-    loader = OFXLoader(test_database)
+    loader = OFXLoader(test_db)
     row_counts = loader.load_data(sample_ofx_data)
 
     # Verify row counts returned
@@ -113,8 +110,8 @@ def test_load_data(
     assert row_counts["transactions"] == 2
     assert row_counts["balances"] == 1
 
-    # Verify data in database
-    conn = duckdb.connect(str(test_database))
+    # Verify data in database via the same connection
+    conn = test_db.conn
 
     # Check transactions table
     result = conn.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()
@@ -135,15 +132,13 @@ def test_load_data(
     assert float(tx_df["amount"][0]) == -50.00
     assert tx_df["payee"][0] == "Coffee Shop"
 
-    conn.close()
-
 
 @pytest.mark.unit
 def test_load_data_idempotent(
-    test_database: Path, sample_ofx_data: dict[str, pl.DataFrame]
+    test_db: Database, sample_ofx_data: dict[str, pl.DataFrame]
 ) -> None:
     """Test that loading the same data multiple times is idempotent."""
-    loader = OFXLoader(test_database)
+    loader = OFXLoader(test_db)
 
     # Load data twice
     loader.load_data(sample_ofx_data)
@@ -153,19 +148,19 @@ def test_load_data_idempotent(
     assert row_counts["transactions"] == 2
 
     # Verify database has correct count
-    conn = duckdb.connect(str(test_database))
-    result = conn.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()
+    result = test_db.conn.execute(
+        "SELECT COUNT(*) FROM raw.ofx_transactions"
+    ).fetchone()
     assert result is not None
     assert result[0] == 2  # Not 4, because of INSERT OR REPLACE
-    conn.close()
 
 
 @pytest.mark.unit
 def test_query_raw_data(
-    test_database: Path, sample_ofx_data: dict[str, pl.DataFrame]
+    test_db: Database, sample_ofx_data: dict[str, pl.DataFrame]
 ) -> None:
     """Test that raw data can be queried from database."""
-    loader = OFXLoader(test_database)
+    loader = OFXLoader(test_db)
     loader.load_data(sample_ofx_data)
 
     # Query transactions
@@ -179,10 +174,10 @@ def test_query_raw_data(
 
 @pytest.mark.unit
 def test_query_raw_data_with_limit(
-    test_database: Path, sample_ofx_data: dict[str, pl.DataFrame]
+    test_db: Database, sample_ofx_data: dict[str, pl.DataFrame]
 ) -> None:
     """Test that query limit works correctly."""
-    loader = OFXLoader(test_database)
+    loader = OFXLoader(test_db)
     loader.load_data(sample_ofx_data)
 
     # Query with limit
@@ -192,7 +187,7 @@ def test_query_raw_data_with_limit(
 
 
 @pytest.mark.unit
-def test_load_empty_dataframes(test_database: Path) -> None:
+def test_load_empty_dataframes(test_db: Database) -> None:
     """Test that loading empty DataFrames doesn't cause errors."""
     empty_data = {
         "institutions": pl.DataFrame(),
@@ -201,15 +196,15 @@ def test_load_empty_dataframes(test_database: Path) -> None:
         "balances": pl.DataFrame(),
     }
 
-    loader = OFXLoader(test_database)
+    loader = OFXLoader(test_db)
     row_counts = loader.load_data(empty_data)
 
     # Should return empty counts
     assert len(row_counts) == 0
 
     # Verify tables exist but are empty
-    conn = duckdb.connect(str(test_database))
-    result = conn.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()
+    result = test_db.conn.execute(
+        "SELECT COUNT(*) FROM raw.ofx_transactions"
+    ).fetchone()
     assert result is not None
     assert result[0] == 0
-    conn.close()

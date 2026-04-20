@@ -1,18 +1,21 @@
 """Tests for CSV loader."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
-import duckdb
 import polars as pl
 import pytest
 
+from moneybin.database import Database
 from moneybin.loaders.csv_loader import CSVLoader
 
 
 @pytest.fixture()
-def db_path(tmp_path: Path) -> Path:
-    """Path to a temporary DuckDB database."""
-    return tmp_path / "test.duckdb"
+def test_db(tmp_path: Path) -> Database:
+    """A temporary Database instance for testing."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-key"
+    return Database(tmp_path / "test.duckdb", secret_store=mock_store)
 
 
 @pytest.fixture()
@@ -77,18 +80,16 @@ def sample_transactions() -> pl.DataFrame:
 class TestCSVLoaderTableCreation:
     """Test raw table creation."""
 
-    def test_creates_tables(self, db_path: Path) -> None:
-        loader = CSVLoader(db_path)
+    def test_creates_tables(self, test_db: Database) -> None:
+        loader = CSVLoader(test_db)
         loader.create_raw_tables()
 
-        conn = duckdb.connect(str(db_path))
-        tables = conn.execute("""
+        tables = test_db.conn.execute("""
             SELECT table_name FROM information_schema.tables
             WHERE table_schema = 'raw'
             ORDER BY table_name
         """).fetchall()
         table_names = [t[0] for t in tables]
-        conn.close()
 
         assert "csv_accounts" in table_names
         assert "csv_transactions" in table_names
@@ -99,11 +100,11 @@ class TestCSVLoaderData:
 
     def test_load_data(
         self,
-        db_path: Path,
+        test_db: Database,
         sample_accounts: pl.DataFrame,
         sample_transactions: pl.DataFrame,
     ) -> None:
-        loader = CSVLoader(db_path)
+        loader = CSVLoader(test_db)
         row_counts = loader.load_data({
             "accounts": sample_accounts,
             "transactions": sample_transactions,
@@ -114,37 +115,37 @@ class TestCSVLoaderData:
 
     def test_idempotent_reload(
         self,
-        db_path: Path,
+        test_db: Database,
         sample_accounts: pl.DataFrame,
         sample_transactions: pl.DataFrame,
     ) -> None:
         """Loading the same data twice should not create duplicates."""
-        loader = CSVLoader(db_path)
+        loader = CSVLoader(test_db)
         data = {"accounts": sample_accounts, "transactions": sample_transactions}
 
         loader.load_data(data)
         loader.load_data(data)
 
-        conn = duckdb.connect(str(db_path), read_only=True)
-        count = conn.execute("SELECT COUNT(*) FROM raw.csv_transactions").fetchone()
-        conn.close()
+        count = test_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.csv_transactions"
+        ).fetchone()
 
         assert count is not None
         assert count[0] == 2  # Not 4
 
     def test_query_loaded_data(
         self,
-        db_path: Path,
+        test_db: Database,
         sample_accounts: pl.DataFrame,
         sample_transactions: pl.DataFrame,
     ) -> None:
-        loader = CSVLoader(db_path)
+        loader = CSVLoader(test_db)
         loader.load_data({
             "accounts": sample_accounts,
             "transactions": sample_transactions,
         })
 
-        conn = duckdb.connect(str(db_path), read_only=True)
+        conn = test_db.conn
 
         # Check accounts
         acct = conn.execute("SELECT institution_name FROM raw.csv_accounts").fetchone()
@@ -158,10 +159,8 @@ class TestCSVLoaderData:
         assert len(txns) == 2
         assert txns[0][0] == "TARGET.COM"
 
-        conn.close()
-
-    def test_empty_data(self, db_path: Path) -> None:
-        loader = CSVLoader(db_path)
+    def test_empty_data(self, test_db: Database) -> None:
+        loader = CSVLoader(test_db)
         row_counts = loader.load_data({
             "accounts": pl.DataFrame(),
             "transactions": pl.DataFrame(),
