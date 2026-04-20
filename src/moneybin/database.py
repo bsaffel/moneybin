@@ -162,8 +162,8 @@ class Database:
     def conn(self) -> duckdb.DuckDBPyConnection:
         """The underlying DuckDB connection.
 
-        Use this for bulk operations that require the raw connection
-        (e.g., ingest_dataframe). For normal queries, prefer execute().
+        Prefer execute() for normal queries. Use this property only when
+        you need access to the raw DuckDB API (e.g., registering Arrow tables).
 
         Raises:
             RuntimeError: If the database has been closed.
@@ -174,6 +174,58 @@ class Database:
                 "Call get_database() to get a new instance."
             )
         return self._conn
+
+    def ingest_dataframe(
+        self,
+        table: str,
+        df: Any,
+        *,
+        on_conflict: str = "insert",
+    ) -> None:
+        """Load a Polars (or Arrow-compatible) DataFrame into the database.
+
+        Converts the DataFrame to Arrow (zero-copy for Polars) and writes
+        via the encrypted connection using a registered temporary view.
+
+        Args:
+            table: Fully-qualified table name (e.g. "raw.tabular_transactions").
+                Schema and table parts are sqlglot-quoted before interpolation.
+            df: Polars DataFrame (or any object with a .to_arrow() method).
+            on_conflict: "insert" to INSERT INTO an existing table,
+                "replace" to CREATE OR REPLACE TABLE.
+
+        Raises:
+            ValueError: If on_conflict is not "insert" or "replace".
+        """
+        from sqlglot import exp
+
+        if on_conflict not in ("insert", "replace"):
+            raise ValueError(
+                f"on_conflict must be 'insert' or 'replace', got {on_conflict!r}"
+            )
+
+        parts = table.split(".", 1)
+        if len(parts) == 2:
+            safe_ref = (
+                f"{exp.to_identifier(parts[0], quoted=True).sql('duckdb')}"
+                f".{exp.to_identifier(parts[1], quoted=True).sql('duckdb')}"
+            )
+        else:
+            safe_ref = exp.to_identifier(table, quoted=True).sql("duckdb")
+
+        arrow_table = df.to_arrow()
+        self.conn.register("_ingest_tmp", arrow_table)
+        try:
+            if on_conflict == "replace":
+                self.conn.execute(
+                    f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                )
+            else:
+                self.conn.execute(
+                    f"INSERT INTO {safe_ref} SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                )
+        finally:
+            self.conn.unregister("_ingest_tmp")
 
     @property
     def path(self) -> Path:

@@ -131,9 +131,13 @@ def _print_import_status(db: Database) -> None:
     print("\n📊 Imported Data Summary")
     print("=" * 60)
 
+    from sqlglot import exp
+
     for schema, table in tables:
+        safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+        safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
         row_count = db.execute(
-            f"SELECT COUNT(*) FROM {schema}.{table}"  # noqa: S608 — schema/table from information_schema, not user input
+            f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
         ).fetchone()
         count = row_count[0] if row_count else 0
 
@@ -142,7 +146,7 @@ def _print_import_status(db: Database) -> None:
         if "transaction" in table:
             try:
                 dates = db.execute(
-                    f"SELECT MIN(CAST(date_posted AS DATE)), MAX(CAST(date_posted AS DATE)) FROM {schema}.{table}"  # noqa: S608 — schema/table from information_schema, not user input
+                    f"SELECT MIN(CAST(date_posted AS DATE)), MAX(CAST(date_posted AS DATE)) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
                 ).fetchone()
                 if dates and dates[0]:
                     date_info = f"  ({dates[0]} to {dates[1]})"

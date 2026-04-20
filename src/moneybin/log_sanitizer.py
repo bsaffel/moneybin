@@ -12,25 +12,15 @@ import re
 
 _sanitizer_logger = logging.getLogger(__name__)
 
-# SSN: NNN-NN-NNNN (but not dates like 2026-04-20)
+# SSN: NNN-NN-NNNN. Dates like 2026-04-20 have 4 digits before the first dash
+# and don't match this pattern, so no date-exclusion guard is needed.
 _SSN_PATTERN = re.compile(r"\b(\d{3})-(\d{2})-(\d{4})\b")
 
-# Account numbers: 8+ consecutive digits (not preceded by year-like context)
+# Account numbers: 8+ consecutive digits (not preceded or followed by a digit)
 _ACCOUNT_PATTERN = re.compile(r"(?<!\d)(\d{8,})(?!\d)")
 
 # Dollar amounts: $N or $N,NNN or $N.NN etc.
 _DOLLAR_PATTERN = re.compile(r"\$[\d,]+(?:\.\d{2})?")
-
-# Date-like patterns to exclude from SSN matching: YYYY-MM-DD
-_DATE_PATTERN = re.compile(r"\b(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b")
-
-
-def _is_date(match: re.Match[str]) -> bool:
-    """Check if an SSN-like match is actually a date."""
-    year = int(match.group(1))
-    month = int(match.group(2))
-    day = int(match.group(3))
-    return (1900 <= year <= 2099) and (1 <= month <= 12) and (1 <= day <= 31)
 
 
 class SanitizedLogFormatter(logging.Formatter):
@@ -57,11 +47,9 @@ class SanitizedLogFormatter(logging.Formatter):
         formatted = super().format(record)
         masked = False
 
-        # Mask SSNs (but not dates)
+        # Mask SSNs
         def ssn_replacer(match: re.Match[str]) -> str:
             nonlocal masked
-            if _is_date(match):
-                return match.group(0)
             masked = True
             return "***-**-****"
 
@@ -73,14 +61,11 @@ class SanitizedLogFormatter(logging.Formatter):
             masked = True
             result = new_result
 
-        # Mask account numbers (8+ digit sequences)
+        # Mask account numbers (8+ digit sequences; regex guarantees len >= 8)
         def account_replacer(match: re.Match[str]) -> str:
             nonlocal masked
-            digits = match.group(1)
-            if len(digits) >= 8:
-                masked = True
-                return f"****...{digits[-4:]}"
-            return digits
+            masked = True
+            return f"****...{match.group(1)[-4:]}"
 
         result = _ACCOUNT_PATTERN.sub(account_replacer, result)
 

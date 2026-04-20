@@ -167,6 +167,10 @@ def open_shell(
     ),
 ) -> None:
     """Open an interactive DuckDB SQL shell with encrypted database attached."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
@@ -208,6 +212,10 @@ def open_ui(
     ),
 ) -> None:
     """Open DuckDB web UI with encrypted database auto-attached."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
@@ -256,6 +264,10 @@ def run_query(
     ),
 ) -> None:
     """Execute a SQL query against the encrypted DuckDB database."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
@@ -354,10 +366,14 @@ def db_info(
                 ORDER BY table_schema, table_name
             """).fetchall()
 
+            from sqlglot import exp
+
             logger.info("  Tables: %d", len(tables))
             for schema, table in tables:
+                safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+                safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
                 count_result = db.execute(
-                    f'SELECT COUNT(*) FROM "{schema}"."{table}"'  # noqa: S608 — schema/table from information_schema
+                    f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
                 ).fetchone()
                 count = count_result[0] if count_result else 0
                 logger.info("    %s.%s: %d rows", schema, table, count)
@@ -465,10 +481,9 @@ def db_restore(
         from_path = backups[choice - 1]
 
     # from_path is guaranteed non-None here (either provided or selected above)
-    assert from_path is not None  # noqa: S101 — guaranteed non-None after selection
     from typing import cast
 
-    resolved_path = cast(Path, from_path)  # narrow type for pyright
+    resolved_path = cast(Path, from_path)
 
     if not resolved_path.exists():
         logger.error(f"❌ Backup file not found: {resolved_path}")
@@ -681,7 +696,20 @@ def db_rotate_key(
         except OSError:
             pass
 
-    store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
+    try:
+        store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
+    except Exception as e:
+        # The DB file now holds new_key but the keychain still has old_key.
+        # old_backup is intact — recovery is possible. Log both paths before
+        # exiting so the user can recover manually.
+        logger.error("❌ Key rotation failed to update keychain: %s", e)
+        logger.error(
+            "Recovery: set MONEYBIN_DATABASE__ENCRYPTION_KEY=%s, "
+            "then restore from %s if needed",
+            new_key,
+            old_backup,
+        )
+        raise typer.Exit(1) from e
     old_backup.unlink(missing_ok=True)
 
     logger.info("✅ Database re-encrypted with new key")

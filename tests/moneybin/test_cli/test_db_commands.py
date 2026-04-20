@@ -515,7 +515,7 @@ class TestDatabaseCommandsIntegration:
             app, ["query", "INVALID SQL", "--database", str(test_db)]
         )
 
-        # Should fail with exit code 1, not crash with unhandled exception
-        # The exact behavior depends on whether DuckDB CLI is installed
-        assert result.exit_code in [0, 1]
+        # Should fail with exit code 1 (either DuckDB CLI not found, or query
+        # rejected) — never a crash with an unhandled exception
+        assert result.exit_code == 1
         assert "Traceback" not in result.output

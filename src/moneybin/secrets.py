@@ -13,6 +13,7 @@ import logging
 import os
 
 import keyring
+import keyring.errors
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,14 @@ class SecretStore:
 
         Args:
             name: Secret name to remove.
+
+        Raises:
+            SecretNotFoundError: If the secret does not exist in the keychain.
         """
-        keyring.delete_password(_SERVICE_NAME, name)
+        try:
+            keyring.delete_password(_SERVICE_NAME, name)
+        except keyring.errors.PasswordDeleteError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            raise SecretNotFoundError(
+                f"Secret '{name}' not found in keychain."
+            ) from None
         logger.debug("Removed secret '%s' from OS keychain", name)
