@@ -90,10 +90,13 @@ Single source of truth for spec status. Update this table when a spec's status c
 | `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |
 | `testing-migration-safety.md` | Feature | planned | Pre/post migration data integrity assertions |
 
-## Standalone
+## Infrastructure
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
+| [Observability](observability.md) | Feature | ready | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
 | [Database Migration](database-migration.md) | Feature | ready | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
+
+## Standalone
 | [Net Worth & Balance Tracking](net-worth.md) | Feature | draft | Authoritative balance tracking per account, daily carry-forward interpolation, reconciliation deltas, `agg_net_worth` aggregation; cash-only v1 |
 | [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers |
