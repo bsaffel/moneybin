@@ -46,6 +46,9 @@ dependencies = [
     "cryptography>=46.0.6",
     "pygments>=2.20.0",
     "pyjwt>=2.12.0",
+    # Secret management and key derivation
+    "keyring>=25.6.0",
+    "argon2-cffi>=23.1.0",
 ]
 
 [tool.setuptools]
