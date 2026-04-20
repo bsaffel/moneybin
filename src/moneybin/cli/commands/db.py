@@ -49,9 +49,11 @@ def _create_init_script(db_path: Path) -> Path:
     try:
         with os.fdopen(fd, "w") as f:
             f.write("LOAD httpfs;\n")
+            safe_db_path = str(db_path).replace("'", "''")
+            safe_key = encryption_key.replace("'", "''")
             f.write(
-                f"ATTACH '{db_path}' AS moneybin "
-                f"(TYPE DUCKDB, ENCRYPTION_KEY '{encryption_key}');\n"
+                f"ATTACH '{safe_db_path}' AS moneybin "
+                f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}');\n"  # noqa: S608  # trusted internal values, single-quote escaped
             )
             f.write("USE moneybin;\n")
         if sys.platform != "win32":
@@ -586,13 +588,17 @@ def db_rotate_key(
     conn = duckdb_mod.connect()
     try:
         conn.execute("LOAD httpfs;")
+        safe_db_path = str(db_path).replace("'", "''")
+        safe_old_key = old_key.replace("'", "''")
         conn.execute(
-            "ATTACH ? AS old_db (TYPE DUCKDB, ENCRYPTION_KEY ?)",
-            [str(db_path), old_key],
+            f"ATTACH '{safe_db_path}' AS old_db "
+            f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_old_key}')"  # noqa: S608  # trusted internal values, single-quote escaped
         )
+        safe_rotated_path = str(rotated_path).replace("'", "''")
+        safe_new_key = new_key.replace("'", "''")
         conn.execute(
-            "ATTACH ? AS new_db (TYPE DUCKDB, ENCRYPTION_KEY ?)",
-            [str(rotated_path), new_key],
+            f"ATTACH '{safe_rotated_path}' AS new_db "
+            f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_new_key}')"  # noqa: S608  # trusted internal values, single-quote escaped
         )
         conn.execute("COPY FROM DATABASE old_db TO new_db")
     except Exception as e:
