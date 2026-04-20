@@ -70,12 +70,12 @@ class TestListCategories:
 
     @pytest.mark.unit
     def test_returns_categories(self) -> None:
-        with server.get_write_db() as db:
-            db.execute("""
-                INSERT INTO app.categories
-                (category_id, category, subcategory, is_default, is_active)
-                VALUES ('FND', 'Food & Drink', NULL, true, true)
-            """)
+        db = server.get_db()
+        db.execute("""
+            INSERT INTO app.categories
+            (category_id, category, subcategory, is_default, is_active)
+            VALUES ('FND', 'Food & Drink', NULL, true, true)
+        """)
         result = list_categories()
         data: list[dict[str, Any]] = json.loads(result)
         assert len(data) == 1
@@ -93,14 +93,14 @@ class TestListCategorizationRules:
 
     @pytest.mark.unit
     def test_returns_rules(self) -> None:
-        with server.get_write_db() as db:
-            db.execute("""
-                INSERT INTO app.categorization_rules
-                (rule_id, name, merchant_pattern, match_type, category,
-                 priority, is_active, created_by, created_at, updated_at)
-                VALUES ('R001', 'Test Rule', 'TEST', 'contains', 'Other',
-                        10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """)
+        db = server.get_db()
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, category,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Test Rule', 'TEST', 'contains', 'Other',
+                    10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
         result = list_categorization_rules()
         data: list[dict[str, Any]] = json.loads(result)
         assert len(data) == 1
@@ -122,8 +122,8 @@ class TestGetCategorizationStats:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute(_INSERT_TRANSACTIONS)
+        db = server.get_db()
+        db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_returns_stats(self) -> None:
@@ -143,8 +143,8 @@ class TestCategorizeTransaction:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute(_INSERT_TRANSACTIONS)
+        db = server.get_db()
+        db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_categorizes_transaction(self) -> None:
@@ -194,12 +194,12 @@ class TestToggleCategory:
 
     @pytest.mark.unit
     def test_disables_category(self) -> None:
-        with server.get_write_db() as db:
-            db.execute("""
-                INSERT INTO app.categories
-                (category_id, category, is_default, is_active)
-                VALUES ('TST', 'Test', true, true)
-            """)
+        db = server.get_db()
+        db.execute("""
+            INSERT INTO app.categories
+            (category_id, category, is_default, is_active)
+            VALUES ('TST', 'Test', true, true)
+        """)
         result = toggle_category("TST", False)
         assert "disabled" in result
 
@@ -267,14 +267,14 @@ class TestDeleteCategorizationRule:
 
     @pytest.mark.unit
     def test_deletes_rule(self) -> None:
-        with server.get_write_db() as db:
-            db.execute("""
-                INSERT INTO app.categorization_rules
-                (rule_id, name, merchant_pattern, match_type, category,
-                 priority, is_active, created_by, created_at, updated_at)
-                VALUES ('R001', 'Test', 'TEST', 'contains', 'Other',
-                        10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """)
+        db = server.get_db()
+        db.execute("""
+            INSERT INTO app.categorization_rules
+            (rule_id, name, merchant_pattern, match_type, category,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES ('R001', 'Test', 'TEST', 'contains', 'Other',
+                    10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
         result = delete_categorization_rule("R001")
         assert "Deleted" in result
 
@@ -289,8 +289,8 @@ class TestBulkCategorize:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute(_INSERT_TRANSACTIONS)
+        db = server.get_db()
+        db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_categorizes_multiple_transactions(self) -> None:

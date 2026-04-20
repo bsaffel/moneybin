@@ -1,20 +1,15 @@
-"""MCP server definition with DuckDB lifecycle management.
+"""MCP server definition with DuckDB connection management.
 
-This module creates the FastMCP server instance and manages DuckDB connections
-used by all tools and resources. The server uses a **read-only connection by
-default** for queries, and acquires a short-lived read-write connection only
-when write operations (imports, categorization, budgets) are needed.
-
-This allows multiple MCP server instances and other tools (CLI, notebooks)
-to read the database concurrently. DuckDB supports unlimited concurrent
-read-only connections but only one read-write connection at a time.
+This module creates the FastMCP server instance and manages the DuckDB
+connection used by all tools and resources. The server uses the shared
+``Database`` singleton from ``moneybin.database``, which provides a single
+long-lived read-write connection per process with encryption, schema init,
+and migrations handled transparently.
 
 Documentation: https://modelcontextprotocol.github.io/python-sdk/
 """
 
 import logging
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
@@ -41,92 +36,27 @@ mcp = FastMCP(
     ),
 )
 
-# Module-level state — set by init_db() before the server starts
-_db: duckdb.DuckDBPyConnection | None = None
-_db_path: Path | None = None
+
+def get_db() -> duckdb.DuckDBPyConnection:
+    """Get the DuckDB connection for queries.
+
+    Returns:
+        The active DuckDB connection from the Database singleton.
+    """
+    from moneybin.database import get_database
+
+    return get_database().conn
 
 
 def get_db_path() -> Path:
     """Get the path to the DuckDB database file.
 
     Returns:
-        The database file path.
-
-    Raises:
-        RuntimeError: If the database has not been initialized.
+        The database file path from the Database singleton.
     """
-    if _db_path is None:
-        raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
-    return _db_path
+    from moneybin.database import get_database
 
-
-def get_db() -> duckdb.DuckDBPyConnection:
-    """Get the read-only DuckDB connection for queries.
-
-    Returns:
-        The active read-only DuckDB connection.
-
-    Raises:
-        RuntimeError: If the database has not been initialized.
-    """
-    if _db is None:
-        raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
-    return _db
-
-
-def refresh_read_connection() -> None:
-    """Reopen the read-only connection to pick up changes.
-
-    DuckDB read-only connections get a snapshot at open time. Call this
-    after external writes so subsequent reads see the new data.
-
-    Raises:
-        RuntimeError: If the database has not been initialized.
-    """
-    global _db  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _db_path is None:
-        raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
-
-    if _db is not None:
-        _db.close()
-
-    _db = duckdb.connect(str(_db_path), read_only=True)
-    logger.info("Read-only connection refreshed")
-
-
-@contextmanager
-def get_write_db() -> Generator[duckdb.DuckDBPyConnection, None, None]:
-    """Open a short-lived read-write connection for write operations.
-
-    Closes the read-only connection, opens a read-write connection, yields
-    it, then closes it and reopens the read-only connection. DuckDB does
-    not allow mixed read-only and read-write connections to the same file
-    in the same process.
-
-    Yields:
-        A read-write DuckDB connection.
-
-    Raises:
-        RuntimeError: If the database has not been initialized.
-    """
-    global _db  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _db_path is None:
-        raise RuntimeError("DuckDB connection not initialized. Call init_db() first.")
-
-    # Close read-only connection before opening read-write
-    if _db is not None:
-        _db.close()
-        _db = None
-
-    write_conn = duckdb.connect(str(_db_path), read_only=False)
-    try:
-        yield write_conn
-    finally:
-        write_conn.close()
-        _db = duckdb.connect(str(_db_path), read_only=True)
-        logger.info("Read-only connection restored after write")
+    return get_database().path
 
 
 def table_exists(table: TableRef) -> bool:
@@ -153,63 +83,28 @@ def table_exists(table: TableRef) -> bool:
         return False
 
 
-def _init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
-    """Initialize all database schemas and app tables.
-
-    Args:
-        conn: Active DuckDB connection.
-    """
-    from moneybin.schema import init_schemas
-
-    init_schemas(conn)
-
-
 def init_db(db_path: Path) -> None:
-    """Initialize the database and open a read-only connection.
+    """Initialize the database.
 
-    If the database file does not exist, it will be created and initialized
-    with all required schemas (raw, core, app) via a temporary read-write
-    connection. The long-lived connection is always read-only.
+    The Database class handles encryption, schema initialization, and
+    migrations transparently. This function is kept for compatibility with
+    the MCP server startup path.
 
     Args:
         db_path: Path to the DuckDB database file.
-
-    Raises:
-        duckdb.IOException: If the database cannot be opened.
     """
-    global _db, _db_path  # noqa: PLW0603 — module-level singleton is intentional
+    from moneybin.database import get_database
 
-    is_new = not db_path.exists()
-
-    if is_new:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info("Creating new database: %s", db_path)
-
-    # Initialize schemas via a temporary read-write connection.
-    # Runs on every startup (all DDL uses IF NOT EXISTS) so that
-    # newly added tables are created in existing databases.
-    init_conn = duckdb.connect(str(db_path), read_only=False)
-    try:
-        _init_schemas(init_conn)
-    finally:
-        init_conn.close()
-    logger.info("Database schemas initialized: %s", db_path)
-
-    # Open long-lived read-only connection
-    _db_path = db_path
-    _db = duckdb.connect(str(db_path), read_only=True)
-    logger.info("DuckDB read-only connection established: %s", db_path)
+    get_database()
+    logger.info("Database initialized: %s", db_path)
 
 
 def close_db() -> None:
     """Close the DuckDB connection if open."""
-    global _db, _db_path  # noqa: PLW0603 — module-level singleton is intentional
+    from moneybin.database import close_database
 
-    if _db is not None:
-        _db.close()
-        _db = None
-        _db_path = None
-        try:
-            logger.info("DuckDB connection closed")
-        except ValueError:
-            pass  # stderr already closed during MCP stdio shutdown
+    close_database()
+    try:
+        logger.info("DuckDB connection closed")
+    except ValueError:
+        pass  # stderr already closed during MCP stdio shutdown

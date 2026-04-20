@@ -7,18 +7,18 @@ individual test classes insert their own specific fixture data.
 
 from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import MagicMock
 
-import duckdb
 import pytest
 
-from moneybin.mcp import server
-from moneybin.schema import init_schemas
+import moneybin.database as db_module
+from moneybin.database import Database
 from tests.moneybin.db_helpers import create_core_tables
 
 
 @pytest.fixture(autouse=True)
-def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
-    """Create a DuckDB with schemas and base reference data for MCP tests.
+def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
+    """Create a Database instance with schemas and base reference data for MCP tests.
 
     Creates all table schemas from canonical SQL files and populates
     base reference data that most tests need:
@@ -27,31 +27,33 @@ def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
     - 2 accounts (ACC001 CHECKING, ACC002 SAVINGS)
     - 2 account balances
 
-    Uses a file-backed database so both read-only and read-write connections
-    work (matching production behavior). Sets up server._db as a read-only
-    connection and server._db_path for get_write_db().
+    Injects the Database instance into the moneybin.database singleton so
+    all MCP server functions (get_db, get_db_path, table_exists) resolve
+    against this test database automatically.
     """
     db_path = tmp_path / "test.duckdb"
 
-    # Use a read-write connection for setup
-    setup_conn = duckdb.connect(str(db_path))
+    # Build a mock SecretStore that returns a fixed key so we can open
+    # the encrypted database in tests.
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
 
-    # Create app/raw schemas and tables via production init_schemas
-    init_schemas(setup_conn)
+    database = Database(db_path, secret_store=mock_store)
+    conn = database.conn
 
     # Core tables are managed by SQLMesh in production; create test-only
     # concrete tables so we can INSERT fixture data directly.
-    create_core_tables(setup_conn)
+    create_core_tables(conn)
 
     # -- Base reference data: institutions --
-    setup_conn.execute("""
+    conn.execute("""
         INSERT INTO raw.ofx_institutions VALUES
         ('Test Bank', '1234', 'test.qfx', '2025-01-01', CURRENT_TIMESTAMP),
         ('Other Bank', '5678', 'other.qfx', '2025-01-01', CURRENT_TIMESTAMP)
     """)
 
     # -- Base reference data: accounts --
-    setup_conn.execute("""
+    conn.execute("""
         INSERT INTO core.dim_accounts VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
@@ -60,7 +62,7 @@ def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
     """)
 
     # -- Base reference data: account balances --
-    setup_conn.execute("""
+    conn.execute("""
         INSERT INTO raw.ofx_balances VALUES
         ('ACC001', '2025-06-01', '2025-06-30', 5000.00,
          '2025-06-30', 4800.00, 'test.qfx',
@@ -70,11 +72,11 @@ def mcp_db(tmp_path: Path) -> Generator[duckdb.DuckDBPyConnection, None, None]:
          '2025-01-24', CURRENT_TIMESTAMP)
     """)
 
-    setup_conn.close()
+    # Inject the Database singleton so all MCP server functions use this DB
+    db_module._database_instance = database  # type: ignore[reportPrivateUsage] — test fixture
 
-    # Set up server state: read-only connection + db_path for write access
-    read_conn = duckdb.connect(str(db_path), read_only=True)
-    server._db = read_conn  # type: ignore[reportPrivateUsage] — test fixture
-    server._db_path = db_path  # type: ignore[reportPrivateUsage] — test fixture
-    yield read_conn
-    server.close_db()
+    yield database
+
+    # Teardown: close and clear the singleton so subsequent tests get a fresh one
+    db_module._database_instance = None  # type: ignore[reportPrivateUsage] — test fixture
+    database.close()

@@ -89,23 +89,23 @@ class TestRecentTransactions:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute("""
-                INSERT INTO core.fct_transactions (
-                    transaction_id, account_id, transaction_date, amount,
-                    amount_absolute, transaction_direction, description, memo,
-                    transaction_type, is_pending, currency_code, source_system,
-                    source_extracted_at, loaded_at,
-                    transaction_year, transaction_month, transaction_day,
-                    transaction_day_of_week, transaction_year_month,
-                    transaction_year_quarter
-                ) VALUES
-                ('TXN001', 'ACC001', CURRENT_DATE - INTERVAL '5 days',
-                 -42.50, 42.50, 'expense', 'Grocery Store', 'Weekly groceries',
-                 'DEBIT', false, 'USD', 'ofx',
-                 '2025-01-24', CURRENT_TIMESTAMP,
-                 2025, 6, 15, 0, '2025-06', '2025-Q2')
-            """)
+        db = server.get_db()
+        db.execute("""
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description, memo,
+                transaction_type, is_pending, currency_code, source_system,
+                source_extracted_at, loaded_at,
+                transaction_year, transaction_month, transaction_day,
+                transaction_day_of_week, transaction_year_month,
+                transaction_year_quarter
+            ) VALUES
+            ('TXN001', 'ACC001', CURRENT_DATE - INTERVAL '5 days',
+             -42.50, 42.50, 'expense', 'Grocery Store', 'Weekly groceries',
+             'DEBIT', false, 'USD', 'ofx',
+             '2025-01-24', CURRENT_TIMESTAMP,
+             2025, 6, 15, 0, '2025-06', '2025-Q2')
+        """)
 
     @pytest.mark.unit
     def test_returns_recent_transactions(self) -> None:
@@ -134,16 +134,16 @@ class TestW2Resource:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute("""
-                INSERT INTO raw.w2_forms (
-                    tax_year, employee_ssn, employer_ein, employee_first_name,
-                    employee_last_name, employer_name, wages, federal_income_tax,
-                    source_file, extracted_at
-                ) VALUES
-                (2024, '***-**-1234', '12-3456789', 'Jane', 'Smith',
-                 'BigCo', 90000.00, 15000.00, 'w2.pdf', '2025-02-01')
-            """)
+        db = server.get_db()
+        db.execute("""
+            INSERT INTO raw.w2_forms (
+                tax_year, employee_ssn, employer_ein, employee_first_name,
+                employee_last_name, employer_name, wages, federal_income_tax,
+                source_file, extracted_at
+            ) VALUES
+            (2024, '***-**-1234', '12-3456789', 'Jane', 'Smith',
+             'BigCo', 90000.00, 15000.00, 'w2.pdf', '2025-02-01')
+        """)
 
     @pytest.mark.unit
     def test_returns_w2_for_year(self) -> None:
