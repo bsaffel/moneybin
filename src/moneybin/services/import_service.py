@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import duckdb
+from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def _run_transforms(db_path: Path) -> bool:
 
 
 def _import_ofx(
-    db_path: Path,
+    db: Database,
     file_path: Path,
     *,
     institution: str | None = None,
@@ -113,7 +113,7 @@ def _import_ofx(
     """Import an OFX/QFX file.
 
     Args:
-        db_path: Path to the DuckDB database file.
+        db: Database instance.
         file_path: Path to the OFX/QFX file.
         institution: Optional institution name override.
 
@@ -130,7 +130,7 @@ def _import_ofx(
     data = extractor.extract_from_file(file_path, institution)
 
     # Load using OFXLoader (which manages its own connection)
-    loader = OFXLoader(db_path)
+    loader = OFXLoader(db)
     row_counts = loader.load_data(data)
 
     result.institutions = row_counts.get("institutions", 0)
@@ -142,22 +142,18 @@ def _import_ofx(
     # Get date range from transactions
     if result.transactions > 0:
         try:
-            conn = duckdb.connect(str(db_path), read_only=True)
-            try:
-                date_result = conn.execute(
-                    """
-                    SELECT
-                        MIN(CAST(date_posted AS DATE)) AS min_date,
-                        MAX(CAST(date_posted AS DATE)) AS max_date
-                    FROM raw.ofx_transactions
-                    WHERE source_file = ?
-                    """,
-                    [str(file_path)],
-                ).fetchone()
-                if date_result and date_result[0]:
-                    result.date_range = f"{date_result[0]} to {date_result[1]}"
-            finally:
-                conn.close()
+            date_result = db.execute(
+                """
+                SELECT
+                    MIN(CAST(date_posted AS DATE)) AS min_date,
+                    MAX(CAST(date_posted AS DATE)) AS max_date
+                FROM raw.ofx_transactions
+                WHERE source_file = ?
+                """,
+                [str(file_path)],
+            ).fetchone()
+            if date_result and date_result[0]:
+                result.date_range = f"{date_result[0]} to {date_result[1]}"
         except Exception:
             logger.debug("Could not determine date range from transactions")
 
@@ -165,13 +161,13 @@ def _import_ofx(
 
 
 def _import_w2(
-    db_path: Path,
+    db: Database,
     file_path: Path,
 ) -> ImportResult:
     """Import a W-2 PDF file.
 
     Args:
-        db_path: Path to the DuckDB database file.
+        db: Database instance.
         file_path: Path to the W-2 PDF.
 
     Returns:
@@ -187,7 +183,7 @@ def _import_w2(
     data = extractor.extract_from_file(file_path)
 
     # Load
-    loader = W2Loader(db_path)
+    loader = W2Loader(db)
     row_count = loader.load_data(data)
 
     result.w2_forms = row_count
@@ -197,7 +193,7 @@ def _import_w2(
 
 
 def _import_csv(
-    db_path: Path,
+    db: Database,
     file_path: Path,
     *,
     account_id: str | None = None,
@@ -206,7 +202,7 @@ def _import_csv(
     """Import a CSV file.
 
     Args:
-        db_path: Path to the DuckDB database file.
+        db: Database instance.
         file_path: Path to the CSV file.
         account_id: Account identifier (required for CSV).
         institution: Optional profile name to use instead of auto-detection.
@@ -244,7 +240,7 @@ def _import_csv(
     )
 
     # Load
-    loader = CSVLoader(db_path)
+    loader = CSVLoader(db)
     row_counts = loader.load_data(data)
 
     result.accounts = row_counts.get("accounts", 0)
@@ -254,22 +250,18 @@ def _import_csv(
     # Get date range from transactions
     if result.transactions > 0:
         try:
-            conn = duckdb.connect(str(db_path), read_only=True)
-            try:
-                date_result = conn.execute(
-                    """
-                    SELECT
-                        MIN(transaction_date) AS min_date,
-                        MAX(transaction_date) AS max_date
-                    FROM raw.csv_transactions
-                    WHERE source_file = ?
-                    """,
-                    [str(file_path)],
-                ).fetchone()
-                if date_result and date_result[0]:
-                    result.date_range = f"{date_result[0]} to {date_result[1]}"
-            finally:
-                conn.close()
+            date_result = db.execute(
+                """
+                SELECT
+                    MIN(transaction_date) AS min_date,
+                    MAX(transaction_date) AS max_date
+                FROM raw.csv_transactions
+                WHERE source_file = ?
+                """,
+                [str(file_path)],
+            ).fetchone()
+            if date_result and date_result[0]:
+                result.date_range = f"{date_result[0]} to {date_result[1]}"
         except Exception:
             logger.debug("Could not determine date range from CSV transactions")
 
@@ -277,7 +269,7 @@ def _import_csv(
 
 
 def import_file(
-    db_path: Path,
+    db: Database,
     file_path: str | Path,
     *,
     run_transforms: bool = True,
@@ -290,7 +282,7 @@ def import_file(
     extract -> load -> transform pipeline.
 
     Args:
-        db_path: Path to the DuckDB database file.
+        db: Database instance.
         file_path: Path to the file to import.
         run_transforms: Whether to run SQLMesh transforms after loading.
             Defaults to True.
@@ -314,53 +306,47 @@ def import_file(
     logger.info("Importing %s file: %s", file_type, path)
 
     if file_type == "ofx":
-        result = _import_ofx(db_path, path, institution=institution)
+        result = _import_ofx(db, path, institution=institution)
     elif file_type == "w2":
-        result = _import_w2(db_path, path)
+        result = _import_w2(db, path)
     elif file_type == "csv":
-        result = _import_csv(
-            db_path, path, account_id=account_id, institution=institution
-        )
+        result = _import_csv(db, path, account_id=account_id, institution=institution)
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
     # Run SQLMesh transforms after loading raw data
     if run_transforms and file_type in ("ofx", "csv"):
-        result.core_tables_rebuilt = _run_transforms(db_path)
+        result.core_tables_rebuilt = _run_transforms(db.path)
 
         # Apply deterministic categorization to new transactions
-        _apply_categorization(db_path)
+        _apply_categorization(db)
 
     logger.info("Import complete: %s", result.summary())
     return result
 
 
-def _apply_categorization(db_path: Path) -> None:
+def _apply_categorization(db: Database) -> None:
     """Run deterministic categorization on uncategorized transactions.
 
     Called after SQLMesh transforms complete. Applies merchant lookups
     and active rules — no LLM dependency.
 
     Args:
-        db_path: Path to the DuckDB database file.
+        db: Database instance.
     """
     from moneybin.services.categorization_service import (
         apply_deterministic_categorization,
     )
 
     try:
-        conn = duckdb.connect(str(db_path), read_only=False)
-        try:
-            stats = apply_deterministic_categorization(conn)
-            if stats["total"] > 0:
-                logger.info(
-                    "Auto-categorized %d transactions (%d merchant, %d rule)",
-                    stats["total"],
-                    stats["merchant"],
-                    stats["rule"],
-                )
-        finally:
-            conn.close()
+        stats = apply_deterministic_categorization(db)
+        if stats["total"] > 0:
+            logger.info(
+                "Auto-categorized %d transactions (%d merchant, %d rule)",
+                stats["total"],
+                stats["merchant"],
+                stats["rule"],
+            )
     except Exception:
         logger.debug(
             "Categorization skipped (tables may not exist yet)",
