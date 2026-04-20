@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-draft
+ready
 
 ## Goal
 
@@ -61,11 +61,14 @@ YAML architecture that separates financial life definitions from engine logic.
 2. All randomness flows through a single seeded `Random` instance per generation run.
    Same persona + seed + years = byte-identical output for a given generator version.
 3. Write generated transactions to raw tables (`raw.ofx_transactions`,
-   `raw.csv_transactions` — or `raw.tabular_transactions` after smart-tabular-import
-   lands) conforming to existing schemas. `source_file` uses a synthetic URI:
-   `synthetic://{persona}/{seed}/{year}`.
+   `raw.tabular_transactions`) conforming to existing schemas. `source_file` uses
+   synthetic URIs: `synthetic://{persona}/{seed}/{year}` for transactions,
+   `synthetic://{persona}/{seed}/{account-name}` for accounts.
 4. Write generated account records to raw account tables (`raw.ofx_accounts`,
-   `raw.csv_accounts` / `raw.tabular_accounts`).
+   `raw.tabular_accounts`).
+4a. Write opening balance snapshots: to `raw.ofx_balances` for OFX-sourced accounts,
+    and as a populated `balance` column (running balance) on `raw.tabular_transactions`
+    for tabular-sourced accounts.
 5. Persona accounts declare their `source_type` (`ofx`, `csv`, etc.) to control which
    raw table they write to — exercising the multi-source union in core models.
 6. Follow the accounting sign convention: negative = expense, positive = income.
@@ -135,9 +138,9 @@ Python.
 YAML Config Layer          Engine Layer              Output Layer
 ─────────────────         ──────────────            ─────────────
 personas/                  GeneratorEngine           raw.ofx_transactions
-  basic.yaml               ├─ AccountSetup           raw.csv_transactions
-  family.yaml              ├─ IncomeGenerator        synthetic.ground_truth
-  freelancer.yaml          ├─ RecurringGenerator
+  basic.yaml               ├─ AccountSetup           raw.tabular_transactions
+  family.yaml              ├─ IncomeGenerator        raw.ofx_balances
+  freelancer.yaml          ├─ RecurringGenerator     synthetic.ground_truth
                            ├─ SpendingGenerator
 merchants/                 └─ TransferGenerator
   grocery.yaml
@@ -240,26 +243,30 @@ description: "Dual-income family, joint + individual accounts, child-related exp
 years_default: 3
 
 accounts:
-  - name: "Joint Checking"
+  - name: "Our Chase Checking"
     type: checking
     source_type: ofx
+    institution: "Chase Bank"
     opening_balance: 4500.00
-  - name: "Joint Savings"
+  - name: "Savings at Ally"
     type: savings
     source_type: ofx
+    institution: "Ally Bank"
     opening_balance: 15000.00
-  - name: "Alice Credit Card"
+  - name: "Alice Costco Visa"
     type: credit_card
     source_type: csv
+    institution: "Citi"
     opening_balance: 0.00
-  - name: "Bob Credit Card"
+  - name: "Bob Amazon Card"
     type: credit_card
     source_type: csv
+    institution: "Chase Bank"
     opening_balance: 0.00
 
 income:
   - type: salary
-    account: "Joint Checking"
+    account: "Our Chase Checking"
     amount: 4200.00
     schedule: biweekly
     pay_day: friday
@@ -267,7 +274,7 @@ income:
     description_template: "DIRECT DEP {employer}"
     employer: "Acme Corp"
   - type: salary
-    account: "Joint Checking"
+    account: "Our Chase Checking"
     amount: 3400.00
     schedule: biweekly
     pay_day: friday
@@ -278,17 +285,17 @@ income:
 recurring:
   - category: housing
     description: "Mortgage Payment"
-    account: "Joint Checking"
+    account: "Our Chase Checking"
     amount: 2100.00
     day_of_month: 1
   - category: utilities
     description: "Electric Company"
-    account: "Joint Checking"
+    account: "Our Chase Checking"
     amount: { mean: 145.00, stddev: 35.00 }
     day_of_month: 15
   - category: subscriptions
     description: "Netflix"
-    account: "Alice Credit Card"
+    account: "Alice Costco Visa"
     amount: 17.99
     day_of_month: 8
     price_increases:
@@ -301,7 +308,7 @@ spending:
       merchant_catalog: grocery
       monthly_budget: { mean: 850.00, stddev: 120.00 }
       transactions_per_month: { mean: 10, stddev: 2 }
-      accounts: ["Joint Checking", "Alice Credit Card"]
+      accounts: ["Our Chase Checking", "Alice Costco Visa"]
       account_weights: [0.6, 0.4]
       seasonal_modifiers:
         november: 1.3
@@ -311,7 +318,7 @@ spending:
       merchant_catalog: dining
       monthly_budget: { mean: 400.00, stddev: 80.00 }
       transactions_per_month: { mean: 8, stddev: 3 }
-      accounts: ["Alice Credit Card", "Bob Credit Card"]
+      accounts: ["Alice Costco Visa", "Bob Amazon Card"]
       account_weights: [0.5, 0.5]
       day_of_week_weights:
         friday: 2.0
@@ -320,21 +327,21 @@ spending:
       merchant_catalog: kids
       monthly_budget: { mean: 300.00, stddev: 60.00 }
       transactions_per_month: { mean: 4, stddev: 1 }
-      accounts: ["Joint Checking"]
+      accounts: ["Our Chase Checking"]
       seasonal_modifiers:
         june: 1.5
         august: 1.8
         september: 1.3
 
 transfers:
-  - from: "Joint Checking"
-    to: "Joint Savings"
+  - from: "Our Chase Checking"
+    to: "Savings at Ally"
     amount: 500.00
     schedule: monthly
     day_of_month: 5
     description_template: "TRANSFER TO SAVINGS"
-  - from: "Joint Checking"
-    to: "Alice Credit Card"
+  - from: "Our Chase Checking"
+    to: "Alice Costco Visa"
     amount: statement_balance
     schedule: monthly
     day_of_month: 20
@@ -343,11 +350,26 @@ transfers:
 
 ### Schema design choices
 
+- **`name`** is the human-readable account label a real person would choose ("Our Chase
+  Checking", "Alice Costco Visa"). Used as `account_name` in `raw.tabular_accounts` and
+  as display context in OFX. Account names are also how income, spending, and transfer
+  sections reference accounts within the persona YAML.
+- **`account_id`** is generated deterministically by the engine — a synthetic
+  source-system identifier (e.g. `SYN100001`), seeded from the persona seed. This
+  parallels what real importers receive: OFX gets institution-assigned `ACCTID`, tabular
+  gets a source-system identifier. The generator never derives `account_id` from the
+  account name.
+- **`institution`** is the financial institution name. Maps to `institution_org` in
+  `raw.ofx_accounts` and `institution_name` in `raw.tabular_accounts`.
 - **Amounts** can be fixed (`17.99`) or distribution-based (`{ mean: 145, stddev: 35 }`).
   Fixed for predictable charges; distribution for variable ones.
 - **`source_type` per account** controls which raw table receives that account's
   transactions. This exercises the multi-source union path in core models — the `family`
-  persona has OFX checking/savings and CSV credit cards, just like a real user.
+  persona has OFX checking/savings and tabular credit cards, just like a real user.
+- **`opening_balance`** is the account balance at the start of the generated date range.
+  For OFX accounts, written as a balance snapshot to `raw.ofx_balances`. For tabular
+  accounts, used to compute the running `balance` column on
+  `raw.tabular_transactions`. Not written as a compensating transaction.
 - **`seasonal_modifiers`** are multipliers on the base monthly budget. `1.3` = 30% more
   than usual. Applied per-month to the spending generator's budget for that category.
 - **`day_of_week_weights`** bias transaction dates within a month. Unspecified days
@@ -370,6 +392,7 @@ Validation catches errors at load time:
 - Unknown persona fields
 - Account names referenced in income/spending/transfers that don't exist in `accounts`
 - Invalid `source_type` values
+- Missing `institution` on accounts
 - Merchant catalog references that don't match a file in `data/merchants/`
 - Negative amounts, zero weights, invalid schedules
 
@@ -472,17 +495,107 @@ The generator writes to existing raw tables, conforming to their schemas exactly
 the data came from a real extractor. Per-account `source_type` in the persona YAML
 determines which raw table receives the data:
 
-| Persona account `source_type` | Transaction table | Account table |
-|---|---|---|
-| `ofx` | `raw.ofx_transactions` | `raw.ofx_accounts` |
-| `csv` | `raw.csv_transactions` (or `raw.tabular_transactions` after smart-tabular-import) | `raw.csv_accounts` (or `raw.tabular_accounts`) |
+| Persona account `source_type` | Transaction table | Account table | Balance table |
+|---|---|---|---|
+| `ofx` | `raw.ofx_transactions` | `raw.ofx_accounts` | `raw.ofx_balances` |
+| `csv` | `raw.tabular_transactions` | `raw.tabular_accounts` | *(running balance in transaction row)* |
 
-The `source_file` column uses a synthetic URI to prevent collisions with real files and
+The `source_file` column uses synthetic URIs to prevent collisions with real files and
 to enable idempotent re-generation:
 
 ```
-synthetic://family/42/2024    # persona=family, seed=42, year=2024
+synthetic://family/42/2024              # transactions: persona=family, seed=42, year=2024
+synthetic://family/42/our-chase-checking  # accounts: persona=family, seed=42, account slug
 ```
+
+### Column mappings
+
+The generator must populate every NOT NULL column and should populate optional columns
+where doing so exercises real code paths. Columns not listed default to NULL.
+
+#### `raw.ofx_accounts`
+
+| Column | Generator value |
+|---|---|
+| `account_id` | Synthetic source-system ID (`SYN100001`, etc.), seeded deterministically |
+| `routing_number` | NULL |
+| `account_type` | Mapped from persona YAML `type`: `checking`→`CHECKING`, `savings`→`SAVINGS`, `credit_card`→`CREDITLINE` |
+| `institution_org` | From persona YAML `institution` field |
+| `institution_fid` | NULL |
+| `source_file` | `synthetic://{persona}/{seed}/{account-slug}` |
+| `extracted_at` | Generation timestamp |
+
+#### `raw.ofx_transactions`
+
+| Column | Generator value |
+|---|---|
+| `transaction_id` | Seeded deterministic ID, FITID-style (e.g. `SYN20240115001`) |
+| `account_id` | Matching `account_id` from `raw.ofx_accounts` |
+| `transaction_type` | Contextual: `DEBIT`, `CREDIT`, `DEP`, `DIRECTDEP`, `XFER` |
+| `date_posted` | TIMESTAMP from generated date |
+| `amount` | Generated amount (negative = expense, positive = income) |
+| `payee` | Generated description (bank-statement-style for merchants with `description_prefix`) |
+| `memo` | NULL |
+| `check_number` | NULL |
+| `source_file` | `synthetic://{persona}/{seed}/{year}` |
+| `extracted_at` | Generation timestamp |
+
+#### `raw.ofx_balances`
+
+| Column | Generator value |
+|---|---|
+| `account_id` | Matching `account_id` from `raw.ofx_accounts` |
+| `statement_start_date` | Start of generated date range |
+| `statement_end_date` | Start of generated date range (initial snapshot) |
+| `ledger_balance` | From persona YAML `opening_balance` |
+| `ledger_balance_date` | Start of generated date range |
+| `available_balance` | NULL |
+| `source_file` | `synthetic://{persona}/{seed}/{account-slug}` |
+| `extracted_at` | Generation timestamp |
+
+#### `raw.tabular_accounts`
+
+| Column | Generator value |
+|---|---|
+| `account_id` | Synthetic source-system ID (`SYN100001`, etc.), seeded deterministically |
+| `account_name` | From persona YAML `name` field (e.g. "Alice Costco Visa") |
+| `account_number` | NULL (real CSVs rarely contain account numbers) |
+| `account_number_masked` | NULL |
+| `account_type` | From persona YAML `type` |
+| `institution_name` | From persona YAML `institution` field |
+| `currency` | `USD` |
+| `source_file` | `synthetic://{persona}/{seed}/{account-slug}` |
+| `source_type` | `csv` |
+| `source_origin` | `synthetic` |
+| `extracted_at` | Generation timestamp |
+
+#### `raw.tabular_transactions`
+
+| Column | Generator value |
+|---|---|
+| `transaction_id` | Seeded deterministic ID |
+| `account_id` | Matching `account_id` from `raw.tabular_accounts` |
+| `transaction_date` | Generated DATE |
+| `post_date` | NULL |
+| `amount` | Generated amount (negative = expense, positive = income) |
+| `original_amount` | String representation of amount |
+| `original_date_str` | Date formatted as string |
+| `description` | Generated description |
+| `memo` | NULL |
+| `category` | NULL (exercise categorization pipeline from scratch) |
+| `subcategory` | NULL |
+| `transaction_type` | NULL |
+| `status` | `Posted` |
+| `check_number` | NULL |
+| `source_transaction_id` | NULL |
+| `reference_number` | NULL |
+| `balance` | Running balance computed from `opening_balance` + cumulative transactions |
+| `currency` | `USD` |
+| `member_name` | NULL |
+| `source_file` | `synthetic://{persona}/{seed}/{year}` |
+| `source_type` | `csv` |
+| `source_origin` | `synthetic` |
+| `row_number` | Sequential per file |
 
 ### Ground truth: `synthetic.ground_truth`
 
@@ -491,7 +604,7 @@ synthetic://family/42/2024    # persona=family, seed=42, year=2024
    against synthetic data */
 CREATE TABLE synthetic.ground_truth (
     source_transaction_id VARCHAR NOT NULL, -- joins to raw/core transaction identity
-    account_id VARCHAR NOT NULL,           -- account context for the transaction
+    account_id VARCHAR NOT NULL,           -- synthetic source-system account ID; joins to raw account tables
     expected_category VARCHAR,             -- ground-truth category label; NULL for transfers
     transfer_pair_id VARCHAR,              -- non-NULL for transfer pairs; both sides share the same ID
     persona VARCHAR NOT NULL,              -- which persona generated this row
@@ -672,8 +785,11 @@ patterns that can't be expressed declaratively.
   referential integrity (every `fct_transactions.account_id` exists in `dim_accounts`).
 - `synthetic.ground_truth` rows all join to `core.fct_transactions` after pipeline.
 - Synthetic origin identifiable via `source_file` URI prefix (`synthetic://`).
-  `source_type` remains `ofx`/`csv` per the persona account config to exercise
-  multi-source union paths.
+  `source_type` remains `ofx`/`csv` per the persona account config and `source_origin`
+  is `synthetic` for tabular accounts — exercises multi-source union paths.
+- Running balances on tabular transactions are internally consistent (opening balance +
+  cumulative transactions = final balance). OFX opening balance snapshots present in
+  `raw.ofx_balances`.
 - Profile isolation: generating into profile `alice` has no effect on the default
   profile's database.
 
@@ -693,7 +809,7 @@ patterns that can't be expressed declaratively.
 |---|---|---|---|
 | `Database.ingest_dataframe()` | Write primitive | Designed (smart-import-tabular.md) | Polars → Arrow → DuckDB via encrypted connection |
 | Profile system (`MoneyBinSettings.profile`) | Infrastructure | Implemented | Named profiles for persona isolation |
-| Raw table schemas | Schema | Implemented | Generator output must conform to existing DDL |
+| Raw table schemas (`raw.ofx_*`, `raw.tabular_*`) | Schema | OFX implemented, tabular designed | Generator output must conform to existing DDL |
 | SQLMesh models | Pipeline | Implemented | `sqlmesh run` materializes generated data through prep→core |
 
 ### Synthetic data requirements in feature specs
@@ -778,3 +894,6 @@ The spec template (`_template.md`) includes this as an optional section. See
 | Realism level | Level 2 for v1 | 80% realism for 20% effort; architecture supports Level 3 |
 | CLI namespace | `moneybin synthetic` | Groups generation + verification; `synthetic` schema alignment |
 | Safety guards | Check `synthetic.ground_truth` existence | Prevents accidental reset of real profiles |
+| Account identity | Synthetic `account_id` (`SYN100001`), separate `account_name` | `account_id` = source-system identifier (never derived from name); `account_name` = human-readable label |
+| Opening balances | `raw.ofx_balances` + tabular running `balance` column | Matches how real data appears in each format; no compensating transactions |
+| `source_origin` | `synthetic` for all generator output | Format-specific testing handled by format compatibility specs |

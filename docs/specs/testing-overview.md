@@ -125,7 +125,7 @@ Each persona uses a named profile to keep its data isolated. The existing profil
 
 ### Anonymized Generation Mode
 
-Generate synthetic data that preserves the statistical properties and structure of the user's real database — transaction distributions, account relationships, spending patterns — while applying industry-standard anonymization (merchant name substitution, amount perturbation, date shifting, account ID replacement). This is v1 scope for the generator. The anonymized dataset preserves existing categorizations as ground truth. Detailed anonymization technique design is a major concern for the generator child spec.
+Generate synthetic data that preserves the statistical properties and structure of the user's real database — transaction distributions, account relationships, spending patterns — while applying industry-standard anonymization (merchant name substitution, amount perturbation, date shifting, account ID replacement). This is a **peer child spec** (`testing-anonymized-data.md`), not part of the persona-based generator. Different problem (data masking pipeline vs. financial life simulator), same output layer (`synthetic` schema, raw table writes). The anonymized dataset preserves existing categorizations as ground truth.
 
 ## Scenario Format
 
@@ -197,7 +197,7 @@ Four child specs under this umbrella. Each is independently useful, designed kno
 
 | Child spec | Purpose | V1 scope | Key design concerns |
 |---|---|---|---|
-| `testing-synthetic-data.md` | Produce life-like financial histories | Three fictional personas (`basic`, `family`, `freelancer`); anonymized mode from real DB; direct DuckDB insert + CSV output modes; deterministic seeding; ground-truth labels | Two generation modes: persona-based (fiction) and anonymization-based (structure-preserving). How to achieve life-like data is a major concern — merchant catalogs, spending distributions, temporal realism, income patterns. Anonymization techniques (merchant substitution, amount perturbation, date shifting) are a second major concern. |
+| `testing-synthetic-data.md` | Produce life-like financial histories | Three fictional personas (`basic`, `family`, `freelancer`); deterministic seeding; ground-truth labels; YAML-driven personas and merchant catalogs; Level 2 realism | Declarative YAML architecture, merchant catalogs with real brand names, spending distributions, temporal realism, income patterns. Anonymized mode is a separate child spec (`testing-anonymized-data.md`). |
 | `testing-csv-fixtures.md` | Curated bank export samples for format compatibility testing | Directory convention (`tests/fixtures/csv_formats/`), naming schema (`<institution>_<account_type>_<year>.csv` + `.expected.json`), initial fixtures from anonymized real exports | Anonymization checklist, contribution path, expected-result format for scoring smart detection |
 | `testing-format-compat.md` | Verify parsers handle all known file formats correctly | Test harness that runs each extractor against its fixtures, compares to expected output | Assertion integration, how to add a new format test, failure reporting |
 | `testing-migration-safety.md` | Verify schema migrations preserve data integrity | Pre/post migration assertions (row counts, checksums, no orphaned FKs, no NULLed fields) | Requires synthetic data to populate a DB before migration; depends on generator |
@@ -232,7 +232,7 @@ These grow as needed. No upfront framework — add an assertion when a new cross
 | Command | Purpose |
 |---|---|
 | `moneybin synthetic generate --persona=family --profile=bob --years=3 --seed=42` | Generate persona-based synthetic data into a named profile |
-| `moneybin synthetic generate --from-db --profile=anon --seed=42` | Generate anonymized synthetic data from current profile into a named profile (see `testing-anonymized-data.md`) |
+| `moneybin synthetic anonymize --profile=anon --seed=42` | Generate anonymized synthetic data from current profile into a named profile (see `testing-anonymized-data.md`, separate child spec) |
 | `moneybin synthetic reset --persona=family --seed=42` | Wipe a generated profile and regenerate to clean state |
 | `moneybin synthetic verify --scenario=family-full-pipeline` | Run a pinned scenario (generate + pipeline + assertions + evaluation) |
 | `moneybin synthetic verify --quick --profile=bob` | Run property assertions only against a profile |

@@ -81,7 +81,7 @@ the full migration path matrix.
 13. Handle multi-account files (Tiller, Mint, Monarch) by detecting account-identifying
     columns and matching/creating accounts per row.
 14. Handle single-account files by requiring `--account-name` and generating a
-    deterministic `account_id` slug.
+    deterministic `account_id`. <!-- NOTE: account_id should be the source system's identifier, not a slug of account_name. To be resolved during implementation. See testing-synthetic-data.md "Schema design choices" for the corrected semantics. -->
 15. Match accounts across source types using account number (strongest), account name
     with fuzzy matching ("did you mean?"), or explicit `--account-id` bypass.
 16. Preserve `source_transaction_id` when the source provides an institution-assigned
@@ -448,7 +448,7 @@ CREATE TABLE raw.tabular_transactions (
        source file with minimal transformation — amounts are sign-normalized but all
        original values are preserved for audit. */
     transaction_id VARCHAR NOT NULL,            -- Deterministic identifier: source_transaction_id when available, else SHA-256 hash of date|amount|description|account_id|row_number
-    account_id VARCHAR NOT NULL,                -- Account identifier: derived from account_name slug (single-account files) or extracted from per-row account column (multi-account files)
+    account_id VARCHAR NOT NULL,                -- Source-system account identifier; for multi-account files extracted from per-row account column, for single-account files provided or generated <!-- NOTE: should not be a slug of account_name. See testing-synthetic-data.md for corrected semantics. -->
     transaction_date DATE NOT NULL,             -- Primary transaction date parsed from source using detected or specified date format
     post_date DATE,                             -- Settlement or posting date when distinct from transaction date; NULL if source provides only one date
     amount DECIMAL(18, 2) NOT NULL,             -- Normalized amount: negative = expense, positive = income regardless of source sign convention
@@ -480,7 +480,7 @@ CREATE TABLE raw.tabular_accounts (
        record is created from the --account-name flag. For multi-account files (Tiller,
        Mint), one record per unique account found in the data. Account numbers are stored
        here (not per-transaction) and masked at the application layer for display. */
-    account_id VARCHAR NOT NULL,                -- Deterministic slug derived from account_name (e.g. "Chase Checking" → "chase-checking")
+    account_id VARCHAR NOT NULL,                -- Source-system account identifier; not derived from account_name <!-- NOTE: should not be a slug. See testing-synthetic-data.md for corrected semantics. -->
     account_name VARCHAR NOT NULL,              -- Human-readable account label provided by user or extracted from multi-account file
     account_number VARCHAR,                     -- Full account number if available in source; stored encrypted at rest, masked at application layer for all output
     account_number_masked VARCHAR,              -- Last 4 digits for display (e.g. "...4521"); derived from account_number or extracted directly if source only provides masked
