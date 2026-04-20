@@ -1,7 +1,7 @@
 # Categorization — Overview
 
-> Last updated: 2026-04-18
-> Status: Draft — umbrella doc for the categorization initiative. Child specs listed in [Pillars](#pillars) are written separately.
+> Last updated: 2026-04-19
+> Status: Ready — umbrella doc for the categorization initiative. Child specs listed in [Pillars](#pillars) are written separately.
 > Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose
@@ -80,108 +80,16 @@ Both pillars share one architectural property: they operate within the existing 
 
 ## Pillar E — Auto-rule generation
 
-### Purpose
-
 When a user categorizes a transaction, the system identifies the pattern and proposes a rule so future matching transactions are categorized automatically. Proposals are staged — never silently activated. The user reviews and approves them in batch.
 
-### Trigger
+**Key design decisions** (full detail in [`categorization-auto-rules.md`](categorization-auto-rules.md)):
 
-After any categorization event (`categorize.bulk`, single categorization, or rule application), for each categorized transaction:
-
-```mermaid
-flowchart TD
-    A[Transaction categorized] --> B[Normalize description]
-    B --> C{Active rule or merchant\nalready covers this pattern?}
-    C -->|Yes| D[No proposal needed]
-    C -->|No| E{Pending proposal for\nthis pattern exists?}
-    E -->|Yes| F[Increment trigger_count\nupdate sample_transactions]
-    E -->|No| G[Create proposed rule\nstatus=pending\nsource=pattern_detection]
-```
-
-### Proposal data model
-
-New table `app.proposed_rules`:
-
-| Column | Type | Description |
-|---|---|---|
-| `proposed_rule_id` | `VARCHAR PK` | Unique identifier for this proposal |
-| `merchant_pattern` | `VARCHAR NOT NULL` | Normalized pattern extracted from transaction description |
-| `match_type` | `VARCHAR DEFAULT 'contains'` | How the pattern is matched: contains, exact, or regex |
-| `category` | `VARCHAR NOT NULL` | Proposed category |
-| `subcategory` | `VARCHAR` | Proposed subcategory |
-| `status` | `VARCHAR DEFAULT 'pending'` | Lifecycle state: pending, approved, rejected, superseded |
-| `trigger_count` | `INTEGER DEFAULT 1` | Number of categorizations that triggered or reinforced this proposal |
-| `source` | `VARCHAR DEFAULT 'pattern_detection'` | How the proposal was generated: pattern_detection or ml |
-| `sample_txn_ids` | `VARCHAR[]` | Up to 5 transaction_ids that triggered this proposal |
-| `proposed_at` | `TIMESTAMP` | When the proposal was created |
-| `decided_at` | `TIMESTAMP` | When the user approved or rejected |
-| `decided_by` | `VARCHAR` | Who decided: 'user' or NULL if still pending |
-
-### Status lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> pending: Pattern detected
-    pending --> approved: User approves
-    pending --> rejected: User rejects
-    pending --> superseded: User corrects category
-    approved --> active_rule: Promoted to app.categorization_rules\nwith created_by='auto_rule'
-    superseded --> pending: New proposal created\nwith corrected category
-```
-
-### Correction handling
-
-When a user recategorizes a transaction that was auto-categorized by an auto-rule:
-
-- **Single override:** The transaction gets `categorized_by='user'`, which outranks the rule per the priority hierarchy. The rule stays active. This is normal — one-off overrides don't indicate a bad rule.
-- **Repeated overrides** (configurable via `categorization.auto_rule_override_threshold`, default 2): The system deactivates the rule, sets the original proposal to `superseded`, and creates a new proposal with the most common correction category. The user sees it in `categorize.auto_review`.
-
-### User experience
-
-**During categorization** — proposals accumulate silently. The `categorize.bulk` response includes a `rules_proposed` count and a hint to review:
-
-```json
-{
-  "applied": 48,
-  "merchants_created": 12,
-  "rules_proposed": 7,
-  "review_hint": "7 new rules proposed. Use categorize.auto_review to review."
-}
-```
-
-**During review** — the user reviews proposals in batch via `categorize.auto_review` (shows pending proposals with sample transactions and trigger counts) and `categorize.auto_confirm` (approves or rejects in batch). Approved proposals are promoted to active rules in `app.categorization_rules` with `created_by='auto_rule'`.
-
-**MCP flow:**
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant AI as AI (MCP)
-    participant Sys as MoneyBin
-
-    User->>AI: Show me proposed rules
-    AI->>Sys: categorize.auto_review()
-    Sys-->>AI: 8 pending rules with samples
-    AI->>User: 8 patterns found:\n1. STARBUCKS → Coffee (3 matches)\n2. AMAZON → Shopping (5 matches)...
-    User->>AI: Approve all except #4,\nthat should be Groceries
-    AI->>Sys: categorize.auto_confirm(\napprove x7, reject x1)
-    AI->>Sys: categorize.create_rules(\ncorrected #4 as Groceries)
-    Sys-->>AI: 7 approved, 1 rejected, 1 created
-    AI->>User: 7 rules activated,\n1 corrected to Groceries.\nNext import will auto-categorize\nthese patterns.
-```
-
-**CLI flow:**
-
-```
-moneybin categorize auto-review         # table of pending proposals
-moneybin categorize auto-confirm \
-  --approve ar_001 ar_002 ar_003 \
-  --reject ar_004                       # batch approve/reject
-```
-
-### Open questions
-
-- Should the proposal engine detect conflicting categorizations of the same pattern (e.g., same merchant categorized differently by amount range) and propose filtered rules? Defer to implementation experience.
+- **Trigger:** After any categorization event (`categorize.bulk` or CLI categorization), for each categorized transaction, check whether an active rule or merchant mapping already covers the pattern. If not, create or reinforce a proposal.
+- **Pattern extraction:** Merchant-first — use the canonical merchant name when a `merchant_id` exists, fall back to `normalize_description()` cleanup otherwise. Reuses the existing description normalization code.
+- **Proposal lifecycle:** `pending` → `approved` (promoted to `app.categorization_rules` with `created_by='auto_rule'`, `priority=200`) or `rejected` or `superseded` (when the user corrects the category).
+- **Correction handling:** Single user overrides don't affect the rule. After `auto_rule_override_threshold` (default 2) overrides, the rule is deactivated and a new proposal is created with the corrected category.
+- **UX:** Proposals accumulate silently. `categorize.bulk` response includes a `rules_proposed` count and review hint. User reviews in batch via `categorize.auto_review` and `categorize.auto_confirm`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
+- **Conflicting categorizations:** Amount/account-aware rule proposals are deferred to future enhancements (see Future Directions).
 
 ---
 
@@ -212,7 +120,7 @@ The v1 implementation uses TF-IDF (term frequency–inverse document frequency) 
 
 - **Minimum training samples:** configurable, default 50 categorized transactions.
 - **Features:** TF-IDF on normalized transaction description (v1). Amount as an optional second feature for experimentation.
-- **Retraining:** on-demand via `categorize.ml_train`. No automatic retraining — the user controls when the model is retrained.
+- **Retraining:** auto-retrains when statistically significant new categorizations exist (threshold relative to training set size, configurable via `categorization.ml_retrain_threshold`). `categorize.ml_train` remains as a manual escape hatch but is not part of the standard workflow.
 
 ### Model storage
 
@@ -245,6 +153,24 @@ Thresholds are configurable via Pydantic settings, independent from transaction-
 | `categorization.ml_review_threshold` | `0.70` | Predictions above this but below auto-apply are queued for review |
 
 Defaults are conservative. The user tunes based on observed accuracy.
+
+### Confidence calibration
+
+Raw SVM scores are distances from the decision boundary, not probabilities. A score of 0.90 does not mean "90% likely correct" — it means "far from the boundary." The ML pipeline uses **Platt scaling** (scikit-learn's `CalibratedClassifierCV`) to convert raw scores into calibrated probability estimates so that confidence thresholds correspond to actual accuracy rates.
+
+Calibration is always on — no raw-score mode. On small training sets (< 200 samples), calibrated probabilities are noisier but still more meaningful than raw distances. Calibration precision improves naturally as training data grows.
+
+### Progressive confidence disclosure
+
+User-facing surfaces (CLI, MCP responses) display **qualitative confidence tiers** rather than raw numeric scores until the model has enough data for calibration to be reliable:
+
+| Tier | Display | Internal range |
+|---|---|---|
+| High | "high confidence" | Above `ml_auto_apply_threshold` |
+| Moderate | "moderate confidence" | Between `ml_review_threshold` and `ml_auto_apply_threshold` |
+| Low | "low confidence" | Below `ml_review_threshold` |
+
+`categorize.ml_status` and `detail=full` on transaction queries always expose the numeric score for power users. The qualitative tiers are the default presentation — they hide calibration noise while the model matures and communicate the system's certainty in terms that don't require ML background.
 
 ### Accuracy measurement
 
@@ -283,7 +209,7 @@ Three levels of visibility into what the categorization system is doing.
 
 ### Import-time summary
 
-Every import reports what the categorization pipeline did:
+Every import reports what the categorization pipeline did. User-facing output uses qualitative confidence tiers (see Progressive Confidence Disclosure):
 
 ```
 Imported 120 transactions from chase_checking.csv
@@ -291,20 +217,42 @@ Imported 120 transactions from chase_checking.csv
     42 by rules
     10 by auto-rules
     25 by merchant mappings
-     8 by ML (confidence >= 0.90)
+     8 by ML (high confidence)
   35 uncategorized
   4 new rules proposed
-  2 ML predictions queued for review
+  2 ML predictions queued for review (moderate confidence)
 ```
 
 ### Per-transaction explainability
 
-`transactions.search` at `detail=full` includes categorization provenance for every transaction:
+`transactions.search` includes categorization provenance for every transaction. The level of detail depends on the `detail` parameter:
 
-- `categorized_by` — which source categorized it
-- `confidence` — how certain the source was
-- `rule_id` — which rule matched (if rule or auto-rule)
-- `merchant_id` — which merchant mapping matched (if merchant)
+**`detail=standard`** (default) — qualitative confidence tiers:
+
+```json
+{
+  "transaction_id": "txn_abc123",
+  "description": "WHOLE FOODS MKT #10234",
+  "category": "Groceries",
+  "categorized_by": "ml",
+  "confidence_tier": "high"
+}
+```
+
+**`detail=full`** — numeric scores for power users:
+
+```json
+{
+  "transaction_id": "txn_abc123",
+  "description": "WHOLE FOODS MKT #10234",
+  "category": "Groceries",
+  "categorized_by": "ml",
+  "confidence": 0.94,
+  "confidence_tier": "high",
+  "rule_id": null,
+  "merchant_id": "m_whofoods"
+}
+```
 
 Every categorization is traceable to its origin. No black boxes.
 
@@ -360,6 +308,16 @@ When transactions arrive from Plaid (or future providers), they include provider
 
 When the AI bulk-categorizes via MCP, those categorizations (weighted at 0.8) become training data. A single MCP categorization session can provide enough labeled data to train an initial model.
 
+### Pre-trained baseline model (v1)
+
+Ship a baseline ML model trained on the developer's own categorized transaction history combined with Plaid provider categories. This gives the ML pipeline a useful starting point before the user has categorized anything — common merchants and spending patterns are already learned.
+
+The baseline model is a static artifact shipped with MoneyBin. It contains no raw transaction data — only the trained model weights (TF-IDF vocabulary + SVM coefficients). The user's own data gradually replaces the baseline as auto-retraining incorporates their categorizations.
+
+**Bootstrap from competitor data.** The baseline can be further enriched using categorized transaction exports from competing tools (Mint, YNAB, Monarch, Tiller) — see `private/specs/strategic-analysis.md` §6 for available export formats and category schemas. Importing and categorizing representative data from multiple tools expands the baseline model's vocabulary beyond any single user's spending patterns.
+
+**Upgrade path to community model.** The pre-trained baseline is a single-contributor model. A future community model could aggregate anonymized training data from opted-in users (see below), producing a higher-quality baseline. The architecture is the same — a shipped model artifact that the user's data gradually personalizes.
+
 ### Community-contributed merchant mappings (future)
 
 Users could opt in to share anonymized merchant-to-category mappings: normalized merchant name and category only, never amounts, dates, or raw descriptions. Privacy constraints this must satisfy:
@@ -370,7 +328,7 @@ Users could opt in to share anonymized merchant-to-category mappings: normalized
 - Aggregation threshold — a mapping only enters the public dataset if multiple users contributed it (k-anonymity)
 - Aligns with `privacy-and-ai-trust.md` consent model
 
-This is a future initiative with real privacy design work. The architecture supports it — the seed merchant list is loadable from external sources — but the contribution pipeline is out of scope for this spec.
+This is a future initiative with real privacy design work. The architecture supports it — the seed merchant list is loadable from external sources — but the contribution pipeline is out of scope for this spec. When built, the community data could also feed a community-trained ML baseline model (see pre-trained baseline model above).
 
 ---
 
@@ -383,7 +341,7 @@ This is a future initiative with real privacy design work. The architecture supp
 - `categorized_by` taxonomy and auditability
 - Confidence thresholds (configurable, independent from transaction-matching)
 - Observability: import summaries, per-transaction explainability, system-level stats
-- Bootstrap strategies: seed merchants, synthetic training data, provider/LLM signal
+- Bootstrap strategies: seed merchants, pre-trained baseline model, synthetic training data, provider/LLM signal, progressive confidence disclosure
 
 ## Out of scope
 
@@ -424,11 +382,13 @@ Not pillars, not designed in detail. Architectural constraints noted so the curr
 
 1. **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Needed when the seed taxonomy no longer fits a user's needs. The existing `app.categories` table supports custom categories; this future work adds merge/rename operations.
 
-2. **Community-contributed merchant mappings** — see Bootstrap Strategies section. Requires its own spec with privacy design work.
+2. **Community-contributed merchant mappings and community ML baseline** — see Bootstrap Strategies section. Merchant mappings and a community-trained ML model could both be built from anonymized opt-in data. Requires its own spec with privacy design work.
 
 3. **Provider category mapping table** — extract `plaid_detailed` from `app.categories` into a generic `app.category_mappings` table (`provider`, `provider_category`, `moneybin_category`, `moneybin_subcategory`). Triggered when a second provider is integrated. Single-column migration, architecturally simple.
 
 4. **Amount/account-aware rule proposals** — detect when the same merchant is categorized differently depending on amount range or account and propose filtered rules. Deferred to implementation experience with the basic proposal engine.
+
+5. **Merchant entity resolution** (`merchant-entity-resolution.md`) — evolve `app.merchants` from a pattern-to-category cache into a first-class entity model. Today, canonical names are LLM-assigned strings with no authority or consistency enforcement. This future spec would design: multiple description patterns per merchant entity, automated pattern discovery (from auto-rules, ML, LLM interactions, and seed data), query-time merchant resolution ("show me all Starbucks spending" finds all description variants), and conflict resolution UX (minimal user intervention — resolve ambiguities only, not manual mapping). Impacts auto-rules (merchant-first pattern extraction quality), ML (entity-level features), and analytics (merchant-level aggregation). See also the seed merchant list in Bootstrap Strategies — shipping seed merchants as entities with known description variants would bootstrap the entity model.
 
 ## Success criteria
 
@@ -438,11 +398,19 @@ Not pillars, not designed in detail. Architectural constraints noted so the curr
 - **No silent miscategorization.** Every auto-applied categorization (rule or ML) is logged with source and confidence. Users can trace any categorization to its origin.
 - **Zero external traffic.** Rules, merchant mappings, ML training, and ML prediction run entirely locally. Verifiable from the audit log.
 
+## Resolved questions
+
+Decisions made during spec review, preserved for context.
+
+- **ML retraining trigger.** Auto-retrain when statistically significant new categorizations exist. The ML prediction step checks whether retraining is warranted before running predictions. Threshold is relative to training set size and configurable via `categorization.ml_retrain_threshold`. `categorize.ml_train` remains as a manual escape hatch but is not part of the standard workflow. The import summary notes when retraining occurred. The system should feel like it's learning from the user — "accuracy over automation" does not override the "system learns" commitment.
+- **Auto-rule deduplication.** Both proposals survive independently; user decides during review. See `categorization-auto-rules.md` Deduplication table and Out of Scope section. Intelligent merging of overlapping patterns is a future enhancement.
+- **ML confidence calibration.** Always use Platt scaling (`CalibratedClassifierCV`). Raw SVM distances are not meaningful as thresholds. Calibrated probabilities are noisier on small datasets but still more useful than uncalibrated scores. Progressive confidence disclosure (qualitative tiers instead of numeric scores) hides calibration noise from users until the model matures. See Confidence Calibration and Progressive Confidence Disclosure sections under Pillar D.
+- **Interaction with Smart Import pillar F.** ML training weights are determined by `categorized_by`, not `source_type`. No interaction. A transaction's label quality depends on who categorized it (user, rule, AI), not how the transaction entered the system (CSV, Plaid, AI-parsed PDF). If AI-parsed transactions have unreliable descriptions, that's a pillar F quality concern at parse time, not a training weight concern.
+
 ## Open questions
 
 Cross-cutting decisions deferred to child specs or to resolve during implementation.
-
-- **ML retraining trigger.** Should the system suggest retraining when accuracy metrics decline or when a significant number of new categorizations have accumulated since the last training? v1 is on-demand only; automatic suggestions are a possible enhancement.
-- **Auto-rule deduplication.** When multiple transactions trigger proposals for overlapping patterns (e.g., "STARBUCKS" and "STARBUCKS RESERVE"), how should the proposal engine handle it? Merge into the broader pattern? Keep both and let the user decide?
-- **ML confidence calibration.** SVM confidence scores are not always well-calibrated probabilities. Should the spec require Platt scaling or isotonic regression to improve calibration? Defer to experimentation.
-- **Interaction with Smart Import pillar F.** AI-parsed transactions enter the system with a pillar-F-specific `source_type` value (TBD). Should these be treated differently by the ML model (e.g., lower weight), or the same as any other source? The `categorized_by` hierarchy is independent of `source_type`, but the ML training pipeline could weight by source type as well as categorization source.
+- **Observability strategy.** Multiple sections of this spec stipulate logging (retraining events, threshold-tier shifts, auto-rule proposals, ML predictions dropped). A cross-cutting logging/observability design pass is needed to ensure a coherent approach across import summaries, per-transaction provenance, and system-level statistics. This is a concern shared with other specs (sync, matching) and should be addressed holistically rather than per-feature.
+- **First-import prompt design.** The bootstrap strategies identify LLM bulk categorization as the primary cold-start solver, but no MCP prompt is designed specifically for the first-time experience — detecting low coverage, proactively offering AI categorization + auto-rule generation as a guided session. Needs design work in `mcp-tool-surface.md`.
+- **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function. See `private/specs/strategic-analysis.md` §6 for source tool category formats.
+- **CLI-only cold start.** Bootstrap strategies assume MCP for LLM bulk categorization. CLI-only users lack an AI assistant to bulk-categorize and face a worse cold-start experience. Needs consideration — possibly a CLI command that invokes the LLM directly, or heavier reliance on the pre-trained baseline model.

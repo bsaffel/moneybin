@@ -1,7 +1,7 @@
 # Auto-Rule Generation
 
 > Last updated: 2026-04-19
-> Status: Draft
+> Status: Ready
 > Parent: [`categorization-overview.md`](categorization-overview.md) (pillar E)
 > Companions: [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
@@ -34,7 +34,7 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 
 ### Proposal generation
 
-1. After any categorization event (`categorize_transaction`, `bulk_categorize`, CLI categorization), the system checks each categorized transaction for a potential auto-rule proposal.
+1. After any categorization event (`categorize.bulk` MCP tool or `moneybin categorize` CLI), the system checks each categorized transaction for a potential auto-rule proposal.
 2. A proposal is generated when no active rule or merchant mapping already covers the transaction's pattern AND no pending proposal for the same pattern exists (if a pending proposal exists, its `trigger_count` is incremented instead).
 3. The proposal threshold is configurable (`categorization.auto_rule_proposal_threshold`, default 1). A value of 1 means propose on first categorization; a value of 3 means propose after three matching categorizations.
 4. Pattern extraction uses the merchant-first strategy: canonical merchant name when a `merchant_id` exists, cleaned description otherwise.
@@ -134,14 +134,13 @@ The cleaning regex list is a simple ordered set of strip rules — not a general
 
 ## Integration Hook
 
-The auto-rule engine hooks into two existing code paths:
+The auto-rule engine hooks into the categorization service layer, which is shared by MCP and CLI:
 
 | Hook point | Trigger |
 |---|---|
-| `categorize_transaction()` MCP tool | Single categorization by user or AI |
-| `bulk_categorize()` MCP tool | Batch categorization |
+| `CategorizationService.bulk_categorize()` | Batch categorization via `categorize.bulk` MCP tool or `moneybin categorize` CLI |
 
-**CLI parity:** `moneybin categorize` commands that write to `app.transaction_categories` trigger the same hook. Same code path, not a separate implementation.
+**CLI parity:** CLI commands use the same service layer as MCP tools. Same code path, not a separate implementation.
 
 ### Hook logic (synchronous)
 
@@ -176,7 +175,7 @@ Imported 120 transactions from chase_checking.csv
     42 by rules
     10 by auto-rules
     25 by merchant mappings
-     8 by ML (confidence >= 0.90)
+     8 by ML (high confidence)
   35 uncategorized
   4 new rules proposed
   Run 'moneybin categorize auto-review' to review proposed rules
@@ -257,7 +256,7 @@ Env var overrides:
 ### Integration tests
 
 - **End-to-end**: import -> bulk categorize -> verify proposals created -> approve -> re-import -> verify new transactions auto-categorized by the promoted rule
-- **Hook fires on all paths**: `categorize_transaction`, `bulk_categorize`, and CLI categorization all trigger proposal generation
+- **Hook fires on all paths**: `categorize.bulk` MCP tool and CLI categorization both trigger proposal generation (same service layer)
 - **Immediate effect**: approve a proposal, verify existing uncategorized transactions matching the pattern are categorized immediately
 - **Priority hierarchy**: transaction categorized by user rule -> auto-rule hook does not propose (pattern already covered)
 - **Hook idempotency**: categorize same transaction twice -> no duplicate proposal
@@ -273,7 +272,7 @@ Env var overrides:
 
 - Existing rule engine (`app.categorization_rules`, rule evaluation logic)
 - Existing merchant normalization (`app.merchants`, canonical name resolution)
-- Existing categorization MCP tools (`categorize_transaction`, `bulk_categorize`)
+- Existing categorization service layer (`CategorizationService.bulk_categorize()`, backing `categorize.bulk` MCP tool)
 - Database migration system (`database-migration.md`) for `app.proposed_rules` table creation
 
 ## Out of Scope
@@ -298,10 +297,10 @@ When proposals exist for both a broad pattern ("STARBUCKS") and a narrow pattern
 
 Rules that haven't matched any transaction in N months could be flagged for review or auto-deactivated. Useful for merchants the user no longer patronizes. Deferred until rule volume is high enough to warrant cleanup.
 
-## Open Questions
+## Resolved Questions
 
-Decisions deferred to implementation:
+Decisions made during spec review, preserved for context.
 
-1. **Description cleaning regex list.** The exact set of strip rules for the description fallback path. Start with common patterns (trailing IDs, location suffixes, payment processor prefixes) and extend based on real-world data.
-2. **Promotion timing.** When an auto-rule is approved and immediately run against uncategorized transactions, should it run synchronously (caller waits) or queue for the next pipeline run? Synchronous is simpler and gives instant feedback.
-3. **`sample_txn_ids` cap.** Capped at 5 in the schema. Is this enough context for the user during review? Implementation can adjust.
+1. **Description cleaning regex list.** The description fallback path reuses the existing `normalize_description()` function in `categorization_service.py`, which already handles POS prefixes, trailing location info, trailing store IDs, and whitespace normalization. The regex approach is conservative (prefers false negatives over false positives) and is best-effort for the long tail — the merchant-first path handles the majority case, and the review queue catches what regex misses. The exact regex list is an implementation detail, extended based on real-world data. Note: merchant entity resolution (`merchant-entity-resolution.md`, planned) will improve the merchant-first path over time, reducing reliance on regex cleaning.
+2. **Promotion timing.** Synchronous. Approved rules are immediately evaluated against existing uncategorized transactions. Instant feedback ("3 uncategorized transactions now categorized by your new rule") outweighs the marginal latency. The operation is fast at personal-finance scale.
+3. **`sample_txn_ids` cap.** 5 is sufficient for v1. Provides enough context for the user to confirm the pattern during review without bloating the proposal table. Trivially adjustable during implementation if review experience suggests otherwise.

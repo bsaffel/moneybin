@@ -1,7 +1,7 @@
 # MCP Tool Surface
 
 > Last updated: 2026-04-17
-> Status: Draft
+> Status: Ready
 > Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
@@ -23,7 +23,7 @@ Together they replace the prototype-era MCP specs (read tools, write tools) with
 
 ## Status
 
-draft
+ready
 
 ---
 
@@ -768,21 +768,32 @@ List auto-generated rules pending user approval.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
-- **Behavior:** Returns array of `{rule_id, name, merchant_pattern, category, subcategory, source, confidence, sample_transactions}` where `source` indicates how the rule was generated (ml, pattern_detection).
+- **Behavior:** Returns array of `{proposed_rule_id, merchant_pattern, category, subcategory, source, trigger_count, sample_transactions}` where `source` indicates how the rule was generated (ml, pattern_detection).
 - **Service:** `CategorizationService.auto_review() -> list[ProposedRule]`
 - **CLI:** `moneybin categorize auto-review`
-- **Dependency:** Categorization umbrella spec (Pillar E: auto-rule generation).
+- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
 ### `categorize.auto_confirm`
 
 Approve or reject proposed auto-generated rules.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `approvals: list[object]` (required) — list of `{rule_id, action}` where action is `approve` or `reject`.
-- **Behavior:** Approved rules become active categorization rules. Rejected rules are discarded. Returns `{approved, rejected, errors}`.
+- **Unique parameters:** `approvals: list[object]` (required) — list of `{proposed_rule_id, action}` where action is `approve` or `reject`.
+- **Behavior:** Approved rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. Returns `{approved, rejected, errors}`.
 - **Service:** `CategorizationService.auto_confirm() -> BulkActionResult`
-- **CLI:** `moneybin categorize auto-confirm --file decisions.json`
-- **Dependency:** Categorization umbrella spec (Pillar E: auto-rule generation).
+- **CLI:** `moneybin categorize auto-confirm --approve <id> [<id>...] --reject <id> [<id>...]`
+- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
+
+### `categorize.auto_stats`
+
+Auto-rule health metrics.
+
+- **Sensitivity:** `low`
+- **Unique parameters:** None.
+- **Behavior:** Returns `{active_rules, pending_proposals, rejected_proposals, override_rate, top_rules}` where `top_rules` is an array of the most-matched auto-rules with match counts. `override_rate` is the percentage of auto-rule categorizations that were later overridden by the user.
+- **Service:** `CategorizationService.auto_stats() -> AutoRuleStats`
+- **CLI:** `moneybin categorize auto-stats`
+- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
 ### `categorize.ml_status`
 
@@ -790,10 +801,10 @@ ML model status and accuracy metrics.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
-- **Behavior:** Returns `{status, last_trained, training_samples, accuracy, confidence_distribution}` where `status` is `untrained`, `training`, or `ready`. `confidence_distribution` shows how many transactions fall in each confidence tier (high/medium/low).
+- **Behavior:** Returns `{status, last_trained, training_samples, accuracy, confidence_distribution}` where `status` is `untrained`, `training`, or `ready`. `confidence_distribution` shows how many transactions fall in each confidence tier (high/moderate/low). Confidence scores are Platt-calibrated probabilities; user-facing output uses qualitative tiers (see [categorization overview](categorization-overview.md) Progressive Confidence Disclosure).
 - **Service:** `CategorizationService.ml_status() -> MLModelStatus`
 - **CLI:** `moneybin categorize ml-status`
-- **Dependency:** Categorization umbrella spec (Pillar D: ML categorization).
+- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
 
 ### `categorize.ml_train`
 
@@ -801,10 +812,10 @@ Trigger model training or retraining on current categorization history.
 
 - **Sensitivity:** `low` — training data stays local.
 - **Unique parameters:** None.
-- **Behavior:** Trains the model synchronously. Returns `{status, training_samples, accuracy, duration_seconds}`. Requires minimum number of categorized transactions to produce a useful model.
+- **Behavior:** Trains the model synchronously. Returns `{status, training_samples, accuracy, duration_seconds}`. Requires minimum number of categorized transactions to produce a useful model. Note: the pipeline auto-retrains when statistically significant new categorizations exist (see [categorization overview](categorization-overview.md)); this tool is a manual escape hatch.
 - **Service:** `CategorizationService.ml_train() -> MLTrainResult`
 - **CLI:** `moneybin categorize ml-train`
-- **Dependency:** Categorization umbrella spec (Pillar D: ML categorization).
+- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
 
 ### `categorize.ml_apply`
 
@@ -815,7 +826,7 @@ Run ML categorization at a given confidence threshold.
 - **Behavior:** Applies ML predictions to uncategorized transactions above the confidence threshold. Returns `{applied, below_threshold, already_categorized}`. With `dry_run`, returns predictions without applying.
 - **Service:** `CategorizationService.ml_apply() -> MLApplyResult`
 - **CLI:** `moneybin categorize ml-apply [--min-confidence 0.9] [--dry-run]`
-- **Dependency:** Categorization umbrella spec (Pillar D: ML categorization).
+- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
 
 ---
 
@@ -1035,7 +1046,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Guide a first-time user from empty database to imported, transformed, and categorized data.
 
-**Relevant tools:** `overview.status`, `import.file`, `import.preview`, `import.list_formats`, `categorize.seed`, `categorize.stats`
+**Relevant tools:** `overview.status`, `import.file`, `import.csv_preview`, `import.list_formats`, `categorize.seed`, `categorize.stats`
 
 **Guardrails:**
 
@@ -1159,7 +1170,7 @@ Tools that depend on unbuilt subsystems are included in the full catalog with de
 | **Provider profiles spec** | Not written | Verified-local bypass; `privacy.status` backend info |
 | **Transaction matching (Pillars A+C)** | Draft (umbrella) | All `transactions.matches.*` tools |
 | **Transaction matching (Pillar B)** | Draft (umbrella) | `transactions.matches.*` transfer-type filtering |
-| **Categorization umbrella spec** | Not written | `categorize.apply_rules`, `categorize.auto_review`, `categorize.auto_confirm`, `categorize.ml_status`, `categorize.ml_train`, `categorize.ml_apply` |
+| **[Categorization overview](categorization-overview.md)** | Draft | `categorize.apply_rules`, `categorize.auto_review`, `categorize.auto_confirm`, `categorize.auto_stats`, `categorize.ml_status`, `categorize.ml_train`, `categorize.ml_apply` |
 | **Smart Import (Pillar A)** | Not written | `import.folder` |
 | **Smart Import (Pillar F) + Privacy** | Not written | `import.ai_preview`, `import.ai_parse` |
 | **Corrections table schema** | Not written | `transactions.correct` |
