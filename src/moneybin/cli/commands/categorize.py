@@ -23,7 +23,7 @@ def apply_rules_cmd() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
     setup_logging(cli_mode=True)
 
-    from moneybin.database import get_database
+    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import (
         apply_deterministic_categorization,
     )
@@ -45,6 +45,12 @@ def apply_rules_cmd() -> None:
     except FileNotFoundError as e:
         logger.error("%s", e)
         raise typer.Exit(1) from e
+    except DatabaseKeyError:
+        logger.error(
+            "Database is locked. Run 'moneybin db unlock' "
+            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
+        )
+        raise typer.Exit(1) from None
 
 
 @app.command("seed")
@@ -56,7 +62,7 @@ def seed_cmd() -> None:
     """
     setup_logging(cli_mode=True)
 
-    from moneybin.database import get_database
+    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import seed_categories
 
     try:
@@ -66,6 +72,12 @@ def seed_cmd() -> None:
     except FileNotFoundError as e:
         logger.error("%s", e)
         raise typer.Exit(1) from e
+    except DatabaseKeyError:
+        logger.error(
+            "Database is locked. Run 'moneybin db unlock' "
+            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
+        )
+        raise typer.Exit(1) from None
 
 
 @app.command("stats")
@@ -73,7 +85,7 @@ def stats_cmd() -> None:
     """Show categorization coverage statistics."""
     setup_logging(cli_mode=True)
 
-    from moneybin.database import get_database
+    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import get_categorization_stats
 
     try:
@@ -82,6 +94,12 @@ def stats_cmd() -> None:
     except FileNotFoundError as e:
         logger.error("%s", e)
         raise typer.Exit(1) from e
+    except DatabaseKeyError:
+        logger.error(
+            "Database is locked. Run 'moneybin db unlock' "
+            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
+        )
+        raise typer.Exit(1) from None
 
     total = stats["total"]
     categorized = stats["categorized"]
@@ -105,7 +123,7 @@ def list_rules_cmd() -> None:
     """Display all active categorization rules."""
     setup_logging(cli_mode=True)
 
-    from moneybin.database import get_database
+    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.tables import CATEGORIZATION_RULES
 
     try:
@@ -122,6 +140,12 @@ def list_rules_cmd() -> None:
     except FileNotFoundError as e:
         logger.error("%s", e)
         raise typer.Exit(1) from e
+    except DatabaseKeyError:
+        logger.error(
+            "Database is locked. Run 'moneybin db unlock' "
+            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
+        )
+        raise typer.Exit(1) from None
 
     if not rows:
         logger.info("No active categorization rules.")

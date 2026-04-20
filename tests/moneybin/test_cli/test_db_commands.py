@@ -805,6 +805,158 @@ class TestDbBackupCommand:
         assert result.exit_code == 1
 
 
+class TestDbInfoCommand:
+    """Tests for 'moneybin db info'."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def test_info_shows_file_and_tables(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Info command opens the database and queries tables when unlocked."""
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"x" * 2048)
+        _make_settings_mock(test_db, mocker)
+
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "abc123"
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchall.return_value = [
+            ("core", "fct_transactions")
+        ]
+        mock_db.execute.return_value.fetchone.return_value = (42,)
+        mock_db.sql.return_value.fetchone.return_value = ("v1.2.3",)
+        mocker.patch("moneybin.database.Database", return_value=mock_db)
+
+        result = runner.invoke(app, ["info"])
+        assert result.exit_code == 0
+        # Verify Database was opened and table query was executed
+        mock_db.execute.assert_called()
+
+    def test_info_shows_locked_state_when_key_missing(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Info command exits 0 without opening the database when key is missing."""
+        from moneybin.secrets import SecretNotFoundError
+
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"data")
+        _make_settings_mock(test_db, mocker)
+
+        mock_store = MagicMock()
+        mock_store.get_key.side_effect = SecretNotFoundError("not found")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mock_database_cls = mocker.patch("moneybin.database.Database")
+
+        result = runner.invoke(app, ["info"])
+        assert result.exit_code == 0
+        # Database should not be opened when locked
+        mock_database_cls.assert_not_called()
+
+    def test_info_fails_when_database_not_found(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Info command exits 1 when database file does not exist."""
+        _make_settings_mock(tmp_path / "missing.duckdb", mocker)
+        result = runner.invoke(app, ["info"])
+        assert result.exit_code == 1
+
+
+class TestDbRestoreCommand:
+    """Tests for 'moneybin db restore'."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def test_restore_from_specified_path(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Restore copies the backup file and opens it with the current key."""
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"current")
+        backup = tmp_path / "backup.duckdb"
+        backup.write_bytes(b"backup")
+        _make_settings_mock(test_db, mocker)
+
+        mock_db = MagicMock()
+        mocker.patch("moneybin.database.Database", return_value=mock_db)
+        mocker.patch("moneybin.secrets.SecretStore")
+
+        result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
+        assert result.exit_code == 0
+        # Verify the backup content was copied to the database path
+        assert test_db.read_bytes() == b"backup"
+
+    def test_restore_fails_when_backup_file_not_found(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Restore exits 1 when the specified backup file does not exist."""
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"data")
+        _make_settings_mock(test_db, mocker)
+
+        result = runner.invoke(
+            app, ["restore", "--from", str(tmp_path / "nonexistent.duckdb"), "--yes"]
+        )
+        assert result.exit_code == 1
+
+    def test_restore_fails_when_no_backups_found(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Restore exits 1 when no backups exist in the backup directory."""
+        test_db = tmp_path / "test.duckdb"
+        _make_settings_mock(test_db, mocker)
+        # backup_path is None → falls back to db_path.parent / "backups", which doesn't exist
+
+        result = runner.invoke(app, ["restore"])
+        assert result.exit_code == 1
+
+    def test_restore_auto_backs_up_current_database(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Restore creates an auto-backup of the current database before overwriting."""
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"current")
+        backup = tmp_path / "backup.duckdb"
+        backup.write_bytes(b"backup")
+        _make_settings_mock(test_db, mocker)
+
+        mock_db = MagicMock()
+        mocker.patch("moneybin.database.Database", return_value=mock_db)
+        mocker.patch("moneybin.secrets.SecretStore")
+
+        result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
+        assert result.exit_code == 0
+
+        backup_dir = tmp_path / "backups"
+        pre_restore = list(backup_dir.glob("*_pre_restore.duckdb"))
+        assert len(pre_restore) == 1
+
+    def test_restore_fails_with_wrong_key(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Restore exits 1 when restored database can't be opened with current key."""
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"current")
+        backup = tmp_path / "backup.duckdb"
+        backup.write_bytes(b"backup")
+        _make_settings_mock(test_db, mocker)
+
+        mocker.patch(
+            "moneybin.database.Database",
+            side_effect=Exception("wrong encryption key"),
+        )
+        mocker.patch("moneybin.secrets.SecretStore")
+
+        result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
+        assert result.exit_code == 1
+
+
 class TestDatabaseCommandsIntegration:
     """Integration tests for database CLI commands."""
 
