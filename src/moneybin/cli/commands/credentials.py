@@ -8,9 +8,8 @@ import logging
 
 import typer
 
-# Import the actual implementation classes
-from moneybin.config import get_current_profile
-from moneybin.utils.secrets_manager import SecretsManager
+from moneybin.config import get_current_profile, get_settings
+from moneybin.secrets import SecretNotFoundError, SecretStore
 
 app = typer.Typer(
     help="Manage API credentials and environment configuration", no_args_is_help=True
@@ -21,21 +20,33 @@ logger = logging.getLogger(__name__)
 @app.command("validate")
 def validate() -> None:
     """Validate all configured credentials and API connections."""
-    # Set up logging for this command
-
     profile = get_current_profile()
     logger.info(f"Validating credentials (Profile: {profile})")
 
-    # Test credentials loading
-    manager = SecretsManager()
-    validation_results = manager.validate_all_credentials()
+    store = SecretStore()
+    settings = get_settings()
+    validation_results: dict[str, bool] = {}
+
+    # Validate database encryption key
+    try:
+        store.get_key("DATABASE__ENCRYPTION_KEY")
+        validation_results["database_key"] = True
+    except SecretNotFoundError:
+        validation_results["database_key"] = False
+
+    # Validate sync API key if sync is enabled
+    if settings.sync.enabled:
+        try:
+            store.get_env("SYNC__API_KEY")
+            validation_results["sync"] = True
+        except SecretNotFoundError:
+            validation_results["sync"] = False
 
     logger.info("🔐 Credential Validation Results:")
     for service, is_valid in validation_results.items():
         status = "✅ Valid" if is_valid else "❌ Invalid/Missing"
-        logger.info(f"  {service.capitalize()}: {status}")
+        logger.info(f"  {service.replace('_', ' ').capitalize()}: {status}")
 
-    # Summary
     valid_count = sum(validation_results.values())
     total_count = len(validation_results)
 
@@ -43,9 +54,7 @@ def validate() -> None:
         logger.info(f"✅ All {total_count} credential(s) are valid")
     else:
         logger.warning(f"⚠️  {valid_count}/{total_count} credential(s) are valid")
-        logger.info(
-            "Check your .env file and run 'moneybin config credentials list-services' for details"
-        )
+        logger.info("💡 Run 'moneybin db init' to set up encryption keys")
 
 
 @app.command("list-services")
