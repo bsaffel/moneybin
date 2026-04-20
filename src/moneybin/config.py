@@ -63,6 +63,14 @@ class DatabaseConfig(BaseModel):
     create_dirs: bool = Field(
         default=True, description="Automatically create database directories"
     )
+    encryption_key_mode: Literal["auto", "passphrase"] = Field(
+        default="auto",
+        description="How the encryption key is managed: auto-generated or user passphrase",
+    )
+    temp_directory: Path | None = Field(
+        default=None,
+        description="DuckDB temp spill directory. Defaults to data/<profile>/temp/",
+    )
 
     @field_validator("path")
     @classmethod
@@ -239,11 +247,15 @@ class MoneyBinSettings(BaseSettings):
         ):
             if duckdb_path:
                 kwargs["database"] = DatabaseConfig(
-                    path=_resolve_path(base, Path(duckdb_path))
+                    path=_resolve_path(base, Path(duckdb_path)),
+                    backup_path=base / f"data/{profile}/backups",
+                    temp_directory=base / f"data/{profile}/temp",
                 )
             else:
                 kwargs["database"] = DatabaseConfig(
-                    path=base / f"data/{profile}/moneybin.duckdb"
+                    path=base / f"data/{profile}/moneybin.duckdb",
+                    backup_path=base / f"data/{profile}/backups",
+                    temp_directory=base / f"data/{profile}/temp",
                 )
 
         if "data" not in kwargs:
@@ -325,6 +337,9 @@ class MoneyBinSettings(BaseSettings):
 
     def create_directories(self) -> None:
         """Create necessary directories for the application."""
+        import stat
+        import sys
+
         directories = [
             self.database.path.parent,
             self.data.raw_data_path,
@@ -334,9 +349,21 @@ class MoneyBinSettings(BaseSettings):
 
         if self.database.backup_path:
             directories.append(self.database.backup_path)
+        if self.database.temp_directory:
+            directories.append(self.database.temp_directory)
 
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+
+            # Set restrictive permissions on data directories (macOS/Linux)
+            if (
+                sys.platform != "win32"
+                and directory != self.logging.log_file_path.parent
+            ):
+                try:
+                    directory.chmod(stat.S_IRWXU)  # 0700
+                except OSError:
+                    pass  # Best-effort on platforms that don't support chmod
 
     def validate_required_credentials(self) -> None:
         """Validate that required credentials are present.
