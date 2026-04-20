@@ -889,144 +889,148 @@ Expected: FAIL — `AttributeError: 'SpendingService' object has no attribute 'b
 Add to `SpendingService` in `src/moneybin/services/spending_service.py`:
 
 ```python
-    def by_category(
-        self,
-        months: int = 3,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        account_id: list[str] | None = None,
-        top_n: int = 10,
-        include_uncategorized: bool = True,
-    ) -> CategoryBreakdown:
-        """Get spending breakdown by category.
+def by_category(
+    self,
+    months: int = 3,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    account_id: list[str] | None = None,
+    top_n: int = 10,
+    include_uncategorized: bool = True,
+) -> CategoryBreakdown:
+    """Get spending breakdown by category.
 
-        Args:
-            months: Number of recent months to include.
-            start_date: ISO 8601 start date (overrides months).
-            end_date: ISO 8601 end date.
-            account_id: Filter to specific accounts.
-            top_n: Limit to top N categories by total.
-            include_uncategorized: Include uncategorized spending as a rollup row.
+    Args:
+        months: Number of recent months to include.
+        start_date: ISO 8601 start date (overrides months).
+        end_date: ISO 8601 end date.
+        account_id: Filter to specific accounts.
+        top_n: Limit to top N categories by total.
+        include_uncategorized: Include uncategorized spending as a rollup row.
 
-        Returns:
-            CategoryBreakdown with per-category totals.
-        """
-        from moneybin.tables import TRANSACTION_CATEGORIES
+    Returns:
+        CategoryBreakdown with per-category totals.
+    """
+    from moneybin.tables import TRANSACTION_CATEGORIES
 
-        conditions: list[str] = ["t.amount < 0"]
-        params: list[object] = []
+    conditions: list[str] = ["t.amount < 0"]
+    params: list[object] = []
 
-        if start_date and end_date:
-            conditions.append("t.transaction_year_month >= ?")
-            params.append(start_date[:7])
-            conditions.append("t.transaction_year_month <= ?")
-            params.append(end_date[:7])
+    if start_date and end_date:
+        conditions.append("t.transaction_year_month >= ?")
+        params.append(start_date[:7])
+        conditions.append("t.transaction_year_month <= ?")
+        params.append(end_date[:7])
 
-        if account_id:
-            placeholders = ", ".join(["?"] * len(account_id))
-            conditions.append(f"t.account_id IN ({placeholders})")
-            params.extend(account_id)
+    if account_id:
+        placeholders = ", ".join(["?"] * len(account_id))
+        conditions.append(f"t.account_id IN ({placeholders})")
+        params.extend(account_id)
 
-        where = "WHERE " + " AND ".join(conditions)
+    where = "WHERE " + " AND ".join(conditions)
 
-        # Date filter for month-based lookback
-        month_limit = ""
-        if not start_date:
-            month_limit = f"""
-                AND t.transaction_year_month IN (
-                    SELECT DISTINCT transaction_year_month
-                    FROM {FCT_TRANSACTIONS.full_name}
-                    ORDER BY transaction_year_month DESC
-                    LIMIT ?
-                )
-            """
-            params.append(months)
-
-        sql = f"""
-            WITH categorized AS (
-                SELECT
-                    COALESCE(c.category, 'Uncategorized') AS category,
-                    c.subcategory,
-                    SUM(ABS(t.amount)) AS total,
-                    COUNT(*) AS transaction_count
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
-                {where}
-                {month_limit}
-                GROUP BY COALESCE(c.category, 'Uncategorized'), c.subcategory
-            ),
-            grand_total AS (
-                SELECT SUM(total) AS grand_total FROM categorized
-            )
-            SELECT
-                category,
-                subcategory,
-                total,
-                transaction_count,
-                ROUND(total * 100.0 / NULLIF(gt.grand_total, 0), 1) AS percent_of_total,
-                gt.grand_total
-            FROM categorized, grand_total gt
-            ORDER BY total DESC
-        """
-
-        result = self._db.execute(sql, params)
-        rows = result.fetchall()
-
-        total_spending = float(rows[0][5]) if rows else 0.0
-
-        categories = []
-        for row in rows:
-            cat_name = row[0]
-            if cat_name == "Uncategorized" and not include_uncategorized:
-                continue
-            categories.append(
-                CategoryRow(
-                    category=cat_name,
-                    subcategory=row[1],
-                    total=float(row[2]),
-                    transaction_count=int(row[3]),
-                    percent_of_total=float(row[4] or 0),
-                )
-            )
-
-        if top_n and len(categories) > top_n:
-            categories = categories[:top_n]
-
-        # Build period string
-        period = self._resolve_period(months, start_date, end_date)
-
-        return CategoryBreakdown(
-            categories=categories,
-            total_spending=total_spending,
-            period=period,
-        )
-
-    def _resolve_period(
-        self,
-        months: int,
-        start_date: str | None,
-        end_date: str | None,
-    ) -> str:
-        """Build a human-readable period string."""
-        if start_date and end_date:
-            return f"{start_date[:7]} to {end_date[:7]}"
-
-        result = self._db.execute(f"""
-            SELECT
-                MIN(transaction_year_month),
-                MAX(transaction_year_month)
-            FROM (
+    # Date filter for month-based lookback
+    month_limit = ""
+    if not start_date:
+        month_limit = f"""
+            AND t.transaction_year_month IN (
                 SELECT DISTINCT transaction_year_month
                 FROM {FCT_TRANSACTIONS.full_name}
                 ORDER BY transaction_year_month DESC
                 LIMIT ?
             )
-        """, [months])
-        row = result.fetchone()
-        if row and row[0]:
-            return f"{row[0]} to {row[1]}"
-        return ""
+        """
+        params.append(months)
+
+    sql = f"""
+        WITH categorized AS (
+            SELECT
+                COALESCE(c.category, 'Uncategorized') AS category,
+                c.subcategory,
+                SUM(ABS(t.amount)) AS total,
+                COUNT(*) AS transaction_count
+            FROM {FCT_TRANSACTIONS.full_name} t
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
+                ON t.transaction_id = c.transaction_id
+            {where}
+            {month_limit}
+            GROUP BY COALESCE(c.category, 'Uncategorized'), c.subcategory
+        ),
+        grand_total AS (
+            SELECT SUM(total) AS grand_total FROM categorized
+        )
+        SELECT
+            category,
+            subcategory,
+            total,
+            transaction_count,
+            ROUND(total * 100.0 / NULLIF(gt.grand_total, 0), 1) AS percent_of_total,
+            gt.grand_total
+        FROM categorized, grand_total gt
+        ORDER BY total DESC
+    """
+
+    result = self._db.execute(sql, params)
+    rows = result.fetchall()
+
+    total_spending = float(rows[0][5]) if rows else 0.0
+
+    categories = []
+    for row in rows:
+        cat_name = row[0]
+        if cat_name == "Uncategorized" and not include_uncategorized:
+            continue
+        categories.append(
+            CategoryRow(
+                category=cat_name,
+                subcategory=row[1],
+                total=float(row[2]),
+                transaction_count=int(row[3]),
+                percent_of_total=float(row[4] or 0),
+            )
+        )
+
+    if top_n and len(categories) > top_n:
+        categories = categories[:top_n]
+
+    # Build period string
+    period = self._resolve_period(months, start_date, end_date)
+
+    return CategoryBreakdown(
+        categories=categories,
+        total_spending=total_spending,
+        period=period,
+    )
+
+
+def _resolve_period(
+    self,
+    months: int,
+    start_date: str | None,
+    end_date: str | None,
+) -> str:
+    """Build a human-readable period string."""
+    if start_date and end_date:
+        return f"{start_date[:7]} to {end_date[:7]}"
+
+    result = self._db.execute(
+        f"""
+        SELECT
+            MIN(transaction_year_month),
+            MAX(transaction_year_month)
+        FROM (
+            SELECT DISTINCT transaction_year_month
+            FROM {FCT_TRANSACTIONS.full_name}
+            ORDER BY transaction_year_month DESC
+            LIMIT ?
+        )
+    """,
+        [months],
+    )
+    row = result.fetchone()
+    if row and row[0]:
+        return f"{row[0]} to {row[1]}"
+    return ""
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1109,181 +1113,182 @@ Expected: FAIL — `AttributeError`
 Add to `SpendingService` in `src/moneybin/services/spending_service.py`:
 
 ```python
-    def merchants(
-        self,
-        months: int = 3,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        account_id: list[str] | None = None,
-        top_n: int = 20,
-    ) -> MerchantBreakdown:
-        """Get top merchants by spending.
+def merchants(
+    self,
+    months: int = 3,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    account_id: list[str] | None = None,
+    top_n: int = 20,
+) -> MerchantBreakdown:
+    """Get top merchants by spending.
 
-        Args:
-            months: Number of recent months.
-            start_date: ISO 8601 start date (overrides months).
-            end_date: ISO 8601 end date.
-            account_id: Filter to specific accounts.
-            top_n: Number of merchants to return.
+    Args:
+        months: Number of recent months.
+        start_date: ISO 8601 start date (overrides months).
+        end_date: ISO 8601 end date.
+        account_id: Filter to specific accounts.
+        top_n: Number of merchants to return.
 
-        Returns:
-            MerchantBreakdown with per-merchant totals.
+    Returns:
+        MerchantBreakdown with per-merchant totals.
+    """
+    from moneybin.tables import MERCHANTS, TRANSACTION_CATEGORIES
+
+    conditions: list[str] = ["t.amount < 0"]
+    params: list[object] = []
+
+    if start_date and end_date:
+        conditions.append("t.transaction_year_month >= ?")
+        params.append(start_date[:7])
+        conditions.append("t.transaction_year_month <= ?")
+        params.append(end_date[:7])
+
+    if account_id:
+        placeholders = ", ".join(["?"] * len(account_id))
+        conditions.append(f"t.account_id IN ({placeholders})")
+        params.extend(account_id)
+
+    where = "WHERE " + " AND ".join(conditions)
+
+    month_limit = ""
+    if not start_date:
+        month_limit = f"""
+            AND t.transaction_year_month IN (
+                SELECT DISTINCT transaction_year_month
+                FROM {FCT_TRANSACTIONS.full_name}
+                ORDER BY transaction_year_month DESC
+                LIMIT ?
+            )
         """
-        from moneybin.tables import MERCHANTS, TRANSACTION_CATEGORIES
+        params.append(months)
 
-        conditions: list[str] = ["t.amount < 0"]
-        params: list[object] = []
+    params.append(top_n)
 
-        if start_date and end_date:
-            conditions.append("t.transaction_year_month >= ?")
-            params.append(start_date[:7])
-            conditions.append("t.transaction_year_month <= ?")
-            params.append(end_date[:7])
+    sql = f"""
+        SELECT
+            COALESCE(m.canonical_name, t.description) AS merchant_name,
+            SUM(ABS(t.amount)) AS total,
+            COUNT(*) AS transaction_count,
+            MAX(c.category) AS category,
+            MAX(t.transaction_date)::VARCHAR AS last_seen
+        FROM {FCT_TRANSACTIONS.full_name} t
+        LEFT JOIN {MERCHANTS.full_name} m
+            ON t.description ILIKE '%' || m.raw_pattern || '%'
+            AND m.match_type = 'contains'
+        LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
+            ON t.transaction_id = c.transaction_id
+        {where}
+        {month_limit}
+        GROUP BY COALESCE(m.canonical_name, t.description)
+        ORDER BY total DESC
+        LIMIT ?
+    """
 
-        if account_id:
-            placeholders = ", ".join(["?"] * len(account_id))
-            conditions.append(f"t.account_id IN ({placeholders})")
-            params.extend(account_id)
+    result = self._db.execute(sql, params)
+    rows = result.fetchall()
 
-        where = "WHERE " + " AND ".join(conditions)
+    merchants_list = [
+        MerchantRow(
+            merchant_name=row[0],
+            total=float(row[1]),
+            transaction_count=int(row[2]),
+            category=row[3],
+            last_seen=str(row[4]),
+        )
+        for row in rows
+    ]
 
-        month_limit = ""
-        if not start_date:
-            month_limit = f"""
-                AND t.transaction_year_month IN (
-                    SELECT DISTINCT transaction_year_month
-                    FROM {FCT_TRANSACTIONS.full_name}
-                    ORDER BY transaction_year_month DESC
-                    LIMIT ?
-                )
-            """
-            params.append(months)
+    period = self._resolve_period(months, start_date, end_date)
 
-        params.append(top_n)
+    return MerchantBreakdown(merchants=merchants_list, period=period)
 
-        sql = f"""
+
+def compare(
+    self,
+    period_a: str,
+    period_b: str,
+    account_id: list[str] | None = None,
+) -> PeriodComparison:
+    """Compare spending between two periods.
+
+    Args:
+        period_a: First period (YYYY-MM).
+        period_b: Second period (YYYY-MM).
+        account_id: Filter to specific accounts.
+
+    Returns:
+        PeriodComparison with per-category change amounts.
+    """
+    from moneybin.tables import TRANSACTION_CATEGORIES
+
+    account_filter = ""
+    params: list[object] = [period_a, period_b]
+
+    if account_id:
+        placeholders = ", ".join(["?"] * len(account_id))
+        account_filter = f"AND t.account_id IN ({placeholders})"
+        params.extend(account_id)
+
+    sql = f"""
+        WITH spending AS (
             SELECT
-                COALESCE(m.canonical_name, t.description) AS merchant_name,
-                SUM(ABS(t.amount)) AS total,
-                COUNT(*) AS transaction_count,
-                MAX(c.category) AS category,
-                MAX(t.transaction_date)::VARCHAR AS last_seen
+                COALESCE(c.category, 'Uncategorized') AS category,
+                t.transaction_year_month AS period,
+                SUM(ABS(t.amount)) AS total
             FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {MERCHANTS.full_name} m
-                ON t.description ILIKE '%' || m.raw_pattern || '%'
-                AND m.match_type = 'contains'
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                 ON t.transaction_id = c.transaction_id
-            {where}
-            {month_limit}
-            GROUP BY COALESCE(m.canonical_name, t.description)
-            ORDER BY total DESC
-            LIMIT ?
-        """
-
-        result = self._db.execute(sql, params)
-        rows = result.fetchall()
-
-        merchants_list = [
-            MerchantRow(
-                merchant_name=row[0],
-                total=float(row[1]),
-                transaction_count=int(row[2]),
-                category=row[3],
-                last_seen=str(row[4]),
-            )
-            for row in rows
-        ]
-
-        period = self._resolve_period(months, start_date, end_date)
-
-        return MerchantBreakdown(merchants=merchants_list, period=period)
-
-    def compare(
-        self,
-        period_a: str,
-        period_b: str,
-        account_id: list[str] | None = None,
-    ) -> PeriodComparison:
-        """Compare spending between two periods.
-
-        Args:
-            period_a: First period (YYYY-MM).
-            period_b: Second period (YYYY-MM).
-            account_id: Filter to specific accounts.
-
-        Returns:
-            PeriodComparison with per-category change amounts.
-        """
-        from moneybin.tables import TRANSACTION_CATEGORIES
-
-        account_filter = ""
-        params: list[object] = [period_a, period_b]
-
-        if account_id:
-            placeholders = ", ".join(["?"] * len(account_id))
-            account_filter = f"AND t.account_id IN ({placeholders})"
-            params.extend(account_id)
-
-        sql = f"""
-            WITH spending AS (
-                SELECT
-                    COALESCE(c.category, 'Uncategorized') AS category,
-                    t.transaction_year_month AS period,
-                    SUM(ABS(t.amount)) AS total
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
-                WHERE t.amount < 0
-                    AND t.transaction_year_month IN (?, ?)
-                    {account_filter}
-                GROUP BY COALESCE(c.category, 'Uncategorized'),
-                         t.transaction_year_month
-            )
-            SELECT
-                category,
-                SUM(CASE WHEN period = ? THEN total ELSE 0 END) AS period_a_total,
-                SUM(CASE WHEN period = ? THEN total ELSE 0 END) AS period_b_total
-            FROM spending
-            GROUP BY category
-            ORDER BY GREATEST(
-                SUM(CASE WHEN period = ? THEN total ELSE 0 END),
-                SUM(CASE WHEN period = ? THEN total ELSE 0 END)
-            ) DESC
-        """
-        # Add period_a/period_b for the CASE expressions and ORDER BY
-        params.extend([period_a, period_b, period_a, period_b])
-
-        result = self._db.execute(sql, params)
-        rows = result.fetchall()
-
-        categories = []
-        total_a = 0.0
-        total_b = 0.0
-        for row in rows:
-            a = float(row[1])
-            b = float(row[2])
-            change = b - a
-            pct = (change / a * 100) if a > 0 else None
-            categories.append(
-                PeriodComparisonRow(
-                    category=row[0],
-                    period_a_total=a,
-                    period_b_total=b,
-                    change_amount=change,
-                    change_percent=pct,
-                )
-            )
-            total_a += a
-            total_b += b
-
-        return PeriodComparison(
-            period_a=period_a,
-            period_b=period_b,
-            categories=categories,
-            period_a_total=total_a,
-            period_b_total=total_b,
+            WHERE t.amount < 0
+                AND t.transaction_year_month IN (?, ?)
+                {account_filter}
+            GROUP BY COALESCE(c.category, 'Uncategorized'),
+                     t.transaction_year_month
         )
+        SELECT
+            category,
+            SUM(CASE WHEN period = ? THEN total ELSE 0 END) AS period_a_total,
+            SUM(CASE WHEN period = ? THEN total ELSE 0 END) AS period_b_total
+        FROM spending
+        GROUP BY category
+        ORDER BY GREATEST(
+            SUM(CASE WHEN period = ? THEN total ELSE 0 END),
+            SUM(CASE WHEN period = ? THEN total ELSE 0 END)
+        ) DESC
+    """
+    # Add period_a/period_b for the CASE expressions and ORDER BY
+    params.extend([period_a, period_b, period_a, period_b])
+
+    result = self._db.execute(sql, params)
+    rows = result.fetchall()
+
+    categories = []
+    total_a = 0.0
+    total_b = 0.0
+    for row in rows:
+        a = float(row[1])
+        b = float(row[2])
+        change = b - a
+        pct = (change / a * 100) if a > 0 else None
+        categories.append(
+            PeriodComparisonRow(
+                category=row[0],
+                period_a_total=a,
+                period_b_total=b,
+                change_amount=change,
+                change_percent=pct,
+            )
+        )
+        total_a += a
+        total_b += b
+
+    return PeriodComparison(
+        period_a=period_a,
+        period_b=period_b,
+        categories=categories,
+        period_a_total=total_a,
+        period_b_total=total_b,
+    )
 ```
 
 - [ ] **Step 8: Run all SpendingService tests**
@@ -1808,9 +1813,7 @@ def mock_spending_service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     )
 
     mock_cls = MagicMock(return_value=mock_svc)
-    monkeypatch.setattr(
-        "moneybin.cli.commands.spending.SpendingService", mock_cls
-    )
+    monkeypatch.setattr("moneybin.cli.commands.spending.SpendingService", mock_cls)
     return mock_svc
 
 
@@ -1834,7 +1837,9 @@ class TestSpendingSummaryCLI:
         runner.invoke(app, ["spending", "summary", "--months", "6"])
         mock_spending_service.summary.assert_called_once()
         call_kwargs = mock_spending_service.summary.call_args
-        assert call_kwargs.kwargs.get("months") == 6 or call_kwargs[1].get("months") == 6
+        assert (
+            call_kwargs.kwargs.get("months") == 6 or call_kwargs[1].get("months") == 6
+        )
 ```
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -1880,9 +1885,7 @@ def _get_service() -> SpendingService:
 
 @app.command("summary")
 def summary(
-    months: Annotated[
-        int, typer.Option(help="Number of recent months to include")
-    ] = 3,
+    months: Annotated[int, typer.Option(help="Number of recent months to include")] = 3,
     start_date: Annotated[
         str | None, typer.Option("--start-date", help="ISO 8601 start date")
     ] = None,

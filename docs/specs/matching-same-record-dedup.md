@@ -317,8 +317,14 @@ class MatchingSettings(BaseModel):
     review_threshold: float = 0.70
     date_window_days: int = 3
     source_priority: list[str] = [
-        "plaid", "csv", "excel", "tsv", "parquet",
-        "feather", "pipe", "ofx",
+        "plaid",
+        "csv",
+        "excel",
+        "tsv",
+        "parquet",
+        "feather",
+        "pipe",
+        "ofx",
     ]
     # Must include every supported source_type. Tabular formats are
     # format-specific per smart-import-tabular.md.

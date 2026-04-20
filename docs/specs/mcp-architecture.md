@@ -394,15 +394,19 @@ The MCP server and CLI are co-equal consumers of the same service layer. The sym
 class SpendingService:
     def summary(self, months: int, account_id: str | None) -> SpendingSummary: ...
 
+
 # MCP tool (thin wrapper)
 @mcp_tool(sensitivity="low")
 def spending_summary(months: int = 3, account_id: str | None = None) -> dict:
     service = SpendingService(get_db())
     return service.summary(months, account_id).to_response()
 
+
 # CLI command (thin wrapper)
 @spending_app.command("summary")
-def spending_summary_cmd(months: int = typer.Option(3), account_id: str | None = None) -> None:
+def spending_summary_cmd(
+    months: int = typer.Option(3), account_id: str | None = None
+) -> None:
     service = SpendingService(get_db())
     result = service.summary(months, account_id)
     render_table(result)

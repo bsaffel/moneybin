@@ -9,7 +9,9 @@
   3. **`sqlglot` quoting** — use `sqlglot.exp.to_identifier(name, quoted=True).sql("duckdb")` for programmatic identifier quoting when building SQL programmatically. Already a project dependency.
   ```python
   # CORRECT — validate against catalog, then quote
-  valid_tables = db.sql("SELECT schema_name || '.' || table_name FROM duckdb_tables()").fetchall()
+  valid_tables = db.sql(
+      "SELECT schema_name || '.' || table_name FROM duckdb_tables()"
+  ).fetchall()
   qualified = f"{schema}.{table}"
   if (qualified,) not in valid_tables:
       raise ValueError(f"Unknown table: {qualified}")

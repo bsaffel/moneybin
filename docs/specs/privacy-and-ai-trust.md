@@ -224,6 +224,7 @@ Each MCP tool declares the maximum data sensitivity tier its response contains:
 @mcp_tool(sensitivity="low")  # tier 0/1 — aggregates only
 def get_spending_by_category(month: str) -> dict: ...
 
+
 @mcp_tool(sensitivity="medium")  # tier 2 — includes descriptions/amounts
 def search_transactions(query: str, limit: int) -> list[dict]: ...
 ```
@@ -294,6 +295,7 @@ New `AIConfig` section in `MoneyBinSettings`, following the existing pattern (`D
 ```python
 class AIConfig(BaseModel):
     """AI backend and privacy configuration."""
+
     model_config = ConfigDict(frozen=True)
 
     default_backend: str | None = Field(
@@ -305,25 +307,35 @@ class AIConfig(BaseModel):
         description="standard: tier-2 consent persists. strict: all AI calls prompt every time.",
     )
 
+
 class AnthropicConfig(BaseModel):
     """Anthropic (Claude) backend configuration."""
+
     model_config = ConfigDict(frozen=True)
 
     api_key: SecretStr | None = Field(default=None, description="Anthropic API key")
-    model: str = Field(default="claude-sonnet-4-6", description="Model to use for AI features")
+    model: str = Field(
+        default="claude-sonnet-4-6", description="Model to use for AI features"
+    )
+
 
 class OpenAIConfig(BaseModel):
     """OpenAI backend configuration."""
+
     model_config = ConfigDict(frozen=True)
 
     api_key: SecretStr | None = Field(default=None, description="OpenAI API key")
     model: str = Field(default="gpt-4o", description="Model to use for AI features")
 
+
 class OllamaConfig(BaseModel):
     """Ollama (local LLM) backend configuration."""
+
     model_config = ConfigDict(frozen=True)
 
-    base_url: str = Field(default="http://localhost:11434", description="Ollama server URL")
+    base_url: str = Field(
+        default="http://localhost:11434", description="Ollama server URL"
+    )
     model: str = Field(default="llama3", description="Model name")
 ```
 

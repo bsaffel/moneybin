@@ -215,14 +215,16 @@ directly or use ambient state. This makes determinism structural, not by convent
 ```python
 class SeededRandom:
     """Wrapper around random.Random providing all stochastic operations."""
+
     def __init__(self, seed: int) -> None:
         self._rng = random.Random(seed)
 
     def log_normal(self, mean: float, stddev: float) -> float: ...
     def weighted_choice(self, items: list, weights: list[float]) -> Any: ...
     def poisson(self, lam: float) -> int: ...
-    def day_in_month(self, year: int, month: int,
-                     day_weights: dict[str, float] | None = None) -> int: ...
+    def day_in_month(
+        self, year: int, month: int, day_weights: dict[str, float] | None = None
+    ) -> int: ...
 ```
 
 When the generator changes (new merchants, adjusted distributions), golden snapshot

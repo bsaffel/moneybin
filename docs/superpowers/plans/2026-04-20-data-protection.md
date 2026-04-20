@@ -284,9 +284,7 @@ class SecretStore:
         if value is not None:
             return value
 
-        raise SecretNotFoundError(
-            f"Secret '{name}' not found. Set env var {env_var}."
-        )
+        raise SecretNotFoundError(f"Secret '{name}' not found. Set env var {env_var}.")
 
     def set_key(self, name: str, value: str) -> None:
         """Store a secret in the OS keychain.
@@ -502,9 +500,7 @@ class TestDatabaseInit:
         """Database file cannot be opened without the encryption key."""
         db_path = db_dir / "moneybin.duckdb"
         db = Database(db_path, secret_store=mock_secret_store)
-        db.execute(
-            "CREATE TABLE test_data (id INTEGER, name VARCHAR)"
-        )
+        db.execute("CREATE TABLE test_data (id INTEGER, name VARCHAR)")
         db.execute("INSERT INTO test_data VALUES (1, 'Alice')")
         db.close()
 
@@ -531,9 +527,7 @@ class TestDatabaseInit:
         finally:
             db.close()
 
-    def test_raises_database_key_error_when_no_key(
-        self, db_dir: Path
-    ) -> None:
+    def test_raises_database_key_error_when_no_key(self, db_dir: Path) -> None:
         """DatabaseKeyError raised when SecretStore cannot find the key."""
         store = MagicMock()
         from moneybin.secrets import SecretNotFoundError
@@ -590,7 +584,10 @@ class TestGetDatabase:
     """get_database() singleton behavior."""
 
     def test_returns_same_instance(
-        self, db_dir: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self,
+        db_dir: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Repeated calls return the same Database instance."""
         from moneybin import database as db_module
@@ -603,12 +600,8 @@ class TestGetDatabase:
         mock_settings.database.temp_directory = db_dir / "temp"
         mock_settings.database.create_dirs = True
         monkeypatch.setattr(db_module, "_database_instance", None)
-        monkeypatch.setattr(
-            "moneybin.database.get_settings", lambda: mock_settings
-        )
-        monkeypatch.setattr(
-            "moneybin.database.SecretStore", lambda: mock_secret_store
-        )
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
 
         db1 = get_database()
         db2 = get_database()
@@ -733,9 +726,7 @@ class Database:
             try:
                 db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
             except OSError:
-                logger.warning(
-                    "Could not set file permissions on %s", db_path
-                )
+                logger.warning("Could not set file permissions on %s", db_path)
 
         # Validate permissions on existing databases
         if not is_new and sys.platform != "win32":
@@ -921,9 +912,7 @@ def make_record() -> callable:
     logger = logging.getLogger("test.sanitizer")
 
     def _make(msg: str, level: int = logging.INFO) -> logging.LogRecord:
-        return logger.makeRecord(
-            "test.sanitizer", level, "test.py", 1, msg, (), None
-        )
+        return logger.makeRecord("test.sanitizer", level, "test.py", 1, msg, (), None)
 
     return _make
 
@@ -1000,7 +989,10 @@ class TestCleanPassthrough:
 
 class TestWarningOnMask:
     def test_emits_warning_when_masking(
-        self, formatter: SanitizedLogFormatter, make_record: callable, caplog: pytest.LogCaptureFixture
+        self,
+        formatter: SanitizedLogFormatter,
+        make_record: callable,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """When masking occurs, a WARNING is emitted identifying the source."""
         record = make_record("SSN: 123-45-6789")
@@ -1109,8 +1101,7 @@ class SanitizedLogFormatter(logging.Formatter):
 
         if masked:
             _sanitizer_logger.warning(
-                "PII pattern detected and masked in log output "
-                "(source: %s:%s)",
+                "PII pattern detected and masked in log output (source: %s:%s)",
                 record.pathname,
                 record.lineno,
             )
@@ -1247,6 +1238,7 @@ from moneybin.database import Database
 
 # In fixtures, create a Database with a mock SecretStore:
 from unittest.mock import MagicMock
+
 mock_store = MagicMock()
 mock_store.get_key.return_value = "test-key"
 db = Database(tmp_path / "test.duckdb", secret_store=mock_store)
@@ -1371,6 +1363,7 @@ try:
 **After:**
 ```python
 from moneybin.database import get_database
+
 db = get_database()
 stats = apply_deterministic_categorization(db)
 # ...
@@ -1385,6 +1378,7 @@ Apply this pattern to all 4 commands: `apply-rules`, `seed`, `stats`, `list-rule
 1. In `import_file()`, change:
 ```python
 from moneybin.database import get_database
+
 db = get_database()
 result = do_import(
     db=db,
@@ -1396,6 +1390,7 @@ result = do_import(
 2. In `import_status()`, change:
 ```python
 from moneybin.database import get_database
+
 db = get_database()
 _print_import_status(db.conn)
 ```
@@ -1436,6 +1431,7 @@ Read `src/moneybin/mcp/server.py` fully. Key changes:
 2. Replace with:
 ```python
 from moneybin.database import get_database
+
 
 def get_db() -> duckdb.DuckDBPyConnection:
     """Get the DuckDB connection for queries.
@@ -1486,6 +1482,7 @@ def init_db(db_path: Path) -> None:
 def close_db() -> None:
     """Close the DuckDB connection if open."""
     from moneybin.database import close_database
+
     close_database()
 ```
 
@@ -1520,15 +1517,20 @@ Replace the current `init_schemas` command with an encryption-aware version:
 @app.command("init")
 def init_db(
     database: Path | None = typer.Option(
-        None, "--database", "-d",
+        None,
+        "--database",
+        "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
     passphrase: bool = typer.Option(
-        False, "--passphrase",
+        False,
+        "--passphrase",
         help="Use passphrase-based key derivation instead of auto-generated key",
     ),
     yes: bool = typer.Option(
-        False, "--yes", "-y",
+        False,
+        "--yes",
+        "-y",
         help="Skip confirmation prompts",
     ),
 ) -> None:
@@ -1567,7 +1569,11 @@ def init_db(
 
         # Derive key using Argon2id
         hasher = argon2.PasswordHasher(
-            time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, type=argon2.Type.ID
+            time_cost=3,
+            memory_cost=65536,
+            parallelism=4,
+            hash_len=32,
+            type=argon2.Type.ID,
         )
         # Use the hash as the encryption key (it includes salt)
         key_hash = hasher.hash(pp)
@@ -1617,6 +1623,7 @@ Add a helper function that creates a temporary SQL init script for the DuckDB CL
 ```python
 import tempfile
 
+
 def _create_init_script(db_path: Path) -> Path:
     """Create a temporary SQL init script for DuckDB CLI with encrypted attach.
 
@@ -1659,7 +1666,9 @@ def _create_init_script(db_path: Path) -> Path:
 @app.command("shell")
 def open_shell(
     database: Path | None = typer.Option(
-        None, "--database", "-d",
+        None,
+        "--database",
+        "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
 ) -> None:
@@ -1703,7 +1712,9 @@ Same pattern but with `-ui` flag:
 @app.command("ui")
 def open_ui(
     database: Path | None = typer.Option(
-        None, "--database", "-d",
+        None,
+        "--database",
+        "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
 ) -> None:
@@ -1746,11 +1757,15 @@ def open_ui(
 def run_query(
     sql: str = typer.Argument(..., help="SQL query to execute"),
     database: Path | None = typer.Option(
-        None, "--database", "-d",
+        None,
+        "--database",
+        "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
     output_format: str = typer.Option(
-        "table", "--format", "-f",
+        "table",
+        "--format",
+        "-f",
         help="Output format: table, csv, json, markdown, box",
     ),
 ) -> None:
@@ -1837,7 +1852,9 @@ git commit -m "feat: rewrite db shell/ui/query with encrypted -init temp script"
 @app.command("info")
 def db_info(
     database: Path | None = typer.Option(
-        None, "--database", "-d",
+        None,
+        "--database",
+        "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
 ) -> None:
@@ -1926,7 +1943,9 @@ git commit -m "feat: add db info command for database metadata display"
 @app.command("backup")
 def db_backup(
     output: Path | None = typer.Option(
-        None, "--output", "-o",
+        None,
+        "--output",
+        "-o",
         help="Output path for backup (default: data/<profile>/backups/)",
     ),
 ) -> None:
@@ -1973,11 +1992,14 @@ def db_backup(
 @app.command("restore")
 def db_restore(
     from_path: Path | None = typer.Option(
-        None, "--from",
+        None,
+        "--from",
         help="Path to backup file to restore from",
     ),
     yes: bool = typer.Option(
-        False, "--yes", "-y",
+        False,
+        "--yes",
+        "-y",
         help="Skip confirmation prompt",
     ),
 ) -> None:
@@ -2191,7 +2213,9 @@ git commit -m "feat: add db lock, unlock, and key commands"
 @app.command("rotate-key")
 def db_rotate_key(
     yes: bool = typer.Option(
-        False, "--yes", "-y",
+        False,
+        "--yes",
+        "-y",
         help="Skip confirmation prompt",
     ),
 ) -> None:
@@ -2215,9 +2239,7 @@ def db_rotate_key(
         raise typer.Exit(1)
 
     if not yes:
-        logger.warning(
-            "⚠️  Existing backups will remain encrypted with the old key."
-        )
+        logger.warning("⚠️  Existing backups will remain encrypted with the old key.")
         confirm = typer.confirm("Proceed with key rotation?")
         if not confirm:
             raise typer.Exit(0)
@@ -2267,9 +2289,7 @@ def db_rotate_key(
     old_backup.unlink(missing_ok=True)
 
     logger.info("✅ Database re-encrypted with new key")
-    logger.info(
-        "💡 Existing backups are still encrypted with the old key"
-    )
+    logger.info("💡 Existing backups are still encrypted with the old key")
 ```
 
 - [ ] **Step 2: Run linting**
@@ -2328,6 +2348,7 @@ Change `create_core_tables` to accept `Database`:
 
 ```python
 from moneybin.database import Database
+
 
 def create_core_tables(db: Database) -> None:
     """Create core tables for testing."""

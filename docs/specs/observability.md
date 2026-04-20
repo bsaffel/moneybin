@@ -47,6 +47,7 @@ Standard Python logging remains unchanged:
 
 ```python
 import logging
+
 logger = logging.getLogger(__name__)
 ```
 
@@ -201,10 +202,11 @@ One JSON object per line. Includes `timestamp`, `logger`, `level`, `message`, pl
 ```python
 from moneybin.observability import tracked, track_duration
 
+
 # Decorator — auto records duration, call count, errors
 @tracked("import", labels={"source_type": "csv"})
-def import_file(path: Path) -> ImportResult:
-    ...
+def import_file(path: Path) -> ImportResult: ...
+
 
 # Context manager — timing a block within a function
 with track_duration("dedup"):
@@ -212,6 +214,7 @@ with track_duration("dedup"):
 
 # Manual — for gauges or custom logic
 from moneybin.metrics import CATEGORIZATION_AUTO_RATE
+
 CATEGORIZATION_AUTO_RATE.set(0.78)
 ```
 

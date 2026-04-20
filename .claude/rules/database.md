@@ -12,7 +12,9 @@ globs: ["**/*.sql", "sqlmesh/models/**", "src/moneybin/sql/**", "src/moneybin/**
 from moneybin.database import get_database
 
 db = get_database()
-result = db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id])
+result = db.execute(
+    "SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id]
+)
 ```
 
 See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full design.
