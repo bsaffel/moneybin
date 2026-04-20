@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import typer
 
 if TYPE_CHECKING:
-    import duckdb
+    from moneybin.database import Database
 
 app = typer.Typer(
     help="Import financial files (OFX/QFX, CSV bank exports, W-2 PDFs) into MoneyBin",
@@ -56,7 +56,7 @@ def import_file(
         moneybin import file ~/Downloads/2024_W2.pdf
         moneybin import file statement.ofx --institution "Wells Fargo"
     """
-    from moneybin.config import get_database_path
+    from moneybin.database import get_database
     from moneybin.services.import_service import import_file as do_import
 
     source = Path(file_path)
@@ -66,8 +66,9 @@ def import_file(
         raise typer.Exit(1)
 
     try:
+        db = get_database()
         result = do_import(
-            db_path=get_database_path(),
+            db=db,
             file_path=source,
             run_transforms=not skip_transform,
             institution=institution,
@@ -91,9 +92,8 @@ def import_status() -> None:
     Example:
         moneybin import status
     """
-    import duckdb
-
     from moneybin.config import get_database_path
+    from moneybin.database import get_database
 
     db_path = get_database_path()
 
@@ -103,23 +103,20 @@ def import_status() -> None:
         raise typer.Exit(1)
 
     try:
-        conn = duckdb.connect(str(db_path), read_only=True)
-        try:
-            _print_import_status(conn)
-        finally:
-            conn.close()
-    except duckdb.IOException as e:
+        db = get_database()
+        _print_import_status(db)
+    except Exception as e:  # noqa: BLE001 — surface connection errors generically
         logger.error("❌ Could not open database: %s", e)
         raise typer.Exit(1) from e
 
 
-def _print_import_status(conn: duckdb.DuckDBPyConnection) -> None:
+def _print_import_status(db: Database) -> None:
     """Query raw tables and print import summary.
 
     Args:
-        conn: Read-only DuckDB connection.
+        db: Database instance.
     """
-    tables = conn.execute("""
+    tables = db.execute("""
         SELECT table_schema, table_name
         FROM information_schema.tables
         WHERE table_schema = 'raw'
@@ -135,7 +132,7 @@ def _print_import_status(conn: duckdb.DuckDBPyConnection) -> None:
     print("=" * 60)
 
     for schema, table in tables:
-        row_count = conn.execute(
+        row_count = db.execute(
             f"SELECT COUNT(*) FROM {schema}.{table}"  # noqa: S608 — schema/table from information_schema, not user input
         ).fetchone()
         count = row_count[0] if row_count else 0
@@ -144,7 +141,7 @@ def _print_import_status(conn: duckdb.DuckDBPyConnection) -> None:
         date_info = ""
         if "transaction" in table:
             try:
-                dates = conn.execute(
+                dates = db.execute(
                     f"SELECT MIN(CAST(date_posted AS DATE)), MAX(CAST(date_posted AS DATE)) FROM {schema}.{table}"  # noqa: S608 — schema/table from information_schema, not user input
                 ).fetchone()
                 if dates and dates[0]:

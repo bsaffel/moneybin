@@ -40,17 +40,18 @@ class TestImportFileCommand:
         return mock
 
     @pytest.fixture
-    def mock_get_database_path(self, mocker: Any, tmp_path: Path) -> MagicMock:
+    def mock_get_database(self, mocker: Any) -> MagicMock:
+        """Mock get_database to avoid requiring a real encrypted database."""
         return mocker.patch(
-            "moneybin.config.get_database_path",
-            return_value=tmp_path / "test.duckdb",
+            "moneybin.database.get_database",
+            return_value=MagicMock(),
         )
 
     def test_import_file_success(
         self,
         runner: CliRunner,
         mock_import_file: MagicMock,
-        mock_get_database_path: MagicMock,
+        mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test successful file import."""
@@ -60,7 +61,7 @@ class TestImportFileCommand:
         result = runner.invoke(app, ["file", str(test_file)])
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
-            db_path=mock_get_database_path.return_value,
+            db=mock_get_database.return_value,
             file_path=test_file,
             run_transforms=True,
             institution=None,
@@ -71,7 +72,7 @@ class TestImportFileCommand:
         self,
         runner: CliRunner,
         mock_import_file: MagicMock,
-        mock_get_database_path: MagicMock,
+        mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test --skip-transform flag passes run_transforms=False."""
@@ -81,7 +82,7 @@ class TestImportFileCommand:
         result = runner.invoke(app, ["file", str(test_file), "--skip-transform"])
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
-            db_path=mock_get_database_path.return_value,
+            db=mock_get_database.return_value,
             file_path=test_file,
             run_transforms=False,
             institution=None,
@@ -92,7 +93,7 @@ class TestImportFileCommand:
         self,
         runner: CliRunner,
         mock_import_file: MagicMock,
-        mock_get_database_path: MagicMock,
+        mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test --institution flag is passed through."""
@@ -104,7 +105,7 @@ class TestImportFileCommand:
         )
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
-            db_path=mock_get_database_path.return_value,
+            db=mock_get_database.return_value,
             file_path=test_file,
             run_transforms=True,
             institution="Wells Fargo",
@@ -123,7 +124,7 @@ class TestImportFileCommand:
         self,
         runner: CliRunner,
         mock_import_file: MagicMock,
-        mock_get_database_path: MagicMock,
+        mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test exit code 1 for unsupported file type."""
@@ -174,6 +175,10 @@ class TestImportStatusCommand:
             return_value=db_path,
         )
 
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchall.return_value = []
+        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         assert "No imported data found" in result.output
@@ -201,7 +206,14 @@ class TestImportStatusCommand:
             return_value=db_path,
         )
 
+        # Mock get_database to return a real duckdb connection via a Database-like mock
+        real_conn = duckdb.connect(str(db_path), read_only=True)
+        mock_db = MagicMock()
+        mock_db.execute.side_effect = real_conn.execute
+        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+
         result = runner.invoke(app, ["status"])
+        real_conn.close()
         assert result.exit_code == 0
         assert "ofx_transactions" in result.output
         assert "2 rows" in result.output
