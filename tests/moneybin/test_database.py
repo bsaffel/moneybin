@@ -176,3 +176,26 @@ class TestGetDatabase:
         assert db1 is db2
         db1.close()
         monkeypatch.setattr(db_module, "_database_instance", None)
+
+    def test_close_database_resets_singleton(
+        self,
+        db_dir: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """close_database() closes the connection and resets the singleton."""
+        from moneybin import database as db_module
+        from moneybin.database import close_database
+
+        db_path = db_dir / "moneybin.duckdb"
+
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        monkeypatch.setattr(db_module, "_database_instance", None)
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+
+        db = get_database()
+        assert db_module._database_instance is db
+        close_database()
+        assert db_module._database_instance is None

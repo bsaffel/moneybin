@@ -192,7 +192,7 @@ class Database:
         Returns:
             DuckDB connection with query results (call .fetchone(), .fetchall(), etc.).
         """
-        if params:
+        if params is not None:
             return self.conn.execute(query, params)
         return self.conn.execute(query)
 
