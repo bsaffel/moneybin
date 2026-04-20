@@ -1,6 +1,7 @@
 """Tests for Database class — centralized encrypted connection management."""
 
 import sys
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -110,10 +111,12 @@ class TestDatabaseOperations:
     """Database.execute(), .sql(), .conn property."""
 
     @pytest.fixture()
-    def db(self, db_dir: Path, mock_secret_store: MagicMock) -> Database:
+    def db(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
         db_path = db_dir / "moneybin.duckdb"
         database = Database(db_path, secret_store=mock_secret_store)
-        yield database  # type: ignore[misc]
+        yield database
         database.close()
 
     def test_execute_with_params(self, db: Database) -> None:
@@ -196,6 +199,6 @@ class TestGetDatabase:
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
 
         db = get_database()
-        assert db_module._database_instance is db
+        assert db_module._database_instance is db  # type: ignore[reportPrivateUsage]  # test-only: verify singleton state
         close_database()
-        assert db_module._database_instance is None
+        assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only: verify singleton reset
