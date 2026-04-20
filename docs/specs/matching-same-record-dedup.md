@@ -1,7 +1,7 @@
 # Same-Record Dedup & Golden-Record Merge Rules
 
-> Last updated: 2026-04-18
-> Status: Draft
+> Last updated: 2026-04-19
+> Status: Ready
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
 
@@ -48,10 +48,10 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 
 ### Identity
 
-13. Gold records are keyed by `transaction_id` — a deterministic UUID v5 derived from the contributing source rows.
+13. Gold records are keyed by `transaction_id` — a deterministic SHA-256 hash derived from the contributing source rows, consistent with the hash-based ID strategy used by the tabular importer (`smart-import-tabular.md`).
 14. Source-native IDs are carried as `source_transaction_id`, with the same logical meaning everywhere the column appears (raw, prep, provenance). The smart tabular importer populates this from institution-assigned IDs when present in the source file (e.g., Tiller's Transaction ID, bank reference numbers identified as unique IDs).
-15. Unmatched records get a `transaction_id` derived from `(source_type, source_transaction_id, account_id)` — stable across SQLMesh reruns.
-16. Matched groups get a `transaction_id` derived from the sorted set of contributing `(source_type, source_transaction_id, account_id)` tuples — also stable.
+15. Unmatched records get a `transaction_id` via `SHA256(source_type || '|' || source_transaction_id || '|' || account_id)` — stable across SQLMesh reruns.
+16. Matched groups get a `transaction_id` via `SHA256()` over the sorted, pipe-delimited set of contributing `(source_type, source_transaction_id, account_id)` tuples — also stable.
 
 ### Provenance
 
@@ -125,8 +125,8 @@ CREATE TABLE IF NOT EXISTS app.match_decisions (
     PRIMARY KEY (match_id)
 );
 
-/* Source-priority ranking for golden-record merge rules; lower priority value = higher precedence */
-CREATE TABLE IF NOT EXISTS app.source_priority (
+/* Source-priority ranking for golden-record merge rules; rebuilt from MatchingSettings on every run */
+CREATE TABLE IF NOT EXISTS prep.seed_source_priority (
     source_type VARCHAR NOT NULL,         -- e.g. plaid, csv, ofx
     priority INTEGER NOT NULL,           -- Lower = higher precedence (1 = best)
     PRIMARY KEY (source_type)
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS app.source_priority (
 
 **`prep.int_transactions__unioned`** (new) — `UNION ALL` of all `stg_*__transactions` with standardized column names and types. Replaces the CTEs in today's `fct_transactions`. Each row carries `source_transaction_id`, `source_type`, and `source_origin`.
 
-**`prep.int_transactions__matched`** (new) — joins `int_transactions__unioned` with `app.match_decisions` to assign `transaction_id` (gold key). Unmatched rows get a deterministic UUID from `(source_type, source_transaction_id, account_id)`. Matched groups get a deterministic UUID from the sorted contributing tuple set. Output has both `transaction_id` and `source_transaction_id`.
+**`prep.int_transactions__matched`** (new) — joins `int_transactions__unioned` with `app.match_decisions` to assign `transaction_id` (gold key). Unmatched rows get a deterministic hash via `SHA256(source_type || '|' || source_transaction_id || '|' || account_id)`. Matched groups get a deterministic hash from the sorted contributing tuple set. Output has both `transaction_id` and `source_transaction_id`.
 
 **`prep.int_transactions__merged`** (new) — collapses matched groups to one row per `transaction_id`. Applies source-priority merge: for each field, COALESCE in priority order across the group's source rows. Exception: `transaction_date` takes the earliest non-NULL value. Adds `canonical_source_type` and `source_count`.
 
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS app.source_priority (
 
 ### App table FK migration
 
-`app.transaction_categories` and `app.transaction_notes` rename their FK from `transaction_id` (source-native) to `transaction_id` (gold key). Values are backfilled as deterministic UUID v5 from each row's `(source_type, source_transaction_id, account_id)` — a 1:1 mapping since no merges exist yet.
+`app.transaction_categories` and `app.transaction_notes` rename their FK from `transaction_id` (source-native) to `transaction_id` (gold key). Values are backfilled as deterministic SHA-256 hashes from each row's `(source_type, source_transaction_id, account_id)` — a 1:1 mapping since no merges exist yet.
 
 ## Matching Engine
 
@@ -230,7 +230,7 @@ Tier 3 pairs below `review_threshold` are not persisted (logged at DEBUG level o
 
 ### Source-priority ranking
 
-A single ordered list stored in `app.source_priority`. Default: `plaid (1) > csv (2) > excel (3) > tsv (4) > parquet (5) > feather (6) > pipe (7) > ofx (8)`. The tabular import formats are individually ranked per `smart-import-tabular.md` — CSV is most common and gets highest priority among tabular formats. The list must include every supported `source_type` value.
+A single ordered list stored in `prep.seed_source_priority`, rebuilt from `MatchingSettings.source_priority` on every run. Config is the sole source of truth; the table is a SQL-accessible projection for merge model joins. Default: `plaid (1) > csv (2) > excel (3) > tsv (4) > parquet (5) > feather (6) > pipe (7) > ofx (8)`. The tabular import formats are individually ranked per `smart-import-tabular.md` — CSV is most common and gets highest priority among tabular formats. The list must include every supported `source_type` value.
 
 ### Field selection
 
@@ -238,7 +238,7 @@ In `int_transactions__merged`, matched groups collapse to one row per `transacti
 
 | Field | Rule |
 |---|---|
-| `transaction_id` | Deterministic UUID v5 from sorted contributing tuples |
+| `transaction_id` | Deterministic SHA-256 hash from sorted contributing tuples |
 | `account_id` | Identical across group (blocking requirement) |
 | `transaction_date` | Earliest non-NULL posted date across sources |
 | `authorized_date` | Highest-priority non-NULL value |
@@ -344,7 +344,7 @@ Env var overrides follow the `MONEYBIN_` convention:
 
 - **Scoring function**: given two transaction records, verify confidence score calculation with known inputs/outputs
 - **1:1 assignment**: given a set of scored pairs with conflicts, verify greedy assignment picks optimal non-overlapping set
-- **UUID v5 generation**: verify deterministic — same inputs always produce same `transaction_id`; verify stability — sorted tuple order doesn't depend on insertion order
+- **Hash generation**: verify deterministic — same inputs always produce same `transaction_id`; verify stability — sorted tuple order doesn't depend on insertion order
 - **Merge rules**: given N source rows with known priorities, verify field selection per the COALESCE policy
 - **Date exception**: verify `transaction_date` picks earliest, not highest-priority
 
@@ -365,7 +365,7 @@ Env var overrides follow the `MONEYBIN_` convention:
 ## Dependencies
 
 - DuckDB `jaro_winkler_similarity()` function (available since DuckDB 0.8.0)
-- UUID v5 generation (Python stdlib `uuid.uuid5`)
+- SHA-256 hashing (Python stdlib `hashlib.sha256`, DuckDB `sha256()`)
 - Existing prep staging views and raw schema
 - Database migration system ([database-migration.md](database-migration.md)) for the `transaction_id` → `source_transaction_id` rename and app table FK changes
 
@@ -385,15 +385,18 @@ When a new source is added to MoneyBin, the following must be updated for matchi
 
 1. Create staging model in `sqlmesh/models/prep/` with tier 2 dedup (`ROW_NUMBER`)
 2. Add a CTE to `int_transactions__unioned` and `UNION ALL` into the combined set — include `source_origin` column
-3. Insert the new `source_type` into the default `source_priority` list at the appropriate position
+3. Insert the new `source_type` into `MatchingSettings.source_priority` at the appropriate position
 4. Define `source_origin` population logic (format name, institution ID, item ID, etc.)
 5. Add the new source to matching integration tests (load + match against existing sources)
 
 ## Open Questions
 
-Decisions deferred to implementation:
+### Resolved
 
-1. **Confidence score formula.** The exact weighting of date distance and description similarity. Spec requires the formula to be auditable (signals persisted in JSON) but doesn't fix the weights — they should be tuned against real data during implementation.
-2. **UUID v5 namespace.** Need a stable namespace UUID for the project. Generate once and store as a constant.
-3. **`app.source_priority` seeding.** Populate from `MatchingSettings.source_priority` on first run? Or treat the table as the source of truth and settings as the initial seed?
-4. **`int_transactions__matched` model kind.** VIEW (always current, recomputes on read) vs TABLE (materialized, faster queries but needs refresh). VIEW is consistent with existing prep models; TABLE may be needed if the join against `app.match_decisions` is expensive at scale.
+- **ID generation strategy.** SHA-256 hashes, consistent with the tabular importer (`smart-import-tabular.md`). No namespace UUID needed.
+- **`source_priority` ownership.** Config-only. `prep.seed_source_priority` is rebuilt from `MatchingSettings.source_priority` on every run. Not mutable app state.
+- **`int_transactions__matched` model kind.** VIEW. DuckDB handles the join against `app.match_decisions` efficiently at personal finance scale. Consistent with existing prep models.
+
+### Deferred to implementation tuning milestone
+
+1. **Confidence score formula.** The exact weighting of date distance and description similarity. Spec requires the formula to be auditable (signals persisted in JSON) but doesn't fix the weights — they should be tuned against real data. See MVP roadmap Level 1 tuning milestone.

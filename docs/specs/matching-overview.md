@@ -45,7 +45,7 @@ The existing `raw` → `prep` → `core` architecture maps naturally to a layere
 | Table/view | Type | Grain | Purpose |
 |---|---|---|---|
 | `core.fct_transactions` (modified) | Fact | One real-world transaction | Gains: `is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_type`, `source_count` (number of raw rows that contributed to this gold record) |
-| `core.fct_transaction_provenance` | Fact | One (canonical_txn, contributing_raw_row) pair | Full lineage: which raw rows from which sources contributed to each gold record |
+| `meta.fct_transaction_provenance` | Fact | One (canonical_txn, contributing_raw_row) pair | Full lineage: which raw rows from which sources contributed to each gold record |
 | `core.bridge_transfers` | Bridge | One transfer pair | Links two `fct_transactions` rows as a matched pair; carries direction, date offset, amount delta |
 
 Match decisions themselves — user confirmations, rejections, auto-merge logs — live in `app.*` (user-authored, mutable state). The provenance output derived from those decisions lives in `core.*` (model-derived, analytics-ready, rebuilt on every SQLMesh run).
@@ -66,7 +66,7 @@ Not separate pillars, but every pillar must honor these. Detailed design lives i
 
 ### Provenance schema
 
-`core.fct_transaction_provenance` links every gold record to every contributing raw row. All merges, pair links, and un-matches write rows here. Provenance rows are never deleted, only superseded (a revoked match appends a reversal row, preserving history).
+`meta.fct_transaction_provenance` links every gold record to every contributing raw row. All merges, pair links, and un-matches write rows here. Provenance rows are never deleted, only superseded (a revoked match appends a reversal row, preserving history).
 
 ### Reversibility
 
@@ -152,7 +152,7 @@ Three sibling initiatives feed the matcher. Matching defines the provenance cont
 
 ## Build order & rationale
 
-1. **Provenance & audit schema** — foundational DDL. Defines the tables every pillar writes to (`app.match_decisions`, `core.fct_transaction_provenance`, `core.bridge_transfers`). Written first as a schema PR or as part of pillar A's child spec.
+1. **Provenance & audit schema** — foundational DDL. Defines the tables every pillar writes to (`app.match_decisions`, `meta.fct_transaction_provenance`, `core.bridge_transfers`). Written first as a schema PR or as part of pillar A's child spec.
 2. **Pillars A + C** (`matching-same-record-dedup.md`) — ship together in one spec. Dedup without merge rules leaves the gold record undefined; merge rules without dedup have nothing to merge. This is the build phase that fixes the latent duplicate bug in `fct_transactions`.
 3. **Pillar B** (`matching-transfer-detection.md`) — layers on once A/C are solid. Different semantics (link two records, don't collapse them), different review posture (always-review in v1).
 4. **[Deferred] Learned promotions for transfer auto-merge** — Phase 2 enhancement. Not a v1 spec.
@@ -161,7 +161,7 @@ Three sibling initiatives feed the matcher. Matching defines the provenance cont
 
 - **No double-counting.** Spending totals computed over `core.fct_transactions` equal totals a user would compute manually after reconciling their statements. This is the headline metric.
 - **Gold-layer contract.** Any consumer querying `core.fct_transactions` can trust that totals, counts, and aggregations reflect reality without awareness of the matching pipeline. Core is independently queryable.
-- **Provenance completeness.** For any gold transaction, the full list of raw rows that contributed to it is queryable via `core.fct_transaction_provenance`.
+- **Provenance completeness.** For any gold transaction, the full list of raw rows that contributed to it is queryable via `meta.fct_transaction_provenance`.
 - **Reversibility guarantee.** Any auto-merge can be undone. After undo, the previously separate gold rows are restored and re-running the matcher re-proposes (not re-applies) the same match.
 - **Transfer integrity.** Spending/income analytics in core exclude transfer pairs by default. Users can opt in to seeing them by joining through `core.bridge_transfers`.
 - **Backfill correctness.** At release, a one-pass backfill identifies and resolves the latent duplicates currently in `fct_transactions` from today's UNION-without-dedup logic. No manual re-imports required.
@@ -177,5 +177,6 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **Review queue persistence.** Does the queue live in `app.*` (user-authored state) or `core.*` (model-derived)? `app.*` is more natural for mutable user decisions but doesn't participate in SQLMesh refresh. Likely `app.*` for decisions, `core.*` for derived provenance.
 - **Backfill UX at release.** One-shot migration on first upgrade (automatic, potentially slow), or explicit `moneybin matches backfill` command (user-triggered, predictable)?
 - **Interaction with Smart Import pillar F.** AI-parsed transactions — should they enter matching with lower default confidence, or be treated the same as any other source?
-- **Match metadata on the fact table.** Resolved: analytics-relevant columns (`is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_type`, `source_count`) go directly on `core.fct_transactions` for query ergonomics. Detailed match metadata (decision logs, match reasons, signal scores, reversal history) lives in supplemental tables (`app.match_decisions`, `core.fct_transaction_provenance`). Child specs define the exact column list per table.
+- **Match metadata on the fact table.** Resolved: analytics-relevant columns (`is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_type`, `source_count`) go directly on `core.fct_transactions` for query ergonomics. Detailed match metadata (decision logs, match reasons, signal scores, reversal history) lives in supplemental tables (`app.match_decisions`, `meta.fct_transaction_provenance`). Child specs define the exact column list per table.
 - **`source_type` taxonomy.** This spec owns the taxonomy. Renamed from `source_system` — `source_type` is neutral enough for both file formats and API/sync sources. Current values: `ofx` and `csv`. Smart tabular import adds format-specific values (`csv`, `tsv`, `excel`, `parquet`, `feather`, `pipe`) per `smart-import-tabular.md`. Plaid adds `plaid`. Future: `pdf_statement`, `pdf_ai_parsed`, `manual`. The canonical gold record carries `canonical_source_type` recording which source "won" the merge. See `.claude/rules/database.md` for the column naming rule.
+- **`source_origin` — institution/connection scoping.** `source_origin` identifies the specific institution, connection, or profile that produced a row (e.g., `chase_credit`, `fidelity_brokerage`, a Plaid `item_id`). It scopes matching: two rows with the same `source_origin` and `source_type` are "within-source" candidates (Tier 2b — overlapping statements from the same bank), while rows with different `source_origin` or `source_type` values are "cross-source" candidates (Tier 3). Population logic is source-specific: tabular import derives it from `TabularProfile` names, OFX from institution identifiers in the file, Plaid from `item_id`. Child specs define the blocking criteria that use `source_origin`.

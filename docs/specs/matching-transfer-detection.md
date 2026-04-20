@@ -1,7 +1,7 @@
 # Transfer Detection
 
 > Last updated: 2026-04-19
-> Status: Draft
+> Status: Ready
 > Parent: [`matching-overview.md`](matching-overview.md) (pillar B)
 > Companions: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (sibling spec, pillars A+C), [`categorization-overview.md`](categorization-overview.md) (independent axis), `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
 
@@ -434,8 +434,11 @@ Transfers that always occur at the same amount or within a narrow range (e.g., $
 
 ## Open Questions
 
-Decisions deferred to implementation:
+### Resolved
 
-1. **Confidence score formula.** Exact combination of the four signals. Starting weights provided (`date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15`) but should be tuned against real data.
-2. **Keyword list.** The initial set of transfer-indicating terms (TRANSFER, XFER, ACH, DIRECT DEP, WIRE, etc.) and how to handle institution-specific variations. May need to be configurable or extensible.
-3. **Backfill ordering.** When running `moneybin matches backfill`, transfer detection runs after dedup backfill. The exact interleaving (dedup fully complete, then transfers; or interleaved per account) is an implementation detail.
+- **Backfill ordering.** Dedup completes fully first, then transfer detection runs. Transfers are cross-account by definition, so all accounts must be deduplicated before transfer pairing can produce correct results. Same order as import-time matching (Tiers 2b → 3 → 4).
+
+### Deferred to implementation tuning milestone
+
+1. **Confidence score formula.** Exact combination of the four signals. Starting weights provided (`date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15`) but should be tuned against real data. See MVP roadmap Level 1 tuning milestone.
+2. **Keyword list.** The initial set of transfer-indicating terms (TRANSFER, XFER, ACH, DIRECT DEP, WIRE, etc.) and how to handle institution-specific variations. Start with a reasonable default set; tune alongside confidence scores with real data.
