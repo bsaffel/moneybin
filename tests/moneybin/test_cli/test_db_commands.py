@@ -566,10 +566,10 @@ class TestDbUnlockCommand:
 
         assert result.exit_code == 1
 
-    def test_unlock_wrong_passphrase_deletes_key_and_exits_1(
+    def test_unlock_database_not_found_deletes_key_and_exits_1(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
-        """Wrong passphrase: database open fails, key is deleted, exits 1."""
+        """Database file missing: key is deleted from keychain and exits 1."""
         import base64
 
         fake_salt = base64.b64encode(b"\x00" * 16).decode()
@@ -578,7 +578,28 @@ class TestDbUnlockCommand:
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\x00" * 32)
 
-        _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
+        _make_settings_mock(tmp_path / "missing.duckdb", mocker)
+
+        result = runner.invoke(app, ["unlock"], input="anypass\n")
+
+        assert result.exit_code == 1
+        mock_store.delete_key.assert_called_once_with("DATABASE__ENCRYPTION_KEY")
+
+    def test_unlock_wrong_passphrase_deletes_key_and_exits_1(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Wrong passphrase: database open fails, key is deleted, exits 1."""
+        import base64
+
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.touch()
+        fake_salt = base64.b64encode(b"\x00" * 16).decode()
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = fake_salt
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\x00" * 32)
+
+        _make_settings_mock(db_path, mocker)
         mocker.patch("moneybin.database.Database", side_effect=Exception("bad key"))
 
         result = runner.invoke(app, ["unlock"], input="wrongpass\n")
@@ -592,13 +613,15 @@ class TestDbUnlockCommand:
         """Correct passphrase: key stored, database opens, exits 0."""
         import base64
 
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.touch()
         fake_salt = base64.b64encode(b"\x00" * 16).decode()
         mock_store = MagicMock()
         mock_store.get_key.return_value = fake_salt
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\xaa" * 32)
 
-        _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
+        _make_settings_mock(db_path, mocker)
         mock_db = MagicMock()
         mocker.patch("moneybin.database.Database", return_value=mock_db)
 

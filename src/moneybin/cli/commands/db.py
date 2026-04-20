@@ -614,6 +614,11 @@ def db_unlock() -> None:
     store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
 
     settings = get_settings()
+    if not settings.database.path.exists():
+        store.delete_key("DATABASE__ENCRYPTION_KEY")
+        logger.error("❌ Database file not found: %s", settings.database.path)
+        logger.info("💡 Run 'moneybin db init --passphrase' to create a new database.")
+        raise typer.Exit(1)
     try:
         db = Database(settings.database.path, secret_store=store)
         db.close()
