@@ -388,6 +388,8 @@ class TestQueryCommand:
             assert result.exit_code == 0
             call_args = mock_subprocess_run.call_args[0][0]
             assert format_flag in call_args
+            # Format flag must appear before -c so DuckDB applies it before running the query
+            assert call_args.index(format_flag) < call_args.index("-c")
 
     def test_query_with_custom_database(
         self,

@@ -314,11 +314,12 @@ def run_query(
         raise typer.Exit(1) from None
 
     try:
-        cmd = [duckdb_path, "-init", str(init_script), "-c", sql]
+        cmd = [duckdb_path, "-init", str(init_script)]
         if output_format in format_map:
             cmd.append(format_map[output_format])
         else:
             logger.warning(f"⚠️  Unknown format '{output_format}', using table")
+        cmd.extend(["-c", sql])
 
         subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args and format flag
     except subprocess.CalledProcessError as e:
@@ -473,7 +474,7 @@ def db_restore(
     from datetime import datetime
 
     from moneybin.config import get_settings
-    from moneybin.database import Database
+    from moneybin.database import Database, DatabaseKeyError
     from moneybin.secrets import SecretStore
 
     settings = get_settings()
@@ -538,7 +539,7 @@ def db_restore(
         db = Database(db_path, secret_store=store)
         db.close()
         logger.info("✅ Database restored from %s", resolved_path.name)
-    except Exception:
+    except DatabaseKeyError:
         logger.warning(
             "⚠️  Could not open restored database with current key. "
             "The backup may be from before a key rotation."
@@ -546,6 +547,12 @@ def db_restore(
         logger.info(
             "💡 Set the original key via MONEYBIN_DATABASE__ENCRYPTION_KEY "
             "and run 'moneybin db rotate-key' to re-encrypt."
+        )
+        raise typer.Exit(1) from None
+    except Exception:
+        logger.debug("Restore validation failed", exc_info=True)
+        logger.warning(
+            "⚠️  Could not open restored database. The backup may be corrupted."
         )
         raise typer.Exit(1) from None
 
