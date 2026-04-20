@@ -130,6 +130,27 @@ class TestShellCommand:
         result = runner.invoke(app, ["shell"])
         assert result.exit_code == 1
 
+    def test_shell_locked_database_exits_1(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        mock_duckdb_cli: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Shell command exits 1 with a helpful message when database is locked."""
+        from moneybin.secrets import SecretNotFoundError
+
+        test_db = tmp_path / "test.duckdb"
+        test_db.touch()
+        _make_settings_mock(test_db, mocker)
+        mocker.patch(
+            "moneybin.cli.commands.db._create_init_script",
+            side_effect=SecretNotFoundError("locked"),
+        )
+
+        result = runner.invoke(app, ["shell"])
+        assert result.exit_code == 1
+
     def test_shell_handles_keyboard_interrupt(
         self,
         runner: CliRunner,
@@ -243,6 +264,27 @@ class TestUiCommand:
         test_db = tmp_path / "test.duckdb"
         test_db.touch()
         _make_settings_mock(test_db, mocker)
+
+        result = runner.invoke(app, ["ui"])
+        assert result.exit_code == 1
+
+    def test_ui_locked_database_exits_1(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        mock_duckdb_cli: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """UI command exits 1 with a helpful message when database is locked."""
+        from moneybin.secrets import SecretNotFoundError
+
+        test_db = tmp_path / "test.duckdb"
+        test_db.touch()
+        _make_settings_mock(test_db, mocker)
+        mocker.patch(
+            "moneybin.cli.commands.db._create_init_script",
+            side_effect=SecretNotFoundError("locked"),
+        )
 
         result = runner.invoke(app, ["ui"])
         assert result.exit_code == 1
@@ -392,6 +434,275 @@ class TestQueryCommand:
 
         result = runner.invoke(app, ["query", "SELECT 1"])
         assert result.exit_code == 1
+
+    def test_query_locked_database_exits_1(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        mock_duckdb_cli: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Query command exits 1 with a helpful message when database is locked."""
+        from moneybin.secrets import SecretNotFoundError
+
+        test_db = tmp_path / "test.duckdb"
+        test_db.touch()
+        _make_settings_mock(test_db, mocker)
+        mocker.patch(
+            "moneybin.cli.commands.db._create_init_script",
+            side_effect=SecretNotFoundError("locked"),
+        )
+
+        result = runner.invoke(app, ["query", "SELECT 1"])
+        assert result.exit_code == 1
+
+
+class TestDbInitCommand:
+    """Tests for 'moneybin db init'."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def _mock_deps(self, mocker: Any, tmp_path: Path) -> tuple[MagicMock, MagicMock]:
+        """Return (mock_store, mock_db_class) with settings patched."""
+        _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
+        mock_store = MagicMock()
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mock_db = MagicMock()
+        mocker.patch("moneybin.database.Database", return_value=mock_db)
+        return mock_store, mock_db
+
+    def test_init_auto_key_stores_key_and_creates_db(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Auto-key mode generates a key, stores it, and creates the database."""
+        mock_store, mock_db = self._mock_deps(mocker, tmp_path)
+
+        result = runner.invoke(app, ["init", "--yes"])
+
+        assert result.exit_code == 0
+        mock_store.set_key.assert_called_once()
+        key_name, key_value = mock_store.set_key.call_args[0]
+        assert key_name == "DATABASE__ENCRYPTION_KEY"
+        assert len(key_value) == 64  # 32 bytes → 64 hex chars
+        mock_db.close.assert_called_once()
+
+    def test_init_passphrase_mismatch_exits_1(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Passphrase mode exits 1 when passphrases don't match."""
+        self._mock_deps(mocker, tmp_path)
+
+        result = runner.invoke(
+            app, ["init", "--passphrase", "--yes"], input="password1\npassword2\n"
+        )
+
+        assert result.exit_code == 1
+
+    def test_init_passphrase_match_stores_key_and_salt(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Passphrase mode derives a key via Argon2id and stores key + salt."""
+        mock_store, mock_db = self._mock_deps(mocker, tmp_path)
+        fake_raw_key = b"\xde\xad\xbe\xef" * 8  # 32 bytes
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=fake_raw_key)
+
+        result = runner.invoke(
+            app, ["init", "--passphrase", "--yes"], input="mypassphrase\nmypassphrase\n"
+        )
+
+        assert result.exit_code == 0
+        assert mock_store.set_key.call_count == 2
+        key_calls = {c[0][0]: c[0][1] for c in mock_store.set_key.call_args_list}
+        assert key_calls["DATABASE__ENCRYPTION_KEY"] == fake_raw_key.hex()
+        assert "DATABASE__PASSPHRASE_SALT" in key_calls
+        mock_db.close.assert_called_once()
+
+    def test_init_existing_db_prompt_declined_exits_0(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Declining the overwrite prompt exits 0 without creating the database."""
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.touch()
+        mock_store, mock_db = self._mock_deps(mocker, tmp_path)
+
+        result = runner.invoke(app, ["init"], input="n\n")
+
+        assert result.exit_code == 0
+        mock_store.set_key.assert_not_called()
+        mock_db.close.assert_not_called()
+
+    def test_init_yes_flag_skips_overwrite_prompt(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """--yes flag skips the overwrite confirmation prompt."""
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.touch()
+        mock_store, _ = self._mock_deps(mocker, tmp_path)
+
+        result = runner.invoke(app, ["init", "--yes"])
+
+        assert result.exit_code == 0
+        mock_store.set_key.assert_called_once()
+
+
+class TestDbUnlockCommand:
+    """Tests for 'moneybin db unlock'."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def test_unlock_no_salt_exits_1(self, runner: CliRunner, mocker: Any) -> None:
+        """Unlock fails when no passphrase salt is found in keychain."""
+        from moneybin.secrets import SecretNotFoundError
+
+        mock_store = MagicMock()
+        mock_store.get_key.side_effect = SecretNotFoundError("no salt")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+
+        result = runner.invoke(app, ["unlock"], input="anypassphrase\n")
+
+        assert result.exit_code == 1
+
+    def test_unlock_wrong_passphrase_deletes_key_and_exits_1(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Wrong passphrase: database open fails, key is deleted, exits 1."""
+        import base64
+
+        fake_salt = base64.b64encode(b"\x00" * 16).decode()
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = fake_salt
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\x00" * 32)
+
+        _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
+        mocker.patch("moneybin.database.Database", side_effect=Exception("bad key"))
+
+        result = runner.invoke(app, ["unlock"], input="wrongpass\n")
+
+        assert result.exit_code == 1
+        mock_store.delete_key.assert_called_once_with("DATABASE__ENCRYPTION_KEY")
+
+    def test_unlock_correct_passphrase_exits_0(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Correct passphrase: key stored, database opens, exits 0."""
+        import base64
+
+        fake_salt = base64.b64encode(b"\x00" * 16).decode()
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = fake_salt
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\xaa" * 32)
+
+        _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
+        mock_db = MagicMock()
+        mocker.patch("moneybin.database.Database", return_value=mock_db)
+
+        result = runner.invoke(app, ["unlock"], input="correctpass\n")
+
+        assert result.exit_code == 0
+        mock_store.set_key.assert_called_once_with(
+            "DATABASE__ENCRYPTION_KEY", (b"\xaa" * 32).hex()
+        )
+        mock_db.close.assert_called_once()
+
+
+class TestDbRotateKeyCommand:
+    """Tests for 'moneybin db rotate-key'."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def _mock_rotate_deps(
+        self, mocker: Any, tmp_path: Path
+    ) -> tuple[MagicMock, MagicMock]:
+        """Patch settings, SecretStore, duckdb.connect, and shutil.move."""
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.touch()
+        _make_settings_mock(db_path, mocker)
+
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "oldkey" * 10  # 60 hex chars
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+
+        mock_conn = MagicMock()
+        mocker.patch("duckdb.connect", return_value=mock_conn)
+        mocker.patch("moneybin.cli.commands.db.shutil.move")
+
+        return mock_store, mock_conn
+
+    def test_rotate_key_db_not_found_exits_1(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Rotate-key fails when database file doesn't exist."""
+        _make_settings_mock(tmp_path / "missing.duckdb", mocker)
+        mock_store = MagicMock()
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+
+        result = runner.invoke(app, ["rotate-key", "--yes"])
+
+        assert result.exit_code == 1
+        mock_store.set_key.assert_not_called()
+
+    def test_rotate_key_success_stores_new_key(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Happy path: new key generated and stored, old backup removed."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+
+        result = runner.invoke(app, ["rotate-key", "--yes"])
+
+        assert result.exit_code == 0
+        mock_store.set_key.assert_called_once()
+        key_name, new_key = mock_store.set_key.call_args[0]
+        assert key_name == "DATABASE__ENCRYPTION_KEY"
+        assert len(new_key) == 64  # 32 bytes → 64 hex chars
+        assert new_key != mock_store.get_key.return_value
+
+    def test_rotate_key_duckdb_copy_fails_exits_1(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """DuckDB copy failure exits 1 without updating the keychain."""
+        mock_store, mock_conn = self._mock_rotate_deps(mocker, tmp_path)
+        mock_conn.execute.side_effect = Exception("copy failed")
+
+        result = runner.invoke(app, ["rotate-key", "--yes"])
+
+        assert result.exit_code == 1
+        mock_store.set_key.assert_not_called()
+
+    def test_rotate_key_keychain_update_fails_exits_1(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """set_key failure after file moves exits 1 and prints recovery key to stderr."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        mock_store.set_key.side_effect = Exception("keychain locked")
+
+        result = runner.invoke(app, ["rotate-key", "--yes"])
+
+        assert result.exit_code == 1
+        # Recovery key is printed via typer.echo(err=True), which CliRunner
+        # captures in result.output (stderr is mixed in by default)
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+
+    def test_rotate_key_confirmation_prompt_declined_exits_0(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Declining the confirmation prompt exits 0 without rotating."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+
+        result = runner.invoke(app, ["rotate-key"], input="n\n")
+
+        assert result.exit_code == 0
+        mock_store.set_key.assert_not_called()
 
 
 class TestDbLockCommand:

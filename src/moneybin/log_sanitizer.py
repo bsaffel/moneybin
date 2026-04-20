@@ -69,7 +69,10 @@ class SanitizedLogFormatter(logging.Formatter):
 
         result = _ACCOUNT_PATTERN.sub(account_replacer, result)
 
-        if masked:
+        # Guard against re-entrant calls: if the sanitizer's own warning record
+        # is passed back through this formatter (e.g. via the root logger's file
+        # handler), don't emit another warning — that would be infinite recursion.
+        if masked and record.name != __name__:
             _sanitizer_logger.warning(
                 "PII pattern detected and masked in log output (source: %s:%s)",
                 record.pathname,

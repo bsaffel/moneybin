@@ -186,7 +186,14 @@ def open_shell(
         logger.info("💡 Install from: https://duckdb.org/docs/installation/")
         raise typer.Exit(1)
 
-    init_script = _create_init_script(db_path)
+    from moneybin.secrets import SecretNotFoundError
+
+    try:
+        init_script = _create_init_script(db_path)
+    except SecretNotFoundError:
+        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        raise typer.Exit(1) from None
+
     try:
         logger.info("🦆 Opening DuckDB interactive shell...")
         logger.info("   Type .help for commands, .quit to exit")
@@ -231,7 +238,14 @@ def open_ui(
         logger.info("💡 Install from: https://duckdb.org/docs/installation/")
         raise typer.Exit(1)
 
-    init_script = _create_init_script(db_path)
+    from moneybin.secrets import SecretNotFoundError
+
+    try:
+        init_script = _create_init_script(db_path)
+    except SecretNotFoundError:
+        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        raise typer.Exit(1) from None
+
     try:
         logger.info("🚀 Opening DuckDB web UI...")
         logger.info("   Press Ctrl+C to stop the server")
@@ -291,7 +305,14 @@ def run_query(
         "box": "-box",
     }
 
-    init_script = _create_init_script(db_path)
+    from moneybin.secrets import SecretNotFoundError
+
+    try:
+        init_script = _create_init_script(db_path)
+    except SecretNotFoundError:
+        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        raise typer.Exit(1) from None
+
     try:
         cmd = [duckdb_path, "-init", str(init_script), "-c", sql]
         if output_format in format_map:
@@ -700,15 +721,13 @@ def db_rotate_key(
         store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
     except Exception as e:
         # The DB file now holds new_key but the keychain still has old_key.
-        # old_backup is intact — recovery is possible. Log both paths before
-        # exiting so the user can recover manually.
+        # old_backup is intact — recovery is possible.
+        # Print the new key to stderr directly (not via logger) so it does
+        # not appear in log files or get processed by SanitizedLogFormatter.
         logger.error("❌ Key rotation failed to update keychain: %s", e)
-        logger.error(
-            "Recovery: set MONEYBIN_DATABASE__ENCRYPTION_KEY=%s, "
-            "then restore from %s if needed",
-            new_key,
-            old_backup,
-        )
+        typer.echo("Recovery: set the following env var to regain access:", err=True)
+        typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
+        typer.echo(f"  (old database backup: {old_backup})", err=True)
         raise typer.Exit(1) from e
     old_backup.unlink(missing_ok=True)
 
