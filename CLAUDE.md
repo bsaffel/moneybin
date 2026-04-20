@@ -10,10 +10,10 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 ## Critical Rules
 
 - **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.  Use `uv add` and similar commands.
-- **Linting/formatting**: Ruff (line length 88). Run `uv run ruff format . && uv run ruff check .` before committing.
+- **Linting/formatting**: Ruff (line length 88). Run `make format && make lint` (or `uv run ruff format . && uv run ruff check .`) before committing.
 - **Type checking**: Pyright (not mypy). Run `uv run pyright` on modified files.
-- **Tests**: `uv run pytest tests/ -v`
-- **Pre-commit checklist**: `uv run ruff format . && uv run ruff check . && uv run pyright && uv run pytest tests/`
+- **Tests**: During development, run only the relevant file(s): `uv run pytest tests/path/to/test_file.py -v`. Before committing, run the full suite: `make test`.
+- **Pre-commit checklist**: `make check test` — runs format, lint, type-check, and unit tests. Run this once before committing, not after every change.
 - **SQL formatting**: `uv run sqlmesh -p sqlmesh format` (uses sqlglot, understands SQLMesh `MODEL()` syntax).
 - **Check the docs first**: Before implementing any pattern involving a library (SQLMesh, DuckDB, Pydantic, etc.), check the authoritative library docs to confirm the correct API and behavior. Do not rely solely on training knowledge — APIs change and edge cases matter. Each `.claude/rules/*.md` file lists relevant doc URLs where applicable.
 
