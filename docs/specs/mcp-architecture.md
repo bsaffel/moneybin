@@ -1,7 +1,7 @@
 # MCP Architecture & Design
 
 > Last updated: 2026-04-17
-> Status: Draft
+> Status: Ready
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`mcp-tool-surface.md`](mcp-tool-surface.md) (concrete tool/prompt/resource definitions), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 > Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
@@ -13,7 +13,7 @@ Together they replace the prototype-era MCP specs (read tools, write tools, tier
 
 ## Status
 
-draft
+ready
 
 ## Mission
 
@@ -589,9 +589,9 @@ These decisions and their rationale should be documented in the 12-month plan.
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
 | [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions.review-matches`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
 
-## Open Questions
+## Resolved Decisions
 
-- **`sql.query` tool.** The prototype has `run_read_query` for arbitrary SQL. Should the v1 surface keep a general SQL tool (power user escape hatch, useful for Claude Code), or is the structured tool surface sufficient? Likely keep it with clear guardrails.
-- **Prompt count.** How many prompts should ship in v1? The "few, high-value" principle suggests 3-5 (monthly review, categorization triage, onboarding). Concrete list in `mcp-tool-surface.md`.
-- **Service layer packaging.** Should services live in `src/moneybin/services/` (new directory, clean separation) or alongside existing business logic? The prototype has `import_service.py` there already.
-- **Privacy middleware implementation.** Decorator-based (`@mcp_tool(sensitivity="medium")`) vs. explicit middleware class? Decorator is more ergonomic for tool authors; class is more testable. Likely decorator that delegates to a middleware class.
+- **`sql.query` tool.** Kept as a power-user escape hatch with guardrails: read-only validation, file-access function blocking, `MAX_ROWS` cap. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §13.
+- **Prompt count.** Four prompts: `monthly-review`, `categorization-organize`, `onboarding`, `tax-prep`. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §14.
+- **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
+- **Privacy middleware implementation.** Decorator-based (`@mcp_tool(sensitivity="medium")`) that delegates to a middleware class. Decorator for ergonomics at the tool definition site; class for testability of the consent/audit/redaction logic.

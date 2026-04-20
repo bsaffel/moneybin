@@ -65,7 +65,12 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 
 ## Configuration
 
-Use Pydantic Settings as single source of truth. Never hardcode paths or credentials.
+All config lives in `src/moneybin/config.py` — one file, one `MoneyBinSettings` root. Pydantic Settings is the single source of truth. Never hardcode paths or credentials.
+
+- **Adding a new config section:** Create a frozen `BaseModel` subclass in `config.py` and add it as a field on `MoneyBinSettings`. Follow the existing pattern (`DatabaseConfig`, `SyncConfig`, etc.).
+- **Accessing config:** Import `get_settings()` — never instantiate `MoneyBinSettings` directly except in tests.
+- **Sensitive values:** Use `SecretStore` (see [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md)), not raw `os.getenv()` or plain `str` fields for secrets.
+- **Env vars** use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_DATABASE__PATH`.
 
 ```python
 from moneybin.database import get_database
@@ -75,8 +80,6 @@ db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [account_
 ```
 
 **Never call `duckdb.connect()` directly.** The `Database` class (`src/moneybin/database.py`) is the sole entry point for all database access. It handles encryption key retrieval, encrypted file attachment, schema initialization, and migrations. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
-
-Env vars use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_PLAID__CLIENT_ID`.
 
 ## Security
 

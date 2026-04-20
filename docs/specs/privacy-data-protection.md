@@ -91,13 +91,34 @@ engineered around.
     `COPY FROM DATABASE` mechanism — attach old with current key, create new with new
     key, copy, swap files, update keychain.
 
+### Secret Retrieval (`SecretStore`)
+11. A `SecretStore` class centralizes all local secret management. It is the only
+    module that imports `keyring`. Three operations:
+    - **`get_key(name)`**: OS keychain → `MONEYBIN_{NAME}` env var →
+      `SecretNotFoundError`. Used for encryption keys (database, e2e).
+    - **`set_key(name, value)` / `delete_key(name)`**: Write to / clear from OS
+      keychain. Used by CLI commands (`db init`, `db lock`, `db unlock`,
+      `db rotate-key`) to manage key lifecycle. SecretStore does not own the
+      lifecycle logic — it provides the keychain interface.
+    - **`get_env(name)`**: `MONEYBIN_{NAME}` env var → `SecretNotFoundError`. Used
+      for API keys, server credentials — secrets that don't need keychain storage.
+12. `SecretStore` does not cache, derive, rotate, or orchestrate secret lifecycle.
+    Passphrase derivation (Argon2id) and rotation sequencing live in the CLI commands
+    that call `set_key()` / `delete_key()`. `SecretStore` is the keychain and env var
+    interface — nothing more.
+13. `SecretStore` replaces the orphaned `secrets_manager.py` module entirely.
+14. All consumers access secrets through `SecretStore` — the `Database` class for
+    encryption keys, `MoneyBinSettings` for sensitive config values, future sync
+    clients for server API keys. No other module imports `keyring` or reads secret
+    env vars directly.
+
 ### Connection Management (`Database` Class)
-11. A single `Database` class in `src/moneybin/database.py` is the sole entry point for
+15. A single `Database` class in `src/moneybin/database.py` is the sole entry point for
     all database access — CLI commands, MCP server, loaders, and services.
-12. One long-lived read-write connection per process. No read-only / read-write
+16. One long-lived read-write connection per process. No read-only / read-write
     coordination. No connection pooling.
-13. The `Database` class owns the full initialization sequence:
-    a. Retrieve encryption key (keychain → env var → error)
+17. The `Database` class owns the full initialization sequence:
+    a. Retrieve encryption key via `SecretStore().get_key("DATABASE__ENCRYPTION_KEY")`
     b. Open in-memory DuckDB connection
     c. Load required extensions (`httpfs`)
     d. Attach encrypted database file via `ATTACH ... (ENCRYPTION_KEY ?)`
@@ -107,48 +128,66 @@ engineered around.
     h. Check SQLMesh version, run `sqlmesh migrate` if needed
     i. Record version state in `app.versions`
     j. Connection is ready
-14. The `Database` class exposes:
+18. The `Database` class exposes:
     - `conn` property — the underlying `duckdb.DuckDBPyConnection`
     - `execute(query, params)` — parameterized SQL execution
     - `sql(query)` — convenience for parameter-free queries
     - `close()` — close connection and release resources
-15. A module-level `get_database()` function provides singleton access, following the
+19. A module-level `get_database()` function provides singleton access, following the
     `get_settings()` pattern.
-16. The `Database` class does NOT own query logic, transaction boundaries, domain rules,
+20. The `Database` class does NOT own query logic, transaction boundaries, domain rules,
     or data access patterns. It is infrastructure — the schema is the API.
-17. When `MONEYBIN_NO_AUTO_UPGRADE=1` is set, the initialization sequence skips steps
+21. When `MONEYBIN_NO_AUTO_UPGRADE=1` is set, the initialization sequence skips steps
     (g), (h), and (i) but still performs encryption, attachment, and schema init.
 
+### Service Layer Contract
+22. Services are stateless functions that receive a `Database` instance as their first
+    parameter. They never receive `db_path: Path` or raw `duckdb.DuckDBPyConnection`.
+23. Services use `db.execute()` for parameterized queries and `db.conn` when bulk
+    operations require the raw connection (e.g., `Database.ingest_dataframe()`).
+24. Services return typed results — dataclasses or Pydantic models. Never raw dicts,
+    tuples, or JSON strings.
+25. Services define their own domain exceptions for expected failures (e.g.,
+    `CategoryNotFoundError`, `ImportValidationError`). Services catch infrastructure
+    exceptions (DuckDB errors, file I/O errors) and re-raise as domain exceptions with
+    operational context (IDs, counts, status codes — never financial data or PII).
+26. Callers (CLI commands, MCP tools) are responsible for translating domain exceptions
+    to exit codes or error envelopes. Services never format output for a specific
+    consumer.
+27. No shared base exception class is required. The convention is: domain exceptions
+    carry clean, PII-free messages. The `SanitizedLogFormatter` (logging) and privacy
+    middleware (MCP) act as independent safety nets at output boundaries.
+
 ### File Permissions
-18. Database file created with `0600` (owner read-write only) on macOS/Linux.
-19. Data directories (`data/<profile>/`, `backups/`, `temp/`, `raw/`) created with `0700`.
-20. Log files created with `0600`.
-21. On every database open, validate file permissions — warn (not fail) if the database
+28. Database file created with `0600` (owner read-write only) on macOS/Linux.
+29. Data directories (`data/<profile>/`, `backups/`, `temp/`, `raw/`) created with `0700`.
+30. Log files created with `0600`.
+31. On every database open, validate file permissions — warn (not fail) if the database
     file is group- or world-readable. Warning includes the fix command.
-22. Windows: file permission enforcement deferred to distribution phase. Encryption is
+32. Windows: file permission enforcement deferred to distribution phase. Encryption is
     the primary control. See §Windows Support.
 
 ### Temp File Hygiene
-23. DuckDB temp directory explicitly configured via `SET temp_directory` to
+33. DuckDB temp directory explicitly configured via `SET temp_directory` to
     `data/<profile>/temp/` — not the system `/tmp`.
-24. Temp directory created with `0700` permissions.
-25. DuckDB encrypts temp files automatically when the database is encrypted — no
+34. Temp directory created with `0700` permissions.
+35. DuckDB encrypts temp files automatically when the database is encrypted — no
     additional work needed beyond ensuring the database is encrypted.
 
 ### PII Sanitization in Logs and Errors
-26. A custom `SanitizedLogFormatter` scans formatted log output for PII patterns before
+36. A custom `SanitizedLogFormatter` scans formatted log output for PII patterns before
     they reach the log file:
     - Account number patterns (sequences of 8+ digits)
     - SSN patterns (NNN-NN-NNNN)
     - Dollar amounts ($N,NNN.NN or similar)
     - Known high-sensitivity field names in structured output
-27. When a pattern matches: mask it in the output and emit a separate `WARNING`-level
+37. When a pattern matches: mask it in the output and emit a separate `WARNING`-level
     entry identifying the leak source (module, line number).
-28. The formatter masks and emits — it never suppresses log entries.
-29. The formatter is a runtime safety net, not a substitute for writing clean log
+38. The formatter masks and emits — it never suppresses log entries.
+39. The formatter is a runtime safety net, not a substitute for writing clean log
     statements. Developers are still responsible for following the PII rules in
     `CLAUDE.md` and `.claude/rules/security.md`.
-30. Error messages returned to users (CLI output, MCP responses) follow the same rules:
+40. Error messages returned to users (CLI output, MCP responses) follow the same rules:
     generic descriptions, never raw financial data. CLI error handlers catch specific
     exceptions and return clean messages.
 
@@ -168,14 +207,14 @@ engineered around.
 - File paths (not file contents)
 
 ### Database Backup and Restore
-31. `db backup` creates a timestamped copy of the encrypted database file in the backup
+41. `db backup` creates a timestamped copy of the encrypted database file in the backup
     directory. Backups are encrypted with the same key — safe to store anywhere.
-32. `db restore` lists available backups, lets the user pick one (or `--from <path>`),
+42. `db restore` lists available backups, lets the user pick one (or `--from <path>`),
     auto-backs-up the current database first, then swaps files.
-33. Restore attempts the current encryption key first. If it fails (backup from before a
+43. Restore attempts the current encryption key first. If it fails (backup from before a
     key rotation), prompts for the original key. On success with an old key, re-encrypts
     the restored database with the current key.
-34. No automatic backup rotation or cleanup in v1. Users manage old backups manually.
+44. No automatic backup rotation or cleanup in v1. Users manage old backups manually.
 
 ## Data Model
 
@@ -226,17 +265,24 @@ class DatabaseConfig(BaseModel):
 ## Implementation Plan
 
 ### Files to Create
+- `src/moneybin/secrets.py` — `SecretStore` class, `SecretNotFoundError` exception.
+  Sole `keyring` consumer: `get_key()`, `set_key()`, `delete_key()` for keychain
+  secrets; `get_env()` for sensitive env vars.
 - `src/moneybin/database.py` — `Database` class, `get_database()` singleton,
-  `DatabaseKeyError` exception
+  `DatabaseKeyError` exception. Uses `SecretStore` for key retrieval.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter` with PII pattern detection
 - `src/moneybin/cli/commands/db_encrypt.py` — `lock`, `unlock`, `key`, `rotate-key`
-  subcommands (or integrated into existing `db.py`)
+  subcommands (or integrated into existing `db.py`). Uses `SecretStore.set_key()` /
+  `delete_key()` for keychain operations.
+- `tests/moneybin/test_secrets.py` — `SecretStore` unit tests (keychain hit, env
+  fallback, missing secret, set/delete)
 - `tests/moneybin/test_database.py` — `Database` class unit tests
 - `tests/moneybin/test_log_sanitizer.py` — formatter tests with PII patterns
 
 ### Files to Modify
 - `src/moneybin/config.py` — add `encryption_key_mode`, `temp_directory` to
-  `DatabaseConfig`; add `backup_path` default resolution to `MoneyBinSettings.__init__`
+  `DatabaseConfig`; add `backup_path` default resolution to `MoneyBinSettings.__init__`;
+  use `SecretStore.get_env()` for sensitive config values instead of raw `os.getenv()`
 - `src/moneybin/cli/commands/db.py` — rewrite `init`, `shell`, `ui`, `query` to use
   `Database` class and `-init` temp script approach for DuckDB CLI/UI launch; add
   `info`, `backup`, `restore` commands
@@ -244,13 +290,18 @@ class DatabaseConfig(BaseModel):
   no longer opens its own
 - `src/moneybin/loaders/*.py` — replace all `duckdb.connect()` calls with
   `get_database().conn` or accept a `Database` instance
-- `src/moneybin/services/*.py` — replace all `duckdb.connect()` calls
+- `src/moneybin/services/import_service.py` — change from `db_path: Path` to
+  `db: Database`; remove internal `duckdb.connect()` calls
+- `src/moneybin/services/categorization_service.py` — change from
+  `conn: DuckDBPyConnection` to `db: Database`
+- `src/moneybin/services/*.py` — all other services follow the same contract
 - `src/moneybin/mcp/server.py` — replace connection management
   (`refresh_read_connection`, `get_write_connection`) with `get_database()`
 - `src/moneybin/cli/commands/categorize.py` — replace `duckdb.connect()` calls
 - `src/moneybin/cli/commands/import_cmd.py` — replace `duckdb.connect()` calls
 - `src/moneybin/logging_config.py` (or wherever logging is configured) — wire in
   `SanitizedLogFormatter`
+- `src/moneybin/utils/secrets_manager.py` — delete (replaced by `secrets.py`)
 
 ### Key Decisions
 - **Encryption algorithm:** AES-256-GCM (authenticated, tamper-detecting). DuckDB
@@ -267,8 +318,18 @@ class DatabaseConfig(BaseModel):
 - **`Database` does not own domain logic:** The schema is the API. Well-commented
   tables and DuckDB's catalog comments make the data self-explanatory to any consumer
   (human, AI, service code). No repository pattern, no data access layer.
+- **`SecretStore` as keychain/env abstraction:** Centralizes all secret retrieval
+  behind a single class rather than scattering `keyring` imports and `os.getenv()`
+  calls across modules. The `Database` class, CLI commands, and settings all use
+  the same interface. This also makes testing straightforward — mock `SecretStore`
+  instead of patching `keyring` and `os.environ` separately in every test.
+- **Service layer contract as convention, not base class:** Services follow a typed
+  pattern (`db: Database` → typed result → domain exceptions) without inheriting from
+  a shared base. A base class would add coupling without value at this stage. The
+  convention can be extracted into a base class later if the pattern proves stable.
 - **`keyring` library for OS keychain:** Abstracts macOS Keychain, Linux Secret
-  Service, Windows Credential Manager. Well-maintained, widely used.
+  Service, Windows Credential Manager. Well-maintained, widely used. Accessed
+  exclusively through `SecretStore`.
 - **`-init` temp script for CLI/UI launch:** DuckDB CLI supports `-init <file>` to run
   SQL on startup. Combined with `-ui`, this enables seamless encrypted database access
   in the DuckDB web UI without manual paste. Temp script created with `0600`, deleted
@@ -366,19 +427,39 @@ this spec — the CLI is the primary interface for infrastructure concerns.
 
 ## Testing Strategy
 
+### Unit: `SecretStore`
+- **`get_key` keychain hit:** keychain contains secret → returns it.
+- **`get_key` env fallback:** keychain miss + `MONEYBIN_{NAME}` set → returns env var.
+- **`get_key` missing:** both miss → raises `SecretNotFoundError` with actionable
+  instructions.
+- **`get_env`:** env var set → returns value. Missing → raises `SecretNotFoundError`.
+- **`set_key` / `delete_key`:** writes to / clears from keychain (mock keyring in
+  tests).
+- **Isolation:** no other module imports `keyring` — verified by test or lint rule.
+
 ### Unit: `Database` class
-- **Key retrieval:** keychain hit → returns key. Keychain miss + env var set → returns
-  env var. Both miss → raises `DatabaseKeyError` with instructions.
+- **Key retrieval:** delegates to `SecretStore.get_key("DATABASE__ENCRYPTION_KEY")`.
+  Mock `SecretStore` in tests.
 - **Initialization:** creates in-memory connection, loads `httpfs`, attaches encrypted
   file, sets temp directory, runs init_schemas, runs migrations.
 - **Singleton:** `get_database()` returns same instance on repeated calls. Cache
   invalidation on profile change.
-- **Auto-key mode:** `db init` generates 256-bit key, stores in keychain, creates
-  encrypted database.
-- **Passphrase mode:** `db init` derives key via PBKDF2, stores derived key in keychain.
-- **Lock/unlock:** `lock` clears keychain entry. Subsequent `get_database()` fails.
-  `unlock` caches derived key, `get_database()` succeeds.
+- **Auto-key mode:** `db init` generates 256-bit key, stores via
+  `SecretStore.set_key()`, creates encrypted database.
+- **Passphrase mode:** `db init` derives key via Argon2id, stores derived key via
+  `SecretStore.set_key()`.
+- **Lock/unlock:** `lock` calls `SecretStore.delete_key()`. Subsequent
+  `get_database()` fails. `unlock` derives and stores via `SecretStore.set_key()`,
+  `get_database()` succeeds.
 - **Close:** connection is closed, resources released, subsequent `conn` access raises.
+
+### Unit: Service layer contract
+- **`Database` parameter:** services that accept `db_path: Path` or raw
+  `DuckDBPyConnection` fail code review. Verified by testing that service functions
+  accept `Database` instances.
+- **Typed returns:** service functions return dataclass/Pydantic instances, not dicts.
+- **Domain exceptions:** infrastructure errors (e.g., `duckdb.Error`) are caught and
+  re-raised as domain exceptions with PII-free messages.
 
 ### Unit: `SanitizedLogFormatter`
 - SSN patterns masked: `123-45-6789` → `***-**-****`
@@ -458,6 +539,11 @@ common interface.
 - A copied `.duckdb` file is unreadable without the encryption key.
 - All `duckdb.connect()` calls in the codebase are replaced with `Database` /
   `get_database()`.
+- All `keyring` imports and secret env var reads go through `SecretStore` — no direct
+  `keyring` or `os.getenv()` for secrets in any other module.
+- `secrets_manager.py` is deleted.
+- All services accept `db: Database` as their first parameter, return typed results,
+  and raise domain exceptions — no `db_path: Path` or raw `DuckDBPyConnection`.
 - `moneybin db shell`, `db ui`, and `db query` open encrypted databases seamlessly.
 - The `SanitizedLogFormatter` catches and masks PII patterns in log output.
 - Migration system works transparently against encrypted databases.
