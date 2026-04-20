@@ -56,6 +56,6 @@ The same DuckDB database is directly accessible via:
 
 ## References
 
-- [MCP Read Tools Spec](../specs/implemented/mcp-read-tools.md) -- Implemented read tools
-- [MCP Write Tools Spec](../specs/implemented/mcp-write-tools.md) -- Implemented write tools
+- [MCP Read Tools Spec](../specs/archived/mcp-read-tools.md) -- Implemented read tools
+- [MCP Write Tools Spec](../specs/archived/mcp-write-tools.md) -- Implemented write tools
 - [MCP Tier 1 Tools Spec](../specs/mcp-tier1-tools.md) -- Next tools to implement

@@ -1,17 +1,18 @@
 # MoneyBin Documentation
 
-## Architecture
+## Decisions (ADRs)
 
-Architecture Decision Records and system design.
+Architecture Decision Records.
 
 | Document | Description |
 |----------|-------------|
-| [System Overview](architecture/system-overview.md) | Consolidated system architecture, tech stack, directory structure |
-| [ADR-001: Medallion Data Layers](architecture/001-medallion-data-layers.md) | Raw/prep/core layer design |
-| [ADR-002: Privacy Tiers](architecture/002-privacy-tiers.md) | Local Only / Encrypted Sync / Managed custody models |
-| [ADR-003: MCP Primary Interface](architecture/003-mcp-primary-interface.md) | MCP server as main consumer interface |
-| [ADR-004: E2E Encryption](architecture/004-e2e-encryption.md) | Encryption design for Encrypted Sync tier (proposed) |
-| [ADR-005: Security Tradeoffs](architecture/005-security-tradeoffs.md) | Threat model and honest security analysis (proposed) |
+| [ADR-001: Medallion Data Layers](decisions/001-medallion-data-layers.md) | Raw/prep/core layer design |
+| [ADR-002: Privacy Tiers](decisions/002-privacy-tiers.md) | Local Only / Encrypted Sync / Managed custody models |
+| [ADR-003: MCP Primary Interface](decisions/003-mcp-primary-interface.md) | MCP server as main consumer interface |
+| [ADR-004: E2E Encryption](decisions/004-e2e-encryption.md) | Encryption design for Encrypted Sync tier (proposed) |
+| [ADR-005: Security Tradeoffs](decisions/005-security-tradeoffs.md) | Threat model and honest security analysis (proposed) |
+| [ADR-006: SQLMesh Replaces dbt](decisions/006-sqlmesh-replaces-dbt.md) | Transformation engine choice |
+| [ADR-007: JSON Over Parquet for Sync](decisions/007-json-over-parquet-for-sync.md) | Sync payload format |
 
 ## Feature Specs
 
@@ -30,18 +31,18 @@ Self-contained documents for driving feature development. Follow the [spec templ
 |------|-------------|
 | [Transaction Categorization](specs/transaction-categorization.md) | Category hierarchy, rules engine, bulk operations |
 | [Budget Tracking](specs/budget-tracking.md) | Budget definitions, rollover, status tracking |
-| [Plaid Integration](specs/plaid-integration.md) | Plaid API + E2E encryption for Encrypted Sync tier |
+| [Plaid Integration](specs/sync-plaid.md) | Plaid API + E2E encryption for Encrypted Sync tier |
 | [Privacy & Security Roadmap](specs/privacy-security-roadmap.md) | Future privacy tiers (Encrypted Sync, Managed) and security controls |
-| [Distribution Roadmap](specs/distribution-roadmap.md) | What needs to change before pip distribution: path defaults, SQLMesh packaging, first-run UX |
+
 
 ### Implemented (Pattern Reference)
 
 | Spec | Description |
 |------|-------------|
-| [OFX Import](specs/implemented/ofx-import.md) | OFX/QFX bank file import |
-| [W-2 Extraction](specs/implemented/w2-extraction.md) | W-2 PDF extraction with dual strategy |
-| [MCP Read Tools](specs/implemented/mcp-read-tools.md) | 8 read-only MCP tools, 5 resources, 5 prompts |
-| [MCP Write Tools](specs/implemented/mcp-write-tools.md) | Import, categorization, budgets, analytics tools |
+| [OFX Import](specs/archived/ofx-import.md) | OFX/QFX bank file import |
+| [W-2 Extraction](specs/archived/w2-extraction.md) | W-2 PDF extraction with dual strategy |
+| [MCP Read Tools](specs/archived/mcp-read-tools.md) | 8 read-only MCP tools, 5 resources, 5 prompts |
+| [MCP Write Tools](specs/archived/mcp-write-tools.md) | Import, categorization, budgets, analytics tools |
 
 ## Reference
 
@@ -49,6 +50,7 @@ Lookup material -- not specs, not decisions.
 
 | Document | Description |
 |----------|-------------|
+| [System Overview](reference/system-overview.md) | Consolidated system architecture, tech stack, directory structure |
 | [Data Model](reference/data-model.md) | Schema definitions, ER diagram, example queries |
 | [Data Sources](reference/data-sources.md) | Data source roadmap and priorities |
 | [MCP Prompts](reference/prompts/README.md) | 9 prompt templates for guided financial workflows |

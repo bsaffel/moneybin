@@ -1,14 +1,18 @@
 # Feature: CSV Import
 
+> **Superseded by [`smart-import-tabular.md`](../smart-import-tabular.md)** — the universal
+> tabular importer that replaces the profile-based CSV system with heuristic detection,
+> multi-format support, and migration profiles.
+
 ## Status
-ready
+implemented
 
 ## Goal
 Import bank transaction data from CSV files into MoneyBin, supporting common bank formats with a fallback generic parser for unknown formats.
 
 ## Background
-- [ADR-001: Medallion Data Layers](../architecture/001-medallion-data-layers.md)
-- [OFX Import](implemented/ofx-import.md) -- Pattern to follow
+- [ADR-001: Medallion Data Layers](../decisions/001-medallion-data-layers.md)
+- [OFX Import](archived/ofx-import.md) -- Pattern to follow
 - [Data Sources](../reference/data-sources.md) -- Priority 3 source
 
 ## Requirements
@@ -60,7 +64,7 @@ CREATE TABLE IF NOT EXISTS raw.csv_transactions (
 
 ### Core integration
 
-Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `source_system = 'csv'`.
+Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `source_type = 'csv'`.
 
 ## Implementation Plan
 

@@ -87,8 +87,26 @@ flowchart LR
 - **Similar to** 1Password's model, but financial data is harder (high-volume, third-party ingestion, heavy aggregation).
 - **Not as good as** true zero-knowledge services (Signal) for the Encrypted Sync tier, because Plaid returns plaintext.
 
+## Addendum: AI Data Flows (2026-04-17)
+
+The original decision addressed **data at rest** — where financial data lives (your machine, encrypted cloud, managed cloud). It did not anticipate AI-first features that send data to external services for parsing, categorization, or analysis. Even in the Local Only tier, AI features create a new class of data movement that the original three-tier model does not cover.
+
+[Privacy & AI Trust](../specs/privacy-and-ai-trust.md) extends this ADR with a complementary model for **data in motion**:
+
+- **AI trust tiers** (0–3) govern when and how data flows to AI backends, with consent gates scaled to risk level
+- **Data sensitivity taxonomy** classifies financial fields and defines per-field redaction rules
+- **Provider profiles** document both privacy stance and capabilities for each AI backend
+- **Verified-local mode** preserves the "nothing leaves this machine" guarantee when using local AI backends (e.g., Ollama on localhost)
+
+The two models are complementary:
+- **Custody tiers** (this ADR) define where data *lives*
+- **AI trust tiers** ([privacy-and-ai-trust.md](../specs/privacy-and-ai-trust.md)) define how data *moves*
+
+The Local Only tier's promise — "nothing leaves this machine" — remains intact by default. AI features that would send data externally require explicit user consent per the AI trust tier model. Users who configure a local AI backend (Ollama) maintain the full Local Only guarantee while still accessing AI-powered features.
+
 ## References
 
 - [ADR-004: E2E Encryption](004-e2e-encryption.md) -- Encryption design for Sync tier
 - [ADR-005: Security Tradeoffs](005-security-tradeoffs.md) -- Threat model analysis
-- [Plaid Integration Spec](../specs/plaid-integration.md) -- Implementation plan for Encrypted Sync
+- [Plaid Integration Spec](../specs/sync-plaid.md) -- Implementation plan for Encrypted Sync
+- [Privacy & AI Trust](../specs/privacy-and-ai-trust.md) -- AI data flow tiers, consent model, and provider profiles

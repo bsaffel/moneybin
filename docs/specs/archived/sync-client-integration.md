@@ -1,17 +1,19 @@
 # Sync Client Integration
 
+> **Archived.** Replaced by [`sync-overview.md`](../sync-overview.md) (umbrella) and [`sync-plaid.md`](../sync-plaid.md) (Plaid provider) as of 2026-04-19.
+
 ## Status
-draft
+archived
 
 ## Goal
 Enable the moneybin Python client to authenticate with moneybin-server, sync bank data via the REST API, load JSON payloads into DuckDB `raw.plaid_*` tables, and transform Plaid data through SQLMesh staging views into core tables alongside existing OFX and CSV sources.
 
 ## Background
-- [moneybin plaid-integration spec](https://github.com/bsaffel/moneybin/blob/main/docs/specs/plaid-integration.md) -- Raw table schemas, staging views, core integration plan
+- [moneybin plaid-integration spec](https://github.com/bsaffel/moneybin/blob/main/docs/specs/sync-plaid.md) -- Raw table schemas, staging views, core integration plan
 - [moneybin CLAUDE.md](https://github.com/bsaffel/moneybin/blob/main/CLAUDE.md) -- Python code standards, architecture layers, sign convention
 - [server-api-contract.md](../reference/server-api-contract.md) -- Full API surface; build against this
-- [ADR-002: Privacy Tiers](https://github.com/bsaffel/moneybin/blob/main/docs/architecture/002-privacy-tiers.md) -- Encrypted Sync tier
-- [ADR-007: JSON over Parquet](https://github.com/bsaffel/moneybin/blob/main/docs/architecture/007-json-over-parquet-for-sync.md) -- Why JSON instead of Parquet
+- [ADR-002: Privacy Tiers](https://github.com/bsaffel/moneybin/blob/main/docs/decisions/002-privacy-tiers.md) -- Encrypted Sync tier
+- [ADR-007: JSON over Parquet](https://github.com/bsaffel/moneybin/blob/main/docs/decisions/007-json-over-parquet-for-sync.md) -- Why JSON instead of Parquet
 - Server API endpoints: `POST /sync/link-token`, `POST /sync/exchange-token`, `POST /sync/trigger`, `GET /sync/status`, `GET /sync/data`
 - All changes in this phase are made in the **moneybin** Python project.
 
@@ -23,7 +25,7 @@ Enable the moneybin Python client to authenticate with moneybin-server, sync ban
 4. Client downloads JSON payload and loads into `raw.plaid_*` DuckDB tables.
 5. Deduplication on primary keys prevents duplicate records on re-sync.
 6. SQLMesh staging views standardize Plaid data and flip amount sign (Plaid positive = expense becomes MoneyBin negative = expense).
-7. Core models include Plaid data via `UNION ALL` with `source_system = 'plaid'`.
+7. Core models include Plaid data via `UNION ALL` with `source_type = 'plaid'`.
 8. CLI commands provide full sync workflow (login, link, run, status).
 9. MCP tools expose sync operations to AI assistants.
 
@@ -58,7 +60,7 @@ Three tables in the `raw` schema, matching the JSON payload from moneybin-server
 -- raw.plaid_balances (PK: account_id, balance_date, source_file)
 ```
 
-Column schemas match `docs/specs/plaid-integration.md` in the moneybin project. Note: `source_file`, `extracted_at`, and `loaded_at` are client-side fields not present in the JSON response -- the client generates them:
+Column schemas match `docs/specs/sync-plaid.md` in the moneybin project. Note: `source_file`, `extracted_at`, and `loaded_at` are client-side fields not present in the JSON response -- the client generates them:
 - `source_file`: logical identifier, e.g. `sync_{job_id}`
 - `extracted_at`: from `metadata.synced_at` in the JSON response
 - `loaded_at`: current timestamp at DuckDB insertion time
@@ -75,8 +77,8 @@ Column schemas match `docs/specs/plaid-integration.md` in the moneybin project. 
 
 | Model | Change |
 |-------|--------|
-| `core.dim_accounts` | Add `plaid_accounts` CTE selecting from `prep.stg_plaid__accounts` with `source_system = 'plaid'`, UNION ALL into `all_accounts` |
-| `core.fct_transactions` | Add `plaid_transactions` CTE selecting from `prep.stg_plaid__transactions` with `source_system = 'plaid'`, UNION ALL into `all_transactions` |
+| `core.dim_accounts` | Add `plaid_accounts` CTE selecting from `prep.stg_plaid__accounts` with `source_type = 'plaid'`, UNION ALL into `all_accounts` |
+| `core.fct_transactions` | Add `plaid_transactions` CTE selecting from `prep.stg_plaid__transactions` with `source_type = 'plaid'`, UNION ALL into `all_transactions` |
 
 ## Implementation Plan
 
@@ -452,8 +454,8 @@ Plaid data flows through existing core tables after sync, so all existing MCP re
 
 - `stg_plaid__transactions`: Verify amount sign flip (-1 * positive becomes negative)
 - `stg_plaid__accounts`: Verify column mapping to core-compatible schema
-- `dim_accounts`: Verify Plaid accounts appear with `source_system = 'plaid'`
-- `fct_transactions`: Verify Plaid transactions appear with correct sign convention and `source_system = 'plaid'`
+- `dim_accounts`: Verify Plaid accounts appear with `source_type = 'plaid'`
+- `fct_transactions`: Verify Plaid transactions appear with correct sign convention and `source_type = 'plaid'`
 - Dedup: Load same JSON twice, verify no duplicate rows in raw tables
 
 ### CLI tests
@@ -503,10 +505,10 @@ uv run moneybin sync run
 # Verify data loaded
 uv run moneybin db shell
 # SELECT COUNT(*) FROM raw.plaid_transactions;
-# SELECT * FROM core.fct_transactions WHERE source_system = 'plaid' LIMIT 5;
+# SELECT * FROM core.fct_transactions WHERE source_type = 'plaid' LIMIT 5;
 # Verify amounts are negative for expenses:
 # SELECT amount, description FROM core.fct_transactions
-#   WHERE source_system = 'plaid' AND amount > 0 LIMIT 5;
+#   WHERE source_type = 'plaid' AND amount > 0 LIMIT 5;
 # (should be income transactions only)
 
 # Run pre-commit checks

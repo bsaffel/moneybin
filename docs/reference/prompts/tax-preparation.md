@@ -59,4 +59,4 @@ The prompt produces a summary including:
 ## Related
 
 - [`import_data`](import-data.md) -- Import W-2 PDFs first
-- [W-2 Extraction spec](../../specs/implemented/w2-extraction.md)
+- [W-2 Extraction spec](../../specs/archived/w2-extraction.md)

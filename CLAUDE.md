@@ -53,22 +53,39 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 2. Add a CTE to the relevant core model and `UNION ALL` into the `all_*` CTE
 3. No changes needed to consumers
 
+## Specs & Implementation Tracking
+
+Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** is the single source of truth for what's been designed, what's in progress, and what's shipped.
+
+- **Before implementing a feature**, check `docs/specs/INDEX.md` to see if a spec exists and what its status is.
+- **When starting implementation**, update the spec's status to `in-progress` (both in the spec file and in `INDEX.md`).
+- **When implementation is complete**, update the spec's status to `implemented` and move the file to `docs/specs/archived/`.
+- **When writing a new spec**, add it to the Active specs table in `INDEX.md`.
+- Statuses: `draft` → `ready` → `in-progress` → `implemented`.
+
 ## Configuration
 
-Use Pydantic Settings as single source of truth. Never hardcode paths or credentials.
+All config lives in `src/moneybin/config.py` — one file, one `MoneyBinSettings` root. Pydantic Settings is the single source of truth. Never hardcode paths or credentials.
+
+- **Adding a new config section:** Create a frozen `BaseModel` subclass in `config.py` and add it as a field on `MoneyBinSettings`. Follow the existing pattern (`DatabaseConfig`, `SyncConfig`, etc.).
+- **Accessing config:** Import `get_settings()` — never instantiate `MoneyBinSettings` directly except in tests.
+- **Sensitive values:** Use `SecretStore` (see [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md)), not raw `os.getenv()` or plain `str` fields for secrets.
+- **Env vars** use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_DATABASE__PATH`.
 
 ```python
-from moneybin.config import get_database_path, get_settings
+from moneybin.database import get_database
 
-conn = duckdb.connect(str(get_database_path()))
+db = get_database()
+db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [account_id])
 ```
 
-Env vars use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_PLAID__CLIENT_ID`.
+**Never call `duckdb.connect()` directly.** The `Database` class (`src/moneybin/database.py`) is the sole entry point for all database access. It handles encryption key retrieval, encrypted file attachment, schema initialization, and migrations. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
 
 ## Security
 
+- **Encryption at rest**: All DuckDB databases are encrypted with AES-256-GCM by default. The `Database` class handles key retrieval and encrypted attachment transparently. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md) for threat model, key management, and CLI commands.
 - `SecretStr` for passwords/API keys in Pydantic Settings.
 - Subprocess commands as lists (`["cmd", "arg"]`), never `shell=True` with user input.
 - Log detailed errors internally; return generic messages to users.
-- **No PII or financial data in logs**: Never log account numbers, routing numbers, balances, transaction amounts, or full descriptions. Log record counts, IDs, and status codes instead. Use masked or truncated values if context is needed (e.g., `account ...1234`).
+- **No PII or financial data in logs**: Never log account numbers, routing numbers, balances, transaction amounts, or full descriptions. Log record counts, IDs, and status codes instead. Use masked or truncated values if context is needed (e.g., `account ...1234`). A `SanitizedLogFormatter` provides runtime detection and masking as a safety net.
 - **Parameterized SQL** with `?` placeholders for all values. Validate dynamic identifiers against allowlists (e.g., `TableRef` constants). See `.claude/rules/security.md` for DuckDB-specific patterns and test conventions.

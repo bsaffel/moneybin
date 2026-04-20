@@ -7,7 +7,7 @@ implemented
 Import financial data from OFX/QFX bank files into MoneyBin with an idempotent, archive-friendly workflow.
 
 ## Background
-- [ADR-001: Medallion Data Layers](../../architecture/001-medallion-data-layers.md)
+- [ADR-001: Medallion Data Layers](../../decisions/001-medallion-data-layers.md)
 - [Data Model](../../reference/data-model.md) -- `raw.ofx_*` tables
 
 ## Requirements

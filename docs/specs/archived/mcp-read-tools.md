@@ -7,7 +7,7 @@ implemented
 Give AI assistants secure, read-only access to local financial data through MCP tools organized by financial domain.
 
 ## Background
-- [ADR-003: MCP Primary Interface](../../architecture/003-mcp-primary-interface.md)
+- [ADR-003: MCP Primary Interface](../../decisions/003-mcp-primary-interface.md)
 - Source: `src/moneybin/mcp/tools.py`
 
 ## Requirements

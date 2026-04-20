@@ -1,38 +1,91 @@
 ---
-paths: ["src/moneybin/mcp/**"]
+paths: ["src/moneybin/mcp/**", "src/moneybin/services/**"]
 ---
 
 # MCP Server
 
-## Data Access
+**Authoritative design:** [`docs/specs/mcp-architecture.md`](../../docs/specs/mcp-architecture.md)
 
-- Read from **core schema only** (`dim_accounts`, `fct_transactions`, etc.)
-- Use `TableRef` constants from `moneybin.tables` for table references, never hardcoded strings.
-- Never query raw or staging tables from the MCP server.
+## Architecture
+
+MCP tools are thin wrappers around a shared service layer. They contain no business logic, no SQL, and no privacy enforcement — all of that lives below them.
+
+```
+MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
+```
+
+- **MCP/CLI layer** — parameter validation, input/output formatting only.
+- **Privacy middleware** — sensitivity gates, consent checks, audit logging, response filtering. Tools are unaware of their own privacy enforcement.
+- **Service layer** — business logic, parameterized SQL, returns typed Python objects (dataclasses or Pydantic models).
+
+## Design Philosophy
+
+1. **Import-first, not ledger-first.** No general-purpose `add_transaction` tool. Transactions come from sources (files, connectors). Corrections and annotations are metadata on source-imported records, not counter-entries.
+2. **Privacy by architecture.** Every tool declares a sensitivity tier (`low`, `medium`, `high`). The middleware enforces consent and redaction automatically.
+3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.
+4. **AI-ergonomic.** Tool names, descriptions, and parameter schemas are designed for LLM tool selection.
+5. **CLI symmetry.** Every MCP tool has a CLI equivalent via the same service layer. `--output json` on any CLI command returns the same response envelope.
+
+## Tool Taxonomy
+
+Tools use dot-separated namespaces (MCP SEP-986): `domain.action_or_view`.
+
+| Namespace | Purpose |
+|---|---|
+| `spending.*` | Expense analysis, trends, category breakdowns |
+| `cashflow.*` | Income vs outflows, income sources |
+| `accounts.*` | Account listing, balances, net worth |
+| `transactions.*` | Search, corrections, annotations, recurring |
+| `import.*` | File import, status |
+| `categorize.*` | Rules, merchant mappings, bulk categorization |
+| `budget.*` | Targets, status, rollovers |
+| `tax.*` | W-2 data, future capital gains |
+| `privacy.*` | Consent status, grants, revocations, audit log |
+| `overview.*` | Cross-domain summaries, system info |
+
+Naming: **noun = query** (`spending.summary`), **verb = action** (`categorize.bulk`). No CRUD naming.
+
+## Response Envelope
+
+Every tool returns this shape:
+
+```json
+{
+  "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "USD"},
+  "data": [ ... ],
+  "actions": ["Use spending.by_category for breakdown"]
+}
+```
+
+- **`summary`** — metadata for the AI: counts, truncation, sensitivity, currency.
+- **`data`** — structured objects, never pre-formatted strings.
+- **`actions`** — contextual next-step hints for composability.
+
+Currency lives in `summary.display_currency`, not per-row. Per-row `currency` only when returning mixed unconverted currencies.
+
+## Sensitivity Tiers
+
+| Tier | Data | Consent |
+|---|---|---|
+| `low` | Aggregates, counts, category labels | None |
+| `medium` | Row-level: descriptions, amounts, dates | `mcp-data-sharing` (persistent) |
+| `high` | Critical PII fields (account numbers) | `mcp-data-sharing` + always masked for cloud |
+
+Tools without consent return **degraded responses** (aggregates instead of row-level data) using the same envelope with `summary.degraded: true`. Never fail — always return something useful.
+
+The `detail` parameter (`summary`, `standard`, `full`) lets the AI self-select verbosity. `detail=summary` always returns aggregates without triggering consent.
 
 ## Connection Model
 
-- **Read tools** use `get_db()` — a long-lived read-only connection opened at startup.
-- **Write tools** use `get_write_db()` — a context manager that temporarily closes the read connection, opens a read-write connection, then restores the read connection after the write completes.
-- DuckDB does not allow mixed read-only and read-write connections to the same file in the same process, so the swap is necessary.
-- This design allows other processes (CLI, notebooks) to read the database concurrently.
+All tools use `get_database()` from `src/moneybin/database.py` — a single long-lived read-write connection per process. The `Database` class handles encryption, schema init, and migrations transparently. See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
 
-## Privacy Tiers
+## Data Access
 
-The MCP server exposes financial data through privacy tiers:
-- Aggregated data (summaries, totals) is lowest sensitivity.
-- Individual transaction details require higher trust.
-- Account identifiers and credentials are highest sensitivity.
+- Read from **core schema** via `TableRef` constants for analytics queries.
+- Write to **app schema** for user-authored state (categories, budgets, consent, annotations).
+- Write to **raw schema** for import operations only.
+- Use parameterized SQL with `?` placeholders for all values.
 
-## Bulk operations
+## Error Messages
 
-- Prefer tools that accept lists over tools that operate on one item at a time. Single-item tools hit turn tool-call limits for bulk workflows.
-- The standard pattern: one read tool to fetch candidates → LLM reasons about all of them → one write tool submits the full list.
-- Example: `get_uncategorized_transactions` → Claude classifies → `bulk_categorize([...])`.
-
-## Principles
-
-- **Local storage only**: All data stays on user's machine.
-- **Minimize data in errors**: Don't expose account numbers, balances, or PII in error messages.
-- **Read-only by default**: Write operations require explicit user confirmation.
-- Treat external APIs (Plaid, etc.) as data sources, not storage.
+- **Minimize data in errors** — no account numbers, balances, or PII in error messages. Privacy enforcement (consent, redaction, audit) is handled by the middleware, not tool code.

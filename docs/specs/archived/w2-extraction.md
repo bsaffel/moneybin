@@ -7,7 +7,7 @@ implemented
 Extract IRS Form W-2 data from PDF files using dual extraction (text + OCR) for high-confidence results, and load into DuckDB for tax analysis.
 
 ## Background
-- [ADR-001: Medallion Data Layers](../../architecture/001-medallion-data-layers.md)
+- [ADR-001: Medallion Data Layers](../../decisions/001-medallion-data-layers.md)
 - [Data Model](../../reference/data-model.md) -- `raw.w2_forms` table
 
 ## Requirements

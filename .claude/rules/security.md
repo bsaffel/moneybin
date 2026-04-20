@@ -3,7 +3,29 @@
 ## SQL Injection Prevention
 
 - **Always use parameterized queries** with `?` placeholders for any user-supplied or variable value. Never use f-strings, `.format()`, or `%` string interpolation to build SQL in production code.
-- **Table/column names cannot be parameterized** — when dynamic identifiers are needed, validate against an allowlist of known names (e.g., `TableRef` constants or a schema dict). Never pass user input directly into identifier positions.
+- **Table/column names cannot be parameterized** — when dynamic identifiers are needed, validate against an allowlist. Three valid approaches, in order of preference:
+  1. **`TableRef` constants** (compile-time) — preferred when the set of valid tables is known at design time.
+  2. **`duckdb_tables()` / `duckdb_columns()`** (runtime) — query DuckDB's catalog to validate that a table or column actually exists before interpolating. Use this when the valid set is dynamic or when you want to validate against the live schema.
+  3. **`sqlglot` quoting** — use `sqlglot.exp.to_identifier(name, quoted=True).sql("duckdb")` for programmatic identifier quoting when building SQL programmatically. Already a project dependency.
+  ```python
+  # CORRECT — validate against catalog, then quote with sqlglot
+  from sqlglot import exp
+
+  valid_tables = db.execute(
+      "SELECT schema_name || '.' || table_name FROM duckdb_tables()"
+  ).fetchall()
+  qualified = f"{schema}.{table}"
+  if (qualified,) not in valid_tables:
+      raise ValueError(f"Unknown table: {qualified}")
+  safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")
+  safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")
+  db.execute(f"SELECT * FROM {safe_schema}.{safe_table} WHERE id = ?", [record_id])
+
+  # CORRECT — compile-time allowlist
+  if table_name not in TableRef.ALL:
+      raise ValueError(f"Unknown table: {table_name}")
+  ```
+  Never use bare f-string interpolation for identifiers, even after validation — always double-quote as defense in depth.
 - **DuckDB `read_*` paths**: Validate file paths before passing to `read_csv()`, `read_parquet()`, etc. — these are SQL injection vectors since DuckDB can read remote URLs and glob patterns.
 - **Test exception**: Test cases may use string-built SQL to construct fixture data or verify edge cases. Annotate with `# noqa: S608  # building test input string, not executing SQL` and keep the constructed SQL within the test — never in a helper that production code could import.
 
@@ -39,3 +61,10 @@ conn.execute(f"SELECT * FROM fct_transactions WHERE account_id = '{account_id}'"
 - **Enum/set membership**: When a parameter must be one of a known set (account types, sort directions, export formats), validate against the set explicitly. Prefer `Literal` types or `Enum` classes over bare strings.
 - **Pydantic for structured input**: Use Pydantic models with `Field(...)` constraints (`min_length`, `max_length`, `ge`, `le`, `pattern`) for any structured input from external sources. Let validation failures raise before business logic runs.
 - **File content**: Treat uploaded/imported file content (CSV, OFX, PDF) as untrusted. Validate structure and field types after parsing — do not assume files conform to expected schemas.
+
+## PII in Logs and Errors
+
+- **Never log** account numbers, routing numbers, SSNs, transaction amounts, balances, full descriptions, or merchant names. Log record counts, entity IDs, status codes, and masked values only.
+- A `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) provides runtime detection and masking of PII patterns (SSNs, account numbers, dollar amounts) as a safety net. It masks and warns — it never suppresses log entries.
+- **Error messages** returned to users (CLI, MCP) must be generic. Catch specific exceptions and return clean messages — never let stack traces with financial data in local variables propagate to output.
+- See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full list of allowed vs prohibited log content.

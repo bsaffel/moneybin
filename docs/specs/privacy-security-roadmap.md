@@ -6,9 +6,9 @@ MoneyBin follows a three-tier data custody model that makes trust boundaries exp
 
 For the architectural rationale, see:
 
-- [ADR-002: Privacy Tiers](../architecture/002-privacy-tiers.md)
-- [ADR-004: E2E Encryption](../architecture/004-e2e-encryption.md)
-- [ADR-005: Security Tradeoffs](../architecture/005-security-tradeoffs.md)
+- [ADR-002: Privacy Tiers](../decisions/002-privacy-tiers.md)
+- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md)
+- [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md)
 
 ## Current: Local Only
 
@@ -28,7 +28,7 @@ For the architectural rationale, see:
 - Server stores only opaque ciphertext
 - You hold the encryption keys
 
-See [`docs/architecture/004-e2e-encryption.md`](../architecture/004-e2e-encryption.md) for the encryption design.
+See [`docs/decisions/004-e2e-encryption.md`](../decisions/004-e2e-encryption.md) for the encryption design.
 
 ## Future: Managed
 

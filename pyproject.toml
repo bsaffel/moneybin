@@ -8,6 +8,7 @@ build-backend = "setuptools.build_meta"
 name = "moneybin"
 version = "0.1.0"
 description = "AI-powered personal finance app built on DuckDB and MCP"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
 dependencies = [
     # Data transforms (SQLMesh manages raw → staging → core pipeline)

@@ -42,3 +42,6 @@ logs/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Archived specs (superseded or historical — use INDEX.md for status)
+docs/specs/archived/

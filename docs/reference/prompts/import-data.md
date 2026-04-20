@@ -44,5 +44,5 @@ flowchart TD
 ## Related
 
 - [`categorize_transactions`](categorize-transactions.md) -- Categorize the imported transactions
-- [OFX Import spec](../../specs/implemented/ofx-import.md)
-- [W-2 Extraction spec](../../specs/implemented/w2-extraction.md)
+- [OFX Import spec](../../specs/archived/ofx-import.md)
+- [W-2 Extraction spec](../../specs/archived/w2-extraction.md)

@@ -1,5 +1,20 @@
 # System Overview
 
+## Name and branding
+
+The project name is **MoneyBin** (camel case, one word). This applies to all marketing, logos, documentation prose, and UI text. The name references Scrooge McDuck's Money Bin from DuckTales.
+
+| Context | Form | Example |
+|---------|------|---------|
+| Branding / prose | MoneyBin | "MoneyBin is a local-first financial platform" |
+| CLI command | `moneybin` | `moneybin data extract ofx` |
+| Python package | `moneybin` | `import moneybin` |
+| GitHub repo | `moneybin` | `github.com/bsaffel/moneybin` |
+
+Lowercase forms (`moneybin`) are technical conventions (CLI, package, repo). The canonical marketing name is always **MoneyBin** with a capital B.
+
+## Overview
+
 MoneyBin is an open-source, local-first personal financial analysis platform. Financial data flows from source files through extractors into DuckDB, is transformed by SQLMesh into canonical analytical tables, and is accessible through two parallel interfaces.
 
 ## Architecture
@@ -13,7 +28,7 @@ flowchart LR
 
 ### Primary interface: MCP server
 
-The MCP server gives AI assistants (Claude, Cursor, etc.) secure access to financial data via tools across 11 domains. It runs locally via stdio -- not a remote service. See [ADR-003](003-mcp-primary-interface.md).
+The MCP server gives AI assistants (Claude, Cursor, etc.) secure access to financial data via tools across 11 domains. It runs locally via stdio -- not a remote service. See [ADR-003](../decisions/003-mcp-primary-interface.md).
 
 ### Data toolkit
 
@@ -26,7 +41,7 @@ The same DuckDB database is directly accessible with standard data tools:
 
 ## Data architecture
 
-Data flows through three layers ([ADR-001](001-medallion-data-layers.md)):
+Data flows through three layers ([ADR-001](../decisions/001-medallion-data-layers.md)):
 
 | Layer | Schema | Materialized | Purpose |
 |-------|--------|-------------|---------|
@@ -64,7 +79,7 @@ See [Data Sources](../reference/data-sources.md) for the full roadmap.
 
 ## Privacy tiers
 
-The architecture supports three data custody models ([ADR-002](002-privacy-tiers.md)):
+The architecture supports three data custody models ([ADR-002](../decisions/002-privacy-tiers.md)):
 
 | Tier | Data Location | Bank Sync | Status |
 |------|--------------|-----------|--------|
@@ -109,8 +124,10 @@ Resolution priority: CLI flag (`--profile=alice`) > env var (`MONEYBIN_PROFILE`)
 
 ## Related ADRs
 
-- [ADR-001: Medallion Data Layers](001-medallion-data-layers.md)
-- [ADR-002: Privacy Tiers](002-privacy-tiers.md)
-- [ADR-003: MCP Primary Interface](003-mcp-primary-interface.md)
-- [ADR-004: E2E Encryption](004-e2e-encryption.md)
-- [ADR-005: Security Tradeoffs](005-security-tradeoffs.md)
+- [ADR-001: Medallion Data Layers](../decisions/001-medallion-data-layers.md)
+- [ADR-002: Privacy Tiers](../decisions/002-privacy-tiers.md)
+- [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
+- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md)
+- [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md)
+- [ADR-006: SQLMesh Replaces dbt](../decisions/006-sqlmesh-replaces-dbt.md)
+- [ADR-007: JSON Over Parquet for Sync](../decisions/007-json-over-parquet-for-sync.md)

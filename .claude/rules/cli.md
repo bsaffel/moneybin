@@ -37,6 +37,17 @@ def command_function(source_path: Path = typer.Option(..., help="Description")) 
 - Clear help text for all commands and options
 - Progress updates for long operations
 
+## Non-Interactive Parity
+
+Every interactive prompt (confirmation, selection, wizard step) must have a flag equivalent that expresses the same intent in a single invocation. AI agents and scripts cannot navigate interactive prompts.
+
+- **Confirmations** → `--yes` / `-y` to auto-accept
+- **Field selection** → named flags (e.g., `--date-col=X`, `--amount-col=Y`)
+- **Declining/skipping** → `--skip` or equivalent
+- **Multi-step wizards** → each step's choice expressible as a flag; all flags combinable in one invocation
+
+Combined with `--output json` (see `mcp-architecture.md` §7), this makes every CLI command fully automatable by AI agents (Claude Code, Codex) and shell scripts.
+
 ## Icon Usage
 
 Use icons **sparingly** — only where they add scanability, not decoration.
@@ -48,6 +59,8 @@ Use icons **sparingly** — only where they add scanability, not decoration.
 | Warning | `⚠️` | `logger.warning(...)` messages |
 | Working | `⚙️` | Start of a long-running operation (sync, load, transform) |
 | Hint | `💡` | Optional follow-up tips after an error |
+| Bug report | `🐛` | Link to issue tracker after an unexpected error |
+| Review | `👀` | Items that need user attention or review |
 
 Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data.
 
@@ -58,6 +71,8 @@ logger.info("✅ Imported %d transactions", count)
 logger.error("❌ File not found: %s", path)
 logger.warning("⚠️  No new data to sync")
 logger.info("💡 Run 'moneybin db init' to create the database first")
+logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
+logger.info("👀 3 auto-generated rules need review")
 
 # Bad — wrong icon semantics or decorative noise
 logger.info("📈 Beginning incremental sync...")  # chart ≠ working
