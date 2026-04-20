@@ -81,7 +81,7 @@ class TestShellCommand:
         assert result.exit_code == 0
 
         call_args = mock_subprocess_run.call_args[0][0]
-        assert call_args[0] == "duckdb"
+        assert call_args[0] == "/usr/local/bin/duckdb"
         assert "-init" in call_args
         assert "-c" not in call_args
         assert "-ui" not in call_args
@@ -199,7 +199,7 @@ class TestUiCommand:
         mock_get.assert_called_once()
 
         call_args = mock_subprocess_run.call_args[0][0]
-        assert call_args[0] == "duckdb"
+        assert call_args[0] == "/usr/local/bin/duckdb"
         assert "-ui" in call_args
 
     def test_ui_with_custom_database(
@@ -315,7 +315,7 @@ class TestQueryCommand:
         assert result.exit_code == 0
 
         call_args = mock_subprocess_run.call_args[0][0]
-        assert call_args[0] == "duckdb"
+        assert call_args[0] == "/usr/local/bin/duckdb"
         assert "-c" in call_args
         assert "SELECT 1" in call_args
 

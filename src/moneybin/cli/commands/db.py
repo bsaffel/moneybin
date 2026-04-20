@@ -91,6 +91,10 @@ def init_db(
     in the OS keychain (auto-key mode). Use --passphrase for passphrase-
     based key derivation via Argon2id.
     """
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     import secrets as secrets_mod
 
     from moneybin.config import get_settings
@@ -109,8 +113,10 @@ def init_db(
     store = SecretStore()
 
     if passphrase:
-        # Passphrase mode: prompt, derive key via Argon2id, store derived key
-        import argon2
+        # Passphrase mode: prompt, derive key via Argon2id, store derived key + salt
+        import base64
+
+        import argon2.low_level
 
         pp = typer.prompt("Enter passphrase", hide_input=True)
         pp_confirm = typer.prompt("Confirm passphrase", hide_input=True)
@@ -118,20 +124,23 @@ def init_db(
             logger.error("❌ Passphrases do not match")
             raise typer.Exit(1)
 
-        # Derive key using Argon2id
-        hasher = argon2.PasswordHasher(
+        # Generate a fixed salt to allow re-derivation during unlock
+        salt = secrets_mod.token_bytes(16)
+        # Derive deterministic key from passphrase + salt using Argon2id
+        raw_key = argon2.low_level.hash_secret_raw(
+            secret=pp.encode(),
+            salt=salt,
             time_cost=3,
             memory_cost=65536,
             parallelism=4,
             hash_len=32,
-            type=argon2.Type.ID,
+            type=argon2.low_level.Type.ID,
         )
-        # Use the hash as the encryption key (it includes salt)
-        key_hash = hasher.hash(pp)
-        # Extract the raw hash for use as DuckDB key (base64-encoded portion)
-        encryption_key = key_hash.split("$")[-1]
+        encryption_key = raw_key.hex()
 
+        # Store key and salt so unlock can re-derive
         store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
+        store.set_key("DATABASE__PASSPHRASE_SALT", base64.b64encode(salt).decode())
         logger.info("Passphrase-derived key stored in OS keychain")
     else:
         # Auto-key mode: generate random 256-bit key
@@ -177,7 +186,7 @@ def open_shell(
     try:
         logger.info("🦆 Opening DuckDB interactive shell...")
         logger.info("   Type .help for commands, .quit to exit")
-        cmd = ["duckdb", "-init", str(init_script)]
+        cmd = [duckdb_path, "-init", str(init_script)]
         subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ DuckDB shell failed: {e}")
@@ -218,7 +227,7 @@ def open_ui(
     try:
         logger.info("🚀 Opening DuckDB web UI...")
         logger.info("   Press Ctrl+C to stop the server")
-        cmd = ["duckdb", "-init", str(init_script), "-ui"]
+        cmd = [duckdb_path, "-init", str(init_script), "-ui"]
         subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ DuckDB UI failed to start: {e}")
@@ -272,7 +281,7 @@ def run_query(
 
     init_script = _create_init_script(db_path)
     try:
-        cmd = ["duckdb", "-init", str(init_script), "-c", sql]
+        cmd = [duckdb_path, "-init", str(init_script), "-c", sql]
         if output_format in format_map:
             cmd.append(format_map[output_format])
         else:
@@ -296,6 +305,10 @@ def db_info(
     ),
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from moneybin.config import get_settings
     from moneybin.database import Database
     from moneybin.secrets import SecretNotFoundError, SecretStore
@@ -370,6 +383,10 @@ def db_backup(
     ),
 ) -> None:
     """Create a timestamped backup of the encrypted database file."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from datetime import datetime
 
     from moneybin.config import get_settings
@@ -412,6 +429,10 @@ def db_restore(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
     """Restore database from a backup file."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from datetime import datetime
 
     from moneybin.config import get_settings
@@ -427,7 +448,7 @@ def db_restore(
             logger.error("❌ No backup directory found: %s", backup_dir)
             raise typer.Exit(1)
 
-        backups = sorted(backup_dir.glob("*.duckdb"), reverse=True)
+        backups: list[Path] = sorted(backup_dir.glob("*.duckdb"), reverse=True)
         if not backups:
             logger.error("❌ No backups found in %s", backup_dir)
             raise typer.Exit(1)
@@ -443,13 +464,19 @@ def db_restore(
             raise typer.Exit(1)
         from_path = backups[choice - 1]
 
-    if not from_path.exists():
-        logger.error(f"❌ Backup file not found: {from_path}")
+    # from_path is guaranteed non-None here (either provided or selected above)
+    assert from_path is not None  # noqa: S101 — guaranteed non-None after selection
+    from typing import cast
+
+    resolved_path = cast(Path, from_path)  # narrow type for pyright
+
+    if not resolved_path.exists():
+        logger.error(f"❌ Backup file not found: {resolved_path}")
         raise typer.Exit(1)
 
     if not yes:
         confirm = typer.confirm(
-            f"Restore from {from_path.name}? Current database will be backed up first."
+            f"Restore from {resolved_path.name}? Current database will be backed up first."
         )
         if not confirm:
             raise typer.Exit(0)
@@ -463,7 +490,7 @@ def db_restore(
         shutil.copy2(str(db_path), str(auto_backup))
         logger.info("Auto-backed up current database: %s", auto_backup.name)
 
-    shutil.copy2(str(from_path), str(db_path))
+    shutil.copy2(str(resolved_path), str(db_path))
     if sys.platform != "win32":
         try:
             db_path.chmod(0o600)
@@ -474,7 +501,7 @@ def db_restore(
     try:
         db = Database(db_path, secret_store=store)
         db.close()
-        logger.info("✅ Database restored from %s", from_path.name)
+        logger.info("✅ Database restored from %s", resolved_path.name)
     except Exception:
         logger.warning(
             "⚠️  Could not open restored database with current key. "
@@ -484,11 +511,16 @@ def db_restore(
             "💡 Set the original key via MONEYBIN_DATABASE__ENCRYPTION_KEY "
             "and run 'moneybin db rotate-key' to re-encrypt."
         )
+        raise typer.Exit(1) from None
 
 
 @app.command("lock")
 def db_lock() -> None:
     """Clear the cached encryption key from OS keychain."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
     store = SecretStore()
@@ -505,21 +537,44 @@ def db_lock() -> None:
 @app.command("unlock")
 def db_unlock() -> None:
     """Derive key from passphrase and cache in OS keychain."""
-    import argon2
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
+    import base64
+
+    import argon2.low_level
 
     from moneybin.config import get_settings
     from moneybin.database import Database
-    from moneybin.secrets import SecretStore
-
-    pp = typer.prompt("Enter passphrase", hide_input=True)
-
-    hasher = argon2.PasswordHasher(
-        time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, type=argon2.Type.ID
-    )
-    key_hash = hasher.hash(pp)
-    encryption_key = key_hash.split("$")[-1]
+    from moneybin.secrets import SecretNotFoundError, SecretStore
 
     store = SecretStore()
+
+    # Retrieve the stored salt
+    try:
+        salt_b64 = store.get_key("DATABASE__PASSPHRASE_SALT")
+    except SecretNotFoundError:
+        logger.error(
+            "❌ No passphrase salt found. Was this database created with --passphrase mode?"
+        )
+        raise typer.Exit(1) from None
+
+    salt = base64.b64decode(salt_b64)
+    pp = typer.prompt("Enter passphrase", hide_input=True)
+
+    # Re-derive key using same params and stored salt
+    raw_key = argon2.low_level.hash_secret_raw(
+        secret=pp.encode(),
+        salt=salt,
+        time_cost=3,
+        memory_cost=65536,
+        parallelism=4,
+        hash_len=32,
+        type=argon2.low_level.Type.ID,
+    )
+    encryption_key = raw_key.hex()
+
     store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
 
     settings = get_settings()
@@ -527,15 +582,19 @@ def db_unlock() -> None:
         db = Database(settings.database.path, secret_store=store)
         db.close()
         logger.info("✅ Database unlocked")
-    except Exception as e:
+    except Exception:
         store.delete_key("DATABASE__ENCRYPTION_KEY")
         logger.error("❌ Wrong passphrase — database remains locked")
-        raise typer.Exit(1) from e
+        raise typer.Exit(1) from None
 
 
 @app.command("key")
 def db_key() -> None:
     """Print the database encryption key."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
     store = SecretStore()
@@ -560,6 +619,10 @@ def db_rotate_key(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
     """Re-encrypt the database with a new key."""
+    from moneybin.logging.config import setup_logging
+
+    setup_logging(cli_mode=True)
+
     import secrets as secrets_mod
 
     import duckdb as duckdb_mod
