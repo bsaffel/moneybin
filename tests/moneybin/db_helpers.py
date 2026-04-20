@@ -8,6 +8,8 @@ minimal CREATE TABLE statements here.
 
 import duckdb
 
+from moneybin.database import Database
+
 # ---------------------------------------------------------------------------
 # Core table DDL — keep in sync with the SQLMesh model output columns.
 # ---------------------------------------------------------------------------
@@ -68,11 +70,24 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
 """
 
 
-def create_core_tables(conn: duckdb.DuckDBPyConnection) -> None:
+def create_core_tables(db: Database) -> None:
     """Create core tables for testing.
 
     Core tables are managed by SQLMesh in production.  Tests that INSERT
     fixture data need concrete tables, so this helper creates them.
+
+    Args:
+        db: A Database instance for executing DDL.
+    """
+    db.execute(CORE_DIM_ACCOUNTS_DDL)
+    db.execute(CORE_FCT_TRANSACTIONS_DDL)
+
+
+def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create core tables for testing (raw connection version).
+
+    Legacy version that accepts a raw DuckDB connection. Use create_core_tables()
+    with a Database instance for new code.
 
     Args:
         conn: An active read-write DuckDB connection.

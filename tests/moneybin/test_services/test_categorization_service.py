@@ -34,7 +34,7 @@ def db(tmp_path: Path) -> Database:
     database = Database(tmp_path / "test.duckdb", secret_store=mock_store)
     # Core tables are managed by SQLMesh in production; create concrete
     # tables here so tests can INSERT fixture data directly.
-    create_core_tables(database.conn)
+    create_core_tables(database)
     return database
 
 

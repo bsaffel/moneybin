@@ -13,7 +13,7 @@ import pytest
 
 import moneybin.database as db_module
 from moneybin.database import Database
-from tests.moneybin.db_helpers import create_core_tables
+from tests.moneybin.db_helpers import create_core_tables_raw
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,7 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
 
     # Core tables are managed by SQLMesh in production; create test-only
     # concrete tables so we can INSERT fixture data directly.
-    create_core_tables(conn)
+    create_core_tables_raw(conn)
 
     # -- Base reference data: institutions --
     conn.execute("""
