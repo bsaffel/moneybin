@@ -8,14 +8,18 @@
   2. **`duckdb_tables()` / `duckdb_columns()`** (runtime) — query DuckDB's catalog to validate that a table or column actually exists before interpolating. Use this when the valid set is dynamic or when you want to validate against the live schema.
   3. **`sqlglot` quoting** — use `sqlglot.exp.to_identifier(name, quoted=True).sql("duckdb")` for programmatic identifier quoting when building SQL programmatically. Already a project dependency.
   ```python
-  # CORRECT — validate against catalog, then quote
-  valid_tables = db.sql(
+  # CORRECT — validate against catalog, then quote with sqlglot
+  from sqlglot import exp
+
+  valid_tables = db.execute(
       "SELECT schema_name || '.' || table_name FROM duckdb_tables()"
   ).fetchall()
   qualified = f"{schema}.{table}"
   if (qualified,) not in valid_tables:
       raise ValueError(f"Unknown table: {qualified}")
-  db.execute(f'SELECT * FROM "{schema}"."{table}" WHERE id = ?', [record_id])
+  safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")
+  safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")
+  db.execute(f"SELECT * FROM {safe_schema}.{safe_table} WHERE id = ?", [record_id])
 
   # CORRECT — compile-time allowlist
   if table_name not in TableRef.ALL:

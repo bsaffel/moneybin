@@ -81,6 +81,35 @@ Both SQLMesh models and schema DDL use the same pattern: `/* description */` blo
 - `sqlmesh format` converts `--` to `/* */` — both styles work.
 - **Do not use** the `columns` block with `COMMENT` keyword — SQLMesh silently swallows it without writing to DuckDB's catalog. Use inline comments instead.
 
+## DuckDB Function Reference
+
+### Date/Time
+- Parse: `strptime(date_string, '%Y-%m-%d')`
+- Format: `strftime(date_col, '%Y-%m')`
+- Extract: `YEAR(date_col)`, `MONTH(date_col)`, `DAY(date_col)`
+- Truncate: `date_trunc('month', date_col)`
+
+### Aggregation & Windows
+- Running total: `SUM(amount) OVER (ORDER BY date ROWS UNBOUNDED PRECEDING)`
+- Previous period: `LAG(amount, 1) OVER (PARTITION BY account ORDER BY date)`
+- Round currency: `ROUND(amount, 2)`
+
+### File I/O
+- Read: `read_csv('file.csv', auto_detect=true)`, `read_parquet('data/*.parquet')`
+- Write: `COPY (SELECT ...) TO 'output.csv' (HEADER, DELIMITER ',')`
+
+### String
+- Pattern: `regexp_matches(description, 'PATTERN')`
+- Match: `description LIKE '%MERCHANT%'`
+- Case: `UPPER()`, `LOWER()`
+
+## Anti-Patterns
+
+- No MySQL/PostgreSQL-specific syntax (this is DuckDB).
+- No `LIMIT` without `ORDER BY` (non-deterministic).
+- No `FLOAT` for currency (use `DECIMAL(18,2)`).
+- No string concatenation for queries (use parameterized).
+
 ### Authoritative References
 
 - SQLMesh model configuration: https://sqlmesh.readthedocs.io/en/latest/reference/model_configuration/#general-model-properties
