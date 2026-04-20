@@ -34,7 +34,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](smart-import-overview.md) | Umbrella | ready | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
-| [Tabular Import](smart-import-tabular.md) | Feature | draft | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB). Supersedes archived `csv-import` spec. |
+| [Tabular Import](smart-import-tabular.md) | Feature | ready | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB). Supersedes archived `csv-import` spec. |
 | `smart-import-pdf.md` | Feature | planned | Pillar C: native-text PDF import |
 | `smart-import-ai-parsing.md` | Feature | planned | Pillar F: LLM fallback for file parsing |
 
@@ -43,8 +43,8 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](matching-overview.md) | Umbrella | ready | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
-| [Same-Record Dedup](matching-same-record-dedup.md) | Feature | draft | Cross-source dedup + golden-record merge rules (pillars A+C) |
-| [Transfer Detection](matching-transfer-detection.md) | Feature | draft | Transfer pair detection across accounts (pillar B); shared matching engine, bridge table, always-review v1 |
+| [Same-Record Dedup](matching-same-record-dedup.md) | Feature | ready | Cross-source dedup + golden-record merge rules (pillars A+C) |
+| [Transfer Detection](matching-transfer-detection.md) | Feature | ready | Transfer pair detection across accounts (pillar B); shared matching engine, bridge table, always-review v1 |
 
 ## Categorization
 

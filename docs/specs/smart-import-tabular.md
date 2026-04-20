@@ -1,8 +1,11 @@
 # Feature: Smart Tabular Import
 
+> Last updated: 2026-04-19 — promoted to ready; fixed implementation plan paths and fixture count
+> Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella), [`matching-overview.md`](matching-overview.md) (provenance contract), [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (downstream dedup), [`categorization-overview.md`](categorization-overview.md) (category bootstrap), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption), [`database-migration.md`](database-migration.md) (schema migration), [`mcp-architecture.md`](mcp-architecture.md) (CLI/MCP symmetry)
+
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-draft
+ready
 
 ## Goal
 
@@ -424,7 +427,11 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
   class's new `ingest_dataframe()` method (Polars → Arrow zero-copy → DuckDB).
 - Dedup via primary key (`INSERT OR REPLACE`).
 - Update format usage metadata (`times_used`, `last_used_at`) in `app.tabular_formats`.
-- Auto-save detected format if `save_format=True` (default).
+- Auto-save detected format if `save_format=True` (default). The format `name` is
+  derived from the `--account-name` slug (single-account files) or the detected
+  institution slug (multi-account files). Example: `--account-name "First National
+  Checking"` → format name `first_national`. If a format with that name already
+  exists, prompt to update it (or auto-update with `--yes`).
 - Trigger SQLMesh transforms unless `--skip-transform` is specified.
 - Apply deterministic categorization post-transform (merchant lookups + rules).
 
@@ -559,15 +566,20 @@ Update `dim_accounts.sql` and `fct_transactions.sql`:
 
 ### Column rename: `source_system` → `source_type`
 
-Existing code uses `source_system`. This spec introduces `source_type` as the canonical
-name — neutral enough for both file formats (`csv`, `excel`) and API/sync sources
-(`plaid`, `ofx`). The rename applies to all layers: raw, staging, core, and application
-code. All specs now use `source_type` consistently.
+Existing core SQLMesh models (`dim_accounts.sql`, `fct_transactions.sql`) synthesize a
+`source_system` column with hardcoded literals (`'csv'`, `'ofx'`). The raw CSV tables
+don't have this column — it exists only in core. This spec introduces `source_type` as
+the canonical name at every layer — neutral enough for both file formats (`csv`, `excel`)
+and API/sync sources (`plaid`, `ofx`). All specs already use `source_type` consistently.
 
-**Migration path:** Rename happens as part of this spec's implementation since we are
-already replacing the CSV pipeline. All references in SQLMesh models (`dim_accounts`,
-`fct_transactions`), MCP tools, and staging views are touched anyway. A database
-migration renames the column in existing tables.
+**Migration path:** The new `raw.tabular_*` tables are created with `source_type` from
+the start. The core SQLMesh models are rewritten as part of this spec (replacing `csv`
+CTEs with `tabular` CTEs), so `source_system` → `source_type` is a rename in the
+`SELECT` alias — no column rename migration needed for raw tables. The `dim_accounts`
+and `fct_transactions` models drop the old `source_system` column and emit `source_type`
+instead. A database migration via [`database-migration.md`](database-migration.md)
+handles renaming `source_system` → `source_type` in `core.dim_accounts` and
+`core.fct_transactions` for existing databases.
 
 ### source_type taxonomy
 
@@ -856,6 +868,11 @@ moneybin import diff-format chase_credit
 | "Create N new accounts?" | `--yes` (auto-create) |
 | Sheet selection | `--sheet="Sheet Name"` |
 | Sign convention confirmation | `--sign=negative-is-expense` |
+
+**`--override` implementation:** Typer's `list[str]` option type accepts repeated flags
+natively. Each `--override` value is parsed as `field=Column Name` (split on first `=`).
+Valid field names are the keys of `FIELD_ALIASES` plus `sign_convention` and
+`date_format`.
 
 ---
 
@@ -1267,15 +1284,17 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/sql/schema/raw_tabular_transactions.sql` | DDL for `raw.tabular_transactions` |
 | `src/moneybin/sql/schema/raw_tabular_accounts.sql` | DDL for `raw.tabular_accounts` |
 | `src/moneybin/sql/schema/app_tabular_formats.sql` | DDL for `app.tabular_formats` |
+| `src/moneybin/data/tabular_formats/chase_credit.yaml` | Built-in Chase credit format (migrated from `csv_profiles/`) |
+| `src/moneybin/data/tabular_formats/citi_credit.yaml` | Built-in Citi credit format (migrated from `csv_profiles/`) |
 | `src/moneybin/data/tabular_formats/tiller.yaml` | Built-in Tiller format |
 | `src/moneybin/data/tabular_formats/mint.yaml` | Built-in Mint format |
 | `src/moneybin/data/tabular_formats/ynab.yaml` | Built-in YNAB format |
-| `sqlmesh/models/tabular/stg_tabular__accounts.sql` | Staging view replacing `stg_csv__accounts` |
-| `sqlmesh/models/tabular/stg_tabular__transactions.sql` | Staging view replacing `stg_csv__transactions` |
+| `sqlmesh/models/prep/stg_tabular__accounts.sql` | Staging view replacing `stg_csv__accounts` |
+| `sqlmesh/models/prep/stg_tabular__transactions.sql` | Staging view replacing `stg_csv__transactions` |
 | `tests/moneybin/test_extractors/test_tabular_extractor.py` | Unit tests for detection engine |
 | `tests/moneybin/test_extractors/test_tabular_formats.py` | Unit tests for format system |
 | `tests/moneybin/test_loaders/test_tabular_loader.py` | Unit tests for transform and load |
-| `tests/fixtures/tabular/` | 75 fixture files organized by category |
+| `tests/fixtures/tabular/` | 73 fixture files organized by category |
 
 ### Files to modify
 
@@ -1298,7 +1317,8 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/data/csv_profiles/` | Remove directory (replaced by `tabular_formats/`) |
 | `src/moneybin/sql/schema/raw_csv_transactions.sql` | Remove (replaced by `raw_tabular_transactions.sql`) |
 | `src/moneybin/sql/schema/raw_csv_accounts.sql` | Remove (replaced by `raw_tabular_accounts.sql`) |
-| `sqlmesh/models/csv/` | Remove directory (replaced by `sqlmesh/models/tabular/`) |
+| `sqlmesh/models/prep/stg_csv__accounts.sql` | Remove (replaced by `stg_tabular__accounts.sql`) |
+| `sqlmesh/models/prep/stg_csv__transactions.sql` | Remove (replaced by `stg_tabular__transactions.sql`) |
 
 ### Key decisions
 
