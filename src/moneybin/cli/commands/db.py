@@ -58,7 +58,7 @@ def _create_init_script(db_path: Path) -> Path:
             f.write("USE moneybin;\n")
         if sys.platform != "win32":
             os.chmod(script_path, 0o600)
-    except Exception:
+    except OSError:
         os.unlink(script_path)
         raise
 
@@ -603,7 +603,17 @@ def db_unlock() -> None:
         )
         raise typer.Exit(1) from None
 
-    salt = base64.b64decode(salt_b64)
+    import binascii
+
+    try:
+        salt = base64.b64decode(salt_b64)
+    except binascii.Error as e:
+        logger.error(
+            "❌ Stored passphrase salt is corrupted: %s. "
+            "Run 'moneybin db init --passphrase' to reinitialize.",
+            e,
+        )
+        raise typer.Exit(1) from e
     pp = typer.prompt("Enter passphrase", hide_input=True)
 
     # Re-derive key using same params and stored salt
@@ -676,7 +686,7 @@ def db_rotate_key(
     import duckdb as duckdb_mod
 
     from moneybin.config import get_settings
-    from moneybin.secrets import SecretStore
+    from moneybin.secrets import SecretNotFoundError, SecretStore
 
     settings = get_settings()
     db_path = settings.database.path
@@ -692,10 +702,16 @@ def db_rotate_key(
             raise typer.Exit(0)
 
     store = SecretStore()
-    old_key = store.get_key("DATABASE__ENCRYPTION_KEY")
+    try:
+        old_key = store.get_key("DATABASE__ENCRYPTION_KEY")
+    except SecretNotFoundError:
+        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        raise typer.Exit(1) from None
     new_key = secrets_mod.token_hex(32)
 
     rotated_path = db_path.with_suffix(".rotated.duckdb")
+    # Direct duckdb.connect() required here: COPY FROM DATABASE needs two
+    # simultaneous open connections; the Database class wraps a single one.
     conn = duckdb_mod.connect()
     try:
         conn.execute("LOAD httpfs;")

@@ -187,21 +187,31 @@ class Database:
         Converts the DataFrame to Arrow (zero-copy for Polars) and writes
         via the encrypted connection using a registered temporary view.
 
+        Columns are matched by name (``BY NAME``), so column order in the
+        DataFrame does not need to match the table definition.  Columns
+        present in the table but absent from the DataFrame (e.g. ``loaded_at
+        DEFAULT CURRENT_TIMESTAMP``) receive their declared defaults.
+
         Args:
             table: Fully-qualified table name (e.g. "raw.tabular_transactions").
                 Schema and table parts are sqlglot-quoted before interpolation.
             df: Polars DataFrame (or any object with a .to_arrow() method).
-            on_conflict: "insert" to INSERT INTO an existing table,
-                "replace" to CREATE OR REPLACE TABLE.
+            on_conflict: How to handle existing rows:
+                - ``"insert"`` — plain INSERT; fails on primary-key conflict.
+                - ``"replace"`` — DROP and recreate the table from the DataFrame
+                  (CREATE OR REPLACE TABLE).
+                - ``"upsert"`` — INSERT OR REPLACE; conflicting rows are deleted
+                  then re-inserted (idempotent reload pattern).
 
         Raises:
-            ValueError: If on_conflict is not "insert" or "replace".
+            ValueError: If on_conflict is not "insert", "replace", or "upsert".
         """
         from sqlglot import exp
 
-        if on_conflict not in ("insert", "replace"):
+        if on_conflict not in ("insert", "replace", "upsert"):
             raise ValueError(
-                f"on_conflict must be 'insert' or 'replace', got {on_conflict!r}"
+                f"on_conflict must be 'insert', 'replace', or 'upsert', "
+                f"got {on_conflict!r}"
             )
 
         parts = table.split(".", 1)
@@ -220,9 +230,13 @@ class Database:
                 self.conn.execute(
                     f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
+            elif on_conflict == "upsert":
+                self.conn.execute(
+                    f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                )
             else:
                 self.conn.execute(
-                    f"INSERT INTO {safe_ref} SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                    f"INSERT INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
         finally:
             self.conn.unregister("_ingest_tmp")

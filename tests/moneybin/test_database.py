@@ -151,6 +151,102 @@ class TestDatabaseOperations:
             _ = db.conn
 
 
+class TestIngestDataframe:
+    """Database.ingest_dataframe() — Arrow-based bulk loading."""
+
+    @pytest.fixture()
+    def db(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        db_path = db_dir / "moneybin.duckdb"
+        database = Database(db_path, secret_store=mock_secret_store)
+        database.execute(
+            "CREATE TABLE test_items (id INTEGER, name VARCHAR, score DECIMAL(5,2))"
+        )
+        yield database
+        database.close()
+
+    def test_insert_mode_loads_rows(self, db: Database) -> None:
+        """Insert mode appends rows to the target table."""
+        import polars as pl
+
+        df = pl.DataFrame({"id": [1, 2], "name": ["alice", "bob"], "score": [9.5, 8.0]})
+        db.ingest_dataframe("test_items", df, on_conflict="insert")
+
+        result = db.execute("SELECT COUNT(*) FROM test_items").fetchone()
+        assert result is not None
+        assert result[0] == 2
+
+    def test_replace_mode_recreates_table(self, db: Database) -> None:
+        """Replace mode drops and recreates the table from the DataFrame."""
+        import polars as pl
+
+        db.execute("INSERT INTO test_items VALUES (1, 'old', 1.0)")
+        df = pl.DataFrame({
+            "id": [2, 3],
+            "name": ["new_a", "new_b"],
+            "score": [5.0, 6.0],
+        })
+        db.ingest_dataframe("test_items", df, on_conflict="replace")
+
+        result = db.execute("SELECT COUNT(*) FROM test_items").fetchone()
+        assert result is not None
+        assert result[0] == 2
+        ids = [
+            r[0] for r in db.execute("SELECT id FROM test_items ORDER BY id").fetchall()
+        ]
+        assert ids == [2, 3]
+
+    def test_upsert_mode_replaces_conflicting_rows(self, db: Database) -> None:
+        """Upsert mode replaces conflicting rows (INSERT OR REPLACE) and appends new ones."""
+        import polars as pl
+
+        db.execute("CREATE TABLE upsert_items (id INTEGER PRIMARY KEY, val VARCHAR)")
+        db.execute("INSERT INTO upsert_items VALUES (1, 'original')")
+
+        df = pl.DataFrame({"id": [1, 2], "val": ["updated", "new"]})
+        db.ingest_dataframe("upsert_items", df, on_conflict="upsert")
+
+        rows = db.execute("SELECT id, val FROM upsert_items ORDER BY id").fetchall()
+        assert rows == [(1, "updated"), (2, "new")]
+
+    def test_by_name_matching_ignores_column_order(self, db: Database) -> None:
+        """Columns are matched by name, so DataFrame column order need not match table order."""
+        import polars as pl
+
+        # DataFrame has columns in reverse order
+        df = pl.DataFrame({"score": [7.5], "name": ["carol"], "id": [3]})
+        db.ingest_dataframe("test_items", df, on_conflict="insert")
+
+        row = db.execute("SELECT id, name, score FROM test_items").fetchone()
+        assert row == (3, "carol", 7.5)
+
+    def test_default_columns_receive_defaults(self, db: Database) -> None:
+        """Columns absent from the DataFrame receive their DEFAULT values."""
+        import polars as pl
+
+        db.execute(
+            "CREATE TABLE timed_items "
+            "(id INTEGER PRIMARY KEY, val VARCHAR, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        df = pl.DataFrame({"id": [1], "val": ["hello"]})
+        db.ingest_dataframe("timed_items", df, on_conflict="insert")
+
+        row = db.execute("SELECT id, val, ts FROM timed_items").fetchone()
+        assert row is not None
+        assert row[0] == 1
+        assert row[1] == "hello"
+        assert row[2] is not None  # DEFAULT applied
+
+    def test_invalid_on_conflict_raises(self, db: Database) -> None:
+        """ValueError raised for unknown on_conflict value."""
+        import polars as pl
+
+        df = pl.DataFrame({"id": [1]})
+        with pytest.raises(ValueError, match="on_conflict"):
+            db.ingest_dataframe("test_items", df, on_conflict="bad")
+
+
 class TestGetDatabase:
     """get_database() singleton behavior."""
 

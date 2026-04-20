@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class OFXLoader:
     """Load OFX extracted data into DuckDB raw tables."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database) -> None:
         """Initialize the OFX loader.
 
         Args:

@@ -32,8 +32,6 @@ class CSVLoader:
 
         Tables follow naming convention: raw.csv_<entity>
         """
-        conn = self.db.conn
-
         schema_files = [
             "raw_schema.sql",
             "raw_csv_accounts.sql",
@@ -47,7 +45,7 @@ class CSVLoader:
 
             with open(sql_path) as f:
                 sql_content = f.read()
-                conn.execute(sql_content)
+                self.db.execute(sql_content)
                 logger.debug("Executed schema file: %s", sql_file)
 
         logger.info("Created CSV raw tables in DuckDB")
@@ -61,7 +59,6 @@ class CSVLoader:
         Returns:
             Row counts for each loaded table.
         """
-        conn = self.db.conn
         row_counts: dict[str, int] = {}
 
         self.create_raw_tables()
@@ -69,38 +66,14 @@ class CSVLoader:
         # Load accounts
         if len(data.get("accounts", pl.DataFrame())) > 0:
             df = data["accounts"]
-            conn.execute("""
-                INSERT OR REPLACE INTO raw.csv_accounts
-                (account_id, account_type, institution_name,
-                 source_file, extracted_at)
-                SELECT account_id, account_type, institution_name,
-                       source_file, extracted_at::TIMESTAMP
-                FROM df
-            """)
+            self.db.ingest_dataframe("raw.csv_accounts", df, on_conflict="upsert")
             row_counts["accounts"] = len(df)
             logger.info("Loaded %d account(s)", row_counts["accounts"])
 
         # Load transactions
         if len(data.get("transactions", pl.DataFrame())) > 0:
             df = data["transactions"]
-            conn.execute("""
-                INSERT OR REPLACE INTO raw.csv_transactions
-                (transaction_id, account_id, transaction_date, post_date,
-                 amount, description, memo, category, subcategory,
-                 transaction_type, transaction_status, check_number,
-                 reference_number, balance, member_name,
-                 source_file, extracted_at)
-                SELECT transaction_id, account_id,
-                       transaction_date::DATE,
-                       CASE WHEN post_date IS NOT NULL
-                            THEN post_date::DATE
-                            ELSE NULL END,
-                       amount, description, memo, category, subcategory,
-                       transaction_type, transaction_status, check_number,
-                       reference_number, balance, member_name,
-                       source_file, extracted_at::TIMESTAMP
-                FROM df
-            """)
+            self.db.ingest_dataframe("raw.csv_transactions", df, on_conflict="upsert")
             row_counts["transactions"] = len(df)
             logger.info("Loaded %d transaction(s)", row_counts["transactions"])
 

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class W2Loader:
     """Load W2 extracted data into DuckDB raw tables."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database) -> None:
         """Initialize the W2 loader.
 
         Args:
