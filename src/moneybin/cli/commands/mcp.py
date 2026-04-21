@@ -6,18 +6,266 @@ assistants like Cursor, Claude Desktop, and ChatGPT Desktop.
 """
 
 import importlib
+import json
 import logging
+from pathlib import Path
 from typing import Annotated, Literal, get_args
 
 import typer
 
+from moneybin.mcp.server import mcp as mcp_server
+
 app = typer.Typer(help="MCP server for AI assistant integration")
 logger = logging.getLogger(__name__)
-
 
 # Transport types supported by FastMCP.run()
 TransportType = Literal["stdio", "sse", "streamable-http"]
 _VALID_TRANSPORTS: tuple[str, ...] = get_args(TransportType)
+
+# Supported MCP client config file locations
+_CLIENT_CONFIG_PATHS: dict[str, Path] = {
+    "claude-desktop": Path.home()
+    / "Library"
+    / "Application Support"
+    / "Claude"
+    / "claude_desktop_config.json",
+    "cursor": Path.home() / ".cursor" / "mcp.json",
+    "windsurf": Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
+}
+
+_DEFAULT_CLIENT = "claude-desktop"
+
+# ── config subgroup ──────────────────────────────────────────────────────────
+
+config_app = typer.Typer(help="MCP server configuration")
+app.add_typer(config_app, name="config")
+
+
+@config_app.callback(invoke_without_command=True)
+def config_show(ctx: typer.Context) -> None:
+    """Display current MCP server configuration.
+
+    Shows the active profile, database path, and MCP-specific limits
+    (max_rows, max_chars). Runs automatically when `mcp config` is
+    invoked without a subcommand.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    from moneybin.config import get_current_profile, get_database_path, get_settings
+
+    settings = get_settings()
+    profile = get_current_profile()
+    db_path = get_database_path()
+
+    typer.echo(f"Profile:    {profile}")
+    typer.echo(f"Database:   {db_path}")
+    typer.echo(f"max_rows:   {settings.mcp.max_rows}")
+    typer.echo(f"max_chars:  {settings.mcp.max_chars}")
+
+
+@config_app.command("generate")
+def config_generate(
+    client: Annotated[
+        str,
+        typer.Option(
+            "--client",
+            "-c",
+            help=f"MCP client to generate config for. Supported: {', '.join(_CLIENT_CONFIG_PATHS)}",
+        ),
+    ] = _DEFAULT_CLIENT,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            "-p",
+            help="MoneyBin profile to use in the generated config.",
+        ),
+    ] = None,
+    install: Annotated[
+        bool,
+        typer.Option(
+            "--install",
+            help="Write the generated config directly into the client's config file.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip confirmation prompt when --install is set.",
+        ),
+    ] = False,
+) -> None:
+    """Generate an MCP server config snippet for an AI client.
+
+    Prints a JSON snippet that registers MoneyBin as an MCP server.
+    With --install, merges the snippet into the client's existing
+    config file (creating it if absent).
+
+    Args:
+        client: Target MCP client identifier.
+        profile: MoneyBin profile to embed in the config.
+        install: Write directly to the client's config file.
+        yes: Bypass install confirmation prompt.
+
+    Examples:
+        # Print config snippet for Claude Desktop
+        moneybin mcp config generate --client claude-desktop
+
+        # Install directly without prompting
+        moneybin mcp config generate --client claude-desktop --install --yes
+    """
+    import shutil
+
+    from moneybin.config import get_current_profile
+
+    resolved_profile = profile or get_current_profile()
+    moneybin_bin = shutil.which("moneybin") or "moneybin"
+
+    server_entry: dict = {
+        "command": moneybin_bin,
+        "args": ["--profile", resolved_profile, "mcp", "serve"],
+    }
+
+    snippet = {"mcpServers": {"MoneyBin": server_entry}}
+    snippet_json = json.dumps(snippet, indent=2)
+
+    typer.echo(snippet_json)
+
+    if not install:
+        return
+
+    config_path = _get_client_config_path(client)
+
+    if not yes:
+        confirmed = typer.confirm(
+            f"\nInstall into {config_path}?",
+            default=False,
+        )
+        if not confirmed:
+            logger.info("Installation cancelled.")
+            return
+
+    _merge_client_config(config_path, snippet)
+    logger.info(f"✅ Config written to {config_path}")
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+
+def _get_client_config_path(client: str) -> Path:
+    """Return the config file path for the given MCP client.
+
+    Args:
+        client: Client identifier (e.g. "claude-desktop").
+
+    Returns:
+        Absolute path to the client's config file.
+
+    Raises:
+        typer.Exit: If the client is not recognized.
+    """
+    if client not in _CLIENT_CONFIG_PATHS:
+        supported = ", ".join(_CLIENT_CONFIG_PATHS)
+        logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
+        raise typer.Exit(1)
+    return _CLIENT_CONFIG_PATHS[client]
+
+
+def _merge_client_config(config_path: Path, patch: dict) -> None:
+    """Merge a patch dict into a JSON config file, creating it if absent.
+
+    The merge is shallow at the top level — nested keys under
+    ``mcpServers`` are merged by name so existing servers are preserved.
+
+    Args:
+        config_path: Path to the JSON config file.
+        patch: Dict to merge in (e.g. ``{"mcpServers": {"MoneyBin": {...}}}``.
+    """
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text())
+        except json.JSONDecodeError:
+            logger.warning(
+                f"⚠️  Could not parse existing config at {config_path}; it will be overwritten."
+            )
+
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(existing.get(key), dict):
+            existing[key] = {**existing[key], **value}
+        else:
+            existing[key] = value
+
+    config_path.write_text(json.dumps(existing, indent=2))
+
+
+# ── list-tools ───────────────────────────────────────────────────────────────
+
+
+@app.command("list-tools")
+def list_tools() -> None:
+    """List all registered MCP tools.
+
+    Imports tool modules to trigger decorator registration, then
+    enumerates the FastMCP tool registry. Useful for verifying that
+    all expected tools are available before connecting an AI client.
+
+    Examples:
+        moneybin mcp list-tools
+    """
+    for module in (
+        "moneybin.mcp.tools",
+        "moneybin.mcp.write_tools",
+    ):
+        importlib.import_module(module)
+
+    tools: dict = mcp_server._tool_manager._tools  # type: ignore[reportAttributeAccessIssue]
+
+    if not tools:
+        typer.echo("No tools registered.")
+        return
+
+    for name, tool in sorted(tools.items()):
+        description = getattr(tool, "description", None) or ""
+        typer.echo(f"  {name}  {description}")
+
+
+# ── list-prompts ─────────────────────────────────────────────────────────────
+
+
+@app.command("list-prompts")
+def list_prompts() -> None:
+    """List all registered MCP prompts.
+
+    Imports prompt modules to trigger decorator registration, then
+    enumerates the FastMCP prompt registry.
+
+    Examples:
+        moneybin mcp list-prompts
+    """
+    for module in (
+        "moneybin.mcp.prompts",
+        "moneybin.mcp.resources",
+    ):
+        importlib.import_module(module)
+
+    prompts: dict = mcp_server._prompt_manager._prompts  # type: ignore[reportAttributeAccessIssue]
+
+    if not prompts:
+        typer.echo("No prompts registered.")
+        return
+
+    for name, prompt in sorted(prompts.items()):
+        description = getattr(prompt, "description", None) or ""
+        typer.echo(f"  {name}  {description}")
+
+
+# ── serve ────────────────────────────────────────────────────────────────────
 
 
 @app.command("serve")
@@ -51,6 +299,7 @@ def serve(
         # Typically invoked by AI clients, not run manually
     """
     from moneybin.config import get_database_path
+    from moneybin.database import DatabaseKeyError
     from moneybin.mcp.server import close_db, init_db, mcp
 
     # Import tools/resources/prompts to register their decorators with the server
@@ -80,6 +329,13 @@ def serve(
         init_db()
         logger.info("MCP server starting (transport=%s, db=%s)", transport, db_path)
         mcp.run(transport=validated_transport)
+    except DatabaseKeyError as e:
+        logger.error(f"❌ Database is locked: {e}")
+        typer.echo(
+            "💡 Run 'moneybin db unlock' to unlock the database first.",
+            err=True,
+        )
+        raise typer.Exit(1) from e
     except FileNotFoundError as e:
         logger.error("Database not found: %s", e)
         raise typer.Exit(1) from e
