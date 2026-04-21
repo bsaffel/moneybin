@@ -1,8 +1,4 @@
-"""Tests for MCP server lifecycle and DuckDB connection management."""
-
-import logging
-from pathlib import Path
-from unittest.mock import patch
+"""Tests for MCP server helper functions."""
 
 import duckdb
 import pytest
@@ -11,134 +7,43 @@ from moneybin.mcp import server
 from moneybin.tables import DIM_ACCOUNTS, TableRef
 
 
-@pytest.fixture
-def test_db_path(mcp_db: duckdb.DuckDBPyConnection, tmp_path: Path) -> Path:
-    """Return path to the pre-populated test DB, closing the active connection.
-
-    The shared mcp_db fixture creates schemas and base data.  This fixture
-    closes that writable connection so server lifecycle tests can call
-    init_db() / close_db() themselves.
-    """
-    server.close_db()
-    return tmp_path / "test.duckdb"
-
-
-class TestDatabaseLifecycle:
-    """Tests for init_db / get_db / close_db."""
+class TestGetDb:
+    """Tests for get_db()."""
 
     @pytest.mark.unit
-    def test_get_db_before_init_raises(self) -> None:
-        """get_db() should raise if init_db() hasn't been called."""
-        server.close_db()
-        with pytest.raises(RuntimeError, match="not initialized"):
-            server.get_db()
+    def test_returns_duckdb_connection(self, mcp_db: object) -> None:
+        """get_db() returns the underlying DuckDB connection."""
+        conn = server.get_db()
+        assert isinstance(conn, duckdb.DuckDBPyConnection)
 
     @pytest.mark.unit
-    def test_init_db_opens_connection(self, test_db_path: Path) -> None:
-        """init_db() should open a working read-only connection."""
-        try:
-            server.init_db(test_db_path)
-            conn = server.get_db()
-            result = conn.execute(
-                """SELECT COUNT(*) FROM core.dim_accounts"""
-            ).fetchone()
-            assert result is not None
-            assert result[0] == 2
-        finally:
-            server.close_db()
+    def test_connection_is_read_write(self, mcp_db: object) -> None:
+        """Connection allows writes (single r/w connection via Database class)."""
+        conn = server.get_db()
+        # Should be able to write — no InvalidInputException
+        conn.execute(
+            "INSERT INTO core.dim_accounts VALUES "
+            "('RWTEST', 'X', 'X', 'X', 'X', 'X', 'X', "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        result = conn.execute(
+            "SELECT COUNT(*) FROM core.dim_accounts WHERE account_id = 'RWTEST'"
+        ).fetchone()
+        assert result is not None
+        assert result[0] == 1
+
+
+class TestGetDbPath:
+    """Tests for get_db_path()."""
 
     @pytest.mark.unit
-    def test_init_db_read_only(self, test_db_path: Path) -> None:
-        """Default connection should be read-only."""
-        try:
-            server.init_db(test_db_path)
-            conn = server.get_db()
-            with pytest.raises(duckdb.InvalidInputException):
-                conn.execute(
-                    "INSERT INTO core.dim_accounts VALUES "
-                    "('X', 'X', 'X', 'X', 'X', 'X', 'X', "
-                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
-                    "CURRENT_TIMESTAMP)"
-                )
-        finally:
-            server.close_db()
+    def test_returns_path(self, mcp_db: object) -> None:
+        """get_db_path() returns a Path object pointing to the database file."""
+        from pathlib import Path
 
-    @pytest.mark.unit
-    def test_get_write_db_allows_writes(self, test_db_path: Path) -> None:
-        """get_write_db() should provide a writable connection."""
-        try:
-            server.init_db(test_db_path)
-            with server.get_write_db() as db:
-                db.execute(
-                    "INSERT INTO core.dim_accounts VALUES "
-                    "('X', 'X', 'X', 'X', 'X', 'X', 'X', "
-                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
-                    "CURRENT_TIMESTAMP)"
-                )
-            # Read connection should see the new data after refresh
-            result = (
-                server
-                .get_db()
-                .execute(
-                    "SELECT COUNT(*) FROM core.dim_accounts WHERE account_id = 'X'"
-                )
-                .fetchone()
-            )
-            assert result is not None
-            assert result[0] == 1
-        finally:
-            server.close_db()
-
-    @pytest.mark.unit
-    def test_get_write_db_before_init_raises(self) -> None:
-        """get_write_db() should raise if init_db() hasn't been called."""
-        server.close_db()
-        with pytest.raises(RuntimeError, match="not initialized"):
-            with server.get_write_db():
-                pass
-
-    @pytest.mark.unit
-    def test_init_db_creates_new_database(self, tmp_path: Path) -> None:
-        """init_db() should create a new database if the file doesn't exist."""
-        server.close_db()
-        new_db_path = tmp_path / "new.duckdb"
-        try:
-            server.init_db(new_db_path)
-            conn = server.get_db()
-            # Schemas should be initialized
-            result = conn.execute(
-                "SELECT COUNT(*) FROM information_schema.schemata "
-                "WHERE schema_name IN ('raw', 'core', 'app')"
-            ).fetchone()
-            assert result is not None
-            assert result[0] == 3
-        finally:
-            server.close_db()
-
-    @pytest.mark.unit
-    def test_close_db_clears_connection(self, test_db_path: Path) -> None:
-        """close_db() should set _db and _db_path back to None."""
-        server.init_db(test_db_path)
-        server.close_db()
-        assert server._db is None  # type: ignore[reportPrivateUsage] — test verification
-        assert server._db_path is None  # type: ignore[reportPrivateUsage] — test verification
-
-    @pytest.mark.unit
-    def test_close_db_survives_closed_logging_stream(self, test_db_path: Path) -> None:
-        """close_db() should not raise when logging stream is already closed.
-
-        During MCP stdio shutdown the client closes stdout/stderr before
-        the server's cleanup code runs.  The logger.info() call must be
-        guarded so close_db() completes without error.
-        """
-        server.init_db(test_db_path)
-        with patch.object(
-            logging.getLogger("moneybin.mcp.server"),
-            "info",
-            side_effect=ValueError("I/O operation on closed file."),
-        ):
-            server.close_db()  # should not raise
-        assert server._db is None  # type: ignore[reportPrivateUsage] — test verification
+        path = server.get_db_path()
+        assert isinstance(path, Path)
+        assert path.name == "test.duckdb"
 
 
 class TestTableRef:
@@ -164,9 +69,26 @@ class TestTableExists:
     """Tests for the table_exists function."""
 
     @pytest.mark.unit
-    def test_existing_table_returns_true(self) -> None:
+    def test_existing_table_returns_true(self, mcp_db: object) -> None:
         assert server.table_exists(DIM_ACCOUNTS) is True
 
     @pytest.mark.unit
-    def test_nonexistent_table_returns_false(self) -> None:
+    def test_nonexistent_table_returns_false(self, mcp_db: object) -> None:
         assert server.table_exists(TableRef("core", "no_such_table")) is False
+
+
+class TestCloseDb:
+    """Tests for close_db()."""
+
+    @pytest.mark.unit
+    def test_close_db_clears_singleton(self) -> None:
+        """close_db() resets the database singleton."""
+        import moneybin.database as db_module
+
+        # Ensure we have an active singleton
+        conn = server.get_db()
+        assert conn is not None
+
+        # close_db() should clear the singleton
+        server.close_db()
+        assert db_module._database_instance is None  # type: ignore[reportPrivateUsage] — test verification

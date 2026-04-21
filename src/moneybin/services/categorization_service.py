@@ -12,6 +12,7 @@ from pathlib import Path
 
 import duckdb
 
+from moneybin.database import Database
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -103,13 +104,11 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return False
 
 
-def match_merchant(
-    conn: duckdb.DuckDBPyConnection, description: str
-) -> dict[str, str | None] | None:
+def match_merchant(db: Database, description: str) -> dict[str, str | None] | None:
     """Look up a merchant by raw description.
 
     Args:
-        conn: DuckDB connection (read-only is fine).
+        db: Database instance (read-only access is sufficient).
         description: Transaction description to match.
 
     Returns:
@@ -121,7 +120,7 @@ def match_merchant(
         return None
 
     try:
-        rows = conn.execute(
+        rows = db.execute(
             f"""
             SELECT merchant_id, raw_pattern, match_type,
                    canonical_name, category, subcategory
@@ -156,7 +155,7 @@ def match_merchant(
 
 
 def create_merchant(
-    conn: duckdb.DuckDBPyConnection,
+    db: Database,
     raw_pattern: str,
     canonical_name: str,
     *,
@@ -168,7 +167,7 @@ def create_merchant(
     """Create a merchant mapping.
 
     Args:
-        conn: DuckDB read-write connection.
+        db: Database instance (read-write).
         raw_pattern: Pattern to match in transaction descriptions.
         canonical_name: Clean merchant name for display.
         match_type: How to match: 'exact', 'contains', or 'regex'.
@@ -180,7 +179,7 @@ def create_merchant(
         The merchant_id of the created merchant.
     """
     merchant_id = str(uuid.uuid4())[:8]
-    conn.execute(
+    db.execute(
         f"""
         INSERT INTO {MERCHANTS.full_name}
         (merchant_id, raw_pattern, match_type, canonical_name,
@@ -202,7 +201,7 @@ def create_merchant(
 
 
 def apply_merchant_categories(
-    conn: duckdb.DuckDBPyConnection,
+    db: Database,
 ) -> int:
     """Apply merchant-based categories to uncategorized transactions.
 
@@ -210,13 +209,13 @@ def apply_merchant_categories(
     that matches the description and has a category assigned.
 
     Args:
-        conn: DuckDB read-write connection.
+        db: Database instance (read-write).
 
     Returns:
         Number of transactions categorized.
     """
     try:
-        uncategorized = conn.execute(
+        uncategorized = db.execute(
             f"""
             SELECT t.transaction_id, t.description
             FROM {FCT_TRANSACTIONS.full_name} t
@@ -235,9 +234,9 @@ def apply_merchant_categories(
 
     categorized_count = 0
     for txn_id, description in uncategorized:
-        merchant = match_merchant(conn, description)
+        merchant = match_merchant(db, description)
         if merchant and merchant.get("category"):
-            conn.execute(
+            db.execute(
                 f"""
                 INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
                 (transaction_id, category, subcategory, categorized_at,
@@ -259,7 +258,7 @@ def apply_merchant_categories(
 
 
 def apply_rules(
-    conn: duckdb.DuckDBPyConnection,
+    db: Database,
 ) -> int:
     """Apply active categorization rules to uncategorized transactions.
 
@@ -269,13 +268,13 @@ def apply_rules(
     by merchant pattern, amount range, and account ID.
 
     Args:
-        conn: DuckDB read-write connection.
+        db: Database instance (read-write).
 
     Returns:
         Number of transactions categorized.
     """
     try:
-        rules = conn.execute(
+        rules = db.execute(
             f"""
             SELECT rule_id, name, merchant_pattern, match_type,
                    min_amount, max_amount, account_id,
@@ -292,7 +291,7 @@ def apply_rules(
         return 0
 
     try:
-        uncategorized = conn.execute(
+        uncategorized = db.execute(
             f"""
             SELECT t.transaction_id, t.description, t.amount, t.account_id
             FROM {FCT_TRANSACTIONS.full_name} t
@@ -343,7 +342,7 @@ def apply_rules(
                 continue
 
             # Rule matches — apply it
-            conn.execute(
+            db.execute(
                 f"""
                 INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
                 (transaction_id, category, subcategory, categorized_at,
@@ -361,7 +360,7 @@ def apply_rules(
 
 
 def apply_deterministic_categorization(
-    conn: duckdb.DuckDBPyConnection,
+    db: Database,
 ) -> dict[str, int]:
     """Run all deterministic categorization: rules first, then merchant fallback.
 
@@ -373,13 +372,13 @@ def apply_deterministic_categorization(
     without any LLM dependency.
 
     Args:
-        conn: DuckDB read-write connection.
+        db: Database instance (read-write).
 
     Returns:
         Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
     """
-    rule_count = apply_rules(conn)
-    merchant_count = apply_merchant_categories(conn)
+    rule_count = apply_rules(db)
+    merchant_count = apply_merchant_categories(db)
     total = merchant_count + rule_count
 
     if total:
@@ -400,7 +399,7 @@ def apply_deterministic_categorization(
 _SQLMESH_ROOT = Path(__file__).resolve().parents[3] / "sqlmesh"
 
 
-def ensure_seed_table(conn: duckdb.DuckDBPyConnection) -> None:
+def ensure_seed_table(db: Database) -> None:
     """Materialize the SQLMesh seed table if it doesn't exist yet.
 
     Runs a targeted ``sqlmesh plan --auto-apply`` scoped to just the
@@ -408,9 +407,9 @@ def ensure_seed_table(conn: duckdb.DuckDBPyConnection) -> None:
     prior CLI invocation of ``sqlmesh apply``.
 
     Args:
-        conn: DuckDB connection (used only to check table existence).
+        db: Database instance (used only to check table existence).
     """
-    result = conn.execute(
+    result = db.execute(
         """
         SELECT COUNT(*) FROM information_schema.tables
         WHERE table_schema = ? AND table_name = ?
@@ -434,7 +433,7 @@ def ensure_seed_table(conn: duckdb.DuckDBPyConnection) -> None:
     logger.info("SQLMesh seed apply completed")
 
 
-def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
+def seed_categories(db: Database) -> int:
     """Populate app.categories from the SQLMesh seed table.
 
     If the seed table does not yet exist, a targeted SQLMesh apply is
@@ -442,21 +441,21 @@ def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
     already exist. Safe to run multiple times.
 
     Args:
-        conn: DuckDB read-write connection.
+        db: Database instance (read-write).
 
     Returns:
         Number of categories inserted.
     """
-    ensure_seed_table(conn)
+    ensure_seed_table(db)
 
     count_before = 0
     try:
-        result = conn.execute(f"SELECT COUNT(*) FROM {CATEGORIES.full_name}").fetchone()
+        result = db.execute(f"SELECT COUNT(*) FROM {CATEGORIES.full_name}").fetchone()
         count_before = result[0] if result else 0
     except duckdb.CatalogException:
         pass
 
-    conn.execute(
+    db.execute(
         f"""
         INSERT OR IGNORE INTO {CATEGORIES.full_name}
         (category_id, category, subcategory, description, is_default,
@@ -474,7 +473,7 @@ def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
         """
     )
 
-    result = conn.execute(f"SELECT COUNT(*) FROM {CATEGORIES.full_name}").fetchone()
+    result = db.execute(f"SELECT COUNT(*) FROM {CATEGORIES.full_name}").fetchone()
     count_after = result[0] if result else 0
 
     inserted = count_after - count_before
@@ -483,18 +482,18 @@ def seed_categories(conn: duckdb.DuckDBPyConnection) -> int:
 
 
 def get_active_categories(
-    conn: duckdb.DuckDBPyConnection,
+    db: Database,
 ) -> list[dict[str, str | bool | None]]:
     """Get all active categories.
 
     Args:
-        conn: DuckDB connection (read-only is fine).
+        db: Database instance (read-only access is sufficient).
 
     Returns:
         List of category dicts.
     """
     try:
-        rows = conn.execute(
+        rows = db.execute(
             f"""
             SELECT category_id, category, subcategory, description,
                    is_default, plaid_detailed
@@ -520,19 +519,19 @@ def get_active_categories(
 
 
 def get_categorization_stats(
-    conn: duckdb.DuckDBPyConnection,
+    db: Database,
 ) -> dict[str, int | float]:
     """Get summary statistics about categorization coverage.
 
     Args:
-        conn: DuckDB connection (read-only is fine).
+        db: Database instance (read-only access is sufficient).
 
     Returns:
         Dict with total, categorized, uncategorized counts and
         breakdown by categorized_by source.
     """
     try:
-        total_result = conn.execute(
+        total_result = db.execute(
             f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"
         ).fetchone()
         total = total_result[0] if total_result else 0
@@ -540,7 +539,7 @@ def get_categorization_stats(
         return {"total": 0, "categorized": 0, "uncategorized": 0, "pct_categorized": 0}
 
     try:
-        categorized_result = conn.execute(
+        categorized_result = db.execute(
             f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name}"
         ).fetchone()
         categorized = categorized_result[0] if categorized_result else 0
@@ -559,7 +558,7 @@ def get_categorization_stats(
 
     # Breakdown by source
     try:
-        source_rows = conn.execute(
+        source_rows = db.execute(
             f"""
             SELECT categorized_by, COUNT(*) AS cnt
             FROM {TRANSACTION_CATEGORIES.full_name}

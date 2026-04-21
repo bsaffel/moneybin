@@ -87,8 +87,8 @@ class TestDescribeTable:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute(_INSERT_TRANSACTIONS)
+        db = server.get_db()
+        db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_describes_existing_table(self) -> None:
@@ -127,8 +127,8 @@ class TestQueryTransactions:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute(_INSERT_TRANSACTIONS)
+        db = server.get_db()
+        db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_returns_all_transactions(self) -> None:
@@ -203,8 +203,8 @@ class TestGetW2Summary:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute(_INSERT_W2)
+        db = server.get_db()
+        db.execute(_INSERT_W2)
 
     @pytest.mark.unit
     def test_returns_w2_data(self) -> None:
@@ -232,8 +232,8 @@ class TestRunReadQuery:
 
     @pytest.fixture(autouse=True)
     def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        with server.get_write_db() as db:
-            db.execute(_INSERT_TRANSACTIONS)
+        db = server.get_db()
+        db.execute(_INSERT_TRANSACTIONS)
 
     @pytest.mark.unit
     def test_valid_select(self) -> None:

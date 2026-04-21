@@ -39,12 +39,12 @@ def extract_ofx(
         moneybin data extract ofx file.qfx --institution "Wells Fargo"
         moneybin data extract ofx file.qfx --skip-transform
     """
-    from moneybin.config import get_database_path
+    from moneybin.database import get_database
     from moneybin.services.import_service import import_file
 
     try:
         result = import_file(
-            db_path=get_database_path(),
+            db=get_database(),
             file_path=file_path,
             run_transforms=not skip_transform,
             institution=institution,
@@ -76,12 +76,12 @@ def extract_w2(
         moneybin data extract w2 ~/Downloads/2024_W2.pdf
         moneybin data extract w2 W2.pdf --skip-transform
     """
-    from moneybin.config import get_database_path
+    from moneybin.database import get_database
     from moneybin.services.import_service import import_file
 
     try:
         result = import_file(
-            db_path=get_database_path(),
+            db=get_database(),
             file_path=file_path,
             run_transforms=not skip_transform,
         )
@@ -125,12 +125,12 @@ def extract_csv(
         moneybin data extract csv statement.csv -a citi-card -i citi_credit
         moneybin data extract csv data.csv -a wf-savings --skip-transform
     """
-    from moneybin.config import get_database_path
+    from moneybin.database import get_database
     from moneybin.services.import_service import import_file
 
     try:
         result = import_file(
-            db_path=get_database_path(),
+            db=get_database(),
             file_path=file_path,
             run_transforms=not skip_transform,
             account_id=account_id,

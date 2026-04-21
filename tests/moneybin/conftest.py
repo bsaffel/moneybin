@@ -7,10 +7,13 @@ the test suite, including profile cleanup and configuration management.
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.config import clear_settings_cache, get_base_dir, set_current_profile
+from moneybin.database import Database
 
 
 @contextmanager
@@ -86,3 +89,39 @@ def clean_profile_state() -> Generator[None, None, None]:
     # Cleanup after test
     clear_settings_cache()
     set_current_profile("test")
+
+
+@pytest.fixture()
+def mock_secret_store() -> MagicMock:
+    """Mock SecretStore that returns a test encryption key.
+
+    Use this fixture when you need to create Database instances in tests
+    without requiring actual keyring/system secret storage.
+    """
+    store = MagicMock()
+    store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    return store
+
+
+@pytest.fixture()
+def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
+    """Provide a test Database instance with encryption.
+
+    Creates a temporary encrypted database suitable for unit and integration
+    tests. The database is initialized with all base schemas (raw, core, app)
+    but contains no pre-populated data.
+
+    For tests that need specific core tables (dim_accounts, fct_transactions),
+    use db_helpers.create_core_tables(db) or create_core_tables_raw(db.conn).
+
+    Args:
+        tmp_path: pytest temporary directory fixture.
+        mock_secret_store: Mocked SecretStore that provides a test key.
+
+    Yields:
+        A Database instance ready for test queries.
+    """
+    db_path = tmp_path / "test.duckdb"
+    database = Database(db_path, secret_store=mock_secret_store)
+    yield database
+    database.close()

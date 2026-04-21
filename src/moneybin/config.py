@@ -63,6 +63,29 @@ class DatabaseConfig(BaseModel):
     create_dirs: bool = Field(
         default=True, description="Automatically create database directories"
     )
+    encryption_key_mode: Literal["auto", "passphrase"] = Field(
+        default="auto",
+        description="How the encryption key is managed: auto-generated or user passphrase",
+    )
+    temp_directory: Path | None = Field(
+        default=None,
+        description="DuckDB temp spill directory. Defaults to data/<profile>/temp/",
+    )
+    # Argon2id parameters for passphrase-based key derivation.
+    # WARNING: changing these after a database is created locks you out —
+    # the derived key will differ and the database will be unreadable.
+    argon2_time_cost: int = Field(
+        default=3, ge=1, description="Argon2id time cost (iterations)"
+    )
+    argon2_memory_cost: int = Field(
+        default=65536, ge=8192, description="Argon2id memory cost in KiB"
+    )
+    argon2_parallelism: int = Field(
+        default=4, ge=1, description="Argon2id degree of parallelism"
+    )
+    argon2_hash_len: int = Field(
+        default=32, ge=16, description="Argon2id output hash length in bytes"
+    )
 
     @field_validator("path")
     @classmethod
@@ -106,6 +129,26 @@ class LoggingConfig(BaseModel):
     )
     backup_count: int = Field(
         default=5, ge=1, le=50, description="Number of log file backups to keep"
+    )
+
+
+class MCPConfig(BaseModel):
+    """MCP server runtime configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    max_rows: int = Field(
+        default=1000, ge=1, description="Maximum rows returned by any MCP query tool"
+    )
+    max_chars: int = Field(
+        default=50000, ge=1, description="Maximum characters in any MCP tool response"
+    )
+    allowed_tables: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional allowlist of fully-qualified table names the query tool may access "
+            '(e.g. ["core.fct_transactions"]). None means all tables are permitted.'
+        ),
     )
 
 
@@ -179,6 +222,7 @@ class MoneyBinSettings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 
     # Application settings
@@ -239,11 +283,15 @@ class MoneyBinSettings(BaseSettings):
         ):
             if duckdb_path:
                 kwargs["database"] = DatabaseConfig(
-                    path=_resolve_path(base, Path(duckdb_path))
+                    path=_resolve_path(base, Path(duckdb_path)),
+                    backup_path=base / f"data/{profile}/backups",
+                    temp_directory=base / f"data/{profile}/temp",
                 )
             else:
                 kwargs["database"] = DatabaseConfig(
-                    path=base / f"data/{profile}/moneybin.duckdb"
+                    path=base / f"data/{profile}/moneybin.duckdb",
+                    backup_path=base / f"data/{profile}/backups",
+                    temp_directory=base / f"data/{profile}/temp",
                 )
 
         if "data" not in kwargs:
@@ -325,6 +373,9 @@ class MoneyBinSettings(BaseSettings):
 
     def create_directories(self) -> None:
         """Create necessary directories for the application."""
+        import stat
+        import sys
+
         directories = [
             self.database.path.parent,
             self.data.raw_data_path,
@@ -334,9 +385,21 @@ class MoneyBinSettings(BaseSettings):
 
         if self.database.backup_path:
             directories.append(self.database.backup_path)
+        if self.database.temp_directory:
+            directories.append(self.database.temp_directory)
 
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+
+            # Set restrictive permissions on data directories (macOS/Linux)
+            if (
+                sys.platform != "win32"
+                and directory != self.logging.log_file_path.parent
+            ):
+                try:
+                    directory.chmod(stat.S_IRWXU)  # 0700
+                except OSError:
+                    pass  # Best-effort on platforms that don't support chmod
 
     def validate_required_credentials(self) -> None:
         """Validate that required credentials are present.

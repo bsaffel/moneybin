@@ -5,12 +5,12 @@ matching, prompt construction, and response parsing.
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
-import duckdb
 import pytest
 from pytest_mock import MockerFixture
 
-from moneybin.schema import init_schemas
+from moneybin.database import Database
 from moneybin.services.categorization_service import (
     apply_deterministic_categorization,
     apply_merchant_categories,
@@ -27,21 +27,21 @@ from tests.moneybin.db_helpers import create_core_tables
 
 
 @pytest.fixture()
-def db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
-    """Create a DuckDB with all schemas for testing."""
-    db_path = tmp_path / "test.duckdb"
-    conn = duckdb.connect(str(db_path))
-    init_schemas(conn)
+def db(tmp_path: Path) -> Database:
+    """Create a Database with all schemas for testing."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-for-tests"
+    database = Database(tmp_path / "test.duckdb", secret_store=mock_store)
     # Core tables are managed by SQLMesh in production; create concrete
     # tables here so tests can INSERT fixture data directly.
-    create_core_tables(conn)
-    return conn
+    create_core_tables(database)
+    return database
 
 
 @pytest.fixture()
-def db_with_transactions(db: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+def db_with_transactions(db: Database) -> Database:
     """DB with sample transactions in core.fct_transactions."""
-    db.execute("""
+    db.conn.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
             amount_absolute, transaction_direction, description, memo,
@@ -135,7 +135,7 @@ class TestMatchesPattern:
     """Tests for _matches_pattern() via match_merchant."""
 
     @pytest.mark.unit
-    def test_exact_match(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_exact_match(self, db: Database) -> None:
         create_merchant(
             db,
             "starbucks",
@@ -148,7 +148,7 @@ class TestMatchesPattern:
         assert result["canonical_name"] == "Starbucks"
 
     @pytest.mark.unit
-    def test_exact_case_insensitive(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_exact_case_insensitive(self, db: Database) -> None:
         create_merchant(
             db,
             "STARBUCKS",
@@ -160,7 +160,7 @@ class TestMatchesPattern:
         assert result is not None
 
     @pytest.mark.unit
-    def test_contains_match(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_contains_match(self, db: Database) -> None:
         create_merchant(
             db,
             "AMZN",
@@ -173,7 +173,7 @@ class TestMatchesPattern:
         assert result["canonical_name"] == "Amazon"
 
     @pytest.mark.unit
-    def test_regex_match(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_regex_match(self, db: Database) -> None:
         create_merchant(
             db,
             r"UBER\s*(TRIP|EATS)",
@@ -186,15 +186,13 @@ class TestMatchesPattern:
         assert result["canonical_name"] == "Uber"
 
     @pytest.mark.unit
-    def test_no_match_returns_none(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_no_match_returns_none(self, db: Database) -> None:
         create_merchant(db, "STARBUCKS", "Starbucks", match_type="exact")
         result = match_merchant(db, "DUNKIN DONUTS")
         assert result is None
 
     @pytest.mark.unit
-    def test_exact_takes_priority_over_contains(
-        self, db: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_exact_takes_priority_over_contains(self, db: Database) -> None:
         create_merchant(
             db,
             "AMZN",
@@ -226,7 +224,7 @@ class TestApplyRules:
     """Tests for rule-based categorization."""
 
     @pytest.mark.unit
-    def test_basic_rule(self, db_with_transactions: duckdb.DuckDBPyConnection) -> None:
+    def test_basic_rule(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         db.execute("""
             INSERT INTO app.categorization_rules
@@ -252,9 +250,7 @@ class TestApplyRules:
         assert row[3] == "R001"
 
     @pytest.mark.unit
-    def test_rule_priority_ordering(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_rule_priority_ordering(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         # Two rules match TXN003 (Amazon), but lower priority wins
         db.execute("""
@@ -276,9 +272,7 @@ class TestApplyRules:
         assert row[0] == "Electronics"  # priority 10 wins over 100
 
     @pytest.mark.unit
-    def test_amount_filter(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_amount_filter(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         # Rule only matches expenses > $100 (amount < -100)
         db.execute("""
@@ -294,9 +288,7 @@ class TestApplyRules:
         assert count == 1  # Only TXN004 (-150) matches
 
     @pytest.mark.unit
-    def test_account_filter(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_account_filter(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         db.execute("""
             INSERT INTO app.categorization_rules
@@ -311,7 +303,7 @@ class TestApplyRules:
         assert count == 0
 
     @pytest.mark.unit
-    def test_idempotent(self, db_with_transactions: duckdb.DuckDBPyConnection) -> None:
+    def test_idempotent(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         db.execute("""
             INSERT INTO app.categorization_rules
@@ -326,9 +318,7 @@ class TestApplyRules:
         assert second == 0  # Already categorized, no duplicates
 
     @pytest.mark.unit
-    def test_inactive_rules_skipped(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_inactive_rules_skipped(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         db.execute("""
             INSERT INTO app.categorization_rules
@@ -350,9 +340,7 @@ class TestApplyMerchantCategories:
     """Tests for merchant-based auto-categorization."""
 
     @pytest.mark.unit
-    def test_applies_merchant_category(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_applies_merchant_category(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         create_merchant(
             db,
@@ -367,7 +355,7 @@ class TestApplyMerchantCategories:
 
     @pytest.mark.unit
     def test_skips_merchants_without_category(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
+        self, db_with_transactions: Database
     ) -> None:
         db = db_with_transactions
         create_merchant(db, "STARBUCKS", "Starbucks", match_type="contains")
@@ -384,9 +372,7 @@ class TestApplyDeterministicCategorization:
     """Tests for the combined merchant + rules pipeline."""
 
     @pytest.mark.unit
-    def test_rules_then_merchants(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_rules_then_merchants(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         # Merchant matches Starbucks
         create_merchant(
@@ -412,7 +398,7 @@ class TestApplyDeterministicCategorization:
 
     @pytest.mark.unit
     def test_rule_takes_precedence_over_merchant(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
+        self, db_with_transactions: Database
     ) -> None:
         """A transaction matched by both a rule and a merchant mapping.
 
@@ -453,18 +439,14 @@ class TestGetCategorizationStats:
     """Tests for categorization coverage stats."""
 
     @pytest.mark.unit
-    def test_all_uncategorized(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_all_uncategorized(self, db_with_transactions: Database) -> None:
         stats = get_categorization_stats(db_with_transactions)
         assert stats["total"] == 4
         assert stats["categorized"] == 0
         assert stats["uncategorized"] == 4
 
     @pytest.mark.unit
-    def test_with_categorized(
-        self, db_with_transactions: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_with_categorized(self, db_with_transactions: Database) -> None:
         db = db_with_transactions
         db.execute("""
             INSERT INTO app.transaction_categories
@@ -486,7 +468,7 @@ class TestEnsureSeedTable:
     """Tests for lazy SQLMesh seed initialization."""
 
     @pytest.mark.unit
-    def test_skips_when_table_exists(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_skips_when_table_exists(self, db: Database) -> None:
         """No SQLMesh call when seed table already exists."""
         db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
         db.execute("CREATE TABLE seeds.categories (category_id VARCHAR)")
@@ -495,7 +477,7 @@ class TestEnsureSeedTable:
 
     @pytest.mark.unit
     def test_calls_sqlmesh_when_missing(
-        self, db: duckdb.DuckDBPyConnection, mocker: MockerFixture
+        self, db: Database, mocker: MockerFixture
     ) -> None:
         """Runs targeted SQLMesh apply when seed table is missing."""
         mock_ctx = mocker.MagicMock()
@@ -526,7 +508,7 @@ class TestSeedCategories:
     """Tests for category seeding."""
 
     @pytest.mark.unit
-    def test_seed_idempotent(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_seed_idempotent(self, db: Database) -> None:
         # Create a mock seed table
         db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
         db.execute("""
@@ -551,7 +533,7 @@ class TestSeedCategories:
         assert second == 0  # Idempotent
 
     @pytest.mark.unit
-    def test_get_active_categories(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_get_active_categories(self, db: Database) -> None:
         db.execute("""
             INSERT INTO app.categories
             (category_id, category, subcategory, is_default, is_active)

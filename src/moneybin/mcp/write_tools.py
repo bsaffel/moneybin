@@ -12,6 +12,7 @@ from pathlib import Path
 
 import duckdb
 
+from moneybin.database import get_database
 from moneybin.services.categorization_service import (
     create_merchant,
     match_merchant,
@@ -29,7 +30,7 @@ from moneybin.tables import (
     TRANSACTION_CATEGORIES,
 )
 
-from .server import get_db, get_db_path, get_write_db, mcp, table_exists
+from .server import mcp, table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +94,12 @@ def import_file(
         )
 
     try:
-        db_path = get_db_path()
-        with get_write_db():
-            result = do_import(
-                db_path, str(resolved), account_id=account_id, institution=institution
-            )
+        result = do_import(
+            get_database(),
+            str(resolved),
+            account_id=account_id,
+            institution=institution,
+        )
         return result.summary()
     except FileNotFoundError as e:
         return f"Error: {e}"
@@ -135,50 +137,50 @@ def categorize_transaction(
     logger.info("Tool called: categorize_transaction(%s, %s)", transaction_id, category)
 
     try:
-        with get_write_db() as db:
-            # Resolve merchant_id before inserting the category record
-            merchant_id = None
-            try:
-                txn = db.execute(
-                    f"""
-                    SELECT description FROM {FCT_TRANSACTIONS.full_name}
-                    WHERE transaction_id = ?
-                    """,
-                    [transaction_id],
-                ).fetchone()
-
-                if txn and txn[0]:
-                    description = txn[0]
-                    existing = match_merchant(db, description)
-                    if existing:
-                        merchant_id = existing["merchant_id"]
-                    else:
-                        normalized = normalize_description(description)
-                        if normalized:
-                            merchant_id = create_merchant(
-                                db,
-                                normalized,
-                                normalized,
-                                match_type="contains",
-                                category=category,
-                                subcategory=subcategory,
-                                created_by=categorized_by,
-                            )
-            except Exception:
-                logger.debug(
-                    "Could not resolve merchant mapping",
-                    exc_info=True,
-                )
-
-            db.execute(
+        db = get_database()
+        # Resolve merchant_id before inserting the category record
+        merchant_id = None
+        try:
+            txn = db.execute(
                 f"""
-                INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory,
-                 categorized_at, categorized_by, merchant_id)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+                SELECT description FROM {FCT_TRANSACTIONS.full_name}
+                WHERE transaction_id = ?
                 """,
-                [transaction_id, category, subcategory, categorized_by, merchant_id],
+                [transaction_id],
+            ).fetchone()
+
+            if txn and txn[0]:
+                description = txn[0]
+                existing = match_merchant(db, description)
+                if existing:
+                    merchant_id = existing["merchant_id"]
+                else:
+                    normalized = normalize_description(description)
+                    if normalized:
+                        merchant_id = create_merchant(
+                            db,
+                            normalized,
+                            normalized,
+                            match_type="contains",
+                            category=category,
+                            subcategory=subcategory,
+                            created_by=categorized_by,
+                        )
+        except Exception:
+            logger.debug(
+                "Could not resolve merchant mapping",
+                exc_info=True,
             )
+
+        db.execute(
+            f"""
+            INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
+            (transaction_id, category, subcategory,
+             categorized_at, categorized_by, merchant_id)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+            """,
+            [transaction_id, category, subcategory, categorized_by, merchant_id],
+        )
 
         sub = f" / {subcategory}" if subcategory else ""
         return f"Transaction {transaction_id} categorized as: {category}{sub}"
@@ -199,7 +201,7 @@ def get_uncategorized_transactions(limit: int = 50) -> str:
     if not table_exists(FCT_TRANSACTIONS):
         return "No transactions found. Import data first."
 
-    db = get_db()
+    db = get_database()
     limit = min(limit, 1000)
 
     try:
@@ -244,8 +246,8 @@ def seed_categories() -> str:
     logger.info("Tool called: seed_categories")
 
     try:
-        with get_write_db() as db:
-            count = seed_categories_svc(db)
+        db = get_database()
+        count = seed_categories_svc(db)
         return f"Seeded {count} new categories."
     except Exception as e:
         logger.exception("Failed to seed categories")
@@ -266,20 +268,20 @@ def toggle_category(category_id: str, is_active: bool) -> str:
     logger.info("Tool called: toggle_category(%s, %s)", category_id, is_active)
 
     try:
-        with get_write_db() as db:
-            row = db.execute(
-                f"""
-                UPDATE {CATEGORIES.full_name}
-                SET is_active = ?
-                WHERE category_id = ?
-                RETURNING category_id
-                """,
-                [is_active, category_id],
-            ).fetchone()
-            if row is not None:
-                action = "enabled" if is_active else "disabled"
-                return f"Category {category_id} {action}."
-            return f"Category {category_id} not found."
+        db = get_database()
+        row = db.execute(
+            f"""
+            UPDATE {CATEGORIES.full_name}
+            SET is_active = ?
+            WHERE category_id = ?
+            RETURNING category_id
+            """,
+            [is_active, category_id],
+        ).fetchone()
+        if row is not None:
+            action = "enabled" if is_active else "disabled"
+            return f"Category {category_id} {action}."
+        return f"Category {category_id} not found."
     except Exception as e:
         logger.exception("Toggle category failed")
         return f"Error: {e}"
@@ -305,16 +307,16 @@ def create_category(
     cat_id = str(_uuid.uuid4())[:8].upper()
 
     try:
-        with get_write_db() as db:
-            db.execute(
-                f"""
-                INSERT INTO {CATEGORIES.full_name}
-                (category_id, category, subcategory, description,
-                 is_default, is_active, created_at)
-                VALUES (?, ?, ?, ?, false, true, CURRENT_TIMESTAMP)
-                """,
-                [cat_id, category, subcategory, description],
-            )
+        db = get_database()
+        db.execute(
+            f"""
+            INSERT INTO {CATEGORIES.full_name}
+            (category_id, category, subcategory, description,
+             is_default, is_active, created_at)
+            VALUES (?, ?, ?, ?, false, true, CURRENT_TIMESTAMP)
+            """,
+            [cat_id, category, subcategory, description],
+        )
         sub = f" / {subcategory}" if subcategory else ""
         return f"Created category: {category}{sub} (ID: {cat_id})"
     except duckdb.ConstraintException:
@@ -354,16 +356,16 @@ def create_merchant_mapping(
     logger.info("Tool called: create_merchant_mapping(%s)", canonical_name)
 
     try:
-        with get_write_db() as db:
-            merchant_id = create_merchant(
-                db,
-                raw_pattern,
-                canonical_name,
-                match_type=match_type,
-                category=category,
-                subcategory=subcategory,
-                created_by="user",
-            )
+        db = get_database()
+        merchant_id = create_merchant(
+            db,
+            raw_pattern,
+            canonical_name,
+            match_type=match_type,
+            category=category,
+            subcategory=subcategory,
+            created_by="user",
+        )
         cat_info = f" -> {category}" if category else ""
         return f"Created merchant: {canonical_name} (pattern: '{raw_pattern}'{cat_info}, ID: {merchant_id})"
     except Exception as e:
@@ -411,30 +413,30 @@ def create_categorization_rule(
     rule_id = str(_uuid.uuid4())[:8]
 
     try:
-        with get_write_db() as db:
-            db.execute(
-                f"""
-                INSERT INTO {CATEGORIZATION_RULES.full_name}
-                (rule_id, name, merchant_pattern, match_type,
-                 min_amount, max_amount, account_id,
-                 category, subcategory, priority, is_active,
-                 created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
-                        'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,
-                [
-                    rule_id,
-                    name,
-                    merchant_pattern,
-                    match_type,
-                    min_amount,
-                    max_amount,
-                    account_id,
-                    category,
-                    subcategory,
-                    priority,
-                ],
-            )
+        db = get_database()
+        db.execute(
+            f"""
+            INSERT INTO {CATEGORIZATION_RULES.full_name}
+            (rule_id, name, merchant_pattern, match_type,
+             min_amount, max_amount, account_id,
+             category, subcategory, priority, is_active,
+             created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
+                    'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            [
+                rule_id,
+                name,
+                merchant_pattern,
+                match_type,
+                min_amount,
+                max_amount,
+                account_id,
+                category,
+                subcategory,
+                priority,
+            ],
+        )
         return f"Created rule '{name}' (ID: {rule_id}, priority: {priority})"
     except Exception as e:
         logger.exception("Create rule failed")
@@ -451,14 +453,14 @@ def delete_categorization_rule(rule_id: str) -> str:
     logger.info("Tool called: delete_categorization_rule(%s)", rule_id)
 
     try:
-        with get_write_db() as db:
-            db.execute(
-                f"""
-                DELETE FROM {CATEGORIZATION_RULES.full_name}
-                WHERE rule_id = ?
-                """,
-                [rule_id],
-            )
+        db = get_database()
+        db.execute(
+            f"""
+            DELETE FROM {CATEGORIZATION_RULES.full_name}
+            WHERE rule_id = ?
+            """,
+            [rule_id],
+        )
         return f"Deleted rule {rule_id}."
     except Exception as e:
         logger.exception("Delete rule failed")
@@ -502,63 +504,63 @@ def bulk_categorize(
     errors: list[str] = []
 
     try:
-        with get_write_db() as db:
-            for item in categorizations:
-                txn_id = item.get("transaction_id", "").strip()
-                category = item.get("category", "").strip()
-                if not txn_id or not category:
-                    errors.append(
-                        f"Skipped item missing transaction_id or category: {item}"
-                    )
-                    continue
-
-                subcategory = item.get("subcategory", "").strip() or None
-                merchant_name = item.get("merchant_name", "").strip() or None
-
-                # Resolve merchant_id before inserting
-                merchant_id = None
-                try:
-                    txn = db.execute(
-                        f"""
-                        SELECT description FROM {FCT_TRANSACTIONS.full_name}
-                        WHERE transaction_id = ?
-                        """,
-                        [txn_id],
-                    ).fetchone()
-                    if txn and txn[0]:
-                        existing = match_merchant(db, txn[0])
-                        if existing:
-                            merchant_id = existing["merchant_id"]
-                        elif create_merchant_mappings and merchant_name:
-                            normalized = normalize_description(txn[0])
-                            if normalized:
-                                merchant_id = create_merchant(
-                                    db,
-                                    normalized,
-                                    merchant_name,
-                                    match_type="contains",
-                                    category=category,
-                                    subcategory=subcategory,
-                                    created_by="ai",
-                                )
-                                merchant_count += 1
-                except Exception:
-                    logger.debug(
-                        "Could not resolve merchant mapping for %s",
-                        txn_id,
-                        exc_info=True,
-                    )
-
-                db.execute(
-                    f"""
-                    INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
-                    (transaction_id, category, subcategory,
-                     categorized_at, categorized_by, merchant_id)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
-                    """,
-                    [txn_id, category, subcategory, merchant_id],
+        db = get_database()
+        for item in categorizations:
+            txn_id = item.get("transaction_id", "").strip()
+            category = item.get("category", "").strip()
+            if not txn_id or not category:
+                errors.append(
+                    f"Skipped item missing transaction_id or category: {item}"
                 )
-                categorized_count += 1
+                continue
+
+            subcategory = item.get("subcategory", "").strip() or None
+            merchant_name = item.get("merchant_name", "").strip() or None
+
+            # Resolve merchant_id before inserting
+            merchant_id = None
+            try:
+                txn = db.execute(
+                    f"""
+                    SELECT description FROM {FCT_TRANSACTIONS.full_name}
+                    WHERE transaction_id = ?
+                    """,
+                    [txn_id],
+                ).fetchone()
+                if txn and txn[0]:
+                    existing = match_merchant(db, txn[0])
+                    if existing:
+                        merchant_id = existing["merchant_id"]
+                    elif create_merchant_mappings and merchant_name:
+                        normalized = normalize_description(txn[0])
+                        if normalized:
+                            merchant_id = create_merchant(
+                                db,
+                                normalized,
+                                merchant_name,
+                                match_type="contains",
+                                category=category,
+                                subcategory=subcategory,
+                                created_by="ai",
+                            )
+                            merchant_count += 1
+            except Exception:
+                logger.debug(
+                    "Could not resolve merchant mapping for %s",
+                    txn_id,
+                    exc_info=True,
+                )
+
+            db.execute(
+                f"""
+                INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
+                (transaction_id, category, subcategory,
+                 categorized_at, categorized_by, merchant_id)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
+                """,
+                [txn_id, category, subcategory, merchant_id],
+            )
+            categorized_count += 1
 
     except Exception as e:
         logger.exception("bulk_categorize failed")
@@ -608,49 +610,49 @@ def bulk_create_categorization_rules(
     errors: list[str] = []
 
     try:
-        with get_write_db() as db:
-            for item in rules:
-                name = str(item.get("name", "")).strip()
-                pattern = str(item.get("merchant_pattern", "")).strip()
-                category = str(item.get("category", "")).strip()
-                if not name or not pattern or not category:
-                    errors.append(
-                        f"Skipped rule missing name, merchant_pattern, or category: {item}"
-                    )
-                    continue
-
-                subcategory = str(item.get("subcategory", "")).strip() or None
-                match_type = str(item.get("match_type", "contains")).strip()
-                min_amount = item.get("min_amount")
-                max_amount = item.get("max_amount")
-                account_id = item.get("account_id")
-                priority = int(item.get("priority", 100) or 100)
-
-                rule_id = str(uuid.uuid4())[:8]
-                db.execute(
-                    f"""
-                    INSERT INTO {CATEGORIZATION_RULES.full_name}
-                    (rule_id, name, merchant_pattern, match_type,
-                     min_amount, max_amount, account_id,
-                     category, subcategory, priority, is_active,
-                     created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
-                            'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
-                    [
-                        rule_id,
-                        name,
-                        pattern,
-                        match_type,
-                        min_amount,
-                        max_amount,
-                        account_id,
-                        category,
-                        subcategory,
-                        priority,
-                    ],
+        db = get_database()
+        for item in rules:
+            name = str(item.get("name", "")).strip()
+            pattern = str(item.get("merchant_pattern", "")).strip()
+            category = str(item.get("category", "")).strip()
+            if not name or not pattern or not category:
+                errors.append(
+                    f"Skipped rule missing name, merchant_pattern, or category: {item}"
                 )
-                created_count += 1
+                continue
+
+            subcategory = str(item.get("subcategory", "")).strip() or None
+            match_type = str(item.get("match_type", "contains")).strip()
+            min_amount = item.get("min_amount")
+            max_amount = item.get("max_amount")
+            account_id = item.get("account_id")
+            priority = int(item.get("priority", 100) or 100)
+
+            rule_id = str(uuid.uuid4())[:8]
+            db.execute(
+                f"""
+                INSERT INTO {CATEGORIZATION_RULES.full_name}
+                (rule_id, name, merchant_pattern, match_type,
+                 min_amount, max_amount, account_id,
+                 category, subcategory, priority, is_active,
+                 created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
+                        'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                [
+                    rule_id,
+                    name,
+                    pattern,
+                    match_type,
+                    min_amount,
+                    max_amount,
+                    account_id,
+                    category,
+                    subcategory,
+                    priority,
+                ],
+            )
+            created_count += 1
 
     except Exception as e:
         logger.exception("bulk_create_categorization_rules failed")
@@ -690,33 +692,33 @@ def bulk_create_merchant_mappings(
     errors: list[str] = []
 
     try:
-        with get_write_db() as db:
-            for item in mappings:
-                raw_pattern = str(item.get("raw_pattern", "")).strip()
-                canonical_name = str(item.get("canonical_name", "")).strip()
-                if not raw_pattern or not canonical_name:
-                    errors.append(
-                        f"Skipped mapping missing raw_pattern or canonical_name: {item}"
-                    )
-                    continue
+        db = get_database()
+        for item in mappings:
+            raw_pattern = str(item.get("raw_pattern", "")).strip()
+            canonical_name = str(item.get("canonical_name", "")).strip()
+            if not raw_pattern or not canonical_name:
+                errors.append(
+                    f"Skipped mapping missing raw_pattern or canonical_name: {item}"
+                )
+                continue
 
-                match_type = str(item.get("match_type", "contains")).strip()
-                category = str(item.get("category", "")).strip() or None
-                subcategory = str(item.get("subcategory", "")).strip() or None
+            match_type = str(item.get("match_type", "contains")).strip()
+            category = str(item.get("category", "")).strip() or None
+            subcategory = str(item.get("subcategory", "")).strip() or None
 
-                try:
-                    create_merchant(
-                        db,
-                        raw_pattern,
-                        canonical_name,
-                        match_type=match_type,
-                        category=category,
-                        subcategory=subcategory,
-                        created_by="ai",
-                    )
-                    created_count += 1
-                except Exception as e:
-                    errors.append(f"Failed to create mapping '{canonical_name}': {e}")
+            try:
+                create_merchant(
+                    db,
+                    raw_pattern,
+                    canonical_name,
+                    match_type=match_type,
+                    category=category,
+                    subcategory=subcategory,
+                    created_by="ai",
+                )
+                created_count += 1
+            except Exception as e:
+                errors.append(f"Failed to create mapping '{canonical_name}': {e}")
 
     except Exception as e:
         logger.exception("bulk_create_merchant_mappings failed")
@@ -749,43 +751,43 @@ def set_budget(
     logger.info("Tool called: set_budget(%s)", category)
 
     if start_month is None:
-        read_db = get_db()
+        read_db = get_database()
         start_month = read_db.execute(
             "SELECT STRFTIME(CURRENT_DATE, '%Y-%m')"
         ).fetchone()[0]  # type: ignore[index] — fetchone() returns a row here, not None
 
     try:
-        with get_write_db() as db:
-            # Check if budget already exists for this category
-            existing = db.execute(
-                """
-                SELECT budget_id FROM app.budgets
-                WHERE category = ? AND (end_month IS NULL OR end_month >= ?)
-                """,
-                [category, start_month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
-            ).fetchone()
+        db = get_database()
+        # Check if budget already exists for this category
+        existing = db.execute(
+            """
+            SELECT budget_id FROM app.budgets
+            WHERE category = ? AND (end_month IS NULL OR end_month >= ?)
+            """,
+            [category, start_month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
+        ).fetchone()
 
-            if existing:
-                db.execute(
-                    """
-                    UPDATE app.budgets
-                    SET monthly_amount = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE budget_id = ?
-                    """,
-                    [monthly_amount, existing[0]],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
-                )
-                return f"Updated budget for '{category}': ${monthly_amount:.2f}/month"
-            else:
-                budget_id = str(uuid.uuid4())[:8]
-                db.execute(
-                    """
-                    INSERT INTO app.budgets
-                    (budget_id, category, monthly_amount, start_month, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
-                    [budget_id, category, monthly_amount, start_month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
-                )
-                return f"Created budget for '{category}': ${monthly_amount:.2f}/month starting {start_month}"
+        if existing:
+            db.execute(
+                """
+                UPDATE app.budgets
+                SET monthly_amount = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE budget_id = ?
+                """,
+                [monthly_amount, existing[0]],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
+            )
+            return f"Updated budget for '{category}': ${monthly_amount:.2f}/month"
+        else:
+            budget_id = str(uuid.uuid4())[:8]
+            db.execute(
+                """
+                INSERT INTO app.budgets
+                (budget_id, category, monthly_amount, start_month, created_at, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                [budget_id, category, monthly_amount, start_month],  # type: ignore[reportUnknownArgumentType] — DuckDB accepts list of mixed types
+            )
+            return f"Created budget for '{category}': ${monthly_amount:.2f}/month starting {start_month}"
     except Exception as e:
         logger.exception("Budget operation failed")
         return f"Error setting budget: {e}"
@@ -799,7 +801,7 @@ def get_budget_status(month: str | None = None) -> str:
         month: Month to check (YYYY-MM). Defaults to current month.
     """
     logger.info("Tool called: get_budget_status")
-    db = get_db()
+    db = get_database()
 
     if not table_exists(BUDGETS):
         return "No budgets set yet. Use set_budget to create one."
@@ -869,7 +871,7 @@ def get_monthly_summary(months: int = 6) -> str:
     if not table_exists(FCT_TRANSACTIONS):
         return "No transactions found. Import data first."
 
-    db = get_db()
+    db = get_database()
 
     try:
         result = db.execute(
@@ -913,7 +915,7 @@ def get_spending_by_category(month: str | None = None) -> str:
     if not table_exists(TRANSACTION_CATEGORIES):
         return "No categorized transactions. Use categorize_transaction first."
 
-    db = get_db()
+    db = get_database()
 
     if month is None:
         month = db.execute("SELECT STRFTIME(CURRENT_DATE, '%Y-%m')").fetchone()[0]  # type: ignore[index] — fetchone() returns a row here, not None
@@ -964,7 +966,7 @@ def find_recurring_transactions(min_occurrences: int = 3) -> str:
     if not table_exists(FCT_TRANSACTIONS):
         return "No transactions found. Import data first."
 
-    db = get_db()
+    db = get_database()
 
     try:
         result = db.execute(

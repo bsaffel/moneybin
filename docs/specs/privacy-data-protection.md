@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+in-progress
 
 ## Goal
 Protect financial data at rest through DuckDB encryption, centralized connection
@@ -60,6 +60,13 @@ including keychain entries and decrypted database contents in memory. Passphrase
 raises the bar slightly (attacker must keylog the passphrase or extract from keychain),
 but auto-key mode offers no additional protection here. This is documented, not
 engineered around.
+
+**DuckDB CLI shell history:** The `db shell` and `db ui` commands pass the encryption
+key via a `-init` temp script. DuckDB only records lines typed interactively in
+`~/.duckdb/history` — commands executed from `-init` files are not written to history.
+The init script itself is deleted as soon as the subprocess exits (via `unlink` in a
+`finally` block). The encryption key is therefore not persisted to disk beyond the
+duration of the shell session.
 
 ## Requirements
 

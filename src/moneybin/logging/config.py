@@ -6,11 +6,14 @@ all MoneyBin components, with support for different environments and use cases.
 
 import logging
 import os
+import stat as stat_mod
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from moneybin.log_sanitizer import SanitizedLogFormatter
 
 
 @dataclass
@@ -131,8 +134,15 @@ def setup_logging(
         log_file = session_log_path(config.log_file_path, prefix="moneybin")
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
+        # Set restrictive permissions on log file (macOS/Linux)
+        if sys.platform != "win32" and log_file.exists():
+            try:
+                log_file.chmod(stat_mod.S_IRUSR | stat_mod.S_IWUSR)  # 0600
+            except OSError:
+                pass
+
         file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        file_handler.setFormatter(logging.Formatter(config.format_string))
+        file_handler.setFormatter(SanitizedLogFormatter(config.format_string))
         handlers.append(file_handler)
 
     # Configure root logger

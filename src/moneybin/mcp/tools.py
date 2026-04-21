@@ -412,12 +412,12 @@ def get_categorization_stats() -> str:
 
     import json
 
+    from moneybin.database import get_database as _get_database
     from moneybin.services.categorization_service import (
         get_categorization_stats as _get_stats,
     )
 
-    db = get_db()
-    stats = _get_stats(db)
+    stats = _get_stats(_get_database())
     return json.dumps(stats, indent=2, default=str)
 
 

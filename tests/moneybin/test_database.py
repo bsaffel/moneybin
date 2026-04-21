@@ -1,0 +1,300 @@
+"""Tests for Database class — centralized encrypted connection management."""
+
+import sys
+from collections.abc import Generator
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import duckdb
+import pytest
+
+from moneybin.database import Database, DatabaseKeyError, get_database
+
+
+@pytest.fixture()
+def db_dir(tmp_path: Path) -> Path:
+    """Provide a temporary directory for test databases."""
+    return tmp_path / "data" / "test"
+
+
+@pytest.fixture()
+def encryption_key() -> str:
+    """Provide a test encryption key string."""
+    return "test-encryption-key-256bit-placeholder"
+
+
+@pytest.fixture()
+def mock_secret_store(encryption_key: str) -> MagicMock:
+    """Mock SecretStore that returns a test encryption key."""
+    store = MagicMock()
+    store.get_key.return_value = encryption_key
+    return store
+
+
+class TestDatabaseInit:
+    """Database initialization and encrypted attachment."""
+
+    def test_creates_encrypted_database(
+        self, db_dir: Path, mock_secret_store: MagicMock, encryption_key: str
+    ) -> None:
+        """New database file is created and encrypted."""
+        db_path = db_dir / "moneybin.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store)
+        try:
+            assert db_path.exists()
+            mock_secret_store.get_key.assert_called_once_with(
+                "DATABASE__ENCRYPTION_KEY"
+            )
+        finally:
+            db.close()
+
+    def test_sets_file_permissions_0600(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """Database file is created with owner-only permissions."""
+        if sys.platform == "win32":
+            pytest.skip("File permissions not enforced on Windows")
+        db_path = db_dir / "moneybin.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store)
+        try:
+            mode = db_path.stat().st_mode & 0o777
+            assert mode == 0o600
+        finally:
+            db.close()
+
+    def test_encrypted_file_unreadable_without_key(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """Database file cannot be opened without the encryption key."""
+        db_path = db_dir / "moneybin.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store)
+        db.execute("CREATE TABLE test_data (id INTEGER, name VARCHAR)")
+        db.execute("INSERT INTO test_data VALUES (1, 'Alice')")
+        db.close()
+
+        # Try to open without key — should fail.
+        # DuckDB raises CatalogException when opening an encrypted file without a key.
+        with pytest.raises(duckdb.CatalogException):
+            bad_conn = duckdb.connect(str(db_path))
+            bad_conn.execute("SELECT * FROM test_data")
+
+    def test_runs_init_schemas(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """Schema initialization runs on first open."""
+        db_path = db_dir / "moneybin.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store)
+        try:
+            # init_schemas creates the raw, core, and app schemas
+            result = db.execute(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name IN ('raw', 'core', 'app') ORDER BY schema_name"
+            ).fetchall()
+            schemas = [r[0] for r in result]
+            assert "app" in schemas
+            assert "raw" in schemas
+        finally:
+            db.close()
+
+    def test_raises_database_key_error_when_no_key(self, db_dir: Path) -> None:
+        """DatabaseKeyError raised when SecretStore cannot find the key."""
+        store = MagicMock()
+        from moneybin.secrets import SecretNotFoundError
+
+        store.get_key.side_effect = SecretNotFoundError("not found")
+        db_path = db_dir / "moneybin.duckdb"
+        with pytest.raises(DatabaseKeyError, match="encryption key"):
+            Database(db_path, secret_store=store)
+
+
+class TestDatabaseOperations:
+    """Database.execute(), .sql(), .conn property."""
+
+    @pytest.fixture()
+    def db(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        db_path = db_dir / "moneybin.duckdb"
+        database = Database(db_path, secret_store=mock_secret_store)
+        yield database
+        database.close()
+
+    def test_execute_with_params(self, db: Database) -> None:
+        """Parameterized query works on attached encrypted database."""
+        db.execute("CREATE TABLE test (id INTEGER, val VARCHAR)")
+        db.execute("INSERT INTO test VALUES (?, ?)", [1, "hello"])
+        result = db.execute("SELECT val FROM test WHERE id = ?", [1]).fetchone()
+        assert result is not None
+        assert result[0] == "hello"
+
+    def test_sql_convenience(self, db: Database) -> None:
+        """sql() method works for parameter-free queries."""
+        db.execute("CREATE TABLE test2 (id INTEGER)")
+        db.execute("INSERT INTO test2 VALUES (42)")
+        result = db.sql("SELECT * FROM test2").fetchone()
+        assert result is not None
+        assert result[0] == 42
+
+    def test_conn_property(self, db: Database) -> None:
+        """Conn property exposes the underlying DuckDB connection."""
+        conn = db.conn
+        assert isinstance(conn, duckdb.DuckDBPyConnection)
+
+    def test_close_releases_resources(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """After close(), conn access raises."""
+        db_path = db_dir / "moneybin.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store)
+        db.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            _ = db.conn
+
+
+class TestIngestDataframe:
+    """Database.ingest_dataframe() — Arrow-based bulk loading."""
+
+    @pytest.fixture()
+    def db(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        db_path = db_dir / "moneybin.duckdb"
+        database = Database(db_path, secret_store=mock_secret_store)
+        database.execute(
+            "CREATE TABLE test_items (id INTEGER, name VARCHAR, score DECIMAL(5,2))"
+        )
+        yield database
+        database.close()
+
+    def test_insert_mode_loads_rows(self, db: Database) -> None:
+        """Insert mode appends rows to the target table."""
+        import polars as pl
+
+        df = pl.DataFrame({"id": [1, 2], "name": ["alice", "bob"], "score": [9.5, 8.0]})
+        db.ingest_dataframe("test_items", df, on_conflict="insert")
+
+        result = db.execute("SELECT COUNT(*) FROM test_items").fetchone()
+        assert result is not None
+        assert result[0] == 2
+
+    def test_replace_mode_recreates_table(self, db: Database) -> None:
+        """Replace mode drops and recreates the table from the DataFrame."""
+        import polars as pl
+
+        db.execute("INSERT INTO test_items VALUES (1, 'old', 1.0)")
+        df = pl.DataFrame({
+            "id": [2, 3],
+            "name": ["new_a", "new_b"],
+            "score": [5.0, 6.0],
+        })
+        db.ingest_dataframe("test_items", df, on_conflict="replace")
+
+        result = db.execute("SELECT COUNT(*) FROM test_items").fetchone()
+        assert result is not None
+        assert result[0] == 2
+        ids = [
+            r[0] for r in db.execute("SELECT id FROM test_items ORDER BY id").fetchall()
+        ]
+        assert ids == [2, 3]
+
+    def test_upsert_mode_replaces_conflicting_rows(self, db: Database) -> None:
+        """Upsert mode replaces conflicting rows (INSERT OR REPLACE) and appends new ones."""
+        import polars as pl
+
+        db.execute("CREATE TABLE upsert_items (id INTEGER PRIMARY KEY, val VARCHAR)")
+        db.execute("INSERT INTO upsert_items VALUES (1, 'original')")
+
+        df = pl.DataFrame({"id": [1, 2], "val": ["updated", "new"]})
+        db.ingest_dataframe("upsert_items", df, on_conflict="upsert")
+
+        rows = db.execute("SELECT id, val FROM upsert_items ORDER BY id").fetchall()
+        assert rows == [(1, "updated"), (2, "new")]
+
+    def test_by_name_matching_ignores_column_order(self, db: Database) -> None:
+        """Columns are matched by name, so DataFrame column order need not match table order."""
+        import polars as pl
+
+        # DataFrame has columns in reverse order
+        df = pl.DataFrame({"score": [7.5], "name": ["carol"], "id": [3]})
+        db.ingest_dataframe("test_items", df, on_conflict="insert")
+
+        row = db.execute("SELECT id, name, score FROM test_items").fetchone()
+        assert row == (3, "carol", 7.5)
+
+    def test_default_columns_receive_defaults(self, db: Database) -> None:
+        """Columns absent from the DataFrame receive their DEFAULT values."""
+        import polars as pl
+
+        db.execute(
+            "CREATE TABLE timed_items "
+            "(id INTEGER PRIMARY KEY, val VARCHAR, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        df = pl.DataFrame({"id": [1], "val": ["hello"]})
+        db.ingest_dataframe("timed_items", df, on_conflict="insert")
+
+        row = db.execute("SELECT id, val, ts FROM timed_items").fetchone()
+        assert row is not None
+        assert row[0] == 1
+        assert row[1] == "hello"
+        assert row[2] is not None  # DEFAULT applied
+
+    def test_invalid_on_conflict_raises(self, db: Database) -> None:
+        """ValueError raised for unknown on_conflict value."""
+        import polars as pl
+
+        df = pl.DataFrame({"id": [1]})
+        with pytest.raises(ValueError, match="on_conflict"):
+            db.ingest_dataframe("test_items", df, on_conflict="bad")
+
+
+class TestGetDatabase:
+    """get_database() singleton behavior."""
+
+    def test_returns_same_instance(
+        self,
+        db_dir: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Repeated calls return the same Database instance."""
+        from moneybin import database as db_module
+
+        db_path = db_dir / "moneybin.duckdb"
+
+        # Patch get_settings to return our test path
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        mock_settings.database.temp_directory = db_dir / "temp"
+        mock_settings.database.create_dirs = True
+        monkeypatch.setattr(db_module, "_database_instance", None)
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+
+        db1 = get_database()
+        db2 = get_database()
+        assert db1 is db2
+        db1.close()
+        monkeypatch.setattr(db_module, "_database_instance", None)
+
+    def test_close_database_resets_singleton(
+        self,
+        db_dir: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """close_database() closes the connection and resets the singleton."""
+        from moneybin import database as db_module
+        from moneybin.database import close_database
+
+        db_path = db_dir / "moneybin.duckdb"
+
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        monkeypatch.setattr(db_module, "_database_instance", None)
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+
+        db = get_database()
+        assert db_module._database_instance is db  # type: ignore[reportPrivateUsage]  # test-only: verify singleton state
+        close_database()
+        assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only: verify singleton reset
