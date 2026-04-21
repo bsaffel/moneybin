@@ -30,6 +30,9 @@ _DOLLAR_PATTERN = re.compile(r"\$[\d,]+(?:\.\d{2})?")
 class SanitizedLogFormatter(logging.Formatter):
     """Log formatter that detects and masks PII patterns.
 
+    Wraps an inner formatter, applying PII masking to its output.
+    Can also be used standalone with a format string.
+
     Patterns detected:
     - SSN: NNN-NN-NNNN → ***-**-****
     - Account numbers: 8+ digits → ****...NNNN (last 4)
@@ -37,7 +40,24 @@ class SanitizedLogFormatter(logging.Formatter):
 
     When a pattern is masked, a separate WARNING is emitted identifying
     the leak source (module, line number).
+
+    Args:
+        inner: Either a format string (str) or a Formatter instance to wrap.
     """
+
+    def __init__(self, inner: str | logging.Formatter = "") -> None:
+        """Initialize the sanitized formatter.
+
+        Args:
+            inner: Either a format string (str) for standalone use, or a
+                Formatter instance whose output will be sanitized.
+        """
+        if isinstance(inner, logging.Formatter):
+            super().__init__()
+            self._inner = inner
+        else:
+            super().__init__(inner)
+            self._inner = None
 
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record, masking any PII patterns found.
@@ -48,7 +68,10 @@ class SanitizedLogFormatter(logging.Formatter):
         Returns:
             Formatted and sanitized log string.
         """
-        formatted = super().format(record)
+        if self._inner is not None:
+            formatted = self._inner.format(record)
+        else:
+            formatted = super().format(record)
         masked = False
 
         # Mask SSNs
