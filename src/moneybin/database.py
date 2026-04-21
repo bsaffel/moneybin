@@ -43,13 +43,12 @@ class Database:
     sequence:
         a. Retrieve encryption key via SecretStore
         b. Open in-memory DuckDB connection
-        c. Load required extensions (httpfs)
-        d. Attach encrypted database file
-        e. USE <attached_db>
-        f. Run init_schemas() (idempotent baseline DDL)
-        g. Run pending schema migrations via MigrationRunner
-        h. Run sqlmesh migrate if SQLMesh version changed
-        i. Record component versions in app.versions
+        c. Attach encrypted database file
+        d. USE <attached_db>
+        e. Run init_schemas() (idempotent baseline DDL)
+        f. Run pending schema migrations via MigrationRunner
+        g. Run sqlmesh migrate if SQLMesh version changed
+        h. Record component versions in app.versions
 
     The Database class does NOT own query logic, transaction boundaries,
     domain rules, or data access patterns. It is infrastructure.
@@ -65,6 +64,7 @@ class Database:
         db_path: Path,
         *,
         secret_store: SecretStore | None = None,
+        no_auto_upgrade: bool | None = None,
     ) -> None:
         """Initialize and open the encrypted database connection.
 
@@ -72,6 +72,8 @@ class Database:
             db_path: Path to the DuckDB database file.
             secret_store: SecretStore instance for key retrieval. If None,
                 creates a new one.
+            no_auto_upgrade: If True, skip versioned migrations and SQLMesh
+                migrate on startup. If None, reads from config.
 
         Raises:
             DatabaseKeyError: If the encryption key cannot be retrieved.
@@ -100,10 +102,7 @@ class Database:
         # Step b: Open in-memory connection
         self._conn = duckdb.connect()
 
-        # Step c: Load required extensions
-        self._conn.execute("INSTALL httpfs; LOAD httpfs;")
-
-        # Step d: Attach encrypted database file.
+        # Step c: Attach encrypted database file.
         # ATTACH does not support parameterized queries in DuckDB — the path
         # and key must be interpolated as string literals. The path comes from
         # our own config (trusted), and the key is from SecretStore (trusted).
@@ -114,7 +113,7 @@ class Database:
             f"ATTACH '{safe_path}' AS moneybin (TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"
         )
 
-        # Step e: USE attached database
+        # Step d: USE attached database
         self._conn.execute("USE moneybin")
 
         # Set file permissions on new databases (macOS/Linux)
@@ -128,12 +127,12 @@ class Database:
         if not is_new and sys.platform != "win32":
             self._check_permissions(db_path)
 
-        # Step f: Run init_schemas (idempotent)
+        # Step e: Run init_schemas (idempotent)
         from moneybin.schema import init_schemas
 
         init_schemas(self._conn)
 
-        # Steps g-i: Auto-upgrade (migrations + version tracking)
+        # Steps f-h: Auto-upgrade (migrations + version tracking)
         from moneybin.migrations import (
             MigrationError,
             MigrationRunner,
@@ -141,8 +140,11 @@ class Database:
             record_version,
         )
 
-        settings = get_settings()
-        if not settings.database.no_auto_upgrade:
+        skip_upgrade = no_auto_upgrade
+        if skip_upgrade is None:
+            settings = get_settings()
+            skip_upgrade = settings.database.no_auto_upgrade
+        if not skip_upgrade:
             current_pkg_version = importlib.metadata.version("moneybin")
             stored_versions = get_current_versions(self)
             stored_pkg_version = stored_versions.get("moneybin")
@@ -186,10 +188,10 @@ class Database:
                 sqlmesh_version = importlib.metadata.version("sqlmesh")
                 stored_sqlmesh = stored_versions.get("sqlmesh")
                 if stored_sqlmesh != sqlmesh_version:
-                    self._run_sqlmesh_migrate()
-                    record_version(self, "sqlmesh", sqlmesh_version)
-                    if stored_sqlmesh is not None:
-                        logger.info("  ✅ SQLMesh state updated")
+                    if self._run_sqlmesh_migrate():
+                        record_version(self, "sqlmesh", sqlmesh_version)
+                        if stored_sqlmesh is not None:
+                            logger.info("  ✅ SQLMesh state updated")
             except importlib.metadata.PackageNotFoundError:
                 pass  # SQLMesh not installed — skip
 
@@ -211,11 +213,15 @@ class Database:
         except OSError:
             pass
 
-    def _run_sqlmesh_migrate(self) -> None:
+    def _run_sqlmesh_migrate(self) -> bool:
         """Run sqlmesh migrate to update SQLMesh internal state.
 
         Called when the installed SQLMesh version differs from the recorded
         version. Uses subprocess to invoke the sqlmesh CLI.
+
+        Returns:
+            True if migration succeeded or was skipped (no sqlmesh dir),
+            False if migration failed.
         """
         import subprocess  # noqa: S404  # subprocess is required to invoke the sqlmesh CLI
 
@@ -224,7 +230,7 @@ class Database:
         sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
         if not sqlmesh_root.is_dir():
             logger.debug("sqlmesh project dir not found, skipping migrate")
-            return
+            return True
         try:
             subprocess.run(  # noqa: S603  # fixed args from trusted internal config, not user input
                 ["uv", "run", "sqlmesh", "-p", str(sqlmesh_root), "migrate"],  # noqa: S607  # uv is a trusted internal tool
@@ -233,12 +239,15 @@ class Database:
                 text=True,
             )
             logger.debug("sqlmesh migrate completed successfully")
+            return True
         except subprocess.CalledProcessError as exc:
             logger.warning(
                 f"⚠️  sqlmesh migrate failed (exit {exc.returncode}): {exc.stderr.strip()}"
             )
+            return False
         except FileNotFoundError:
             logger.debug("sqlmesh CLI not found, skipping migrate")
+            return True
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:

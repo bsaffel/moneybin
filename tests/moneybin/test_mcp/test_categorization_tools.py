@@ -25,6 +25,8 @@ from moneybin.mcp.write_tools import (
     toggle_category,
 )
 
+pytestmark = pytest.mark.usefixtures("mcp_db")
+
 # ---------------------------------------------------------------------------
 # Shared INSERT SQL
 # ---------------------------------------------------------------------------
@@ -121,7 +123,7 @@ class TestGetCategorizationStats:
     """Tests for get_categorization_stats tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute(_INSERT_TRANSACTIONS)
 
@@ -142,7 +144,7 @@ class TestCategorizeTransaction:
     """Tests for categorize_transaction tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute(_INSERT_TRANSACTIONS)
 
@@ -288,7 +290,7 @@ class TestBulkCategorize:
     """Tests for bulk_categorize tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute(_INSERT_TRANSACTIONS)
 

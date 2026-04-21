@@ -39,7 +39,7 @@ class TestDatabaseInit:
     ) -> None:
         """New database file is created and encrypted."""
         db_path = db_dir / "moneybin.duckdb"
-        db = Database(db_path, secret_store=mock_secret_store)
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
         try:
             assert db_path.exists()
             mock_secret_store.get_key.assert_called_once_with(
@@ -55,7 +55,7 @@ class TestDatabaseInit:
         if sys.platform == "win32":
             pytest.skip("File permissions not enforced on Windows")
         db_path = db_dir / "moneybin.duckdb"
-        db = Database(db_path, secret_store=mock_secret_store)
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
         try:
             mode = db_path.stat().st_mode & 0o777
             assert mode == 0o600
@@ -67,7 +67,7 @@ class TestDatabaseInit:
     ) -> None:
         """Database file cannot be opened without the encryption key."""
         db_path = db_dir / "moneybin.duckdb"
-        db = Database(db_path, secret_store=mock_secret_store)
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
         db.execute("CREATE TABLE test_data (id INTEGER, name VARCHAR)")
         db.execute("INSERT INTO test_data VALUES (1, 'Alice')")
         db.close()
@@ -83,7 +83,7 @@ class TestDatabaseInit:
     ) -> None:
         """Schema initialization runs on first open."""
         db_path = db_dir / "moneybin.duckdb"
-        db = Database(db_path, secret_store=mock_secret_store)
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
         try:
             # init_schemas creates the raw, core, and app schemas
             result = db.execute(
@@ -115,7 +115,9 @@ class TestDatabaseOperations:
         self, db_dir: Path, mock_secret_store: MagicMock
     ) -> Generator[Database, None, None]:
         db_path = db_dir / "moneybin.duckdb"
-        database = Database(db_path, secret_store=mock_secret_store)
+        database = Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        )
         yield database
         database.close()
 
@@ -145,7 +147,7 @@ class TestDatabaseOperations:
     ) -> None:
         """After close(), conn access raises."""
         db_path = db_dir / "moneybin.duckdb"
-        db = Database(db_path, secret_store=mock_secret_store)
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
         db.close()
         with pytest.raises(RuntimeError, match="closed"):
             _ = db.conn
@@ -159,7 +161,9 @@ class TestIngestDataframe:
         self, db_dir: Path, mock_secret_store: MagicMock
     ) -> Generator[Database, None, None]:
         db_path = db_dir / "moneybin.duckdb"
-        database = Database(db_path, secret_store=mock_secret_store)
+        database = Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        )
         database.execute(
             "CREATE TABLE test_items (id INTEGER, name VARCHAR, score DECIMAL(5,2))"
         )
