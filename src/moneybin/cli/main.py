@@ -13,12 +13,21 @@ import typer
 from ..config import set_current_profile
 from ..observability import setup_observability
 from ..utils.user_config import ensure_default_profile
-from .commands import categorize, db, import_cmd, logs, mcp, profile, sync, transform
+from .commands import (
+    categorize,
+    db,
+    import_cmd,
+    logs,
+    mcp,
+    profile,
+    stats,
+    sync,
+    transform,
+)
 from .commands.stubs import (
     db_migrate_app,
     export_app,
     matches_app,
-    stats_app,
     track_app,
 )
 
@@ -111,7 +120,7 @@ app.add_typer(
     help="Run SQLMesh data transformations",
 )
 app.add_typer(track_app, name="track", help="Balance tracking and net worth")
-app.add_typer(stats_app, name="stats", help="Show lifetime metric aggregates")
+app.add_typer(stats.app, name="stats", help="Show lifetime metric aggregates")
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(
     mcp.app,

@@ -130,16 +130,6 @@ def export_run() -> None:
     _not_implemented("export.md")
 
 
-# --- stats ---
-stats_app = typer.Typer(help="Show lifetime metric aggregates", no_args_is_help=True)
-
-
-@stats_app.command("show")
-def stats_show() -> None:
-    """Display lifetime metric aggregates."""
-    _not_implemented("observability.md")
-
-
 # --- db migrate ---
 db_migrate_app = typer.Typer(help="Database migration management")
 
