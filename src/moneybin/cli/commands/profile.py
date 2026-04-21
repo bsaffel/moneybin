@@ -96,6 +96,9 @@ def profile_delete(
     except ProfileNotFoundError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
+    except ValueError as e:
+        logger.error(f"❌ {e}")
+        raise typer.Exit(1) from e
 
 
 @app.command("show")

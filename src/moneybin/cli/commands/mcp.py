@@ -191,9 +191,11 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
         try:
             existing = json.loads(config_path.read_text())
         except json.JSONDecodeError:
-            logger.warning(
-                f"⚠️  Could not parse existing config at {config_path}; it will be overwritten."
+            logger.error(
+                f"❌ Cannot parse existing config at {config_path}. "
+                "Fix the JSON manually before running --install again."
             )
+            raise typer.Exit(1) from None
 
     for key, value in patch.items():
         existing_val = existing.get(key)

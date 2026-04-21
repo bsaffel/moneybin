@@ -35,6 +35,7 @@ app = typer.Typer(
 
 @app.callback()
 def main_callback(
+    ctx: typer.Context,
     profile_name: Annotated[
         str | None,
         typer.Option(
@@ -54,19 +55,21 @@ def main_callback(
     ] = False,
 ) -> None:
     """Global options for MoneyBin CLI."""
-    if profile_name is None:
+    if profile_name is None and ctx.invoked_subcommand not in ("profile",):
         try:
             profile_name = ensure_default_profile()
         except KeyboardInterrupt:
             raise typer.Abort() from None
 
-    try:
-        set_current_profile(profile_name)
-    except ValueError as e:
-        raise typer.BadParameter(str(e)) from e
+    if profile_name is not None:
+        try:
+            set_current_profile(profile_name)
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
 
     setup_logging(cli_mode=True, verbose=verbose, profile=profile_name)
-    logger.info(f"Using profile: {profile_name}")
+    if profile_name is not None:
+        logger.info(f"Using profile: {profile_name}")
 
     # Auto-migrate old directory layout on first run after upgrade
     from moneybin.services.profile_service import ProfileService

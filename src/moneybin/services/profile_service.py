@@ -144,12 +144,18 @@ class ProfileService:
 
         Raises:
             ProfileNotFoundError: If the named profile directory does not exist.
-            ValueError: If the name contains no valid characters.
+            ValueError: If the name contains no valid characters, or if the
+                profile is currently active.
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
+        if normalized == get_default_profile():
+            raise ValueError(
+                f"Cannot delete the active profile '{normalized}'. "
+                "Switch to another profile first: moneybin profile switch <name>"
+            )
         shutil.rmtree(profile_dir)
         logger.info(f"Deleted profile: {normalized}")
 
@@ -207,8 +213,12 @@ class ProfileService:
         if not old_data_dir.exists():
             return []
 
-        # Skip if profiles/ already has content (already migrated)
-        if self._profiles_dir.exists() and any(self._profiles_dir.iterdir()):
+        # Skip if profiles/ already has completed migrations (config.yaml present)
+        if self._profiles_dir.exists() and any(
+            (p / "config.yaml").exists()
+            for p in self._profiles_dir.iterdir()
+            if p.is_dir()
+        ):
             return []
 
         migrated: list[str] = []
@@ -223,9 +233,10 @@ class ProfileService:
 
             profile_name = entry.name
             profile_dir = self._profiles_dir / profile_name
-            profile_dir.mkdir(parents=True, exist_ok=True)
 
             try:
+                profile_dir.mkdir(parents=True, exist_ok=True)
+
                 # Move database files
                 for db_file in entry.glob("*.duckdb"):
                     dest = profile_dir / db_file.name
@@ -261,6 +272,9 @@ class ProfileService:
                                 shutil.move(str(log_file), str(dest))
                         shutil.rmtree(old_logs)
             except OSError as e:
+                # Remove empty orphan dir so re-migration isn't blocked
+                if profile_dir.exists() and not any(profile_dir.iterdir()):
+                    profile_dir.rmdir()
                 logger.warning(
                     f"⚠️  Partial migration for profile '{profile_name}': {e}. "
                     f"Old data remains in {entry}, partially migrated data in {profile_dir}. "
