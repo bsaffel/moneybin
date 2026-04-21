@@ -118,7 +118,7 @@ def load_user_config() -> UserConfig:
             if "default_profile" in data and "active_profile" not in data:
                 data["active_profile"] = data.pop("default_profile")
             return UserConfig(**data)
-    except Exception as e:
+    except (yaml.YAMLError, OSError) as e:
         logger.warning(f"Failed to load user config from {config_path}: {e}")
         return UserConfig()
 
@@ -142,7 +142,7 @@ def save_user_config(config: UserConfig) -> None:
             data = config.model_dump(exclude_none=True)
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
         logger.info(f"Saved user config to {config_path}")
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Failed to save user config to {config_path}: {e}")
         raise
 

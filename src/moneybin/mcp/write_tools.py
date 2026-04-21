@@ -750,14 +750,12 @@ def set_budget(
     """
     logger.info("Tool called: set_budget(%s)", category)
 
+    db = get_database()
+
     if start_month is None:
-        read_db = get_database()
-        start_month = read_db.execute(
-            "SELECT STRFTIME(CURRENT_DATE, '%Y-%m')"
-        ).fetchone()[0]  # type: ignore[index] — fetchone() returns a row here, not None
+        start_month = db.execute("SELECT STRFTIME(CURRENT_DATE, '%Y-%m')").fetchone()[0]  # type: ignore[index] — fetchone() returns a row here, not None
 
     try:
-        db = get_database()
         # Check if budget already exists for this category
         existing = db.execute(
             """

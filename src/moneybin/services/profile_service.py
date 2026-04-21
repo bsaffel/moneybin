@@ -213,14 +213,6 @@ class ProfileService:
         if not old_data_dir.exists():
             return []
 
-        # Skip if profiles/ already has completed migrations (config.yaml present)
-        if self._profiles_dir.exists() and any(
-            (p / "config.yaml").exists()
-            for p in self._profiles_dir.iterdir()
-            if p.is_dir()
-        ):
-            return []
-
         migrated: list[str] = []
 
         for entry in sorted(old_data_dir.iterdir()):
@@ -233,6 +225,10 @@ class ProfileService:
 
             profile_name = entry.name
             profile_dir = self._profiles_dir / profile_name
+
+            # Skip profiles that already completed migration
+            if (profile_dir / "config.yaml").exists():
+                continue
 
             try:
                 profile_dir.mkdir(parents=True, exist_ok=True)

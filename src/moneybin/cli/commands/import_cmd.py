@@ -62,7 +62,7 @@ def import_file(
     source = Path(file_path)
 
     if not source.exists():
-        logger.error("File not found: %s", source)
+        logger.error(f"File not found: {source}")
         raise typer.Exit(1)
 
     try:
@@ -74,12 +74,12 @@ def import_file(
             institution=institution,
             account_id=account_id,
         )
-        logger.info("✅ %s", result.summary())
+        logger.info(f"✅ {result.summary()}")
     except ValueError as e:
-        logger.error("❌ %s", e)
+        logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
     except FileNotFoundError as e:
-        logger.error("❌ %s", e)
+        logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
 
 
@@ -92,13 +92,13 @@ def import_status() -> None:
     Example:
         moneybin import status
     """
-    from moneybin.config import get_database_path
+    from moneybin.config import get_settings
     from moneybin.database import get_database
 
-    db_path = get_database_path()
+    db_path = get_settings().database.path
 
     if not db_path.exists():
-        logger.warning("Database not found: %s", db_path)
+        logger.warning(f"Database not found: {db_path}")
         logger.info("Run 'moneybin import file <path>' to import data first.")
         raise typer.Exit(1)
 
@@ -106,7 +106,7 @@ def import_status() -> None:
         db = get_database()
         _print_import_status(db)
     except Exception as e:  # noqa: BLE001 — surface connection errors generically
-        logger.error("❌ Could not open database: %s", e)
+        logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
 
 

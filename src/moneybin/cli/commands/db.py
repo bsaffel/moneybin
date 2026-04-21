@@ -429,8 +429,8 @@ def db_info(
                 logger.info("  DuckDB version: %s", version[0])
         finally:
             db.close()
-    except Exception as e:
-        logger.error("❌ Could not open database: %s", e)
+    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on connection/encryption failure
+        logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
 
 
@@ -580,7 +580,7 @@ def db_restore(
             "and run 'moneybin db rotate-key' to re-encrypt."
         )
         raise typer.Exit(1) from None
-    except Exception:
+    except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
         logger.debug("Restore validation failed", exc_info=True)
         logger.warning(
             "⚠️  Could not open restored database. The backup may be corrupted."
@@ -603,7 +603,7 @@ def db_lock() -> None:
         logger.info("✅ Database locked — key cleared from keychain")
     except SecretNotFoundError:
         logger.info("Database is already locked (no key in keychain)")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — keyring backends may raise non-specific errors
         logger.error(f"❌ Failed to lock: {e}")
         raise typer.Exit(1) from e
 
@@ -755,7 +755,7 @@ def db_rotate_key(
             f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_new_key}')"  # noqa: S608  # trusted internal values, single-quote escaped
         )
         conn.execute("COPY FROM DATABASE old_db TO new_db")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on ATTACH/COPY failure
         logger.error(f"❌ Key rotation failed: {e}")
         rotated_path.unlink(missing_ok=True)
         raise typer.Exit(1) from e
@@ -774,12 +774,12 @@ def db_rotate_key(
 
     try:
         store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — keyring backends may raise non-specific errors
         # The DB file now holds new_key but the keychain still has old_key.
         # old_backup is intact — recovery is possible.
         # Print the new key to stderr directly (not via logger) so it does
         # not appear in log files or get processed by SanitizedLogFormatter.
-        logger.error("❌ Key rotation failed to update keychain: %s", e)
+        logger.error(f"❌ Key rotation failed to update keychain: {e}")
         typer.echo("Recovery: set the following env var to regain access:", err=True)
         typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
         typer.echo(f"  (old database backup: {old_backup})", err=True)

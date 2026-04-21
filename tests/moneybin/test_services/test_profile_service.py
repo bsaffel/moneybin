@@ -223,6 +223,18 @@ class TestProfileSet:
         with pytest.raises(ValueError, match="section.field"):
             svc.set("alice", "badkey", "value")
 
+    def test_set_unsafe_key_identifier_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keys with uppercase or special chars in section/field raise ValueError."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        with pytest.raises(ValueError, match="lowercase identifiers"):
+            svc.set("alice", "Section.field", "value")
+        with pytest.raises(ValueError, match="lowercase identifiers"):
+            svc.set("alice", "section.__proto__", "value")
+
     def test_set_nonexistent_profile_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
