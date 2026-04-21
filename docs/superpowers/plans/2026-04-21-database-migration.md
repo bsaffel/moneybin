@@ -167,7 +167,7 @@ _SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
     "core_schema.sql",
     "app_schema.sql",
-    "analytics_schema.sql",          # <-- ADD: analytics schema for user SQLMesh models
+    "analytics_schema.sql",  # <-- ADD: analytics schema for user SQLMesh models
     "raw_ofx_institutions.sql",
     "raw_ofx_accounts.sql",
     "raw_ofx_transactions.sql",
@@ -181,8 +181,8 @@ _SCHEMA_FILES: list[str] = [
     "app_transaction_categories.sql",
     "app_budgets.sql",
     "app_transaction_notes.sql",
-    "app_schema_migrations.sql",     # <-- ADD: migration tracking table
-    "app_versions.sql",              # <-- ADD: component version tracking
+    "app_schema_migrations.sql",  # <-- ADD: migration tracking table
+    "app_versions.sql",  # <-- ADD: component version tracking
 ]
 ```
 
@@ -863,7 +863,9 @@ class MigrationRunner:
             [migration.version],
         ).fetchone()
         if existing is not None:
-            logger.debug(f"Migration V{migration.version:03d} already applied, skipping")
+            logger.debug(
+                f"Migration V{migration.version:03d} already applied, skipping"
+            )
             return
 
         logger.info(f"Applying migration {migration.filename}")
@@ -888,9 +890,7 @@ class MigrationRunner:
                 "VALUES (?, ?, ?, TRUE, ?)",
                 [migration.version, migration.filename, migration.checksum, elapsed_ms],
             )
-            logger.info(
-                f"Applied {migration.filename} in {elapsed_ms}ms"
-            )
+            logger.info(f"Applied {migration.filename} in {elapsed_ms}ms")
 
         except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -948,9 +948,7 @@ class MigrationRunner:
             f"migration_v{migration.version}", migration.path
         )
         if spec is None or spec.loader is None:
-            raise MigrationError(
-                f"Cannot load Python migration {migration.filename}"
-            )
+            raise MigrationError(f"Cannot load Python migration {migration.filename}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
@@ -1000,6 +998,7 @@ Add to `tests/moneybin/test_migrations.py`:
 @dataclass
 class DriftWarning:
     """Needed for type reference in tests — import from migrations module."""
+
     pass
 
 
@@ -1087,7 +1086,10 @@ class TestMigrationRunnerStuck:
         runner = MigrationRunner(db, migrations_dir=tmp_path)
         result = runner.apply_all()
         assert result.failed is True
-        assert "stuck" in (result.failed_migration or "").lower() or result.applied_count == 0
+        assert (
+            "stuck" in (result.failed_migration or "").lower()
+            or result.applied_count == 0
+        )
 ```
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -1118,57 +1120,62 @@ class DriftWarning:
 Add methods to `MigrationRunner`:
 
 ```python
-    def check_drift(self) -> list[DriftWarning]:
-        """Check for checksum drift between applied migrations and current files.
+def check_drift(self) -> list[DriftWarning]:
+    """Check for checksum drift between applied migrations and current files.
 
-        Returns:
-            List of DriftWarning for files that have changed or gone missing.
-        """
-        applied_rows = self._db.execute(
-            "SELECT version, filename, checksum FROM app.schema_migrations "
-            "WHERE success = TRUE"
-        ).fetchall()
-        if not applied_rows:
-            return []
+    Returns:
+        List of DriftWarning for files that have changed or gone missing.
+    """
+    applied_rows = self._db.execute(
+        "SELECT version, filename, checksum FROM app.schema_migrations "
+        "WHERE success = TRUE"
+    ).fetchall()
+    if not applied_rows:
+        return []
 
-        # Build lookup of current files
-        current_files: dict[int, Migration] = {}
-        for m in discover_migrations(self._migrations_dir):
-            current_files[m.version] = m
+    # Build lookup of current files
+    current_files: dict[int, Migration] = {}
+    for m in discover_migrations(self._migrations_dir):
+        current_files[m.version] = m
 
-        warnings: list[DriftWarning] = []
-        for version, filename, stored_checksum in applied_rows:
-            if version not in current_files:
-                warnings.append(DriftWarning(
+    warnings: list[DriftWarning] = []
+    for version, filename, stored_checksum in applied_rows:
+        if version not in current_files:
+            warnings.append(
+                DriftWarning(
                     version=version,
                     filename=filename,
                     reason=f"File missing — {filename} was applied but no longer exists on disk",
-                ))
-            elif current_files[version].checksum != stored_checksum:
-                warnings.append(DriftWarning(
+                )
+            )
+        elif current_files[version].checksum != stored_checksum:
+            warnings.append(
+                DriftWarning(
                     version=version,
                     filename=filename,
                     reason=f"Checksum mismatch — {filename} has been modified since it was applied",
-                ))
-
-        return warnings
-
-    def check_stuck(self) -> None:
-        """Check for stuck migrations (success=false in tracking table).
-
-        Raises:
-            MigrationError: If any migration has success=false.
-        """
-        stuck = self._db.execute(
-            "SELECT version, filename FROM app.schema_migrations "
-            "WHERE success = FALSE ORDER BY version LIMIT 1"
-        ).fetchone()
-        if stuck is not None:
-            raise MigrationError(
-                f"Stuck migration: {stuck[1]} (version {stuck[0]}) failed previously. "
-                f"Fix the issue and delete the row from app.schema_migrations to retry, "
-                f"or apply a corrective migration with a higher version number."
+                )
             )
+
+    return warnings
+
+
+def check_stuck(self) -> None:
+    """Check for stuck migrations (success=false in tracking table).
+
+    Raises:
+        MigrationError: If any migration has success=false.
+    """
+    stuck = self._db.execute(
+        "SELECT version, filename FROM app.schema_migrations "
+        "WHERE success = FALSE ORDER BY version LIMIT 1"
+    ).fetchone()
+    if stuck is not None:
+        raise MigrationError(
+            f"Stuck migration: {stuck[1]} (version {stuck[0]}) failed previously. "
+            f"Fix the issue and delete the row from app.schema_migrations to retry, "
+            f"or apply a corrective migration with a higher version number."
+        )
 ```
 
 Update `apply_all()` to check for stuck state first:
@@ -1376,7 +1383,9 @@ class TestAutoUpgrade:
     ) -> None:
         """First database init records the current package version."""
         db_path = tmp_path / "test.duckdb"
-        with patch("moneybin.database.importlib.metadata.version", return_value="1.0.0"):
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="1.0.0"
+        ):
             database = Database(db_path, secret_store=mock_secret_store)
         try:
             row = database.execute(
@@ -1393,12 +1402,16 @@ class TestAutoUpgrade:
         """When package version changes, pending migrations are applied."""
         db_path = tmp_path / "test.duckdb"
         # First init at version 1.0.0
-        with patch("moneybin.database.importlib.metadata.version", return_value="1.0.0"):
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="1.0.0"
+        ):
             db1 = Database(db_path, secret_store=mock_secret_store)
             db1.close()
 
         # Second init at version 2.0.0 — should trigger migration sequence
-        with patch("moneybin.database.importlib.metadata.version", return_value="2.0.0"):
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="2.0.0"
+        ):
             db2 = Database(db_path, secret_store=mock_secret_store)
         try:
             row = db2.execute(
@@ -1411,12 +1424,17 @@ class TestAutoUpgrade:
             db2.close()
 
     def test_no_auto_upgrade_skips_migrations(
-        self, tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """MONEYBIN_DATABASE__NO_AUTO_UPGRADE=1 skips migration sequence."""
         monkeypatch.setenv("MONEYBIN_DATABASE__NO_AUTO_UPGRADE", "1")
         db_path = tmp_path / "test.duckdb"
-        with patch("moneybin.database.importlib.metadata.version", return_value="1.0.0"):
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="1.0.0"
+        ):
             database = Database(db_path, secret_store=mock_secret_store)
         try:
             row = database.execute(
@@ -1443,64 +1461,60 @@ import importlib.metadata
 Replace the migration stub comment with:
 
 ```python
-        # Steps g-i: Auto-upgrade (migrations + version tracking)
-        from moneybin.config import get_settings
-        from moneybin.migrations import (
-            MigrationRunner,
-            get_current_versions,
-            record_version,
-        )
+# Steps g-i: Auto-upgrade (migrations + version tracking)
+from moneybin.config import get_settings
+from moneybin.migrations import (
+    MigrationRunner,
+    get_current_versions,
+    record_version,
+)
 
-        settings = get_settings()
-        if not settings.database.no_auto_upgrade:
-            current_pkg_version = importlib.metadata.version("moneybin")
-            stored_versions = get_current_versions(self)
-            stored_pkg_version = stored_versions.get("moneybin")
+settings = get_settings()
+if not settings.database.no_auto_upgrade:
+    current_pkg_version = importlib.metadata.version("moneybin")
+    stored_versions = get_current_versions(self)
+    stored_pkg_version = stored_versions.get("moneybin")
 
-            if stored_pkg_version != current_pkg_version:
-                if stored_pkg_version is not None:
-                    logger.info(
-                        f"⚙️  MoneyBin upgraded ({stored_pkg_version} → {current_pkg_version}). "
-                        f"Applying updates..."
-                    )
+    if stored_pkg_version != current_pkg_version:
+        if stored_pkg_version is not None:
+            logger.info(
+                f"⚙️  MoneyBin upgraded ({stored_pkg_version} → {current_pkg_version}). "
+                f"Applying updates..."
+            )
 
-                # Run pending schema migrations
-                runner = MigrationRunner(self)
-                result = runner.apply_all()
+        # Run pending schema migrations
+        runner = MigrationRunner(self)
+        result = runner.apply_all()
 
-                if result.failed:
-                    logger.error(
-                        f"❌ Migration {result.failed_migration} failed. "
-                        f"Database rolled back."
-                    )
-                    logger.info(
-                        f"💡 See logs for details"
-                    )
-                    logger.error(
-                        f"🐛 Report issues at https://github.com/bsaffel/moneybin/issues"
-                    )
-                    raise MigrationError(
-                        f"Migration failed: {result.failed_migration}. "
-                        f"See logs for details."
-                    )
+        if result.failed:
+            logger.error(
+                f"❌ Migration {result.failed_migration} failed. Database rolled back."
+            )
+            logger.info(f"💡 See logs for details")
+            logger.error(
+                f"🐛 Report issues at https://github.com/bsaffel/moneybin/issues"
+            )
+            raise MigrationError(
+                f"Migration failed: {result.failed_migration}. See logs for details."
+            )
 
-                if result.applied_count > 0:
-                    logger.info(f"  ✅ {result.applied_count} migration(s) applied")
+        if result.applied_count > 0:
+            logger.info(f"  ✅ {result.applied_count} migration(s) applied")
 
-                # Check SQLMesh version
-                try:
-                    sqlmesh_version = importlib.metadata.version("sqlmesh")
-                    stored_sqlmesh = stored_versions.get("sqlmesh")
-                    if stored_sqlmesh != sqlmesh_version:
-                        self._run_sqlmesh_migrate()
-                        record_version(self, "sqlmesh", sqlmesh_version)
-                        if stored_sqlmesh is not None:
-                            logger.info("  ✅ SQLMesh state updated")
-                except importlib.metadata.PackageNotFoundError:
-                    pass  # SQLMesh not installed — skip
+        # Check SQLMesh version
+        try:
+            sqlmesh_version = importlib.metadata.version("sqlmesh")
+            stored_sqlmesh = stored_versions.get("sqlmesh")
+            if stored_sqlmesh != sqlmesh_version:
+                self._run_sqlmesh_migrate()
+                record_version(self, "sqlmesh", sqlmesh_version)
+                if stored_sqlmesh is not None:
+                    logger.info("  ✅ SQLMesh state updated")
+        except importlib.metadata.PackageNotFoundError:
+            pass  # SQLMesh not installed — skip
 
-                # Record MoneyBin version
-                record_version(self, "moneybin", current_pkg_version)
+        # Record MoneyBin version
+        record_version(self, "moneybin", current_pkg_version)
 ```
 
 Add the SQLMesh migrate helper method to the `Database` class:
@@ -1784,7 +1798,9 @@ def migrate_status() -> None:
         for version, filename, _checksum, success, exec_ms, applied_at in applied_rows:
             status = "✅" if success else "❌"
             time_str = f" ({exec_ms}ms)" if exec_ms is not None else ""
-            logger.info(f"  {status} V{version:03d} {filename}{time_str} — {applied_at}")
+            logger.info(
+                f"  {status} V{version:03d} {filename}{time_str} — {applied_at}"
+            )
     else:
         logger.info("No applied migrations")
 
@@ -1820,7 +1836,7 @@ In `src/moneybin/cli/main.py`, replace the stub import and registration:
 
 Remove from imports (line 18):
 ```python
-    db_migrate_app,
+(db_migrate_app,)
 ```
 
 Add import:

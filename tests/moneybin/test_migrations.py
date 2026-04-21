@@ -256,6 +256,7 @@ class TestMigrationRunnerApplyOne:
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema = 'app' AND table_name = 'migration_test'"
         ).fetchone()
+        assert result is not None
         assert result[0] == 1
 
         # Tracking row was recorded
@@ -284,11 +285,13 @@ class TestMigrationRunnerApplyOne:
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema = 'app' AND table_name = 'py_test'"
         ).fetchone()
+        assert result is not None
         assert result[0] == 1
 
         row = db.execute(
             "SELECT success FROM app.schema_migrations WHERE version = 1"
         ).fetchone()
+        assert row is not None
         assert row[0] is True
 
     def test_records_execution_time(self, db: Database, tmp_path: Path) -> None:
@@ -302,6 +305,7 @@ class TestMigrationRunnerApplyOne:
         row = db.execute(
             "SELECT execution_ms FROM app.schema_migrations WHERE version = 1"
         ).fetchone()
+        assert row is not None
         assert row[0] is not None
         assert row[0] >= 0
 
@@ -333,6 +337,7 @@ class TestMigrationRunnerApplyOne:
         count = db.execute(
             "SELECT COUNT(*) FROM app.schema_migrations WHERE version = 1"
         ).fetchone()
+        assert count is not None
         assert count[0] == 1
 
 
@@ -379,6 +384,7 @@ class TestMigrationRunnerApplyAll:
         row = db.execute(
             "SELECT COUNT(*) FROM app.schema_migrations WHERE version = 3"
         ).fetchone()
+        assert row is not None
         assert row[0] == 0
 
     def test_no_pending_returns_zero(self, db: Database, tmp_path: Path) -> None:
@@ -481,6 +487,7 @@ class TestVersionTracking:
             "SELECT component, version, previous_version "
             "FROM app.versions WHERE component = 'test_component'"
         ).fetchone()
+        assert row is not None
         assert row[0] == "test_component"
         assert row[1] == "1.0.0"
         assert row[2] is None
@@ -493,6 +500,7 @@ class TestVersionTracking:
             "SELECT version, previous_version FROM app.versions "
             "WHERE component = 'test_component'"
         ).fetchone()
+        assert row is not None
         assert row[0] == "2.0.0"
         assert row[1] == "1.0.0"
 
@@ -503,6 +511,7 @@ class TestVersionTracking:
         count = db.execute(
             "SELECT COUNT(*) FROM app.versions WHERE component = 'test_component'"
         ).fetchone()
+        assert count is not None
         assert count[0] == 1
 
     def test_get_current_versions_empty(self, db: Database) -> None:
@@ -562,6 +571,7 @@ class TestAutoUpgrade:
                 "SELECT version, previous_version FROM app.versions "
                 "WHERE component = 'moneybin'"
             ).fetchone()
+            assert row is not None
             assert row[0] == "2.0.0"
             assert row[1] == "1.0.0"
         finally:
@@ -587,6 +597,7 @@ class TestAutoUpgrade:
             row = database.execute(
                 "SELECT COUNT(*) FROM app.versions WHERE component = 'moneybin'"
             ).fetchone()
+            assert row is not None
             assert row[0] == 0  # version not recorded when auto-upgrade is skipped
         finally:
             database.close()
