@@ -13,23 +13,53 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _is_moneybin_repo(path: Path) -> bool:
+    """Check if path is a moneybin repo checkout.
+
+    Detects the moneybin repository by checking for .git directory and
+    pyproject.toml with name = "moneybin".
+
+    Args:
+        path: Directory to check.
+
+    Returns:
+        True if path appears to be a moneybin repo checkout.
+    """
+    if not (path / ".git").exists():
+        return False
+    pyproject = path / "pyproject.toml"
+    if not pyproject.exists():
+        return False
+    try:
+        content = pyproject.read_text()
+        return 'name = "moneybin"' in content
+    except OSError:
+        return False
+
+
 def get_base_dir() -> Path:
-    """Determine the base directory for resolving relative data/log paths.
+    """Determine the base directory for MoneyBin data and configuration.
 
     Resolution order:
         1. MONEYBIN_HOME env var (explicit override, always wins)
-        2. development environment (default): current working directory
-        3. staging/production: ~/.moneybin/
+        2. MONEYBIN_ENVIRONMENT=development: current working directory
+        3. Repo checkout detection (.git + pyproject.toml name=moneybin): cwd
+        4. Default: ~/.moneybin/
 
     Returns:
-        Path: Absolute base directory for the application
+        Path: Absolute base directory for the application.
     """
+    # os.getenv used intentionally: this runs during MoneyBinSettings.__init__
+    # to resolve paths, so get_settings() is not yet available.
     moneybin_home = os.getenv("MONEYBIN_HOME")
     if moneybin_home:
         return Path(moneybin_home).expanduser().resolve()
 
-    environment = os.getenv("MONEYBIN_ENVIRONMENT", "development")
+    environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
+        return Path.cwd().resolve()
+
+    if _is_moneybin_repo(Path.cwd()):
         return Path.cwd().resolve()
 
     return (Path.home() / ".moneybin").resolve()
