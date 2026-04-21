@@ -284,7 +284,7 @@ class MoneyBinSettings(BaseSettings):
             raise ValueError(f"Invalid profile name: {e}") from e
 
     def __init__(self, **kwargs: Any):
-        """Initialize settings with environment variable overrides.
+        """Initialize settings with profile-based directory layout.
 
         Args:
             **kwargs: Additional configuration overrides
@@ -302,37 +302,35 @@ class MoneyBinSettings(BaseSettings):
         # Resolve all relative paths against the base directory so they work
         # regardless of the process's working directory (e.g. Claude Desktop MCP).
         base = get_base_dir()
+        profile_dir = base / "profiles" / profile
 
         # Check for legacy DUCKDB_PATH environment variable
         duckdb_path = os.getenv("DUCKDB_PATH")
 
-        # Set database path if not explicitly provided or if using old default
-        if "database" not in kwargs or (
-            "database" in kwargs
-            and kwargs["database"].path == Path("data/default/moneybin.duckdb")
-        ):
+        # Set database path if not explicitly provided
+        if "database" not in kwargs:
             if duckdb_path:
                 kwargs["database"] = DatabaseConfig(
                     path=_resolve_path(base, Path(duckdb_path)),
-                    backup_path=base / f"data/{profile}/backups",
-                    temp_directory=base / f"data/{profile}/temp",
+                    backup_path=profile_dir / "backups",
+                    temp_directory=profile_dir / "temp",
                 )
             else:
                 kwargs["database"] = DatabaseConfig(
-                    path=base / f"data/{profile}/moneybin.duckdb",
-                    backup_path=base / f"data/{profile}/backups",
-                    temp_directory=base / f"data/{profile}/temp",
+                    path=profile_dir / "moneybin.duckdb",
+                    backup_path=profile_dir / "backups",
+                    temp_directory=profile_dir / "temp",
                 )
 
         if "data" not in kwargs:
             kwargs["data"] = DataConfig(
-                raw_data_path=base / f"data/{profile}/raw",
-                temp_data_path=base / f"data/{profile}/temp",
+                raw_data_path=profile_dir / "raw",
+                temp_data_path=profile_dir / "temp",
             )
 
         if "logging" not in kwargs:
             kwargs["logging"] = LoggingConfig(
-                log_file_path=base / f"logs/{profile}/moneybin.log"
+                log_file_path=profile_dir / "logs" / "moneybin.log"
             )
 
         super().__init__(**kwargs)
