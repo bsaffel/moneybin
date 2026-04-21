@@ -1,6 +1,7 @@
 """Tests for old config format migration."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -73,3 +74,39 @@ class TestMigrateOldLayout:
         )
         svc = ProfileService()
         assert svc.migrate_old_layout() == []
+
+    def test_partial_failure_logs_warning_and_continues(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Continues migrating other profiles when one fails mid-move."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        # Create two old-layout profiles (sorted: alice before bob)
+        for name in ("alice", "bob"):
+            old_data = tmp_path / "data" / name
+            old_data.mkdir(parents=True)
+            (old_data / "moneybin.duckdb").write_text("fake-db")
+
+        import shutil as _shutil
+
+        original_move = _shutil.move
+        call_count = 0
+
+        def failing_move(src: str, dst: str) -> str:
+            nonlocal call_count
+            call_count += 1
+            # Fail on the first shutil.move (alice's db file)
+            if call_count == 1:
+                raise OSError("disk full")
+            return original_move(src, dst)
+
+        with patch("shutil.move", side_effect=failing_move):
+            svc = ProfileService()
+            migrated = svc.migrate_old_layout()
+
+        # alice failed, bob succeeded
+        assert "bob" in migrated
+        assert "alice" not in migrated
+        assert "Partial migration" in caplog.text

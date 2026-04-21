@@ -32,7 +32,7 @@ def _is_moneybin_repo(path: Path) -> bool:
         return False
     try:
         content = pyproject.read_text()
-        return 'name = "moneybin"' in content
+        return '\nname = "moneybin"' in content
     except OSError:
         return False
 

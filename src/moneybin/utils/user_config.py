@@ -281,14 +281,17 @@ def ensure_default_profile() -> str:
     set_default_profile(profile_name)
 
     # Create the profile directory structure
-    from moneybin.services.profile_service import ProfileService
+    from moneybin.services.profile_service import ProfileExistsError, ProfileService
 
     try:
         svc = ProfileService()
         profile_dir = svc.create(profile_name)
         print(f"\n🎉 Your default profile '{profile_name}' has been created!")
         print(f"    Data will be stored in: {profile_dir}\n")
-    except Exception:  # noqa: BLE001 — profile creation is best-effort during first-run
+    except ProfileExistsError:
+        pass  # already exists — fine on first run
+    except OSError as e:
+        logger.warning(f"Could not create profile directory: {e}")
         from moneybin.config import get_base_dir
 
         base = get_base_dir()

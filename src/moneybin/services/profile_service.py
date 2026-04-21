@@ -8,6 +8,7 @@ with its own database, logs, and configuration.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -22,6 +23,8 @@ from moneybin.utils.user_config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SAFE_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class ProfileExistsError(Exception):
@@ -53,8 +56,14 @@ class ProfileService:
 
         Returns:
             Path to the profile directory.
+
+        Raises:
+            ValueError: If the normalized name escapes the profiles directory.
         """
-        return self._profiles_dir / normalize_profile_name(name)
+        profile_dir = self._profiles_dir / normalize_profile_name(name)
+        if not profile_dir.is_relative_to(self._profiles_dir):
+            raise ValueError(f"Invalid profile name: {name!r}")
+        return profile_dir
 
     def create(self, name: str) -> Path:
         """Create a new profile with directory structure and config.
@@ -74,9 +83,10 @@ class ProfileService:
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
-        if profile_dir.exists():
-            raise ProfileExistsError(f"Profile '{normalized}' already exists")
-        profile_dir.mkdir(parents=True)
+        try:
+            profile_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            raise ProfileExistsError(f"Profile '{normalized}' already exists") from None
         (profile_dir / "logs").mkdir()
         (profile_dir / "temp").mkdir()
         generate_profile_config(profile_dir, normalized)
@@ -203,7 +213,7 @@ class ProfileService:
 
         migrated: list[str] = []
 
-        for entry in old_data_dir.iterdir():
+        for entry in sorted(old_data_dir.iterdir()):
             if not entry.is_dir():
                 continue
             if not (entry / "moneybin.duckdb").exists() and not any(
@@ -215,40 +225,48 @@ class ProfileService:
             profile_dir = self._profiles_dir / profile_name
             profile_dir.mkdir(parents=True, exist_ok=True)
 
-            # Move database files
-            for db_file in entry.glob("*.duckdb"):
-                dest = profile_dir / db_file.name
-                if not dest.exists():
-                    shutil.move(str(db_file), str(dest))
+            try:
+                # Move database files
+                for db_file in entry.glob("*.duckdb"):
+                    dest = profile_dir / db_file.name
+                    if not dest.exists():
+                        shutil.move(str(db_file), str(dest))
 
-            # Move backups
-            old_backups = entry / "backups"
-            if old_backups.exists():
-                new_backups = profile_dir / "backups"
-                if not new_backups.exists():
-                    shutil.move(str(old_backups), str(new_backups))
+                # Move backups
+                old_backups = entry / "backups"
+                if old_backups.exists():
+                    new_backups = profile_dir / "backups"
+                    if not new_backups.exists():
+                        shutil.move(str(old_backups), str(new_backups))
 
-            # Move temp
-            old_temp = entry / "temp"
-            if old_temp.exists():
-                new_temp = profile_dir / "temp"
-                if not new_temp.exists():
-                    shutil.move(str(old_temp), str(new_temp))
-                else:
-                    shutil.rmtree(old_temp)
+                # Move temp
+                old_temp = entry / "temp"
+                if old_temp.exists():
+                    new_temp = profile_dir / "temp"
+                    if not new_temp.exists():
+                        shutil.move(str(old_temp), str(new_temp))
+                    else:
+                        shutil.rmtree(old_temp)
 
-            # Move logs
-            old_logs = self._base / "logs" / profile_name
-            if old_logs.exists():
-                new_logs = profile_dir / "logs"
-                if not new_logs.exists():
-                    shutil.move(str(old_logs), str(new_logs))
-                else:
-                    for log_file in old_logs.iterdir():
-                        dest = new_logs / log_file.name
-                        if not dest.exists():
-                            shutil.move(str(log_file), str(dest))
-                    shutil.rmtree(old_logs)
+                # Move logs
+                old_logs = self._base / "logs" / profile_name
+                if old_logs.exists():
+                    new_logs = profile_dir / "logs"
+                    if not new_logs.exists():
+                        shutil.move(str(old_logs), str(new_logs))
+                    else:
+                        for log_file in old_logs.iterdir():
+                            dest = new_logs / log_file.name
+                            if not dest.exists():
+                                shutil.move(str(log_file), str(dest))
+                        shutil.rmtree(old_logs)
+            except OSError as e:
+                logger.warning(
+                    f"⚠️  Partial migration for profile '{profile_name}': {e}. "
+                    f"Old data remains in {entry}, partially migrated data in {profile_dir}. "
+                    f"Re-run migration or move files manually."
+                )
+                continue
 
             # Ensure dirs exist
             (profile_dir / "logs").mkdir(exist_ok=True)
@@ -282,7 +300,7 @@ class ProfileService:
                     logger.info(
                         "Migrated global config: default_profile -> active_profile"
                     )
-            except Exception as e:  # noqa: BLE001 — defensive: YAML parse errors or I/O issues shouldn't abort migration
+            except (yaml.YAMLError, OSError) as e:
                 logger.warning(f"Could not migrate global config: {e}")
 
         return migrated
@@ -321,6 +339,8 @@ class ProfileService:
                 f"Key must be section.field (e.g., 'logging.level'), got: {key}"
             )
         section, field = parts
+        if not _SAFE_KEY.match(section) or not _SAFE_KEY.match(field):
+            raise ValueError(f"Key parts must be lowercase identifiers, got: {key!r}")
         if section not in data or not isinstance(data[section], dict):
             data[section] = {}
         section_dict: dict[str, object] = data[section]  # type: ignore[assignment]  # narrowed above
