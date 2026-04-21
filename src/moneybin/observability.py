@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["setup_observability", "tracked", "track_duration"]
 
+_initialized = False
+
 
 def setup_observability(
     stream: str = "cli",
@@ -55,15 +57,20 @@ def setup_observability(
         verbose: Enable DEBUG level logging.
         profile: Profile name (unused — set via set_current_profile before).
     """
-    # Step 1: Configure logging
+    global _initialized
+
+    # Step 1: Configure logging (always — allows reconfiguration)
     setup_logging(stream=stream, verbose=verbose, profile=profile)
 
-    # Step 2: Register atexit handler for metrics flush
-    atexit.register(_flush_metrics_on_exit)
+    if not _initialized:
+        # Step 2: Register atexit handler for metrics flush (once only)
+        atexit.register(_flush_metrics_on_exit)
 
-    # Step 3: For MCP, start periodic flush
-    if stream == "mcp":
-        _start_periodic_flush()
+        # Step 3: For MCP, start periodic flush
+        if stream == "mcp":
+            _start_periodic_flush()
+
+        _initialized = True
 
     logger.debug(f"Observability initialized (stream={stream})")
 

@@ -16,6 +16,13 @@ from moneybin.log_sanitizer import SanitizedLogFormatter
 from moneybin.logging.formatters import HumanFormatter, JSONFormatter
 
 
+class _SuppressFilter(logging.Filter):
+    """Filter out noisy SQLMesh analytics shutdown messages."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Shutting down the event dispatcher" not in record.getMessage()
+
+
 def session_log_path(
     configured_path: Path,
     prefix: str = "cli",
@@ -136,9 +143,6 @@ def setup_logging(
     logging.getLogger("plaid").setLevel(logging.INFO)
     logging.getLogger("sqlmesh.core.analytics.dispatcher").setLevel(logging.WARNING)
 
-    # Suppress SQLMesh analytics shutdown message
-    class _SuppressFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            return "Shutting down the event dispatcher" not in record.getMessage()
-
-    logging.root.addFilter(_SuppressFilter())
+    # Suppress SQLMesh analytics shutdown message (guard against duplicates)
+    if not any(isinstance(f, _SuppressFilter) for f in logging.root.filters):
+        logging.root.addFilter(_SuppressFilter())

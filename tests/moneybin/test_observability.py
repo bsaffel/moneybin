@@ -38,10 +38,11 @@ class TestSetupObservability:
     def test_setup_registers_atexit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """setup_observability should register an atexit handler for metrics flush."""
         monkeypatch.setenv("MONEYBIN_LOGGING__LOG_TO_FILE", "false")
-        with patch("moneybin.observability.atexit") as mock_atexit:
-            from moneybin.observability import setup_observability
+        import moneybin.observability as obs_mod
 
-            setup_observability(stream="cli")
+        monkeypatch.setattr(obs_mod, "_initialized", False)
+        with patch("moneybin.observability.atexit") as mock_atexit:
+            obs_mod.setup_observability(stream="cli")
             mock_atexit.register.assert_called_once()
 
     @pytest.mark.unit

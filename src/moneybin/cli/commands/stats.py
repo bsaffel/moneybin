@@ -5,12 +5,14 @@ Displays lifetime metric aggregates from the app.metrics table.
 
 import json
 import logging
-import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Annotated
 
 import typer
 
+from moneybin.cli.commands.logs import (
+    _parse_duration,  # type: ignore[reportPrivateUsage] — shared CLI helper, not truly private
+)
 from moneybin.database import DatabaseKeyError, get_database
 
 logger = logging.getLogger(__name__)
@@ -19,34 +21,6 @@ app = typer.Typer(
     help="Show lifetime metric aggregates",
     no_args_is_help=True,
 )
-
-
-def _parse_duration(duration: str) -> timedelta:
-    """Parse a duration string like '30d', '7d', '24h' into a timedelta.
-
-    Args:
-        duration: Duration string (e.g., "30d", "7d", "24h", "60m").
-
-    Returns:
-        timedelta for the specified duration.
-
-    Raises:
-        ValueError: If format is invalid.
-    """
-    match = re.match(r"^(\d+)([dhm])$", duration.strip())
-    if not match:
-        raise ValueError(
-            f"Invalid duration format: '{duration}'. Use <number><unit> "
-            "where unit is d (days), h (hours), or m (minutes)."
-        )
-    value = int(match.group(1))
-    unit = match.group(2)
-    if unit == "d":
-        return timedelta(days=value)
-    elif unit == "h":
-        return timedelta(hours=value)
-    else:
-        return timedelta(minutes=value)
 
 
 @app.command("show")
@@ -139,8 +113,8 @@ def stats_show(
         name, metric_type, value, count, _last = row
         display_name = name.replace("moneybin_", "").replace("_", " ").title()
         if metric_type == "counter":
-            logger.info(f"{display_name}: {value:,.0f} total")
+            typer.echo(f"{display_name}: {value:,.0f} total")
         elif metric_type == "gauge":
-            logger.info(f"{display_name}: {value:.2f}")
+            typer.echo(f"{display_name}: {value:.2f}")
         elif metric_type == "histogram":
-            logger.info(f"{display_name}: {count} observations (sum={value:.2f}s)")
+            typer.echo(f"{display_name}: {count} observations (sum={value:.2f}s)")

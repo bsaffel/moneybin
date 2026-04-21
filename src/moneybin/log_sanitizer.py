@@ -101,9 +101,7 @@ class SanitizedLogFormatter(logging.Formatter):
         # handler), don't emit another warning — that would be infinite recursion.
         if masked and record.name != __name__:
             _sanitizer_logger.warning(
-                "PII pattern detected and masked in log output (source: %s:%s)",
-                record.pathname,
-                record.lineno,
+                f"PII pattern detected and masked in log output (source: {record.pathname}:{record.lineno})"
             )
 
         return result
