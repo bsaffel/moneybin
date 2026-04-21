@@ -19,13 +19,13 @@ from .commands import (
     import_cmd,
     logs,
     mcp,
+    migrate,
     profile,
     stats,
     sync,
     transform,
 )
 from .commands.stubs import (
-    db_migrate_app,
     export_app,
     matches_app,
     track_app,
@@ -139,7 +139,7 @@ app.add_typer(
 )
 
 # Add db migrate as a sub-typer of db
-db.app.add_typer(db_migrate_app, name="migrate", help="Database migration management")
+db.app.add_typer(migrate.app, name="migrate", help="Database migration management")
 
 
 def main() -> None:
