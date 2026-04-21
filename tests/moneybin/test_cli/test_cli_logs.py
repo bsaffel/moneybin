@@ -147,11 +147,13 @@ class TestLogsTail:
     def test_tail_shows_last_n_lines(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail shows the last N lines of the log file."""
-        log_file = tmp_path / "moneybin.log"
+        """Logs tail shows the last N lines of the most recent stream file."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "cli_2026-04-21.log"
         lines = [f"line {i}\n" for i in range(50)]
         log_file.write_text("".join(lines))
-        mock_settings.return_value.logging.log_file_path = log_file
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(app, ["tail", "--lines", "5"])
         assert result.exit_code == 0
@@ -162,10 +164,12 @@ class TestLogsTail:
     @patch("moneybin.cli.commands.logs.get_settings")
     def test_tail_default_lines(self, mock_settings: MagicMock, tmp_path: Path) -> None:
         """Logs tail defaults to 20 lines."""
-        log_file = tmp_path / "moneybin.log"
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "cli_2026-04-21.log"
         lines = [f"line {i}\n" for i in range(30)]
         log_file.write_text("".join(lines))
-        mock_settings.return_value.logging.log_file_path = log_file
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(app, ["tail"])
         assert result.exit_code == 0
@@ -173,30 +177,32 @@ class TestLogsTail:
         assert len(output_lines) == 20
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_stream_filter(self, mock_settings: MagicMock, tmp_path: Path) -> None:
-        """Logs tail --stream filters lines by stream name."""
-        log_file = tmp_path / "moneybin.log"
-        log_file.write_text(
-            "INFO mcp server started\n"
-            "INFO sqlmesh transform done\n"
-            "INFO mcp tool called\n"
-            "INFO general info\n"
+    def test_tail_stream_selects_correct_files(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """Logs tail --stream selects files matching the stream prefix."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "mcp_2026-04-21.log").write_text(
+            "INFO mcp server started\nINFO mcp tool called\n"
         )
-        mock_settings.return_value.logging.log_file_path = log_file
+        (log_dir / "cli_2026-04-21.log").write_text("INFO general info\n")
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(app, ["tail", "--stream", "mcp"])
         assert result.exit_code == 0
         assert "mcp server started" in result.output
         assert "mcp tool called" in result.output
-        assert "sqlmesh transform done" not in result.output
         assert "general info" not in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_missing_log_file(
+    def test_tail_missing_log_dir(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail handles missing log file gracefully."""
-        mock_settings.return_value.logging.log_file_path = tmp_path / "nonexistent.log"
+        """Logs tail handles missing log directory gracefully."""
+        mock_settings.return_value.logging.log_file_path = (
+            tmp_path / "nonexistent" / "moneybin.log"
+        )
         result = runner.invoke(app, ["tail"])
         assert result.exit_code == 0
 
@@ -205,9 +211,10 @@ class TestLogsTail:
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
         """Logs tail shows all lines when file has fewer than requested."""
-        log_file = tmp_path / "moneybin.log"
-        log_file.write_text("line 1\nline 2\nline 3\n")
-        mock_settings.return_value.logging.log_file_path = log_file
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "cli_2026-04-21.log").write_text("line 1\nline 2\nline 3\n")
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(app, ["tail", "--lines", "20"])
         assert result.exit_code == 0

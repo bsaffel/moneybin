@@ -111,26 +111,37 @@ def logs_clean(
 @app.command("tail")
 def logs_tail(
     stream: str | None = typer.Option(
-        None, "--stream", help="Filter by stream: mcp, sqlmesh"
+        None, "--stream", help="Stream to tail: cli (default), mcp, sqlmesh"
     ),
     follow: bool = typer.Option(False, "-f", "--follow", help="Follow log output"),
     lines: int = typer.Option(20, "-n", "--lines", help="Number of lines to show"),
 ) -> None:
     """Show recent log entries, optionally following new output."""
     settings = get_settings()
-    log_path = settings.logging.log_file_path
+    log_dir = settings.logging.log_file_path.parent
 
-    if not log_path.exists():
-        logger.info(f"No log file found: {log_path}")
+    if not log_dir.exists():
+        logger.info(f"No log directory found: {log_dir}")
         return
 
-    stream_lower = stream.lower() if stream else None
+    # Find the most recent log file for the requested stream
+    stream_prefix = (stream or "cli").lower()
+    log_files = sorted(
+        log_dir.glob(f"{stream_prefix}_*.log"),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+    if not log_files:
+        logger.info(f"No log files found for stream '{stream_prefix}' in {log_dir}")
+        return
+
+    log_path = log_files[0]  # Most recent by name (date-sorted)
 
     tail_buf: deque[str] = deque(maxlen=lines)
     with open(log_path) as f:
         for line in f:
-            if stream_lower is None or stream_lower in line.lower():
-                tail_buf.append(line)
+            tail_buf.append(line)
 
     for line in tail_buf:
         typer.echo(line.rstrip())
@@ -143,8 +154,7 @@ def logs_tail(
                 while True:
                     line = f.readline()
                     if line:
-                        if stream_lower is None or stream_lower in line.lower():
-                            typer.echo(line.rstrip())
+                        typer.echo(line.rstrip())
                     else:
                         time.sleep(0.5)
         except KeyboardInterrupt:
