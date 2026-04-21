@@ -147,6 +147,7 @@ class Database:
             stored_versions = get_current_versions(self)
             stored_pkg_version = stored_versions.get("moneybin")
 
+            # Check MoneyBin schema migrations
             if stored_pkg_version != current_pkg_version:
                 if stored_pkg_version is not None:
                     logger.info(
@@ -175,20 +176,21 @@ class Database:
                 if result.applied_count > 0:
                     logger.info(f"  ✅ {result.applied_count} migration(s) applied")
 
-                # Check SQLMesh version
-                try:
-                    sqlmesh_version = importlib.metadata.version("sqlmesh")
-                    stored_sqlmesh = stored_versions.get("sqlmesh")
-                    if stored_sqlmesh != sqlmesh_version:
-                        self._run_sqlmesh_migrate()
-                        record_version(self, "sqlmesh", sqlmesh_version)
-                        if stored_sqlmesh is not None:
-                            logger.info("  ✅ SQLMesh state updated")
-                except importlib.metadata.PackageNotFoundError:
-                    pass  # SQLMesh not installed — skip
-
                 # Record MoneyBin version
                 record_version(self, "moneybin", current_pkg_version)
+
+            # Check SQLMesh version independently — a SQLMesh upgrade
+            # without a MoneyBin upgrade still needs `sqlmesh migrate`.
+            try:
+                sqlmesh_version = importlib.metadata.version("sqlmesh")
+                stored_sqlmesh = stored_versions.get("sqlmesh")
+                if stored_sqlmesh != sqlmesh_version:
+                    self._run_sqlmesh_migrate()
+                    record_version(self, "sqlmesh", sqlmesh_version)
+                    if stored_sqlmesh is not None:
+                        logger.info("  ✅ SQLMesh state updated")
+            except importlib.metadata.PackageNotFoundError:
+                pass  # SQLMesh not installed — skip
 
         logger.info(f"Database connection established: {db_path}")
 
@@ -216,6 +218,8 @@ class Database:
         """
         import subprocess  # noqa: S404  # subprocess is required to invoke the sqlmesh CLI
 
+        # Assumes editable install — __file__ resolves to the project tree.
+        # Non-editable installs silently skip (CalledProcessError caught below).
         sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
         try:
             subprocess.run(  # noqa: S603  # fixed args from trusted internal config, not user input

@@ -175,13 +175,7 @@ class MigrationRunner:
         *,
         migrations_dir: Path | None = None,
     ) -> None:
-        """Initialize the runner with an open database connection.
-
-        Args:
-            db: Open Database instance to run migrations against.
-            migrations_dir: Directory containing migration files. Defaults
-                to the built-in sql/migrations/ directory.
-        """
+        """Initialize the runner."""
         self._db = db
         self._migrations_dir = migrations_dir or _MIGRATIONS_DIR
 
@@ -305,15 +299,16 @@ class MigrationRunner:
                 self._execute_python_migration(migration)
 
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            self._db.execute("COMMIT")
 
-            # Record success
+            # Record success inside the transaction so DDL and tracking
+            # are committed atomically — prevents orphaned DDL on crash.
             self._db.execute(
                 "INSERT INTO app.schema_migrations "
                 "(version, filename, checksum, success, execution_ms) "
                 "VALUES (?, ?, ?, TRUE, ?)",
                 [migration.version, migration.filename, migration.checksum, elapsed_ms],
             )
+            self._db.execute("COMMIT")
             logger.info(f"Applied {migration.filename} in {elapsed_ms}ms")
 
         except Exception as exc:  # noqa: BLE001 — must catch all to record failure and re-raise as MigrationError
