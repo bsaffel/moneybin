@@ -11,6 +11,10 @@ import typer
 
 from moneybin.config import get_database_path
 
+# Context is imported at module level so tests can patch
+# moneybin.cli.commands.transform.Context. SQLMesh has no type stubs.
+from sqlmesh import Context  # type: ignore[import-untyped] — sqlmesh has no type stubs
+
 app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
@@ -28,19 +32,15 @@ def plan_transforms(
     Shows which models would be rebuilt based on changes since the last run.
     Use --apply to apply the plan immediately.
     """
-    from sqlmesh import (
-        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
-    )
-
     db_path = get_database_path()
-    logger.info("Running SQLMesh plan against %s", db_path)
+    logger.info(f"Running SQLMesh plan against {db_path}")
 
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
-    except Exception as e:
-        logger.error("❌ SQLMesh plan failed: %s", e)
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ SQLMesh plan failed: {e}")
         raise typer.Exit(1) from e
 
 
@@ -51,17 +51,98 @@ def apply_transforms() -> None:
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
     models since the last run.
     """
-    from sqlmesh import (
-        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
-    )
-
     db_path = get_database_path()
-    logger.info("Applying SQLMesh transforms against %s", db_path)
+    logger.info(f"Applying SQLMesh transforms against {db_path}")
 
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("✅ SQLMesh transforms applied")
-    except Exception as e:
-        logger.error("❌ SQLMesh apply failed: %s", e)
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ SQLMesh apply failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command("status")
+def transform_status() -> None:
+    """Show current model state and environment."""
+    logger.info("⚙️  Checking SQLMesh status...")
+    try:
+        ctx = Context(paths=str(_SQLMESH_ROOT))
+        env = ctx.state_reader.get_environment("prod")
+        if env:
+            logger.info("Environment: prod")
+            logger.info(f"  Last updated: {env.expiration_ts}")
+        else:
+            logger.info("No SQLMesh environment initialized yet")
+            logger.info("💡 Run 'moneybin transform apply' to initialize")
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ SQLMesh status failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command("validate")
+def transform_validate() -> None:
+    """Check that model SQL parses and resolves without errors."""
+    logger.info("⚙️  Validating SQLMesh models...")
+    try:
+        ctx = Context(paths=str(_SQLMESH_ROOT))
+        ctx.plan(no_prompts=True, auto_apply=False)
+        logger.info("✅ All models valid")
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ Validation failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command("audit")
+def transform_audit(
+    start: str = typer.Option(
+        ..., "--start", help="Start date for audit window (YYYY-MM-DD)"
+    ),
+    end: str = typer.Option(
+        ..., "--end", help="End date for audit window (YYYY-MM-DD)"
+    ),
+) -> None:
+    """Run data quality assertions defined in SQLMesh models."""
+    logger.info("⚙️  Running SQLMesh audits...")
+    try:
+        ctx = Context(paths=str(_SQLMESH_ROOT))
+        ctx.audit(start=start, end=end)
+        logger.info("✅ All audits passed")
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ Audit failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command("restate")
+def transform_restate(
+    model: str = typer.Option(
+        ..., "--model", help="Model name (e.g., core.fct_transactions)"
+    ),
+    start: str = typer.Option(
+        ..., "--start", help="Start date for restatement (YYYY-MM-DD)"
+    ),
+    end: str | None = typer.Option(None, "--end", help="End date (defaults to today)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+) -> None:
+    """Force recompute a model for a date range."""
+    if not yes:
+        confirm = typer.confirm(
+            f"Restate {model} from {start}? This will recompute all affected data."
+        )
+        if not confirm:
+            return
+    logger.info(f"⚙️  Restating {model} from {start}...")
+    try:
+        ctx = Context(paths=str(_SQLMESH_ROOT))
+        ctx.plan(
+            restate_models=[model],
+            start=start,
+            end=end,
+            auto_apply=True,
+            no_prompts=True,
+        )
+        logger.info(f"✅ Restated {model}")
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ Restatement failed: {e}")
         raise typer.Exit(1) from e

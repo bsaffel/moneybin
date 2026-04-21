@@ -13,39 +13,56 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _is_moneybin_repo(path: Path) -> bool:
+    """Check if path is a moneybin repo checkout.
+
+    Detects the moneybin repository by checking for .git directory and
+    pyproject.toml with name = "moneybin".
+
+    Args:
+        path: Directory to check.
+
+    Returns:
+        True if path appears to be a moneybin repo checkout.
+    """
+    if not (path / ".git").exists():
+        return False
+    pyproject = path / "pyproject.toml"
+    if not pyproject.exists():
+        return False
+    try:
+        content = pyproject.read_text()
+        return '\nname = "moneybin"' in content
+    except OSError:
+        return False
+
+
 def get_base_dir() -> Path:
-    """Determine the base directory for resolving relative data/log paths.
+    """Determine the base directory for MoneyBin data and configuration.
 
     Resolution order:
         1. MONEYBIN_HOME env var (explicit override, always wins)
-        2. development environment (default): current working directory
-        3. staging/production: ~/.moneybin/
+        2. MONEYBIN_ENVIRONMENT=development: current working directory
+        3. Repo checkout detection (.git + pyproject.toml name=moneybin): cwd
+        4. Default: ~/.moneybin/
 
     Returns:
-        Path: Absolute base directory for the application
+        Path: Absolute base directory for the application.
     """
+    # os.getenv used intentionally: this runs during MoneyBinSettings.__init__
+    # to resolve paths, so get_settings() is not yet available.
     moneybin_home = os.getenv("MONEYBIN_HOME")
     if moneybin_home:
         return Path(moneybin_home).expanduser().resolve()
 
-    environment = os.getenv("MONEYBIN_ENVIRONMENT", "development")
+    environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
         return Path.cwd().resolve()
 
+    if _is_moneybin_repo(Path.cwd()):
+        return Path.cwd().resolve()
+
     return (Path.home() / ".moneybin").resolve()
-
-
-def _resolve_path(base: Path, p: Path) -> Path:
-    """Resolve a path against base if it is relative; return as-is if absolute.
-
-    Args:
-        base: Base directory to resolve against
-        p: Path to resolve
-
-    Returns:
-        Path: Absolute path
-    """
-    return p if p.is_absolute() else base / p
 
 
 class DatabaseConfig(BaseModel):
@@ -254,7 +271,7 @@ class MoneyBinSettings(BaseSettings):
             raise ValueError(f"Invalid profile name: {e}") from e
 
     def __init__(self, **kwargs: Any):
-        """Initialize settings with environment variable overrides.
+        """Initialize settings with profile-based directory layout.
 
         Args:
             **kwargs: Additional configuration overrides
@@ -272,37 +289,25 @@ class MoneyBinSettings(BaseSettings):
         # Resolve all relative paths against the base directory so they work
         # regardless of the process's working directory (e.g. Claude Desktop MCP).
         base = get_base_dir()
+        profile_dir = base / "profiles" / profile
 
-        # Check for legacy DUCKDB_PATH environment variable
-        duckdb_path = os.getenv("DUCKDB_PATH")
-
-        # Set database path if not explicitly provided or if using old default
-        if "database" not in kwargs or (
-            "database" in kwargs
-            and kwargs["database"].path == Path("data/default/moneybin.duckdb")
-        ):
-            if duckdb_path:
-                kwargs["database"] = DatabaseConfig(
-                    path=_resolve_path(base, Path(duckdb_path)),
-                    backup_path=base / f"data/{profile}/backups",
-                    temp_directory=base / f"data/{profile}/temp",
-                )
-            else:
-                kwargs["database"] = DatabaseConfig(
-                    path=base / f"data/{profile}/moneybin.duckdb",
-                    backup_path=base / f"data/{profile}/backups",
-                    temp_directory=base / f"data/{profile}/temp",
-                )
+        # Set database path if not explicitly provided
+        if "database" not in kwargs:
+            kwargs["database"] = DatabaseConfig(
+                path=profile_dir / "moneybin.duckdb",
+                backup_path=profile_dir / "backups",
+                temp_directory=profile_dir / "temp",
+            )
 
         if "data" not in kwargs:
             kwargs["data"] = DataConfig(
-                raw_data_path=base / f"data/{profile}/raw",
-                temp_data_path=base / f"data/{profile}/temp",
+                raw_data_path=profile_dir / "raw",
+                temp_data_path=profile_dir / "temp",
             )
 
         if "logging" not in kwargs:
             kwargs["logging"] = LoggingConfig(
-                log_file_path=base / f"logs/{profile}/moneybin.log"
+                log_file_path=profile_dir / "logs" / "moneybin.log"
             )
 
         super().__init__(**kwargs)

@@ -49,19 +49,12 @@ def temp_profile(profile: str) -> Generator[str, None, None]:
         # Yield the normalized profile name to the test
         yield normalized
     finally:
-        # Clean up data directory for this profile
+        # Clean up profile directory
         # Don't check exists() because tests may mock it - just try to remove
         base = get_base_dir()
-        data_dir = base / "data" / normalized
+        profile_dir = base / "profiles" / normalized
         try:
-            shutil.rmtree(data_dir)
-        except FileNotFoundError:
-            pass  # Directory doesn't exist, nothing to clean up
-
-        # Clean up logs directory for this profile
-        logs_dir = base / "logs" / normalized
-        try:
-            shutil.rmtree(logs_dir)
+            shutil.rmtree(profile_dir)
         except FileNotFoundError:
             pass  # Directory doesn't exist, nothing to clean up
 

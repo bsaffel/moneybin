@@ -10,7 +10,9 @@ without requiring specific data source configurations like Plaid.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
@@ -34,8 +36,8 @@ class TestCLIProfileHandling:
         # Mock the user config to return 'test' as the default profile
         mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="test")
 
-        # Run a command without --profile flag (credentials list-services doesn't need Plaid)
-        result = runner.invoke(app, ["config", "credentials", "list-services"])
+        # Run a command without --profile flag (profile list doesn't need external services)
+        result = runner.invoke(app, ["profile", "list"])
 
         # Should succeed and use test profile from config
         assert result.exit_code == 0
@@ -45,9 +47,7 @@ class TestCLIProfileHandling:
         """Test explicitly setting a user profile via CLI flag."""
         with temp_profile("alice"):
             # Run with explicit --profile=alice
-            result = runner.invoke(
-                app, ["--profile=alice", "config", "credentials", "list-services"]
-            )
+            result = runner.invoke(app, ["--profile=alice", "profile", "list"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
@@ -56,9 +56,7 @@ class TestCLIProfileHandling:
         """Test setting a different user profile."""
         with temp_profile("bob"):
             # Run with explicit --profile=bob
-            result = runner.invoke(
-                app, ["--profile=bob", "config", "credentials", "list-services"]
-            )
+            result = runner.invoke(app, ["--profile=bob", "profile", "list"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "bob"
@@ -67,9 +65,7 @@ class TestCLIProfileHandling:
         """Test using short -p flag for profile."""
         with temp_profile("alice"):
             # Run with short flag -p
-            result = runner.invoke(
-                app, ["-p", "alice", "config", "credentials", "list-services"]
-            )
+            result = runner.invoke(app, ["-p", "alice", "profile", "list"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
@@ -80,7 +76,7 @@ class TestCLIProfileHandling:
             # Run with profile containing slash - slash gets removed during normalization
             result = runner.invoke(
                 app,
-                ["--profile=invalid/profile", "config", "credentials", "list-services"],
+                ["--profile=invalid/profile", "profile", "list"],
             )
 
             # Should succeed after normalization
@@ -92,9 +88,7 @@ class TestCLIProfileHandling:
         """Test that profile name with space gets normalized (space -> hyphen)."""
         with temp_profile("bad profile"):
             # Run with profile containing space - space gets converted to hyphen
-            result = runner.invoke(
-                app, ["--profile=bad profile", "config", "credentials", "list-services"]
-            )
+            result = runner.invoke(app, ["--profile=bad profile", "profile", "list"])
 
             # Should succeed after normalization
             assert result.exit_code == 0
@@ -112,7 +106,7 @@ class TestCLIProfileHandling:
             )
 
             # Run without explicit flag (should use env var)
-            result = runner.invoke(app, ["config", "credentials", "list-services"])
+            result = runner.invoke(app, ["profile", "list"])
 
             # Should use alice profile from environment variable
             assert result.exit_code == 0
@@ -131,9 +125,7 @@ class TestCLIProfileHandling:
             )
 
             # Run with explicit --profile=bob (should override env var)
-            result = runner.invoke(
-                app, ["--profile=bob", "config", "credentials", "list-services"]
-            )
+            result = runner.invoke(app, ["--profile=bob", "profile", "list"])
 
             assert result.exit_code == 0
             # Should use bob profile from CLI flag, not alice from env var
@@ -142,9 +134,7 @@ class TestCLIProfileHandling:
     def test_profile_propagates_correctly(self) -> None:
         """Test that profile is set correctly in the config system."""
         with temp_profile("alice"):
-            result = runner.invoke(
-                app, ["--profile=alice", "config", "credentials", "list-services"]
-            )
+            result = runner.invoke(app, ["--profile=alice", "profile", "list"])
 
             assert result.exit_code == 0
             # Verify profile was set correctly
@@ -163,7 +153,7 @@ class TestCLIProfileHandling:
         with temp_profile("alice-personal"):
             result = runner.invoke(
                 app,
-                ["--profile=alice-personal", "config", "credentials", "list-services"],
+                ["--profile=alice-personal", "profile", "list"],
             )
 
             assert result.exit_code == 0
@@ -172,10 +162,40 @@ class TestCLIProfileHandling:
     def test_profile_with_underscore_gets_normalized(self) -> None:
         """Test that profile names with underscores get normalized to hyphens."""
         with temp_profile("alice_work"):
-            result = runner.invoke(
-                app, ["--profile=alice_work", "config", "credentials", "list-services"]
-            )
+            result = runner.invoke(app, ["--profile=alice_work", "profile", "list"])
 
             assert result.exit_code == 0
             # Underscore is converted to hyphen: "alice_work" -> "alice-work"
             assert get_current_profile() == "alice-work"
+
+
+class TestMigrationOnFirstRun:
+    """Test auto-migration triggers on CLI startup."""
+
+    def test_old_layout_migrated_on_startup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Old data/<name>/ layout is migrated when CLI starts."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
+
+        # Create old layout
+        old_data = tmp_path / "data" / "alice"
+        old_data.mkdir(parents=True)
+        (old_data / "moneybin.duckdb").write_text("fake-db")
+
+        # Set up global config with old key name
+        global_config = tmp_path / "config.yaml"
+        global_config.write_text("default_profile: alice\n")
+        mocker.patch(
+            "moneybin.utils.user_config.get_user_config_path",
+            return_value=global_config,
+        )
+        mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="alice")
+
+        runner.invoke(app, ["--profile=alice", "profile", "list"])
+        # After migration, alice should be in profiles/
+        assert (tmp_path / "profiles" / "alice" / "moneybin.duckdb").exists()

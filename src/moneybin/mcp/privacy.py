@@ -12,13 +12,23 @@ from moneybin.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Load MCP limits from config (MONEYBIN_MCP__MAX_ROWS, MONEYBIN_MCP__MAX_CHARS, etc.)
-_mcp_cfg = get_settings().mcp
-MAX_ROWS: int = _mcp_cfg.max_rows
-MAX_CHARS: int = _mcp_cfg.max_chars
-ALLOWED_TABLES: set[str] | None = (
-    {t.lower() for t in _mcp_cfg.allowed_tables} if _mcp_cfg.allowed_tables else None
-)
+
+def _get_mcp_limits() -> tuple[int, int, set[str] | None]:
+    """Load MCP limits from config (lazy, not at import time).
+
+    Returns:
+        Tuple of (max_rows, max_chars, allowed_tables).
+    """
+    cfg = get_settings().mcp
+    allowed = {t.lower() for t in cfg.allowed_tables} if cfg.allowed_tables else None
+    return cfg.max_rows, cfg.max_chars, allowed
+
+
+def get_max_rows() -> int:
+    """Get the configured maximum rows for MCP query results."""
+    max_rows, _, _ = _get_mcp_limits()
+    return max_rows
+
 
 # DuckDB table-valued functions that read local files or make network requests.
 # These pass the read-only prefix check (SELECT/WITH) but can exfiltrate data.
@@ -126,13 +136,14 @@ def check_table_allowed(table_name: str) -> str | None:
     Returns:
         None if allowed, or an error message string if blocked.
     """
-    if ALLOWED_TABLES is None:
+    _, _, allowed_tables = _get_mcp_limits()
+    if allowed_tables is None:
         return None
 
-    if table_name.lower() not in ALLOWED_TABLES:
+    if table_name.lower() not in allowed_tables:
         return (
             f"Table '{table_name}' is not in the allowed tables list. "
-            f"Allowed tables: {', '.join(sorted(ALLOWED_TABLES))}"
+            f"Allowed tables: {', '.join(sorted(allowed_tables))}"
         )
 
     return None
@@ -147,13 +158,14 @@ def truncate_result(text: str) -> str:
     Returns:
         The original text or truncated version with a notice.
     """
-    if len(text) <= MAX_CHARS:
+    _, max_chars, _ = _get_mcp_limits()
+    if len(text) <= max_chars:
         return text
 
-    truncated = text[:MAX_CHARS]
+    truncated = text[:max_chars]
     return (
         f"{truncated}\n\n"
-        f"[Result truncated at {MAX_CHARS:,} characters. "
+        f"[Result truncated at {max_chars:,} characters. "
         f"Use more specific queries or filters to reduce result size.]"
     )
 

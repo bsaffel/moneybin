@@ -62,6 +62,15 @@ conn.execute(f"SELECT * FROM fct_transactions WHERE account_id = '{account_id}'"
 - **Pydantic for structured input**: Use Pydantic models with `Field(...)` constraints (`min_length`, `max_length`, `ge`, `le`, `pattern`) for any structured input from external sources. Let validation failures raise before business logic runs.
 - **File content**: Treat uploaded/imported file content (CSV, OFX, PDF) as untrusted. Validate structure and field types after parsing — do not assume files conform to expected schemas.
 
+## External Library Exception Wrapping
+
+When catching exceptions from external libraries (keyring, duckdb, argon2, base64):
+
+1. **Read the library docs** for the exact exception type raised — don't guess.
+2. **Wrap at the boundary module**, not in callers. E.g., `SecretStore.delete_key()` catches `keyring.errors.PasswordDeleteError` and raises `SecretNotFoundError`.
+3. **Comment untyped exceptions**: DuckDB raises generic errors on bad encryption keys. Use `# noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY` to document why a broad catch is needed.
+4. **Test the wrapping**: mock the real library exception type, verify the project exception is raised.
+
 ## PII in Logs and Errors
 
 - **Never log** account numbers, routing numbers, SSNs, transaction amounts, balances, full descriptions, or merchant names. Log record counts, entity IDs, status codes, and masked values only.

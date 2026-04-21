@@ -28,8 +28,22 @@ def command_function(source_path: Path = typer.Option(..., help="Description")) 
 ## Error Handling
 
 - Catch specific exceptions (FileNotFoundError, PermissionError, etc.)
+- Any command that calls `get_database()` must also catch `DatabaseKeyError` with a "run `moneybin db unlock`" message.
 - Use `raise typer.Exit(code) from e` for error chaining
 - Exit codes: 0 = success, 1 = general error, 2+ = command-specific
+
+## Secrets in Error Output
+
+Recovery messages containing keys, tokens, or credentials must go to stderr via `typer.echo(..., err=True)` — **never through `logger.*()`**. The log pipeline persists to files and hex keys won't match PII regex patterns.
+
+## Multi-State Operations
+
+When a command modifies multiple persistent stores in sequence (e.g., file move + keychain update), wrap later steps in try/except with recovery guidance: tell the user what state they're in, where the backup is, and don't delete backups until all steps succeed.
+
+## Command Group Registration
+
+- **Workflow ordering**: Top-level commands in `main.py` are registered in workflow order: setup → ingest → enrich → pipeline → analyze → output → integrations → ops. New commands should be inserted at the appropriate workflow stage.
+- **`no_args_is_help=True`**: Every `typer.Typer()` group must set this flag so bare invocation shows help text consistently. Do not use `invoke_without_command=True` callbacks as a substitute for showing help.
 
 ## Conventions
 
@@ -67,8 +81,8 @@ Do **not** add icons to ordinary informational log lines (paths, counts, results
 ```python
 # Good
 logger.info("⚙️  Starting sync from all institutions...")
-logger.info("✅ Imported %d transactions", count)
-logger.error("❌ File not found: %s", path)
+logger.info(f"✅ Imported {count} transactions")
+logger.error(f"❌ File not found: {path}")
 logger.warning("⚠️  No new data to sync")
 logger.info("💡 Run 'moneybin db init' to create the database first")
 logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
@@ -77,5 +91,5 @@ logger.info("👀 3 auto-generated rules need review")
 # Bad — wrong icon semantics or decorative noise
 logger.info("📈 Beginning incremental sync...")  # chart ≠ working
 logger.info("📊 Loading results:")  # chart ≠ working
-logger.info("📁 Data saved to: %s", path)  # no icon needed for paths
+logger.info(f"📁 Data saved to: {path}")  # no icon needed for paths
 ```

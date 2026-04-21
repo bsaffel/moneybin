@@ -26,7 +26,7 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 - Type hints on all function parameters and return values. Modern syntax: `str | None`, `list[str]`.
 - Google-style docstrings with Args/Returns/Raises.
 - Catch specific exceptions, not bare `Exception`.
-- Structured logging: `logger = logging.getLogger(__name__)` with appropriate levels. Use f-strings in log messages (e.g. `logger.info(f"Loaded {n} records")`), not `%`-style formatting.
+- Structured logging: `logger = logging.getLogger(__name__)` with appropriate levels. **Always use f-strings in log messages** (e.g. `logger.info(f"Loaded {n} records")`). Never use `%s`/`%d`-style lazy formatting — it contradicts the project convention and bypasses the `SanitizedLogFormatter`'s pattern matching.
 - Triple-quoted strings (`"""..."""`) for inline SQL.
 - Always include a reason for `# noqa:` or `# type: ignore` comments. The reason goes inline after the rule code, e.g. `# noqa: S608  # building test input string, not executing SQL`.
 - Acronyms use ALL CAPS in class names: `OFXExtractor`, `CSVReader`, `PDFExtractor` (follows stdlib convention like `HTTPServer`).
@@ -59,7 +59,7 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 
 - **Before implementing a feature**, check `docs/specs/INDEX.md` to see if a spec exists and what its status is.
 - **When starting implementation**, update the spec's status to `in-progress` (both in the spec file and in `INDEX.md`).
-- **When implementation is complete**, update the spec's status to `implemented` and move the file to `docs/specs/archived/`.
+- **When implementation is complete**, update the spec's status to `implemented` and move the file to `docs/specs/archived/`. See `.claude/rules/shipping.md` for README and public documentation updates.
 - **When writing a new spec**, add it to the Active specs table in `INDEX.md`.
 - Statuses: `draft` → `ready` → `in-progress` → `implemented`.
 
@@ -83,6 +83,10 @@ db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [account_
 ```
 
 **Never call `duckdb.connect()` directly.** The `Database` class (`src/moneybin/database.py`) is the sole entry point for all database access. It handles encryption key retrieval, encrypted file attachment, schema initialization, and migrations. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
+
+## Constants
+
+Security-critical parameters (crypto cost factors, key lengths, salt sizes) must be defined once — either as module-level `_CONSTANTS` or as config fields on the relevant `*Config` class. Never duplicate across call sites; extract a shared helper if two functions need the same parameters.
 
 ## Security
 

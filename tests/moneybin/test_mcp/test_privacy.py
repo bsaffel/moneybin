@@ -145,17 +145,20 @@ class TestCheckTableAllowed:
 
     @pytest.mark.unit
     def test_no_allowlist_allows_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # With no allowlist, everything is allowed
         from moneybin.mcp import privacy
 
-        monkeypatch.setattr(privacy, "ALLOWED_TABLES", None)
+        monkeypatch.setattr(privacy, "_get_mcp_limits", lambda: (100, 10000, None))
         assert check_table_allowed("any_table") is None
 
     @pytest.mark.unit
     def test_allowlist_blocks_unlisted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from moneybin.mcp import privacy
 
-        monkeypatch.setattr(privacy, "ALLOWED_TABLES", {"raw.ofx_accounts"})
+        monkeypatch.setattr(
+            privacy,
+            "_get_mcp_limits",
+            lambda: (100, 10000, {"raw.ofx_accounts"}),
+        )
         result = check_table_allowed("raw.ofx_transactions")
         assert result is not None
         assert "not in the allowed" in result
@@ -164,7 +167,11 @@ class TestCheckTableAllowed:
     def test_allowlist_permits_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from moneybin.mcp import privacy
 
-        monkeypatch.setattr(privacy, "ALLOWED_TABLES", {"raw.ofx_accounts"})
+        monkeypatch.setattr(
+            privacy,
+            "_get_mcp_limits",
+            lambda: (100, 10000, {"raw.ofx_accounts"}),
+        )
         assert check_table_allowed("raw.ofx_accounts") is None
 
 
@@ -180,7 +187,7 @@ class TestTruncateResult:
     def test_long_text_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from moneybin.mcp import privacy
 
-        monkeypatch.setattr(privacy, "MAX_CHARS", 20)
+        monkeypatch.setattr(privacy, "_get_mcp_limits", lambda: (100, 20, None))
         result = truncate_result("x" * 100)
         # First 20 chars should be the original content
         assert result.startswith("x" * 20)

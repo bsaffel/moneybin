@@ -143,17 +143,23 @@ class TestImportStatusCommand:
     def runner(self) -> CliRunner:
         return CliRunner()
 
+    @pytest.fixture
+    def _mock_settings(self, mocker: Any, tmp_path: Path) -> MagicMock:
+        """Mock get_settings so database.path points to tmp_path."""
+        mock_settings = MagicMock()
+        mock_settings.database.path = tmp_path / "moneybin.duckdb"
+        mocker.patch(
+            "moneybin.config.get_settings",
+            return_value=mock_settings,
+        )
+        return mock_settings
+
     def test_status_no_database(
         self,
         runner: CliRunner,
-        mocker: Any,
-        tmp_path: Path,
+        _mock_settings: MagicMock,
     ) -> None:
         """Test exit code 1 when database does not exist."""
-        mocker.patch(
-            "moneybin.config.get_database_path",
-            return_value=tmp_path / "nonexistent.duckdb",
-        )
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 1
 
@@ -162,18 +168,14 @@ class TestImportStatusCommand:
         runner: CliRunner,
         mocker: Any,
         tmp_path: Path,
+        _mock_settings: MagicMock,
     ) -> None:
         """Test status with database that has no raw tables."""
         import duckdb
 
-        db_path = tmp_path / "test.duckdb"
+        db_path = tmp_path / "moneybin.duckdb"
         conn = duckdb.connect(str(db_path))
         conn.close()
-
-        mocker.patch(
-            "moneybin.config.get_database_path",
-            return_value=db_path,
-        )
 
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
@@ -188,11 +190,12 @@ class TestImportStatusCommand:
         runner: CliRunner,
         mocker: Any,
         tmp_path: Path,
+        _mock_settings: MagicMock,
     ) -> None:
         """Test status with populated raw tables."""
         import duckdb
 
-        db_path = tmp_path / "test.duckdb"
+        db_path = tmp_path / "moneybin.duckdb"
         conn = duckdb.connect(str(db_path))
         conn.execute("CREATE SCHEMA IF NOT EXISTS raw")
         conn.execute("CREATE TABLE raw.ofx_transactions (id INT, date_posted DATE)")
@@ -200,11 +203,6 @@ class TestImportStatusCommand:
             "INSERT INTO raw.ofx_transactions VALUES (1, '2025-01-01'), (2, '2025-06-15')"
         )
         conn.close()
-
-        mocker.patch(
-            "moneybin.config.get_database_path",
-            return_value=db_path,
-        )
 
         # Mock get_database to return a real duckdb connection via a Database-like mock
         real_conn = duckdb.connect(str(db_path), read_only=True)

@@ -92,17 +92,17 @@ class TestUserConfig:
     def test_user_config_default(self):
         """Test default UserConfig initialization."""
         config = UserConfig()
-        assert config.default_profile is None
+        assert config.active_profile is None
 
     def test_user_config_with_profile(self):
-        """Test UserConfig with profile set."""
-        config = UserConfig(default_profile="alice")
-        assert config.default_profile == "alice"
+        """Test UserConfig with active_profile set."""
+        config = UserConfig(active_profile="alice")
+        assert config.active_profile == "alice"
 
     def test_user_config_normalizes_profile(self):
         """Test that UserConfig normalizes profile name."""
-        config = UserConfig(default_profile="Alice Work")
-        assert config.default_profile == "alice-work"
+        config = UserConfig(active_profile="Alice Work")
+        assert config.active_profile == "alice-work"
 
 
 class TestUserConfigFileOperations:
@@ -119,17 +119,17 @@ class TestUserConfigFileOperations:
 
         config = load_user_config()
         assert isinstance(config, UserConfig)
-        assert config.default_profile is None
+        assert config.active_profile is None
 
     def test_load_user_config_with_file(self, mocker: MockerFixture):
         """Test loading config from existing file."""
-        yaml_content = "default_profile: alice\n"
+        yaml_content = "active_profile: alice\n"
 
         mocker.patch.object(Path, "exists", return_value=True)
         mocker.patch("builtins.open", mock_open(read_data=yaml_content))
 
         config = load_user_config()
-        assert config.default_profile == "alice"
+        assert config.active_profile == "alice"
 
     def test_save_user_config(self, tmp_path: Path, mocker: MockerFixture):
         """Test saving user config to file."""
@@ -140,7 +140,7 @@ class TestUserConfigFileOperations:
             return_value=test_config_path,
         )
 
-        config = UserConfig(default_profile="alice")
+        config = UserConfig(active_profile="alice")
         save_user_config(config)
 
         assert test_config_path.exists()
@@ -158,7 +158,7 @@ class TestUserConfigFileOperations:
 
     def test_get_default_profile_set(self, mocker: MockerFixture):
         """Test getting default profile when set."""
-        yaml_content = "default_profile: alice\n"
+        yaml_content = "active_profile: alice\n"
 
         mocker.patch.object(Path, "exists", return_value=True)
         mocker.patch("builtins.open", mock_open(read_data=yaml_content))
@@ -192,7 +192,7 @@ class TestUserConfigFileOperations:
 
         # Create a config file
         test_config_path.parent.mkdir(parents=True, exist_ok=True)
-        test_config_path.write_text("default_profile: alice\n")
+        test_config_path.write_text("active_profile: alice\n")
 
         assert test_config_path.exists()
 
@@ -208,3 +208,92 @@ class TestUserConfigFileOperations:
 
         # Should not raise error
         reset_user_config()
+
+
+class TestActiveProfile:
+    """Test active_profile in global config."""
+
+    def test_load_config_with_active_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Global config uses active_profile key."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("active_profile: alice\n")
+        monkeypatch.setattr(
+            "moneybin.utils.user_config.get_user_config_path",
+            lambda: config_path,
+        )
+        config = load_user_config()
+        assert config.active_profile == "alice"
+
+    def test_save_config_writes_active_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving config writes active_profile key."""
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr(
+            "moneybin.utils.user_config.get_user_config_path",
+            lambda: config_path,
+        )
+        save_user_config(UserConfig(active_profile="bob"))
+        content = config_path.read_text()
+        assert "active_profile: bob" in content
+
+    def test_migrate_default_profile_to_active(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Old default_profile key is read as active_profile."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("default_profile: alice\n")
+        monkeypatch.setattr(
+            "moneybin.utils.user_config.get_user_config_path",
+            lambda: config_path,
+        )
+        config = load_user_config()
+        assert config.active_profile == "alice"
+
+
+class TestProfileConfigYaml:
+    """Test per-profile config.yaml generation."""
+
+    def test_generate_profile_config(self, tmp_path: Path) -> None:
+        """generate_profile_config creates a config.yaml with defaults."""
+        from moneybin.utils.user_config import generate_profile_config
+
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        config_path = profile_dir / "config.yaml"
+        assert config_path.exists()
+        import yaml
+
+        data = yaml.safe_load(config_path.read_text())
+        assert data["database"]["encryption_key_mode"] == "auto"
+        assert data["logging"]["level"] == "INFO"
+        assert data["sync"]["enabled"] is False
+
+    def test_generate_profile_config_creates_directory(self, tmp_path: Path) -> None:
+        """generate_profile_config creates the profile directory if missing."""
+        from moneybin.utils.user_config import generate_profile_config
+
+        profile_dir = tmp_path / "nested" / "deep" / "profile"
+        assert not profile_dir.exists()
+        generate_profile_config(profile_dir, "testuser")
+        assert profile_dir.exists()
+        assert (profile_dir / "config.yaml").exists()
+
+    def test_generate_profile_config_returns_path(self, tmp_path: Path) -> None:
+        """generate_profile_config returns the path to config.yaml."""
+        from moneybin.utils.user_config import generate_profile_config
+
+        profile_dir = tmp_path / "alice"
+        result = generate_profile_config(profile_dir, "alice")
+        assert result == profile_dir / "config.yaml"
+
+    def test_generate_profile_config_header_contains_name(self, tmp_path: Path) -> None:
+        """config.yaml header contains the profile name."""
+        from moneybin.utils.user_config import generate_profile_config
+
+        profile_dir = tmp_path / "bob"
+        generate_profile_config(profile_dir, "bob")
+        content = (profile_dir / "config.yaml").read_text()
+        assert "# Profile: bob" in content

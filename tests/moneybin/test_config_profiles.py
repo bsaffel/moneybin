@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 
 from moneybin.config import (
@@ -198,27 +199,6 @@ class TestProfileConfiguration:
             settings = MoneyBinSettings(profile="alice")
             assert settings.profile == "alice"
 
-    def test_legacy_environment_variables(self, mocker: MockerFixture) -> None:
-        """Test that legacy DUCKDB_PATH environment variable still works."""
-        with temp_profile("dev"):
-            # Mock legacy environment variables
-            mocker.patch.dict(
-                os.environ,
-                {
-                    "DUCKDB_PATH": "custom/path/db.duckdb",
-                },
-                clear=True,
-            )
-
-            # Mock file existence
-            mocker.patch.object(Path, "exists", return_value=False)
-
-            settings = MoneyBinSettings(profile="dev")
-
-            # Legacy DUCKDB_PATH should still work (resolved against base dir)
-            base = get_base_dir()
-            assert settings.database.path == base / "custom/path/db.duckdb"
-
     def test_profile_field_in_settings(self, mocker: MockerFixture) -> None:
         """Test that profile field is properly set and normalized in settings."""
         with temp_profile("dev"), temp_profile("prod"), temp_profile("Alice_Work"):
@@ -257,10 +237,7 @@ class TestProfileConfiguration:
     def test_profile_aware_paths(self, mocker: MockerFixture) -> None:
         """Test that paths are profile-aware by default."""
         with temp_profile("alice"), temp_profile("bob"):
-            # Clear environment variables that would override profile paths
-            mocker.patch.dict(
-                os.environ, {"DUCKDB_PATH": "", "LOG_FILE_PATH": ""}, clear=True
-            )
+            mocker.patch.dict(os.environ, {}, clear=True)
             mocker.patch.object(Path, "exists", return_value=False)
 
             # Create settings for alice profile
@@ -268,30 +245,35 @@ class TestProfileConfiguration:
 
             # Paths should be absolute and include the profile name
             base = get_base_dir()
-            assert alice_settings.database.path == base / "data/alice/moneybin.duckdb"
-            assert alice_settings.data.raw_data_path == base / "data/alice/raw"
-            assert alice_settings.data.temp_data_path == base / "data/alice/temp"
+            assert alice_settings.database.path == (
+                base / "profiles" / "alice" / "moneybin.duckdb"
+            )
+            assert (
+                alice_settings.data.raw_data_path == base / "profiles" / "alice" / "raw"
+            )
+            assert alice_settings.data.temp_data_path == (
+                base / "profiles" / "alice" / "temp"
+            )
             assert alice_settings.logging.log_file_path == (
-                base / "logs/alice/moneybin.log"
+                base / "profiles" / "alice" / "logs" / "moneybin.log"
             )
 
             # Create settings for bob profile
             bob_settings = MoneyBinSettings(profile="bob")
 
             # Check that bob has different paths
-            assert bob_settings.database.path == base / "data/bob/moneybin.duckdb"
-            assert bob_settings.data.raw_data_path == base / "data/bob/raw"
+            assert bob_settings.database.path == (
+                base / "profiles" / "bob" / "moneybin.duckdb"
+            )
+            assert bob_settings.data.raw_data_path == base / "profiles" / "bob" / "raw"
             assert bob_settings.logging.log_file_path == (
-                base / "logs/bob/moneybin.log"
+                base / "profiles" / "bob" / "logs" / "moneybin.log"
             )
 
     def test_profile_isolation(self, mocker: MockerFixture) -> None:
         """Test that different profiles have completely isolated paths."""
         with temp_profile("alice"), temp_profile("bob"):
-            # Clear environment variables that would override profile paths
-            mocker.patch.dict(
-                os.environ, {"DUCKDB_PATH": "", "LOG_FILE_PATH": ""}, clear=True
-            )
+            mocker.patch.dict(os.environ, {}, clear=True)
             mocker.patch.object(Path, "exists", return_value=False)
 
             alice_settings = MoneyBinSettings(profile="alice")
@@ -339,3 +321,57 @@ class TestProfileConfiguration:
             alice_settings_3 = get_settings()
             assert alice_settings_1 is not alice_settings_3
             assert alice_settings_3.profile == "alice"
+
+
+class TestProfileDirectoryLayout:
+    """Test that settings resolve paths under profiles/<name>/ directory."""
+
+    def test_database_path_under_profiles(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Database lives at <base>/profiles/<name>/moneybin.duckdb."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        clear_settings_cache()
+        set_current_profile("alice")
+        settings = get_settings()
+        assert (
+            settings.database.path
+            == tmp_path / "profiles" / "alice" / "moneybin.duckdb"
+        )
+
+    def test_log_path_under_profiles(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Logs live at <base>/profiles/<name>/logs/moneybin.log."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        clear_settings_cache()
+        set_current_profile("alice")
+        settings = get_settings()
+        assert (
+            settings.logging.log_file_path
+            == tmp_path / "profiles" / "alice" / "logs" / "moneybin.log"
+        )
+
+    def test_temp_dir_under_profiles(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Temp directory at <base>/profiles/<name>/temp/."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        clear_settings_cache()
+        set_current_profile("alice")
+        settings = get_settings()
+        assert (
+            settings.database.temp_directory == tmp_path / "profiles" / "alice" / "temp"
+        )
+
+    def test_backup_path_under_profiles(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backup directory at <base>/profiles/<name>/backups/."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        clear_settings_cache()
+        set_current_profile("alice")
+        settings = get_settings()
+        assert (
+            settings.database.backup_path == tmp_path / "profiles" / "alice" / "backups"
+        )

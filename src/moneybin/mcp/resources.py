@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, OFX_BALANCES, W2_FORMS
 
-from .privacy import MAX_ROWS, truncate_result
+from .privacy import get_max_rows, truncate_result
 from .server import get_db, mcp, table_exists
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def schema_tables() -> str:
     """)
 
     columns = [desc[0] for desc in result.description]
-    rows = result.fetchmany(MAX_ROWS)
+    rows = result.fetchmany(get_max_rows())
     records = [dict(zip(columns, row, strict=False)) for row in rows]
     return json.dumps(records, indent=2, default=str)
 
@@ -81,7 +81,7 @@ def schema_table_detail(table_name: str) -> str:
     )
 
     columns = [desc[0] for desc in result.description]
-    rows = result.fetchmany(MAX_ROWS)
+    rows = result.fetchmany(get_max_rows())
     records = [dict(zip(columns, row, strict=False)) for row in rows]
 
     if not records:
@@ -149,7 +149,7 @@ def accounts_summary() -> str:
         """)
 
     columns = [desc[0] for desc in result.description]
-    rows = result.fetchmany(MAX_ROWS)
+    rows = result.fetchmany(get_max_rows())
     records = [dict(zip(columns, row, strict=False)) for row in rows]
     return json.dumps(records, indent=2, default=str)
 
@@ -182,7 +182,7 @@ def recent_transactions() -> str:
         ORDER BY transaction_date DESC
         LIMIT ?
         """,
-        [cutoff, MAX_ROWS],
+        [cutoff, get_max_rows()],
     )
     columns = [desc[0] for desc in result.description]
     rows = result.fetchall()

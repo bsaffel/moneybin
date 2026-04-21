@@ -49,6 +49,7 @@ dependencies = [
     # Secret management and key derivation
     "keyring>=25.6.0",
     "argon2-cffi>=23.1.0",
+    "python-multipart>=0.0.26",
 ]
 
 [tool.setuptools]

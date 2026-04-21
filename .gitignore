@@ -26,6 +26,9 @@ venv/
 .DS_Store
 ._*
 
+# Profiles info
+profiles/
+
 # Data files (exclude sensitive financial data)
 data/
 *.csv

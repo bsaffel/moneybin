@@ -21,8 +21,8 @@ from moneybin.tables import (
 )
 
 from .privacy import (
-    MAX_ROWS,
     check_table_allowed,
+    get_max_rows,
     truncate_result,
     validate_read_only_query,
 )
@@ -58,7 +58,7 @@ def _query_to_json(sql: str, params: list[object] | None = None) -> str:
             result = db.execute(sql)
 
         columns = [desc[0] for desc in result.description]
-        rows = result.fetchmany(MAX_ROWS)
+        rows = result.fetchmany(get_max_rows())
 
         records = [dict(zip(columns, row, strict=False)) for row in rows]
         return truncate_result(json.dumps(records, indent=2, default=str))
@@ -191,7 +191,7 @@ def query_transactions(
         limit: Maximum number of results (default 100, max 1000).
     """
     logger.info("Tool called: query_transactions")
-    limit = min(limit, MAX_ROWS)
+    limit = min(limit, get_max_rows())
 
     if not table_exists(FCT_TRANSACTIONS):
         return (

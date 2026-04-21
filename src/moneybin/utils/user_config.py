@@ -6,6 +6,7 @@ including default profile settings and user preferences.
 
 import logging
 import re
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -17,14 +18,14 @@ logger = logging.getLogger(__name__)
 class UserConfig(BaseModel):
     """User-level configuration stored in ~/.moneybin/config.yaml."""
 
-    default_profile: str | None = Field(
+    active_profile: str | None = Field(
         default=None,
-        description="Default profile name (user's first name or chosen identifier)",
+        description="Active profile name (user's first name or chosen identifier)",
     )
 
-    @field_validator("default_profile")
+    @field_validator("active_profile")
     @classmethod
-    def validate_default_profile(cls, v: str | None) -> str | None:
+    def validate_active_profile(cls, v: str | None) -> str | None:
         """Validate and normalize profile name."""
         if v is None:
             return None
@@ -101,6 +102,7 @@ def load_user_config() -> UserConfig:
 
     Note:
         Returns default UserConfig if file doesn't exist or cannot be read.
+        Migrates old ``default_profile`` key to ``active_profile`` on load.
     """
     config_path = get_user_config_path()
 
@@ -112,8 +114,11 @@ def load_user_config() -> UserConfig:
         with open(config_path) as f:
             raw_data = yaml.safe_load(f)
             data: dict[str, str | None] = raw_data if isinstance(raw_data, dict) else {}
+            # Migrate old default_profile key to active_profile
+            if "default_profile" in data and "active_profile" not in data:
+                data["active_profile"] = data.pop("default_profile")
             return UserConfig(**data)
-    except Exception as e:
+    except (yaml.YAMLError, OSError) as e:
         logger.warning(f"Failed to load user config from {config_path}: {e}")
         return UserConfig()
 
@@ -137,26 +142,26 @@ def save_user_config(config: UserConfig) -> None:
             data = config.model_dump(exclude_none=True)
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
         logger.info(f"Saved user config to {config_path}")
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Failed to save user config to {config_path}: {e}")
         raise
 
 
 def get_default_profile() -> str | None:
-    """Get the default profile name from user config.
+    """Get the active profile name from user config.
 
     Returns:
-        str | None: Default profile name, or None if not set
+        str | None: Active profile name, or None if not set
     """
     config = load_user_config()
-    return config.default_profile
+    return config.active_profile
 
 
 def set_default_profile(profile_name: str) -> None:
-    """Set the default profile name in user config.
+    """Set the active profile name in user config.
 
     Args:
-        profile_name: Profile name to set as default (will be normalized)
+        profile_name: Profile name to set as active (will be normalized)
 
     Raises:
         ValueError: If profile name is invalid
@@ -167,13 +172,48 @@ def set_default_profile(profile_name: str) -> None:
     # Load existing config
     config = load_user_config()
 
-    # Update default profile
-    config.default_profile = normalized
+    # Update active profile
+    config.active_profile = normalized
 
     # Save config
     save_user_config(config)
 
-    logger.info(f"Set default profile to: {normalized}")
+    logger.info(f"Set active profile to: {normalized}")
+
+
+def generate_profile_config(profile_dir: Path, profile_name: str) -> Path:
+    """Generate a per-profile config.yaml with sensible defaults.
+
+    Args:
+        profile_dir: Directory for the profile (will be created).
+        profile_name: Profile name (for header comment).
+
+    Returns:
+        Path to the created config.yaml.
+    """
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    config_path = profile_dir / "config.yaml"
+
+    config_data = {
+        "database": {
+            "encryption_key_mode": "auto",
+        },
+        "logging": {
+            "level": "INFO",
+            "log_to_file": True,
+            "max_file_size_mb": 50,
+        },
+        "sync": {
+            "enabled": False,
+        },
+    }
+
+    header = f"# Profile: {profile_name}\n# Created: {date.today()}\n\n"
+    with open(config_path, "w") as f:
+        f.write(header)
+        yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    return config_path
 
 
 def prompt_for_profile_name() -> str:
@@ -186,36 +226,40 @@ def prompt_for_profile_name() -> str:
         ValueError: If user provides invalid input
         KeyboardInterrupt: If user cancels (Ctrl+C)
     """
-    print("\n👋 Welcome to MoneyBin!\n")
-    print("To get started, please enter your first name.")
-    print("This will be your default profile name.")
-    print("(You can create additional profiles later for other people or purposes)\n")
+    import typer
+
+    typer.echo("\n👋 Welcome to MoneyBin!\n")
+    typer.echo("To get started, please enter your first name.")
+    typer.echo("This will be your default profile name.")
+    typer.echo(
+        "(You can create additional profiles later for other people or purposes)\n"
+    )
 
     while True:
         try:
             name = input("First name: ").strip()
 
             if not name:
-                print("❌ Please enter a name.\n")
+                typer.echo("❌ Please enter a name.\n")
                 continue
 
             # Normalize the name
             try:
                 normalized = normalize_profile_name(name)
-                print(f"\n✅ Your profile name will be: {normalized}")
+                typer.echo(f"\n✅ Your profile name will be: {normalized}")
 
                 # Confirm with user
                 confirm = input("Is this okay? [Y/n]: ").strip().lower()
                 if confirm in ("", "y", "yes"):
                     return normalized
-                print("\nLet's try again.\n")
+                typer.echo("\nLet's try again.\n")
 
             except ValueError as e:
-                print(f"❌ {e}")
-                print("Please try again with a different name.\n")
+                typer.echo(f"❌ {e}")
+                typer.echo("Please try again with a different name.\n")
 
         except (KeyboardInterrupt, EOFError):
-            print("\n\n⚠️  Setup cancelled. You'll be prompted again next time.")
+            typer.echo("\n\n⚠️  Setup cancelled. You'll be prompted again next time.")
             raise KeyboardInterrupt("User cancelled profile setup") from None
 
 
@@ -228,6 +272,8 @@ def ensure_default_profile() -> str:
     Raises:
         KeyboardInterrupt: If user cancels setup
     """
+    import typer
+
     # Check if default profile is already set
     default_profile = get_default_profile()
 
@@ -240,11 +286,23 @@ def ensure_default_profile() -> str:
     # Save as default
     set_default_profile(profile_name)
 
-    from moneybin.config import get_base_dir
+    # Create the profile directory structure
+    from moneybin.services.profile_service import ProfileExistsError, ProfileService
 
-    base = get_base_dir()
-    print(f"\n🎉 Your default profile '{profile_name}' has been created!")
-    print(f"    Data will be stored in: {base / 'data' / profile_name}/\n")
+    try:
+        svc = ProfileService()
+        profile_dir = svc.create(profile_name)
+        typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
+        typer.echo(f"    Data will be stored in: {profile_dir}\n")
+    except ProfileExistsError:
+        pass  # already exists — fine on first run
+    except OSError as e:
+        logger.warning(f"Could not create profile directory: {e}")
+        from moneybin.config import get_base_dir
+
+        base = get_base_dir()
+        typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
+        typer.echo(f"    Data will be stored in: {base / 'profiles' / profile_name}\n")
 
     return profile_name
 
@@ -256,9 +314,11 @@ def reset_user_config() -> None:
     """
     config_path = get_user_config_path()
 
+    import typer
+
     if config_path.exists():
         config_path.unlink()
         logger.info(f"Deleted user config: {config_path}")
-        print(f"✅ Reset user configuration: {config_path}")
+        typer.echo(f"✅ Reset user configuration: {config_path}")
     else:
-        print("ℹ️  No user configuration to reset.")
+        typer.echo("ℹ️  No user configuration to reset.")
