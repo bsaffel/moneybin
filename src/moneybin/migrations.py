@@ -135,11 +135,13 @@ class MigrationResult:
         applied_count: Number of migrations successfully applied.
         failed: Whether any migration failed.
         failed_migration: Filename of the failed migration, if any.
+        error_message: Human-readable details for display to the user.
     """
 
     applied_count: int = 0
     failed: bool = False
     failed_migration: str | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -318,13 +320,21 @@ class MigrationRunner:
             except Exception:  # noqa: BLE001 S110 — rollback is best-effort; original exc re-raised below
                 pass
 
-            # Record failure
-            self._db.execute(
-                "INSERT INTO app.schema_migrations "
-                "(version, filename, checksum, success, execution_ms) "
-                "VALUES (?, ?, ?, FALSE, ?)",
-                [migration.version, migration.filename, migration.checksum, elapsed_ms],
-            )
+            # Record failure — best-effort; original exception takes priority
+            try:
+                self._db.execute(
+                    "INSERT INTO app.schema_migrations "
+                    "(version, filename, checksum, success, execution_ms) "
+                    "VALUES (?, ?, ?, FALSE, ?)",
+                    [
+                        migration.version,
+                        migration.filename,
+                        migration.checksum,
+                        elapsed_ms,
+                    ],
+                )
+            except Exception:  # noqa: BLE001 S110 — failure tracking is best-effort; original exc re-raised below
+                logger.warning("Failed to record migration failure in tracking table")
             raise MigrationError(
                 f"Migration {migration.filename} failed: {exc}"
             ) from exc
@@ -341,7 +351,7 @@ class MigrationRunner:
         try:
             self.check_stuck()
         except MigrationError as exc:
-            return MigrationResult(failed=True, failed_migration=str(exc))
+            return MigrationResult(failed=True, error_message=str(exc))
 
         pending = self.pending()
         if not pending:

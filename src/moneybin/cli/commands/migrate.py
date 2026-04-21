@@ -12,6 +12,7 @@ import typer
 
 from moneybin.database import DatabaseKeyError, get_database
 from moneybin.migrations import MigrationRunner, get_current_versions
+from moneybin.tables import SCHEMA_MIGRATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,8 @@ def migrate_apply(
         logger.warning(f"⚠️  {warning.reason}")
 
     if result.failed:
-        logger.error(f"❌ Migration {result.failed_migration} failed")
+        msg = result.error_message or f"Migration {result.failed_migration} failed"
+        logger.error(f"❌ {msg}")
         logger.info("💡 See logs for details")
         logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
         raise typer.Exit(1) from None
@@ -77,8 +79,8 @@ def migrate_status() -> None:
 
     # Applied migrations
     applied_rows = db.execute(
-        "SELECT version, filename, checksum, success, execution_ms, applied_at "
-        "FROM app.schema_migrations ORDER BY version"
+        f"SELECT version, filename, checksum, success, execution_ms, applied_at "  # noqa: S608 — SCHEMA_MIGRATIONS is a compile-time TableRef constant
+        f"FROM {SCHEMA_MIGRATIONS.full_name} ORDER BY version"
     ).fetchall()
 
     if applied_rows:

@@ -191,7 +191,7 @@ class TestMigrationRunnerAppliedVersions:
         applied = runner.applied_versions()
         assert applied == {1: "abc123"}
 
-    def test_excludes_failed_migrations(self, db: Database) -> None:
+    def test_includes_failed_migrations(self, db: Database) -> None:
         """Failed migrations (success=false) are still returned — they represent stuck state."""
         db.execute(
             "INSERT INTO app.schema_migrations (version, filename, checksum, success) "
@@ -475,6 +475,9 @@ class TestMigrationRunnerStuck:
         result = runner.apply_all()
         assert result.failed is True
         assert result.applied_count == 0
+        assert result.failed_migration is None
+        assert result.error_message is not None
+        assert "stuck" in result.error_message.lower()
 
 
 class TestVersionTracking:

@@ -160,16 +160,17 @@ class Database:
                 result = runner.apply_all()
 
                 if result.failed:
-                    logger.error(
-                        f"❌ Migration {result.failed_migration} failed. "
-                        f"Database rolled back."
+                    msg = (
+                        result.error_message
+                        or f"Migration {result.failed_migration} failed"
                     )
+                    logger.error(f"❌ {msg}")
                     logger.info("💡 See logs for details")
                     logger.error(
                         "🐛 Report issues at https://github.com/bsaffel/moneybin/issues"
                     )
                     raise MigrationError(
-                        f"Migration failed: {result.failed_migration}. "
+                        f"Migration failed: {result.failed_migration or 'stuck migration'}. "
                         f"See logs for details."
                     )
 
