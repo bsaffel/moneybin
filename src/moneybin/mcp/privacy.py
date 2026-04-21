@@ -6,21 +6,18 @@ result size limits.
 """
 
 import logging
-import os
 import re
+
+from moneybin.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Configurable limits via environment variables
-MAX_ROWS: int = int(os.getenv("MONEYBIN_MCP_MAX_ROWS", "1000"))
-MAX_CHARS: int = int(os.getenv("MONEYBIN_MCP_MAX_CHARS", "50000"))
-
-# Optional table allowlist (comma-separated)
-_allowed_tables_env = os.getenv("MONEYBIN_MCP_ALLOWED_TABLES", "")
+# Load MCP limits from config (MONEYBIN_MCP__MAX_ROWS, MONEYBIN_MCP__MAX_CHARS, etc.)
+_mcp_cfg = get_settings().mcp
+MAX_ROWS: int = _mcp_cfg.max_rows
+MAX_CHARS: int = _mcp_cfg.max_chars
 ALLOWED_TABLES: set[str] | None = (
-    {t.strip().lower() for t in _allowed_tables_env.split(",") if t.strip()}
-    if _allowed_tables_env
-    else None
+    {t.lower() for t in _mcp_cfg.allowed_tables} if _mcp_cfg.allowed_tables else None
 )
 
 # DuckDB table-valued functions that read local files or make network requests.

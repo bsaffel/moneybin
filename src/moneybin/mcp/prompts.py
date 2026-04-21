@@ -146,14 +146,17 @@ def find_anomalies(days: str = "30") -> str:
 
 
 @mcp.prompt()
-def tax_preparation(tax_year: str = "2024") -> str:
+def tax_preparation(tax_year: str | None = None) -> str:
     """Gather tax-related information for a specific year.
 
     Args:
-        tax_year: The tax year to prepare for.
+        tax_year: The tax year to prepare for. Defaults to the previous calendar year.
     """
+    from datetime import datetime
+
+    resolved_year = tax_year or str(datetime.now().year - 1)
     return _dedent(f"""
-        Help me prepare tax information for {tax_year}.
+        Help me prepare tax information for {resolved_year}.
 
         Steps:
         1. Use get_w2_summary to retrieve W-2 data for the year

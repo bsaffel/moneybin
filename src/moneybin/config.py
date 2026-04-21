@@ -132,6 +132,26 @@ class LoggingConfig(BaseModel):
     )
 
 
+class MCPConfig(BaseModel):
+    """MCP server runtime configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    max_rows: int = Field(
+        default=1000, ge=1, description="Maximum rows returned by any MCP query tool"
+    )
+    max_chars: int = Field(
+        default=50000, ge=1, description="Maximum characters in any MCP tool response"
+    )
+    allowed_tables: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional allowlist of fully-qualified table names the query tool may access "
+            '(e.g. ["core.fct_transactions"]). None means all tables are permitted.'
+        ),
+    )
+
+
 class SyncConfig(BaseModel):
     """Configuration for MoneyBin Sync service (optional paid tier).
 
@@ -202,6 +222,7 @@ class MoneyBinSettings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 
     # Application settings

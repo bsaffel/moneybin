@@ -65,8 +65,11 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 
 ## Configuration
 
-All config lives in `src/moneybin/config.py` — one file, one `MoneyBinSettings` root. Pydantic Settings is the single source of truth. Never hardcode paths or credentials.
+All config lives in `src/moneybin/config.py` — one file, one `MoneyBinSettings` root. Pydantic Settings is the single source of truth. Never hardcode paths, credentials, **or tunable parameters**.
 
+- **What belongs in config:** Any value a user or operator might want to change without editing source code — paths, limits, thresholds, algorithm parameters (e.g. Argon2 cost factors), timeouts, default lookback windows. If you catch yourself writing a magic number that controls behavior, ask: should this be in config?
+- **What does NOT belong in config:** Mathematical constants, regex patterns, SQL keywords, internal type identifiers. Function parameter defaults that represent API surface (e.g. MCP tool `limit=` args the caller can override) are fine as defaults, not config fields.
+- **Never use `os.getenv()` directly.** All environment variable reads go through Pydantic Settings. Raw `os.getenv()` calls outside `config.py` are a bug — they bypass validation, type coercion, and the `MONEYBIN_` prefix convention.
 - **Adding a new config section:** Create a frozen `BaseModel` subclass in `config.py` and add it as a field on `MoneyBinSettings`. Follow the existing pattern (`DatabaseConfig`, `SyncConfig`, etc.).
 - **Accessing config:** Import `get_settings()` — never instantiate `MoneyBinSettings` directly except in tests.
 - **Sensitive values:** Use `SecretStore` (see [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md)), not raw `os.getenv()` or plain `str` fields for secrets.
