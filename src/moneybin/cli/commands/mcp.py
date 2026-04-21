@@ -117,16 +117,22 @@ def config_generate(
         # Install directly without prompting
         moneybin mcp config generate --client claude-desktop --install --yes
     """
-    import shutil
-
     from moneybin.config import get_current_profile
 
     resolved_profile = profile or get_current_profile()
-    moneybin_bin = shutil.which("moneybin") or "moneybin"
 
     server_entry: dict[str, Any] = {
-        "command": moneybin_bin,
-        "args": ["--profile", resolved_profile, "mcp", "serve"],
+        "command": "uv",
+        "args": [
+            "run",
+            "--directory",
+            str(Path.cwd()),
+            "moneybin",
+            "--profile",
+            resolved_profile,
+            "mcp",
+            "serve",
+        ],
     }
 
     snippet = {"mcpServers": {"MoneyBin": server_entry}}

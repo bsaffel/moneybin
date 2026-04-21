@@ -199,27 +199,6 @@ class TestProfileConfiguration:
             settings = MoneyBinSettings(profile="alice")
             assert settings.profile == "alice"
 
-    def test_legacy_environment_variables(self, mocker: MockerFixture) -> None:
-        """Test that legacy DUCKDB_PATH environment variable still works."""
-        with temp_profile("dev"):
-            # Mock legacy environment variables
-            mocker.patch.dict(
-                os.environ,
-                {
-                    "DUCKDB_PATH": "custom/path/db.duckdb",
-                },
-                clear=True,
-            )
-
-            # Mock file existence
-            mocker.patch.object(Path, "exists", return_value=False)
-
-            settings = MoneyBinSettings(profile="dev")
-
-            # Legacy DUCKDB_PATH should still work (resolved against base dir)
-            base = get_base_dir()
-            assert settings.database.path == base / "custom/path/db.duckdb"
-
     def test_profile_field_in_settings(self, mocker: MockerFixture) -> None:
         """Test that profile field is properly set and normalized in settings."""
         with temp_profile("dev"), temp_profile("prod"), temp_profile("Alice_Work"):
@@ -258,10 +237,7 @@ class TestProfileConfiguration:
     def test_profile_aware_paths(self, mocker: MockerFixture) -> None:
         """Test that paths are profile-aware by default."""
         with temp_profile("alice"), temp_profile("bob"):
-            # Clear environment variables that would override profile paths
-            mocker.patch.dict(
-                os.environ, {"DUCKDB_PATH": "", "LOG_FILE_PATH": ""}, clear=True
-            )
+            mocker.patch.dict(os.environ, {}, clear=True)
             mocker.patch.object(Path, "exists", return_value=False)
 
             # Create settings for alice profile
@@ -297,10 +273,7 @@ class TestProfileConfiguration:
     def test_profile_isolation(self, mocker: MockerFixture) -> None:
         """Test that different profiles have completely isolated paths."""
         with temp_profile("alice"), temp_profile("bob"):
-            # Clear environment variables that would override profile paths
-            mocker.patch.dict(
-                os.environ, {"DUCKDB_PATH": "", "LOG_FILE_PATH": ""}, clear=True
-            )
+            mocker.patch.dict(os.environ, {}, clear=True)
             mocker.patch.object(Path, "exists", return_value=False)
 
             alice_settings = MoneyBinSettings(profile="alice")

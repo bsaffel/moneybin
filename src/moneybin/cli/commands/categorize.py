@@ -8,8 +8,6 @@ import logging
 
 import typer
 
-from ...logging import setup_logging
-
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
@@ -21,8 +19,6 @@ app = typer.Typer(
 @app.command("apply-rules")
 def apply_rules_cmd() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
-    setup_logging(cli_mode=True)
-
     from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import (
         apply_deterministic_categorization,
@@ -60,8 +56,6 @@ def seed_cmd() -> None:
     Requires SQLMesh transforms to have been run at least once.
     Safe to run multiple times — existing categories are not overwritten.
     """
-    setup_logging(cli_mode=True)
-
     from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import seed_categories
 
@@ -83,8 +77,6 @@ def seed_cmd() -> None:
 @app.command("stats")
 def stats_cmd() -> None:
     """Show categorization coverage statistics."""
-    setup_logging(cli_mode=True)
-
     from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import get_categorization_stats
 
@@ -121,8 +113,6 @@ def stats_cmd() -> None:
 @app.command("list-rules")
 def list_rules_cmd() -> None:
     """Display all active categorization rules."""
-    setup_logging(cli_mode=True)
-
     from moneybin.database import DatabaseKeyError, get_database
     from moneybin.tables import CATEGORIZATION_RULES
 

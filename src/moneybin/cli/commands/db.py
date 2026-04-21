@@ -123,10 +123,6 @@ def init_db(
     in the OS keychain (auto-key mode). Use --passphrase for passphrase-
     based key derivation via Argon2id.
     """
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     import secrets as secrets_mod
 
     from moneybin.config import get_settings
@@ -190,10 +186,6 @@ def open_shell(
     ),
 ) -> None:
     """Open an interactive DuckDB SQL shell with encrypted database attached."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
@@ -242,10 +234,6 @@ def open_ui(
     ),
 ) -> None:
     """Open DuckDB web UI with encrypted database auto-attached."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
@@ -301,10 +289,6 @@ def run_query(
     ),
 ) -> None:
     """Execute a SQL query against the encrypted DuckDB database."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
@@ -362,10 +346,6 @@ def db_info(
     ),
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from moneybin.config import get_settings
     from moneybin.database import Database
     from moneybin.secrets import SecretNotFoundError, SecretStore
@@ -444,10 +424,6 @@ def db_backup(
     ),
 ) -> None:
     """Create a timestamped backup of the encrypted database file."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from datetime import datetime
 
     from moneybin.config import get_settings
@@ -495,10 +471,6 @@ def db_restore(
     ),
 ) -> None:
     """Restore database from a backup file."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from datetime import datetime
 
     from moneybin.config import get_settings
@@ -591,10 +563,6 @@ def db_restore(
 @app.command("lock")
 def db_lock() -> None:
     """Clear the cached encryption key from OS keychain."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
     store = SecretStore()
@@ -611,10 +579,6 @@ def db_lock() -> None:
 @app.command("unlock")
 def db_unlock() -> None:
     """Derive key from passphrase and cache in OS keychain."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     import base64
     import binascii
 
@@ -676,10 +640,6 @@ def db_unlock() -> None:
 @app.command("key")
 def db_key() -> None:
     """Print the database encryption key."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
     store = SecretStore()
@@ -704,10 +664,6 @@ def db_rotate_key(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
     """Re-encrypt the database with a new key."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
-
     import secrets as secrets_mod
 
     import duckdb as duckdb_mod

@@ -65,19 +65,6 @@ def get_base_dir() -> Path:
     return (Path.home() / ".moneybin").resolve()
 
 
-def _resolve_path(base: Path, p: Path) -> Path:
-    """Resolve a path against base if it is relative; return as-is if absolute.
-
-    Args:
-        base: Base directory to resolve against
-        p: Path to resolve
-
-    Returns:
-        Path: Absolute path
-    """
-    return p if p.is_absolute() else base / p
-
-
 class DatabaseConfig(BaseModel):
     """Database configuration settings."""
 
@@ -304,23 +291,13 @@ class MoneyBinSettings(BaseSettings):
         base = get_base_dir()
         profile_dir = base / "profiles" / profile
 
-        # Check for legacy DUCKDB_PATH environment variable
-        duckdb_path = os.getenv("DUCKDB_PATH")
-
         # Set database path if not explicitly provided
         if "database" not in kwargs:
-            if duckdb_path:
-                kwargs["database"] = DatabaseConfig(
-                    path=_resolve_path(base, Path(duckdb_path)),
-                    backup_path=profile_dir / "backups",
-                    temp_directory=profile_dir / "temp",
-                )
-            else:
-                kwargs["database"] = DatabaseConfig(
-                    path=profile_dir / "moneybin.duckdb",
-                    backup_path=profile_dir / "backups",
-                    temp_directory=profile_dir / "temp",
-                )
+            kwargs["database"] = DatabaseConfig(
+                path=profile_dir / "moneybin.duckdb",
+                backup_path=profile_dir / "backups",
+                temp_directory=profile_dir / "temp",
+            )
 
         if "data" not in kwargs:
             kwargs["data"] = DataConfig(

@@ -29,14 +29,9 @@ conn = duckdb.connect("data/duckdb/moneybin.duckdb")
 ## Environment Variables
 
 ```bash
-# Preferred hierarchical format
 MONEYBIN_DATABASE__PATH=custom/path/db.duckdb
 MONEYBIN_PLAID__CLIENT_ID=your_client_id
 MONEYBIN_PLAID__ENVIRONMENT=production
-
-# Legacy format (still supported)
-DUCKDB_PATH=data/duckdb/moneybin.duckdb
-PLAID_CLIENT_ID=your_client_id
 ```
 
 ## CLI Integration

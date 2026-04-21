@@ -6,6 +6,7 @@ Commands for viewing, cleaning, and tailing log files.
 import logging
 import re
 import time
+from collections import deque
 from datetime import datetime, timedelta
 
 import typer
@@ -123,13 +124,15 @@ def logs_tail(
         logger.info("No log file found: %s", log_path)
         return
 
+    stream_lower = stream.lower() if stream else None
+
+    tail_buf: deque[str] = deque(maxlen=lines)
     with open(log_path) as f:
-        all_lines = f.readlines()
+        for line in f:
+            if stream_lower is None or stream_lower in line.lower():
+                tail_buf.append(line)
 
-    if stream:
-        all_lines = [line for line in all_lines if stream.lower() in line.lower()]
-
-    for line in all_lines[-lines:]:
+    for line in tail_buf:
         typer.echo(line.rstrip())
 
     if follow:
@@ -140,7 +143,7 @@ def logs_tail(
                 while True:
                     line = f.readline()
                     if line:
-                        if stream is None or stream.lower() in line.lower():
+                        if stream_lower is None or stream_lower in line.lower():
                             typer.echo(line.rstrip())
                     else:
                         time.sleep(0.5)

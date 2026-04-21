@@ -51,12 +51,7 @@ class LoggingConfig:
 
         # Resolve log path against the base directory
         base = get_base_dir()
-        env_log_path = os.getenv("LOG_FILE_PATH")
-        if env_log_path:
-            p = Path(env_log_path)
-            log_file_path = p if p.is_absolute() else base / p
-        else:
-            log_file_path = base / f"logs/{profile}/moneybin.log"
+        log_file_path = base / f"logs/{profile}/moneybin.log"
 
         return cls(
             level=os.getenv("LOG_LEVEL", "INFO").upper(),

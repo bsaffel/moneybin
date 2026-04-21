@@ -24,9 +24,6 @@ def profile_create(
     name: Annotated[str, typer.Argument(help="Profile name (will be normalized)")],
 ) -> None:
     """Create a new profile with directory structure and config."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
     svc = ProfileService()
     try:
         profile_dir = svc.create(name)
@@ -40,9 +37,6 @@ def profile_create(
 @app.command("list")
 def profile_list() -> None:
     """List all profiles, marking the active one."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
     svc = ProfileService()
     profiles = svc.list()
     if not profiles:
@@ -59,9 +53,6 @@ def profile_switch(
     name: Annotated[str, typer.Argument(help="Profile name to switch to")],
 ) -> None:
     """Set a different profile as the active default."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
     svc = ProfileService()
     try:
         svc.switch(name)
@@ -80,9 +71,6 @@ def profile_delete(
     ] = False,
 ) -> None:
     """Delete a profile and all its data (database, logs, config)."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
     svc = ProfileService()
     if not yes:
         confirm = typer.confirm(
@@ -109,9 +97,6 @@ def profile_show(
     ] = None,
 ) -> None:
     """Show resolved settings for a profile."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
     svc = ProfileService()
     try:
         info = svc.show(name)
@@ -142,9 +127,6 @@ def profile_set(
     ] = None,
 ) -> None:
     """Set a configuration value on a profile."""
-    from moneybin.logging.config import setup_logging
-
-    setup_logging(cli_mode=True)
     svc = ProfileService()
     target: str
     if name:
