@@ -136,7 +136,12 @@ def config_generate(
         ],
     }
 
-    snippet = {"mcpServers": {"MoneyBin": server_entry}}
+    entry_name = (
+        f"MoneyBin ({resolved_profile})"
+        if resolved_profile != "default"
+        else "MoneyBin"
+    )
+    snippet = {"mcpServers": {entry_name: server_entry}}
     snippet_json = json.dumps(snippet, indent=2)
 
     typer.echo(snippet_json)

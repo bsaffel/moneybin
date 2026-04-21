@@ -819,11 +819,11 @@ def db_ps(
 
     db_path = database or get_settings().database.path
     if not db_path.exists():
-        logger.info("Database file does not exist yet: %s", db_path)
+        logger.info(f"Database file does not exist yet: {db_path}")
         return
     processes = _find_db_processes(db_path)
     if not processes:
-        logger.info("No other processes have %s open", db_path.name)
+        logger.info(f"No other processes have {db_path.name} open")
         return
     typer.echo(f"Processes holding {db_path} open:\n")
     typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
@@ -844,11 +844,11 @@ def db_kill(
 
     db_path = database or get_settings().database.path
     if not db_path.exists():
-        logger.info("Database file does not exist yet: %s", db_path)
+        logger.info(f"Database file does not exist yet: {db_path}")
         return
     processes = _find_db_processes(db_path)
     if not processes:
-        logger.info("No other processes have %s open", db_path.name)
+        logger.info(f"No other processes have {db_path.name} open")
         return
     typer.echo(f"Processes holding {db_path} open:\n")
     typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
@@ -867,11 +867,11 @@ def db_kill(
         pid = int(proc["pid"])
         try:
             os.kill(pid, signal.SIGTERM)
-            logger.info("Sent SIGTERM to PID %d (%s)", pid, proc["command"])
+            logger.info(f"Sent SIGTERM to PID {pid} ({proc['command']})")
             killed += 1
         except ProcessLookupError:
-            logger.warning("⚠️  PID %d already exited", pid)
+            logger.warning(f"⚠️  PID {pid} already exited")
         except PermissionError:
-            logger.error("❌ No permission to kill PID %d (%s)", pid, proc["command"])
+            logger.error(f"❌ No permission to kill PID {pid} ({proc['command']})")
     if killed:
-        logger.info("✅ Sent SIGTERM to %d %s", killed, noun)
+        logger.info(f"✅ Sent SIGTERM to {killed} {noun}")

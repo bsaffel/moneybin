@@ -81,8 +81,8 @@ Do **not** add icons to ordinary informational log lines (paths, counts, results
 ```python
 # Good
 logger.info("⚙️  Starting sync from all institutions...")
-logger.info("✅ Imported %d transactions", count)
-logger.error("❌ File not found: %s", path)
+logger.info(f"✅ Imported {count} transactions")
+logger.error(f"❌ File not found: {path}")
 logger.warning("⚠️  No new data to sync")
 logger.info("💡 Run 'moneybin db init' to create the database first")
 logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
@@ -91,5 +91,5 @@ logger.info("👀 3 auto-generated rules need review")
 # Bad — wrong icon semantics or decorative noise
 logger.info("📈 Beginning incremental sync...")  # chart ≠ working
 logger.info("📊 Loading results:")  # chart ≠ working
-logger.info("📁 Data saved to: %s", path)  # no icon needed for paths
+logger.info(f"📁 Data saved to: {path}")  # no icon needed for paths
 ```
