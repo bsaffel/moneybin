@@ -100,6 +100,7 @@ def stats_show(
             params if params else None,
         ).fetchall()
     except Exception:  # noqa: BLE001 — app.metrics table may not exist yet
+        logger.debug("Failed to query app.metrics", exc_info=True)
         rows = []
 
     if output == "json":

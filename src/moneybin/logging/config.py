@@ -110,7 +110,7 @@ def setup_logging(
 
     # Console handler (always present, writes to stderr)
     console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setFormatter(console_formatter)
+    console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
     handlers.append(console_handler)
 
     # File handler

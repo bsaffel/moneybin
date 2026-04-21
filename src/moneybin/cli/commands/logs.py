@@ -126,7 +126,14 @@ def logs_tail(
         return
 
     # Find the most recent log file for the requested stream
+    valid_streams = {"cli", "mcp", "sqlmesh"}
     stream_prefix = (stream or "cli").lower()
+    if stream_prefix not in valid_streams:
+        logger.error(
+            f"❌ Unknown stream '{stream_prefix}'. "
+            f"Choose from: {', '.join(sorted(valid_streams))}"
+        )
+        raise typer.Exit(1)
     log_files = sorted(
         log_dir.glob(f"{stream_prefix}_*.log"),
         key=lambda p: p.name,
