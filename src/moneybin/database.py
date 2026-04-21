@@ -220,8 +220,11 @@ class Database:
         import subprocess  # noqa: S404  # subprocess is required to invoke the sqlmesh CLI
 
         # Assumes editable install — __file__ resolves to the project tree.
-        # Non-editable installs silently skip (CalledProcessError caught below).
+        # Non-editable installs skip cleanly (sqlmesh dir won't exist).
         sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
+        if not sqlmesh_root.is_dir():
+            logger.debug("sqlmesh project dir not found, skipping migrate")
+            return
         try:
             subprocess.run(  # noqa: S603  # fixed args from trusted internal config, not user input
                 ["uv", "run", "sqlmesh", "-p", str(sqlmesh_root), "migrate"],  # noqa: S607  # uv is a trusted internal tool

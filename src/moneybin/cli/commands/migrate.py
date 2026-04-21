@@ -79,13 +79,13 @@ def migrate_status() -> None:
 
     # Applied migrations
     applied_rows = db.execute(
-        f"SELECT version, filename, checksum, success, execution_ms, applied_at "  # noqa: S608 — SCHEMA_MIGRATIONS is a compile-time TableRef constant
+        f"SELECT version, filename, success, execution_ms, applied_at "  # noqa: S608 — SCHEMA_MIGRATIONS is a compile-time TableRef constant
         f"FROM {SCHEMA_MIGRATIONS.full_name} ORDER BY version"
     ).fetchall()
 
     if applied_rows:
         logger.info("Applied migrations:")
-        for version, filename, _checksum, success, exec_ms, applied_at in applied_rows:
+        for version, filename, success, exec_ms, applied_at in applied_rows:
             status = "✅" if success else "❌"
             time_str = f" ({exec_ms}ms)" if exec_ms is not None else ""
             logger.info(

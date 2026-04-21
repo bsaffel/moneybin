@@ -102,7 +102,7 @@ def discover_migrations(migrations_dir: Path | None = None) -> list[Migration]:
         return []
 
     migrations: list[Migration] = []
-    for path in sorted(directory.iterdir()):
+    for path in directory.iterdir():
         if not path.is_file():
             continue
         if not _MIGRATION_PATTERN.match(path.name):

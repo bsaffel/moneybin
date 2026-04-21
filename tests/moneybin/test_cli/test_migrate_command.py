@@ -171,7 +171,7 @@ class TestMigrateStatus:
 
         mock_db = mock_get_db.return_value
         mock_db.execute.return_value.fetchall.return_value = [
-            (1, "V001__init.sql", "abc123", True, 42, "2026-01-01 00:00:00")
+            (1, "V001__init.sql", True, 42, "2026-01-01 00:00:00")
         ]
 
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.migrate"):
