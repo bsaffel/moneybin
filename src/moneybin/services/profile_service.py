@@ -5,6 +5,8 @@ configuration of user profiles. Each profile is an isolation boundary
 with its own database, logs, and configuration.
 """
 
+from __future__ import annotations
+
 import logging
 import shutil
 from pathlib import Path
@@ -181,6 +183,109 @@ class ProfileService:
             "database_exists": db_path.exists(),
             "config": config_data,
         }
+
+    def migrate_old_layout(self) -> list[str]:
+        """Migrate from old data/<name>/ + logs/<name>/ layout to profiles/<name>/.
+
+        Detects old-format directories under data/ and moves their contents
+        to profiles/<name>/. Safe to call multiple times — no-ops if already migrated.
+
+        Returns:
+            List of profile names that were migrated.
+        """
+        old_data_dir = self._base / "data"
+        if not old_data_dir.exists():
+            return []
+
+        # Skip if profiles/ already has content (already migrated)
+        if self._profiles_dir.exists() and any(self._profiles_dir.iterdir()):
+            return []
+
+        migrated: list[str] = []
+
+        for entry in old_data_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            if not (entry / "moneybin.duckdb").exists() and not any(
+                entry.glob("*.duckdb")
+            ):
+                continue
+
+            profile_name = entry.name
+            profile_dir = self._profiles_dir / profile_name
+            profile_dir.mkdir(parents=True, exist_ok=True)
+
+            # Move database files
+            for db_file in entry.glob("*.duckdb"):
+                dest = profile_dir / db_file.name
+                if not dest.exists():
+                    shutil.move(str(db_file), str(dest))
+
+            # Move backups
+            old_backups = entry / "backups"
+            if old_backups.exists():
+                new_backups = profile_dir / "backups"
+                if not new_backups.exists():
+                    shutil.move(str(old_backups), str(new_backups))
+
+            # Move temp
+            old_temp = entry / "temp"
+            if old_temp.exists():
+                new_temp = profile_dir / "temp"
+                if not new_temp.exists():
+                    shutil.move(str(old_temp), str(new_temp))
+                else:
+                    shutil.rmtree(old_temp)
+
+            # Move logs
+            old_logs = self._base / "logs" / profile_name
+            if old_logs.exists():
+                new_logs = profile_dir / "logs"
+                if not new_logs.exists():
+                    shutil.move(str(old_logs), str(new_logs))
+                else:
+                    for log_file in old_logs.iterdir():
+                        dest = new_logs / log_file.name
+                        if not dest.exists():
+                            shutil.move(str(log_file), str(dest))
+                    shutil.rmtree(old_logs)
+
+            # Ensure dirs exist
+            (profile_dir / "logs").mkdir(exist_ok=True)
+            (profile_dir / "temp").mkdir(exist_ok=True)
+
+            # Generate config if needed
+            if not (profile_dir / "config.yaml").exists():
+                generate_profile_config(profile_dir, profile_name)
+
+            migrated.append(profile_name)
+            logger.info(f"Migrated profile: {profile_name}")
+
+        # Migrate global config key
+        from moneybin.utils.user_config import get_user_config_path
+
+        config_path = get_user_config_path()
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    raw = yaml.safe_load(f)
+                if isinstance(raw, dict) and "default_profile" in raw:
+                    raw_config: dict[str, object] = raw
+                    raw_config["active_profile"] = raw_config.pop("default_profile")
+                    with open(config_path, "w") as f:
+                        yaml.safe_dump(
+                            raw_config,
+                            f,
+                            default_flow_style=False,
+                            sort_keys=False,
+                        )
+                    logger.info(
+                        "Migrated global config: default_profile -> active_profile"
+                    )
+            except Exception as e:  # noqa: BLE001 — defensive: YAML parse errors or I/O issues shouldn't abort migration
+                logger.warning(f"Could not migrate global config: {e}")
+
+        return migrated
 
     def set(self, name: str, key: str, value: str) -> None:
         """Set a config value in a profile's config.yaml.
