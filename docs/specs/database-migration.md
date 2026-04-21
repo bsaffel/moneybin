@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+implemented
 
 ## Goal
 Provide a seamless, automatic upgrade experience for MoneyBin's DuckDB databases
