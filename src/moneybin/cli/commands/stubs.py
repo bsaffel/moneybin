@@ -138,19 +138,3 @@ stats_app = typer.Typer(help="Show lifetime metric aggregates", no_args_is_help=
 def stats_show() -> None:
     """Display lifetime metric aggregates."""
     _not_implemented("observability.md")
-
-
-# --- db migrate ---
-db_migrate_app = typer.Typer(help="Database migration management")
-
-
-@db_migrate_app.command("apply")
-def db_migrate_apply() -> None:
-    """Apply pending database migrations."""
-    _not_implemented("database-migration.md")
-
-
-@db_migrate_app.command("status")
-def db_migrate_status() -> None:
-    """Show migration state."""
-    _not_implemented("database-migration.md")
