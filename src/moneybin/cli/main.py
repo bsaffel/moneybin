@@ -18,7 +18,7 @@ from .commands.stubs import (
     db_migrate_app,
     export_app,
     matches_app,
-    stats_command,
+    stats_app,
     track_app,
 )
 
@@ -78,12 +78,12 @@ def main_callback(
         svc = ProfileService()
         migrated = svc.migrate_old_layout()
         if migrated:
-            logger.info("Migrated %d profile(s) to new directory layout", len(migrated))
+            logger.info(f"Migrated {len(migrated)} profile(s) to new directory layout")
     except Exception:  # noqa: BLE001 — migration is best-effort, don't block CLI startup
         logger.debug("Migration check failed", exc_info=True)
 
 
-# Core command groups
+# Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops
 app.add_typer(
     profile.app,
     name="profile",
@@ -104,10 +104,19 @@ app.add_typer(
     name="categorize",
     help="Manage transaction categories, rules, and merchants",
 )
+app.add_typer(matches_app, name="matches", help="Review and manage transaction matches")
 app.add_typer(
     transform.app,
     name="transform",
     help="Run SQLMesh data transformations",
+)
+app.add_typer(track_app, name="track", help="Balance tracking and net worth")
+app.add_typer(stats_app, name="stats", help="Show lifetime metric aggregates")
+app.add_typer(export_app, name="export", help="Export data to external formats")
+app.add_typer(
+    mcp.app,
+    name="mcp",
+    help="MCP server for AI assistant integration",
 )
 app.add_typer(
     db.app,
@@ -115,27 +124,13 @@ app.add_typer(
     help="Database management and exploration",
 )
 app.add_typer(
-    mcp.app,
-    name="mcp",
-    help="MCP server for AI assistant integration",
-)
-app.add_typer(
     logs.app,
     name="logs",
     help="Manage log files",
 )
-app.add_typer(matches_app, name="matches", help="Review and manage transaction matches")
-app.add_typer(track_app, name="track", help="Balance tracking and net worth")
-app.add_typer(export_app, name="export", help="Export data to external formats")
 
 # Add db migrate as a sub-typer of db
 db.app.add_typer(db_migrate_app, name="migrate", help="Database migration management")
-
-
-@app.command("stats")
-def stats() -> None:
-    """Show lifetime metric aggregates."""
-    stats_command()
 
 
 def main() -> None:

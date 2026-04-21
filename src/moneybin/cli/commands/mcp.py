@@ -13,9 +13,10 @@ from typing import Annotated, Any, Literal, get_args
 
 import typer
 
+from moneybin.config import get_base_dir
 from moneybin.mcp.server import mcp as mcp_server
 
-app = typer.Typer(help="MCP server for AI assistant integration")
+app = typer.Typer(help="MCP server for AI assistant integration", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 # Transport types supported by FastMCP.run()
@@ -126,7 +127,7 @@ def config_generate(
         "args": [
             "run",
             "--directory",
-            str(Path.cwd()),
+            str(get_base_dir()),
             "moneybin",
             "--profile",
             resolved_profile,
@@ -321,13 +322,11 @@ def serve(
         importlib.import_module(module)
 
     db_path = get_database_path()
-    logger.info("Starting MCP server with database: %s", db_path)
+    logger.info(f"Starting MCP server with database: {db_path}")
 
     if transport not in _VALID_TRANSPORTS:
         logger.error(
-            "Invalid transport '%s'. Must be one of: %s",
-            transport,
-            ", ".join(_VALID_TRANSPORTS),
+            f"Invalid transport '{transport}'. Must be one of: {', '.join(_VALID_TRANSPORTS)}"
         )
         raise typer.Exit(1)
 
@@ -336,7 +335,7 @@ def serve(
 
     try:
         init_db()
-        logger.info("MCP server starting (transport=%s, db=%s)", transport, db_path)
+        logger.info(f"MCP server starting (transport={transport}, db={db_path})")
         mcp.run(transport=validated_transport)
     except DatabaseKeyError as e:
         logger.error(f"❌ Database is locked: {e}")
@@ -346,7 +345,7 @@ def serve(
         )
         raise typer.Exit(1) from e
     except FileNotFoundError as e:
-        logger.error("Database not found: %s", e)
+        logger.error(f"Database not found: {e}")
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
         logger.info("MCP server stopped by user")

@@ -33,14 +33,14 @@ def plan_transforms(
     Use --apply to apply the plan immediately.
     """
     db_path = get_database_path()
-    logger.info("Running SQLMesh plan against %s", db_path)
+    logger.info(f"Running SQLMesh plan against {db_path}")
 
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-        logger.error("❌ SQLMesh plan failed: %s", e)
+        logger.error(f"❌ SQLMesh plan failed: {e}")
         raise typer.Exit(1) from e
 
 
@@ -52,14 +52,14 @@ def apply_transforms() -> None:
     models since the last run.
     """
     db_path = get_database_path()
-    logger.info("Applying SQLMesh transforms against %s", db_path)
+    logger.info(f"Applying SQLMesh transforms against {db_path}")
 
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("✅ SQLMesh transforms applied")
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-        logger.error("❌ SQLMesh apply failed: %s", e)
+        logger.error(f"❌ SQLMesh apply failed: {e}")
         raise typer.Exit(1) from e
 
 
@@ -72,12 +72,12 @@ def transform_status() -> None:
         env = ctx.state_reader.get_environment("prod")
         if env:
             logger.info("Environment: prod")
-            logger.info("  Last updated: %s", env.expiration_ts)
+            logger.info(f"  Last updated: {env.expiration_ts}")
         else:
             logger.info("No SQLMesh environment initialized yet")
             logger.info("💡 Run 'moneybin transform apply' to initialize")
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-        logger.error("❌ SQLMesh status failed: %s", e)
+        logger.error(f"❌ SQLMesh status failed: {e}")
         raise typer.Exit(1) from e
 
 
@@ -90,7 +90,7 @@ def transform_validate() -> None:
         ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-        logger.error("❌ Validation failed: %s", e)
+        logger.error(f"❌ Validation failed: {e}")
         raise typer.Exit(1) from e
 
 
@@ -110,7 +110,7 @@ def transform_audit(
         ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-        logger.error("❌ Audit failed: %s", e)
+        logger.error(f"❌ Audit failed: {e}")
         raise typer.Exit(1) from e
 
 
@@ -132,7 +132,7 @@ def transform_restate(
         )
         if not confirm:
             return
-    logger.info("⚙️  Restating %s from %s...", model, start)
+    logger.info(f"⚙️  Restating {model} from {start}...")
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(
@@ -142,7 +142,7 @@ def transform_restate(
             auto_apply=True,
             no_prompts=True,
         )
-        logger.info("✅ Restated %s", model)
+        logger.info(f"✅ Restated {model}")
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-        logger.error("❌ Restatement failed: %s", e)
+        logger.error(f"❌ Restatement failed: {e}")
         raise typer.Exit(1) from e

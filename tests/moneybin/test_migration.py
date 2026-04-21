@@ -75,6 +75,51 @@ class TestMigrateOldLayout:
         svc = ProfileService()
         assert svc.migrate_old_layout() == []
 
+    def test_migrates_backups(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Migrates backups/ directory from data/<name>/ to profiles/<name>/."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        old_data = tmp_path / "data" / "alice"
+        old_data.mkdir(parents=True)
+        (old_data / "moneybin.duckdb").write_text("fake-db")
+        old_backups = old_data / "backups"
+        old_backups.mkdir()
+        (old_backups / "moneybin.duckdb.bak").write_text("fake-backup")
+
+        svc = ProfileService()
+        migrated = svc.migrate_old_layout()
+        assert migrated == ["alice"]
+
+        new_dir = tmp_path / "profiles" / "alice"
+        assert (new_dir / "backups" / "moneybin.duckdb.bak").exists()
+        assert not old_backups.exists()
+
+    def test_migrates_backups_partial_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backup migration merges files when target dir already exists."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        old_data = tmp_path / "data" / "alice"
+        old_data.mkdir(parents=True)
+        (old_data / "moneybin.duckdb").write_text("fake-db")
+        old_backups = old_data / "backups"
+        old_backups.mkdir()
+        (old_backups / "new-backup.bak").write_text("new-backup")
+
+        # Pre-create target with an existing file (simulating partial retry)
+        new_backups = tmp_path / "profiles" / "alice" / "backups"
+        new_backups.mkdir(parents=True)
+        (new_backups / "existing-backup.bak").write_text("existing-backup")
+
+        svc = ProfileService()
+        svc.migrate_old_layout()
+
+        # Both files present after merge
+        assert (new_backups / "existing-backup.bak").read_text() == "existing-backup"
+        assert (new_backups / "new-backup.bak").read_text() == "new-backup"
+        assert not old_backups.exists()
+
     def test_partial_failure_logs_warning_and_continues(
         self,
         tmp_path: Path,

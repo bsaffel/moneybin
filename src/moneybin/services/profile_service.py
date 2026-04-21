@@ -239,12 +239,16 @@ class ProfileService:
                     if not dest.exists():
                         shutil.move(str(db_file), str(dest))
 
-                # Move backups
+                # Move backups (file-by-file merge like logs handler)
                 old_backups = entry / "backups"
                 if old_backups.exists():
                     new_backups = profile_dir / "backups"
-                    if not new_backups.exists():
-                        shutil.move(str(old_backups), str(new_backups))
+                    new_backups.mkdir(exist_ok=True)
+                    for f in old_backups.iterdir():
+                        dest = new_backups / f.name
+                        if not dest.exists():
+                            shutil.move(str(f), str(dest))
+                    shutil.rmtree(old_backups)
 
                 # Move temp
                 old_temp = entry / "temp"

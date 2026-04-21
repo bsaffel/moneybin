@@ -85,50 +85,58 @@ def track_networth_show() -> None:
     _not_implemented("net-worth.md")
 
 
-track_budget_app = typer.Typer(help="Budget tracking")
+track_budget_app = typer.Typer(help="Budget tracking", no_args_is_help=True)
 track_app.add_typer(track_budget_app, name="budget")
 
 
-@track_budget_app.callback(invoke_without_command=True)
-def track_budget_stub() -> None:
-    """Budget tracking commands."""
+@track_budget_app.command("show")
+def track_budget_show() -> None:
+    """Show budget status."""
     _not_implemented("budget-tracking.md")
 
 
-track_recurring_app = typer.Typer(help="Recurring transaction detection")
+track_recurring_app = typer.Typer(
+    help="Recurring transaction detection", no_args_is_help=True
+)
 track_app.add_typer(track_recurring_app, name="recurring")
 
 
-@track_recurring_app.callback(invoke_without_command=True)
-def track_recurring_stub() -> None:
-    """Recurring transaction commands."""
+@track_recurring_app.command("show")
+def track_recurring_show() -> None:
+    """Show detected recurring transactions."""
     logger.info("This command is not yet implemented.")
     logger.info("💡 This feature is planned for a future spec")
 
 
-track_investments_app = typer.Typer(help="Investment tracking")
+track_investments_app = typer.Typer(help="Investment tracking", no_args_is_help=True)
 track_app.add_typer(track_investments_app, name="investments")
 
 
-@track_investments_app.callback(invoke_without_command=True)
-def track_investments_stub() -> None:
-    """Investment tracking commands."""
+@track_investments_app.command("show")
+def track_investments_show() -> None:
+    """Show investment portfolio."""
     _not_implemented("investment-tracking.md")
 
 
 # --- export ---
-export_app = typer.Typer(help="Export data to CSV, Excel, and other formats")
+export_app = typer.Typer(
+    help="Export data to CSV, Excel, and other formats", no_args_is_help=True
+)
 
 
-@export_app.callback(invoke_without_command=True)
-def export_callback() -> None:
-    """Export financial data."""
+@export_app.command("run")
+def export_run() -> None:
+    """Export financial data to a file."""
     _not_implemented("export.md")
 
 
 # --- stats ---
-def stats_command() -> None:
-    """Show lifetime metric aggregates."""
+stats_app = typer.Typer(help="Show lifetime metric aggregates", no_args_is_help=True)
+
+
+@stats_app.command("show")
+def stats_show() -> None:
+    """Display lifetime metric aggregates."""
     _not_implemented("observability.md")
 
 

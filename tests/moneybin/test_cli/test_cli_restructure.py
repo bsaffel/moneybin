@@ -106,5 +106,5 @@ class TestStubbedCommands:
     @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
     def test_stats_stubbed(self, mock_profile: MagicMock) -> None:
         """Stats command exists."""
-        result = runner.invoke(app, ["stats"])
+        result = runner.invoke(app, ["stats", "--help"])
         assert result.exit_code == 0

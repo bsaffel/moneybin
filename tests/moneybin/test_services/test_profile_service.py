@@ -132,6 +132,22 @@ class TestProfileDelete:
         with pytest.raises(ProfileNotFoundError):
             svc.delete("nonexistent")
 
+    def test_delete_active_profile_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting the active profile raises ValueError."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr(
+            "moneybin.utils.user_config.get_user_config_path",
+            lambda: config_path,
+        )
+        svc = ProfileService()
+        svc.create("alice")
+        svc.switch("alice")
+        with pytest.raises(ValueError, match="Cannot delete the active profile"):
+            svc.delete("alice")
+
 
 class TestProfileShow:
     """Test profile show (resolved settings)."""

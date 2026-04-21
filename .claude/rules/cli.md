@@ -40,6 +40,11 @@ Recovery messages containing keys, tokens, or credentials must go to stderr via 
 
 When a command modifies multiple persistent stores in sequence (e.g., file move + keychain update), wrap later steps in try/except with recovery guidance: tell the user what state they're in, where the backup is, and don't delete backups until all steps succeed.
 
+## Command Group Registration
+
+- **Workflow ordering**: Top-level commands in `main.py` are registered in workflow order: setup → ingest → enrich → pipeline → analyze → output → integrations → ops. New commands should be inserted at the appropriate workflow stage.
+- **`no_args_is_help=True`**: Every `typer.Typer()` group must set this flag so bare invocation shows help text consistently. Do not use `invoke_without_command=True` callbacks as a substitute for showing help.
+
 ## Conventions
 
 - Kebab-case for command names

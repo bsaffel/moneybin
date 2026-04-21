@@ -78,7 +78,7 @@ def logs_clean(
     cutoff = datetime.now() - delta
 
     if not log_dir.exists():
-        logger.info("Log directory does not exist: %s", log_dir)
+        logger.info(f"Log directory does not exist: {log_dir}")
         return
 
     deleted = 0
@@ -91,21 +91,21 @@ def logs_clean(
         if mtime < cutoff:
             size = log_file.stat().st_size
             if dry_run:
-                logger.info("  Would delete: %s (%.1f KB)", log_file.name, size / 1024)
+                logger.info(f"  Would delete: {log_file.name} ({size / 1024:.1f} KB)")
             else:
                 log_file.unlink()
-                logger.info("  Deleted: %s", log_file.name)
+                logger.info(f"  Deleted: {log_file.name}")
             deleted += 1
             freed_bytes += size
 
     if deleted == 0:
-        logger.info("No log files older than %s", older_than)
+        logger.info(f"No log files older than {older_than}")
     elif dry_run:
         logger.info(
-            "Would delete %d file(s), freeing %.1f KB", deleted, freed_bytes / 1024
+            f"Would delete {deleted} file(s), freeing {freed_bytes / 1024:.1f} KB"
         )
     else:
-        logger.info("✅ Deleted %d file(s), freed %.1f KB", deleted, freed_bytes / 1024)
+        logger.info(f"✅ Deleted {deleted} file(s), freed {freed_bytes / 1024:.1f} KB")
 
 
 @app.command("tail")
@@ -121,7 +121,7 @@ def logs_tail(
     log_path = settings.logging.log_file_path
 
     if not log_path.exists():
-        logger.info("No log file found: %s", log_path)
+        logger.info(f"No log file found: {log_path}")
         return
 
     stream_lower = stream.lower() if stream else None

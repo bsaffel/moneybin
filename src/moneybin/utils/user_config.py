@@ -226,36 +226,40 @@ def prompt_for_profile_name() -> str:
         ValueError: If user provides invalid input
         KeyboardInterrupt: If user cancels (Ctrl+C)
     """
-    print("\n👋 Welcome to MoneyBin!\n")
-    print("To get started, please enter your first name.")
-    print("This will be your default profile name.")
-    print("(You can create additional profiles later for other people or purposes)\n")
+    import typer
+
+    typer.echo("\n👋 Welcome to MoneyBin!\n")
+    typer.echo("To get started, please enter your first name.")
+    typer.echo("This will be your default profile name.")
+    typer.echo(
+        "(You can create additional profiles later for other people or purposes)\n"
+    )
 
     while True:
         try:
             name = input("First name: ").strip()
 
             if not name:
-                print("❌ Please enter a name.\n")
+                typer.echo("❌ Please enter a name.\n")
                 continue
 
             # Normalize the name
             try:
                 normalized = normalize_profile_name(name)
-                print(f"\n✅ Your profile name will be: {normalized}")
+                typer.echo(f"\n✅ Your profile name will be: {normalized}")
 
                 # Confirm with user
                 confirm = input("Is this okay? [Y/n]: ").strip().lower()
                 if confirm in ("", "y", "yes"):
                     return normalized
-                print("\nLet's try again.\n")
+                typer.echo("\nLet's try again.\n")
 
             except ValueError as e:
-                print(f"❌ {e}")
-                print("Please try again with a different name.\n")
+                typer.echo(f"❌ {e}")
+                typer.echo("Please try again with a different name.\n")
 
         except (KeyboardInterrupt, EOFError):
-            print("\n\n⚠️  Setup cancelled. You'll be prompted again next time.")
+            typer.echo("\n\n⚠️  Setup cancelled. You'll be prompted again next time.")
             raise KeyboardInterrupt("User cancelled profile setup") from None
 
 
@@ -268,6 +272,8 @@ def ensure_default_profile() -> str:
     Raises:
         KeyboardInterrupt: If user cancels setup
     """
+    import typer
+
     # Check if default profile is already set
     default_profile = get_default_profile()
 
@@ -286,8 +292,8 @@ def ensure_default_profile() -> str:
     try:
         svc = ProfileService()
         profile_dir = svc.create(profile_name)
-        print(f"\n🎉 Your default profile '{profile_name}' has been created!")
-        print(f"    Data will be stored in: {profile_dir}\n")
+        typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
+        typer.echo(f"    Data will be stored in: {profile_dir}\n")
     except ProfileExistsError:
         pass  # already exists — fine on first run
     except OSError as e:
@@ -295,8 +301,8 @@ def ensure_default_profile() -> str:
         from moneybin.config import get_base_dir
 
         base = get_base_dir()
-        print(f"\n🎉 Your default profile '{profile_name}' has been created!")
-        print(f"    Data will be stored in: {base / 'profiles' / profile_name}\n")
+        typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
+        typer.echo(f"    Data will be stored in: {base / 'profiles' / profile_name}\n")
 
     return profile_name
 
@@ -308,9 +314,11 @@ def reset_user_config() -> None:
     """
     config_path = get_user_config_path()
 
+    import typer
+
     if config_path.exists():
         config_path.unlink()
         logger.info(f"Deleted user config: {config_path}")
-        print(f"✅ Reset user configuration: {config_path}")
+        typer.echo(f"✅ Reset user configuration: {config_path}")
     else:
-        print("ℹ️  No user configuration to reset.")
+        typer.echo("ℹ️  No user configuration to reset.")
