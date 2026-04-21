@@ -95,7 +95,11 @@ def _run_transforms(db_path: Path) -> bool:
         True if transforms ran successfully.
     """
     import duckdb as duckdb_mod
-    from sqlmesh.core.config.connection import BaseDuckDBConnectionConfig
+    from sqlmesh.core.config import Config, GatewayConfig
+    from sqlmesh.core.config.connection import (
+        BaseDuckDBConnectionConfig,
+        DuckDBConnectionConfig,
+    )
     from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 
     from moneybin.secrets import SecretStore
@@ -132,11 +136,18 @@ def _run_transforms(db_path: Path) -> bool:
     BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
 
     try:
+        config = Config(
+            default_gateway="moneybin",
+            gateways={
+                "moneybin": GatewayConfig(
+                    connection=DuckDBConnectionConfig(database=str(db_path)),
+                ),
+            },
+        )
         ctx = Context(
             paths=str(_SQLMESH_ROOT),
-            gateway={  # type: ignore[reportArgumentType] — SQLMesh accepts dict at runtime
-                "connection": {"type": "duckdb", "database": str(db_path)},
-            },
+            config=config,
+            gateway="moneybin",
         )
         ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("SQLMesh transforms completed")
