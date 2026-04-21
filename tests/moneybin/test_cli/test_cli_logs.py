@@ -7,47 +7,45 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.logs import (
-    _parse_duration as _parse_duration,  # type: ignore[reportPrivateUsage] — testing internal helper
-)
 from moneybin.cli.commands.logs import app
+from moneybin.utils.parsing import parse_duration
 
 runner = CliRunner()
 
 
 class TestParseDuration:
-    """Tests for the _parse_duration helper function."""
+    """Tests for the parse_duration helper function."""
 
     def test_parse_days(self) -> None:
-        """_parse_duration parses day strings correctly."""
-        assert _parse_duration("30d") == timedelta(days=30)
-        assert _parse_duration("7d") == timedelta(days=7)
-        assert _parse_duration("1d") == timedelta(days=1)
+        """parse_duration parses day strings correctly."""
+        assert parse_duration("30d") == timedelta(days=30)
+        assert parse_duration("7d") == timedelta(days=7)
+        assert parse_duration("1d") == timedelta(days=1)
 
     def test_parse_hours(self) -> None:
-        """_parse_duration parses hour strings correctly."""
-        assert _parse_duration("24h") == timedelta(hours=24)
-        assert _parse_duration("1h") == timedelta(hours=1)
+        """parse_duration parses hour strings correctly."""
+        assert parse_duration("24h") == timedelta(hours=24)
+        assert parse_duration("1h") == timedelta(hours=1)
 
     def test_parse_minutes(self) -> None:
-        """_parse_duration parses minute strings correctly."""
-        assert _parse_duration("60m") == timedelta(minutes=60)
-        assert _parse_duration("5m") == timedelta(minutes=5)
+        """parse_duration parses minute strings correctly."""
+        assert parse_duration("60m") == timedelta(minutes=60)
+        assert parse_duration("5m") == timedelta(minutes=5)
 
     def test_parse_invalid_format_raises(self) -> None:
-        """_parse_duration raises ValueError for invalid formats."""
+        """parse_duration raises ValueError for invalid formats."""
         with pytest.raises(ValueError, match="Invalid duration format"):
-            _parse_duration("30")
+            parse_duration("30")
 
     def test_parse_invalid_unit_raises(self) -> None:
-        """_parse_duration raises ValueError for unknown units."""
+        """parse_duration raises ValueError for unknown units."""
         with pytest.raises(ValueError, match="Invalid duration format"):
-            _parse_duration("30s")
+            parse_duration("30s")
 
     def test_parse_empty_raises(self) -> None:
-        """_parse_duration raises ValueError for empty string."""
+        """parse_duration raises ValueError for empty string."""
         with pytest.raises(ValueError, match="Invalid duration format"):
-            _parse_duration("")
+            parse_duration("")
 
 
 class TestLogsPath:

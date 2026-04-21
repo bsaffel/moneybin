@@ -64,24 +64,27 @@ def tracked(
             call_labels = {"operation": operation, "source_type": source_type}
             _TRACKED_CALLS.labels(**call_labels).inc()
             start = time.monotonic()
+            error: Exception | None = None
             try:
-                result = func(*args, **kwargs)
-                duration = time.monotonic() - start
-                _TRACKED_DURATION.labels(**call_labels).observe(duration)
-                logger.debug(f"{operation} completed in {duration:.3f}s")
-                return result
+                return func(*args, **kwargs)
             except Exception as exc:
+                error = exc
+                raise
+            finally:
                 duration = time.monotonic() - start
                 _TRACKED_DURATION.labels(**call_labels).observe(duration)
-                _TRACKED_ERRORS.labels(
-                    operation=operation,
-                    error_type=type(exc).__name__,
-                    source_type=source_type,
-                ).inc()
-                logger.debug(
-                    f"{operation} failed after {duration:.3f}s: {type(exc).__name__}"
-                )
-                raise
+                if error is not None:
+                    _TRACKED_ERRORS.labels(
+                        operation=operation,
+                        error_type=type(error).__name__,
+                        source_type=source_type,
+                    ).inc()
+                    logger.debug(
+                        f"{operation} failed after {duration:.3f}s: "
+                        f"{type(error).__name__}"
+                    )
+                else:
+                    logger.debug(f"{operation} completed in {duration:.3f}s")
 
         return wrapper
 

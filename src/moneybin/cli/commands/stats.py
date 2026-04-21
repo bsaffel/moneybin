@@ -10,10 +10,8 @@ from typing import Annotated
 
 import typer
 
-from moneybin.cli.commands.logs import (
-    _parse_duration,  # type: ignore[reportPrivateUsage] — shared CLI helper, not truly private
-)
 from moneybin.database import DatabaseKeyError, get_database
+from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +53,7 @@ def stats_show(
 
     if since:
         try:
-            delta = _parse_duration(since)
+            delta = parse_duration(since)
         except ValueError as e:
             logger.error(f"❌ {e}")
             raise typer.Exit(1) from e

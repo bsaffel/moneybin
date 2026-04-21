@@ -35,6 +35,10 @@ def mock_db() -> MagicMock:
     db = MagicMock()
     db.conn = conn
     db.execute = conn.execute
+    db.executemany = conn.executemany
+    db.begin = conn.begin
+    db.commit = conn.commit
+    db.rollback = conn.rollback
     return db
 
 

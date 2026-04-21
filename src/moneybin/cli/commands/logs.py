@@ -4,14 +4,14 @@ Commands for viewing, cleaning, and tailing log files.
 """
 
 import logging
-import re
 import time
-from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime
+from pathlib import Path
 
 import typer
 
 from moneybin.config import get_settings
+from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
 
@@ -19,34 +19,6 @@ app = typer.Typer(
     help="Manage log files",
     no_args_is_help=True,
 )
-
-
-def _parse_duration(duration: str) -> timedelta:
-    """Parse a duration string like '30d', '7d', '24h' into a timedelta.
-
-    Args:
-        duration: Duration string (e.g., "30d", "7d", "24h", "60m").
-
-    Returns:
-        timedelta for the specified duration.
-
-    Raises:
-        ValueError: If format is invalid.
-    """
-    match = re.match(r"^(\d+)([dhm])$", duration.strip())
-    if not match:
-        raise ValueError(
-            f"Invalid duration format: '{duration}'. Use <number><unit> "
-            "where unit is d (days), h (hours), or m (minutes)."
-        )
-    value = int(match.group(1))
-    unit = match.group(2)
-    if unit == "d":
-        return timedelta(days=value)
-    elif unit == "h":
-        return timedelta(hours=value)
-    else:
-        return timedelta(minutes=value)
 
 
 @app.command("path")
@@ -68,7 +40,7 @@ def logs_clean(
 ) -> None:
     """Delete log files older than a specified duration."""
     try:
-        delta = _parse_duration(older_than)
+        delta = parse_duration(older_than)
     except ValueError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
@@ -108,6 +80,35 @@ def logs_clean(
         logger.info(f"✅ Deleted {deleted} file(s), freed {freed_bytes / 1024:.1f} KB")
 
 
+def _tail_file(path: Path, n: int, block_size: int = 8192) -> list[str]:
+    """Read the last n lines of a file without loading it entirely into memory.
+
+    Args:
+        path: Path to the file.
+        n: Number of lines to return.
+        block_size: Bytes to read per backward seek step.
+
+    Returns:
+        The last n lines of the file.
+    """
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        if size == 0:
+            return []
+
+        data = b""
+        pos = size
+        while pos > 0 and data.count(b"\n") <= n:
+            step = min(block_size, pos)
+            pos -= step
+            f.seek(pos)
+            data = f.read(step) + data
+
+        lines = data.decode(errors="replace").splitlines()
+        return lines[-n:]
+
+
 @app.command("tail")
 def logs_tail(
     stream: str | None = typer.Option(
@@ -138,12 +139,9 @@ def logs_tail(
 
     log_path = log_files[0]  # Most recent by name (date-sorted)
 
-    tail_buf: deque[str] = deque(maxlen=lines)
-    with open(log_path) as f:
-        for line in f:
-            tail_buf.append(line)
-
-    for line in tail_buf:
+    # Read last N lines efficiently by seeking backward from end of file
+    tail_lines = _tail_file(log_path, lines)
+    for line in tail_lines:
         typer.echo(line.rstrip())
 
     if follow:

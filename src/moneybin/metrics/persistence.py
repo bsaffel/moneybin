@@ -14,16 +14,31 @@ Load strategy:
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from prometheus_client import CollectorRegistry
 from prometheus_client.metrics import MetricWrapperBase
+
+
+class _DBExecutor(Protocol):
+    """Minimal interface for database access in metrics persistence."""
+
+    def execute(self, query: str, params: list[Any] | None = None) -> Any: ...  # noqa: E704  # protocol stub
+
+    def executemany(self, query: str, params: list[list[Any]]) -> Any: ...  # noqa: E704  # protocol stub
+
+    def begin(self) -> None: ...  # noqa: E704  # protocol stub
+
+    def commit(self) -> None: ...  # noqa: E704  # protocol stub
+
+    def rollback(self) -> None: ...  # noqa: E704  # protocol stub
+
 
 logger = logging.getLogger(__name__)
 
 
 def flush_to_duckdb(
-    db: object,
+    db: _DBExecutor,
     *,
     registry: CollectorRegistry | None = None,
 ) -> None:
@@ -32,7 +47,7 @@ def flush_to_duckdb(
     Each metric+label combination becomes one row with a snapshot timestamp.
 
     Args:
-        db: Database instance (must have an ``execute()`` method).
+        db: Database instance with an ``execute()`` method.
         registry: Prometheus registry to read from. Defaults to the
             global REGISTRY.
     """
@@ -41,7 +56,7 @@ def flush_to_duckdb(
     reg = registry or REGISTRY
     now = datetime.now(tz=UTC)
 
-    rows_written = 0
+    rows: list[list[object]] = []
     for metric in reg.collect():
         # Skip internal prometheus metrics
         if metric.name.startswith(("python_", "process_")):
@@ -89,34 +104,45 @@ def flush_to_duckdb(
                     bucket_counts = counts
 
             labels_json = json.dumps(labels) if labels else "{}"
+            rows.append([
+                base_name,
+                metric_type,
+                labels_json,
+                sample.value,
+                bucket_bounds,
+                bucket_counts,
+                now,
+            ])
 
-            try:
-                db.execute(  # type: ignore[union-attr]  # db is typed as object for flexibility
-                    """
-                    INSERT INTO app.metrics
-                        (metric_name, metric_type, labels, value,
-                         bucket_bounds, bucket_counts, recorded_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        base_name,
-                        metric_type,
-                        labels_json,
-                        sample.value,
-                        bucket_bounds,
-                        bucket_counts,
-                        now,
-                    ],
-                )
-                rows_written += 1
-            except Exception:  # noqa: BLE001  # best-effort flush; log and continue
-                logger.debug(f"Failed to flush metric {base_name}", exc_info=True)
+    if not rows:
+        logger.debug("No metrics to flush")
+        return
 
-    logger.debug(f"Flushed {rows_written} metric rows to app.metrics")
+    try:
+        db.begin()
+        db.executemany(
+            """
+            INSERT INTO app.metrics
+                (metric_name, metric_type, labels, value,
+                 bucket_bounds, bucket_counts, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001  # best-effort flush; DB may be unavailable
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001, S110  # rollback is best-effort; nothing useful to log
+            pass
+        logger.debug("Failed to flush metrics batch", exc_info=True)
+        return
+
+    logger.debug(f"Flushed {len(rows)} metric rows to app.metrics")
 
 
 def load_from_duckdb(
-    db: object,
+    db: _DBExecutor,
     *,
     registry: CollectorRegistry | None = None,
 ) -> None:
@@ -126,7 +152,7 @@ def load_from_duckdb(
     Histograms: bucket restoration is deferred to a future task.
 
     Args:
-        db: Database instance (must have an ``execute()`` method).
+        db: Database instance with an ``execute()`` method.
         registry: Prometheus registry to restore into. Defaults to the
             global REGISTRY.
     """
@@ -137,7 +163,7 @@ def load_from_duckdb(
     try:
         raw_rows = cast(
             list[tuple[Any, ...]],
-            db.execute(  # type: ignore[union-attr]  # db is typed as object for flexibility
+            db.execute(
                 """
                 SELECT metric_name, metric_type, labels, value
                 FROM app.metrics

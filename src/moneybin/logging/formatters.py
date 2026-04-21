@@ -65,11 +65,7 @@ class JSONFormatter(logging.Formatter):
         # Copy non-standard attributes as extra fields
         for key, value in record.__dict__.items():
             if key not in _RESERVED_ATTRS and key != "message":
-                try:
-                    json.dumps(value)  # Only include JSON-serializable values
-                    obj[key] = value
-                except (TypeError, ValueError):
-                    pass
+                obj[key] = value
 
         if record.exc_info and record.exc_info[1] is not None:
             obj["exception"] = self.formatException(record.exc_info)
