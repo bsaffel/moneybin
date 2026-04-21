@@ -1,7 +1,8 @@
 """Main CLI application for MoneyBin.
 
 This module provides the unified entry point for all MoneyBin CLI operations,
-organizing commands into six groups: config, import, sync, data, db, mcp.
+organizing commands into groups: profile, import, sync, categorize, transform,
+db, mcp.
 """
 
 import logging
@@ -12,7 +13,7 @@ import typer
 from ..config import set_current_profile
 from ..logging import setup_logging
 from ..utils.user_config import ensure_default_profile
-from .commands import config, data, db, import_cmd, mcp, sync
+from .commands import categorize, db, import_cmd, mcp, profile, sync, transform
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,12 @@ app = typer.Typer(
 
 @app.callback()
 def main_callback(
-    profile: Annotated[
+    profile_name: Annotated[
         str | None,
         typer.Option(
             "--profile",
             "-p",
-            help="User profile to use (e.g., alice, bob, yourself). Uses saved default if not specified.",
+            help="User profile to use. Uses saved default if not specified.",
             envvar="MONEYBIN_PROFILE",
         ),
     ] = None,
@@ -45,79 +46,57 @@ def main_callback(
         ),
     ] = False,
 ) -> None:
-    """Global options for MoneyBin CLI.
-
-    The profile option determines which user's financial data to work with:
-    - Each profile has isolated data storage in data/{profile}/
-    - Each profile loads from .env.{profile} files (e.g., .env.alice, .env.bob)
-    - Use profiles for: different family members, personal vs business, etc.
-    - Profile names are normalized to lowercase with hyphens
-
-    Examples:
-      moneybin sync plaid                            # Use default profile
-      moneybin --profile=alice sync plaid            # Sync Alice's bank accounts
-      moneybin --profile=bob import file stmt.ofx    # Import Bob's statement
-      moneybin --profile=household data transform apply  # Transform household data
-
-    Can also be set via MONEYBIN_PROFILE environment variable.
-    Priority: --profile flag > MONEYBIN_PROFILE > saved default > prompt
-    """
-    # Resolve profile name BEFORE setting up logging so logs go to correct directory
-    # Priority:
-    # 1. --profile flag (already checked by typer)
-    # 2. MONEYBIN_PROFILE env var (already checked by typer)
-    # 3. Saved default from ~/.moneybin/config.yaml
-    # 4. Prompt user for first name
-    if profile is None:
+    """Global options for MoneyBin CLI."""
+    if profile_name is None:
         try:
-            profile = ensure_default_profile()
+            profile_name = ensure_default_profile()
         except KeyboardInterrupt:
-            # User cancelled setup
             raise typer.Abort() from None
 
-    # Set the current profile globally (will normalize the name)
     try:
-        set_current_profile(profile)
+        set_current_profile(profile_name)
     except ValueError as e:
         raise typer.BadParameter(str(e)) from e
 
-    # Initialize logging AFTER profile is set so logs go to profile-specific directory
-    setup_logging(cli_mode=True, verbose=verbose, profile=profile)
-
-    # Log which profile is active
-    logger.info(f"👤 Using profile: {profile}")
+    setup_logging(cli_mode=True, verbose=verbose, profile=profile_name)
+    logger.info(f"Using profile: {profile_name}")
 
 
-# Add command groups
+# Core command groups
 app.add_typer(
-    config.app,
-    name="config",
-    help="Manage profiles, settings, and API credentials",
-)
-app.add_typer(
-    mcp.app,
-    name="mcp",
-    help="Run the MCP server for AI app integrations (Claude, etc.)",
+    profile.app,
+    name="profile",
+    help="Manage user profiles (create, list, switch, delete, show, set)",
 )
 app.add_typer(
     import_cmd.app,
     name="import",
-    help="Import financial files (OFX/QFX bank statements, W-2 PDFs) into MoneyBin",
+    help="Import financial files into MoneyBin",
 )
 app.add_typer(
     sync.app,
     name="sync",
-    help="Sync transactions from Moneybin servers.",
+    help="Sync transactions from external services",
 )
 app.add_typer(
-    data.app,
-    name="data",
-    help="Fine-grained data pipeline commands like extract, load, and transform",
+    categorize.app,
+    name="categorize",
+    help="Manage transaction categories, rules, and merchants",
+)
+app.add_typer(
+    transform.app,
+    name="transform",
+    help="Run SQLMesh data transformations",
 )
 app.add_typer(
     db.app,
     name="db",
-    help="Explore and query your DuckDB database directly",
+    help="Database management and exploration",
+)
+app.add_typer(
+    mcp.app,
+    name="mcp",
+    help="MCP server for AI assistant integration",
 )
 
 
