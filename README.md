@@ -146,6 +146,13 @@ from extractors      type casting (views)     multi-source (tables)
 - **Local-first architecture** — no cloud account, no telemetry, no external network calls.
 - **Defense in depth** — PII sanitization in logs, parameterized SQL throughout, path validation on file operations.
 
+### Observability
+
+- **Structured logging** — stream-based routing (`cli`, `mcp`, `sqlmesh`) with daily log files, human-readable and JSON formatters, PII sanitization.
+- **Metrics** — `prometheus_client`-backed counters, gauges, and histograms with automatic DuckDB persistence across restarts.
+- **Instrumentation** — `@tracked` decorator and `track_duration` context manager for zero-boilerplate operation timing.
+- **CLI** — `moneybin stats show` for lifetime metric aggregates; `moneybin logs tail --stream mcp` for stream-filtered log viewing.
+
 ### Multi-Profile Support
 
 Each profile is an isolation boundary with its own database, config, and logs under `~/.moneybin/profiles/<name>/`.
@@ -243,7 +250,7 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | Multi-profile support (isolated DBs, config, logs) | ✅ |
 | CLI restructure (profiles, domain commands, base dir) | ✅ |
 | Database migration system | 📐 |
-| Observability (metrics, structured logging) | 📐 |
+| Observability (metrics, structured logging) | ✅ |
 | Synthetic test data generator | 📐 |
 | Privacy tiers & consent model | 📐 |
 | Export (CSV, Excel, Google Sheets) | 🗓️ |

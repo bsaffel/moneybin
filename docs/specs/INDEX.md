@@ -95,7 +95,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [CLI Restructure](cli-restructure.md) | Architecture | in-progress | Target CLI command tree: profiles as first-class, `import` as golden path, domain commands top-level. Reference spec for all other specs' CLI sections. |
-| [Observability](observability.md) | Feature | ready | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
+| [Observability](archived/observability.md) | Feature | implemented | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
 | [Database Migration](database-migration.md) | Feature | ready | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
 | `export.md` | Feature | planned | Export analysis results to CSV, Excel, Google Sheets |
 | `cli-ux-standards.md` | Architecture | planned | CLI interaction patterns: progressive disclosure, review queues, status commands, output formatting |

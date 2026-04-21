@@ -1,6 +1,6 @@
 # Observability
 
-> Status: ready
+> Status: implemented
 > Dependencies: privacy-data-protection.md (provides `SanitizedLogFormatter`)
 > Scope: Logging consolidation, structured metrics, instrumentation API, CLI commands
 
