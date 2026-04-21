@@ -14,6 +14,8 @@ from moneybin.mcp.resources import (
     w2_by_year,
 )
 
+pytestmark = pytest.mark.usefixtures("mcp_db")
+
 # ---------------------------------------------------------------------------
 # Schema resources
 # ---------------------------------------------------------------------------
@@ -88,7 +90,7 @@ class TestRecentTransactions:
     """Tests for recent transactions resource."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute("""
             INSERT INTO core.fct_transactions (
@@ -133,7 +135,7 @@ class TestW2Resource:
     """Tests for W2 tax year resource."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute("""
             INSERT INTO raw.w2_forms (

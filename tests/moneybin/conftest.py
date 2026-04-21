@@ -115,6 +115,6 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None
         A Database instance ready for test queries.
     """
     db_path = tmp_path / "test.duckdb"
-    database = Database(db_path, secret_store=mock_secret_store)
+    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
     yield database
     database.close()

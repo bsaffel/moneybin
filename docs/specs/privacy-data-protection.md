@@ -73,8 +73,7 @@ duration of the shell session.
 ### Encryption at Rest
 1. All new databases are encrypted with AES-256-GCM via DuckDB's encryption extension.
    Unencrypted databases are never the default state.
-2. The `httpfs` extension is loaded for OpenSSL-backed encryption writes (hardware AES
-   acceleration, negligible overhead).
+2. DuckDB handles AES-256-GCM encryption natively; no additional extensions required.
 3. DuckDB temp files are automatically encrypted when the database is encrypted.
 4. Two key modes are supported, chosen at `db init` time:
    - **Auto-key (default):** Random 256-bit key generated and stored in OS keychain.
@@ -127,14 +126,13 @@ duration of the shell session.
 17. The `Database` class owns the full initialization sequence:
     a. Retrieve encryption key via `SecretStore().get_key("DATABASE__ENCRYPTION_KEY")`
     b. Open in-memory DuckDB connection
-    c. Load required extensions (`httpfs`)
-    d. Attach encrypted database file via `ATTACH ... (ENCRYPTION_KEY ?)`
-    e. `USE <attached_db>`
-    f. Run `init_schemas()` (idempotent baseline DDL)
-    g. Run `MigrationRunner.apply_all()` (pending schema migrations)
-    h. Check SQLMesh version, run `sqlmesh migrate` if needed
-    i. Record version state in `app.versions`
-    j. Connection is ready
+    c. Attach encrypted database file via `ATTACH ... (ENCRYPTION_KEY ?)`
+    d. `USE <attached_db>`
+    e. Run `init_schemas()` (idempotent baseline DDL)
+    f. Run `MigrationRunner.apply_all()` (pending schema migrations)
+    g. Check SQLMesh version, run `sqlmesh migrate` if needed
+    h. Record version state in `app.versions`
+    i. Connection is ready
 18. The `Database` class exposes:
     - `conn` property — the underlying `duckdb.DuckDBPyConnection`
     - `execute(query, params)` — parameterized SQL execution
@@ -447,8 +445,8 @@ this spec — the CLI is the primary interface for infrastructure concerns.
 ### Unit: `Database` class
 - **Key retrieval:** delegates to `SecretStore.get_key("DATABASE__ENCRYPTION_KEY")`.
   Mock `SecretStore` in tests.
-- **Initialization:** creates in-memory connection, loads `httpfs`, attaches encrypted
-  file, sets temp directory, runs init_schemas, runs migrations.
+- **Initialization:** creates in-memory connection, attaches encrypted
+  file, runs init_schemas, runs migrations.
 - **Singleton:** `get_database()` returns same instance on repeated calls. Cache
   invalidation on profile change.
 - **Auto-key mode:** `db init` generates 256-bit key, stores via
@@ -505,8 +503,7 @@ this spec — the CLI is the primary interface for infrastructure concerns.
 ## Dependencies
 - `keyring` — OS keychain abstraction (macOS Keychain, Linux Secret Service, Windows
   Credential Manager)
-- `duckdb` — encryption extension (built-in since v1.4), `httpfs` extension (for
-  OpenSSL-backed writes)
+- `duckdb` — encryption extension (built-in since v1.4)
 - `argon2-cffi` — Argon2id passphrase key derivation (ADR-013)
 - `secrets` (stdlib) — random key generation
 - `re` (stdlib) — PII pattern matching in log formatter

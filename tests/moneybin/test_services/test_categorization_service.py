@@ -31,7 +31,9 @@ def db(tmp_path: Path) -> Database:
     """Create a Database with all schemas for testing."""
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-for-tests"
-    database = Database(tmp_path / "test.duckdb", secret_store=mock_store)
+    database = Database(
+        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+    )
     # Core tables are managed by SQLMesh in production; create concrete
     # tables here so tests can INSERT fixture data directly.
     create_core_tables(database)
