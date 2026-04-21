@@ -88,3 +88,6 @@ pyrightconfig.json
 
 # Private docs (strategy, specs, notes — not for open source)
 private/
+
+# Git worktrees (isolated workspaces)
+.worktrees/
