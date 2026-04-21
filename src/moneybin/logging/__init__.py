@@ -1,21 +1,19 @@
 """Centralized logging configuration for MoneyBin application.
 
-This package provides unified logging configuration across all MoneyBin components,
-including CLI commands, data extractors, Dagster pipelines, and utility modules.
+This package provides unified logging configuration across all MoneyBin components.
 
 Standard usage:
     ```python
     import logging
-    from moneybin.logging import setup_logging
 
-    # Configure once at application startup
-    setup_logging()
-
-    # Get loggers in each module
     logger = logging.getLogger(__name__)
     ```
+
+Internal setup is called through ``moneybin.observability.setup_observability()``.
+Direct import of ``setup_logging`` is for internal use only.
 """
 
-from .config import LoggingConfig, session_log_path, setup_logging
+from .config import session_log_path, setup_logging
+from .formatters import HumanFormatter, JSONFormatter
 
-__all__ = ["LoggingConfig", "session_log_path", "setup_logging"]
+__all__ = ["HumanFormatter", "JSONFormatter", "session_log_path", "setup_logging"]
