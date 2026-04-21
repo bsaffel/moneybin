@@ -384,3 +384,85 @@ class TestMigrationRunnerApplyAll:
         result = runner.apply_all()
         assert result.applied_count == 0
         assert result.failed is False
+
+
+class TestMigrationRunnerDrift:
+    """MigrationRunner.check_drift() detects modified migration files."""
+
+    def test_detects_checksum_drift(self, db: Database, tmp_path: Path) -> None:
+        """Warns when an applied migration's file has changed."""
+        sql_file = tmp_path / "V001__drifted.sql"
+        sql_file.write_text("SELECT 1;")
+        migration = Migration.from_file(sql_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.apply_one(migration)
+
+        # Modify the file after applying
+        sql_file.write_text("SELECT 999;")
+        warnings = runner.check_drift()
+        assert len(warnings) == 1
+        assert warnings[0].version == 1
+        assert warnings[0].filename == "V001__drifted.sql"
+
+    def test_no_drift_when_unchanged(self, db: Database, tmp_path: Path) -> None:
+        """No warnings when file checksums match."""
+        sql_file = tmp_path / "V001__stable.sql"
+        sql_file.write_text("SELECT 1;")
+        migration = Migration.from_file(sql_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.apply_one(migration)
+        assert runner.check_drift() == []
+
+    def test_ignores_unapplied_files(self, db: Database, tmp_path: Path) -> None:
+        """Unapplied migration files are not checked for drift."""
+        (tmp_path / "V001__pending.sql").write_text("SELECT 1;")
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        assert runner.check_drift() == []
+
+    def test_detects_missing_file(self, db: Database, tmp_path: Path) -> None:
+        """Warns when an applied migration's file has been deleted."""
+        sql_file = tmp_path / "V001__deleted.sql"
+        sql_file.write_text("SELECT 1;")
+        migration = Migration.from_file(sql_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.apply_one(migration)
+
+        sql_file.unlink()
+        warnings = runner.check_drift()
+        assert len(warnings) == 1
+        assert "missing" in warnings[0].reason.lower()
+
+
+class TestMigrationRunnerStuck:
+    """MigrationRunner detects stuck migrations (success=false)."""
+
+    def test_detects_stuck_migration(self, db: Database, tmp_path: Path) -> None:
+        """Raises error when a failed migration exists in tracking table."""
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum, success) "
+            "VALUES (1, 'V001__stuck.sql', 'abc', FALSE)"
+        )
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        with pytest.raises(MigrationError, match="stuck"):
+            runner.check_stuck()
+
+    def test_no_stuck_when_all_succeeded(self, db: Database, tmp_path: Path) -> None:
+        """No error when all applied migrations succeeded."""
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum, success) "
+            "VALUES (1, 'V001__ok.sql', 'abc', TRUE)"
+        )
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.check_stuck()  # no exception
+
+    def test_apply_all_checks_stuck_first(self, db: Database, tmp_path: Path) -> None:
+        """apply_all() raises if there's a stuck migration, before running anything."""
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum, success) "
+            "VALUES (1, 'V001__stuck.sql', 'abc', FALSE)"
+        )
+        (tmp_path / "V002__new.sql").write_text("SELECT 1;")
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        result = runner.apply_all()
+        assert result.failed is True
+        assert result.applied_count == 0

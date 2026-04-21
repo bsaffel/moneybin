@@ -142,6 +142,21 @@ class MigrationResult:
     failed_migration: str | None = None
 
 
+@dataclass(frozen=True)
+class DriftWarning:
+    """Warning about a migration file that has changed since it was applied.
+
+    Attributes:
+        version: Migration version number.
+        filename: Migration filename.
+        reason: Human-readable explanation of the drift.
+    """
+
+    version: int
+    filename: str
+    reason: str
+
+
 class MigrationRunner:
     """Discovers and applies database migrations.
 
@@ -169,6 +184,68 @@ class MigrationRunner:
         """
         self._db = db
         self._migrations_dir = migrations_dir or _MIGRATIONS_DIR
+
+    def check_drift(self) -> list[DriftWarning]:
+        """Check for checksum drift between applied migrations and current files.
+
+        Returns:
+            List of DriftWarning for files that have changed or gone missing.
+        """
+        applied_rows = self._db.execute(
+            "SELECT version, filename, checksum FROM app.schema_migrations "
+            "WHERE success = TRUE"
+        ).fetchall()
+        if not applied_rows:
+            return []
+
+        # Build lookup of current files
+        current_files: dict[int, Migration] = {}
+        for m in discover_migrations(self._migrations_dir):
+            current_files[m.version] = m
+
+        warnings: list[DriftWarning] = []
+        for version, filename, stored_checksum in applied_rows:
+            if version not in current_files:
+                warnings.append(
+                    DriftWarning(
+                        version=version,
+                        filename=filename,
+                        reason=(
+                            f"File missing — {filename} was applied but no longer"
+                            " exists on disk"
+                        ),
+                    )
+                )
+            elif current_files[version].checksum != stored_checksum:
+                warnings.append(
+                    DriftWarning(
+                        version=version,
+                        filename=filename,
+                        reason=(
+                            f"Checksum mismatch — {filename} has been modified"
+                            " since it was applied"
+                        ),
+                    )
+                )
+
+        return warnings
+
+    def check_stuck(self) -> None:
+        """Check for stuck migrations (success=false in tracking table).
+
+        Raises:
+            MigrationError: If any migration has success=false.
+        """
+        stuck = self._db.execute(
+            "SELECT version, filename FROM app.schema_migrations "
+            "WHERE success = FALSE ORDER BY version LIMIT 1"
+        ).fetchone()
+        if stuck is not None:
+            raise MigrationError(
+                f"Stuck migration: {stuck[1]} (version {stuck[0]}) failed previously. "
+                f"Fix the issue and delete the row from app.schema_migrations to retry, "
+                f"or apply a corrective migration with a higher version number."
+            )
 
     def applied_versions(self) -> dict[int, str]:
         """Return applied migration versions and their checksums.
@@ -260,11 +337,17 @@ class MigrationRunner:
     def apply_all(self) -> MigrationResult:
         """Apply all pending migrations in version order.
 
-        Stops on first failure. Returns a summary of what was applied.
+        Checks for stuck migrations first. Stops on first failure.
 
         Returns:
             MigrationResult with counts and failure info.
         """
+        # Check for stuck state before doing anything
+        try:
+            self.check_stuck()
+        except MigrationError as exc:
+            return MigrationResult(failed=True, failed_migration=str(exc))
+
         pending = self.pending()
         if not pending:
             logger.debug("No pending migrations")
