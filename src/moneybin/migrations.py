@@ -8,11 +8,19 @@ Migration files live in src/moneybin/sql/migrations/ and follow Flyway
 naming: V<NNN>__<snake_case>.{sql,py} (3+ digit version, double underscore).
 """
 
+from __future__ import annotations
+
 import hashlib
+import importlib.util
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +51,7 @@ class Migration:
     file_type: str
 
     @classmethod
-    def from_file(cls, path: Path) -> "Migration":
+    def from_file(cls, path: Path) -> Migration:
         """Parse a migration file path into a Migration instance.
 
         Args:
@@ -113,3 +121,188 @@ def discover_migrations(migrations_dir: Path | None = None) -> list[Migration]:
 
     migrations.sort(key=lambda m: m.version)
     return migrations
+
+
+class MigrationError(Exception):
+    """Raised when a migration fails to apply."""
+
+
+@dataclass
+class MigrationResult:
+    """Summary of a migration batch run.
+
+    Attributes:
+        applied_count: Number of migrations successfully applied.
+        failed: Whether any migration failed.
+        failed_migration: Filename of the failed migration, if any.
+    """
+
+    applied_count: int = 0
+    failed: bool = False
+    failed_migration: str | None = None
+
+
+class MigrationRunner:
+    """Discovers and applies database migrations.
+
+    Receives an open Database instance — encryption-unaware. Follows
+    the service pattern: business logic only, no connection management.
+
+    Args:
+        db: Open Database instance.
+        migrations_dir: Directory containing migration files. Defaults
+            to the built-in sql/migrations/ directory.
+    """
+
+    def __init__(
+        self,
+        db: Database,
+        *,
+        migrations_dir: Path | None = None,
+    ) -> None:
+        """Initialize the runner with an open database connection.
+
+        Args:
+            db: Open Database instance to run migrations against.
+            migrations_dir: Directory containing migration files. Defaults
+                to the built-in sql/migrations/ directory.
+        """
+        self._db = db
+        self._migrations_dir = migrations_dir or _MIGRATIONS_DIR
+
+    def applied_versions(self) -> dict[int, str]:
+        """Return applied migration versions and their checksums.
+
+        Returns:
+            Dict mapping version number to checksum string.
+        """
+        rows = self._db.execute(
+            "SELECT version, checksum FROM app.schema_migrations"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def pending(self) -> list[Migration]:
+        """Return migrations that have not yet been applied, sorted by version.
+
+        Returns:
+            List of unapplied Migration objects in version order.
+        """
+        applied = self.applied_versions()
+        all_migrations = discover_migrations(self._migrations_dir)
+        return [m for m in all_migrations if m.version not in applied]
+
+    def apply_one(self, migration: Migration) -> None:
+        """Apply a single migration within a transaction.
+
+        If the migration version is already recorded in the tracking table,
+        this is a silent no-op (idempotent). On failure, the migration DDL
+        is rolled back but a tracking row with success=false is recorded.
+
+        Args:
+            migration: The migration to apply.
+
+        Raises:
+            MigrationError: If the migration fails to execute.
+        """
+        # Idempotent: skip if already applied
+        existing = self._db.execute(
+            "SELECT version FROM app.schema_migrations WHERE version = ?",
+            [migration.version],
+        ).fetchone()
+        if existing is not None:
+            logger.debug(
+                f"Migration V{migration.version:03d} already applied, skipping"
+            )
+            return
+
+        logger.info(f"Applying migration {migration.filename}")
+        start = time.monotonic()
+
+        try:
+            self._db.execute("BEGIN TRANSACTION")
+
+            if migration.file_type == "sql":
+                sql = migration.path.read_text()
+                self._db.execute(sql)
+            else:
+                self._execute_python_migration(migration)
+
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            self._db.execute("COMMIT")
+
+            # Record success
+            self._db.execute(
+                "INSERT INTO app.schema_migrations "
+                "(version, filename, checksum, success, execution_ms) "
+                "VALUES (?, ?, ?, TRUE, ?)",
+                [migration.version, migration.filename, migration.checksum, elapsed_ms],
+            )
+            logger.info(f"Applied {migration.filename} in {elapsed_ms}ms")
+
+        except Exception as exc:  # noqa: BLE001 — must catch all to record failure and re-raise as MigrationError
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            try:
+                self._db.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001 S110 — rollback is best-effort; original exc re-raised below
+                pass
+
+            # Record failure
+            self._db.execute(
+                "INSERT INTO app.schema_migrations "
+                "(version, filename, checksum, success, execution_ms) "
+                "VALUES (?, ?, ?, FALSE, ?)",
+                [migration.version, migration.filename, migration.checksum, elapsed_ms],
+            )
+            raise MigrationError(
+                f"Migration {migration.filename} failed: {exc}"
+            ) from exc
+
+    def apply_all(self) -> MigrationResult:
+        """Apply all pending migrations in version order.
+
+        Stops on first failure. Returns a summary of what was applied.
+
+        Returns:
+            MigrationResult with counts and failure info.
+        """
+        pending = self.pending()
+        if not pending:
+            logger.debug("No pending migrations")
+            return MigrationResult()
+
+        result = MigrationResult()
+        for migration in pending:
+            try:
+                self.apply_one(migration)
+                result.applied_count += 1
+            except MigrationError:
+                result.failed = True
+                result.failed_migration = migration.filename
+                break
+
+        return result
+
+    def _execute_python_migration(self, migration: Migration) -> None:
+        """Import and execute a Python migration's migrate() function.
+
+        Args:
+            migration: A Python migration file.
+
+        Raises:
+            MigrationError: If the module lacks a migrate() function or cannot
+                be loaded.
+        """
+        spec = importlib.util.spec_from_file_location(
+            f"migration_v{migration.version}", migration.path
+        )
+        if spec is None or spec.loader is None:
+            raise MigrationError(f"Cannot load Python migration {migration.filename}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[union-attr]  # loader existence checked above
+
+        migrate_fn = getattr(module, "migrate", None)
+        if migrate_fn is None:
+            raise MigrationError(
+                f"Python migration {migration.filename} has no migrate() function"
+            )
+        migrate_fn(self._db.conn)

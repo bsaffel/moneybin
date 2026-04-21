@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from moneybin.database import Database
-from moneybin.migrations import Migration, discover_migrations
+from moneybin.migrations import (
+    Migration,
+    MigrationError,
+    MigrationRunner,
+    discover_migrations,
+)
 
 
 class TestMigrationSchema:
@@ -163,3 +168,219 @@ class TestDiscoverMigrations:
         (tmp_path / "V001__also_first.sql").write_text("SELECT 2;")
         with pytest.raises(ValueError, match="Duplicate migration version"):
             discover_migrations(tmp_path)
+
+
+class TestMigrationRunnerAppliedVersions:
+    """MigrationRunner.applied_versions() reads the tracking table."""
+
+    def test_empty_tracking_table(self, db: Database) -> None:
+        """Returns empty dict when no migrations have been applied."""
+        runner = MigrationRunner(db)
+        assert runner.applied_versions() == {}
+
+    def test_returns_applied_versions_with_checksums(self, db: Database) -> None:
+        """Returns {version: checksum} for applied migrations."""
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum) "
+            "VALUES (1, 'V001__test.sql', 'abc123')"
+        )
+        runner = MigrationRunner(db)
+        applied = runner.applied_versions()
+        assert applied == {1: "abc123"}
+
+    def test_excludes_failed_migrations(self, db: Database) -> None:
+        """Failed migrations (success=false) are still returned — they represent stuck state."""
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum, success) "
+            "VALUES (1, 'V001__ok.sql', 'aaa', TRUE), "
+            "(2, 'V002__fail.sql', 'bbb', FALSE)"
+        )
+        runner = MigrationRunner(db)
+        applied = runner.applied_versions()
+        assert 1 in applied
+        assert 2 in applied
+
+
+class TestMigrationRunnerPending:
+    """MigrationRunner.pending() computes unapplied migrations."""
+
+    def test_all_pending_when_none_applied(self, db: Database, tmp_path: Path) -> None:
+        """All discovered migrations are pending when tracking table is empty."""
+        (tmp_path / "V001__first.sql").write_text("SELECT 1;")
+        (tmp_path / "V002__second.sql").write_text("SELECT 2;")
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        pending = runner.pending()
+        assert [m.version for m in pending] == [1, 2]
+
+    def test_excludes_already_applied(self, db: Database, tmp_path: Path) -> None:
+        """Already-applied versions are excluded from pending."""
+        (tmp_path / "V001__first.sql").write_text("SELECT 1;")
+        (tmp_path / "V002__second.sql").write_text("SELECT 2;")
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum) "
+            "VALUES (1, 'V001__first.sql', 'ignored')"
+        )
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        pending = runner.pending()
+        assert [m.version for m in pending] == [2]
+
+    def test_empty_when_all_applied(self, db: Database, tmp_path: Path) -> None:
+        """Returns empty list when all migrations are applied."""
+        (tmp_path / "V001__first.sql").write_text("SELECT 1;")
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum) "
+            "VALUES (1, 'V001__first.sql', 'ignored')"
+        )
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        assert runner.pending() == []
+
+
+class TestMigrationRunnerApplyOne:
+    """MigrationRunner.apply_one() executes a single migration."""
+
+    def test_applies_sql_migration(self, db: Database, tmp_path: Path) -> None:
+        """SQL migration is executed and tracked."""
+        sql_file = tmp_path / "V001__create_test.sql"
+        sql_file.write_text(
+            "CREATE TABLE IF NOT EXISTS app.migration_test (id INTEGER PRIMARY KEY);"
+        )
+        migration = Migration.from_file(sql_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.apply_one(migration)
+
+        # Table was created
+        result = db.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema = 'app' AND table_name = 'migration_test'"
+        ).fetchone()
+        assert result[0] == 1
+
+        # Tracking row was recorded
+        row = db.execute(
+            "SELECT version, filename, checksum, success FROM app.schema_migrations "
+            "WHERE version = 1"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 1
+        assert row[1] == "V001__create_test.sql"
+        assert row[2] == migration.checksum
+        assert row[3] is True
+
+    def test_applies_python_migration(self, db: Database, tmp_path: Path) -> None:
+        """Python migration calls migrate(conn) and is tracked."""
+        py_file = tmp_path / "V001__py_test.py"
+        py_file.write_text(
+            "def migrate(conn):\n"
+            "    conn.execute('CREATE TABLE IF NOT EXISTS app.py_test (id INTEGER)')\n"
+        )
+        migration = Migration.from_file(py_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.apply_one(migration)
+
+        result = db.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema = 'app' AND table_name = 'py_test'"
+        ).fetchone()
+        assert result[0] == 1
+
+        row = db.execute(
+            "SELECT success FROM app.schema_migrations WHERE version = 1"
+        ).fetchone()
+        assert row[0] is True
+
+    def test_records_execution_time(self, db: Database, tmp_path: Path) -> None:
+        """Execution time is recorded in milliseconds."""
+        sql_file = tmp_path / "V001__timed.sql"
+        sql_file.write_text("SELECT 1;")
+        migration = Migration.from_file(sql_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.apply_one(migration)
+
+        row = db.execute(
+            "SELECT execution_ms FROM app.schema_migrations WHERE version = 1"
+        ).fetchone()
+        assert row[0] is not None
+        assert row[0] >= 0
+
+    def test_rollback_on_sql_error(self, db: Database, tmp_path: Path) -> None:
+        """Failed SQL migration rolls back and records success=false."""
+        sql_file = tmp_path / "V001__bad.sql"
+        sql_file.write_text("CREATE TABLE this is not valid SQL;")
+        migration = Migration.from_file(sql_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+
+        with pytest.raises(MigrationError):
+            runner.apply_one(migration)
+
+        row = db.execute(
+            "SELECT success FROM app.schema_migrations WHERE version = 1"
+        ).fetchone()
+        assert row is not None
+        assert row[0] is False
+
+    def test_idempotent_on_rerun(self, db: Database, tmp_path: Path) -> None:
+        """Re-running an already-applied migration is a silent no-op."""
+        sql_file = tmp_path / "V001__test.sql"
+        sql_file.write_text("SELECT 1;")
+        migration = Migration.from_file(sql_file)
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.apply_one(migration)
+        runner.apply_one(migration)  # no error
+
+        count = db.execute(
+            "SELECT COUNT(*) FROM app.schema_migrations WHERE version = 1"
+        ).fetchone()
+        assert count[0] == 1
+
+
+class TestMigrationRunnerApplyAll:
+    """MigrationRunner.apply_all() runs pending migrations in order."""
+
+    def test_applies_pending_in_order(self, db: Database, tmp_path: Path) -> None:
+        """Pending migrations are applied in version order."""
+        (tmp_path / "V001__first.sql").write_text(
+            "CREATE TABLE IF NOT EXISTS app.first (id INTEGER);"
+        )
+        (tmp_path / "V002__second.sql").write_text(
+            "CREATE TABLE IF NOT EXISTS app.second (id INTEGER);"
+        )
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        result = runner.apply_all()
+        assert result.applied_count == 2
+        assert result.failed is False
+
+    def test_skips_already_applied(self, db: Database, tmp_path: Path) -> None:
+        """Already-applied migrations are not re-executed."""
+        (tmp_path / "V001__first.sql").write_text("SELECT 1;")
+        (tmp_path / "V002__second.sql").write_text("SELECT 2;")
+        db.execute(
+            "INSERT INTO app.schema_migrations (version, filename, checksum) "
+            "VALUES (1, 'V001__first.sql', 'ignored')"
+        )
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        result = runner.apply_all()
+        assert result.applied_count == 1
+
+    def test_stops_on_first_failure(self, db: Database, tmp_path: Path) -> None:
+        """Stops executing after first failed migration."""
+        (tmp_path / "V001__good.sql").write_text("SELECT 1;")
+        (tmp_path / "V002__bad.sql").write_text("INVALID SQL HERE;")
+        (tmp_path / "V003__never.sql").write_text("SELECT 3;")
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        result = runner.apply_all()
+        assert result.applied_count == 1
+        assert result.failed is True
+        assert result.failed_migration == "V002__bad.sql"
+
+        # V003 was never attempted
+        row = db.execute(
+            "SELECT COUNT(*) FROM app.schema_migrations WHERE version = 3"
+        ).fetchone()
+        assert row[0] == 0
+
+    def test_no_pending_returns_zero(self, db: Database, tmp_path: Path) -> None:
+        """Returns count=0 when nothing is pending."""
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        result = runner.apply_all()
+        assert result.applied_count == 0
+        assert result.failed is False
