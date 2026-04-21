@@ -52,3 +52,31 @@ class TestPromotedCommands:
         assert result.exit_code == 0
         assert "create" in result.output
         assert "list" in result.output
+
+
+class TestMovedCommands:
+    """Commands moved between groups."""
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_db_ps_exists(self, mock_profile: MagicMock) -> None:
+        """Db ps command exists."""
+        result = runner.invoke(app, ["db", "ps", "--help"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_db_kill_exists(self, mock_profile: MagicMock) -> None:
+        """Db kill command exists."""
+        result = runner.invoke(app, ["db", "kill", "--help"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_mcp_show_removed(self, mock_profile: MagicMock) -> None:
+        """Mcp show no longer exists."""
+        result = runner.invoke(app, ["mcp", "show"])
+        assert result.exit_code != 0
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_mcp_kill_removed(self, mock_profile: MagicMock) -> None:
+        """Mcp kill no longer exists."""
+        result = runner.invoke(app, ["mcp", "kill"])
+        assert result.exit_code != 0

@@ -7,7 +7,8 @@ managing the encryption lifecycle of the MoneyBin DuckDB database.
 import logging
 import os
 import shutil
-import subprocess  # noqa: S404 — subprocess used with static args for DuckDB CLI invocation
+import signal
+import subprocess  # noqa: S404 — subprocess used with static args for DuckDB CLI invocation and lsof/ps process inspection
 import sys
 import tempfile
 from pathlib import Path
@@ -787,3 +788,134 @@ def db_rotate_key(
 
     logger.info("✅ Database re-encrypted with new key")
     logger.info("💡 Existing backups are still encrypted with the old key")
+
+
+def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
+    """Find processes that have the DuckDB file open, excluding the current process.
+
+    Args:
+        db_path: Path to the DuckDB database file.
+
+    Returns:
+        List of dicts with keys: pid (int), command (str), cmdline (str).
+    """
+    own_pid = os.getpid()
+    try:
+        result = subprocess.run(  # noqa: S603 — lsof with static args, db_path is a validated Path
+            ["lsof", "-F", "pcn", str(db_path)],  # noqa: S607 — lsof is a standard system utility
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        logger.error("❌ lsof not found — cannot inspect file locks")
+        return []
+    except subprocess.TimeoutExpired:
+        logger.error("❌ lsof timed out")
+        return []
+
+    if not result.stdout:
+        return []
+
+    # lsof -F output: each process block starts with p<pid>, then c<cmd>, then n<file>
+    processes: list[dict[str, str | int]] = []
+    seen_pids: set[int] = set()
+    current_pid: int | None = None
+    current_cmd: str = ""
+
+    for line in result.stdout.splitlines():
+        if line.startswith("p"):
+            current_pid = int(line[1:])
+            current_cmd = ""
+        elif line.startswith("c") and current_pid is not None:
+            current_cmd = line[1:]
+        elif (
+            line.startswith("n")
+            and current_pid is not None
+            and current_pid not in seen_pids
+        ):
+            seen_pids.add(current_pid)
+            if current_pid == own_pid:
+                continue
+            ps_result = subprocess.run(  # noqa: S603 — ps with static args and validated int PID
+                ["ps", "-p", str(current_pid), "-o", "args="],  # noqa: S607 — ps is a standard system utility
+                capture_output=True,
+                text=True,
+            )
+            cmdline = ps_result.stdout.strip()
+            processes.append({
+                "pid": current_pid,
+                "command": current_cmd,
+                "cmdline": cmdline,
+            })
+
+    return processes
+
+
+@app.command("ps")
+def db_ps(
+    database: Path | None = typer.Option(
+        None, "--database", "-d", help="Path to DuckDB database file"
+    ),
+) -> None:
+    """Show processes holding the MoneyBin database file open."""
+    from moneybin.config import get_settings
+
+    db_path = database or get_settings().database.path
+    if not db_path.exists():
+        logger.info("Database file does not exist yet: %s", db_path)
+        return
+    processes = _find_db_processes(db_path)
+    if not processes:
+        logger.info("No other processes have %s open", db_path.name)
+        return
+    typer.echo(f"Processes holding {db_path} open:\n")
+    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
+    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
+    for proc in processes:
+        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
+
+
+@app.command("kill")
+def db_kill(
+    database: Path | None = typer.Option(
+        None, "--database", "-d", help="Path to DuckDB database file"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+) -> None:
+    """Kill processes holding the MoneyBin database file open."""
+    from moneybin.config import get_settings
+
+    db_path = database or get_settings().database.path
+    if not db_path.exists():
+        logger.info("Database file does not exist yet: %s", db_path)
+        return
+    processes = _find_db_processes(db_path)
+    if not processes:
+        logger.info("No other processes have %s open", db_path.name)
+        return
+    typer.echo(f"Processes holding {db_path} open:\n")
+    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
+    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
+    for proc in processes:
+        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
+    typer.echo()
+
+    count = len(processes)
+    noun = "process" if count == 1 else "processes"
+    if not yes and not typer.confirm(f"Send SIGTERM to {count} {noun}?"):
+        raise typer.Exit(0)
+
+    killed = 0
+    for proc in processes:
+        pid = int(proc["pid"])
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("Sent SIGTERM to PID %d (%s)", pid, proc["command"])
+            killed += 1
+        except ProcessLookupError:
+            logger.warning("⚠️  PID %d already exited", pid)
+        except PermissionError:
+            logger.error("❌ No permission to kill PID %d (%s)", pid, proc["command"])
+    if killed:
+        logger.info("✅ Sent SIGTERM to %d %s", killed, noun)
