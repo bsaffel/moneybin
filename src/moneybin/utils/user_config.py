@@ -284,7 +284,7 @@ def ensure_default_profile() -> str:
 
     base = get_base_dir()
     print(f"\n🎉 Your default profile '{profile_name}' has been created!")
-    print(f"    Data will be stored in: {base / 'data' / profile_name}/\n")
+    print(f"    Data will be stored in: {base / 'profiles' / profile_name}/\n")
 
     return profile_name
 
