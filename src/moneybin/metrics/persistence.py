@@ -98,7 +98,7 @@ def flush_to_duckdb(
                             le = s.labels.get("le", "")
                             if le != "+Inf":
                                 bounds.append(float(le))
-                            counts.append(int(s.value))
+                                counts.append(int(s.value))
                 if bounds:
                     bucket_bounds = bounds
                     bucket_counts = counts
@@ -197,13 +197,11 @@ def load_from_duckdb(
         if metric_type != "counter":
             continue
 
-        collector = metric_lookup.get(metric_name)
-        if collector is None:
-            collector = metric_lookup.get(
-                metric_name[: -len("_total")]
-                if metric_name.endswith("_total")
-                else metric_name
-            )
+        # DB stores base names (without _total suffix), but Counter collectors
+        # are registered with the _total suffix. Try both forms.
+        collector = metric_lookup.get(metric_name) or metric_lookup.get(
+            f"{metric_name}_total"
+        )
         if collector is None:
             logger.debug(f"No registered metric for {metric_name}, skipping")
             continue

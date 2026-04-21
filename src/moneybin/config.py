@@ -146,19 +146,11 @@ class LoggingConfig(BaseModel):
     log_file_path: Path = Field(
         default=Path("logs/default/moneybin.log"), description="Path to log file"
     )
-    max_file_size_mb: int = Field(
-        default=50, ge=1, le=1000, description="Maximum log file size in MB"
-    )
-    backup_count: int = Field(
-        default=5, ge=1, le=50, description="Number of log file backups to keep"
-    )
     format: Literal["human", "json"] = Field(
         default="human", description="Log output format: human-readable or JSON"
     )
-    sanitize: bool = Field(
-        default=True,
-        description="PII sanitization on all log output. Always on — exists for visibility only.",
-    )
+    # PII sanitization (SanitizedLogFormatter) is always on and cannot be
+    # disabled — it's a security invariant, not a tunable preference.
 
 
 class MCPConfig(BaseModel):

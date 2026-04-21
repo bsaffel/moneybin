@@ -64,6 +64,9 @@ def setup_observability(
 
     if not _initialized:
         # Step 2: Register atexit handler for metrics flush (once only)
+        # TODO: Call load_from_duckdb() here to restore counter values from
+        # the previous session. Deferred — requires deciding on startup cost
+        # trade-offs (DB may not exist yet on first run). See persistence.py.
         atexit.register(_flush_metrics_on_exit)
 
         # Step 3: For MCP, start periodic flush

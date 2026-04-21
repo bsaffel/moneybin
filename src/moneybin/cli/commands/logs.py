@@ -147,7 +147,7 @@ def logs_tail(
     if follow:
         typer.echo("--- Following (Ctrl+C to stop) ---")
         try:
-            with open(log_path) as f:
+            with open(log_path, encoding="utf-8") as f:
                 f.seek(0, 2)
                 while True:
                     line = f.readline()

@@ -1,8 +1,8 @@
 """Metrics collection and instrumentation for MoneyBin.
 
 Public API:
-    - ``init_metrics()`` — initialize the registry and load prior state
     - Metric constants (``IMPORT_RECORDS_TOTAL``, etc.) for manual recording
+    - ``flush_to_duckdb()`` / ``load_from_duckdb()`` in ``persistence`` submodule
 
 For instrumentation, use ``moneybin.observability.tracked`` and
 ``moneybin.observability.track_duration`` instead of importing from here.

@@ -174,9 +174,9 @@ class TestPydanticLoggingConfig:
             PydanticLoggingConfig(format="xml")  # type: ignore[arg-type]  # intentionally invalid for test
 
     @pytest.mark.unit
-    def test_sanitize_defaults_true(self) -> None:
-        """Sanitize flag should default to True."""
+    def test_sanitization_always_on(self) -> None:
+        """PII sanitization is always on — no config knob to disable it."""
         from moneybin.config import LoggingConfig as PydanticLoggingConfig
 
         config = PydanticLoggingConfig()
-        assert config.sanitize is True
+        assert not hasattr(config, "sanitize")

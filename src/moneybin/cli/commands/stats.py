@@ -5,8 +5,8 @@ Displays lifetime metric aggregates from the app.metrics table.
 
 import json
 import logging
-from datetime import datetime
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, Literal
 
 import typer
 
@@ -32,7 +32,7 @@ def stats_show(
         typer.Option("--metric", help="Filter to a metric family (e.g., import)"),
     ] = None,
     output: Annotated[
-        str,
+        Literal["text", "json"],
         typer.Option("--output", help="Output format: text or json"),
     ] = "text",
 ) -> None:
@@ -57,28 +57,44 @@ def stats_show(
         except ValueError as e:
             logger.error(f"❌ {e}")
             raise typer.Exit(1) from e
-        cutoff = datetime.now() - delta
+        cutoff = datetime.now(tz=UTC) - delta
         where_clauses.append("recorded_at >= ?")
         params.append(cutoff)
 
     if metric:
-        where_clauses.append("metric_name LIKE ?")
-        params.append(f"%{metric}%")
+        # Escape LIKE metacharacters so _ and % match literally
+        escaped = metric.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        where_clauses.append("metric_name LIKE ? ESCAPE '!'")
+        params.append(f"%{escaped}%")
 
     where_sql = ""
     if where_clauses:
         where_sql = "WHERE " + " AND ".join(where_clauses)
 
     try:
+        # Use latest snapshot per metric+labels (not SUM — values are cumulative)
         rows = db.execute(
             f"""
-            SELECT metric_name, metric_type,
-                   SUM(value) as total_value,
-                   COUNT(*) as snapshot_count,
-                   MAX(recorded_at) as last_recorded
-            FROM app.metrics
-            {where_sql}
-            GROUP BY metric_name, metric_type
+            SELECT metric_name, metric_type, labels,
+                   value AS current_value,
+                   snapshot_count,
+                   last_recorded
+            FROM (
+                SELECT metric_name, metric_type, labels, value,
+                       COUNT(*) OVER (
+                           PARTITION BY metric_name, metric_type, labels
+                       ) AS snapshot_count,
+                       MAX(recorded_at) OVER (
+                           PARTITION BY metric_name, metric_type, labels
+                       ) AS last_recorded,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY metric_name, metric_type, labels
+                           ORDER BY recorded_at DESC
+                       ) AS rn
+                FROM app.metrics
+                {where_sql}
+            )
+            WHERE rn = 1
             ORDER BY metric_name
             """,  # noqa: S608 — where_sql is built from validated fragments, not user input
             params if params else None,
@@ -92,9 +108,10 @@ def stats_show(
                 {
                     "name": row[0],
                     "type": row[1],
-                    "value": row[2],
-                    "snapshots": row[3],
-                    "last_recorded": row[4].isoformat() if row[4] else None,
+                    "labels": row[2],
+                    "value": row[3],
+                    "snapshots": row[4],
+                    "last_recorded": row[5].isoformat() if row[5] else None,
                 }
                 for row in rows
             ]
@@ -108,7 +125,7 @@ def stats_show(
 
     # Human-readable output
     for row in rows:
-        name, metric_type, value, count, _last = row
+        name, metric_type, _labels, value, count, _last = row
         display_name = name.replace("moneybin_", "").replace("_", " ").title()
         if metric_type == "counter":
             typer.echo(f"{display_name}: {value:,.0f} total")

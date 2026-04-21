@@ -67,7 +67,7 @@ def tracked(
             error: Exception | None = None
             try:
                 return func(*args, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — re-raised immediately; caught only to record error metrics
                 error = exc
                 raise
             finally:

@@ -201,7 +201,6 @@ def generate_profile_config(profile_dir: Path, profile_name: str) -> Path:
         "logging": {
             "level": "INFO",
             "log_to_file": True,
-            "max_file_size_mb": 50,
         },
         "sync": {
             "enabled": False,
