@@ -68,6 +68,17 @@ def main_callback(
     setup_logging(cli_mode=True, verbose=verbose, profile=profile_name)
     logger.info(f"Using profile: {profile_name}")
 
+    # Auto-migrate old directory layout on first run after upgrade
+    from moneybin.services.profile_service import ProfileService
+
+    try:
+        svc = ProfileService()
+        migrated = svc.migrate_old_layout()
+        if migrated:
+            logger.info("Migrated %d profile(s) to new directory layout", len(migrated))
+    except Exception:  # noqa: BLE001 — migration is best-effort, don't block CLI startup
+        logger.debug("Migration check failed", exc_info=True)
+
 
 # Core command groups
 app.add_typer(
