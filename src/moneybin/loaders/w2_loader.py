@@ -33,8 +33,6 @@ class W2Loader:
         Tables follow Fivetran naming convention: raw.w2_forms
         Schema file is located in src/moneybin/sql/schema/
         """
-        conn = self.db.conn
-
         # Execute schema files in order
         schema_files = [
             "raw_schema.sql",
@@ -48,7 +46,7 @@ class W2Loader:
 
             with open(sql_path) as f:
                 sql_content = f.read()
-                conn.execute(sql_content)
+                self.db.execute(sql_content)
                 logger.debug(f"Executed schema file: {sql_file}")
 
         logger.info("Created W2 raw tables in DuckDB")
@@ -62,11 +60,15 @@ class W2Loader:
         Returns:
             int: Number of rows loaded
         """
-        conn = self.db.conn
         row_count = 0
 
         # Ensure tables exist
         self.create_raw_tables()
+
+        # INSERT queries reference local Polars DataFrames via DuckDB's Python
+        # frame scan (FROM df). This requires the raw conn.execute() rather than
+        # db.execute() — use db.conn directly for INSERT FROM df only.
+        conn = self.db.conn
 
         # Load W2 forms (use INSERT OR REPLACE for idempotency)
         if len(data) > 0:
@@ -119,17 +121,15 @@ class W2Loader:
         Returns:
             pl.DataFrame: Query results
         """
-        conn = self.db.conn
-
         if limit is not None:
             query = """
                 SELECT * FROM raw.w2_forms
                 ORDER BY loaded_at DESC LIMIT ?
             """
-            return conn.execute(query, [limit]).pl()
+            return self.db.execute(query, [limit]).pl()
         else:
             query = """
                 SELECT * FROM raw.w2_forms
                 ORDER BY loaded_at DESC
             """
-            return conn.execute(query).pl()
+            return self.db.execute(query).pl()

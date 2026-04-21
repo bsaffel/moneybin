@@ -33,8 +33,6 @@ class OFXLoader:
         Tables follow Fivetran naming convention: raw.ofx_<entity>
         Schema files are located in src/moneybin/sql/schema/
         """
-        conn = self.db.conn
-
         # Execute schema files in order
         schema_files = [
             "raw_schema.sql",
@@ -51,7 +49,7 @@ class OFXLoader:
 
             with open(sql_path) as f:
                 sql_content = f.read()
-                conn.execute(sql_content)
+                self.db.execute(sql_content)
                 logger.debug(f"Executed schema file: {sql_file}")
 
         logger.info("Created OFX raw tables in DuckDB")
@@ -65,11 +63,15 @@ class OFXLoader:
         Returns:
             dict: Row counts for each loaded table
         """
-        conn = self.db.conn
         row_counts = {}
 
         # Ensure tables exist
         self.create_raw_tables()
+
+        # INSERT queries reference local Polars DataFrames via DuckDB's Python
+        # frame scan (FROM df). This requires the raw conn.execute() rather than
+        # db.execute() — use db.conn directly for INSERT FROM df only.
+        conn = self.db.conn
 
         # Load institutions (use INSERT OR REPLACE for idempotency)
         if len(data.get("institutions", pl.DataFrame())) > 0:
@@ -161,8 +163,6 @@ class OFXLoader:
                 f"Must be one of: {', '.join(sorted(allowed_tables))}"
             )
 
-        conn = self.db.conn
-
         # Use DuckDB's parameter binding for LIMIT
         # Note: table_name is validated above, so f-string is safe
         if limit is not None:
@@ -170,10 +170,10 @@ class OFXLoader:
                 SELECT * FROM raw.ofx_{table_name}
                 ORDER BY loaded_at DESC LIMIT ?
             """  # noqa: S608 — table_name is validated against VALID_TABLES allowlist above
-            return conn.execute(query, [limit]).pl()
+            return self.db.execute(query, [limit]).pl()
         else:
             query = f"""
                 SELECT * FROM raw.ofx_{table_name}
                 ORDER BY loaded_at DESC
             """  # noqa: S608 — table_name is validated against VALID_TABLES allowlist above
-            return conn.execute(query).pl()
+            return self.db.execute(query).pl()

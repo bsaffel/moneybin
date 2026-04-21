@@ -18,6 +18,37 @@ app = typer.Typer(help="Database management commands", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 
+def _derive_key_from_passphrase(passphrase: str, salt: bytes) -> str:
+    """Derive a hex encryption key from a passphrase using Argon2id.
+
+    Used by both init_db (at creation) and db_unlock (at re-derivation).
+    Both callers must use the same DatabaseConfig parameters — this helper
+    ensures they can never diverge and silently lock users out.
+
+    Args:
+        passphrase: User-supplied passphrase string.
+        salt: Random 16-byte salt (stored at init, retrieved at unlock).
+
+    Returns:
+        64-character hex string (256-bit key).
+    """
+    import argon2.low_level
+
+    from moneybin.config import get_settings
+
+    db_cfg = get_settings().database
+    raw_key = argon2.low_level.hash_secret_raw(
+        secret=passphrase.encode(),
+        salt=salt,
+        time_cost=db_cfg.argon2_time_cost,
+        memory_cost=db_cfg.argon2_memory_cost,
+        parallelism=db_cfg.argon2_parallelism,
+        hash_len=db_cfg.argon2_hash_len,
+        type=argon2.low_level.Type.ID,
+    )
+    return raw_key.hex()
+
+
 def _check_duckdb_cli() -> str | None:
     """Check if DuckDB CLI is available and return its path.
 
@@ -116,8 +147,6 @@ def init_db(
         # Passphrase mode: prompt, derive key via Argon2id, store derived key + salt
         import base64
 
-        import argon2.low_level
-
         pp = typer.prompt("Enter passphrase", hide_input=True)
         pp_confirm = typer.prompt("Confirm passphrase", hide_input=True)
         if pp != pp_confirm:
@@ -126,19 +155,10 @@ def init_db(
 
         # Generate a fixed salt to allow re-derivation during unlock
         salt = secrets_mod.token_bytes(16)
-        # Derive deterministic key from passphrase + salt using Argon2id.
-        # Parameters come from DatabaseConfig — must match db_unlock exactly.
-        db_cfg = settings.database
-        raw_key = argon2.low_level.hash_secret_raw(
-            secret=pp.encode(),
-            salt=salt,
-            time_cost=db_cfg.argon2_time_cost,
-            memory_cost=db_cfg.argon2_memory_cost,
-            parallelism=db_cfg.argon2_parallelism,
-            hash_len=db_cfg.argon2_hash_len,
-            type=argon2.low_level.Type.ID,
-        )
-        encryption_key = raw_key.hex()
+        # Derive deterministic key from passphrase + salt via shared helper.
+        # _derive_key_from_passphrase must be used here and in db_unlock so
+        # the Argon2id parameters can never diverge.
+        encryption_key = _derive_key_from_passphrase(pp, salt)
 
         # Store key and salt so unlock can re-derive
         store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
@@ -467,6 +487,11 @@ def db_restore(
         help="Path to backup file to restore from",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    latest: bool = typer.Option(
+        False,
+        "--latest",
+        help="Auto-select the most recent backup (non-interactive)",
+    ),
 ) -> None:
     """Restore database from a backup file."""
     from moneybin.logging.config import setup_logging
@@ -493,16 +518,19 @@ def db_restore(
             logger.error("❌ No backups found in %s", backup_dir)
             raise typer.Exit(1)
 
-        logger.info("Available backups:")
-        for i, b in enumerate(backups, 1):
-            size = b.stat().st_size / (1024 * 1024)
-            logger.info("  %d. %s (%.1f MB)", i, b.name, size)
+        if latest:
+            from_path = backups[0]
+        else:
+            logger.info("Available backups:")
+            for i, b in enumerate(backups, 1):
+                size = b.stat().st_size / (1024 * 1024)
+                logger.info("  %d. %s (%.1f MB)", i, b.name, size)
 
-        choice = typer.prompt("Select backup number", type=int)
-        if choice < 1 or choice > len(backups):
-            logger.error("❌ Invalid selection")
-            raise typer.Exit(1)
-        from_path = backups[choice - 1]
+            choice = typer.prompt("Select backup number", type=int)
+            if choice < 1 or choice > len(backups):
+                logger.error("❌ Invalid selection")
+                raise typer.Exit(1)
+            from_path = backups[choice - 1]
 
     # from_path is guaranteed non-None here (either provided or selected above)
     from typing import cast
@@ -587,8 +615,7 @@ def db_unlock() -> None:
     setup_logging(cli_mode=True)
 
     import base64
-
-    import argon2.low_level
+    import binascii
 
     from moneybin.config import get_settings
     from moneybin.database import Database
@@ -606,8 +633,6 @@ def db_unlock() -> None:
         )
         raise typer.Exit(1) from None
 
-    import binascii
-
     try:
         salt = base64.b64decode(salt_b64)
     except binascii.Error as e:
@@ -619,19 +644,10 @@ def db_unlock() -> None:
         raise typer.Exit(1) from e
     pp = typer.prompt("Enter passphrase", hide_input=True)
 
-    # Re-derive key using same params and stored salt.
-    # Parameters come from DatabaseConfig — must match init_db exactly.
-    db_cfg = settings.database
-    raw_key = argon2.low_level.hash_secret_raw(
-        secret=pp.encode(),
-        salt=salt,
-        time_cost=db_cfg.argon2_time_cost,
-        memory_cost=db_cfg.argon2_memory_cost,
-        parallelism=db_cfg.argon2_parallelism,
-        hash_len=db_cfg.argon2_hash_len,
-        type=argon2.low_level.Type.ID,
-    )
-    encryption_key = raw_key.hex()
+    # Re-derive key using same params and stored salt via shared helper.
+    # _derive_key_from_passphrase must be used here and in init_db so
+    # the Argon2id parameters can never diverge.
+    encryption_key = _derive_key_from_passphrase(pp, salt)
 
     store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
 
@@ -647,8 +663,11 @@ def db_unlock() -> None:
     except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
         try:
             store.delete_key("DATABASE__ENCRYPTION_KEY")
-        except SecretNotFoundError:
-            pass
+        except Exception:  # noqa: BLE001 — keyring backends may raise beyond SecretNotFoundError
+            logger.debug(
+                "Could not remove key from keychain during unlock failure",
+                exc_info=True,
+            )
         logger.error("❌ Wrong passphrase — database remains locked")
         raise typer.Exit(1) from None
 
