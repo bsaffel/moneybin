@@ -84,6 +84,10 @@ db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [account_
 
 **Never call `duckdb.connect()` directly.** The `Database` class (`src/moneybin/database.py`) is the sole entry point for all database access. It handles encryption key retrieval, encrypted file attachment, schema initialization, and migrations. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
 
+## Constants
+
+Security-critical parameters (crypto cost factors, key lengths, salt sizes) must be defined once — either as module-level `_CONSTANTS` or as config fields on the relevant `*Config` class. Never duplicate across call sites; extract a shared helper if two functions need the same parameters.
+
 ## Security
 
 - **Encryption at rest**: All DuckDB databases are encrypted with AES-256-GCM by default. The `Database` class handles key retrieval and encrypted attachment transparently. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md) for threat model, key management, and CLI commands.
