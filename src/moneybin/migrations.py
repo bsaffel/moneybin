@@ -389,3 +389,46 @@ class MigrationRunner:
                 f"Python migration {migration.filename} has no migrate() function"
             )
         migrate_fn(self._db.conn)
+
+
+def get_current_versions(db: Database) -> dict[str, str]:
+    """Read all component versions from app.versions.
+
+    Args:
+        db: Open Database instance.
+
+    Returns:
+        Dict mapping component name to version string.
+    """
+    rows = db.execute("SELECT component, version FROM app.versions").fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def record_version(db: Database, component: str, version: str) -> None:
+    """Record or update a component version in app.versions.
+
+    If the component already has the same version, this is a no-op.
+    If the version has changed, previous_version is updated.
+
+    Args:
+        db: Open Database instance.
+        component: Component identifier (e.g. 'moneybin', 'sqlmesh').
+        version: Current version string.
+    """
+    existing = db.execute(
+        "SELECT version FROM app.versions WHERE component = ?", [component]
+    ).fetchone()
+
+    if existing is None:
+        db.execute(
+            "INSERT INTO app.versions (component, version) VALUES (?, ?)",
+            [component, version],
+        )
+        logger.info(f"Recorded {component} version {version} (first install)")
+    elif existing[0] != version:
+        db.execute(
+            "UPDATE app.versions SET previous_version = version, "
+            "version = ?, updated_at = CURRENT_TIMESTAMP WHERE component = ?",
+            [version, component],
+        )
+        logger.info(f"Updated {component} version {existing[0]} -> {version}")

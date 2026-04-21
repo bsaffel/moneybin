@@ -2,6 +2,7 @@
 
 import hashlib
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -11,6 +12,8 @@ from moneybin.migrations import (
     MigrationError,
     MigrationRunner,
     discover_migrations,
+    get_current_versions,
+    record_version,
 )
 
 
@@ -466,3 +469,124 @@ class TestMigrationRunnerStuck:
         result = runner.apply_all()
         assert result.failed is True
         assert result.applied_count == 0
+
+
+class TestVersionTracking:
+    """Version recording and retrieval in app.versions."""
+
+    def test_record_version_first_install(self, db: Database) -> None:
+        """Records version with no previous_version on first install."""
+        record_version(db, "test_component", "1.0.0")
+        row = db.execute(
+            "SELECT component, version, previous_version "
+            "FROM app.versions WHERE component = 'test_component'"
+        ).fetchone()
+        assert row[0] == "test_component"
+        assert row[1] == "1.0.0"
+        assert row[2] is None
+
+    def test_record_version_upgrade(self, db: Database) -> None:
+        """Updates version and sets previous_version on upgrade."""
+        record_version(db, "test_component", "1.0.0")
+        record_version(db, "test_component", "2.0.0")
+        row = db.execute(
+            "SELECT version, previous_version FROM app.versions "
+            "WHERE component = 'test_component'"
+        ).fetchone()
+        assert row[0] == "2.0.0"
+        assert row[1] == "1.0.0"
+
+    def test_record_version_same_is_noop(self, db: Database) -> None:
+        """Recording the same version is a no-op."""
+        record_version(db, "test_component", "1.0.0")
+        record_version(db, "test_component", "1.0.0")
+        count = db.execute(
+            "SELECT COUNT(*) FROM app.versions WHERE component = 'test_component'"
+        ).fetchone()
+        assert count[0] == 1
+
+    def test_get_current_versions_empty(self, db: Database) -> None:
+        """Returns empty dict when no versions recorded for unknown component."""
+        versions = get_current_versions(db)
+        assert "test_never_recorded" not in versions
+
+    def test_get_current_versions(self, db: Database) -> None:
+        """Returns {component: version} mapping including recorded components."""
+        record_version(db, "test_component_a", "1.0.0")
+        record_version(db, "test_component_b", "0.130.0")
+        versions = get_current_versions(db)
+        assert versions["test_component_a"] == "1.0.0"
+        assert versions["test_component_b"] == "0.130.0"
+
+
+class TestAutoUpgrade:
+    """Auto-upgrade runs migrations when package version changes."""
+
+    def test_first_init_records_version(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """First database init records the current package version."""
+        db_path = tmp_path / "test.duckdb"
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="1.0.0"
+        ):
+            database = Database(db_path, secret_store=mock_secret_store)
+        try:
+            row = database.execute(
+                "SELECT version FROM app.versions WHERE component = 'moneybin'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "1.0.0"
+        finally:
+            database.close()
+
+    def test_version_mismatch_runs_migrations(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """When package version changes, pending migrations are applied."""
+        db_path = tmp_path / "test.duckdb"
+        # First init at version 1.0.0
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="1.0.0"
+        ):
+            db1 = Database(db_path, secret_store=mock_secret_store)
+            db1.close()
+
+        # Second init at version 2.0.0 — should trigger migration sequence
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="2.0.0"
+        ):
+            db2 = Database(db_path, secret_store=mock_secret_store)
+        try:
+            row = db2.execute(
+                "SELECT version, previous_version FROM app.versions "
+                "WHERE component = 'moneybin'"
+            ).fetchone()
+            assert row[0] == "2.0.0"
+            assert row[1] == "1.0.0"
+        finally:
+            db2.close()
+
+    def test_no_auto_upgrade_skips_migrations(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+    ) -> None:
+        """no_auto_upgrade=True in settings skips migration sequence."""
+        from moneybin.config import DatabaseConfig, MoneyBinSettings
+
+        mock_settings = MagicMock(spec=MoneyBinSettings)
+        mock_settings.database = DatabaseConfig(no_auto_upgrade=True)
+        db_path = tmp_path / "test.duckdb"
+        with (
+            patch("moneybin.database.importlib.metadata.version", return_value="1.0.0"),
+            patch("moneybin.database.get_settings", return_value=mock_settings),
+        ):
+            database = Database(db_path, secret_store=mock_secret_store)
+        try:
+            row = database.execute(
+                "SELECT COUNT(*) FROM app.versions WHERE component = 'moneybin'"
+            ).fetchone()
+            assert row[0] == 0  # version not recorded when auto-upgrade is skipped
+        finally:
+            database.close()
