@@ -6,6 +6,7 @@ including default profile settings and user preferences.
 
 import logging
 import re
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -17,14 +18,14 @@ logger = logging.getLogger(__name__)
 class UserConfig(BaseModel):
     """User-level configuration stored in ~/.moneybin/config.yaml."""
 
-    default_profile: str | None = Field(
+    active_profile: str | None = Field(
         default=None,
-        description="Default profile name (user's first name or chosen identifier)",
+        description="Active profile name (user's first name or chosen identifier)",
     )
 
-    @field_validator("default_profile")
+    @field_validator("active_profile")
     @classmethod
-    def validate_default_profile(cls, v: str | None) -> str | None:
+    def validate_active_profile(cls, v: str | None) -> str | None:
         """Validate and normalize profile name."""
         if v is None:
             return None
@@ -101,6 +102,7 @@ def load_user_config() -> UserConfig:
 
     Note:
         Returns default UserConfig if file doesn't exist or cannot be read.
+        Migrates old ``default_profile`` key to ``active_profile`` on load.
     """
     config_path = get_user_config_path()
 
@@ -112,6 +114,9 @@ def load_user_config() -> UserConfig:
         with open(config_path) as f:
             raw_data = yaml.safe_load(f)
             data: dict[str, str | None] = raw_data if isinstance(raw_data, dict) else {}
+            # Migrate old default_profile key to active_profile
+            if "default_profile" in data and "active_profile" not in data:
+                data["active_profile"] = data.pop("default_profile")
             return UserConfig(**data)
     except Exception as e:
         logger.warning(f"Failed to load user config from {config_path}: {e}")
@@ -143,20 +148,20 @@ def save_user_config(config: UserConfig) -> None:
 
 
 def get_default_profile() -> str | None:
-    """Get the default profile name from user config.
+    """Get the active profile name from user config.
 
     Returns:
-        str | None: Default profile name, or None if not set
+        str | None: Active profile name, or None if not set
     """
     config = load_user_config()
-    return config.default_profile
+    return config.active_profile
 
 
 def set_default_profile(profile_name: str) -> None:
-    """Set the default profile name in user config.
+    """Set the active profile name in user config.
 
     Args:
-        profile_name: Profile name to set as default (will be normalized)
+        profile_name: Profile name to set as active (will be normalized)
 
     Raises:
         ValueError: If profile name is invalid
@@ -167,13 +172,48 @@ def set_default_profile(profile_name: str) -> None:
     # Load existing config
     config = load_user_config()
 
-    # Update default profile
-    config.default_profile = normalized
+    # Update active profile
+    config.active_profile = normalized
 
     # Save config
     save_user_config(config)
 
-    logger.info(f"Set default profile to: {normalized}")
+    logger.info(f"Set active profile to: {normalized}")
+
+
+def generate_profile_config(profile_dir: Path, profile_name: str) -> Path:
+    """Generate a per-profile config.yaml with sensible defaults.
+
+    Args:
+        profile_dir: Directory for the profile (will be created).
+        profile_name: Profile name (for header comment).
+
+    Returns:
+        Path to the created config.yaml.
+    """
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    config_path = profile_dir / "config.yaml"
+
+    config_data = {
+        "database": {
+            "encryption_key_mode": "auto",
+        },
+        "logging": {
+            "level": "INFO",
+            "log_to_file": True,
+            "max_file_size_mb": 50,
+        },
+        "sync": {
+            "enabled": False,
+        },
+    }
+
+    header = f"# Profile: {profile_name}\n# Created: {date.today()}\n\n"
+    with open(config_path, "w") as f:
+        f.write(header)
+        yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    return config_path
 
 
 def prompt_for_profile_name() -> str:
