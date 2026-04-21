@@ -80,3 +80,31 @@ class TestMovedCommands:
         """Mcp kill no longer exists."""
         result = runner.invoke(app, ["mcp", "kill"])
         assert result.exit_code != 0
+
+
+class TestStubbedCommands:
+    """Stubbed commands show 'not implemented' messages."""
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_matches_stubbed(self, mock_profile: MagicMock) -> None:
+        """Matches group exists but shows not-implemented."""
+        result = runner.invoke(app, ["matches", "--help"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_track_stubbed(self, mock_profile: MagicMock) -> None:
+        """Track group exists but shows not-implemented."""
+        result = runner.invoke(app, ["track", "--help"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_export_stubbed(self, mock_profile: MagicMock) -> None:
+        """Export group exists."""
+        result = runner.invoke(app, ["export", "--help"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+    def test_stats_stubbed(self, mock_profile: MagicMock) -> None:
+        """Stats command exists."""
+        result = runner.invoke(app, ["stats"])
+        assert result.exit_code == 0

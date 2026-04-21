@@ -14,6 +14,13 @@ from ..config import set_current_profile
 from ..logging import setup_logging
 from ..utils.user_config import ensure_default_profile
 from .commands import categorize, db, import_cmd, logs, mcp, profile, sync, transform
+from .commands.stubs import (
+    db_migrate_app,
+    export_app,
+    matches_app,
+    stats_command,
+    track_app,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +110,18 @@ app.add_typer(
     name="logs",
     help="Manage log files",
 )
+app.add_typer(matches_app, name="matches", help="Review and manage transaction matches")
+app.add_typer(track_app, name="track", help="Balance tracking and net worth")
+app.add_typer(export_app, name="export", help="Export data to external formats")
+
+# Add db migrate as a sub-typer of db
+db.app.add_typer(db_migrate_app, name="migrate", help="Database migration management")
+
+
+@app.command("stats")
+def stats() -> None:
+    """Show lifetime metric aggregates."""
+    stats_command()
 
 
 def main() -> None:
