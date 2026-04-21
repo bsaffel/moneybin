@@ -147,6 +147,13 @@ class LoggingConfig(BaseModel):
     backup_count: int = Field(
         default=5, ge=1, le=50, description="Number of log file backups to keep"
     )
+    format: Literal["human", "json"] = Field(
+        default="human", description="Log output format: human-readable or JSON"
+    )
+    sanitize: bool = Field(
+        default=True,
+        description="PII sanitization on all log output. Always on — exists for visibility only.",
+    )
 
 
 class MCPConfig(BaseModel):

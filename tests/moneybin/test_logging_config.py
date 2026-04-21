@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from moneybin.config import LoggingConfig as PydanticLoggingConfig
 from moneybin.logging.config import LoggingConfig, session_log_path, setup_logging
 
 
@@ -128,3 +129,42 @@ class TestSetupLogging:
                 assert fh.filter(record), (
                     f"FileHandler {fh} should accept records from '{name}'"
                 )
+
+
+class TestPydanticLoggingConfig:
+    """Tests for the Pydantic LoggingConfig on MoneyBinSettings."""
+
+    @pytest.mark.unit
+    def test_default_format_is_human(self) -> None:
+        """Default log format should be 'human'."""
+        config = PydanticLoggingConfig()
+        assert config.format == "human"
+
+    @pytest.mark.unit
+    def test_json_format_accepted(self) -> None:
+        """JSON format should be a valid option."""
+        config = PydanticLoggingConfig(format="json")
+        assert config.format == "json"
+
+    @pytest.mark.unit
+    def test_invalid_format_rejected(self) -> None:
+        """Invalid format values should raise ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            PydanticLoggingConfig(format="xml")
+
+    @pytest.mark.unit
+    def test_sanitize_defaults_true(self) -> None:
+        """Sanitize flag should default to True."""
+        config = PydanticLoggingConfig()
+        assert config.sanitize is True
+
+    @pytest.mark.unit
+    def test_config_is_frozen(self) -> None:
+        """LoggingConfig should be immutable."""
+        from pydantic import ValidationError
+
+        config = PydanticLoggingConfig()
+        with pytest.raises(ValidationError):
+            config.format = "json"  # type: ignore[misc]
