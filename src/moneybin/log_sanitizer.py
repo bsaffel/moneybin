@@ -16,7 +16,11 @@ _sanitizer_logger = logging.getLogger(__name__)
 # and don't match this pattern, so no date-exclusion guard is needed.
 _SSN_PATTERN = re.compile(r"\b(\d{3})-(\d{2})-(\d{4})\b")
 
-# Account numbers: 8+ consecutive digits (not preceded or followed by a digit)
+# Account numbers: 8+ consecutive digits (not preceded or followed by a digit).
+# Known false-positive risk: numeric dates (20260420), row IDs, file offsets,
+# and other long digit sequences will also be masked. This is intentional —
+# the formatter is a safety-net layer, not a substitute for clean log statements.
+# Real account numbers should never appear in log output at all.
 _ACCOUNT_PATTERN = re.compile(r"(?<!\d)(\d{8,})(?!\d)")
 
 # Dollar amounts: $N or $N,NNN or $N.NN etc.

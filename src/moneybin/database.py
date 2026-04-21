@@ -16,7 +16,6 @@ Never call ``duckdb.connect()`` directly. See the data-protection spec
 """
 
 import logging
-import os
 import stat
 import sys
 from pathlib import Path
@@ -120,7 +119,7 @@ class Database:
             try:
                 db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
             except OSError:
-                logger.warning("Could not set file permissions on %s", db_path)
+                logger.warning(f"Could not set file permissions on {db_path}")
 
         # Validate permissions on existing databases
         if not is_new and sys.platform != "win32":
@@ -132,12 +131,8 @@ class Database:
         init_schemas(self._conn)
 
         # Steps g-i: Migration (stub — see database-migration.md spec)
-        if not os.environ.get("MONEYBIN_NO_AUTO_UPGRADE"):
-            logger.debug(
-                "Migration steps skipped — MigrationRunner not yet implemented"
-            )
 
-        logger.info("Database connection established: %s", db_path)
+        logger.info(f"Database connection established: {db_path}")
 
     def _check_permissions(self, db_path: Path) -> None:
         """Warn if database file has overly permissive permissions.
@@ -149,11 +144,8 @@ class Database:
             mode = db_path.stat().st_mode & 0o777
             if mode & 0o077:  # group or world readable/writable
                 logger.warning(
-                    "⚠️  Database file %s has permissive permissions (%04o). "
-                    "Run: chmod 600 %s",
-                    db_path,
-                    mode,
-                    db_path,
+                    f"⚠️  Database file {db_path} has permissive permissions ({mode:04o}). "
+                    f"Run: chmod 600 {db_path}"
                 )
         except OSError:
             pass
@@ -284,7 +276,7 @@ class Database:
                 pass
             self._conn = None
         self._closed = True
-        logger.debug("Database connection closed: %s", self._db_path)
+        logger.debug(f"Database connection closed: {self._db_path}")
 
 
 # Singleton instance

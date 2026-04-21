@@ -126,14 +126,16 @@ def init_db(
 
         # Generate a fixed salt to allow re-derivation during unlock
         salt = secrets_mod.token_bytes(16)
-        # Derive deterministic key from passphrase + salt using Argon2id
+        # Derive deterministic key from passphrase + salt using Argon2id.
+        # Parameters come from DatabaseConfig — must match db_unlock exactly.
+        db_cfg = settings.database
         raw_key = argon2.low_level.hash_secret_raw(
             secret=pp.encode(),
             salt=salt,
-            time_cost=3,
-            memory_cost=65536,
-            parallelism=4,
-            hash_len=32,
+            time_cost=db_cfg.argon2_time_cost,
+            memory_cost=db_cfg.argon2_memory_cost,
+            parallelism=db_cfg.argon2_parallelism,
+            hash_len=db_cfg.argon2_hash_len,
             type=argon2.low_level.Type.ID,
         )
         encryption_key = raw_key.hex()
@@ -592,6 +594,7 @@ def db_unlock() -> None:
     from moneybin.database import Database
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
+    settings = get_settings()
     store = SecretStore()
 
     # Retrieve the stored salt
@@ -616,21 +619,22 @@ def db_unlock() -> None:
         raise typer.Exit(1) from e
     pp = typer.prompt("Enter passphrase", hide_input=True)
 
-    # Re-derive key using same params and stored salt
+    # Re-derive key using same params and stored salt.
+    # Parameters come from DatabaseConfig — must match init_db exactly.
+    db_cfg = settings.database
     raw_key = argon2.low_level.hash_secret_raw(
         secret=pp.encode(),
         salt=salt,
-        time_cost=3,
-        memory_cost=65536,
-        parallelism=4,
-        hash_len=32,
+        time_cost=db_cfg.argon2_time_cost,
+        memory_cost=db_cfg.argon2_memory_cost,
+        parallelism=db_cfg.argon2_parallelism,
+        hash_len=db_cfg.argon2_hash_len,
         type=argon2.low_level.Type.ID,
     )
     encryption_key = raw_key.hex()
 
     store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
 
-    settings = get_settings()
     if not settings.database.path.exists():
         store.delete_key("DATABASE__ENCRYPTION_KEY")
         logger.error("❌ Database file not found: %s", settings.database.path)
@@ -640,8 +644,11 @@ def db_unlock() -> None:
         db = Database(settings.database.path, secret_store=store)
         db.close()
         logger.info("✅ Database unlocked")
-    except Exception:
-        store.delete_key("DATABASE__ENCRYPTION_KEY")
+    except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
+        try:
+            store.delete_key("DATABASE__ENCRYPTION_KEY")
+        except SecretNotFoundError:
+            pass
         logger.error("❌ Wrong passphrase — database remains locked")
         raise typer.Exit(1) from None
 

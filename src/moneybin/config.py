@@ -71,6 +71,21 @@ class DatabaseConfig(BaseModel):
         default=None,
         description="DuckDB temp spill directory. Defaults to data/<profile>/temp/",
     )
+    # Argon2id parameters for passphrase-based key derivation.
+    # WARNING: changing these after a database is created locks you out —
+    # the derived key will differ and the database will be unreadable.
+    argon2_time_cost: int = Field(
+        default=3, ge=1, description="Argon2id time cost (iterations)"
+    )
+    argon2_memory_cost: int = Field(
+        default=65536, ge=8192, description="Argon2id memory cost in KiB"
+    )
+    argon2_parallelism: int = Field(
+        default=4, ge=1, description="Argon2id degree of parallelism"
+    )
+    argon2_hash_len: int = Field(
+        default=32, ge=16, description="Argon2id output hash length in bytes"
+    )
 
     @field_validator("path")
     @classmethod
