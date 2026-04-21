@@ -2,7 +2,7 @@
 
 ## When a Feature Ships
 
-After marking a spec as `implemented` and archiving it, update public-facing documentation:
+After marking a spec as `implemented` (in both the spec file and `INDEX.md`), update public-facing documentation:
 
 ### README.md Updates
 

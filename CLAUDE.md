@@ -59,7 +59,7 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 
 - **Before implementing a feature**, check `docs/specs/INDEX.md` to see if a spec exists and what its status is.
 - **When starting implementation**, update the spec's status to `in-progress` (both in the spec file and in `INDEX.md`).
-- **When implementation is complete**, update the spec's status to `implemented` and move the file to `docs/specs/archived/`. See `.claude/rules/shipping.md` for README and public documentation updates.
+- **When implementation is complete**, update the spec's status to `implemented` (both in the spec file and in `INDEX.md`). See `.claude/rules/shipping.md` for README and public documentation updates.
 - **When writing a new spec**, add it to the Active specs table in `INDEX.md`.
 - Statuses: `draft` → `ready` → `in-progress` → `implemented`.
 
