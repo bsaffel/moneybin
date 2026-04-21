@@ -327,6 +327,11 @@ def serve(
         importlib.import_module(module)
 
     db_path = get_database_path()
+
+    from moneybin.observability import setup_observability
+
+    setup_observability(stream="mcp")
+
     logger.info(f"Starting MCP server with database: {db_path}")
 
     if transport not in _VALID_TRANSPORTS:

@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 from ..config import set_current_profile
-from ..logging import setup_logging
+from ..observability import setup_observability
 from ..utils.user_config import ensure_default_profile
 from .commands import categorize, db, import_cmd, logs, mcp, profile, sync, transform
 from .commands.stubs import (
@@ -67,7 +67,7 @@ def main_callback(
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-    setup_logging(cli_mode=True, verbose=verbose, profile=profile_name)
+    setup_observability(stream="cli", verbose=verbose, profile=profile_name)
     if profile_name is not None:
         logger.info(f"Using profile: {profile_name}")
 
