@@ -40,7 +40,9 @@ class TestTransformAudit:
     def test_audit_succeeds(self, mock_ctx_cls: MagicMock) -> None:
         """Transform audit runs SQLMesh audit."""
         mock_ctx = mock_ctx_cls.return_value
-        result = runner.invoke(app, ["audit"])
+        result = runner.invoke(
+            app, ["audit", "--start", "2026-01-01", "--end", "2026-01-31"]
+        )
         assert result.exit_code == 0
         mock_ctx.audit.assert_called_once()
 
@@ -58,7 +60,7 @@ class TestTransformRestate:
             input="n\n",
         )
         assert result.exit_code == 0
-        mock_ctx.restate_model.assert_not_called()
+        mock_ctx.plan.assert_not_called()
 
     @patch("moneybin.cli.commands.transform.Context")
     def test_restate_with_yes(self, mock_ctx_cls: MagicMock) -> None:

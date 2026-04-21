@@ -120,7 +120,7 @@ class TestMCPConfigGenerate:
         config_file = tmp_path / "claude_desktop_config.json"
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp._get_client_config_path",
-            lambda client: config_file,
+            lambda client: config_file,  # type: ignore[reportUnknownLambdaType]
         )
         result = runner.invoke(
             app,
@@ -136,7 +136,7 @@ class TestMCPConfigGenerate:
         config_file = tmp_path / "claude_desktop_config.json"
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp._get_client_config_path",
-            lambda client: config_file,
+            lambda client: config_file,  # type: ignore[reportUnknownLambdaType]
         )
         result = runner.invoke(
             app,
@@ -151,7 +151,7 @@ class TestMCPConfigGenerate:
         config_file = tmp_path / "claude_desktop_config.json"
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp._get_client_config_path",
-            lambda client: config_file,
+            lambda client: config_file,  # type: ignore[reportUnknownLambdaType]
         )
         runner.invoke(
             app,

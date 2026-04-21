@@ -2,12 +2,15 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.logs import _parse_duration, app
+from moneybin.cli.commands.logs import (
+    _parse_duration as _parse_duration,  # type: ignore[reportPrivateUsage] — testing internal helper
+)
+from moneybin.cli.commands.logs import app
 
 runner = CliRunner()
 
@@ -51,7 +54,7 @@ class TestLogsPath:
     """Tests for the logs path command."""
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_path_prints_log_dir(self, mock_settings) -> None:
+    def test_path_prints_log_dir(self, mock_settings: MagicMock) -> None:
         """Logs path prints the log directory."""
         mock_settings.return_value.logging.log_file_path = Path(
             "/fake/profiles/alice/logs/moneybin.log"
@@ -61,7 +64,7 @@ class TestLogsPath:
         assert "/fake/profiles/alice/logs" in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_path_does_not_include_filename(self, mock_settings) -> None:
+    def test_path_does_not_include_filename(self, mock_settings: MagicMock) -> None:
         """Logs path prints the directory, not the log file itself."""
         mock_settings.return_value.logging.log_file_path = Path(
             "/fake/profiles/alice/logs/moneybin.log"
@@ -141,7 +144,9 @@ class TestLogsTail:
     """Tests for the logs tail command."""
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_shows_last_n_lines(self, mock_settings, tmp_path: Path) -> None:
+    def test_tail_shows_last_n_lines(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
         """Logs tail shows the last N lines of the log file."""
         log_file = tmp_path / "moneybin.log"
         lines = [f"line {i}\n" for i in range(50)]
@@ -155,7 +160,7 @@ class TestLogsTail:
         assert "line 49" in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_default_lines(self, mock_settings, tmp_path: Path) -> None:
+    def test_tail_default_lines(self, mock_settings: MagicMock, tmp_path: Path) -> None:
         """Logs tail defaults to 20 lines."""
         log_file = tmp_path / "moneybin.log"
         lines = [f"line {i}\n" for i in range(30)]
@@ -168,7 +173,7 @@ class TestLogsTail:
         assert len(output_lines) == 20
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_stream_filter(self, mock_settings, tmp_path: Path) -> None:
+    def test_tail_stream_filter(self, mock_settings: MagicMock, tmp_path: Path) -> None:
         """Logs tail --stream filters lines by stream name."""
         log_file = tmp_path / "moneybin.log"
         log_file.write_text(
@@ -187,7 +192,9 @@ class TestLogsTail:
         assert "general info" not in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_missing_log_file(self, mock_settings, tmp_path: Path) -> None:
+    def test_tail_missing_log_file(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
         """Logs tail handles missing log file gracefully."""
         mock_settings.return_value.logging.log_file_path = tmp_path / "nonexistent.log"
         result = runner.invoke(app, ["tail"])
@@ -195,7 +202,7 @@ class TestLogsTail:
 
     @patch("moneybin.cli.commands.logs.get_settings")
     def test_tail_fewer_lines_than_requested(
-        self, mock_settings, tmp_path: Path
+        self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
         """Logs tail shows all lines when file has fewer than requested."""
         log_file = tmp_path / "moneybin.log"

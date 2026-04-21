@@ -9,7 +9,7 @@ import importlib
 import json
 import logging
 from pathlib import Path
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 
 import typer
 
@@ -124,7 +124,7 @@ def config_generate(
     resolved_profile = profile or get_current_profile()
     moneybin_bin = shutil.which("moneybin") or "moneybin"
 
-    server_entry: dict = {
+    server_entry: dict[str, Any] = {
         "command": moneybin_bin,
         "args": ["--profile", resolved_profile, "mcp", "serve"],
     }
@@ -174,7 +174,7 @@ def _get_client_config_path(client: str) -> Path:
     return _CLIENT_CONFIG_PATHS[client]
 
 
-def _merge_client_config(config_path: Path, patch: dict) -> None:
+def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
     """Merge a patch dict into a JSON config file, creating it if absent.
 
     The merge is shallow at the top level — nested keys under
@@ -186,7 +186,7 @@ def _merge_client_config(config_path: Path, patch: dict) -> None:
     """
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    existing: dict = {}
+    existing: dict[str, Any] = {}
     if config_path.exists():
         try:
             existing = json.loads(config_path.read_text())
@@ -196,8 +196,9 @@ def _merge_client_config(config_path: Path, patch: dict) -> None:
             )
 
     for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(existing.get(key), dict):
-            existing[key] = {**existing[key], **value}
+        existing_val = existing.get(key)
+        if isinstance(value, dict) and isinstance(existing_val, dict):
+            existing[key] = {**existing_val, **value}
         else:
             existing[key] = value
 
@@ -224,7 +225,7 @@ def list_tools() -> None:
     ):
         importlib.import_module(module)
 
-    tools: dict = mcp_server._tool_manager._tools  # type: ignore[reportAttributeAccessIssue]
+    tools: dict[str, object] = mcp_server._tool_manager._tools  # type: ignore[reportAttributeAccessIssue] — accessing FastMCP internals
 
     if not tools:
         typer.echo("No tools registered.")
@@ -254,7 +255,7 @@ def list_prompts() -> None:
     ):
         importlib.import_module(module)
 
-    prompts: dict = mcp_server._prompt_manager._prompts  # type: ignore[reportAttributeAccessIssue]
+    prompts: dict[str, object] = mcp_server._prompt_manager._prompts  # type: ignore[reportAttributeAccessIssue] — accessing FastMCP internals
 
     if not prompts:
         typer.echo("No prompts registered.")

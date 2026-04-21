@@ -95,12 +95,19 @@ def transform_validate() -> None:
 
 
 @app.command("audit")
-def transform_audit() -> None:
+def transform_audit(
+    start: str = typer.Option(
+        ..., "--start", help="Start date for audit window (YYYY-MM-DD)"
+    ),
+    end: str = typer.Option(
+        ..., "--end", help="End date for audit window (YYYY-MM-DD)"
+    ),
+) -> None:
     """Run data quality assertions defined in SQLMesh models."""
     logger.info("⚙️  Running SQLMesh audits...")
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
-        ctx.audit()
+        ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error("❌ Audit failed: %s", e)
@@ -128,8 +135,13 @@ def transform_restate(
     logger.info("⚙️  Restating %s from %s...", model, start)
     try:
         ctx = Context(paths=str(_SQLMESH_ROOT))
-        ctx.restate_model(model, start=start, end=end)
-        ctx.plan(auto_apply=True, no_prompts=True)
+        ctx.plan(
+            restate_models=[model],
+            start=start,
+            end=end,
+            auto_apply=True,
+            no_prompts=True,
+        )
         logger.info("✅ Restated %s", model)
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error("❌ Restatement failed: %s", e)
