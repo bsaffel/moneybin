@@ -82,26 +82,68 @@ def _run_transforms(db_path: Path) -> bool:
     SQLMesh manages its own connection — the caller must close any
     existing connections before calling this.
 
+    Because the database is encrypted with AES-256-GCM (ATTACH ...
+    ENCRYPTION_KEY), and SQLMesh's DuckDB gateway config does not support
+    encryption_key, we create a properly-connected DuckDB adapter and
+    pre-populate SQLMesh's adapter cache so it reuses our connection
+    instead of creating one that can't decrypt the file.
+
     Args:
         db_path: Path to the DuckDB database file.
 
     Returns:
         True if transforms ran successfully.
     """
+    import duckdb as duckdb_mod
+    from sqlmesh.core.config.connection import BaseDuckDBConnectionConfig
+    from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
+
+    from moneybin.secrets import SecretStore
     from sqlmesh import (
         Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
     )
 
     logger.info("Running SQLMesh transforms")
-    ctx = Context(
-        paths=str(_SQLMESH_ROOT),
-        gateway={  # type: ignore[reportArgumentType] — SQLMesh accepts dict at runtime
-            "connection": {"type": "duckdb", "database": str(db_path)},
-        },
+
+    store = SecretStore()
+    encryption_key = store.get_key("DATABASE__ENCRYPTION_KEY")
+
+    # Create an in-memory DuckDB connection and ATTACH the encrypted file.
+    # This mirrors the pattern in Database.__init__.
+    conn = duckdb_mod.connect()
+    safe_path = str(db_path).replace("'", "''")
+    safe_key = encryption_key.replace("'", "''")
+    conn.execute("INSTALL httpfs; LOAD httpfs;")
+    conn.execute(
+        f"ATTACH '{safe_path}' AS moneybin (TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"  # noqa: S608  # trusted internal values, single-quote escaped
     )
-    ctx.plan(auto_apply=True, no_prompts=True)
-    logger.info("SQLMesh transforms completed")
-    return True
+    conn.execute("USE moneybin")
+
+    # Pre-populate SQLMesh's adapter cache (keyed by database path).
+    # BaseDuckDBConnectionConfig.create_engine_adapter checks this cache
+    # before creating a new adapter, so SQLMesh will reuse our encrypted
+    # connection rather than opening its own unencrypted one.
+    adapter = DuckDBEngineAdapter(
+        lambda: conn,
+        default_catalog="moneybin",
+        register_comments=True,
+    )
+    cache_key = str(db_path)
+    BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
+
+    try:
+        ctx = Context(
+            paths=str(_SQLMESH_ROOT),
+            gateway={  # type: ignore[reportArgumentType] — SQLMesh accepts dict at runtime
+                "connection": {"type": "duckdb", "database": str(db_path)},
+            },
+        )
+        ctx.plan(auto_apply=True, no_prompts=True)
+        logger.info("SQLMesh transforms completed")
+        return True
+    finally:
+        BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
+        conn.close()
 
 
 def _import_ofx(

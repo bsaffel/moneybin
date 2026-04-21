@@ -142,7 +142,7 @@ def serve(
     validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
 
     try:
-        init_db(db_path)
+        init_db()
         logger.info("MCP server starting (transport=%s, db=%s)", transport, db_path)
         mcp.run(transport=validated_transport)
     except FileNotFoundError as e:

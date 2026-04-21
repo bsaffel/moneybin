@@ -83,20 +83,17 @@ def table_exists(table: TableRef) -> bool:
         return False
 
 
-def init_db(db_path: Path) -> None:
-    """Initialize the database.
+def init_db() -> None:
+    """Initialize the database singleton.
 
     The Database class handles encryption, schema initialization, and
-    migrations transparently. This function is kept for compatibility with
-    the MCP server startup path.
-
-    Args:
-        db_path: Path to the DuckDB database file.
+    migrations transparently via ``get_database()``, which reads the
+    database path from ``get_settings().database.path``.
     """
     from moneybin.database import get_database
 
-    get_database()
-    logger.info("Database initialized: %s", db_path)
+    db = get_database()
+    logger.info(f"Database initialized: {db.path}")
 
 
 def close_db() -> None:

@@ -77,3 +77,16 @@ class TestSetAndDeleteKey:
         mock_kr.delete_password.assert_called_once_with(
             "moneybin", "DATABASE__ENCRYPTION_KEY"
         )
+
+    def test_delete_key_raises_secret_not_found_when_absent(self) -> None:
+        """PasswordDeleteError from keyring backend is wrapped as SecretNotFoundError."""
+        store = SecretStore()
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.PasswordDeleteError = type(
+                "PasswordDeleteError", (Exception,), {}
+            )
+            mock_kr.delete_password.side_effect = mock_kr.errors.PasswordDeleteError(
+                "not found"
+            )
+            with pytest.raises(SecretNotFoundError, match="not found in keychain"):
+                store.delete_key("DATABASE__ENCRYPTION_KEY")
