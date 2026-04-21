@@ -46,6 +46,20 @@ When a function delegates to an external system (SQLMesh, DuckDB CLI, keyring, s
 - **Mocks must raise real library exceptions**: if keyring raises `PasswordDeleteError`, the mock must too — not the project wrapper the code is supposed to produce.
 - **Integration tests for subsystem boundaries** (`@pytest.mark.integration`, `make test-all`): one test per boundary that exercises the real interaction (encrypted DB + SQLMesh, passphrase lock/unlock cycle, key rotation round-trip).
 
+## Database Fixtures
+
+- **Always pass `no_auto_upgrade=True`** when creating `Database` instances in tests, unless the test is specifically verifying migration behavior. Without this, each test spawns a `sqlmesh migrate` subprocess (~1.5s per test).
+- **Use `mock_secret_store`** from the root `conftest.py` (or create a local `MagicMock` with `get_key.return_value = "test-key"`) — never hit the real keyring.
+- **Avoid `autouse=True` on expensive fixtures.** Use `pytestmark = pytest.mark.usefixtures("fixture_name")` at module level, and add the fixture as an explicit parameter to any inner fixtures that depend on it (e.g., `_insert_data(self, mcp_db: object)`).
+
+```python
+# CORRECT — fast test database
+Database(tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True)
+
+# WRONG — spawns sqlmesh subprocess, runs migrations on every test
+Database(tmp_path / "test.duckdb", secret_store=mock_store)
+```
+
 ## Best Practices
 
 - Arrange-Act-Assert structure.

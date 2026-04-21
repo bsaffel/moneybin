@@ -6,6 +6,8 @@ import pytest
 from moneybin.mcp import server
 from moneybin.tables import DIM_ACCOUNTS, TableRef
 
+pytestmark = pytest.mark.usefixtures("mcp_db")
+
 
 class TestGetDb:
     """Tests for get_db()."""

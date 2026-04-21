@@ -15,7 +15,9 @@ def test_db(tmp_path: Path) -> Database:
     """A temporary Database instance for testing."""
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-key"
-    return Database(tmp_path / "test.duckdb", secret_store=mock_store)
+    return Database(
+        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+    )
 
 
 @pytest.fixture()

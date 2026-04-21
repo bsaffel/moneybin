@@ -17,6 +17,8 @@ from moneybin.mcp.tools import (
     run_read_query,
 )
 
+pytestmark = pytest.mark.usefixtures("mcp_db")
+
 # ---------------------------------------------------------------------------
 # Shared INSERT SQL for test classes that need transactions or W2 data
 # ---------------------------------------------------------------------------
@@ -86,7 +88,7 @@ class TestDescribeTable:
     """Tests for the describe_table tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute(_INSERT_TRANSACTIONS)
 
@@ -126,7 +128,7 @@ class TestQueryTransactions:
     """Tests for the query_transactions tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute(_INSERT_TRANSACTIONS)
 
@@ -202,7 +204,7 @@ class TestGetW2Summary:
     """Tests for the get_w2_summary tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute(_INSERT_W2)
 
@@ -231,7 +233,7 @@ class TestRunReadQuery:
     """Tests for the run_read_query tool."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
+    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
         db = server.get_db()
         db.execute(_INSERT_TRANSACTIONS)
 

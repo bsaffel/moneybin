@@ -16,7 +16,7 @@ from moneybin.database import Database
 from tests.moneybin.db_helpers import create_core_tables_raw
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture()
 def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
     """Create a Database instance with schemas and base reference data for MCP tests.
 
@@ -38,7 +38,7 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
 
-    database = Database(db_path, secret_store=mock_store)
+    database = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
     conn = database.conn
 
     # Core tables are managed by SQLMesh in production; create test-only
