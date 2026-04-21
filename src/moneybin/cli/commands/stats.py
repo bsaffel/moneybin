@@ -76,8 +76,8 @@ def stats_show(
         raise typer.Exit(1) from e
 
     # Build query with optional filters
-    where_clauses = []
-    params: list[object] = []
+    where_clauses: list[str] = []
+    params: list[str | datetime] = []
 
     if since:
         try:
@@ -136,7 +136,7 @@ def stats_show(
 
     # Human-readable output
     for row in rows:
-        name, metric_type, value, count, last = row
+        name, metric_type, value, count, _last = row
         display_name = name.replace("moneybin_", "").replace("_", " ").title()
         if metric_type == "counter":
             logger.info(f"{display_name}: {value:,.0f} total")

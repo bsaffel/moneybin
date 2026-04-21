@@ -113,7 +113,7 @@ class TestFlushToDuckDB:
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == "histogram"
-        assert rows[0][1] == pytest.approx(1.0, abs=0.01)  # sum of 0.3 + 0.7
+        assert rows[0][1] == pytest.approx(1.0, abs=0.01)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete  # sum of 0.3 + 0.7
         assert rows[0][2] is not None  # bucket_bounds
         assert rows[0][3] is not None  # bucket_counts
 

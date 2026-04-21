@@ -22,7 +22,7 @@ class TestMetricDefinitions:
     def test_import_records_total_has_source_type_label(self) -> None:
         from moneybin.metrics.registry import IMPORT_RECORDS_TOTAL
 
-        assert "source_type" in IMPORT_RECORDS_TOTAL._labelnames
+        assert "source_type" in IMPORT_RECORDS_TOTAL._labelnames  # type: ignore[reportPrivateUsage,reportUnknownMemberType] — testing prometheus internals
 
     @pytest.mark.unit
     def test_import_duration_is_histogram(self) -> None:

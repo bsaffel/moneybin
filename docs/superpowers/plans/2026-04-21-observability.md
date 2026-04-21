@@ -58,9 +58,9 @@
 In `pyproject.toml`, add these two lines to the `dependencies` array, after the `"typer>=0.24.1"` line:
 
 ```python
-    # Observability: metrics registry and JSON log formatting
-    "prometheus_client>=0.22.0",
-    "python-json-logger>=3.3.0",
+# Observability: metrics registry and JSON log formatting
+("prometheus_client>=0.22.0",)
+("python-json-logger>=3.3.0",)
 ```
 
 - [ ] **Step 2: Install and verify**
@@ -447,9 +447,7 @@ class TestSessionLogPath:
     def test_path_structure(self) -> None:
         """Path follows logs/{profile}/stream_YYYY-MM-DD.log format."""
         now = datetime(2025, 4, 11, 13, 57, 18)
-        result = session_log_path(
-            Path("logs/test/moneybin.log"), prefix="cli", now=now
-        )
+        result = session_log_path(Path("logs/test/moneybin.log"), prefix="cli", now=now)
         assert result == Path("logs/test/cli_2025-04-11.log")
 
     @pytest.mark.unit
@@ -1339,8 +1337,7 @@ def tracked(
             metric_labels = {"operation": operation, **extra_labels}
             # Fill missing label keys with empty string for prometheus
             call_labels = {
-                k: metric_labels.get(k, "")
-                for k in ("operation", "source_type")
+                k: metric_labels.get(k, "") for k in ("operation", "source_type")
             }
             _TRACKED_CALLS.labels(**call_labels).inc()
             start = time.monotonic()
@@ -1348,9 +1345,7 @@ def tracked(
                 result = func(*args, **kwargs)
                 duration = time.monotonic() - start
                 _TRACKED_DURATION.labels(**call_labels).observe(duration)
-                logger.debug(
-                    f"{operation} completed in {duration:.3f}s"
-                )
+                logger.debug(f"{operation} completed in {duration:.3f}s")
                 return result
             except Exception as exc:
                 duration = time.monotonic() - start
@@ -1630,9 +1625,7 @@ class TestLoadFromDuckDB:
         """Gauges are point-in-time; should NOT be restored."""
         from moneybin.metrics.persistence import flush_to_duckdb, load_from_duckdb
 
-        gauge = Gauge(
-            "test_restore_gauge", "Restorable gauge", registry=fresh_registry
-        )
+        gauge = Gauge("test_restore_gauge", "Restorable gauge", registry=fresh_registry)
         gauge.set(42.0)
 
         flush_to_duckdb(mock_db, registry=fresh_registry)
@@ -1845,7 +1838,9 @@ def load_from_duckdb(
         if collector is None:
             # Try with _total stripped (flush stores with _total)
             collector = metric_lookup.get(
-                metric_name[: -len("_total")] if metric_name.endswith("_total") else metric_name
+                metric_name[: -len("_total")]
+                if metric_name.endswith("_total")
+                else metric_name
             )
         if collector is None:
             logger.debug(f"No registered metric for {metric_name}, skipping")
@@ -1920,9 +1915,7 @@ class TestSetupObservability:
             from moneybin.observability import setup_observability
 
             setup_observability(stream="cli", verbose=True)
-            mock_log.assert_called_once_with(
-                stream="cli", verbose=True, profile=None
-            )
+            mock_log.assert_called_once_with(stream="cli", verbose=True, profile=None)
 
     @pytest.mark.unit
     def test_setup_registers_atexit(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2376,7 +2369,17 @@ from .commands.stubs import (
 
 Add import for the real stats command:
 ```python
-from .commands import categorize, db, import_cmd, logs, mcp, profile, stats, sync, transform
+from .commands import (
+    categorize,
+    db,
+    import_cmd,
+    logs,
+    mcp,
+    profile,
+    stats,
+    sync,
+    transform,
+)
 ```
 
 Change the `stats_app` registration:

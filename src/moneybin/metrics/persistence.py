@@ -14,6 +14,7 @@ Load strategy:
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from prometheus_client import CollectorRegistry
 from prometheus_client.metrics import MetricWrapperBase
@@ -72,8 +73,8 @@ def flush_to_duckdb(
             bucket_counts = None
 
             if metric_type == "histogram":
-                bounds = []
-                counts = []
+                bounds: list[float] = []
+                counts: list[int] = []
                 base_labels = {k: v for k, v in labels.items() if k != "le"}
                 for s in metric.samples:
                     if s.name == f"{base_name}_bucket":
@@ -134,22 +135,25 @@ def load_from_duckdb(
     reg = registry or REGISTRY
 
     try:
-        rows = db.execute(  # type: ignore[union-attr]  # db is typed as object for flexibility
-            """
-            SELECT metric_name, metric_type, labels, value
-            FROM app.metrics
-            WHERE (metric_name, labels, recorded_at) IN (
-                SELECT metric_name, labels, MAX(recorded_at)
+        raw_rows = cast(
+            list[tuple[Any, ...]],
+            db.execute(  # type: ignore[union-attr]  # db is typed as object for flexibility
+                """
+                SELECT metric_name, metric_type, labels, value
                 FROM app.metrics
-                GROUP BY metric_name, labels
-            )
-            """
-        ).fetchall()
+                WHERE (metric_name, labels, recorded_at) IN (
+                    SELECT metric_name, labels, MAX(recorded_at)
+                    FROM app.metrics
+                    GROUP BY metric_name, labels
+                )
+                """
+            ).fetchall(),
+        )
     except Exception:  # noqa: BLE001  # table may not exist yet; silently skip
         logger.debug("No metrics table found or empty — skipping restore")
         return
 
-    if not rows:
+    if not raw_rows:
         return
 
     # Build a lookup of registered metrics by name
@@ -159,7 +163,11 @@ def load_from_duckdb(
             metric_lookup[collector._name] = collector  # type: ignore[attr-defined]  # prometheus_client internal API
 
     restored = 0
-    for metric_name, metric_type, labels_json, value in rows:
+    for row in raw_rows:
+        metric_name = str(row[0])
+        metric_type = str(row[1])
+        labels_json = str(row[2]) if row[2] else ""
+        value = float(row[3])
         if metric_type != "counter":
             continue
 
