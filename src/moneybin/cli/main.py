@@ -13,9 +13,18 @@ import typer
 from ..config import set_current_profile
 from ..logging import setup_logging
 from ..utils.user_config import ensure_default_profile
-from .commands import categorize, db, import_cmd, logs, mcp, profile, sync, transform
+from .commands import (
+    categorize,
+    db,
+    import_cmd,
+    logs,
+    mcp,
+    migrate,
+    profile,
+    sync,
+    transform,
+)
 from .commands.stubs import (
-    db_migrate_app,
     export_app,
     matches_app,
     stats_app,
@@ -130,7 +139,7 @@ app.add_typer(
 )
 
 # Add db migrate as a sub-typer of db
-db.app.add_typer(db_migrate_app, name="migrate", help="Database migration management")
+db.app.add_typer(migrate.app, name="migrate", help="Database migration management")
 
 
 def main() -> None:

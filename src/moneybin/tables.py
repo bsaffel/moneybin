@@ -36,6 +36,8 @@ TRANSACTION_NOTES = TableRef("app", "transaction_notes")
 CATEGORIES = TableRef("app", "categories")
 MERCHANTS = TableRef("app", "merchants")
 CATEGORIZATION_RULES = TableRef("app", "categorization_rules")
+SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
+VERSIONS = TableRef("app", "versions")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")

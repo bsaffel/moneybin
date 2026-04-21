@@ -103,6 +103,11 @@ class DatabaseConfig(BaseModel):
     argon2_hash_len: int = Field(
         default=32, ge=16, description="Argon2id output hash length in bytes"
     )
+    no_auto_upgrade: bool = Field(
+        default=False,
+        description="Skip versioned migrations and SQLMesh migrate on startup. "
+        "Encryption and schema init still run.",
+    )
 
     @field_validator("path")
     @classmethod

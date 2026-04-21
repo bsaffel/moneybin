@@ -15,6 +15,7 @@ Never call ``duckdb.connect()`` directly. See the data-protection spec
 (``docs/specs/privacy-data-protection.md``) for the full design.
 """
 
+import importlib.metadata
 import logging
 import stat
 import sys
@@ -46,7 +47,9 @@ class Database:
         d. Attach encrypted database file
         e. USE <attached_db>
         f. Run init_schemas() (idempotent baseline DDL)
-        g-i. Migration steps (not yet implemented — see database-migration.md)
+        g. Run pending schema migrations via MigrationRunner
+        h. Run sqlmesh migrate if SQLMesh version changed
+        i. Record component versions in app.versions
 
     The Database class does NOT own query logic, transaction boundaries,
     domain rules, or data access patterns. It is infrastructure.
@@ -130,7 +133,65 @@ class Database:
 
         init_schemas(self._conn)
 
-        # Steps g-i: Migration (stub — see database-migration.md spec)
+        # Steps g-i: Auto-upgrade (migrations + version tracking)
+        from moneybin.migrations import (
+            MigrationError,
+            MigrationRunner,
+            get_current_versions,
+            record_version,
+        )
+
+        settings = get_settings()
+        if not settings.database.no_auto_upgrade:
+            current_pkg_version = importlib.metadata.version("moneybin")
+            stored_versions = get_current_versions(self)
+            stored_pkg_version = stored_versions.get("moneybin")
+
+            # Check MoneyBin schema migrations
+            if stored_pkg_version != current_pkg_version:
+                if stored_pkg_version is not None:
+                    logger.info(
+                        f"⚙️  MoneyBin upgraded ({stored_pkg_version} → {current_pkg_version}). "
+                        f"Applying updates..."
+                    )
+
+                # Run pending schema migrations
+                runner = MigrationRunner(self)
+                result = runner.apply_all()
+
+                if result.failed:
+                    msg = (
+                        result.error_message
+                        or f"Migration {result.failed_migration} failed"
+                    )
+                    logger.error(f"❌ {msg}")
+                    logger.info("💡 See logs for details")
+                    logger.error(
+                        "🐛 Report issues at https://github.com/bsaffel/moneybin/issues"
+                    )
+                    raise MigrationError(
+                        f"Migration failed: {result.failed_migration or 'stuck migration'}. "
+                        f"See logs for details."
+                    )
+
+                if result.applied_count > 0:
+                    logger.info(f"  ✅ {result.applied_count} migration(s) applied")
+
+                # Record MoneyBin version
+                record_version(self, "moneybin", current_pkg_version)
+
+            # Check SQLMesh version independently — a SQLMesh upgrade
+            # without a MoneyBin upgrade still needs `sqlmesh migrate`.
+            try:
+                sqlmesh_version = importlib.metadata.version("sqlmesh")
+                stored_sqlmesh = stored_versions.get("sqlmesh")
+                if stored_sqlmesh != sqlmesh_version:
+                    self._run_sqlmesh_migrate()
+                    record_version(self, "sqlmesh", sqlmesh_version)
+                    if stored_sqlmesh is not None:
+                        logger.info("  ✅ SQLMesh state updated")
+            except importlib.metadata.PackageNotFoundError:
+                pass  # SQLMesh not installed — skip
 
         logger.info(f"Database connection established: {db_path}")
 
@@ -149,6 +210,35 @@ class Database:
                 )
         except OSError:
             pass
+
+    def _run_sqlmesh_migrate(self) -> None:
+        """Run sqlmesh migrate to update SQLMesh internal state.
+
+        Called when the installed SQLMesh version differs from the recorded
+        version. Uses subprocess to invoke the sqlmesh CLI.
+        """
+        import subprocess  # noqa: S404  # subprocess is required to invoke the sqlmesh CLI
+
+        # Assumes editable install — __file__ resolves to the project tree.
+        # Non-editable installs skip cleanly (sqlmesh dir won't exist).
+        sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
+        if not sqlmesh_root.is_dir():
+            logger.debug("sqlmesh project dir not found, skipping migrate")
+            return
+        try:
+            subprocess.run(  # noqa: S603  # fixed args from trusted internal config, not user input
+                ["uv", "run", "sqlmesh", "-p", str(sqlmesh_root), "migrate"],  # noqa: S607  # uv is a trusted internal tool
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.debug("sqlmesh migrate completed successfully")
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                f"⚠️  sqlmesh migrate failed (exit {exc.returncode}): {exc.stderr.strip()}"
+            )
+        except FileNotFoundError:
+            logger.debug("sqlmesh CLI not found, skipping migrate")
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:

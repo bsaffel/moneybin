@@ -144,6 +144,7 @@ from extractors      type casting (views)     multi-source (tables)
 - **AES-256-GCM encryption at rest** — every database, from creation. Zero-friction auto-key for single-user machines; passphrase mode for shared environments.
 - **Key management** — lock, unlock, rotate-key, backup, restore.
 - **Local-first architecture** — no cloud account, no telemetry, no external network calls.
+- **Automatic schema migrations** — upgrades happen transparently on first run after a package update. Versioned SQL and Python migrations, drift detection, stuck migration recovery. Power users can inspect state with `moneybin db migrate status`.
 - **Defense in depth** — PII sanitization in logs, parameterized SQL throughout, path validation on file operations.
 
 ### Multi-Profile Support
@@ -242,7 +243,7 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | Key management (lock/unlock/rotate) | ✅ |
 | Multi-profile support (isolated DBs, config, logs) | ✅ |
 | CLI restructure (profiles, domain commands, base dir) | ✅ |
-| Database migration system | 📐 |
+| Database migration system | ✅ |
 | Observability (metrics, structured logging) | 📐 |
 | Synthetic test data generator | 📐 |
 | Privacy tiers & consent model | 📐 |
