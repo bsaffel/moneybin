@@ -13,7 +13,7 @@ import typer
 from ..config import set_current_profile
 from ..logging import setup_logging
 from ..utils.user_config import ensure_default_profile
-from .commands import categorize, db, import_cmd, mcp, profile, sync, transform
+from .commands import categorize, db, import_cmd, logs, mcp, profile, sync, transform
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,11 @@ app.add_typer(
     mcp.app,
     name="mcp",
     help="MCP server for AI assistant integration",
+)
+app.add_typer(
+    logs.app,
+    name="logs",
+    help="Manage log files",
 )
 
 
