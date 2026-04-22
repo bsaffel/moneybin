@@ -326,9 +326,7 @@ def create_category(
     """
     logger.info(f"Tool called: create_category({category}, {subcategory})")
 
-    import uuid as _uuid
-
-    cat_id = str(_uuid.uuid4())[:8].upper()
+    cat_id = uuid.uuid4().hex[:12]
 
     try:
         db = get_database()
@@ -442,9 +440,7 @@ def create_categorization_rule(
     except ValueError as e:
         return f"Error: {e}"
 
-    import uuid as _uuid
-
-    rule_id = str(_uuid.uuid4())[:8]
+    rule_id = uuid.uuid4().hex[:12]
 
     try:
         db = get_database()
@@ -669,7 +665,7 @@ def bulk_create_categorization_rules(
             account_id = item.get("account_id")
             priority = int(item.get("priority", 100) or 100)
 
-            rule_id = str(uuid.uuid4())[:8]
+            rule_id = uuid.uuid4().hex[:12]
             db.execute(
                 f"""
                 INSERT INTO {CATEGORIZATION_RULES.full_name}
@@ -824,7 +820,7 @@ def set_budget(
             )
             return f"Updated budget for '{category}': ${monthly_amount:.2f}/month"
         else:
-            budget_id = str(uuid.uuid4())[:8]
+            budget_id = uuid.uuid4().hex[:12]
             db.execute(
                 """
                 INSERT INTO app.budgets
