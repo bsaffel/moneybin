@@ -100,19 +100,34 @@ def _detect_file_type(file_path: Path) -> str:
         file_path: Path to the file.
 
     Returns:
-        File type string: 'ofx', 'w2', or raises ValueError.
+        File type string: 'ofx', 'w2', or 'tabular'.
+
+    Raises:
+        ValueError: If extension is not recognized.
     """
     suffix = file_path.suffix.lower()
     if suffix in (".ofx", ".qfx"):
         return "ofx"
     if suffix == ".pdf":
         return "w2"
-    if suffix == ".csv":
-        return "csv"
+    if suffix in (
+        ".csv",
+        ".tsv",
+        ".tab",
+        ".txt",
+        ".dat",
+        ".xlsx",
+        ".xls",
+        ".parquet",
+        ".pq",
+        ".feather",
+        ".arrow",
+        ".ipc",
+    ):
+        return "tabular"
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx (bank statements), .pdf (W-2 forms), "
-        f".csv (bank transaction exports)"
+        f"Supported: .ofx, .qfx, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
     )
 
 
@@ -267,7 +282,7 @@ def _import_w2(
     return result
 
 
-def _import_csv(
+def _import_csv(  # type: ignore[reportUnusedFunction]  # retained for Task 24 removal
     db: Database,
     file_path: Path,
     *,
@@ -330,6 +345,212 @@ def _import_csv(
     return result
 
 
+def _import_tabular(
+    db: Database,
+    file_path: Path,
+    *,
+    account_name: str | None = None,
+    account_id: str | None = None,
+    format_name: str | None = None,
+    overrides: dict[str, str] | None = None,
+    sheet: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+    no_row_limit: bool = False,
+    no_size_limit: bool = False,
+) -> ImportResult:
+    """Import a tabular file through the five-stage pipeline.
+
+    Args:
+        db: Database instance.
+        file_path: Path to the file.
+        account_name: Account name for single-account files.
+        account_id: Explicit account ID (bypass matching).
+        format_name: Explicit format name (bypass detection).
+        overrides: Field→column overrides.
+        sheet: Excel sheet name.
+        delimiter: Explicit delimiter.
+        encoding: Explicit encoding.
+        no_row_limit: Override row count limit.
+        no_size_limit: Override file size limit.
+
+    Returns:
+        ImportResult with summary.
+    """
+    import re
+
+    import polars as pl
+
+    from moneybin.extractors.tabular.column_mapper import map_columns
+    from moneybin.extractors.tabular.format_detector import detect_format
+    from moneybin.extractors.tabular.formats import (
+        TabularFormat,
+        load_builtin_formats,
+    )
+    from moneybin.extractors.tabular.readers import read_file
+    from moneybin.extractors.tabular.transforms import transform_dataframe
+    from moneybin.loaders.tabular_loader import TabularLoader
+
+    result = ImportResult(file_path=str(file_path), file_type="tabular")
+
+    # Stage 1: Format detection
+    format_info = detect_format(
+        file_path,
+        format_override=None,
+        delimiter_override=delimiter,
+        encoding_override=encoding,
+        no_size_limit=no_size_limit,
+    )
+
+    # Stage 2: Read file
+    read_result = read_file(
+        file_path,
+        format_info,
+        sheet=sheet,
+        no_row_limit=no_row_limit,
+    )
+    df = read_result.df
+
+    if len(df) == 0:
+        raise ValueError(f"No data rows found in {file_path.name}")
+
+    # Stage 3: Column mapping
+    matched_format: TabularFormat | None = None
+    if format_name:
+        builtin = load_builtin_formats()
+        if format_name in builtin:
+            matched_format = builtin[format_name]
+    else:
+        builtin = load_builtin_formats()
+        headers = list(df.columns)
+        for fmt in builtin.values():
+            if fmt.matches_headers(headers):
+                matched_format = fmt
+                break
+
+    if matched_format:
+        mapping_result_mapping = matched_format.field_mapping
+        mapping_result_date_format = matched_format.date_format
+        mapping_result_sign_convention = matched_format.sign_convention
+        mapping_result_number_format = matched_format.number_format
+        mapping_result_is_multi_account = matched_format.multi_account
+        mapping_result_confidence = "high"
+        format_source = "built-in"
+    else:
+        mapping_result = map_columns(df, overrides=overrides)
+        mapping_result_mapping = mapping_result.field_mapping
+        mapping_result_date_format = mapping_result.date_format or "%Y-%m-%d"
+        mapping_result_sign_convention = mapping_result.sign_convention
+        mapping_result_number_format = mapping_result.number_format
+        mapping_result_is_multi_account = mapping_result.is_multi_account
+        mapping_result_confidence = mapping_result.confidence
+        format_source = "detected"
+
+        if mapping_result.confidence == "low":
+            raise ValueError(
+                f"Could not reliably detect column mapping for "
+                f"{file_path.name}. Use --override to specify columns manually."
+            )
+
+    # Determine account info
+    source_type = format_info.file_type
+    if source_type == "semicolon":
+        source_type = "csv"
+
+    if account_id:
+        acct_id = account_id
+    elif account_name:
+        acct_id = re.sub(r"[^a-z0-9]+", "-", account_name.lower()).strip("-")
+    elif mapping_result_is_multi_account:
+        acct_id = "multi-account"
+    else:
+        raise ValueError("Single-account files require --account-name or --account-id")
+
+    source_origin = (
+        matched_format.name
+        if matched_format
+        else re.sub(r"[^a-z0-9]+", "-", (account_name or "unknown").lower()).strip("-")
+    )
+
+    # Create import batch
+    loader = TabularLoader(db)
+    import_id = loader.create_import_batch(
+        source_file=str(file_path),
+        source_type=source_type,
+        source_origin=source_origin,
+        account_names=[account_name or acct_id],
+        format_name=matched_format.name if matched_format else None,
+        format_source=format_source,
+    )
+
+    # Stage 4: Transform
+    try:
+        transform_result = transform_dataframe(
+            df=df,
+            field_mapping=mapping_result_mapping,
+            date_format=mapping_result_date_format,
+            sign_convention=mapping_result_sign_convention,
+            number_format=mapping_result_number_format,
+            account_id=acct_id,
+            source_file=str(file_path),
+            source_type=source_type,
+            source_origin=source_origin,
+            import_id=import_id,
+        )
+    except Exception as e:  # noqa: BLE001  # re-raised as ValueError after recording rejection in DB
+        loader.finalize_import_batch(
+            import_id=import_id,
+            rows_total=len(df),
+            rows_imported=0,
+            rows_rejected=len(df),
+        )
+        raise ValueError(f"Transform failed: {e}") from e
+
+    # Stage 5: Load
+    account_df = pl.DataFrame({
+        "account_id": [acct_id],
+        "account_name": [account_name or acct_id],
+        "account_number": [None],
+        "account_number_masked": [None],
+        "account_type": [None],
+        "institution_name": [
+            matched_format.institution_name if matched_format else None
+        ],
+        "currency": [None],
+        "source_file": [str(file_path)],
+        "source_type": [source_type],
+        "source_origin": [source_origin],
+        "import_id": [import_id],
+    })
+
+    rows_imported = loader.load_transactions(transform_result.transactions)
+    loader.load_accounts(account_df)
+
+    loader.finalize_import_batch(
+        import_id=import_id,
+        rows_total=len(df),
+        rows_imported=rows_imported,
+        rows_rejected=transform_result.rows_rejected,
+        rows_skipped_trailing=read_result.rows_skipped_trailing,
+        detection_confidence=mapping_result_confidence,
+        number_format=mapping_result_number_format,
+        date_format=mapping_result_date_format,
+        sign_convention=mapping_result_sign_convention,
+        balance_validated=transform_result.balance_validated,
+    )
+
+    result.accounts = 1
+    result.transactions = rows_imported
+    result.details = {"transactions": rows_imported, "accounts": 1}
+
+    if rows_imported > 0:
+        result.date_range = _query_date_range(
+            db, "raw.tabular_transactions", "transaction_date", file_path
+        )
+
+    return result
+
+
 def import_file(
     db: Database,
     file_path: str | Path,
@@ -337,6 +558,7 @@ def import_file(
     run_transforms: bool = True,
     institution: str | None = None,
     account_id: str | None = None,
+    account_name: str | None = None,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -348,9 +570,11 @@ def import_file(
         file_path: Path to the file to import.
         run_transforms: Whether to run SQLMesh transforms after loading.
             Defaults to True.
-        institution: Institution name (OFX) or CSV profile name. Auto-detected
-            for CSV if omitted.
-        account_id: Account identifier (CSV only, required).
+        institution: Institution name (OFX only). Auto-detected for OFX if
+            omitted.
+        account_id: Explicit account ID for tabular imports (bypasses name
+            matching).
+        account_name: Account name for single-account tabular files.
 
     Returns:
         ImportResult with summary of what was imported.
@@ -371,13 +595,18 @@ def import_file(
         result = _import_ofx(db, path, institution=institution)
     elif file_type == "w2":
         result = _import_w2(db, path)
-    elif file_type == "csv":
-        result = _import_csv(db, path, account_id=account_id, institution=institution)
+    elif file_type == "tabular":
+        result = _import_tabular(
+            db,
+            path,
+            account_name=account_name,
+            account_id=account_id,
+        )
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
     # Run SQLMesh transforms after loading raw data
-    if run_transforms and file_type in ("ofx", "csv"):
+    if run_transforms and file_type in ("ofx", "tabular"):
         result.core_tables_rebuilt = _run_transforms(db.path)
 
         # Apply deterministic categorization to new transactions
