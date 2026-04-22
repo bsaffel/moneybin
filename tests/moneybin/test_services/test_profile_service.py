@@ -224,10 +224,10 @@ class TestProfileSet:
         monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
         svc = ProfileService()
         svc.create("alice")
-        svc.set("alice", "logging.max_file_size_mb", "100")
+        svc.set("alice", "mcp.max_rows", "500")
         config_path = tmp_path / "profiles" / "alice" / "config.yaml"
         data = yaml.safe_load(config_path.read_text())
-        assert data["logging"]["max_file_size_mb"] == 100
+        assert data["mcp"]["max_rows"] == 500
 
     def test_set_invalid_key_format_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

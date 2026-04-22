@@ -361,6 +361,35 @@ class Database:
             return self.conn.execute(query, params)
         return self.conn.execute(query)
 
+    def executemany(
+        self, query: str, params: list[list[Any]]
+    ) -> duckdb.DuckDBPyConnection:
+        """Execute a parameterized SQL query for each parameter set.
+
+        More efficient than calling execute() in a loop — DuckDB batches
+        the parameter binding internally.
+
+        Args:
+            query: SQL query string with ? placeholders.
+            params: List of parameter lists, one per row.
+
+        Returns:
+            DuckDB connection (typically no result set for INSERT/UPDATE).
+        """
+        return self.conn.executemany(query, params)
+
+    def begin(self) -> None:
+        """Begin an explicit transaction."""
+        self.conn.begin()
+
+    def commit(self) -> None:
+        """Commit the current transaction."""
+        self.conn.commit()
+
+    def rollback(self) -> None:
+        """Roll back the current transaction."""
+        self.conn.rollback()
+
     def sql(self, query: str) -> duckdb.DuckDBPyRelation:
         """Execute a parameter-free SQL query.
 

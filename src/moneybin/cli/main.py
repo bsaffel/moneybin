@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 from ..config import set_current_profile
-from ..logging import setup_logging
+from ..observability import setup_observability
 from ..utils.user_config import ensure_default_profile
 from .commands import (
     categorize,
@@ -21,13 +21,13 @@ from .commands import (
     mcp,
     migrate,
     profile,
+    stats,
     sync,
     transform,
 )
 from .commands.stubs import (
     export_app,
     matches_app,
-    stats_app,
     track_app,
 )
 
@@ -76,7 +76,7 @@ def main_callback(
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-    setup_logging(cli_mode=True, verbose=verbose, profile=profile_name)
+    setup_observability(stream="cli", verbose=verbose, profile=profile_name)
     if profile_name is not None:
         logger.info(f"Using profile: {profile_name}")
 
@@ -120,7 +120,7 @@ app.add_typer(
     help="Run SQLMesh data transformations",
 )
 app.add_typer(track_app, name="track", help="Balance tracking and net worth")
-app.add_typer(stats_app, name="stats", help="Show lifetime metric aggregates")
+app.add_typer(stats.app, name="stats", help="Show lifetime metric aggregates")
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(
     mcp.app,

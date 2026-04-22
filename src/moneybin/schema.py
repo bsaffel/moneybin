@@ -50,6 +50,7 @@ _SCHEMA_FILES: list[str] = [
     "app_transaction_categories.sql",
     "app_budgets.sql",
     "app_transaction_notes.sql",
+    "app_metrics.sql",
     "app_schema_migrations.sql",
     "app_versions.sql",
 ]

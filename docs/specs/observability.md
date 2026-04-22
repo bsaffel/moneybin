@@ -1,6 +1,6 @@
 # Observability
 
-> Status: ready
+> Status: implemented
 > Dependencies: privacy-data-protection.md (provides `SanitizedLogFormatter`)
 > Scope: Logging consolidation, structured metrics, instrumentation API, CLI commands
 
@@ -350,4 +350,3 @@ The `SanitizedLogFormatter` is defined in `src/moneybin/log_sanitizer.py` by the
 ### New Dependencies
 
 - `prometheus_client` — metric types and in-process registry
-- `python-json-logger` — JSON log formatter (lightweight, stdlib-compatible)

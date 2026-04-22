@@ -1,5 +1,6 @@
 """Tests for logs CLI commands."""
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -7,47 +8,45 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.logs import (
-    _parse_duration as _parse_duration,  # type: ignore[reportPrivateUsage] — testing internal helper
-)
 from moneybin.cli.commands.logs import app
+from moneybin.utils.parsing import parse_duration
 
 runner = CliRunner()
 
 
 class TestParseDuration:
-    """Tests for the _parse_duration helper function."""
+    """Tests for the parse_duration helper function."""
 
     def test_parse_days(self) -> None:
-        """_parse_duration parses day strings correctly."""
-        assert _parse_duration("30d") == timedelta(days=30)
-        assert _parse_duration("7d") == timedelta(days=7)
-        assert _parse_duration("1d") == timedelta(days=1)
+        """parse_duration parses day strings correctly."""
+        assert parse_duration("30d") == timedelta(days=30)
+        assert parse_duration("7d") == timedelta(days=7)
+        assert parse_duration("1d") == timedelta(days=1)
 
     def test_parse_hours(self) -> None:
-        """_parse_duration parses hour strings correctly."""
-        assert _parse_duration("24h") == timedelta(hours=24)
-        assert _parse_duration("1h") == timedelta(hours=1)
+        """parse_duration parses hour strings correctly."""
+        assert parse_duration("24h") == timedelta(hours=24)
+        assert parse_duration("1h") == timedelta(hours=1)
 
     def test_parse_minutes(self) -> None:
-        """_parse_duration parses minute strings correctly."""
-        assert _parse_duration("60m") == timedelta(minutes=60)
-        assert _parse_duration("5m") == timedelta(minutes=5)
+        """parse_duration parses minute strings correctly."""
+        assert parse_duration("60m") == timedelta(minutes=60)
+        assert parse_duration("5m") == timedelta(minutes=5)
 
     def test_parse_invalid_format_raises(self) -> None:
-        """_parse_duration raises ValueError for invalid formats."""
+        """parse_duration raises ValueError for invalid formats."""
         with pytest.raises(ValueError, match="Invalid duration format"):
-            _parse_duration("30")
+            parse_duration("30")
 
     def test_parse_invalid_unit_raises(self) -> None:
-        """_parse_duration raises ValueError for unknown units."""
+        """parse_duration raises ValueError for unknown units."""
         with pytest.raises(ValueError, match="Invalid duration format"):
-            _parse_duration("30s")
+            parse_duration("30s")
 
     def test_parse_empty_raises(self) -> None:
-        """_parse_duration raises ValueError for empty string."""
+        """parse_duration raises ValueError for empty string."""
         with pytest.raises(ValueError, match="Invalid duration format"):
-            _parse_duration("")
+            parse_duration("")
 
 
 class TestLogsPath:
@@ -147,13 +146,15 @@ class TestLogsTail:
     def test_tail_shows_last_n_lines(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail shows the last N lines of the log file."""
-        log_file = tmp_path / "moneybin.log"
+        """Logs tail shows the last N lines of the most recent stream file."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "cli_2026-04-21.log"
         lines = [f"line {i}\n" for i in range(50)]
         log_file.write_text("".join(lines))
-        mock_settings.return_value.logging.log_file_path = log_file
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--lines", "5"])
+        result = runner.invoke(app, ["tail", "--stream", "cli", "--lines", "5"])
         assert result.exit_code == 0
         output_lines = [ln for ln in result.output.strip().split("\n") if ln]
         assert len(output_lines) == 5
@@ -162,41 +163,45 @@ class TestLogsTail:
     @patch("moneybin.cli.commands.logs.get_settings")
     def test_tail_default_lines(self, mock_settings: MagicMock, tmp_path: Path) -> None:
         """Logs tail defaults to 20 lines."""
-        log_file = tmp_path / "moneybin.log"
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "cli_2026-04-21.log"
         lines = [f"line {i}\n" for i in range(30)]
         log_file.write_text("".join(lines))
-        mock_settings.return_value.logging.log_file_path = log_file
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail"])
+        result = runner.invoke(app, ["tail", "--stream", "cli"])
         assert result.exit_code == 0
         output_lines = [ln for ln in result.output.strip().split("\n") if ln]
         assert len(output_lines) == 20
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_stream_filter(self, mock_settings: MagicMock, tmp_path: Path) -> None:
-        """Logs tail --stream filters lines by stream name."""
-        log_file = tmp_path / "moneybin.log"
-        log_file.write_text(
-            "INFO mcp server started\n"
-            "INFO sqlmesh transform done\n"
-            "INFO mcp tool called\n"
-            "INFO general info\n"
+    def test_tail_stream_selects_correct_files(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """Logs tail --stream selects files matching the stream prefix."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "mcp_2026-04-21.log").write_text(
+            "INFO mcp server started\nINFO mcp tool called\n"
         )
-        mock_settings.return_value.logging.log_file_path = log_file
+        (log_dir / "cli_2026-04-21.log").write_text("INFO general info\n")
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(app, ["tail", "--stream", "mcp"])
         assert result.exit_code == 0
         assert "mcp server started" in result.output
         assert "mcp tool called" in result.output
-        assert "sqlmesh transform done" not in result.output
         assert "general info" not in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_missing_log_file(
+    def test_tail_missing_log_dir(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail handles missing log file gracefully."""
-        mock_settings.return_value.logging.log_file_path = tmp_path / "nonexistent.log"
+        """Logs tail handles missing log directory gracefully."""
+        mock_settings.return_value.logging.log_file_path = (
+            tmp_path / "nonexistent" / "moneybin.log"
+        )
         result = runner.invoke(app, ["tail"])
         assert result.exit_code == 0
 
@@ -205,12 +210,338 @@ class TestLogsTail:
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
         """Logs tail shows all lines when file has fewer than requested."""
-        log_file = tmp_path / "moneybin.log"
-        log_file.write_text("line 1\nline 2\nline 3\n")
-        mock_settings.return_value.logging.log_file_path = log_file
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "cli_2026-04-21.log").write_text("line 1\nline 2\nline 3\n")
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--lines", "20"])
+        result = runner.invoke(app, ["tail", "--stream", "cli", "--lines", "20"])
         assert result.exit_code == 0
         assert "line 1" in result.output
         assert "line 2" in result.output
         assert "line 3" in result.output
+
+
+class TestLogsTailAllStream:
+    """Tests for the --stream all (default) behavior."""
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_all_stream_merges_by_timestamp(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """Default stream merges entries from all streams sorted by time."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "cli_2026-04-21.log").write_text(
+            "2026-04-21 14:00:00,000 - cli.main - INFO - CLI started\n"
+            "2026-04-21 14:00:02,000 - cli.main - INFO - CLI done\n"
+        )
+        (log_dir / "mcp_2026-04-21.log").write_text(
+            "2026-04-21 14:00:01,000 - mcp.server - INFO - MCP request\n"
+        )
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--output", "json", "-n", "50"])
+        assert result.exit_code == 0
+        entries: list[dict[str, str]] = json.loads(result.output)
+        assert len(entries) == 3
+        # Verify timestamp ordering: CLI → MCP → CLI
+        assert entries[0]["message"] == "CLI started"
+        assert entries[1]["message"] == "MCP request"
+        assert entries[2]["message"] == "CLI done"
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_all_stream_is_default(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """Without --stream, all streams are shown."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "cli_2026-04-21.log").write_text(
+            "2026-04-21 14:00:00,000 - cli - INFO - from cli\n"
+        )
+        (log_dir / "mcp_2026-04-21.log").write_text(
+            "2026-04-21 14:00:01,000 - mcp - INFO - from mcp\n"
+        )
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--output", "json", "-n", "50"])
+        assert result.exit_code == 0
+        entries: list[dict[str, str]] = json.loads(result.output)
+        messages = [e["message"] for e in entries]
+        assert "from cli" in messages
+        assert "from mcp" in messages
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_single_stream_excludes_others(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--stream cli excludes mcp and sqlmesh entries."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "cli_2026-04-21.log").write_text(
+            "2026-04-21 14:00:00,000 - cli - INFO - from cli\n"
+        )
+        (log_dir / "mcp_2026-04-21.log").write_text(
+            "2026-04-21 14:00:01,000 - mcp - INFO - from mcp\n"
+        )
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(
+            app, ["tail", "--stream", "cli", "--output", "json", "-n", "50"]
+        )
+        assert result.exit_code == 0
+        entries: list[dict[str, str]] = json.loads(result.output)
+        messages = [e["message"] for e in entries]
+        assert "from cli" in messages
+        assert "from mcp" not in messages
+
+
+def _make_structured_log(tmp_path: Path) -> Path:
+    """Create a log file with structured log lines for filter tests."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / "cli_2026-04-21.log"
+    log_file.write_text(
+        "2026-04-21 14:00:00,000 - moneybin.loader - INFO - Loaded 50 records\n"
+        "2026-04-21 14:00:01,000 - moneybin.loader - DEBUG - Cache hit for key abc\n"
+        "2026-04-21 14:00:02,000 - moneybin.loader - WARNING - ⚠️  Duplicate record\n"
+        "2026-04-21 14:00:03,000 - moneybin.loader - ERROR - ❌ File not found: x.csv\n"
+        "Traceback (most recent call last):\n"
+        '  File "loader.py", line 42, in load\n'
+        "FileNotFoundError: x.csv\n"
+        "2026-04-21 14:00:04,000 - moneybin.db - INFO - Query completed in 0.5s\n"
+        "2026-04-21 14:00:05,000 - moneybin.db - CRITICAL - Database corrupted\n"
+    )
+    return log_dir
+
+
+class TestLogsTailFilters:
+    """Tests for logs tail filtering (--level, --since, --grep, --output)."""
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_level_filter_error(self, mock_settings: MagicMock, tmp_path: Path) -> None:
+        """--level ERROR shows only ERROR and CRITICAL entries."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--level", "ERROR", "-n", "50"])
+        assert result.exit_code == 0
+        assert "File not found" in result.output
+        assert "Database corrupted" in result.output
+        assert "Loaded 50 records" not in result.output
+        assert "Duplicate record" not in result.output
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_level_filter_includes_traceback(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--level ERROR includes traceback continuation lines."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--level", "ERROR", "-n", "50"])
+        assert result.exit_code == 0
+        assert "Traceback" in result.output
+        assert "FileNotFoundError" in result.output
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_level_filter_warning(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--level WARNING shows WARNING, ERROR, and CRITICAL."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--level", "WARNING", "-n", "50"])
+        assert result.exit_code == 0
+        assert "Duplicate record" in result.output
+        assert "File not found" in result.output
+        assert "Database corrupted" in result.output
+        assert "Loaded 50 records" not in result.output
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_grep_filter(self, mock_settings: MagicMock, tmp_path: Path) -> None:
+        """--grep filters messages by regex pattern."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--grep", "records|Query", "-n", "50"])
+        assert result.exit_code == 0
+        assert "Loaded 50 records" in result.output
+        assert "Query completed" in result.output
+        assert "Duplicate record" not in result.output
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_grep_matches_traceback(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--grep matches against traceback lines too."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--grep", "FileNotFoundError", "-n", "50"])
+        assert result.exit_code == 0
+        assert "File not found" in result.output
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_output_json(self, mock_settings: MagicMock, tmp_path: Path) -> None:
+        """--output json returns structured JSON array."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(app, ["tail", "--output", "json", "-n", "50"])
+        assert result.exit_code == 0
+        entries: list[dict[str, str]] = json.loads(result.output)
+        assert isinstance(entries, list)
+        assert len(entries) == 6
+        # Check structure of first entry
+        assert entries[0]["level"] == "INFO"
+        assert entries[0]["logger"] == "moneybin.loader"
+        assert "timestamp" in entries[0]
+        assert "message" in entries[0]
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_output_json_with_traceback(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--output json includes traceback field for error entries."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(
+            app, ["tail", "--output", "json", "--level", "ERROR", "-n", "50"]
+        )
+        assert result.exit_code == 0
+        entries = json.loads(result.output)
+        error_entry = entries[0]
+        assert error_entry["level"] == "ERROR"
+        assert "traceback" in error_entry
+        assert "FileNotFoundError" in error_entry["traceback"]
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_combined_filters(self, mock_settings: MagicMock, tmp_path: Path) -> None:
+        """--level and --grep can be combined."""
+        log_dir = _make_structured_log(tmp_path)
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(
+            app, ["tail", "--level", "ERROR", "--grep", "corrupted", "-n", "50"]
+        )
+        assert result.exit_code == 0
+        assert "Database corrupted" in result.output
+        assert "File not found" not in result.output
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_level_exits_1(self, _mock_settings: MagicMock) -> None:
+        """--level with an invalid value exits with code 1."""
+        result = runner.invoke(app, ["tail", "--level", "BOGUS"])
+        assert result.exit_code == 1
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_grep_regex_exits_1(self, _mock_settings: MagicMock) -> None:
+        """--grep with invalid regex exits with code 1."""
+        result = runner.invoke(app, ["tail", "--grep", "[invalid"])
+        assert result.exit_code == 1
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_since_exits_1(self, _mock_settings: MagicMock) -> None:
+        """--since with invalid duration exits with code 1."""
+        result = runner.invoke(app, ["tail", "--since", "bogus"])
+        assert result.exit_code == 1
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_follow_without_stream_exits_1(self, _mock_settings: MagicMock) -> None:
+        """--follow without --stream exits with code 1 (can't tail all)."""
+        result = runner.invoke(app, ["tail", "-f"])
+        assert result.exit_code == 1
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_follow_with_explicit_stream_not_rejected(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--follow with --stream cli passes the stream validation."""
+        # Point at an empty log dir so it exits before the follow loop
+        mock_settings.return_value.logging.log_file_path = (
+            tmp_path / "nonexistent" / "moneybin.log"
+        )
+        result = runner.invoke(app, ["tail", "-f", "--stream", "cli"])
+        assert "requires a specific stream" not in (result.output or "")
+
+
+class TestParseLogLines:
+    """Tests for _parse_log_lines and _filter_entries helpers."""
+
+    def test_parse_structured_lines(self) -> None:
+        """Parses standard log format into entries."""
+        from moneybin.cli.commands.logs import (
+            _parse_log_lines,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        lines = [
+            "2026-04-21 14:00:00,000 - app - INFO - hello",
+            "2026-04-21 14:00:01,000 - app - ERROR - boom",
+            "Traceback line 1",
+            "Traceback line 2",
+        ]
+        entries = _parse_log_lines(lines)
+        assert len(entries) == 2
+        assert entries[0].level == "INFO"
+        assert entries[1].level == "ERROR"
+        assert entries[1].extra_lines == ["Traceback line 1", "Traceback line 2"]
+
+    def test_parse_empty_lines(self) -> None:
+        """Returns empty list for no lines."""
+        from moneybin.cli.commands.logs import (
+            _parse_log_lines,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        assert _parse_log_lines([]) == []
+
+
+class TestTailFile:
+    """Unit tests for the _tail_file helper."""
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        """_tail_file returns empty list for an empty file."""
+        from moneybin.cli.commands.logs import (
+            _tail_file,  # pyright: ignore[reportPrivateUsage] — testing internal helper
+        )
+
+        f = tmp_path / "empty.log"
+        f.write_text("")
+        assert _tail_file(f, 10) == []
+
+    def test_fewer_lines_than_requested(self, tmp_path: Path) -> None:
+        """_tail_file returns all lines when file has fewer than n."""
+        from moneybin.cli.commands.logs import (
+            _tail_file,  # pyright: ignore[reportPrivateUsage] — testing internal helper
+        )
+
+        f = tmp_path / "short.log"
+        f.write_text("a\nb\nc\n")
+        result = _tail_file(f, 10)
+        assert result == ["a", "b", "c"]
+
+    def test_exact_n_lines(self, tmp_path: Path) -> None:
+        """_tail_file returns last n lines from a longer file."""
+        from moneybin.cli.commands.logs import (
+            _tail_file,  # pyright: ignore[reportPrivateUsage] — testing internal helper
+        )
+
+        f = tmp_path / "long.log"
+        lines = [f"line {i}" for i in range(100)]
+        f.write_text("\n".join(lines) + "\n")
+        result = _tail_file(f, 5)
+        assert result == ["line 95", "line 96", "line 97", "line 98", "line 99"]
+
+    def test_small_block_size(self, tmp_path: Path) -> None:
+        """_tail_file works correctly with a small block size."""
+        from moneybin.cli.commands.logs import (
+            _tail_file,  # pyright: ignore[reportPrivateUsage] — testing internal helper
+        )
+
+        f = tmp_path / "small_block.log"
+        f.write_text("alpha\nbeta\ngamma\ndelta\n")
+        result = _tail_file(f, 2, block_size=4)
+        assert result == ["gamma", "delta"]

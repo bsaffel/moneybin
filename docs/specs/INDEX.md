@@ -19,15 +19,15 @@ Single source of truth for spec status. Update this table when a spec's status c
 | `draft` | Design written, not yet reviewed or ready for implementation |
 | `ready` | Design reviewed and approved; ready for implementation |
 | `in-progress` | Implementation underway |
-| `implemented` | Shipped; spec moved to `archived/` |
+| `implemented` | Shipped; spec stays in place as living documentation |
 
 ## Updating implemented features
 
 | Change size | Action |
 |---|---|
 | **Bug fix / minor tweak** | No spec needed. Code change speaks for itself. |
-| **Enhancement to existing feature** | New spec referencing the original as context. Original stays in `archived/` untouched. |
-| **Full redesign / replacement** | New spec. Original gets a note at the top pointing to the replacement. |
+| **Enhancement to existing feature** | New spec referencing the original as context. Original stays in place untouched. |
+| **Full redesign / replacement** | New spec. Original gets a note at the top pointing to the replacement. Old spec moves to `archived/` since it's been superseded. |
 
 ## Smart Import
 
@@ -95,7 +95,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [CLI Restructure](cli-restructure.md) | Architecture | in-progress | Target CLI command tree: profiles as first-class, `import` as golden path, domain commands top-level. Reference spec for all other specs' CLI sections. |
-| [Observability](observability.md) | Feature | ready | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
+| [Observability](observability.md) | Feature | implemented | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
 | [Database Migration](database-migration.md) | Feature | implemented | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
 | `export.md` | Feature | planned | Export analysis results to CSV, Excel, Google Sheets |
 | `cli-ux-standards.md` | Architecture | planned | CLI interaction patterns: progressive disclosure, review queues, status commands, output formatting |

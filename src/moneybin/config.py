@@ -146,11 +146,22 @@ class LoggingConfig(BaseModel):
     log_file_path: Path = Field(
         default=Path("logs/default/moneybin.log"), description="Path to log file"
     )
-    max_file_size_mb: int = Field(
-        default=50, ge=1, le=1000, description="Maximum log file size in MB"
+    format: Literal["human", "json"] = Field(
+        default="human", description="Log output format: human-readable or JSON"
     )
-    backup_count: int = Field(
-        default=5, ge=1, le=50, description="Number of log file backups to keep"
+    # PII sanitization (SanitizedLogFormatter) is always on and cannot be
+    # disabled — it's a security invariant, not a tunable preference.
+
+
+class MetricsConfig(BaseModel):
+    """Metrics collection and persistence configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    flush_interval_seconds: int = Field(
+        default=300,
+        ge=10,
+        description="Periodic flush interval for MCP stream (seconds)",
     )
 
 
@@ -244,6 +255,7 @@ class MoneyBinSettings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 
