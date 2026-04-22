@@ -559,6 +559,7 @@ def import_file(
     institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
+    format_name: str | None = None,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -575,6 +576,8 @@ def import_file(
         account_id: Explicit account ID for tabular imports (bypasses name
             matching).
         account_name: Account name for single-account tabular files.
+        format_name: Explicit format name for tabular imports (bypasses
+            auto-detection).
 
     Returns:
         ImportResult with summary of what was imported.
@@ -601,6 +604,7 @@ def import_file(
             path,
             account_name=account_name,
             account_id=account_id,
+            format_name=format_name,
         )
     else:
         raise ValueError(f"Unsupported file type: {file_type}")

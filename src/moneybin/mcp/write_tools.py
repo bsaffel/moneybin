@@ -68,43 +68,36 @@ def _validate_match_type(match_type: str) -> MatchType:
 def import_file(
     file_path: str,
     account_id: str | None = None,
+    account_name: str | None = None,
     institution: str | None = None,
+    format_name: str | None = None,
 ) -> str:
     """Import a financial data file into MoneyBin.
 
     Supported formats (detected automatically by extension):
       - .ofx / .qfx — OFX/Quicken bank statements
       - .pdf        — W-2 tax forms
-      - .csv        — bank transaction exports (see CSV workflow below)
+      - .csv / .tsv / .xlsx / .parquet / .feather — tabular transaction exports
 
-    CSV workflow:
-      CSVs do not contain account identifiers, so ``account_id`` must be
-      supplied by the caller (e.g. 'chase-checking-1234'). The institution
-      profile is auto-detected from the file's header row; use
-      ``csv_list_profiles`` to see what is installed.
+    Tabular files (CSV, TSV, Excel, Parquet, Feather) go through a 5-stage pipeline:
+      1. Format detection (encoding, delimiter, file type)
+      2. File reading (header detection, trailing row removal)
+      3. Column mapping (header aliases + content validation)
+      4. Transform (date parsing, amount normalization, ID generation)
+      5. Load (raw table write with import batch tracking)
 
-      If this tool returns a "Could not auto-detect CSV format" error:
-        1. Call ``csv_preview_file`` to inspect the headers and sample rows
-        2. Determine the column mapping:
-             - date_column and date_format (e.g. '%m/%d/%Y', '%Y-%m-%d')
-             - description_column (payee / merchant name)
-             - sign_convention: 'negative_is_expense' (single col, most common),
-               'negative_is_income' (single col, inverted), or
-               'split_debit_credit' (separate debit/credit columns)
-             - amount_column (single-col) OR debit_column + credit_column
-             - Optional: post_date_column, memo_column, category_column,
-               type_column, balance_column, reference_column, check_number_column
-        3. Propose a profile name (e.g. 'wellsfargo_checking') and confirm
-           with the user; set header_signature to the minimal set of columns
-           that uniquely fingerprint this institution's format
-        4. Call ``csv_save_profile`` with the confirmed mapping
-        5. Retry this tool with the original file_path and account_id
+    For single-account files, provide ``account_name`` (e.g. 'Chase Checking').
+    Multi-account files (Tiller, Mint, etc.) are detected automatically.
+
+    If auto-detection fails, use ``format_name`` to specify a known format
+    (see ``list_formats``), or use the CLI with ``--override`` flags.
 
     Args:
         file_path: Absolute path to the file to import.
-        account_id: Account identifier (required for CSV files).
-        institution: Institution name (OFX) or CSV profile name (optional,
-            auto-detects for CSV).
+        account_id: Explicit account identifier (bypasses name matching).
+        account_name: Account name for single-account tabular files.
+        institution: Institution name (OFX only).
+        format_name: Use a specific named format (bypass auto-detection).
     """
     logger.info(f"Tool called: import_file({file_path})")
 
@@ -122,7 +115,9 @@ def import_file(
             get_database(),
             str(resolved),
             account_id=account_id,
+            account_name=account_name,
             institution=institution,
+            format_name=format_name,
         )
         return result.summary()
     except FileNotFoundError as e:
@@ -132,6 +127,166 @@ def import_file(
     except Exception as e:
         logger.exception(f"Import failed: {file_path}")
         return f"Import failed: {e}"
+
+
+@mcp.tool()
+def import_preview(file_path: str) -> str:
+    """Preview a file's structure and detected column mapping without importing.
+
+    Runs the first 3 stages of the tabular pipeline (detect, read, map)
+    and returns format info, column mapping, and sample rows. Use this
+    to understand an unknown file before importing.
+
+    Args:
+        file_path: Absolute path to the file to preview.
+    """
+    logger.info(f"Tool called: import_preview({file_path})")
+
+    from moneybin.extractors.tabular.column_mapper import map_columns
+    from moneybin.extractors.tabular.format_detector import detect_format
+    from moneybin.extractors.tabular.readers import read_file
+
+    resolved = Path(file_path).expanduser().resolve()
+    if not resolved.is_relative_to(Path.home()):
+        return (
+            "Error: file_path must be within the user's home directory. "
+            "Path traversal and symlinks that escape the home directory are not allowed."
+        )
+
+    try:
+        # Stage 1: Format detection
+        format_info = detect_format(resolved)
+
+        # Stage 2: Read file (first rows only for preview)
+        read_result = read_file(resolved, format_info)
+
+        # Stage 3: Column mapping
+        mapping_result = map_columns(read_result.df)
+
+        preview: dict[str, object] = {
+            "file": resolved.name,
+            "format": {
+                "file_type": format_info.file_type,
+                "delimiter": format_info.delimiter,
+                "encoding": format_info.encoding,
+                "file_size_bytes": format_info.file_size,
+            },
+            "columns": {
+                "mapping": mapping_result.field_mapping,
+                "confidence": mapping_result.confidence,
+                "date_format": mapping_result.date_format,
+                "number_format": mapping_result.number_format,
+                "sign_convention": mapping_result.sign_convention,
+                "is_multi_account": mapping_result.is_multi_account,
+                "unmapped_columns": mapping_result.unmapped_columns,
+                "flagged_fields": mapping_result.flagged_fields,
+            },
+            "sample_values": mapping_result.sample_values,
+            "rows_read": len(read_result.df),
+            "rows_skipped_trailing": read_result.rows_skipped_trailing,
+        }
+        return json.dumps(preview, indent=2, default=str)
+    except FileNotFoundError as e:
+        return f"Error: {e}"
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception(f"Preview failed: {file_path}")
+        return f"Preview failed: {e}"
+
+
+@mcp.tool()
+def import_history(limit: int = 20, import_id: str | None = None) -> str:
+    """List past imports with batch details.
+
+    Returns import ID, source file, status, row counts, and detection
+    confidence for each completed import batch.
+
+    Args:
+        limit: Maximum number of records to return (default 20).
+        import_id: Filter to a specific import ID for full details.
+    """
+    logger.info("Tool called: import_history")
+
+    try:
+        from moneybin.loaders.tabular_loader import TabularLoader
+
+        db = get_database()
+        loader = TabularLoader(db)
+        records = loader.get_import_history(
+            limit=min(limit, 200),
+            import_id=import_id,
+        )
+        return json.dumps(records, indent=2, default=str)
+    except Exception as e:
+        logger.exception("import_history failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def import_revert(import_id: str) -> str:
+    """Undo an import batch — deletes all rows loaded in that batch.
+
+    Removes transactions and accounts from the specified import batch
+    and marks it as reverted in the import log.
+
+    Args:
+        import_id: The UUID of the import batch to revert.
+    """
+    logger.info(f"Tool called: import_revert({import_id})")
+
+    try:
+        from moneybin.loaders.tabular_loader import TabularLoader
+
+        db = get_database()
+        loader = TabularLoader(db)
+        result = loader.revert_import(import_id)
+
+        status = result.get("status")
+        if status == "not_found":
+            return f"Error: {result.get('reason', 'Import not found')}"
+        if status == "already_reverted":
+            return f"Import {import_id} was already reverted."
+        rows_deleted = result.get("rows_deleted", 0)
+        return f"Reverted import {import_id}: {rows_deleted} rows deleted."
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.exception(f"import_revert failed: {import_id}")
+        return f"Revert failed: {e}"
+
+
+@mcp.tool()
+def list_formats() -> str:
+    """List all available tabular import formats (built-in + user-saved).
+
+    Returns format name, institution, sign convention, and date format
+    for each format. Use ``import_preview`` to test a format against
+    a specific file.
+    """
+    logger.info("Tool called: list_formats")
+
+    try:
+        from moneybin.extractors.tabular.formats import load_builtin_formats
+
+        formats = load_builtin_formats()
+        format_list = [
+            {
+                "name": fmt.name,
+                "institution_name": fmt.institution_name,
+                "file_type": fmt.file_type,
+                "sign_convention": fmt.sign_convention,
+                "date_format": fmt.date_format,
+                "number_format": fmt.number_format,
+                "multi_account": fmt.multi_account,
+                "header_signature": fmt.header_signature,
+            }
+            for fmt in sorted(formats.values(), key=lambda f: f.name)
+        ]
+        return json.dumps({"formats": format_list, "total": len(format_list)}, indent=2)
+    except Exception as e:
+        logger.exception("list_formats failed")
+        return json.dumps({"error": str(e)})
 
 
 # ---------------------------------------------------------------------------
