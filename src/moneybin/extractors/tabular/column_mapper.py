@@ -38,7 +38,7 @@ def _collect_samples(df: pl.DataFrame, col: str) -> list[str | None]:
         Up to ``_SAMPLE_SIZE`` string values (None for null cells).
     """
     vals = df[col].head(_SAMPLE_SIZE).cast(pl.Utf8).to_list()
-    return [str(v) if v is not None else "" for v in vals]
+    return [str(v) if v is not None else None for v in vals]
 
 
 @dataclass
@@ -93,7 +93,6 @@ def map_columns(
     mapping: dict[str, str] = {}
     claimed: set[str] = set()
     flagged: list[str] = []
-    # Store as list[str | None] so downstream detection functions accept it.
     _samples: dict[str, list[str | None]] = {}
 
     # Apply overrides first
@@ -160,7 +159,7 @@ def map_columns(
     unmapped = [c for c in df.columns if c not in claimed]
     confidence = _assign_confidence(mapping, flagged, date_format)
 
-    # Convert to list[str] for the public API (callers don't need None).
+    # Convert None → "" for the public sample_values (callers don't need nulls).
     sample_values: dict[str, list[str]] = {
         k: [v if v is not None else "" for v in vs] for k, vs in _samples.items()
     }

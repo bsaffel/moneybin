@@ -42,16 +42,16 @@ def import_file(
         "--skip-transform",
         help="Skip rebuilding core tables after import",
     ),
-    institution: str = typer.Option(
+    institution: str | None = typer.Option(
         None,
         "--institution",
         "-i",
         help="Institution name (OFX) or CSV profile name (auto-detects if omitted)",
     ),
-    account_id: str = typer.Option(
+    account_id: str | None = typer.Option(
         None, "--account-id", "-a", help="Account identifier (bypasses name matching)"
     ),
-    account_name: str = typer.Option(
+    account_name: str | None = typer.Option(
         None,
         "--account-name",
         "-n",
@@ -60,7 +60,7 @@ def import_file(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-confirm high-confidence detections"
     ),
-    format_name: str = typer.Option(
+    format_name: str | None = typer.Option(
         None,
         "--format",
         "-f",
@@ -74,7 +74,7 @@ def import_file(
             "--override amount=Amount)"
         ),
     ),
-    sign: str = typer.Option(
+    sign: str | None = typer.Option(
         None,
         "--sign",
         help=(
@@ -82,23 +82,23 @@ def import_file(
             "negative_is_income, split_debit_credit"
         ),
     ),
-    date_format: str = typer.Option(
+    date_format: str | None = typer.Option(
         None,
         "--date-format",
         help="Date format override (strptime format string, e.g. %%Y-%%m-%%d)",
     ),
-    number_format: str = typer.Option(
+    number_format: str | None = typer.Option(
         None,
         "--number-format",
         help="Number format override: us, european, swiss_french, zero_decimal",
     ),
-    sheet: str = typer.Option(
+    sheet: str | None = typer.Option(
         None, "--sheet", help="Excel sheet name (default: auto-select largest)"
     ),
-    delimiter: str = typer.Option(
+    delimiter: str | None = typer.Option(
         None, "--delimiter", help="Explicit delimiter for text formats"
     ),
-    encoding: str = typer.Option(
+    encoding: str | None = typer.Option(
         None, "--encoding", help="Explicit file encoding (e.g. utf-8, latin-1)"
     ),
     no_row_limit: bool = typer.Option(
@@ -212,7 +212,7 @@ def import_file(
 @app.command("history")
 def import_history(
     limit: int = typer.Option(20, "--limit", "-n", help="Max records to show"),
-    import_id: str = typer.Option(
+    import_id: str | None = typer.Option(
         None, "--import-id", help="Show details for a specific import"
     ),
 ) -> None:
@@ -310,6 +310,9 @@ def import_revert(
     if status == "not_found":
         logger.error(f"❌ {result.get('reason', 'Import not found')}")
         raise typer.Exit(1)
+    elif status == "superseded":
+        logger.error(f"❌ {result.get('reason', 'Import was superseded')}")
+        raise typer.Exit(1)
     elif status == "already_reverted":
         logger.warning(f"⚠️  Import {import_id[:8]}... was already reverted")
     else:
@@ -322,19 +325,19 @@ def import_revert(
 @app.command("preview")
 def import_preview(
     file_path: str = typer.Argument(..., help="File to preview"),
-    format_name: str = typer.Option(
+    format_name: str | None = typer.Option(
         None,
         "--format",
         "-f",
         help="Use a specific named format (bypass auto-detection)",
     ),
-    sheet: str = typer.Option(
+    sheet: str | None = typer.Option(
         None, "--sheet", help="Excel sheet name (default: auto-select largest)"
     ),
-    delimiter: str = typer.Option(
+    delimiter: str | None = typer.Option(
         None, "--delimiter", help="Explicit delimiter for text formats"
     ),
-    encoding: str = typer.Option(
+    encoding: str | None = typer.Option(
         None, "--encoding", help="Explicit file encoding (e.g. utf-8, latin-1)"
     ),
     override: list[str] = typer.Option(

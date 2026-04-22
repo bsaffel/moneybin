@@ -99,7 +99,8 @@ def import_file(
         institution: Institution name (OFX only).
         format_name: Use a specific named format (bypass auto-detection).
     """
-    logger.info(f"Tool called: import_file({file_path})")
+    file_name = Path(file_path).name
+    logger.info(f"Tool called: import_file({file_name!r})")
 
     # Expand ~ and resolve to canonical path (collapses '..' and follows
     # symlinks), then verify the result stays within the user's home directory.
@@ -125,7 +126,7 @@ def import_file(
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
-        logger.exception(f"Import failed: {file_path}")
+        logger.exception(f"Import failed: {file_name!r}")
         return f"Import failed: {e}"
 
 
@@ -140,7 +141,8 @@ def import_preview(file_path: str) -> str:
     Args:
         file_path: Absolute path to the file to preview.
     """
-    logger.info(f"Tool called: import_preview({file_path})")
+    file_name = Path(file_path).name
+    logger.info(f"Tool called: import_preview({file_name!r})")
 
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
@@ -191,7 +193,7 @@ def import_preview(file_path: str) -> str:
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
-        logger.exception(f"Preview failed: {file_path}")
+        logger.exception(f"Preview failed: {file_name!r}")
         return f"Preview failed: {e}"
 
 
@@ -247,6 +249,10 @@ def import_revert(import_id: str) -> str:
             return f"Error: {result.get('reason', 'Import not found')}"
         if status == "already_reverted":
             return f"Import {import_id} was already reverted."
+        if status == "superseded":
+            return (
+                f"Error: {result.get('reason', 'Import was superseded by a re-import')}"
+            )
         rows_deleted = result.get("rows_deleted", 0)
         return f"Reverted import {import_id}: {rows_deleted} rows deleted."
     except ValueError as e:

@@ -111,3 +111,31 @@ class TestRevertImport:
         loader = TabularLoader(mock_db)
         result = loader.revert_import("nonexistent")
         assert result["status"] == "not_found"
+
+    def test_revert_superseded_by_reimport(self, mock_db: MagicMock) -> None:
+        """When a file was re-imported, reverting the old batch returns superseded."""
+        # First call: import_log lookup returns a valid row
+        # Second call: COUNT(*) returns 0 (no rows with old import_id)
+        # Third call: re-import check finds a newer import
+        call_count = 0
+
+        def side_effect(*_args: object) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                # import_log lookup
+                result.fetchone.return_value = ("old-import-id", "complete")
+            elif call_count == 2:
+                # COUNT(*) — no rows with old import_id
+                result.fetchone.return_value = (0,)
+            elif call_count == 3:
+                # re-import check — found a newer import
+                result.fetchone.return_value = ("new-import-id-1234",)
+            return result
+
+        mock_db.execute.side_effect = side_effect
+        loader = TabularLoader(mock_db)
+        result = loader.revert_import("old-import-id")
+        assert result["status"] == "superseded"
+        assert "re-imported" in str(result.get("reason", ""))

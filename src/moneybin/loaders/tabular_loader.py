@@ -194,6 +194,34 @@ class TabularLoader:
         ).fetchone()
         txn_deleted = txn_count[0] if txn_count else 0
 
+        # If no rows found, check whether this file was re-imported under a
+        # newer batch — the upsert replaces import_id on key collision.
+        if txn_deleted == 0:
+            reimport_row = self.db.execute(
+                """
+                SELECT il2.import_id
+                FROM raw.import_log il1
+                JOIN raw.import_log il2
+                    ON il2.source_file = il1.source_file
+                    AND il2.import_id != il1.import_id
+                    AND il2.started_at > il1.started_at
+                    AND il2.status NOT IN ('reverted', 'failed')
+                WHERE il1.import_id = ?
+                ORDER BY il2.started_at DESC
+                LIMIT 1
+                """,
+                [import_id],
+            ).fetchone()
+            if reimport_row:
+                newer_id = reimport_row[0]
+                return {
+                    "status": "superseded",
+                    "reason": (
+                        f"File was re-imported as {newer_id[:8]}...; "
+                        f"revert that batch to remove the data."
+                    ),
+                }
+
         self.db.execute(
             "DELETE FROM raw.tabular_transactions WHERE import_id = ?",
             [import_id],
