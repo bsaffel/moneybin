@@ -334,7 +334,7 @@ def import_file(
     db: Database,
     file_path: str | Path,
     *,
-    run_transforms: bool = True,
+    do_transforms: bool = True,
     institution: str | None = None,
     account_id: str | None = None,
 ) -> ImportResult:
@@ -346,7 +346,7 @@ def import_file(
     Args:
         db: Database instance.
         file_path: Path to the file to import.
-        run_transforms: Whether to run SQLMesh transforms after loading.
+        do_transforms: Whether to run SQLMesh transforms after loading.
             Defaults to True.
         institution: Institution name (OFX) or CSV profile name. Auto-detected
             for CSV if omitted.
@@ -377,7 +377,7 @@ def import_file(
         raise ValueError(f"Unsupported file type: {file_type}")
 
     # Run SQLMesh transforms after loading raw data
-    if run_transforms and file_type in ("ofx", "csv"):
+    if do_transforms and file_type in ("ofx", "csv"):
         result.core_tables_rebuilt = run_transforms(db.path)
 
         # Apply deterministic categorization to new transactions
