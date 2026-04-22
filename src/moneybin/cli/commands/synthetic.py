@@ -5,6 +5,15 @@ import random
 
 import typer
 
+from moneybin.tables import (
+    CSV_ACCOUNTS,
+    CSV_TRANSACTIONS,
+    GROUND_TRUTH,
+    OFX_ACCOUNTS,
+    OFX_BALANCES,
+    OFX_TRANSACTIONS,
+)
+
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
@@ -15,14 +24,14 @@ app = typer.Typer(
 # Persona -> default profile name mapping
 _PERSONA_PROFILES = {"basic": "alice", "family": "bob", "freelancer": "charlie"}
 
-# Tables to scope-delete during reset (hardcoded allowlist — not user input)
+# Tables to scope-delete during reset (allowlist from TableRef constants)
 _RESET_DELETIONS = {
-    "synthetic.ground_truth": "WHERE TRUE",
-    "raw.ofx_transactions": "WHERE source_file LIKE 'synthetic://%'",
-    "raw.ofx_accounts": "WHERE source_file LIKE 'synthetic://%'",
-    "raw.ofx_balances": "WHERE source_file LIKE 'synthetic://%'",
-    "raw.csv_transactions": "WHERE source_file LIKE 'synthetic://%'",
-    "raw.csv_accounts": "WHERE source_file LIKE 'synthetic://%'",
+    GROUND_TRUTH.full_name: "WHERE TRUE",
+    OFX_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
+    OFX_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
+    OFX_BALANCES.full_name: "WHERE source_file LIKE 'synthetic://%'",
+    CSV_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
+    CSV_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
 }
 
 
@@ -48,7 +57,7 @@ def _run_generate(
     from moneybin.testing.synthetic.engine import GeneratorEngine
     from moneybin.testing.synthetic.writer import SyntheticWriter
 
-    actual_seed = seed if seed is not None else random.randint(1, 999999)  # noqa: S311 — not crypto, just a reproducibility seed
+    actual_seed = seed if seed is not None else random.randint(1, 9999)  # noqa: S311 — not crypto, just a reproducibility seed
 
     logger.info(
         f"⚙️  Generating {persona!r} persona into profile {profile!r} "
@@ -140,7 +149,11 @@ def generate(
         None, "--years", help="Number of years of history"
     ),
     seed: int | None = typer.Option(
-        None, "--seed", help="Seed for deterministic output (random if omitted)"
+        None,
+        "--seed",
+        min=1,
+        max=9999,
+        help="Seed for deterministic output (random if omitted)",
     ),
     skip_transform: bool = typer.Option(
         False, "--skip-transform", help="Skip running SQLMesh after generation"
@@ -158,20 +171,27 @@ def reset(
         None, "--profile", help="Target profile to reset"
     ),
     years: int | None = typer.Option(None, "--years", help="Years to regenerate"),
-    seed: int | None = typer.Option(None, "--seed", help="Seed for regeneration"),
+    seed: int | None = typer.Option(
+        None, "--seed", min=1, max=9999, help="Seed for regeneration"
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    skip_transform: bool = typer.Option(
+        False, "--skip-transform", help="Skip running SQLMesh after regeneration"
+    ),
 ) -> None:
     """Wipe a generated profile and regenerate from scratch."""
-    from moneybin.config import set_current_profile
+    from moneybin.config import get_settings, set_current_profile
     from moneybin.database import DatabaseKeyError, close_database, get_database
 
     target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
 
+    original_profile = get_settings().profile
     set_current_profile(target_profile)
 
     try:
         db = get_database()
     except DatabaseKeyError:
+        set_current_profile(original_profile)
         logger.error("❌ Database encryption key not found")
         logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
         raise typer.Exit(1) from None
@@ -205,6 +225,9 @@ def reset(
         if not confirmed:
             raise typer.Abort()
 
+    from moneybin.metrics.registry import SYNTHETIC_RESET_TOTAL
+
+    SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
     logger.info(f"⚙️  Resetting profile {target_profile!r}...")
     for table, where in _RESET_DELETIONS.items():
         try:
@@ -222,5 +245,5 @@ def reset(
         profile=target_profile,
         years=years,
         seed=seed,
-        skip_transform=False,
+        skip_transform=skip_transform,
     )

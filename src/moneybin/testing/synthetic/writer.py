@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 
 from moneybin.database import Database
+from moneybin.tables import GROUND_TRUTH
 from moneybin.testing.synthetic.models import (
     GeneratedAccount,
     GeneratedTransaction,
@@ -259,5 +260,5 @@ class SyntheticWriter:
                 "generated_at": now,
             })
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("synthetic.ground_truth", df, on_conflict="upsert")
+        self._db.ingest_dataframe(GROUND_TRUTH.full_name, df, on_conflict="upsert")
         return len(rows)

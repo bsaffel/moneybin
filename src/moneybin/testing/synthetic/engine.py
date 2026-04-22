@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 from decimal import Decimal
 
@@ -85,6 +86,12 @@ class GeneratorEngine:
         Returns:
             GenerationResult with all accounts, transactions, and metadata.
         """
+        from moneybin.metrics.registry import (
+            SYNTHETIC_GENERATED_TRANSACTIONS_TOTAL,
+            SYNTHETIC_GENERATION_DURATION_SECONDS,
+        )
+
+        start_time = time.monotonic()
         accounts = self._setup_accounts()
 
         # Create generators
@@ -137,6 +144,14 @@ class GeneratorEngine:
 
         start_date = date(self._start_year, 1, 1)
         end_date = date(self._end_year, 12, 31)
+
+        duration = time.monotonic() - start_time
+        SYNTHETIC_GENERATED_TRANSACTIONS_TOTAL.labels(persona=self._persona_name).inc(
+            len(all_txns)
+        )
+        SYNTHETIC_GENERATION_DURATION_SECONDS.labels(
+            persona=self._persona_name
+        ).observe(duration)
 
         logger.info(
             f"Generated {len(all_txns)} transactions for persona "

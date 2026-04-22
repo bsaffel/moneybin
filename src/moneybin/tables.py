@@ -23,6 +23,8 @@ DIM_ACCOUNTS = TableRef("core", "dim_accounts")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions")
 
 # -- Raw tables (used until core models are built for these entities) --
+OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
+OFX_TRANSACTIONS = TableRef("raw", "ofx_transactions")
 OFX_BALANCES = TableRef("raw", "ofx_balances")
 OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
 W2_FORMS = TableRef("raw", "w2_forms")

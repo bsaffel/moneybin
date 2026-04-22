@@ -80,6 +80,7 @@ class TestGenerateCommand:
         result = runner.invoke(app, ["generate", "--persona", "basic", "--seed", "42"])
         assert result.exit_code == 0
         mock_engine.assert_called_once()
+        mock_writer.return_value.write.assert_called_once()
 
     def test_generate_unknown_persona(
         self,
