@@ -562,7 +562,9 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
 - **Running balance validation** (when `balance` column is mapped):
   Balance columns are a powerful free validation signal that most importers ignore.
   When present, verify internal consistency by checking sequential balance deltas:
-  `balance[n] - balance[n-1]` should equal `amount[n]` (within ±0.01 for rounding).
+  `balance[n] - balance[n-1]` should equal `amount[n]` (within a rounding tolerance
+  based on the detected number format: ±0.01 for 2-decimal currencies, ±0.001 for
+  3-decimal currencies like KWD/BHD, ±1 for zero-decimal currencies like JPY/KRW).
   1. If ≥90% of consecutive pairs pass → strong confirmation of correct amount parsing
      and sign convention. Boost confidence tier (medium → high if all other required
      fields are solid).
@@ -695,7 +697,7 @@ CREATE TABLE raw.import_log (
     format_name VARCHAR,                        -- Name of the matched or saved format (NULL if no format matched)
     format_source VARCHAR,                      -- How the format was resolved: "built-in", "saved", "detected", "override"
     account_names JSON NOT NULL,                -- List of account names affected by this import
-    status VARCHAR NOT NULL DEFAULT 'importing', -- Lifecycle: importing → complete | partial | failed | reverted
+    status VARCHAR NOT NULL DEFAULT 'importing' CHECK (status IN ('importing', 'complete', 'partial', 'failed', 'reverted')), -- Lifecycle: importing → complete | partial | failed | reverted
     rows_total INTEGER,                         -- Total rows in source file (before filtering)
     rows_imported INTEGER,                      -- Rows successfully written to raw tables
     rows_rejected INTEGER DEFAULT 0,            -- Rows that failed validation (with reasons in rejection_details)
@@ -732,7 +734,7 @@ CREATE TABLE app.tabular_formats (
     sign_convention VARCHAR NOT NULL,           -- How amounts are represented in the source: negative_is_expense, negative_is_income, split_debit_credit
     date_format VARCHAR NOT NULL,               -- strftime format string for parsing date values (e.g. "%m/%d/%Y", "%Y-%m-%d")
     number_format VARCHAR NOT NULL DEFAULT 'us', -- Number convention: us (1,234.56), european (1.234,56), swiss_french (1 234,56), zero_decimal (1,234)
-    skip_trailing_patterns JSON NOT NULL DEFAULT '[]', -- Regex patterns for detecting and excluding trailing non-data rows (totals, metadata); empty list means use default patterns
+    skip_trailing_patterns JSON, -- Regex patterns for trailing non-data rows: NULL = use default patterns, [] = no patterns (explicit opt-out), ["^Total", ...] = institution-specific patterns only
     multi_account BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this format expects per-row account identification (Tiller, Mint, Monarch)
     source VARCHAR NOT NULL DEFAULT 'detected', -- How this format was created: "detected" (auto-saved), "manual" (user-created), "built-in-override" (customized built-in)
     times_used INTEGER NOT NULL DEFAULT 0,      -- Number of successful imports completed using this format
@@ -1264,7 +1266,7 @@ field_mapping:
 sign_convention: negative_is_expense
 date_format: "%m/%d/%Y"
 number_format: us                              # us | european | swiss_french | zero_decimal
-skip_trailing_patterns: []                     # regex patterns for trailing junk rows (empty = use defaults)
+skip_trailing_patterns: null                   # null = use default patterns; [] = no patterns; ["^Total"] = custom only
 ```
 
 **Maybe/Sure migration format** (new built-in):
@@ -1294,7 +1296,7 @@ field_mapping:
 sign_convention: negative_is_expense
 date_format: "%Y-%m-%d"
 number_format: us
-skip_trailing_patterns: []
+skip_trailing_patterns: null
 ```
 
 ---

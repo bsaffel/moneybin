@@ -8,8 +8,8 @@ Use the first strategy that applies:
 |---|---|---|---|
 | 1 | **Source-provided ID** | Upstream system supplies a stable identifier | OFX `<FITID>`, Plaid `transaction_id` |
 | 2 | **Content hash** | No source ID, but identity is determined by content | CSV transactions (no FITID) |
-| 3 | **UUID4 (truncated)** | User-created entity with no natural key | Merchants, rules, budgets |
-| 4 | **Semantic slug** | Human-authored reference data needing readable IDs | Categories (`food_and_drink.coffee`) |
+| 3 | **UUID4 (truncated)** | User-created entity with no natural key | Merchants, rules, budgets, user-created categories |
+| 4 | **Semantic slug** | Human-authored reference data needing readable IDs | Seed data codes (`INC-SAL`), format names (`chase_credit`) |
 
 ## Content Hashes
 
@@ -30,7 +30,7 @@ return f"csv_{digest}"
 For app-layer entities created by the user or system with no natural key.
 
 - **Length**: 12 hex chars (48 bits) — collision probability ~0.00002% at 10,000 items.
-- **Format**: `str(uuid.uuid4().hex)[:12]` (hex only, no hyphens).
+- **Format**: `uuid.uuid4().hex[:12]` (hex only, no hyphens).
 
 ```python
 merchant_id = uuid.uuid4().hex[:12]
@@ -45,4 +45,4 @@ Always prefer the upstream system's identifier. Store as-is — do not hash, tru
 
 ## Semantic Slugs
 
-For human-authored reference data where readability matters more than uniqueness guarantees. Use dot-separated hierarchies (`food_and_drink.coffee`). Uniqueness is enforced by the database (PRIMARY KEY or UNIQUE constraint), not by the generation strategy.
+For hand-crafted reference data where readability matters more than uniqueness guarantees. Use short, mnemonic codes (`INC-SAL`, `TRN-INT`) or descriptive names (`chase_credit`, `tiller`). Uniqueness is enforced by the database (PRIMARY KEY or UNIQUE constraint), not by the generation strategy.
