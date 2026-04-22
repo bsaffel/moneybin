@@ -69,12 +69,11 @@ def setup_observability(
         # the previous session. Deferred — requires deciding on startup cost
         # trade-offs (DB may not exist yet on first run). See persistence.py.
         atexit.register(_flush_metrics_on_exit)
-
-        # Step 3: For MCP, start periodic flush
-        if stream == "mcp":
-            _start_periodic_flush()
-
         _initialized = True
+
+    # Step 3: For MCP, start periodic flush (idempotent — checks _periodic_timer)
+    if stream == "mcp" and _periodic_timer is None:
+        _start_periodic_flush()
 
     logger.debug(f"Observability initialized (stream={stream})")
 

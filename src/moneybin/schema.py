@@ -94,11 +94,10 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                 try:
                     safe_desc = description.replace("'", "''")
                     conn.execute(f"COMMENT ON TABLE {table_name} IS '{safe_desc}'")
-                    logger.debug("Applied table comment to %s", table_name)
+                    logger.debug(f"Applied table comment to {table_name}")
                 except duckdb.CatalogException:
                     logger.debug(
-                        "Skipping table comment for %s — table does not exist yet",
-                        table_name,
+                        f"Skipping table comment for {table_name} — table does not exist yet"
                     )
 
         # Column-level comments: trailing -- text on each column definition
@@ -113,14 +112,10 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                 conn.execute(
                     f"COMMENT ON COLUMN {table_name}.{col_def.name} IS '{safe_comment}'"
                 )
-                logger.debug(
-                    "Applied column comment to %s.%s", table_name, col_def.name
-                )
+                logger.debug(f"Applied column comment to {table_name}.{col_def.name}")
             except duckdb.CatalogException:
                 logger.debug(
-                    "Skipping column comment for %s.%s — table does not exist yet",
-                    table_name,
-                    col_def.name,
+                    f"Skipping column comment for {table_name}.{col_def.name} — table does not exist yet"
                 )
 
 
@@ -133,11 +128,11 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     for sql_file in _SCHEMA_FILES:
         sql_path = _SQL_DIR / sql_file
         if not sql_path.exists():
-            logger.warning("Schema file not found, skipping: %s", sql_file)
+            logger.warning(f"Schema file not found, skipping: {sql_file}")
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
         _apply_comments(conn, sql)
-        logger.debug("Executed %s", sql_file)
+        logger.debug(f"Executed {sql_file}")
 
-    logger.debug("Executed %d schema files from %s", len(_SCHEMA_FILES), _SQL_DIR)
+    logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
