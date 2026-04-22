@@ -63,7 +63,7 @@ class TestImportFileCommand:
         mock_import_file.assert_called_once_with(
             db=mock_get_database.return_value,
             file_path=test_file,
-            do_transforms=True,
+            apply_transforms=True,
             institution=None,
             account_id=None,
             account_name=None,
@@ -83,7 +83,7 @@ class TestImportFileCommand:
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Test --skip-transform flag passes do_transforms=False."""
+        """Test --skip-transform flag passes apply_transforms=False."""
         test_file = tmp_path / "test.ofx"
         test_file.touch()
 
@@ -92,7 +92,7 @@ class TestImportFileCommand:
         mock_import_file.assert_called_once_with(
             db=mock_get_database.return_value,
             file_path=test_file,
-            do_transforms=False,
+            apply_transforms=False,
             institution=None,
             account_id=None,
             account_name=None,
@@ -123,7 +123,7 @@ class TestImportFileCommand:
         mock_import_file.assert_called_once_with(
             db=mock_get_database.return_value,
             file_path=test_file,
-            do_transforms=True,
+            apply_transforms=True,
             institution="Wells Fargo",
             account_id=None,
             account_name=None,

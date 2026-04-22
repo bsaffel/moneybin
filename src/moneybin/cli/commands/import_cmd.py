@@ -177,7 +177,7 @@ def import_file(
         result = do_import(
             db=db,
             file_path=source,
-            do_transforms=not skip_transform,
+            apply_transforms=not skip_transform,
             institution=institution,
             account_id=account_id,
             account_name=account_name,

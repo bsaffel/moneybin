@@ -70,7 +70,7 @@ class TestImportFileAccountName:
         mock_import_file.assert_called_once_with(
             db=mock_get_database.return_value,
             file_path=csv_file,
-            do_transforms=True,
+            apply_transforms=True,
             institution=None,
             account_id=None,
             account_name="Chase Checking",
