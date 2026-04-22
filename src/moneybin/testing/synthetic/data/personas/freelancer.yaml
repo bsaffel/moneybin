@@ -1,0 +1,143 @@
+persona: freelancer
+profile: charlie
+description: "Irregular income (invoices + 1099), business + personal accounts, quarterly tax"
+years_default: 3
+
+accounts:
+  - name: "Personal Checking"
+    type: checking
+    source_type: ofx
+    institution: "Chase Bank"
+    opening_balance: 5200.00
+  - name: "Business Checking"
+    type: checking
+    source_type: ofx
+    institution: "Mercury Bank"
+    opening_balance: 12000.00
+  - name: "Personal Visa"
+    type: credit_card
+    source_type: csv
+    institution: "Capital One"
+    opening_balance: 0.00
+
+income:
+  - type: freelance
+    account: "Business Checking"
+    amount: { mean: 5000.00, stddev: 2000.00 }
+    schedule: irregular
+    count_per_month: { mean: 2.5, stddev: 1.0 }
+    description_template: "CLIENT PAYMENT"
+  - type: salary
+    account: "Business Checking"
+    amount: 3000.00
+    schedule: monthly
+    description_template: "RETAINER PAYMENT"
+    employer: "Anchor Client LLC"
+
+recurring:
+  - category: housing
+    description: "Office Rent"
+    account: "Business Checking"
+    amount: 800.00
+    day_of_month: 1
+  - category: housing
+    description: "Apartment Rent"
+    account: "Personal Checking"
+    amount: 1800.00
+    day_of_month: 1
+  - category: insurance
+    description: "Business Insurance"
+    account: "Business Checking"
+    amount: 150.00
+    day_of_month: 10
+  - category: subscriptions
+    description: "Adobe Creative Cloud"
+    account: "Business Checking"
+    amount: 54.99
+    day_of_month: 15
+  - category: subscriptions
+    description: "GitHub Pro"
+    account: "Business Checking"
+    amount: 4.00
+    day_of_month: 15
+  - category: subscriptions
+    description: "Slack Business"
+    account: "Business Checking"
+    amount: 12.50
+    day_of_month: 15
+  - category: utilities
+    description: "Phone Bill"
+    account: "Personal Checking"
+    amount: 85.00
+    day_of_month: 18
+  - category: utilities
+    description: "Internet Service"
+    account: "Personal Checking"
+    amount: 75.00
+    day_of_month: 12
+  - category: taxes
+    description: "IRS Estimated Tax Payment"
+    account: "Business Checking"
+    amount: 3500.00
+    day_of_month: 15
+    months: [1, 4, 6, 9]
+
+spending:
+  categories:
+    - name: grocery
+      merchant_catalog: grocery
+      monthly_budget: { mean: 400.00, stddev: 70.00 }
+      transactions_per_month: { mean: 6, stddev: 1 }
+      accounts: ["Personal Checking", "Personal Visa"]
+      account_weights: [0.4, 0.6]
+    - name: dining
+      merchant_catalog: dining
+      monthly_budget: { mean: 350.00, stddev: 80.00 }
+      transactions_per_month: { mean: 8, stddev: 2 }
+      accounts: ["Personal Visa", "Business Checking"]
+      account_weights: [0.6, 0.4]
+      day_of_week_weights:
+        friday: 1.5
+        saturday: 1.5
+    - name: transport
+      merchant_catalog: transport
+      monthly_budget: { mean: 200.00, stddev: 50.00 }
+      transactions_per_month: { mean: 5, stddev: 2 }
+      accounts: ["Personal Checking"]
+    - name: shopping
+      merchant_catalog: shopping
+      monthly_budget: { mean: 250.00, stddev: 80.00 }
+      transactions_per_month: { mean: 6, stddev: 2 }
+      accounts: ["Personal Visa"]
+      seasonal_modifiers:
+        november: 1.4
+        december: 1.8
+    - name: entertainment
+      merchant_catalog: entertainment
+      monthly_budget: { mean: 80.00, stddev: 30.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["Personal Visa"]
+    - name: health
+      merchant_catalog: health
+      monthly_budget: { mean: 120.00, stddev: 40.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["Personal Checking"]
+    - name: education
+      merchant_catalog: education
+      monthly_budget: { mean: 80.00, stddev: 40.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["Business Checking"]
+
+transfers:
+  - from: "Business Checking"
+    to: "Personal Checking"
+    amount: 4000.00
+    schedule: monthly
+    day_of_month: 28
+    description_template: "OWNER DRAW"
+  - from: "Personal Checking"
+    to: "Personal Visa"
+    amount: statement_balance
+    schedule: monthly
+    day_of_month: 25
+    description_template: "ONLINE PAYMENT CAPITAL ONE"

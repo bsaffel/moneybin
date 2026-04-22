@@ -1,0 +1,105 @@
+persona: basic
+profile: alice
+description: "Single income, 1 checking + 1 credit card, simple spending, ~300 txns/yr"
+years_default: 3
+
+accounts:
+  - name: "Chase Checking"
+    type: checking
+    source_type: ofx
+    institution: "Chase Bank"
+    opening_balance: 3200.00
+  - name: "Capital One Visa"
+    type: credit_card
+    source_type: csv
+    institution: "Capital One"
+    opening_balance: 0.00
+
+income:
+  - type: salary
+    account: "Chase Checking"
+    amount: 3800.00
+    schedule: biweekly
+    pay_day: friday
+    annual_raise_pct: 3.0
+    description_template: "DIRECT DEP {employer}"
+    employer: "Acme Corp"
+
+recurring:
+  - category: housing
+    description: "Rent Payment"
+    account: "Chase Checking"
+    amount: 1500.00
+    day_of_month: 1
+  - category: utilities
+    description: "Electric Company"
+    account: "Chase Checking"
+    amount: { mean: 95.00, stddev: 25.00 }
+    day_of_month: 15
+  - category: utilities
+    description: "Internet Service"
+    account: "Chase Checking"
+    amount: 65.00
+    day_of_month: 12
+  - category: utilities
+    description: "Phone Bill"
+    account: "Chase Checking"
+    amount: 85.00
+    day_of_month: 18
+  - category: insurance
+    description: "Car Insurance"
+    account: "Chase Checking"
+    amount: 142.00
+    day_of_month: 5
+
+spending:
+  categories:
+    - name: grocery
+      merchant_catalog: grocery
+      monthly_budget: { mean: 350.00, stddev: 60.00 }
+      transactions_per_month: { mean: 5, stddev: 1 }
+      accounts: ["Chase Checking", "Capital One Visa"]
+      account_weights: [0.5, 0.5]
+      seasonal_modifiers:
+        november: 1.2
+        december: 1.3
+        january: 0.8
+    - name: dining
+      merchant_catalog: dining
+      monthly_budget: { mean: 180.00, stddev: 50.00 }
+      transactions_per_month: { mean: 4, stddev: 1 }
+      accounts: ["Capital One Visa"]
+      day_of_week_weights:
+        friday: 2.0
+        saturday: 2.0
+    - name: transport
+      merchant_catalog: transport
+      monthly_budget: { mean: 120.00, stddev: 35.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["Chase Checking"]
+    - name: shopping
+      merchant_catalog: shopping
+      monthly_budget: { mean: 150.00, stddev: 60.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["Capital One Visa"]
+      seasonal_modifiers:
+        november: 1.5
+        december: 2.0
+    - name: entertainment
+      merchant_catalog: entertainment
+      monthly_budget: { mean: 60.00, stddev: 25.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["Capital One Visa"]
+    - name: personal_care
+      merchant_catalog: personal_care
+      monthly_budget: { mean: 40.00, stddev: 15.00 }
+      transactions_per_month: { mean: 1, stddev: 1 }
+      accounts: ["Chase Checking"]
+
+transfers:
+  - from: "Chase Checking"
+    to: "Capital One Visa"
+    amount: statement_balance
+    schedule: monthly
+    day_of_month: 20
+    description_template: "ONLINE PAYMENT CAPITAL ONE"

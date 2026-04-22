@@ -92,13 +92,11 @@ class TestImportPipeline:
         # Run SQLMesh transforms against the encrypted database.
         # This is the exact code path that was broken before the fix —
         # SQLMesh needs the encryption key passed via adapter cache.
-        from moneybin.services.import_service import (
-            _run_transforms,  # type: ignore[reportPrivateUsage]  # integration test
-        )
+        from moneybin.services.import_service import run_transforms
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("moneybin.secrets.SecretStore", lambda: mock_store)
-            result = _run_transforms(db_path)
+            result = run_transforms(db_path)
 
         assert result is True
 

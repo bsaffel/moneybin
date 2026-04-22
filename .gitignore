@@ -42,6 +42,8 @@ data/
 !tests/fixtures/*.pdf
 # Built-in CSV profiles are static config bundled with the package (not financial data)
 !src/moneybin/data/
+# Synthetic test data (YAML merchant catalogs + persona definitions, not financial data)
+!src/moneybin/testing/synthetic/data/
 
 # Database files
 *.duckdb

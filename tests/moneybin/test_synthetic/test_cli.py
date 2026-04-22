@@ -1,0 +1,166 @@
+# ruff: noqa: S101,S106,S108
+"""Tests for synthetic data CLI commands."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+from typer.testing import CliRunner
+
+from moneybin.cli.commands.synthetic import app
+
+
+class TestGenerateCommand:
+    """Test the 'synthetic generate' CLI command."""
+
+    @pytest.fixture(autouse=True)
+    def mock_profile(self, mocker: Any) -> None:
+        """Prevent generate/reset from mutating process-wide profile state."""
+        mock_settings = MagicMock()
+        mock_settings.profile = "default"
+        mocker.patch("moneybin.config.get_settings", return_value=mock_settings)
+        mocker.patch("moneybin.config.set_current_profile")
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    @pytest.fixture
+    def mock_get_database(self, mocker: Any) -> MagicMock:
+        mock_db = MagicMock()
+        # Make the "already has data" check return 0 rows
+        mock_db.execute.return_value.fetchone.return_value = (0,)
+        return mocker.patch(
+            "moneybin.database.get_database",
+            return_value=mock_db,
+        )
+
+    @pytest.fixture
+    def mock_engine(self, mocker: Any) -> MagicMock:
+        mock_result = MagicMock()
+        mock_result.persona = "basic"
+        mock_result.seed = 42
+        mock_result.accounts = [MagicMock()]
+        mock_result.transactions = [MagicMock()] * 100
+        mock_result.start_date = MagicMock(__str__=lambda s: "2024-01-01")  # type: ignore[reportUnknownLambdaType]  # MagicMock dunder override
+        mock_result.end_date = MagicMock(__str__=lambda s: "2024-12-31")  # type: ignore[reportUnknownLambdaType]  # MagicMock dunder override
+        mock_cls = mocker.patch(
+            "moneybin.testing.synthetic.engine.GeneratorEngine",
+        )
+        mock_cls.return_value.generate.return_value = mock_result
+        return mock_cls
+
+    @pytest.fixture
+    def mock_writer(self, mocker: Any) -> MagicMock:
+        mock_cls = mocker.patch(
+            "moneybin.testing.synthetic.writer.SyntheticWriter",
+        )
+        mock_cls.return_value.write.return_value = {
+            "ofx_accounts": 1,
+            "ofx_transactions": 80,
+            "csv_transactions": 20,
+            "ground_truth": 100,
+        }
+        return mock_cls
+
+    @pytest.fixture
+    def mock_run_transforms(self, mocker: Any) -> MagicMock:
+        return mocker.patch(
+            "moneybin.services.import_service.run_transforms",
+            return_value=True,
+        )
+
+    def test_generate_requires_persona(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["generate"])
+        assert result.exit_code != 0
+
+    def test_generate_success(
+        self,
+        runner: CliRunner,
+        mock_get_database: MagicMock,
+        mock_engine: MagicMock,
+        mock_writer: MagicMock,
+        mock_run_transforms: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["generate", "--persona", "basic", "--seed", "42"])
+        assert result.exit_code == 0
+        mock_engine.assert_called_once()
+        mock_writer.return_value.write.assert_called_once()
+
+    def test_generate_unknown_persona(
+        self,
+        runner: CliRunner,
+        mock_get_database: MagicMock,
+    ) -> None:
+        with patch(
+            "moneybin.testing.synthetic.engine.GeneratorEngine",
+            side_effect=FileNotFoundError("Unknown persona: 'bad'"),
+        ):
+            result = runner.invoke(app, ["generate", "--persona", "bad"])
+            assert result.exit_code == 1
+
+
+class TestResetCommand:
+    """Test the 'synthetic reset' CLI command."""
+
+    @pytest.fixture(autouse=True)
+    def mock_profile(self, mocker: Any) -> None:
+        """Prevent reset from mutating process-wide profile state."""
+        mock_settings = MagicMock()
+        mock_settings.profile = "default"
+        mocker.patch("moneybin.config.get_settings", return_value=mock_settings)
+        mocker.patch("moneybin.config.set_current_profile")
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def test_reset_requires_persona(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["reset"])
+        assert result.exit_code != 0
+
+    def test_reset_success_with_yes(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+    ) -> None:
+        """Reset --yes with ground_truth present should delete and regenerate."""
+        mock_db = MagicMock()
+        # ground_truth table exists
+        mock_db.execute.return_value.fetchone.return_value = (1,)
+        mock_db.path = Path("/tmp/test.duckdb")
+        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch("moneybin.database.close_database")
+
+        # Mock _run_generate to avoid the full pipeline
+        mock_run = mocker.patch(
+            "moneybin.cli.commands.synthetic._run_generate",
+        )
+
+        result = runner.invoke(
+            app, ["reset", "--persona", "basic", "--yes", "--seed", "42"]
+        )
+        assert result.exit_code == 0
+        mock_run.assert_called_once_with(
+            persona="basic",
+            profile="alice",
+            years=None,
+            seed=42,
+            skip_transform=False,
+        )
+
+    def test_reset_requires_yes_or_prompt(self, runner: CliRunner) -> None:
+        """Without --yes, reset should prompt for confirmation."""
+        # CliRunner sends EOF on stdin by default, so prompt is declined
+        with patch("moneybin.database.get_database") as mock_get_db:
+            mock_db = MagicMock()
+            # ground_truth table exists check returns 1
+            mock_db.execute.return_value.fetchone.return_value = (1,)
+            mock_db.path = Path("/tmp/test.duckdb")
+            mock_get_db.return_value = mock_db
+            result = runner.invoke(app, ["reset", "--persona", "basic"])
+            # Should either prompt and abort, or succeed with --yes
+            assert result.exit_code != 0 or "Aborted" in (result.output or "")

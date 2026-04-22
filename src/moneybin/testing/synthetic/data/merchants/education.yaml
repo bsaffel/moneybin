@@ -1,0 +1,34 @@
+category: education
+merchants:
+  - name: "Udemy"
+    weight: 15
+    amount: { mean: 14.99, stddev: 5.00 }
+    description_prefix: "UDEMY"
+  - name: "Coursera"
+    weight: 12
+    amount: { mean: 49.00, stddev: 10.00 }
+    description_prefix: "COURSERA"
+  - name: "O'Reilly Media"
+    weight: 8
+    amount: { mean: 39.00, stddev: 5.00 }
+    description_prefix: "OREILLY MEDIA"
+  - name: "Amazon Books"
+    weight: 14
+    amount: { mean: 22.00, stddev: 10.00 }
+    description_prefix: "AMZN MKTP"
+  - name: "Barnes & Noble"
+    weight: 10
+    amount: { mean: 28.00, stddev: 12.00 }
+    description_prefix: "BARNES NOBLE"
+  - name: "Student Loan Payment"
+    weight: 8
+    amount: { mean: 350.00, stddev: 50.00 }
+    description_prefix: "STUDENT LOAN"
+  - name: "LinkedIn Learning"
+    weight: 6
+    amount: { mean: 29.99, stddev: 0.00 }
+    description_prefix: "LINKEDIN"
+  - name: "Professional Certification"
+    weight: 3
+    amount: { mean: 250.00, stddev: 100.00 }
+    description_prefix: "PROF CERT"

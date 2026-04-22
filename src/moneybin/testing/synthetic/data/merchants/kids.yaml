@@ -1,0 +1,42 @@
+category: kids
+merchants:
+  - name: "YMCA Programs"
+    weight: 10
+    amount: { mean: 65.00, stddev: 20.00 }
+    description_prefix: "YMCA"
+  - name: "Soccer League"
+    weight: 8
+    amount: { mean: 120.00, stddev: 30.00 }
+    description_prefix: "YOUTH SOCCER"
+  - name: "Music Lessons"
+    weight: 8
+    amount: { mean: 45.00, stddev: 10.00 }
+    description_prefix: "MUSIC ACADEMY"
+  - name: "Tutoring Center"
+    weight: 6
+    amount: { mean: 55.00, stddev: 15.00 }
+    description_prefix: "KUMON"
+  - name: "School Supplies"
+    weight: 8
+    amount: { mean: 25.00, stddev: 12.00 }
+    description_prefix: "SCHOOL SUPPLIES"
+  - name: "Pediatrician"
+    weight: 6
+    amount: { mean: 35.00, stddev: 15.00 }
+    description_prefix: "PEDIATRIC ASSOC"
+  - name: "Children's Museum"
+    weight: 5
+    amount: { mean: 30.00, stddev: 10.00 }
+    description_prefix: "CHILDRENS MUSEUM"
+  - name: "Summer Camp"
+    weight: 4
+    amount: { mean: 250.00, stddev: 80.00 }
+    description_prefix: "SUMMER CAMP"
+  - name: "Swim Lessons"
+    weight: 6
+    amount: { mean: 40.00, stddev: 10.00 }
+    description_prefix: "AQUATIC CENTER"
+  - name: "Dance Academy"
+    weight: 5
+    amount: { mean: 50.00, stddev: 12.00 }
+    description_prefix: "DANCE ACADEMY"

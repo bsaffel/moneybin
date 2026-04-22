@@ -1,0 +1,82 @@
+category: shopping
+merchants:
+  - name: "Amazon"
+    weight: 20
+    amount: { mean: 42.00, stddev: 30.00 }
+    description_prefix: "AMZN MKTP"
+  - name: "Target"
+    weight: 12
+    amount: { mean: 38.00, stddev: 18.00 }
+    description_prefix: "TARGET"
+  - name: "Walmart"
+    weight: 14
+    amount: { mean: 45.00, stddev: 22.00 }
+    description_prefix: "WAL-MART"
+  - name: "TJ Maxx"
+    weight: 6
+    amount: { mean: 35.00, stddev: 15.00 }
+    description_prefix: "TJ MAXX"
+  - name: "Nike"
+    weight: 5
+    amount: { mean: 95.00, stddev: 35.00 }
+    description_prefix: "NIKE"
+  - name: "Nordstrom"
+    weight: 4
+    amount: { mean: 120.00, stddev: 50.00 }
+    description_prefix: "NORDSTROM"
+  - name: "Old Navy"
+    weight: 6
+    amount: { mean: 42.00, stddev: 18.00 }
+    description_prefix: "OLD NAVY"
+  - name: "H&M"
+    weight: 5
+    amount: { mean: 35.00, stddev: 15.00 }
+    description_prefix: "HM"
+  - name: "Home Depot"
+    weight: 8
+    amount: { mean: 65.00, stddev: 35.00 }
+    description_prefix: "THE HOME DEPOT"
+  - name: "Lowe's"
+    weight: 7
+    amount: { mean: 58.00, stddev: 30.00 }
+    description_prefix: "LOWES"
+  - name: "IKEA"
+    weight: 3
+    amount: { mean: 110.00, stddev: 50.00 }
+    description_prefix: "IKEA"
+  - name: "Etsy"
+    weight: 5
+    amount: { mean: 32.00, stddev: 18.00 }
+    description_prefix: "ETSY"
+  - name: "Best Buy"
+    weight: 6
+    amount: { mean: 85.00, stddev: 45.00 }
+    description_prefix: "BEST BUY"
+  - name: "Apple Store"
+    weight: 4
+    amount: { mean: 150.00, stddev: 80.00 }
+    description_prefix: "APPLE STORE"
+  - name: "REI"
+    weight: 3
+    amount: { mean: 75.00, stddev: 35.00 }
+    description_prefix: "REI"
+  - name: "PetSmart"
+    weight: 5
+    amount: { mean: 38.00, stddev: 18.00 }
+    description_prefix: "PETSMART"
+  - name: "Chewy"
+    weight: 4
+    amount: { mean: 55.00, stddev: 20.00 }
+    description_prefix: "CHEWY"
+  - name: "Sephora"
+    weight: 4
+    amount: { mean: 48.00, stddev: 22.00 }
+    description_prefix: "SEPHORA"
+  - name: "Bath & Body Works"
+    weight: 3
+    amount: { mean: 28.00, stddev: 12.00 }
+    description_prefix: "BATH BODY WORKS"
+  - name: "Dick's Sporting Goods"
+    weight: 3
+    amount: { mean: 65.00, stddev: 30.00 }
+    description_prefix: "DICKS SPORTING"
