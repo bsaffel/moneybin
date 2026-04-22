@@ -30,6 +30,37 @@ from moneybin.secrets import SecretNotFoundError, SecretStore
 logger = logging.getLogger(__name__)
 
 _KEY_NAME = "DATABASE__ENCRYPTION_KEY"
+_DATABASE_ALIAS = "moneybin"
+
+
+def build_attach_sql(
+    db_path: Path, encryption_key: str, *, alias: str = _DATABASE_ALIAS
+) -> str:
+    """Build a DuckDB ATTACH statement for an encrypted database.
+
+    Single-quote escapes the path and key to prevent injection. The alias
+    is double-quoted via sqlglot as defense in depth. All three parameters
+    must come from trusted sources (config, SecretStore, hardcoded literals)
+    — never user input.
+
+    Args:
+        db_path: Path to the DuckDB database file.
+        encryption_key: AES-256-GCM encryption key.
+        alias: Database alias in DuckDB (default "moneybin"). Must be a
+            simple identifier — callers should only pass hardcoded literals.
+
+    Returns:
+        ATTACH SQL string ready for execution.
+    """
+    from sqlglot import exp
+
+    safe_path = str(db_path).replace("'", "''")
+    safe_key = encryption_key.replace("'", "''")
+    safe_alias = exp.to_identifier(alias, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+    return (
+        f"ATTACH '{safe_path}' AS {safe_alias} "  # noqa: S608 — trusted internal values, single-quote escaped, alias sqlglot-quoted
+        f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"
+    )
 
 
 class DatabaseKeyError(Exception):
@@ -84,7 +115,6 @@ class Database:
 
         store = secret_store or SecretStore()
 
-        # Step a: Retrieve encryption key
         try:
             encryption_key = store.get_key(_KEY_NAME)
         except SecretNotFoundError as e:
@@ -99,22 +129,10 @@ class Database:
 
         is_new = not db_path.exists()
 
-        # Step b: Open in-memory connection
         self._conn = duckdb.connect()
 
-        # Step c: Attach encrypted database file.
-        # ATTACH does not support parameterized queries in DuckDB — the path
-        # and key must be interpolated as string literals. The path comes from
-        # our own config (trusted), and the key is from SecretStore (trusted).
-        # Both are escaped by replacing single-quotes to prevent injection.
-        safe_path = str(db_path).replace("'", "''")
-        safe_key = encryption_key.replace("'", "''")
-        self._conn.execute(  # noqa: S608  # identifiers from trusted config, not user input
-            f"ATTACH '{safe_path}' AS moneybin (TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"
-        )
-
-        # Step d: USE attached database
-        self._conn.execute("USE moneybin")
+        self._conn.execute(build_attach_sql(db_path, encryption_key))
+        self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
         # Set file permissions on new databases (macOS/Linux)
         if is_new and sys.platform != "win32":
@@ -127,12 +145,10 @@ class Database:
         if not is_new and sys.platform != "win32":
             self._check_permissions(db_path)
 
-        # Step e: Run init_schemas (idempotent)
         from moneybin.schema import init_schemas
 
         init_schemas(self._conn)
 
-        # Steps f-h: Auto-upgrade (migrations + version tracking)
         from moneybin.migrations import (
             MigrationError,
             MigrationRunner,
@@ -162,15 +178,7 @@ class Database:
                 result = runner.apply_all()
 
                 if result.failed:
-                    msg = (
-                        result.error_message
-                        or f"Migration {result.failed_migration} failed"
-                    )
-                    logger.error(f"❌ {msg}")
-                    logger.info("💡 See logs for details")
-                    logger.error(
-                        "🐛 Report issues at https://github.com/bsaffel/moneybin/issues"
-                    )
+                    result.log_failure()
                     raise MigrationError(
                         f"Migration failed: {result.failed_migration or 'stuck migration'}. "
                         f"See logs for details."

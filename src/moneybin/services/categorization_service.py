@@ -9,6 +9,7 @@ import logging
 import re
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import duckdb
 
@@ -23,6 +24,8 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+MatchType = Literal["exact", "contains", "regex"]
 
 # -- Merchant name normalization patterns --
 
@@ -97,30 +100,24 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         try:
             return bool(re.search(pattern, text, re.IGNORECASE))
         except re.error:
-            logger.warning("Invalid regex pattern: %s", pattern)
+            logger.warning(f"Invalid regex pattern: {pattern}")
             return False
     else:
-        logger.warning("Unknown match_type: %s", match_type)
+        logger.warning(f"Unknown match_type: {match_type}")
         return False
 
 
-def match_merchant(db: Database, description: str) -> dict[str, str | None] | None:
-    """Look up a merchant by raw description.
+def _fetch_merchants(db: Database) -> list[tuple[str, ...]] | None:
+    """Fetch all merchant mappings ordered by match priority.
 
     Args:
         db: Database instance (read-only access is sufficient).
-        description: Transaction description to match.
 
     Returns:
-        Dict with merchant_id, canonical_name, category, subcategory
-        if found, otherwise None.
+        List of merchant rows, or None if the table doesn't exist.
     """
-    normalized = normalize_description(description)
-    if not normalized:
-        return None
-
     try:
-        rows = db.execute(
+        return db.execute(
             f"""
             SELECT merchant_id, raw_pattern, match_type,
                    canonical_name, category, subcategory
@@ -136,11 +133,29 @@ def match_merchant(db: Database, description: str) -> dict[str, str | None] | No
     except duckdb.CatalogException:
         return None
 
-    for row in rows:
+
+def _match_description(
+    description: str,
+    merchants: list[tuple[str, ...]],
+) -> dict[str, str | None] | None:
+    """Match a description against a pre-fetched merchant list.
+
+    Args:
+        description: Transaction description to match.
+        merchants: Pre-fetched merchant rows from ``_fetch_merchants()``.
+
+    Returns:
+        Dict with merchant_id, canonical_name, category, subcategory
+        if found, otherwise None.
+    """
+    normalized = normalize_description(description)
+    if not normalized:
+        return None
+
+    for row in merchants:
         merchant_id, raw_pattern, match_type, canonical_name, category, subcategory = (
             row
         )
-        # Match against both raw description and normalized form
         if _matches_pattern(description, raw_pattern, match_type) or _matches_pattern(
             normalized, raw_pattern, match_type
         ):
@@ -154,12 +169,30 @@ def match_merchant(db: Database, description: str) -> dict[str, str | None] | No
     return None
 
 
+def match_merchant(db: Database, description: str) -> dict[str, str | None] | None:
+    """Look up a merchant by raw description.
+
+    Args:
+        db: Database instance (read-only access is sufficient).
+        description: Transaction description to match.
+
+    Returns:
+        Dict with merchant_id, canonical_name, category, subcategory
+        if found, otherwise None.
+    """
+    merchants = _fetch_merchants(db)
+    if merchants is None:
+        return None
+
+    return _match_description(description, merchants)
+
+
 def create_merchant(
     db: Database,
     raw_pattern: str,
     canonical_name: str,
     *,
-    match_type: str = "contains",
+    match_type: MatchType = "contains",
     category: str | None = None,
     subcategory: str | None = None,
     created_by: str = "ai",
@@ -196,7 +229,7 @@ def create_merchant(
             created_by,
         ],
     )
-    logger.info("Created merchant mapping: %s -> %s", raw_pattern, canonical_name)
+    logger.info(f"Created merchant mapping: {raw_pattern} -> {canonical_name}")
     return merchant_id
 
 
@@ -205,8 +238,8 @@ def apply_merchant_categories(
 ) -> int:
     """Apply merchant-based categories to uncategorized transactions.
 
-    For each uncategorized transaction, checks if a merchant mapping exists
-    that matches the description and has a category assigned.
+    Fetches all merchants once, then matches each uncategorized transaction
+    in Python — avoids a per-transaction DB query.
 
     Args:
         db: Database instance (read-write).
@@ -214,6 +247,10 @@ def apply_merchant_categories(
     Returns:
         Number of transactions categorized.
     """
+    merchants = _fetch_merchants(db)
+    if not merchants:
+        return 0
+
     try:
         uncategorized = db.execute(
             f"""
@@ -234,7 +271,7 @@ def apply_merchant_categories(
 
     categorized_count = 0
     for txn_id, description in uncategorized:
-        merchant = match_merchant(db, description)
+        merchant = _match_description(description, merchants)
         if merchant and merchant.get("category"):
             db.execute(
                 f"""
@@ -253,7 +290,7 @@ def apply_merchant_categories(
             categorized_count += 1
 
     if categorized_count:
-        logger.info("Merchant matching categorized %d transactions", categorized_count)
+        logger.info(f"Merchant matching categorized {categorized_count} transactions")
     return categorized_count
 
 
@@ -324,24 +361,20 @@ def apply_rules(
                 subcategory,
             ) = rule
 
-            # Check pattern match (against both raw and normalized)
             if not (
                 _matches_pattern(description, pattern, match_type)
                 or _matches_pattern(normalized, pattern, match_type)
             ):
                 continue
 
-            # Check amount range
             if min_amount is not None and amount < float(min_amount):
                 continue
             if max_amount is not None and amount > float(max_amount):
                 continue
 
-            # Check account filter
             if rule_account_id is not None and account_id != rule_account_id:
                 continue
 
-            # Rule matches — apply it
             db.execute(
                 f"""
                 INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
@@ -355,7 +388,7 @@ def apply_rules(
             break  # First matching rule wins
 
     if categorized_count:
-        logger.info("Rule engine categorized %d transactions", categorized_count)
+        logger.info(f"Rule engine categorized {categorized_count} transactions")
     return categorized_count
 
 
@@ -477,7 +510,7 @@ def seed_categories(db: Database) -> int:
     count_after = result[0] if result else 0
 
     inserted = count_after - count_before
-    logger.info("Seeded %d categories (%d total)", inserted, count_after)
+    logger.info(f"Seeded {inserted} categories ({count_after} total)")
     return inserted
 
 

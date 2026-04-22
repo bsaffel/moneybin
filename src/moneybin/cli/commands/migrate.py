@@ -12,7 +12,6 @@ import typer
 
 from moneybin.database import DatabaseKeyError, get_database
 from moneybin.migrations import MigrationRunner, get_current_versions
-from moneybin.tables import SCHEMA_MIGRATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +52,7 @@ def migrate_apply(
         logger.warning(f"⚠️  {warning.reason}")
 
     if result.failed:
-        msg = result.error_message or f"Migration {result.failed_migration} failed"
-        logger.error(f"❌ {msg}")
-        logger.info("💡 See logs for details")
-        logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
+        result.log_failure()
         raise typer.Exit(1) from None
 
     if result.applied_count > 0:
@@ -78,18 +74,15 @@ def migrate_status() -> None:
     runner = MigrationRunner(db)
 
     # Applied migrations
-    applied_rows = db.execute(
-        f"SELECT version, filename, success, execution_ms, applied_at "  # noqa: S608 — SCHEMA_MIGRATIONS is a compile-time TableRef constant
-        f"FROM {SCHEMA_MIGRATIONS.full_name} ORDER BY version"
-    ).fetchall()
+    applied = runner.applied_details()
 
-    if applied_rows:
+    if applied:
         logger.info("Applied migrations:")
-        for version, filename, success, exec_ms, applied_at in applied_rows:
-            status = "✅" if success else "❌"
-            time_str = f" ({exec_ms}ms)" if exec_ms is not None else ""
+        for m in applied:
+            status = "✅" if m.success else "❌"
+            time_str = f" ({m.execution_ms}ms)" if m.execution_ms is not None else ""
             logger.info(
-                f"  {status} V{version:03d} {filename}{time_str} — {applied_at}"
+                f"  {status} V{m.version:03d} {m.filename}{time_str} — {m.applied_at}"
             )
     else:
         logger.info("No applied migrations")

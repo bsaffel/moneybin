@@ -27,6 +27,24 @@ logger = logging.getLogger(__name__)
 _SAFE_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def _read_yaml(path: Path) -> dict[str, object]:
+    """Read a YAML file and return its contents as a dict.
+
+    Returns an empty dict if the file doesn't exist or isn't a mapping.
+
+    Args:
+        path: Path to the YAML file.
+
+    Returns:
+        Parsed dict, or empty dict.
+    """
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        loaded = yaml.safe_load(f)
+    return loaded if isinstance(loaded, dict) else {}
+
+
 class ProfileExistsError(Exception):
     """Raised when attempting to create a profile that already exists."""
 
@@ -176,20 +194,14 @@ class ProfileService:
             ProfileNotFoundError: If the named profile directory does not exist.
             ValueError: If the name contains no valid characters.
         """
+        active = get_default_profile()
         if name is None:
-            name = get_default_profile() or "default"
+            name = active or "default"
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
-        config_path = profile_dir / "config.yaml"
-        config_data: dict[str, object] = {}
-        if config_path.exists():
-            with open(config_path) as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    config_data = loaded
-        active = get_default_profile()
+        config_data = _read_yaml(profile_dir / "config.yaml")
         db_path = profile_dir / "moneybin.duckdb"
         return {
             "name": normalized,
@@ -226,20 +238,17 @@ class ProfileService:
             profile_name = entry.name
             profile_dir = self._profiles_dir / profile_name
 
-            # Skip profiles that already completed migration
             if (profile_dir / "config.yaml").exists():
                 continue
 
             try:
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
-                # Move database files
                 for db_file in entry.glob("*.duckdb"):
                     dest = profile_dir / db_file.name
                     if not dest.exists():
                         shutil.move(str(db_file), str(dest))
 
-                # Move backups (file-by-file merge like logs handler)
                 old_backups = entry / "backups"
                 if old_backups.exists():
                     new_backups = profile_dir / "backups"
@@ -250,7 +259,6 @@ class ProfileService:
                             shutil.move(str(f), str(dest))
                     shutil.rmtree(old_backups)
 
-                # Move temp
                 old_temp = entry / "temp"
                 if old_temp.exists():
                     new_temp = profile_dir / "temp"
@@ -259,7 +267,6 @@ class ProfileService:
                     else:
                         shutil.rmtree(old_temp)
 
-                # Move logs
                 old_logs = self._base / "logs" / profile_name
                 if old_logs.exists():
                     new_logs = profile_dir / "logs"
@@ -282,27 +289,22 @@ class ProfileService:
                 )
                 continue
 
-            # Ensure dirs exist
             (profile_dir / "logs").mkdir(exist_ok=True)
             (profile_dir / "temp").mkdir(exist_ok=True)
 
-            # Generate config if needed
             if not (profile_dir / "config.yaml").exists():
                 generate_profile_config(profile_dir, profile_name)
 
             migrated.append(profile_name)
             logger.info(f"Migrated profile: {profile_name}")
 
-        # Migrate global config key
         from moneybin.utils.user_config import get_user_config_path
 
         config_path = get_user_config_path()
         if config_path.exists():
             try:
-                with open(config_path) as f:
-                    raw = yaml.safe_load(f)
-                if isinstance(raw, dict) and "default_profile" in raw:
-                    raw_config: dict[str, object] = raw
+                raw_config = _read_yaml(config_path)
+                if "default_profile" in raw_config:
                     raw_config["active_profile"] = raw_config.pop("default_profile")
                     with open(config_path, "w") as f:
                         yaml.safe_dump(
@@ -341,12 +343,7 @@ class ProfileService:
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
         config_path = profile_dir / "config.yaml"
-        data: dict[str, object] = {}
-        if config_path.exists():
-            with open(config_path) as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    data = loaded
+        data = _read_yaml(config_path)
         parts = key.split(".")
         if len(parts) != 2:
             raise ValueError(

@@ -317,7 +317,7 @@ class W2Extractor:
             )
             df = pl.DataFrame([df_data])
 
-            logger.info("✅ Extracted W2 for tax year %s", w2_schema.tax_year)
+            logger.info(f"✅ Extracted W2 for tax year {w2_schema.tax_year}")
 
             return df
 

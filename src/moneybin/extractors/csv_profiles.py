@@ -142,7 +142,7 @@ def save_profile(profile: CSVProfile, profiles_dir: Path) -> Path:
     with open(output_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
-    logger.info("Saved CSV profile '%s' to %s", profile.name, output_path)
+    logger.info(f"Saved CSV profile '{profile.name}' to {output_path}")
     return output_path
 
 
@@ -187,7 +187,7 @@ def load_profiles(user_profiles_dir: Path) -> dict[str, CSVProfile]:
                 profile = _load_profile_from_yaml(yaml_path)
                 profiles[profile.name] = profile
             except Exception:
-                logger.warning("Skipping invalid built-in profile: %s", yaml_path)
+                logger.warning(f"Skipping invalid built-in profile: {yaml_path}")
 
     # Load user profiles (override built-ins with same name)
     if user_profiles_dir.is_dir():
@@ -196,7 +196,7 @@ def load_profiles(user_profiles_dir: Path) -> dict[str, CSVProfile]:
                 profile = _load_profile_from_yaml(yaml_path)
                 profiles[profile.name] = profile
             except Exception:
-                logger.warning("Skipping invalid user profile: %s", yaml_path)
+                logger.warning(f"Skipping invalid user profile: {yaml_path}")
 
     return profiles
 
@@ -248,7 +248,7 @@ def ensure_default_profiles(user_profiles_dir: Path) -> None:
     for yaml_path in _BUILTIN_PROFILES_DIR.glob("*.yaml"):
         dest = user_profiles_dir / yaml_path.name
         shutil.copy2(yaml_path, dest)
-        logger.info("Copied built-in profile %s to %s", yaml_path.name, dest)
+        logger.info(f"Copied built-in profile {yaml_path.name} to {dest}")
 
 
 def list_profile_names(user_profiles_dir: Path) -> list[str]:

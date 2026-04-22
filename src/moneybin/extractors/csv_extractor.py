@@ -92,7 +92,7 @@ class CSVExtractor:
                 "Use --account-id on the CLI."
             )
 
-        logger.info("Extracting data from CSV file: %s", file_path)
+        logger.info(f"Extracting data from CSV file: {file_path}")
 
         # Resolve profile
         if profile is None:
@@ -219,7 +219,7 @@ class CSVExtractor:
             # Parse date
             date_str = str(row.get(profile.date_column, "")).strip()
             if not date_str:
-                logger.debug("Skipping row %d: empty date", row_index)
+                logger.debug(f"Skipping row {row_index}: empty date")
                 continue
 
             try:
@@ -247,7 +247,7 @@ class CSVExtractor:
             # Parse amount
             amount = self._parse_amount(row, profile)
             if amount is None:
-                logger.debug("Skipping row %d: could not parse amount", row_index)
+                logger.debug(f"Skipping row {row_index}: could not parse amount")
                 continue
 
             # Build description

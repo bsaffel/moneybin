@@ -29,17 +29,15 @@ def apply_rules_cmd() -> None:
         stats = apply_deterministic_categorization(db)
         if stats["total"] > 0:
             logger.info(
-                "\u2705 Categorized %d transactions (%d merchant, %d rule)",
-                stats["total"],
-                stats["merchant"],
-                stats["rule"],
+                f"\u2705 Categorized {stats['total']} transactions "
+                f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
         else:
             logger.info(
                 "\u2705 No uncategorized transactions matched rules or merchants"
             )
     except FileNotFoundError as e:
-        logger.error("%s", e)
+        logger.error(f"{e}")
         raise typer.Exit(1) from e
     except DatabaseKeyError:
         logger.error(
@@ -62,9 +60,9 @@ def seed_cmd() -> None:
     try:
         db = get_database()
         count = seed_categories(db)
-        logger.info("\u2705 Seeded %d new categories", count)
+        logger.info(f"\u2705 Seeded {count} new categories")
     except FileNotFoundError as e:
-        logger.error("%s", e)
+        logger.error(f"{e}")
         raise typer.Exit(1) from e
     except DatabaseKeyError:
         logger.error(
@@ -84,7 +82,7 @@ def stats_cmd() -> None:
         db = get_database()
         stats = get_categorization_stats(db)
     except FileNotFoundError as e:
-        logger.error("%s", e)
+        logger.error(f"{e}")
         raise typer.Exit(1) from e
     except DatabaseKeyError:
         logger.error(
@@ -99,15 +97,15 @@ def stats_cmd() -> None:
     pct = stats["pct_categorized"]
 
     logger.info("Categorization coverage:")
-    logger.info("  Total transactions:   %d", total)
-    logger.info("  Categorized:          %d (%.1f%%)", categorized, pct)
-    logger.info("  Uncategorized:        %d", uncategorized)
+    logger.info(f"  Total transactions:   {total}")
+    logger.info(f"  Categorized:          {categorized} ({pct:.1f}%)")
+    logger.info(f"  Uncategorized:        {uncategorized}")
 
     # Show breakdown by source
     for key, value in stats.items():
         if key.startswith("by_"):
             source = key[3:]
-            logger.info("  By %s:  %s", source, value)
+            logger.info(f"  By {source}:  {value}")
 
 
 @app.command("list-rules")
@@ -128,7 +126,7 @@ def list_rules_cmd() -> None:
             """
         ).fetchall()
     except FileNotFoundError as e:
-        logger.error("%s", e)
+        logger.error(f"{e}")
         raise typer.Exit(1) from e
     except DatabaseKeyError:
         logger.error(
@@ -145,12 +143,5 @@ def list_rules_cmd() -> None:
     for rule_id, name, pattern, match_type, cat, subcat, priority in rows:
         sub = f" / {subcat}" if subcat else ""
         logger.info(
-            "  [%s] %s: '%s' (%s) -> %s%s (priority: %d)",
-            rule_id,
-            name,
-            pattern,
-            match_type,
-            cat,
-            sub,
-            priority,
+            f"  [{rule_id}] {name}: '{pattern}' ({match_type}) -> {cat}{sub} (priority: {priority})"
         )
