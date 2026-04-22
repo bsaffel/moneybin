@@ -1,6 +1,6 @@
 # Feature: Smart Tabular Import
 
-> Last updated: 2026-04-19 — promoted to ready; fixed implementation plan paths and fixture count
+> Last updated: 2026-04-22 — added open-source learnings: import batch tracking/reverting, DD/MM disambiguation, running balance validation, size guardrails, regex skip patterns, named number formats, Maybe migration format, design rationale section. Fixtures: 73 → 96.
 > Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella), [`matching-overview.md`](matching-overview.md) (provenance contract), [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (downstream dedup), [`categorization-overview.md`](categorization-overview.md) (category bootstrap), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption), [`database-migration.md`](database-migration.md) (schema migration), [`mcp-architecture.md`](mcp-architecture.md) (CLI/MCP symmetry)
 
 ## Status
@@ -108,6 +108,24 @@ the full migration path matrix.
 26. Every interactive CLI prompt has a non-interactive flag equivalent for AI agents and
     scripts (non-interactive parity).
 27. CLI and MCP surfaces share the same service layer — neither contains business logic.
+28. Track every import as a batch with a unique `import_id`. Provide `import history`
+    and `import revert` commands to inspect and undo imports. Reverting deletes all
+    rows from that batch and restores the previous state.
+29. Disambiguate DD/MM vs MM/DD date formats using positional value analysis and date
+    range reasonableness scoring. Flag truly ambiguous files for user confirmation.
+30. When a running balance column is present, use sequential balance deltas to validate
+    amount parsing and sign convention. Balance consistency is a high-confidence signal.
+31. Enforce import size guardrails: warn at 10,000 rows, refuse at 50,000 rows unless
+    overridden with `--no-row-limit`. File size limits: 25 MB for text formats, 100 MB
+    for binary formats, overridden with `--no-size-limit`.
+32. Support regex-based skip patterns in format definitions for trailing junk rows
+    (totals, footers, export metadata). Auto-detection uses a default pattern set;
+    saved formats store institution-specific patterns.
+33. Detect and normalize four named number format conventions: US (`1,234.56`),
+    European (`1.234,56`), Swiss/French (`1 234,56`), and zero-decimal (`1,234` for
+    JPY, KRW, etc.). Record the detected convention in saved formats.
+34. Ship a built-in format for Maybe/Sure CSV export alongside the existing migration
+    formats, capturing the Maybe diaspora migration path.
 
 ---
 
@@ -161,10 +179,38 @@ Converts the file into a format-agnostic Polars DataFrame.
 - Header row detection: scan for first row where values look like column names — multiple
   short strings, low numeric ratio, high uniqueness. Skip preceding rows (bank summaries,
   export timestamps, blank lines). Record the detected `skip_rows` count for the format.
-- Handle trailing summary/total rows: detect and exclude rows after the data that contain
-  aggregates ("Total", "Sum") or metadata ("Export Date", "Record Count").
+- Handle trailing summary/total rows via a two-tier approach:
+  1. **Format-specific regex patterns** — saved formats can declare
+     `skip_trailing_patterns` (list of regexes). When a format matches, these patterns
+     are applied before data processing. Example: Chase CSVs end with `,,Total,1234.56`
+     → pattern `^,{2,}Total`.
+  2. **Default heuristic patterns** — when no format matches, apply a default set of
+     trailing-row regexes compiled from real-world bank exports (hledger community rules,
+     Firefly III importer, and direct testing):
+     ```python
+     DEFAULT_TRAILING_PATTERNS: list[str] = [
+         r"^(Total|Grand Total|Sum|Totals)\b",  # aggregate labels
+         r"^(Export(ed)?|Generated|Downloaded|Report) (Date|On|At)\b",  # export metadata
+         r"^(Record Count|Row Count|Number of)",  # row counts
+         r"^(Opening|Closing|Beginning|Ending) Balance\b",  # balance summaries
+         r"^,{3,}$",  # empty rows with only delimiters
+         r"^\s*$",  # blank rows at end of file
+     ]
+     ```
+     Scan from the last row upward. Stop removing when a row doesn't match any pattern.
+     Record removed row count for diagnostics.
 - Handle repeated header rows mid-file (copy-paste from paginated web views).
 - Handle BOM markers transparently.
+- **Size guardrails** (applied before reading the full file):
+  - Text formats: reject files >25 MB unless `--no-size-limit`.
+  - Binary formats (Parquet, Feather, Excel): reject files >100 MB unless
+    `--no-size-limit`.
+  - After reading: warn if row count >10,000; refuse if >50,000 unless
+    `--no-row-limit`. Most personal finance files are <5,000 rows. A 50,000-row file
+    is almost certainly a mistake (wrong export, duplicate data, or enterprise data).
+    The limits are advisory safeguards, not performance constraints — DuckDB and Polars
+    handle millions of rows fine. The concern is financial data correctness: importing
+    the wrong 50k-row file silently is worse than rejecting it loudly.
 - Use `polars.read_csv()` with detected delimiter, encoding, skip_rows.
 
 **Excel reader (.xlsx):**
@@ -385,15 +431,56 @@ conform to the expected type:
 
 - **Date fields:** Try a ranked list of common date formats against sampled values:
   `%m/%d/%Y`, `%Y-%m-%d`, `%m/%d/%y`, `%m-%d-%Y`, `%d/%m/%Y`, `%Y/%m/%d`,
-  `%d-%b-%Y`, `%d-%B-%Y`, `%b %d, %Y`. Threshold: ≥90% of non-empty samples parse
-  successfully with one format. Record the winning format. If multiple columns qualify
-  as dates, prefer the one with more distinct values (transaction date varies more than
-  post date within a single statement period).
-- **Amount fields:** Strip `$`, `€`, `£`, `,`, whitespace, and try `float()`. Handle
-  parentheses-as-negative: `(42.50)` → `-42.50`. Handle European decimals: detect via
-  comma-as-decimal heuristic (if `.` appears as thousands separator). Handle "DR"/"CR"
-  suffixes. Handle amounts with spaces as thousands separator (`1 234.56`). Threshold:
+  `%d-%b-%Y`, `%d-%B-%Y`, `%b %d, %Y`. Score each candidate format on two axes:
+  1. **Parse rate** — fraction of non-empty samples that parse successfully.
+     Threshold: ≥90%.
+  2. **Date range reasonableness** — fraction of parsed dates that fall within
+     1970-01-01 to today + 1 year. Penalize formats where parsed dates land outside
+     this window (e.g., a format that interprets `01/13/2024` as January 2013 in a
+     `DD/MM/YYYY` interpretation).
+
+  **DD/MM vs MM/DD disambiguation algorithm:**
+  When both `%m/%d/Y` and `%d/%m/Y` pass the parse rate threshold, disambiguate:
+  1. Scan *all* date values (not just the 20-row sample) for values where the first
+     or second numeric component exceeds 12.
+  2. If position 1 has values >12 (e.g., `15/02/2024`) → DD/MM. Those rows cannot
+     be months.
+  3. If position 2 has values >12 (e.g., `02/15/2024`) → MM/DD.
+  4. If both positions have values >12 → data has mixed formats; flag as low
+     confidence with guidance.
+  5. If neither position ever exceeds 12 (rare in practice — a full month of data
+     almost always includes dates past the 12th) → check date range reasonableness
+     of both interpretations against the file's apparent time range (min/max dates
+     should span a plausible statement period, not jump between months erratically).
+  6. If still ambiguous → medium confidence; surface both interpretations in the
+     confirmation prompt with `--date-format` override.
+
+  Record the winning format. If multiple columns qualify as dates, prefer the one
+  with more distinct values (transaction date varies more than post date within a
+  single statement period).
+
+- **Amount fields:** Detect the number format convention, then parse. The four named
+  conventions (sourced from Maybe/Sure's international handling and hledger's decimal
+  mark support):
+
+  | Convention | Example | Thousands sep | Decimal sep | Detection signal |
+  |---|---|---|---|---|
+  | `us` | `1,234.56` | `,` | `.` | Period appears after last comma; two decimal digits after period |
+  | `european` | `1.234,56` | `.` | `,` | Comma appears after last period; two digits after comma |
+  | `swiss_french` | `1 234,56` | ` ` (space) | `,` | Space-separated groups; comma before final digits |
+  | `zero_decimal` | `1,234` | `,` | (none) | No decimal separator; amounts are whole numbers (JPY, KRW, VND) |
+
+  **Detection algorithm:** Sample non-empty amount values. For each value, check which
+  conventions produce valid parses. The convention that parses the most values wins. If
+  tied, prefer `us` (most common in English-language exports). Record the winning
+  convention in the saved format as `number_format`.
+
+  After convention detection, parse amounts: strip currency symbols (`$`, `€`, `£`,
+  `¥`, `₩`, `kr`, `CHF`, `R$` — the 15 most common currency markers from ISO 4217
+  usage rankings), apply convention-specific thousands/decimal handling, handle
+  parentheses-as-negative (`(42.50)` → `-42.50`), handle "DR"/"CR" suffixes. Threshold:
   ≥95% of non-empty samples parse as numeric.
+
 - **Text fields:** Columns where <50% of values parse as numeric or date.
 
 If validation fails for a header-matched field, demote the match and flag it.
@@ -472,6 +559,26 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
   `"Chase Checking"` → `"chase-checking"`. Normalized: lowercase, non-alphanumeric
   replaced with hyphens, stripped.
 - **Row number assignment:** 1-based source file line/row number.
+- **Running balance validation** (when `balance` column is mapped):
+  Balance columns are a powerful free validation signal that most importers ignore.
+  When present, verify internal consistency by checking sequential balance deltas:
+  `balance[n] - balance[n-1]` should equal `amount[n]` (within a rounding tolerance
+  based on the detected number format: ±0.01 for 2-decimal currencies, ±0.001 for
+  3-decimal currencies like KWD/BHD, ±1 for zero-decimal currencies like JPY/KRW).
+  1. If ≥90% of consecutive pairs pass → strong confirmation of correct amount parsing
+     and sign convention. Boost confidence tier (medium → high if all other required
+     fields are solid).
+  2. If <90% pass but ≥90% pass after inverting the sign convention → the sign
+     convention was wrong. Auto-correct and log the correction.
+  3. If neither direction passes → balance column may represent a different time
+     window than the transactions (e.g., running balance from an older period, or
+     balances include transactions not in this export). Warn but don't block import.
+     Record `balance_validated: false` in the import log.
+
+  This validation runs after amount normalization and sign convention application.
+  It catches the most insidious class of import bugs — amounts that parse correctly
+  as numbers but have the wrong sign, turning expenses into income or vice versa.
+
 - **Structural validation:**
   - Null density: warn if required columns are >10% null.
   - Amount range sanity: flag if values look like dates (e.g., `20260315`) or if all
@@ -484,10 +591,17 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
 
 ### Stage 5: Load
 
+- **Create import batch** — generate a UUID `import_id` and write a record to
+  `raw.import_log` before inserting any transaction rows. This is the anchor for
+  import history, reverting, and diagnostics.
 - Write to `raw.tabular_transactions` and `raw.tabular_accounts` via the `Database`
   class's new `ingest_dataframe()` method (Polars → Arrow zero-copy → DuckDB).
+  Every row carries the `import_id` from this batch.
 - Dedup via primary key (`INSERT OR REPLACE`).
 - Update format usage metadata (`times_used`, `last_used_at`) in `app.tabular_formats`.
+- **Finalize import batch** — update `raw.import_log` with final row counts, status
+  (`complete` or `partial` if some rows were rejected), and any diagnostic flags
+  (balance validation result, rows rejected, trailing rows skipped).
 - Auto-save detected format if `save_format=True` (default). The format `name` is
   derived from the `--account-name` slug (single-account files) or the detected
   institution slug (multi-account files). Example: `--account-name "First National
@@ -495,6 +609,15 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
   exists, prompt to update it (or auto-update with `--yes`).
 - Trigger SQLMesh transforms unless `--skip-transform` is specified.
 - Apply deterministic categorization post-transform (merchant lookups + rules).
+
+**Import reverting:** `moneybin import revert <import-id>` deletes all
+`raw.tabular_transactions` and `raw.tabular_accounts` rows matching that
+`import_id`, marks the import log record as `reverted`, and triggers a SQLMesh
+re-run to propagate the removal through staging and core. This is critical for
+user confidence during early adoption — importing the wrong file or with the
+wrong column mapping should be trivially recoverable, not a "wipe the database
+and start over" event. The revert operation is idempotent (reverting an already-
+reverted import is a no-op with a warning).
 
 ---
 
@@ -530,6 +653,7 @@ CREATE TABLE raw.tabular_transactions (
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file at time of extraction
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
+    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in raw.import_log; enables import reverting and history
     row_number INTEGER,                         -- 1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
@@ -551,9 +675,42 @@ CREATE TABLE raw.tabular_accounts (
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file that created or updated this account record
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data; matches the format name for tabular imports
+    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in raw.import_log; enables import reverting and history
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
     PRIMARY KEY (account_id, source_file)
+);
+```
+
+### Import log table
+
+```sql
+CREATE TABLE raw.import_log (
+    /* Audit log of every tabular file import. Each import batch gets a UUID that is
+       stamped on every raw row it produces, enabling import history, reverting, and
+       diagnostics. Inspired by Maybe/Sure's import lifecycle tracking — reverting a
+       bad import should be trivial, not catastrophic. */
+    import_id VARCHAR PRIMARY KEY,              -- UUID generated at the start of each import batch
+    source_file VARCHAR NOT NULL,               -- Absolute path to the imported file
+    source_type VARCHAR NOT NULL,               -- File format: csv, tsv, excel, parquet, feather, pipe
+    source_origin VARCHAR NOT NULL,             -- Format/institution that produced this data
+    format_name VARCHAR,                        -- Name of the matched or saved format (NULL if no format matched)
+    format_source VARCHAR,                      -- How the format was resolved: "built-in", "saved", "detected", "override"
+    account_names JSON NOT NULL,                -- List of account names affected by this import
+    status VARCHAR NOT NULL DEFAULT 'importing' CHECK (status IN ('importing', 'complete', 'partial', 'failed', 'reverted')), -- Lifecycle: importing → complete | partial | failed | reverted
+    rows_total INTEGER,                         -- Total rows in source file (before filtering)
+    rows_imported INTEGER,                      -- Rows successfully written to raw tables
+    rows_rejected INTEGER DEFAULT 0,            -- Rows that failed validation (with reasons in rejection_details)
+    rows_skipped_trailing INTEGER DEFAULT 0,    -- Trailing junk rows removed by skip patterns
+    rejection_details JSON,                     -- Per-rejected-row: [{row_number, reason}]
+    detection_confidence VARCHAR,               -- Confidence tier of the column mapping: high, medium, low (NULL if format matched)
+    number_format VARCHAR,                      -- Detected number convention: us, european, swiss_french, zero_decimal
+    date_format VARCHAR,                        -- Date format string used for parsing
+    sign_convention VARCHAR,                    -- Sign convention applied: negative_is_expense, negative_is_income, split_debit_credit
+    balance_validated BOOLEAN,                  -- Whether running balance validation passed (NULL if no balance column)
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the import batch began
+    completed_at TIMESTAMP,                     -- When the import batch finished (NULL if still running or failed)
+    reverted_at TIMESTAMP                       -- When the import was reverted (NULL if not reverted)
 );
 ```
 
@@ -576,6 +733,8 @@ CREATE TABLE app.tabular_formats (
     field_mapping JSON NOT NULL,                -- Mapping of destination field names to source column names (e.g. {"transaction_date": "Trans Date", "amount": "Amount"})
     sign_convention VARCHAR NOT NULL,           -- How amounts are represented in the source: negative_is_expense, negative_is_income, split_debit_credit
     date_format VARCHAR NOT NULL,               -- strftime format string for parsing date values (e.g. "%m/%d/%Y", "%Y-%m-%d")
+    number_format VARCHAR NOT NULL DEFAULT 'us', -- Number convention: us (1,234.56), european (1.234,56), swiss_french (1 234,56), zero_decimal (1,234)
+    skip_trailing_patterns JSON, -- Regex patterns for trailing non-data rows: NULL = use default patterns, [] = no patterns (explicit opt-out), ["^Total", ...] = institution-specific patterns only
     multi_account BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this format expects per-row account identification (Tiller, Mint, Monarch)
     source VARCHAR NOT NULL DEFAULT 'detected', -- How this format was created: "detected" (auto-saved), "manual" (user-created), "built-in-override" (customized built-in)
     times_used INTEGER NOT NULL DEFAULT 0,      -- Number of successful imports completed using this format
@@ -899,6 +1058,38 @@ $ moneybin import file statement.csv --account-name "Chase Check"
 ✅ Imported 347 transactions to account "Chase Checking"
 ```
 
+### Import history and reverting
+
+```bash
+# List recent imports with batch details
+moneybin import history
+moneybin import history --limit 20
+
+# Show details of a specific import batch
+moneybin import history --import-id abc12345
+
+# Revert an import (delete all rows from that batch, re-run transforms)
+moneybin import revert abc12345
+
+# Revert with confirmation skip (scripts/AI agents)
+moneybin import revert abc12345 --yes
+```
+
+**History output:**
+
+```
+$ moneybin import history
+
+┌────────────┬──────────────────────┬──────────────┬──────┬──────────┬─────────────────────┐
+│ Import ID  │ File                 │ Format       │ Rows │ Status   │ Date                │
+├────────────┼──────────────────────┼──────────────┼──────┼──────────┼─────────────────────┤
+│ abc12345   │ chase-march.csv      │ chase_credit │  347 │ complete │ 2026-04-22 14:30:00 │
+│ def67890   │ tiller-export.csv    │ tiller       │  582 │ complete │ 2026-04-20 09:15:00 │
+│ ghi11111   │ unknown-bank.csv     │ (detected)   │   89 │ partial  │ 2026-04-19 16:45:00 │
+│ jkl22222   │ wrong-file.csv       │ (detected)   │  201 │ reverted │ 2026-04-18 11:00:00 │
+└────────────┴──────────────────────┴──────────────┴──────┴──────────┴─────────────────────┘
+```
+
 ### Format management subcommands
 
 ```bash
@@ -929,6 +1120,11 @@ moneybin import diff-format chase_credit
 | "Create N new accounts?" | `--yes` (auto-create) |
 | Sheet selection | `--sheet="Sheet Name"` |
 | Sign convention confirmation | `--sign=negative-is-expense` |
+| Date format ambiguity (DD/MM vs MM/DD) | `--date-format="%d/%m/%Y"` |
+| Number format confirmation | `--number-format=european` |
+| Row limit warning | `--no-row-limit` |
+| File size warning | `--no-size-limit` |
+| "Revert import? This will delete N rows." | `--yes` (auto-confirm revert) |
 
 **`--override` implementation:** Typer's `list[str]` option type accepts repeated flags
 natively. Each `--override` value is parsed as `field=Column Name` (split on first `=`).
@@ -983,6 +1179,29 @@ def import_preview(file_path: str) -> PreviewResult:
     #          sheet_names (Excel), row_count_estimate
 ```
 
+### `import_history` — list past imports
+
+```python
+def import_history(
+    limit: int = 20,
+    import_id: str | None = None,
+) -> list[ImportLogEntry]:
+    # Returns: import_id, source_file, format_name, rows_imported, status,
+    #          started_at, accounts, detection_confidence
+```
+
+### `import_revert` — undo an import batch
+
+```python
+def import_revert(
+    import_id: str,
+    auto_confirm: bool = False,
+) -> RevertResult:
+    # Returns: {"status": "reverted", "rows_deleted": 347, "accounts_affected": [...]}
+    # or: {"status": "already_reverted", "reverted_at": "..."}
+    # or: {"status": "not_found", "reason": "No import with ID ..."}
+```
+
 ### `list_formats` — list available formats
 
 ```python
@@ -1011,6 +1230,7 @@ def list_formats() -> list[FormatSummary]:
 | `tiller` | Tiller (Google Sheets) | CSV | **Yes** | Transaction ID, Account, Account #, Institution, Category, Full Description |
 | `mint` | Mint (legacy) | CSV | **Yes** | Account Name, Original Description, Labels, Notes, Tags |
 | `ynab` | YNAB | CSV | No (per-account export) | Outflow/Inflow (split), Payee, Category Group/Category, Cleared |
+| `maybe` | Maybe / Sure | CSV | **Yes** | Multi-account, category, tags, currency, ISO date format |
 
 Built-in formats ship as YAML files in `src/moneybin/data/tabular_formats/` and are
 seeded into `app.tabular_formats` on `moneybin db init`. They serve as fallback when
@@ -1045,6 +1265,38 @@ field_mapping:
   memo: Full Description
 sign_convention: negative_is_expense
 date_format: "%m/%d/%Y"
+number_format: us                              # us | european | swiss_french | zero_decimal
+skip_trailing_patterns: null                   # null = use default patterns; [] = no patterns; ["^Total"] = custom only
+```
+
+**Maybe/Sure migration format** (new built-in):
+
+```yaml
+name: maybe
+institution_name: Maybe / Sure
+format: csv
+multi_account: true
+header_signature:
+  - date
+  - name
+  - amount
+  - currency
+  - account
+  - category
+  - tags
+  - note
+field_mapping:
+  transaction_date: date
+  description: name
+  amount: amount
+  currency: currency
+  account_name: account
+  category: category
+  memo: note
+sign_convention: negative_is_expense
+date_format: "%Y-%m-%d"
+number_format: us
+skip_trailing_patterns: null
 ```
 
 ---
@@ -1106,25 +1358,34 @@ storage. The format-agnostic boundary is a Polars DataFrame.
 - Header-to-destination matching against alias table for every destination field
 - Normalization: case, whitespace, underscores, hyphens, quotes
 - Content validation: dates, amounts, text classification
+- Date format disambiguation: DD/MM vs MM/DD via positional value >12 analysis
+- Date format disambiguation: range reasonableness scoring when positional analysis is inconclusive
+- Date format disambiguation: truly ambiguous files flagged as medium confidence
 - Fallback discovery: correct field identified from content when headers are generic
 - Sign convention inference: negative-is-expense, split debit/credit, all-positive
 - Multi-account detection: account columns trigger per-row extraction
 - Confidence tier assignment for known high/medium/low scenarios
+- Confidence boost from running balance validation (medium → high when balance validates)
 - `source_transaction_id` vs `reference_number` disambiguation
 - Conflict resolution: multiple date candidates, multiple text candidates
 - Format lookup: DB match, built-in YAML fallback, user overrides built-in
 
 **Transform & validate (Stage 4):**
 - Date parsing for all supported format strings
-- European decimal handling (comma-as-decimal)
-- Amount normalization: currency symbols, commas, parentheses-as-negative
+- Four number format conventions: US, European, Swiss/French, zero-decimal
+- Number format auto-detection from sample values
+- Amount normalization: currency symbols (15 common markers), commas, parentheses-as-negative
 - Debit/credit column merge
 - "DR"/"CR" suffix handling
-- Amounts with spaces as thousands separator
+- Amounts with spaces as thousands separator (Swiss/French convention)
+- Zero-decimal currency handling (JPY, KRW — no decimal point)
 - `original_amount` and `original_date_str` preservation
 - Transaction ID generation: source_transaction_id path and hash fallback path
 - Hash collision handling with `row_number`
 - Account ID slug generation and idempotency
+- Running balance validation: sequential delta check confirms amounts and sign convention
+- Running balance sign correction: auto-invert sign when balance deltas match inverted amounts
+- Running balance mismatch: warn-but-proceed when balance column is inconsistent
 - Structural validation: null density, amount range, date range
 - Malformed row rejection with row number and reason
 
@@ -1135,6 +1396,23 @@ storage. The format-agnostic boundary is a Polars DataFrame.
 - Format update via overrides
 - Usage tracking (times_used, last_used_at)
 - Multi-account format flag
+- `number_format` and `skip_trailing_patterns` round-trip through YAML and DB
+
+**Import batch tracking:**
+- Import creates `raw.import_log` record with correct metadata
+- `import_id` stamped on every raw transaction and account row
+- Import history returns batches in reverse chronological order
+- Import revert deletes all rows with matching `import_id`
+- Import revert marks log record as `reverted` with timestamp
+- Revert of already-reverted import is idempotent (no-op with warning)
+- Revert of nonexistent import returns clear error
+- Partial import (some rows rejected) records correct counts in log
+- Re-import after revert produces new `import_id` (no collision)
+
+**Size guardrails:**
+- File >25 MB text / >100 MB binary rejected with guidance (unless `--no-size-limit`)
+- Row count >10,000 warns; >50,000 refuses (unless `--no-row-limit`)
+- Override flags allow large files through
 
 **Account matching:**
 - Exact name match across all source types
@@ -1181,7 +1459,7 @@ a bulletproof importer matters more than shipping early.
 | 6 | Parquet with typed columns | Schema preservation, minimal detection |
 | 7 | Feather/Arrow IPC with typed columns | Arrow-native reading, schema preservation |
 
-#### Built-in format fixtures (5 fixtures)
+#### Built-in format fixtures (6 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
@@ -1190,118 +1468,156 @@ a bulletproof importer matters more than shipping early.
 | 10 | Tiller transactions export | Multi-account detection, Transaction ID, built-in format |
 | 11 | Mint transactions export | Multi-account, Original Description, Labels/Tags |
 | 12 | YNAB transactions export | Per-account, Outflow/Inflow split, Category Group/Category |
+| 13 | Maybe/Sure transactions export | Multi-account, ISO dates, currency column, tags, category migration |
 
-#### Detection confidence fixtures (4 fixtures)
+#### Detection confidence fixtures (5 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 13 | CSV with clear standard headers | High confidence — all fields matched by header |
-| 14 | CSV with generic headers (Col1, Col2, Col3) | Medium confidence — content-based detection |
-| 15 | CSV with no detectable date column | Low confidence — graceful failure with guidance |
-| 16 | Parquet with financial column names | High confidence — typed + named |
+| 14 | CSV with clear standard headers | High confidence — all fields matched by header |
+| 15 | CSV with generic headers (Col1, Col2, Col3) | Medium confidence — content-based detection |
+| 16 | CSV with no detectable date column | Low confidence — graceful failure with guidance |
+| 17 | Parquet with financial column names | High confidence — typed + named |
+| 18 | CSV with running balance column that validates | High confidence boost — balance deltas confirm amounts |
 
 #### Header and format edge cases (15 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 17 | CSV with junk rows before header (bank summary, export date) | Header row detection, skip_rows |
-| 18 | CSV with trailing summary/total row | Non-data row exclusion |
-| 19 | CSV with trailing metadata (export date, record count) | Trailing junk detection |
-| 20 | CSV with BOM marker (UTF-8-BOM) | BOM transparency |
-| 21 | CSV with Latin-1 encoding | Encoding detection |
-| 22 | CSV with Windows-1252 encoding (smart quotes in descriptions) | Encoding edge case |
-| 23 | CSV with CRLF line endings | Cross-platform line ending |
-| 24 | CSV with trailing commas on every row | Extra empty column handling |
-| 25 | CSV with quoted fields containing commas | CSV parsing correctness |
-| 26 | CSV with inconsistent quoting | Parser robustness |
-| 27 | CSV with empty lines interspersed between data rows | Sparse row handling |
-| 28 | CSV with repeated header row mid-file (paginated web copy) | Duplicate header detection |
-| 29 | CSV with no header row (purely numeric data) | Content-only detection, low confidence |
-| 30 | CSV with duplicate column names | Column disambiguation |
-| 31 | .txt file that is actually tab-separated | Extension/content mismatch handling |
+| 19 | CSV with junk rows before header (bank summary, export date) | Header row detection, skip_rows |
+| 20 | CSV with trailing summary/total row | Default regex pattern match, row exclusion |
+| 21 | CSV with trailing metadata (export date, record count) | Default regex pattern match |
+| 22 | CSV with BOM marker (UTF-8-BOM) | BOM transparency |
+| 23 | CSV with Latin-1 encoding | Encoding detection |
+| 24 | CSV with Windows-1252 encoding (smart quotes in descriptions) | Encoding edge case |
+| 25 | CSV with CRLF line endings | Cross-platform line ending |
+| 26 | CSV with trailing commas on every row | Extra empty column handling |
+| 27 | CSV with quoted fields containing commas | CSV parsing correctness |
+| 28 | CSV with inconsistent quoting | Parser robustness |
+| 29 | CSV with empty lines interspersed between data rows | Sparse row handling |
+| 30 | CSV with repeated header row mid-file (paginated web copy) | Duplicate header detection |
+| 31 | CSV with no header row (purely numeric data) | Content-only detection, low confidence |
+| 32 | CSV with duplicate column names | Column disambiguation |
+| 33 | .txt file that is actually tab-separated | Extension/content mismatch handling |
 
-#### Amount parsing edge cases (10 fixtures)
-
-| # | Fixture | Tests |
-|---|---|---|
-| 32 | Amounts with European decimals (1.234,56) | Comma-as-decimal detection |
-| 33 | Amounts with currency symbols ($42.50, €15.00, £8.99) | Symbol stripping |
-| 34 | Amounts with parentheses-as-negative ((42.50)) | Alternative negative representation |
-| 35 | All-positive amounts (ambiguous sign convention) | Sign convention flagging |
-| 36 | Split debit/credit columns (one null when other has value) | Debit/credit merge |
-| 37 | Amounts with three decimal places (international bank) | Precision handling |
-| 38 | Amounts with spaces as thousands separator (1 234.56) | Space-separated thousands |
-| 39 | Amounts with "DR"/"CR" suffix | Suffix-based sign detection |
-| 40 | Amounts with mixed formats in same column ($1,234 and 1234.00) | Robustness |
-| 41 | Credit card CSV where negative = payment/credit (inverted) | negative_is_income detection |
-
-#### Date parsing edge cases (8 fixtures)
+#### Amount parsing edge cases (13 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 42 | Dates as MM/DD/YYYY | Standard US format |
-| 43 | Dates as DD/MM/YYYY (day-first, ambiguous) | Day-first vs month-first disambiguation |
-| 44 | Dates as YYYY-MM-DD (ISO 8601) | ISO format |
-| 45 | Dates as MM/DD/YY (two-digit year) | Century inference |
-| 46 | Dates as DD-Mon-YYYY (15-Mar-2026) | Named month parsing |
-| 47 | Dates as "Mon DD, YYYY" (Mar 15, 2026) | Long month name format |
-| 48 | Mixed date formats in same file (transaction vs post date) | Per-column format detection |
-| 49 | Excel dates as serial numbers (45372) | Serial → date conversion |
+| 34 | Amounts with European decimals (1.234,56) | `european` number format detection |
+| 35 | Amounts with currency symbols ($42.50, €15.00, £8.99) | Symbol stripping (common markers) |
+| 36 | Amounts with parentheses-as-negative ((42.50)) | Alternative negative representation |
+| 37 | All-positive amounts (ambiguous sign convention) | Sign convention flagging |
+| 38 | Split debit/credit columns (one null when other has value) | Debit/credit merge |
+| 39 | Amounts with three decimal places (international bank) | Precision handling |
+| 40 | Amounts with spaces as thousands separator (1 234,56) | `swiss_french` number format detection |
+| 41 | Amounts with "DR"/"CR" suffix | Suffix-based sign detection |
+| 42 | Amounts with mixed formats in same column ($1,234 and 1234.00) | Robustness |
+| 43 | Credit card CSV where negative = payment/credit (inverted) | negative_is_income detection |
+| 44 | Zero-decimal currency amounts (¥1,234 / ₩50,000) | `zero_decimal` number format detection, no decimal point |
+| 45 | Amounts with less common currency markers (kr, CHF, R$) | Extended symbol stripping |
+| 46 | Number format auto-detection when US and European are both plausible | Convention scoring tiebreak |
 
-#### Multi-account fixtures (6 fixtures)
+#### Date parsing edge cases (11 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 50 | Tiller multi-institution (5+ accounts) | Per-row account extraction, cross-institution |
-| 51 | Mint multi-account export | Different column layout from Tiller, account name matching |
-| 52 | Generic multi-account CSV | Account column detection without built-in format |
-| 53 | Multi-account with fuzzy account names | "Did you mean?" flow for near-matches |
-| 54 | Multi-account with account numbers | Account number matching across source types |
-| 55 | Multi-account with mixed known/unknown accounts | Some matched, some new — partial match flow |
+| 47 | Dates as MM/DD/YYYY | Standard US format |
+| 48 | Dates as DD/MM/YYYY with days >12 present | Positional disambiguation → DD/MM |
+| 49 | Dates as DD/MM/YYYY with no days >12 (all ≤12) | Range reasonableness scoring; medium confidence if ambiguous |
+| 50 | Dates as YYYY-MM-DD (ISO 8601) | ISO format |
+| 51 | Dates as MM/DD/YY (two-digit year) | Century inference |
+| 52 | Dates as DD-Mon-YYYY (15-Mar-2026) | Named month parsing |
+| 53 | Dates as "Mon DD, YYYY" (Mar 15, 2026) | Long month name format |
+| 54 | Mixed date formats in same file (transaction vs post date) | Per-column format detection |
+| 55 | Excel dates as serial numbers (45372) | Serial → date conversion |
+| 56 | Dates with values >12 in position 2 only | Positional disambiguation → MM/DD |
+| 57 | Dates that parse as both DD/MM and MM/DD with different range plausibility | Range scoring disambiguates |
+
+#### Running balance validation fixtures (5 fixtures)
+
+| # | Fixture | Tests |
+|---|---|---|
+| 58 | CSV with consistent running balance column | Balance validation passes → confidence boost |
+| 59 | CSV with balance that validates only after sign inversion | Auto-correct sign convention via balance |
+| 60 | CSV with inconsistent balance (different period than transactions) | Warn but proceed, `balance_validated: false` |
+| 61 | CSV with balance column and split debit/credit amounts | Balance validates merged debit/credit |
+| 62 | CSV with balance off by rounding (±0.01 tolerance) | Rounding tolerance in delta check |
+
+#### Multi-account fixtures (7 fixtures)
+
+| # | Fixture | Tests |
+|---|---|---|
+| 63 | Tiller multi-institution (5+ accounts) | Per-row account extraction, cross-institution |
+| 64 | Mint multi-account export | Different column layout from Tiller, account name matching |
+| 65 | Maybe/Sure multi-account export | ISO dates, currency column, tags preservation |
+| 66 | Generic multi-account CSV | Account column detection without built-in format |
+| 67 | Multi-account with fuzzy account names | "Did you mean?" flow for near-matches |
+| 68 | Multi-account with account numbers | Account number matching across source types |
+| 69 | Multi-account with mixed known/unknown accounts | Some matched, some new — partial match flow |
 
 #### Excel-specific fixtures (6 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 56 | Excel with multiple sheets (transactions on second sheet) | Sheet selection (pick largest) |
-| 57 | Excel with non-row-1 header (title row, then header) | Header row detection in Excel |
-| 58 | Excel with merged header cells | Unmerge and propagate |
-| 59 | Excel with formulas in amount cells | Use computed values |
-| 60 | Excel with date cells (serial number storage) | Native date handling |
-| 61 | Excel with currency-formatted cells | Raw value extraction |
+| 70 | Excel with multiple sheets (transactions on second sheet) | Sheet selection (pick largest) |
+| 71 | Excel with non-row-1 header (title row, then header) | Header row detection in Excel |
+| 72 | Excel with merged header cells | Unmerge and propagate |
+| 73 | Excel with formulas in amount cells | Use computed values |
+| 74 | Excel with date cells (serial number storage) | Native date handling |
+| 75 | Excel with currency-formatted cells | Raw value extraction |
 
-#### Migration-specific fixtures (4 fixtures)
+#### Migration-specific fixtures (5 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 62 | Mint export with custom categories | Category preservation for auto-rule seeding |
-| 63 | YNAB export with split transactions | Partial import (splits noted, not split) |
-| 64 | Import from two tools with overlapping date ranges | Dedup across migration sources |
-| 65 | Tiller with balance history sheet (different schema) | Wrong-schema sheet rejection |
+| 76 | Mint export with custom categories | Category preservation for auto-rule seeding |
+| 77 | YNAB export with split transactions | Partial import (splits noted, not split) |
+| 78 | Import from two tools with overlapping date ranges | Dedup across migration sources |
+| 79 | Tiller with balance history sheet (different schema) | Wrong-schema sheet rejection |
+| 80 | Maybe/Sure export with categories + tags | Category + tag preservation for auto-rule seeding |
+
+#### Import batch and revert fixtures (5 fixtures)
+
+| # | Fixture | Tests |
+|---|---|---|
+| 81 | Import, verify import_log entry, verify import_id on rows | Batch tracking end-to-end |
+| 82 | Import, then revert → rows deleted, log marked reverted | Revert lifecycle |
+| 83 | Import, revert, re-import → new import_id, no collision | Revert + re-import idempotency |
+| 84 | Partial import (some rows rejected) → log records correct counts | Partial status and rejection_details |
+| 85 | Import history listing with multiple batches | History ordering and filtering |
+
+#### Size guardrail fixtures (3 fixtures)
+
+| # | Fixture | Tests |
+|---|---|---|
+| 86 | CSV with 15,000 rows (above warn threshold) | Warning issued, import proceeds |
+| 87 | CSV with 55,000 rows (above refuse threshold) | Refused without `--no-row-limit`; succeeds with flag |
+| 88 | Large text file near 25 MB boundary | Size limit enforcement and `--no-size-limit` override |
 
 #### Performance and stress fixtures (4 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 66 | Very large CSV (10k+ rows) | Performance baseline, memory usage |
-| 67 | Very wide CSV (50+ columns, mostly unmapped) | Many unmapped columns handled gracefully |
-| 68 | Single-row file (header + 1 transaction) | Minimum viable file |
-| 69 | File with 1000+ rows of same-day same-amount transactions | Hash collision handling at scale |
+| 89 | Very large CSV (10k+ rows) | Performance baseline, memory usage |
+| 90 | Very wide CSV (50+ columns, mostly unmapped) | Many unmapped columns handled gracefully |
+| 91 | Single-row file (header + 1 transaction) | Minimum viable file |
+| 92 | File with 1000+ rows of same-day same-amount transactions | Hash collision handling at scale |
 
 #### Error and edge case fixtures (4 fixtures)
 
 | # | Fixture | Tests |
 |---|---|---|
-| 70 | Empty file (0 bytes) | Graceful error message |
-| 71 | Header-only file (no data rows) | Graceful "no transactions found" message |
-| 72 | Completely unstructured text | Low confidence with actionable guidance |
-| 73 | Binary file misnamed as .csv | Magic bytes detection, clear error |
+| 93 | Empty file (0 bytes) | Graceful error message |
+| 94 | Header-only file (no data rows) | Graceful "no transactions found" message |
+| 95 | Completely unstructured text | Low confidence with actionable guidance |
+| 96 | Binary file misnamed as .csv | Magic bytes detection, clear error |
 
-**Total: 73 fixtures.**
+**Total: 96 fixtures.**
 
 The fixture library is designed for comprehensive coverage, not speed. Each fixture is
 small (5–20 rows) and tests a specific edge case. The cost of creating and maintaining
-75 small fixtures is low; the cost of a bug in the importer that corrupts financial data
+96 small fixtures is low; the cost of a bug in the importer that corrupts financial data
 is catastrophic. Fixtures are the primary defense against regression.
 
 ---
@@ -1345,17 +1661,19 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/sql/schema/raw_tabular_transactions.sql` | DDL for `raw.tabular_transactions` |
 | `src/moneybin/sql/schema/raw_tabular_accounts.sql` | DDL for `raw.tabular_accounts` |
 | `src/moneybin/sql/schema/app_tabular_formats.sql` | DDL for `app.tabular_formats` |
+| `src/moneybin/sql/schema/raw_import_log.sql` | DDL for `raw.import_log` |
 | `src/moneybin/data/tabular_formats/chase_credit.yaml` | Built-in Chase credit format (migrated from `csv_profiles/`) |
 | `src/moneybin/data/tabular_formats/citi_credit.yaml` | Built-in Citi credit format (migrated from `csv_profiles/`) |
 | `src/moneybin/data/tabular_formats/tiller.yaml` | Built-in Tiller format |
 | `src/moneybin/data/tabular_formats/mint.yaml` | Built-in Mint format |
 | `src/moneybin/data/tabular_formats/ynab.yaml` | Built-in YNAB format |
+| `src/moneybin/data/tabular_formats/maybe.yaml` | Built-in Maybe/Sure migration format |
 | `sqlmesh/models/prep/stg_tabular__accounts.sql` | Staging view replacing `stg_csv__accounts` |
 | `sqlmesh/models/prep/stg_tabular__transactions.sql` | Staging view replacing `stg_csv__transactions` |
 | `tests/moneybin/test_extractors/test_tabular_extractor.py` | Unit tests for detection engine |
 | `tests/moneybin/test_extractors/test_tabular_formats.py` | Unit tests for format system |
 | `tests/moneybin/test_loaders/test_tabular_loader.py` | Unit tests for transform and load |
-| `tests/fixtures/tabular/` | 73 fixture files organized by category |
+| `tests/fixtures/tabular/` | 96 fixture files organized by category |
 
 ### Files to modify
 
@@ -1393,6 +1711,59 @@ is catastrophic. Fixtures are the primary defense against regression.
 | Transaction ID | Deterministic hash per layer; different identity spaces | Raw: idempotent re-import. Core: independent of source. |
 | Sign normalization | At extract time (Stage 4) | Downstream code always sees negative=expense |
 | Multi-account | Auto-detected from account columns in data | Handles Tiller, Mint, Monarch natively |
+| Import batch tracking | UUID `import_id` on every row + `raw.import_log` table | Enables import reverting (critical for user confidence), history, and diagnostics. Learned from Maybe/Sure's import lifecycle — reverting a bad import must be trivial. |
+| Date disambiguation | Positional value >12 analysis + range reasonableness scoring | Deterministic, explains its reasoning. Learned from Sure's date format scoring (parse rate + reasonable range). Covers the DD/MM vs MM/DD problem that trips up every CSV importer. |
+| Number format detection | Four named conventions (US, European, Swiss/French, zero-decimal) | Covers all major international conventions. Learned from Maybe/Sure's four-format handling and hledger's decimal mark support. |
+| Running balance validation | Sequential delta check on balance column when present | Free validation signal that catches sign convention errors. No competitor uses balance columns for validation — they just store them. |
+| Trailing row removal | Regex patterns (format-specific + default set) | More robust than keyword matching alone. Default patterns compiled from hledger community rules and real-world bank exports. Saved formats store institution-specific patterns. |
+| Size guardrails | Soft warn + hard refuse with override flags | Prevents accidental import of wrong files. Learned from Maybe's 10k row limit. Override flags preserve power-user escape hatch. |
+
+---
+
+## Design Rationale: Learnings from Open-Source Import Systems
+
+This spec incorporates patterns and lessons from every major open-source personal
+finance project's import system. The goal is best-in-class import correctness — no
+open-source tool treats import as seriously as MoneyBin does.
+
+### Competitive landscape (import capabilities)
+
+| Project | Approach | Strengths | Gaps MoneyBin fills |
+|---|---|---|---|
+| **hledger** | Declarative `.rules` files per bank; user writes regex-based field mapping and conditional categorization | Most mature CSV rules system; `amount-in`/`amount-out` dual-field; regex conditionals; `include` for shared rules; community-contributed bank rules | No auto-detection (user must write rules); no confidence tiers; no multi-format support (CSV only); no migration story |
+| **Maybe/Sure** | User selects column labels in web UI; template reuse for repeat imports; date format scoring; four number format conventions | Date range reasonableness scoring; international number formats; import reverting; encoding auto-detection | No format auto-detection (manual column selection); no heuristic engine; no built-in bank profiles; no non-interactive/AI-agent path |
+| **Firefly III** | Separate Data Importer app; user assigns "roles" to columns via web UI; JSON config files saved per bank | Role-based column mapping; broad community; CAMT.052/053 support | No auto-detection; no confidence tiers; manual role assignment; no migration profiles |
+| **Actual Budget** | Dedicated importers per competitor (YNAB4, YNAB5); basic CSV with manual mapping | Good YNAB migration path; auto-rules from payee patterns (post-import) | No general CSV auto-detection; no format heuristics; no multi-format; limited to specific competitor migrations |
+| **Beancount `smart_importer`** | ML (SVM via scikit-learn) wrapping existing importers; predicts posting accounts and payees from historical data | Trains on your own ledger; improves over time; local-only processing | ML for categorization only, not format detection; requires existing labeled data; no standalone import capability |
+
+### What MoneyBin does that none of them do
+
+1. **Fully automatic detection with confidence** — no rules files to write, no columns to
+   manually assign. The heuristic engine detects format, delimiter, encoding, header row,
+   column mapping, sign convention, number format, and date format — then tells you how
+   confident it is and lets you override. Nobody else does this.
+2. **Non-interactive parity** — every interactive prompt has a flag equivalent. AI agents
+   (Claude Code, Codex) and shell scripts can import files without navigating interactive
+   prompts. No competitor offers this.
+3. **Migration as a first-class feature** — imported categories seed the auto-rule engine.
+   No competitor preserves categorization work across tool migrations.
+4. **Running balance validation** — when a balance column is present, use it to validate
+   amounts and sign convention. No competitor exploits this free signal.
+5. **Import reverting** — full undo of any import batch with one command. Maybe/Sure have
+   this; hledger, Firefly III, and Actual do not.
+
+### Patterns adopted from competitors
+
+| Pattern | Source | How adopted |
+|---|---|---|
+| Date format scoring by parse rate + range reasonableness | Maybe/Sure | Stage 3 Step 3 — score candidates on both axes |
+| Four named number format conventions (US, European, Swiss/French, zero-decimal) | Maybe/Sure | Stage 3 Step 3 — auto-detect and record in saved format |
+| Regex-based trailing row exclusion | hledger (`skip /pattern/`) | Stage 2 — default pattern set + format-specific patterns in YAML |
+| `amount-in` / `amount-out` dual-field handling | hledger | Stage 3 Step 5 — `split_debit_credit` sign convention |
+| Import batch lifecycle tracking | Maybe/Sure | Stage 5 — `raw.import_log` with UUID `import_id` on every row |
+| Encoding auto-detection with fallback chain | Maybe/Sure (rchardet) | Stage 1 — `charset-normalizer` (better library, same concept) |
+| Template/format reuse across imports | Maybe/Sure, Firefly III | `app.tabular_formats` — auto-saved detected formats |
+| ML for categorization, not format detection | Beancount `smart_importer` | Out-of-scope confirmation — rules-based detection is the right approach for format detection; ML value is in categorization (separate spec) |
 
 ---
 
@@ -1402,7 +1773,7 @@ is catastrophic. Fixtures are the primary defense against regression.
 |---|---|
 | Scanned/image PDFs | Requires OCR + vision model; different trust profile. See `smart-import-pdf.md` (Pillar C). |
 | AI-assisted parsing (Pillar F) | Consent-gated cloud dependency; separate spec. See `smart-import-ai-parsing.md`. |
-| ML-powered detection | Rules-based heuristics cover the 80% case. Add ML if heuristics hit a ceiling in practice. |
+| ML-powered format detection | Rules-based heuristics cover the 80% case. Validated by hledger (rules files), Firefly III (role-based mapping), and Sure (template reuse) — all ship without ML for format detection. Beancount's `smart_importer` proves ML is valuable for *categorization* (post-import), not format detection (pre-import). Add ML if heuristics hit a ceiling in practice. |
 | JSON / JSONL import | JSON's nested data types (objects, arrays) map better to DuckDB's native STRUCT/LIST/MAP types than to a flattened tabular DataFrame. A future JSON importer should leverage `duckdb.read_json_auto()` for native type inference rather than squeezing through the tabular pipeline. Separate spec when needed. |
 | Investment transaction routing | Architecture supports it (field alias table, routing hook). Implementation deferred to Level 2. |
 | Partitioned Parquet datasets | Single-file Parquet in v1. `polars.read_parquet()` accepts globs — minimal lift when needed. |

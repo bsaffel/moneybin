@@ -61,6 +61,7 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 - **When starting implementation**, update the spec's status to `in-progress` (both in the spec file and in `INDEX.md`).
 - **When implementation is complete**, update the spec's status to `implemented` (both in the spec file and in `INDEX.md`). See `.claude/rules/shipping.md` for README and public documentation updates.
 - **When writing a new spec**, add it to the Active specs table in `INDEX.md`.
+- **Observability wiring**: Every spec that touches application code must include metrics in its implementation plan. Define new metrics in `registry.py` where appropriate, and wire `@tracked` / `track_duration` / manual `.inc()` / `.observe()` / `.set()` calls at integration points. See `docs/specs/observability.md` for the instrumentation API and existing metric definitions in `src/moneybin/metrics/registry.py`.
 - Statuses: `draft` → `ready` → `in-progress` → `implemented`.
 
 ## Configuration

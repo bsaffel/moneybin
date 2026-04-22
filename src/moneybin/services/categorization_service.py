@@ -211,7 +211,7 @@ def create_merchant(
     Returns:
         The merchant_id of the created merchant.
     """
-    merchant_id = str(uuid.uuid4())[:8]
+    merchant_id = uuid.uuid4().hex[:12]
     db.execute(
         f"""
         INSERT INTO {MERCHANTS.full_name}
