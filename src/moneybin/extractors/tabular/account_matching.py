@@ -7,10 +7,11 @@ Matches imported accounts against the full account registry using:
 4. Explicit --account-id bypass
 """
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+
+from moneybin.utils import slugify
 
 
 @dataclass
@@ -25,18 +26,6 @@ class AccountMatch:
 
     candidates: list[dict[str, str]] = field(default_factory=list)
     """Fuzzy match candidates for "did you mean?" prompt."""
-
-
-def _slugify(name: str) -> str:
-    """Generate deterministic slug from account name.
-
-    Args:
-        name: Human-readable account name.
-
-    Returns:
-        Lowercase, hyphen-separated slug.
-    """
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
 def match_account(
@@ -71,12 +60,12 @@ def match_account(
                 return AccountMatch(matched=True, account_id=acct_id)
 
     # 2. Exact slug match
-    target_slug = _slugify(account_name)
+    target_slug = slugify(account_name)
     for acct in existing:
         if acct.get("account_id") == target_slug:
             return AccountMatch(matched=True, account_id=target_slug)
         acct_name = acct.get("account_name") or ""
-        if _slugify(acct_name) == target_slug:
+        if slugify(acct_name) == target_slug:
             acct_id = acct.get("account_id") or ""
             return AccountMatch(matched=True, account_id=acct_id)
 

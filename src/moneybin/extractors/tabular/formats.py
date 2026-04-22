@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -154,6 +155,7 @@ class TabularFormat(BaseModel, frozen=True):
         return cls(**data)
 
 
+@lru_cache(maxsize=1)
 def load_builtin_formats() -> dict[str, TabularFormat]:
     """Load all built-in format YAML files.
 

@@ -69,6 +69,13 @@ def detect_date_format(
         range_score = reasonable_count / max(parse_count, 1)
         if parse_rate >= 0.9:
             scores.append((fmt, parse_rate, range_score))
+            # Early exit on perfect match with unambiguous format
+            if (
+                parse_rate == 1.0
+                and range_score == 1.0
+                and fmt not in {"%m/%d/%Y", "%d/%m/%Y"}
+            ):
+                return fmt, "high"
 
     if not scores:
         return None, "low"

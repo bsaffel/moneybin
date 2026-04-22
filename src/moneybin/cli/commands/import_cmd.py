@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 import typer
+
+from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 
 if TYPE_CHECKING:
     from moneybin.database import Database
@@ -26,12 +28,8 @@ app = typer.Typer(
 )
 logger = logging.getLogger(__name__)
 
-_VALID_SIGN_CONVENTIONS = frozenset({
-    "negative_is_expense",
-    "negative_is_income",
-    "split_debit_credit",
-})
-_VALID_NUMBER_FORMATS = frozenset({"us", "european", "swiss_french", "zero_decimal"})
+_VALID_SIGN_CONVENTIONS = frozenset(get_args(SignConventionType))
+_VALID_NUMBER_FORMATS = frozenset(get_args(NumberFormatType))
 
 
 @app.command("file")
@@ -166,12 +164,16 @@ def import_file(
         )
         raise typer.Exit(1)
 
+    # Parse --override values into dict
+    overrides: dict[str, str] | None = None
+    if override:
+        overrides = {}
+        for raw in override:
+            field_name, col_name = raw.split("=", 1)
+            overrides[field_name.strip()] = col_name.strip()
+
     try:
         db = get_database()
-        # TODO(Task future): Wire tabular-specific params (format_name, overrides,
-        # sign, date_format, number_format, sheet, delimiter, encoding,
-        # no_row_limit, no_size_limit, save_format, yes) through import_file()
-        # once the service function signature is updated to accept them.
         result = do_import(
             db=db,
             file_path=source,
@@ -179,6 +181,13 @@ def import_file(
             institution=institution,
             account_id=account_id,
             account_name=account_name,
+            format_name=format_name,
+            overrides=overrides,
+            sheet=sheet,
+            delimiter=delimiter,
+            encoding=encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
         )
         logger.info(f"✅ {result.summary()}")
     except DatabaseKeyError as e:

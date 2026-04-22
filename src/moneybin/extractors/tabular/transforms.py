@@ -25,6 +25,24 @@ logger = logging.getLogger(__name__)
 _SIGN_FIELDS = {"amount", "debit_amount", "credit_amount"}
 
 
+def _col_as_strings(df: pl.DataFrame, col: str | None, n: int) -> list[str]:
+    """Extract a column from a DataFrame as a list of strings.
+
+    Returns ``[""] * n`` if the column is absent or None.
+
+    Args:
+        df: Source DataFrame.
+        col: Column name, or None.
+        n: Expected length (row count).
+
+    Returns:
+        String values, one per row — None values become ``""``.
+    """
+    if not col or col not in df.columns:
+        return [""] * n
+    return [str(v) if v is not None else "" for v in df[col].to_list()]
+
+
 @dataclass
 class RejectionDetail:
     """Details about a rejected row."""
@@ -96,10 +114,7 @@ def transform_dataframe(
     original_date_strs: list[str] = []
     original_amount_strs: list[str] = []
 
-    if date_col and date_col in df.columns:
-        original_date_strs = df[date_col].cast(pl.Utf8).to_list()
-    else:
-        original_date_strs = [""] * len(df)
+    original_date_strs = _col_as_strings(df, date_col, len(df))
 
     # Determine original amount string — for audit, use whichever column was mapped
     if sign_convention == "split_debit_credit":
@@ -108,11 +123,7 @@ def transform_dataframe(
         # Combine debit/credit into a single original string representation
         original_amount_strs = _combine_original_debit_credit(df, debit_col, credit_col)
     else:
-        amount_col = field_mapping.get("amount")
-        if amount_col and amount_col in df.columns:
-            original_amount_strs = df[amount_col].cast(pl.Utf8).to_list()
-        else:
-            original_amount_strs = [""] * len(df)
+        original_amount_strs = _col_as_strings(df, field_mapping.get("amount"), len(df))
 
     # Parse amounts
     parsed_amounts, amount_rejections = _extract_amounts(
@@ -311,16 +322,8 @@ def _extract_amounts(
         debit_col = field_mapping.get("debit_amount")
         credit_col = field_mapping.get("credit_amount")
 
-        debit_strs: list[str] = (
-            [str(v) if v is not None else "" for v in df[debit_col].to_list()]
-            if debit_col and debit_col in df.columns
-            else [""] * n
-        )
-        credit_strs: list[str] = (
-            [str(v) if v is not None else "" for v in df[credit_col].to_list()]
-            if credit_col and credit_col in df.columns
-            else [""] * n
-        )
+        debit_strs = _col_as_strings(df, debit_col, n)
+        credit_strs = _col_as_strings(df, credit_col, n)
 
         for idx in range(n):
             debit_val = parse_amount_str(debit_strs[idx], number_format)
@@ -342,9 +345,7 @@ def _extract_amounts(
         if not amount_col or amount_col not in df.columns:
             return [None] * n, dict.fromkeys(range(n), "Missing amount column")
 
-        amount_strs = [
-            str(v) if v is not None else "" for v in df[amount_col].to_list()
-        ]
+        amount_strs = _col_as_strings(df, amount_col, n)
 
         for idx, s in enumerate(amount_strs):
             val = parse_amount_str(s, number_format)
@@ -379,16 +380,8 @@ def _combine_original_debit_credit(
         List of original amount strings, one per row.
     """
     n = len(df)
-    debit_strs = (
-        [str(v) if v is not None else "" for v in df[debit_col].to_list()]
-        if debit_col and debit_col in df.columns
-        else [""] * n
-    )
-    credit_strs = (
-        [str(v) if v is not None else "" for v in df[credit_col].to_list()]
-        if credit_col and credit_col in df.columns
-        else [""] * n
-    )
+    debit_strs = _col_as_strings(df, debit_col, n)
+    credit_strs = _col_as_strings(df, credit_col, n)
 
     result: list[str] = []
     for d, c in zip(debit_strs, credit_strs, strict=True):
@@ -436,8 +429,7 @@ def _validate_running_balance(
         # Need at least two rows to compute a delta
         return result
 
-    # Map accepted 1-based row numbers back to the balance_strs list (0-indexed).
-    # balance_strs is indexed by original source position (row_number - 1).
+    # Parse balance strings once, mapped by accepted row numbers (0-indexed).
     balances: list[float | None] = []
     for row_num in row_numbers:
         idx = row_num - 1
@@ -446,20 +438,24 @@ def _validate_running_balance(
         else:
             balances.append(None)
 
+    # Pre-compute valid consecutive pairs where both balances are present
+    valid_pairs: list[tuple[int, float]] = []
+    for i in range(1, n):
+        b_prev = balances[i - 1]
+        b_curr = balances[i]
+        if b_prev is not None and b_curr is not None:
+            valid_pairs.append((i, round(b_curr - b_prev, 2)))
+
     def _pass_rate(amt_list: list[float]) -> float:
         """Fraction of consecutive pairs where delta ≈ amount."""
         checks = n - 1
         if checks == 0:
             return 1.0
-        passed = 0
-        for i in range(1, n):
-            b_prev = balances[i - 1]
-            b_curr = balances[i]
-            if b_prev is None or b_curr is None:
-                continue
-            delta = round(b_curr - b_prev, 2)
-            if abs(delta - amt_list[i]) <= _balance_tolerance:
-                passed += 1
+        passed = sum(
+            1
+            for i, delta in valid_pairs
+            if abs(delta - amt_list[i]) <= _balance_tolerance
+        )
         return passed / checks
 
     forward_rate = _pass_rate(amounts)

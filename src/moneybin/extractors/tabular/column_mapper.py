@@ -12,6 +12,7 @@ import polars as pl
 from moneybin.extractors.tabular.date_detection import (
     detect_date_format,
     detect_number_format,
+    parse_amount_str,
 )
 from moneybin.extractors.tabular.field_aliases import (
     ACCOUNT_IDENTIFYING_FIELDS,
@@ -24,6 +25,20 @@ from moneybin.extractors.tabular.sign_convention import (
 logger = logging.getLogger(__name__)
 
 _SAMPLE_SIZE = 20
+
+
+def _collect_samples(df: pl.DataFrame, col: str) -> list[str | None]:
+    """Extract sample values from a column as strings.
+
+    Args:
+        df: Source DataFrame.
+        col: Column name to sample.
+
+    Returns:
+        Up to ``_SAMPLE_SIZE`` string values (None for null cells).
+    """
+    vals = df[col].head(_SAMPLE_SIZE).cast(pl.Utf8).to_list()
+    return [str(v) if v is not None else "" for v in vals]
 
 
 @dataclass
@@ -99,8 +114,7 @@ def map_columns(
 
     # Collect sample values for mapped fields
     for dest, src in mapping.items():
-        vals = df[src].head(_SAMPLE_SIZE).cast(pl.Utf8).to_list()
-        _samples[dest] = [str(v) if v is not None else "" for v in vals]
+        _samples[dest] = _collect_samples(df, src)
 
     # Content validation on date fields
     date_format = None
@@ -128,8 +142,7 @@ def map_columns(
                 mapping[req_field] = candidate
                 claimed.add(candidate)
                 flagged.append(req_field)
-                vals = df[candidate].head(_SAMPLE_SIZE).cast(pl.Utf8).to_list()
-                _samples[req_field] = [str(v) if v is not None else "" for v in vals]
+                _samples[req_field] = _collect_samples(df, candidate)
                 if req_field == "transaction_date" and date_format is None:
                     date_format, _ = detect_date_format(_samples[req_field])
 
@@ -218,37 +231,20 @@ def _score_column_for_field(values: list[str], field_name: str) -> float:
         return 0.0
 
     if field_name == "amount":
-        numeric_count = sum(1 for v in values if _is_amount(v))
+        numeric_count = sum(1 for v in values if parse_amount_str(v, "us") is not None)
         ratio = numeric_count / len(values) if values else 0
         return ratio * 0.9 if ratio >= 0.8 else 0.0
 
     if field_name == "description":
         unique_ratio = len(set(values)) / len(values) if values else 0
         avg_len = sum(len(v) for v in values) / len(values) if values else 0
-        numeric_count = sum(1 for v in values if _is_amount(v))
+        numeric_count = sum(1 for v in values if parse_amount_str(v, "us") is not None)
         numeric_ratio = numeric_count / len(values) if values else 0
         if unique_ratio > 0.5 and avg_len > 5 and numeric_ratio < 0.3:
             return 0.7
         return 0.0
 
     return 0.0
-
-
-def _is_amount(s: str) -> bool:
-    """Check if a string looks like a financial amount.
-
-    Args:
-        s: Raw string value to test.
-
-    Returns:
-        True if the string can be parsed as a numeric amount.
-    """
-    s = s.strip().lstrip("-").strip("$€£¥").replace(",", "").strip("()")
-    try:
-        float(s)
-        return True
-    except ValueError:
-        return False
 
 
 def _assign_confidence(

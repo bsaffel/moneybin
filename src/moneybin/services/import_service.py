@@ -314,8 +314,6 @@ def _import_tabular(
     Returns:
         ImportResult with summary.
     """
-    import re
-
     import polars as pl
 
     from moneybin.extractors.tabular.column_mapper import map_columns
@@ -329,6 +327,7 @@ def _import_tabular(
     from moneybin.extractors.tabular.readers import read_file
     from moneybin.extractors.tabular.transforms import transform_dataframe
     from moneybin.loaders.tabular_loader import TabularLoader
+    from moneybin.utils import slugify
 
     result = ImportResult(file_path=str(file_path), file_type="tabular")
 
@@ -399,16 +398,14 @@ def _import_tabular(
     if account_id:
         acct_id = account_id
     elif account_name:
-        acct_id = re.sub(r"[^a-z0-9]+", "-", account_name.lower()).strip("-")
+        acct_id = slugify(account_name)
     elif mapping_result_is_multi_account:
         acct_id = "multi-account"
     else:
         raise ValueError("Single-account files require --account-name or --account-id")
 
     source_origin = (
-        matched_format.name
-        if matched_format
-        else re.sub(r"[^a-z0-9]+", "-", (account_name or "unknown").lower()).strip("-")
+        matched_format.name if matched_format else slugify(account_name or "unknown")
     )
 
     # Create import batch
@@ -499,6 +496,12 @@ def import_file(
     account_id: str | None = None,
     account_name: str | None = None,
     format_name: str | None = None,
+    overrides: dict[str, str] | None = None,
+    sheet: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+    no_row_limit: bool = False,
+    no_size_limit: bool = False,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -517,6 +520,12 @@ def import_file(
         account_name: Account name for single-account tabular files.
         format_name: Explicit format name for tabular imports (bypasses
             auto-detection).
+        overrides: Field→column overrides for tabular imports.
+        sheet: Excel sheet name for tabular imports.
+        delimiter: Explicit delimiter for tabular imports.
+        encoding: Explicit encoding for tabular imports.
+        no_row_limit: Override row count limit for tabular imports.
+        no_size_limit: Override file size limit for tabular imports.
 
     Returns:
         ImportResult with summary of what was imported.
@@ -544,6 +553,12 @@ def import_file(
             account_name=account_name,
             account_id=account_id,
             format_name=format_name,
+            overrides=overrides,
+            sheet=sheet,
+            delimiter=delimiter,
+            encoding=encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
         )
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
