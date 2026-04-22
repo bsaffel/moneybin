@@ -5,12 +5,18 @@ column mapping, date format, sign convention, delimiter, etc. Built-in
 formats ship as YAML files; user formats are stored in the database.
 """
 
+from __future__ import annotations
+
+import json
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from pydantic import BaseModel, field_validator
+
+if TYPE_CHECKING:
+    from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +137,7 @@ class TabularFormat(BaseModel, frozen=True):
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "TabularFormat":
+    def from_yaml(cls, path: Path) -> TabularFormat:
         """Load a format from a YAML file.
 
         Args:
@@ -168,3 +174,172 @@ def load_builtin_formats() -> dict[str, TabularFormat]:
             logger.warning(f"Failed to load format: {yaml_path}", exc_info=True)
 
     return formats
+
+
+def save_format_to_db(db: Database, fmt: TabularFormat) -> None:
+    """Persist a TabularFormat to the app.tabular_formats table.
+
+    Uses INSERT OR REPLACE so re-saving a format with the same name
+    updates all fields in place.
+
+    Args:
+        db: Active Database connection.
+        fmt: Format to persist.
+    """
+    db.execute(
+        """
+        INSERT OR REPLACE INTO app.tabular_formats (
+            name, institution_name, file_type, delimiter, encoding,
+            skip_rows, sheet, header_signature, field_mapping,
+            sign_convention, date_format, number_format,
+            skip_trailing_patterns, multi_account, source,
+            times_used, last_used_at, updated_at
+        ) VALUES (
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, CURRENT_TIMESTAMP
+        )
+        """,
+        [
+            fmt.name,
+            fmt.institution_name,
+            fmt.file_type,
+            fmt.delimiter,
+            fmt.encoding,
+            fmt.skip_rows,
+            fmt.sheet,
+            json.dumps(fmt.header_signature),
+            json.dumps(fmt.field_mapping),
+            fmt.sign_convention,
+            fmt.date_format,
+            fmt.number_format,
+            json.dumps(fmt.skip_trailing_patterns)
+            if fmt.skip_trailing_patterns is not None
+            else None,
+            fmt.multi_account,
+            fmt.source,
+            fmt.times_used,
+            fmt.last_used_at,
+        ],
+    )
+    logger.debug(f"Saved format to DB: {fmt.name}")
+
+
+def load_formats_from_db(db: Database) -> dict[str, TabularFormat]:
+    """Load all user-saved formats from app.tabular_formats.
+
+    Args:
+        db: Active Database connection.
+
+    Returns:
+        Dict mapping format name to TabularFormat. Returns empty dict if
+        the table does not exist yet or contains no rows.
+    """
+    try:
+        rows = db.execute(
+            """
+            SELECT
+                name, institution_name, file_type, delimiter, encoding,
+                skip_rows, sheet, header_signature, field_mapping,
+                sign_convention, date_format, number_format,
+                skip_trailing_patterns, multi_account, source,
+                times_used, last_used_at
+            FROM app.tabular_formats
+            ORDER BY name
+            """
+        ).fetchall()
+    except Exception:  # noqa: BLE001  # table may not exist before first migration
+        logger.debug("app.tabular_formats not available; returning empty format set")
+        return {}
+
+    formats: dict[str, TabularFormat] = {}
+    for row in rows:
+        (
+            name,
+            institution_name,
+            file_type,
+            delimiter,
+            encoding,
+            skip_rows,
+            sheet,
+            header_signature_raw,
+            field_mapping_raw,
+            sign_convention,
+            date_format,
+            number_format,
+            skip_trailing_raw,
+            multi_account,
+            source,
+            times_used,
+            last_used_at,
+        ) = row
+        try:
+            fmt = TabularFormat(
+                name=name,
+                institution_name=institution_name,
+                file_type=file_type,
+                delimiter=delimiter,
+                encoding=encoding,
+                skip_rows=skip_rows,
+                sheet=sheet,
+                header_signature=json.loads(header_signature_raw),
+                field_mapping=json.loads(field_mapping_raw),
+                sign_convention=sign_convention,
+                date_format=date_format,
+                number_format=number_format,
+                skip_trailing_patterns=json.loads(skip_trailing_raw)
+                if skip_trailing_raw is not None
+                else None,
+                multi_account=bool(multi_account),
+                source=source,
+                times_used=times_used or 0,
+                last_used_at=str(last_used_at) if last_used_at is not None else None,
+            )
+            formats[fmt.name] = fmt
+        except (ValueError, TypeError):
+            logger.warning(f"Skipping malformed DB format row: {name!r}", exc_info=True)
+
+    logger.debug(f"Loaded {len(formats)} format(s) from DB")
+    return formats
+
+
+def delete_format_from_db(db: Database, name: str) -> bool:
+    """Delete a user-saved format by name.
+
+    Args:
+        db: Active Database connection.
+        name: Format name to delete.
+
+    Returns:
+        True if the format was found and deleted, False if not found.
+    """
+    row = db.execute(
+        "SELECT name FROM app.tabular_formats WHERE name = ?",
+        [name],
+    ).fetchone()
+    if row is None:
+        return False
+    db.execute(
+        "DELETE FROM app.tabular_formats WHERE name = ?",
+        [name],
+    )
+    logger.debug(f"Deleted format from DB: {name!r}")
+    return True
+
+
+def merge_formats(
+    builtins: dict[str, TabularFormat],
+    user_formats: dict[str, TabularFormat],
+) -> dict[str, TabularFormat]:
+    """Merge built-in and user-defined formats, with user formats taking priority.
+
+    Args:
+        builtins: Formats loaded from built-in YAML files.
+        user_formats: Formats loaded from the database.
+
+    Returns:
+        Combined dict where user_formats override builtins on name collision.
+    """
+    return {**builtins, **user_formats}

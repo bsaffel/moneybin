@@ -120,3 +120,78 @@ class TestTabularFormatModel:
         assert loaded.name == fmt.name
         assert loaded.number_format == "european"
         assert loaded.skip_trailing_patterns == ["^Total"]
+
+
+class TestFormatDBOperations:
+    """Tests for DB persistence functions."""
+
+    def test_save_format_to_db(self) -> None:
+        from unittest.mock import MagicMock
+
+        from moneybin.extractors.tabular.formats import save_format_to_db
+
+        mock_db = MagicMock()
+        fmt = TabularFormat(
+            name="test_bank",
+            institution_name="Test Bank",
+            header_signature=["Date", "Amount"],
+            field_mapping={"transaction_date": "Date", "amount": "Amount"},
+            sign_convention="negative_is_expense",
+            date_format="%m/%d/%Y",
+        )
+        save_format_to_db(mock_db, fmt)
+        assert mock_db.execute.called
+
+    def test_load_formats_from_db(self) -> None:
+        from unittest.mock import MagicMock
+
+        from moneybin.extractors.tabular.formats import load_formats_from_db
+
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchall.return_value = []
+        formats = load_formats_from_db(mock_db)
+        assert isinstance(formats, dict)
+        assert len(formats) == 0
+
+    def test_delete_format_from_db(self) -> None:
+        from unittest.mock import MagicMock
+
+        from moneybin.extractors.tabular.formats import delete_format_from_db
+
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchone.return_value = ("test_bank",)
+        result = delete_format_from_db(mock_db, "test_bank")
+        assert result is True
+
+    def test_delete_nonexistent_format(self) -> None:
+        from unittest.mock import MagicMock
+
+        from moneybin.extractors.tabular.formats import delete_format_from_db
+
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchone.return_value = None
+        result = delete_format_from_db(mock_db, "nonexistent")
+        assert result is False
+
+    def test_user_format_overrides_builtin(self) -> None:
+        from moneybin.extractors.tabular.formats import (
+            load_builtin_formats,
+            merge_formats,
+        )
+
+        builtins = load_builtin_formats()
+        user = {
+            "chase_credit": TabularFormat(
+                name="chase_credit",
+                institution_name="Chase (custom)",
+                header_signature=["Custom Date", "Custom Amount"],
+                field_mapping={
+                    "transaction_date": "Custom Date",
+                    "amount": "Custom Amount",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+            )
+        }
+        merged = merge_formats(builtins, user)
+        assert merged["chase_credit"].institution_name == "Chase (custom)"

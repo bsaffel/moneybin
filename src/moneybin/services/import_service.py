@@ -323,6 +323,8 @@ def _import_tabular(
     from moneybin.extractors.tabular.formats import (
         TabularFormat,
         load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
     )
     from moneybin.extractors.tabular.readers import read_file
     from moneybin.extractors.tabular.transforms import transform_dataframe
@@ -352,15 +354,15 @@ def _import_tabular(
         raise ValueError(f"No data rows found in {file_path.name}")
 
     # Stage 3: Column mapping
+    all_formats = merge_formats(load_builtin_formats(), load_formats_from_db(db))
+
     matched_format: TabularFormat | None = None
     if format_name:
-        builtin = load_builtin_formats()
-        if format_name in builtin:
-            matched_format = builtin[format_name]
+        if format_name in all_formats:
+            matched_format = all_formats[format_name]
     else:
-        builtin = load_builtin_formats()
         headers = list(df.columns)
-        for fmt in builtin.values():
+        for fmt in all_formats.values():
             if fmt.matches_headers(headers):
                 matched_format = fmt
                 break
