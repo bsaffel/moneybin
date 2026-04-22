@@ -34,21 +34,13 @@ class GeneratorEngine:
         persona_name: Name of the persona to generate (matches YAML filename).
         seed: Integer seed for deterministic output.
         years: Number of years to generate (overrides persona default).
+
+    Raises:
+        FileNotFoundError: If the persona or any referenced merchant catalog
+            YAML file does not exist.
     """
 
-    def __init__(self, persona_name: str, seed: int, years: int | None = None) -> None:
-        """Initialize the engine, loading persona and merchant configs.
-
-        Args:
-            persona_name: Name of the persona (matches YAML filename without extension).
-            seed: Integer seed for deterministic, reproducible output.
-            years: Number of complete years to generate; defaults to persona's
-                ``years_default`` if not provided.
-
-        Raises:
-            FileNotFoundError: If the persona or any referenced merchant catalog
-                YAML file does not exist.
-        """
+    def __init__(self, persona_name: str, seed: int, years: int | None = None) -> None:  # noqa: D107 — args documented in class docstring
         self._persona_name = persona_name
         self._seed = seed
         self._rng = SeededRandom(seed)

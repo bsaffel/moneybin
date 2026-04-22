@@ -23,12 +23,13 @@ from moneybin.testing.synthetic.models import (
 
 logger = logging.getLogger(__name__)
 
-_GROUND_TRUTH_DDL = (
+_GROUND_TRUTH_DDL_PATH = (
     Path(__file__).resolve().parents[2]
     / "sql"
     / "schema"
     / "synthetic_ground_truth.sql"
 )
+_ground_truth_ddl: str | None = None
 
 
 def _slugify(name: str) -> str:
@@ -53,14 +54,15 @@ class SyntheticWriter:
         db: Database instance.
     """
 
-    def __init__(self, db: Database) -> None:
-        """Initialize the writer with a database connection."""
+    def __init__(self, db: Database) -> None:  # noqa: D107 — args documented in class docstring
         self._db = db
 
     def _create_synthetic_schema(self) -> None:
         """Create the synthetic schema and ground_truth table on demand."""
-        ddl = _GROUND_TRUTH_DDL.read_text()
-        self._db.execute(ddl)
+        global _ground_truth_ddl  # noqa: PLW0603 — module-level cache, read once
+        if _ground_truth_ddl is None:
+            _ground_truth_ddl = _GROUND_TRUTH_DDL_PATH.read_text()
+        self._db.execute(_ground_truth_ddl)
 
     def write(self, result: GenerationResult) -> dict[str, int]:
         """Write all generated data to the database.

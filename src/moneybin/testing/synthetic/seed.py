@@ -19,8 +19,7 @@ class SeededRandom:
         seed: Integer seed for reproducible output.
     """
 
-    def __init__(self, seed: int) -> None:
-        """Initialize the RNG with a fixed integer seed."""
+    def __init__(self, seed: int) -> None:  # noqa: D107 — args documented in class docstring
         self._rng = random.Random(seed)  # noqa: S311  # deterministic test data, not cryptography
 
     def uniform(self, a: float, b: float) -> float:

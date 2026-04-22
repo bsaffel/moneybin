@@ -72,18 +72,18 @@ def generate(
 
     # Check if profile already has data
     try:
-        row = db.execute("""SELECT COUNT(*) FROM raw.ofx_transactions""").fetchone()
-        row_count = row[0] if row else 0
-        csv_row = db.execute("""SELECT COUNT(*) FROM raw.csv_transactions""").fetchone()
-        csv_count = csv_row[0] if csv_row else 0
+        row = db.execute(
+            """SELECT (SELECT COUNT(*) FROM raw.ofx_transactions)
+                    + (SELECT COUNT(*) FROM raw.csv_transactions)"""
+        ).fetchone()
+        existing_count = row[0] if row else 0
     except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
-        row_count = 0
-        csv_count = 0
+        existing_count = 0
 
-    if row_count + csv_count > 0:
+    if existing_count > 0:
         logger.error(
             f"❌ Profile {target_profile!r} already has data "
-            f"({row_count + csv_count} transactions)"
+            f"({existing_count} transactions)"
         )
         logger.info(
             f"💡 Use 'moneybin synthetic reset --persona={persona}' "

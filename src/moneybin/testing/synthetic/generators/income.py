@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -12,15 +13,8 @@ from moneybin.testing.synthetic.models import (
 )
 from moneybin.testing.synthetic.seed import SeededRandom
 
-_DAY_MAP = {
-    "monday": 0,
-    "tuesday": 1,
-    "wednesday": 2,
-    "thursday": 3,
-    "friday": 4,
-    "saturday": 5,
-    "sunday": 6,
-}
+# calendar.day_name uses Monday=0 convention matching date.weekday()
+_DAY_MAP = {name.lower(): i for i, name in enumerate(calendar.day_name)}
 
 
 class IncomeGenerator:
@@ -33,14 +27,13 @@ class IncomeGenerator:
         rng: Seeded random number generator.
     """
 
-    def __init__(
+    def __init__(  # noqa: D107 — args documented in class docstring
         self,
         incomes: list[IncomeConfig],
         start_year: int,
         end_year: int,
         rng: SeededRandom,
     ) -> None:
-        """Initialize and pre-compute biweekly pay dates for all salary sources."""
         self._incomes = incomes
         self._start_year = start_year
         self._end_year = end_year

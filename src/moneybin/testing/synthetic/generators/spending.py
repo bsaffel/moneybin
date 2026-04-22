@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import date
 from decimal import Decimal
 
@@ -12,21 +13,6 @@ from moneybin.testing.synthetic.models import (
     SpendingConfig,
 )
 from moneybin.testing.synthetic.seed import SeededRandom
-
-_MONTH_NAMES = {
-    1: "january",
-    2: "february",
-    3: "march",
-    4: "april",
-    5: "may",
-    6: "june",
-    7: "july",
-    8: "august",
-    9: "september",
-    10: "october",
-    11: "november",
-    12: "december",
-}
 
 _CITIES = [
     "AUSTIN TX",
@@ -62,16 +48,35 @@ class SpendingGenerator:
         rng: Seeded random number generator.
     """
 
-    def __init__(
+    def __init__(  # noqa: D107 — args documented in class docstring
         self,
         spending: SpendingConfig,
         catalogs: dict[str, MerchantCatalog],
         rng: SeededRandom,
     ) -> None:
-        """Store configuration and seed for month-by-month generation."""
         self._categories = spending.categories
         self._catalogs = catalogs
         self._rng = rng
+
+        # Pre-compute merchant lookup structures (avoids rebuilding per month)
+        self._merchant_names: dict[str, list[str]] = {}
+        self._merchant_weights: dict[str, list[float]] = {}
+        self._merchant_lookup: dict[str, dict[str, MerchantEntry]] = {}
+        for cat_config in spending.categories:
+            cat_name = cat_config.merchant_catalog
+            if cat_name not in self._merchant_names:
+                merchants = catalogs[cat_name].merchants
+                self._merchant_names[cat_name] = [m.name for m in merchants]
+                self._merchant_weights[cat_name] = [float(m.weight) for m in merchants]
+                self._merchant_lookup[cat_name] = {m.name: m for m in merchants}
+
+        # Pre-compute float account weights per category
+        self._account_weights: dict[str, list[float]] = {}
+        for cat_config in spending.categories:
+            if cat_config.account_weights:
+                self._account_weights[cat_config.name] = [
+                    float(w) for w in cat_config.account_weights
+                ]
 
     def _make_description(self, merchant: MerchantEntry) -> str:
         """Generate a bank-statement-style description for a merchant.
@@ -100,13 +105,13 @@ class SpendingGenerator:
             List of spending transactions (amounts are negative).
         """
         txns: list[GeneratedTransaction] = []
-        month_name = _MONTH_NAMES[month]
+        month_name = calendar.month_name[month].lower()
 
         for cat_config in self._categories:
-            catalog = self._catalogs[cat_config.merchant_catalog]
-            merchant_names = [m.name for m in catalog.merchants]
-            merchant_weights = [float(m.weight) for m in catalog.merchants]
-            merchant_lookup = {m.name: m for m in catalog.merchants}
+            cat_key = cat_config.merchant_catalog
+            merchant_names = self._merchant_names[cat_key]
+            merchant_weights = self._merchant_weights[cat_key]
+            merchant_lookup = self._merchant_lookup[cat_key]
 
             # Apply seasonal modifier to transaction count
             seasonal_mult = cat_config.seasonal_modifiers.get(month_name, 1.0)
@@ -134,10 +139,10 @@ class SpendingGenerator:
                 )
 
                 # Select account, optionally weighted
-                if cat_config.account_weights:
+                if cat_config.name in self._account_weights:
                     account = self._rng.weighted_choice(
                         cat_config.accounts,
-                        [float(w) for w in cat_config.account_weights],
+                        self._account_weights[cat_config.name],
                     )
                 else:
                     account = self._rng.choice(cat_config.accounts)
