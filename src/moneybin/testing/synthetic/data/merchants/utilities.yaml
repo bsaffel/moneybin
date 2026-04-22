@@ -1,0 +1,34 @@
+category: utilities
+merchants:
+  - name: "AT&T"
+    weight: 15
+    amount: { mean: 95.00, stddev: 15.00 }
+    description_prefix: "ATT"
+  - name: "Comcast Xfinity"
+    weight: 14
+    amount: { mean: 89.00, stddev: 10.00 }
+    description_prefix: "COMCAST"
+  - name: "T-Mobile"
+    weight: 13
+    amount: { mean: 85.00, stddev: 12.00 }
+    description_prefix: "T-MOBILE"
+  - name: "Verizon"
+    weight: 13
+    amount: { mean: 92.00, stddev: 14.00 }
+    description_prefix: "VERIZON"
+  - name: "Electric Company"
+    weight: 15
+    amount: { mean: 135.00, stddev: 40.00 }
+    description_prefix: "ELECTRIC CO"
+  - name: "Gas Utility"
+    weight: 10
+    amount: { mean: 75.00, stddev: 30.00 }
+    description_prefix: "GAS UTILITY"
+  - name: "Water Utility"
+    weight: 10
+    amount: { mean: 55.00, stddev: 15.00 }
+    description_prefix: "WATER DEPT"
+  - name: "Waste Management"
+    weight: 10
+    amount: { mean: 42.00, stddev: 8.00 }
+    description_prefix: "WASTE MGMT"

@@ -1,0 +1,34 @@
+category: gifts
+merchants:
+  - name: "1-800-Flowers"
+    weight: 8
+    amount: { mean: 65.00, stddev: 25.00 }
+    description_prefix: "1800FLOWERS"
+  - name: "Hallmark"
+    weight: 12
+    amount: { mean: 8.00, stddev: 4.00 }
+    description_prefix: "HALLMARK"
+  - name: "Amazon Gift"
+    weight: 15
+    amount: { mean: 45.00, stddev: 25.00 }
+    description_prefix: "AMZN MKTP"
+  - name: "Target Gift"
+    weight: 10
+    amount: { mean: 35.00, stddev: 15.00 }
+    description_prefix: "TARGET"
+  - name: "Charitable Donation"
+    weight: 12
+    amount: { mean: 50.00, stddev: 30.00 }
+    description_prefix: "DONATION"
+  - name: "GoFundMe"
+    weight: 6
+    amount: { mean: 25.00, stddev: 15.00 }
+    description_prefix: "GOFUNDME"
+  - name: "Party City"
+    weight: 5
+    amount: { mean: 35.00, stddev: 15.00 }
+    description_prefix: "PARTY CITY"
+  - name: "Etsy Gift"
+    weight: 8
+    amount: { mean: 38.00, stddev: 18.00 }
+    description_prefix: "ETSY"

@@ -91,6 +91,26 @@ MCP_TOOL_DURATION_SECONDS = Histogram(
     ["tool_name"],
 )
 
+# ── Synthetic data ───────────────────────────────────────────────────────────
+
+SYNTHETIC_GENERATED_TRANSACTIONS_TOTAL = Counter(
+    "moneybin_synthetic_generated_transactions_total",
+    "Total synthetic transactions generated",
+    ["persona"],
+)
+
+SYNTHETIC_GENERATION_DURATION_SECONDS = Histogram(
+    "moneybin_synthetic_generation_duration_seconds",
+    "Duration of synthetic data generation runs in seconds",
+    ["persona"],
+)
+
+SYNTHETIC_RESET_TOTAL = Counter(
+    "moneybin_synthetic_reset_total",
+    "Total synthetic dataset resets performed",
+    ["persona"],
+)
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 DB_QUERY_DURATION_SECONDS = Histogram(

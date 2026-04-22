@@ -1,0 +1,50 @@
+category: entertainment
+merchants:
+  - name: "AMC Theatres"
+    weight: 12
+    amount: { mean: 28.00, stddev: 10.00 }
+    description_prefix: "AMC THEATRES"
+  - name: "Steam"
+    weight: 10
+    amount: { mean: 25.00, stddev: 15.00 }
+    description_prefix: "STEAMPOWERED"
+  - name: "PlayStation Store"
+    weight: 8
+    amount: { mean: 30.00, stddev: 18.00 }
+    description_prefix: "PLAYSTATION"
+  - name: "Xbox Microsoft"
+    weight: 7
+    amount: { mean: 28.00, stddev: 16.00 }
+    description_prefix: "MICROSOFT XBOX"
+  - name: "Dave & Buster's"
+    weight: 5
+    amount: { mean: 45.00, stddev: 15.00 }
+    description_prefix: "DAVE AND BUSTERS"
+  - name: "TopGolf"
+    weight: 4
+    amount: { mean: 55.00, stddev: 18.00 }
+    description_prefix: "TOPGOLF"
+  - name: "Ticketmaster"
+    weight: 6
+    amount: { mean: 85.00, stddev: 35.00 }
+    description_prefix: "TICKETMASTER"
+  - name: "Regal Cinemas"
+    weight: 8
+    amount: { mean: 25.00, stddev: 8.00 }
+    description_prefix: "REGAL CINEMAS"
+  - name: "Audible"
+    weight: 6
+    amount: { mean: 15.00, stddev: 2.00 }
+    description_prefix: "AUDIBLE"
+  - name: "Apple iTunes"
+    weight: 10
+    amount: { mean: 8.00, stddev: 5.00 }
+    description_prefix: "APPLE.COM/BILL"
+  - name: "Nintendo eShop"
+    weight: 5
+    amount: { mean: 22.00, stddev: 12.00 }
+    description_prefix: "NINTENDO"
+  - name: "Spotify"
+    weight: 9
+    amount: { mean: 11.00, stddev: 2.00 }
+    description_prefix: "SPOTIFY"

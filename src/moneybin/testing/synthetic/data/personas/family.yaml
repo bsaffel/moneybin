@@ -1,0 +1,186 @@
+persona: family
+profile: bob
+description: "Dual-income family, joint + individual accounts, child-related expenses"
+years_default: 3
+
+accounts:
+  - name: "Our Chase Checking"
+    type: checking
+    source_type: ofx
+    institution: "Chase Bank"
+    opening_balance: 4500.00
+  - name: "Savings at Ally"
+    type: savings
+    source_type: ofx
+    institution: "Ally Bank"
+    opening_balance: 15000.00
+  - name: "Alice Costco Visa"
+    type: credit_card
+    source_type: csv
+    institution: "Citi"
+    opening_balance: 0.00
+  - name: "Bob Amazon Card"
+    type: credit_card
+    source_type: csv
+    institution: "Chase Bank"
+    opening_balance: 0.00
+
+income:
+  - type: salary
+    account: "Our Chase Checking"
+    amount: 4200.00
+    schedule: biweekly
+    pay_day: friday
+    annual_raise_pct: 3.0
+    description_template: "DIRECT DEP {employer}"
+    employer: "Acme Corp"
+  - type: salary
+    account: "Our Chase Checking"
+    amount: 3400.00
+    schedule: biweekly
+    pay_day: friday
+    annual_raise_pct: 2.5
+    description_template: "DIRECT DEP {employer}"
+    employer: "TechStart Inc"
+
+recurring:
+  - category: housing
+    description: "Mortgage Payment"
+    account: "Our Chase Checking"
+    amount: 2100.00
+    day_of_month: 1
+  - category: utilities
+    description: "Electric Company"
+    account: "Our Chase Checking"
+    amount: { mean: 145.00, stddev: 35.00 }
+    day_of_month: 15
+  - category: utilities
+    description: "Gas Utility"
+    account: "Our Chase Checking"
+    amount: { mean: 85.00, stddev: 25.00 }
+    day_of_month: 18
+  - category: utilities
+    description: "Water Bill"
+    account: "Our Chase Checking"
+    amount: { mean: 55.00, stddev: 12.00 }
+    day_of_month: 22
+  - category: utilities
+    description: "Internet Service"
+    account: "Our Chase Checking"
+    amount: 89.00
+    day_of_month: 10
+  - category: utilities
+    description: "Phone Plan"
+    account: "Our Chase Checking"
+    amount: 145.00
+    day_of_month: 8
+  - category: subscriptions
+    description: "Netflix"
+    account: "Alice Costco Visa"
+    amount: 17.99
+    day_of_month: 8
+    price_increases:
+      - after_months: 18
+        new_amount: 19.99
+  - category: subscriptions
+    description: "Spotify Family"
+    account: "Alice Costco Visa"
+    amount: 16.99
+    day_of_month: 12
+  - category: subscriptions
+    description: "Disney+"
+    account: "Bob Amazon Card"
+    amount: 13.99
+    day_of_month: 15
+  - category: insurance
+    description: "Auto Insurance"
+    account: "Our Chase Checking"
+    amount: 185.00
+    day_of_month: 5
+  - category: insurance
+    description: "Life Insurance"
+    account: "Our Chase Checking"
+    amount: 65.00
+    day_of_month: 5
+
+spending:
+  categories:
+    - name: grocery
+      merchant_catalog: grocery
+      monthly_budget: { mean: 850.00, stddev: 120.00 }
+      transactions_per_month: { mean: 12, stddev: 2 }
+      accounts: ["Our Chase Checking", "Alice Costco Visa"]
+      account_weights: [0.6, 0.4]
+      seasonal_modifiers:
+        november: 1.3
+        december: 1.4
+        january: 0.8
+    - name: dining
+      merchant_catalog: dining
+      monthly_budget: { mean: 400.00, stddev: 80.00 }
+      transactions_per_month: { mean: 10, stddev: 3 }
+      accounts: ["Alice Costco Visa", "Bob Amazon Card"]
+      account_weights: [0.5, 0.5]
+      day_of_week_weights:
+        friday: 2.0
+        saturday: 2.0
+    - name: kids_activities
+      merchant_catalog: kids
+      monthly_budget: { mean: 300.00, stddev: 60.00 }
+      transactions_per_month: { mean: 5, stddev: 1 }
+      accounts: ["Our Chase Checking"]
+      seasonal_modifiers:
+        june: 1.5
+        august: 1.8
+        september: 1.3
+    - name: transport
+      merchant_catalog: transport
+      monthly_budget: { mean: 280.00, stddev: 60.00 }
+      transactions_per_month: { mean: 8, stddev: 2 }
+      accounts: ["Our Chase Checking", "Bob Amazon Card"]
+      account_weights: [0.7, 0.3]
+    - name: shopping
+      merchant_catalog: shopping
+      monthly_budget: { mean: 450.00, stddev: 100.00 }
+      transactions_per_month: { mean: 12, stddev: 3 }
+      accounts: ["Alice Costco Visa", "Bob Amazon Card"]
+      account_weights: [0.5, 0.5]
+      seasonal_modifiers:
+        november: 1.5
+        december: 2.0
+        january: 0.7
+    - name: entertainment
+      merchant_catalog: entertainment
+      monthly_budget: { mean: 150.00, stddev: 40.00 }
+      transactions_per_month: { mean: 4, stddev: 1 }
+      accounts: ["Bob Amazon Card"]
+    - name: health
+      merchant_catalog: health
+      monthly_budget: { mean: 200.00, stddev: 60.00 }
+      transactions_per_month: { mean: 3, stddev: 1 }
+      accounts: ["Our Chase Checking"]
+    - name: personal_care
+      merchant_catalog: personal_care
+      monthly_budget: { mean: 100.00, stddev: 30.00 }
+      transactions_per_month: { mean: 2, stddev: 1 }
+      accounts: ["Alice Costco Visa"]
+
+transfers:
+  - from: "Our Chase Checking"
+    to: "Savings at Ally"
+    amount: 500.00
+    schedule: monthly
+    day_of_month: 5
+    description_template: "TRANSFER TO SAVINGS"
+  - from: "Our Chase Checking"
+    to: "Alice Costco Visa"
+    amount: statement_balance
+    schedule: monthly
+    day_of_month: 20
+    description_template: "ONLINE PAYMENT CITI"
+  - from: "Our Chase Checking"
+    to: "Bob Amazon Card"
+    amount: statement_balance
+    schedule: monthly
+    day_of_month: 22
+    description_template: "ONLINE PAYMENT CHASE CARD"

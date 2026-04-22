@@ -1,0 +1,62 @@
+category: grocery
+merchants:
+  - name: "Trader Joe's"
+    weight: 15
+    amount: { mean: 55.00, stddev: 18.00 }
+    description_prefix: "TRADER JOE'S"
+  - name: "Costco"
+    weight: 10
+    amount: { mean: 145.00, stddev: 40.00 }
+    description_prefix: "COSTCO WHSE"
+  - name: "Whole Foods"
+    weight: 8
+    amount: { mean: 72.00, stddev: 22.00 }
+    description_prefix: "WHOLE FOODS MKT"
+  - name: "Kroger"
+    weight: 12
+    amount: { mean: 65.00, stddev: 20.00 }
+    description_prefix: "KROGER"
+  - name: "Walmart Grocery"
+    weight: 14
+    amount: { mean: 78.00, stddev: 25.00 }
+    description_prefix: "WAL-MART"
+  - name: "Target"
+    weight: 8
+    amount: { mean: 45.00, stddev: 15.00 }
+    description_prefix: "TARGET"
+  - name: "Aldi"
+    weight: 10
+    amount: { mean: 42.00, stddev: 12.00 }
+    description_prefix: "ALDI"
+  - name: "Safeway"
+    weight: 6
+    amount: { mean: 58.00, stddev: 18.00 }
+    description_prefix: "SAFEWAY"
+  - name: "Instacart"
+    weight: 7
+    amount: { mean: 85.00, stddev: 30.00 }
+    description_prefix: "INSTACART"
+  - name: "Amazon Fresh"
+    weight: 5
+    amount: { mean: 68.00, stddev: 22.00 }
+    description_prefix: "AMZN FRESH"
+  - name: "Publix"
+    weight: 6
+    amount: { mean: 62.00, stddev: 18.00 }
+    description_prefix: "PUBLIX"
+  - name: "H-E-B"
+    weight: 5
+    amount: { mean: 70.00, stddev: 20.00 }
+    description_prefix: "H-E-B"
+  - name: "Sprouts"
+    weight: 4
+    amount: { mean: 48.00, stddev: 15.00 }
+    description_prefix: "SPROUTS FARMERS"
+  - name: "Albertsons"
+    weight: 4
+    amount: { mean: 55.00, stddev: 16.00 }
+    description_prefix: "ALBERTSONS"
+  - name: "Wegmans"
+    weight: 3
+    amount: { mean: 80.00, stddev: 25.00 }
+    description_prefix: "WEGMANS"

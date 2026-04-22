@@ -1,0 +1,50 @@
+category: health
+merchants:
+  - name: "CVS Pharmacy"
+    weight: 15
+    amount: { mean: 25.00, stddev: 15.00 }
+    description_prefix: "CVS PHARMACY"
+  - name: "Walgreens"
+    weight: 12
+    amount: { mean: 22.00, stddev: 12.00 }
+    description_prefix: "WALGREENS"
+  - name: "Doctor Copay"
+    weight: 10
+    amount: { mean: 40.00, stddev: 15.00 }
+    description_prefix: "PHYSICIAN OFFICE"
+  - name: "Dental Office"
+    weight: 6
+    amount: { mean: 75.00, stddev: 40.00 }
+    description_prefix: "DENTAL OFFICE"
+  - name: "Vision Center"
+    weight: 4
+    amount: { mean: 50.00, stddev: 25.00 }
+    description_prefix: "VISION CENTER"
+  - name: "Urgent Care"
+    weight: 3
+    amount: { mean: 150.00, stddev: 50.00 }
+    description_prefix: "URGENT CARE"
+  - name: "LabCorp"
+    weight: 3
+    amount: { mean: 35.00, stddev: 20.00 }
+    description_prefix: "LABCORP"
+  - name: "Physical Therapy"
+    weight: 3
+    amount: { mean: 45.00, stddev: 15.00 }
+    description_prefix: "PHYSICAL THERAPY"
+  - name: "Planet Fitness"
+    weight: 8
+    amount: { mean: 25.00, stddev: 5.00 }
+    description_prefix: "PLANET FITNESS"
+  - name: "GNC"
+    weight: 5
+    amount: { mean: 35.00, stddev: 15.00 }
+    description_prefix: "GNC"
+  - name: "Mental Health Copay"
+    weight: 4
+    amount: { mean: 30.00, stddev: 10.00 }
+    description_prefix: "BEHAVIORAL HEALTH"
+  - name: "Dermatologist"
+    weight: 2
+    amount: { mean: 55.00, stddev: 25.00 }
+    description_prefix: "DERMATOLOGY ASSOC"
