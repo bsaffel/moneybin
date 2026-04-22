@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from decimal import Decimal
 
 from moneybin.testing.synthetic.models import GeneratedTransaction, TransferConfig
 from moneybin.testing.synthetic.seed import SeededRandom
+
+logger = logging.getLogger(__name__)
 
 
 class TransferGenerator:
@@ -47,7 +50,12 @@ class TransferGenerator:
             if config.schedule == "monthly":
                 txn_date = date(year, month, config.day_of_month)
             else:
-                continue  # biweekly transfers not implemented in v1
+                logger.warning(
+                    f"⚠️  Skipping transfer {config.from_account!r} → "
+                    f"{config.to_account!r}: schedule {config.schedule!r} "
+                    f"not implemented in v1"
+                )
+                continue
 
             # Determine amount
             if config.amount == "statement_balance":

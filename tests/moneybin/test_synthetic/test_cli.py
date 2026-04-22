@@ -122,6 +122,36 @@ class TestResetCommand:
         result = runner.invoke(app, ["reset"])
         assert result.exit_code != 0
 
+    def test_reset_success_with_yes(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+    ) -> None:
+        """Reset --yes with ground_truth present should delete and regenerate."""
+        mock_db = MagicMock()
+        # ground_truth table exists
+        mock_db.execute.return_value.fetchone.return_value = (1,)
+        mock_db.path = Path("/tmp/test.duckdb")
+        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch("moneybin.database.close_database")
+
+        # Mock _run_generate to avoid the full pipeline
+        mock_run = mocker.patch(
+            "moneybin.cli.commands.synthetic._run_generate",
+        )
+
+        result = runner.invoke(
+            app, ["reset", "--persona", "basic", "--yes", "--seed", "42"]
+        )
+        assert result.exit_code == 0
+        mock_run.assert_called_once_with(
+            persona="basic",
+            profile="alice",
+            years=None,
+            seed=42,
+            skip_transform=False,
+        )
+
     def test_reset_requires_yes_or_prompt(self, runner: CliRunner) -> None:
         """Without --yes, reset should prompt for confirmation."""
         # CliRunner sends EOF on stdin by default, so prompt is declined

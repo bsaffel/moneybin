@@ -68,74 +68,79 @@ def _run_generate(
     set_current_profile(profile)
 
     try:
-        db = get_database()
-    except DatabaseKeyError:
-        set_current_profile(original_profile)
-        logger.error("❌ Database encryption key not found")
-        logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
-        raise typer.Exit(1) from None
+        try:
+            db = get_database()
+        except DatabaseKeyError:
+            logger.error("❌ Database encryption key not found")
+            logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
+            raise typer.Exit(1) from None
 
-    # Check if profile already has data
-    try:
-        row = db.execute(
-            """SELECT (SELECT COUNT(*) FROM raw.ofx_transactions)
-                    + (SELECT COUNT(*) FROM raw.csv_transactions)"""
-        ).fetchone()
-        existing_count = row[0] if row else 0
-    except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
-        existing_count = 0
+        # Check if profile already has data
+        try:
+            row = db.execute(
+                """SELECT (SELECT COUNT(*) FROM raw.ofx_transactions)
+                        + (SELECT COUNT(*) FROM raw.csv_transactions)"""
+            ).fetchone()
+            existing_count = row[0] if row else 0
+        except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
+            existing_count = 0
 
-    if existing_count > 0:
-        logger.error(
-            f"❌ Profile {profile!r} already has data ({existing_count} transactions)"
+        if existing_count > 0:
+            logger.error(
+                f"❌ Profile {profile!r} already has data ({existing_count} transactions)"
+            )
+            logger.info(
+                f"💡 Use 'moneybin synthetic reset --persona={persona}' "
+                f"to wipe and regenerate"
+            )
+            raise typer.Exit(1) from None
+
+        # Generate
+        try:
+            engine = GeneratorEngine(persona, seed=actual_seed, years=years)
+            result = engine.generate()
+        except FileNotFoundError as e:
+            logger.error(f"❌ {e}")
+            raise typer.Exit(1) from None
+
+        # Write to database
+        writer = SyntheticWriter(db)
+        counts = writer.write(result)
+
+        acct_count = counts.get("ofx_accounts", 0) + counts.get("csv_accounts", 0)
+        txn_count = counts.get("ofx_transactions", 0) + counts.get(
+            "csv_transactions", 0
+        )
+        gt_count = counts.get("ground_truth", 0)
+        transfer_count = sum(1 for t in result.transactions if t.transfer_pair_id) // 2
+
+        logger.info(f"  Created {acct_count} accounts")
+        logger.info(
+            f"  Generated {txn_count} transactions "
+            f"({result.start_date} to {result.end_date})"
         )
         logger.info(
-            f"💡 Use 'moneybin synthetic reset --persona={persona}' "
-            f"to wipe and regenerate"
+            f"  Wrote ground truth: {gt_count} labels, {transfer_count} transfer pairs"
         )
-        raise typer.Exit(1) from None
 
-    # Generate
-    try:
-        engine = GeneratorEngine(persona, seed=actual_seed, years=years)
-        result = engine.generate()
-    except FileNotFoundError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from None
+        # Run SQLMesh transforms
+        if not skip_transform:
+            logger.info("⚙️  Running SQLMesh to materialize pipeline...")
+            try:
+                run_transforms(db.path)
+            except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
+                logger.warning(
+                    "⚠️  SQLMesh transforms failed — raw data is intact, "
+                    "run 'moneybin transform apply' manually"
+                )
 
-    # Write to database
-    writer = SyntheticWriter(db)
-    counts = writer.write(result)
-
-    acct_count = counts.get("ofx_accounts", 0) + counts.get("csv_accounts", 0)
-    txn_count = counts.get("ofx_transactions", 0) + counts.get("csv_transactions", 0)
-    gt_count = counts.get("ground_truth", 0)
-    transfer_count = sum(1 for t in result.transactions if t.transfer_pair_id) // 2
-
-    logger.info(f"  Created {acct_count} accounts")
-    logger.info(
-        f"  Generated {txn_count} transactions "
-        f"({result.start_date} to {result.end_date})"
-    )
-    logger.info(
-        f"  Wrote ground truth: {gt_count} labels, {transfer_count} transfer pairs"
-    )
-
-    # Run SQLMesh transforms
-    if not skip_transform:
-        logger.info("⚙️  Running SQLMesh to materialize pipeline...")
-        try:
-            run_transforms(db.path)
-        except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
-            logger.warning(
-                "⚠️  SQLMesh transforms failed — raw data is intact, "
-                "run 'moneybin transform apply' manually"
-            )
-
-    logger.info(
-        f"✅ Profile {profile!r} ready (seed={actual_seed}). "
-        f"Use --profile={profile} with any moneybin command."
-    )
+        logger.info(
+            f"✅ Profile {profile!r} ready (seed={actual_seed}). "
+            f"Use --profile={profile} with any moneybin command."
+        )
+    except typer.Exit:
+        set_current_profile(original_profile)
+        raise
 
 
 @app.command("generate")
