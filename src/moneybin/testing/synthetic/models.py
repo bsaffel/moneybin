@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -100,6 +101,18 @@ class SpendingCategoryConfig(BaseModel):
     seasonal_modifiers: dict[str, float] = Field(default_factory=dict)
     day_of_week_weights: dict[str, float] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _validate_account_weights(self) -> SpendingCategoryConfig:
+        """Ensure account_weights length matches accounts length."""
+        if self.account_weights is not None and len(self.account_weights) != len(
+            self.accounts
+        ):
+            raise ValueError(
+                f"account_weights length ({len(self.account_weights)}) must match "
+                f"accounts length ({len(self.accounts)})"
+            )
+        return self
+
 
 class SpendingConfig(BaseModel):
     """The spending section of a persona definition."""
@@ -181,7 +194,7 @@ class PersonaConfig(BaseModel):
 # YAML loading helpers
 # ---------------------------------------------------------------------------
 
-_DATA_DIR = __import__("pathlib").Path(__file__).resolve().parent / "data"
+_DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 def load_persona(persona_name: str) -> PersonaConfig:

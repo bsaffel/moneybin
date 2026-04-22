@@ -11,6 +11,7 @@ from moneybin.testing.synthetic.models import (
     MerchantEntry,
     PersonaConfig,
     RecurringConfig,
+    SpendingCategoryConfig,
     TransferConfig,
 )
 
@@ -195,8 +196,23 @@ class TestPersonaConfig:
             AccountConfig(
                 name="Bad",
                 type="checking",
-                source_type="parquet",  # type: ignore[arg-type]
+                source_type="parquet",  # type: ignore[arg-type]  # intentionally invalid to test rejection
                 institution="Test Bank",
+            )
+
+
+class TestSpendingCategoryConfig:
+    """Test spending category config validation."""
+
+    def test_account_weights_length_mismatch_rejected(self) -> None:
+        with pytest.raises(ValueError, match="account_weights length"):
+            SpendingCategoryConfig(
+                name="grocery",
+                merchant_catalog="grocery",
+                monthly_budget=AmountDistribution(mean=400.0, stddev=80.0),
+                transactions_per_month=AmountDistribution(mean=5.0, stddev=1.0),
+                accounts=["Checking", "Visa"],
+                account_weights=[0.6, 0.3, 0.1],
             )
 
 
