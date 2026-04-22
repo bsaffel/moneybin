@@ -15,6 +15,16 @@ app = typer.Typer(
 # Persona -> default profile name mapping
 _PERSONA_PROFILES = {"basic": "alice", "family": "bob", "freelancer": "charlie"}
 
+# Tables to truncate during reset (hardcoded allowlist — not user input)
+_RESET_TABLES = [
+    "synthetic.ground_truth",
+    "raw.ofx_transactions",
+    "raw.ofx_accounts",
+    "raw.ofx_balances",
+    "raw.csv_transactions",
+    "raw.csv_accounts",
+]
+
 
 @app.command("generate")
 def generate(
@@ -66,18 +76,20 @@ def generate(
         row_count = row[0] if row else 0
         csv_row = db.execute("""SELECT COUNT(*) FROM raw.csv_transactions""").fetchone()
         csv_count = csv_row[0] if csv_row else 0
-        if row_count + csv_count > 0:
-            logger.error(
-                f"❌ Profile {target_profile!r} already has data "
-                f"({row_count + csv_count} transactions)"
-            )
-            logger.info(
-                f"💡 Use 'moneybin synthetic reset --persona={persona}' "
-                f"to wipe and regenerate"
-            )
-            raise typer.Exit(1) from None
     except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
-        pass
+        row_count = 0
+        csv_count = 0
+
+    if row_count + csv_count > 0:
+        logger.error(
+            f"❌ Profile {target_profile!r} already has data "
+            f"({row_count + csv_count} transactions)"
+        )
+        logger.info(
+            f"💡 Use 'moneybin synthetic reset --persona={persona}' "
+            f"to wipe and regenerate"
+        )
+        raise typer.Exit(1) from None
 
     # Generate
     try:
@@ -153,17 +165,10 @@ def reset(
             WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"""
         ).fetchone()
         gt_exists = gt_row[0] if gt_row else 0
-        if not gt_exists:
-            logger.error(
-                f"❌ Profile {target_profile!r} was not created by the "
-                f"generator. Refusing to reset."
-            )
-            logger.info(
-                f"💡 To destroy a non-generated profile, use "
-                f"'moneybin db destroy --profile={target_profile}'"
-            )
-            raise typer.Exit(1) from None
     except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
+        gt_exists = 0
+
+    if not gt_exists:
         logger.error(
             f"❌ Profile {target_profile!r} was not created by the "
             f"generator. Refusing to reset."
@@ -182,15 +187,6 @@ def reset(
         if not confirmed:
             raise typer.Abort()
 
-    # Drop all data from raw and synthetic tables (hardcoded allowlist)
-    _RESET_TABLES = [  # noqa: N806 — local constant for clarity
-        "synthetic.ground_truth",
-        "raw.ofx_transactions",
-        "raw.ofx_accounts",
-        "raw.ofx_balances",
-        "raw.csv_transactions",
-        "raw.csv_accounts",
-    ]
     logger.info(f"⚙️  Resetting profile {target_profile!r}...")
     for table in _RESET_TABLES:
         try:

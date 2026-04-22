@@ -22,9 +22,12 @@ class TestGenerateCommand:
 
     @pytest.fixture
     def mock_get_database(self, mocker: Any) -> MagicMock:
+        mock_db = MagicMock()
+        # Make the "already has data" check return 0 rows
+        mock_db.execute.return_value.fetchone.return_value = (0,)
         return mocker.patch(
             "moneybin.database.get_database",
-            return_value=MagicMock(),
+            return_value=mock_db,
         )
 
     @pytest.fixture
