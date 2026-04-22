@@ -1,0 +1,27 @@
+name: ynab
+institution_name: YNAB
+format: csv
+header_signature:
+  - Account
+  - Flag
+  - Date
+  - Payee
+  - Category Group/Category
+  - Category Group
+  - Category
+  - Memo
+  - Outflow
+  - Inflow
+  - Cleared
+field_mapping:
+  transaction_date: Date
+  description: Payee
+  category: Category Group/Category
+  debit_amount: Outflow
+  credit_amount: Inflow
+  memo: Memo
+  status: Cleared
+sign_convention: split_debit_credit
+date_format: "%m/%d/%Y"
+number_format: us
+skip_trailing_patterns: null
