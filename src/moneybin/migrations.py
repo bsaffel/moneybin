@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
@@ -187,7 +189,7 @@ class AppliedMigration:
     filename: str
     success: bool
     execution_ms: int | None
-    applied_at: str
+    applied_at: datetime
 
 
 class MigrationRunner:

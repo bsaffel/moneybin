@@ -161,6 +161,7 @@ class TestMigrateStatus:
     ) -> None:
         """Status command exits 0 and logs applied and pending migrations."""
         import logging
+        from datetime import datetime
 
         from moneybin.migrations import AppliedMigration
 
@@ -176,7 +177,7 @@ class TestMigrateStatus:
                 filename="V001__init.sql",
                 success=True,
                 execution_ms=42,
-                applied_at="2026-01-01 00:00:00",
+                applied_at=datetime(2026, 1, 1),
             )
         ]
         mock_runner.check_drift.return_value = []

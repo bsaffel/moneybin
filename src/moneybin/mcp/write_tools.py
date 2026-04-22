@@ -7,6 +7,7 @@ layer with privacy validation.
 
 import json
 import logging
+import typing
 import uuid
 from pathlib import Path
 
@@ -35,7 +36,7 @@ from .server import mcp, table_exists
 
 logger = logging.getLogger(__name__)
 
-_VALID_MATCH_TYPES: set[MatchType] = {"exact", "contains", "regex"}
+_VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
 
 
 def _validate_match_type(match_type: str) -> MatchType:
