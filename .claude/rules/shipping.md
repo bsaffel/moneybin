@@ -27,6 +27,10 @@ The goal is that someone reading the README gets an accurate picture of what Mon
 
 - Add a 🗓️ entry to the relevant roadmap table in `README.md`.
 
+## Pre-Push Quality Pass
+
+After implementation is complete and documentation is updated, run `/simplify` **before the final commit and push**. This reviews the changed code for reuse opportunities, quality issues, and efficiency problems — then fixes what it finds. The goal is to catch copy-paste patterns, redundant state, missing validations, and other issues that accumulate during implementation before they land on `main`.
+
 ## Principle
 
 The README is the project's storefront. It must stay honest — never claim shipped status for designed-only features — but it should also stay *current*. A shipped feature that isn't in the README is invisible to users.

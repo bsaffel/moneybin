@@ -52,7 +52,7 @@ def schema_table_detail(table_name: str) -> str:
     The table_name can be schema-qualified (e.g. 'raw.ofx_transactions')
     or just the table name (searches all schemas).
     """
-    logger.info("Resource read: schema/%s", table_name)
+    logger.info(f"Resource read: schema/{table_name}")
     db = get_db()
 
     # Handle schema-qualified names
@@ -208,7 +208,7 @@ def w2_by_year(tax_year: str) -> str:
     Args:
         tax_year: The tax year (e.g. '2024').
     """
-    logger.info("Resource read: w2/%s", tax_year)
+    logger.info(f"Resource read: w2/{tax_year}")
     db = get_db()
 
     if not table_exists(W2_FORMS):

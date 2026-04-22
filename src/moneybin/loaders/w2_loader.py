@@ -62,12 +62,8 @@ class W2Loader:
         """
         row_count = 0
 
-        # Ensure tables exist
-        self.create_raw_tables()
-
-        # INSERT queries reference local Polars DataFrames via DuckDB's Python
-        # frame scan (FROM df). This requires the raw conn.execute() rather than
-        # db.execute() — use db.conn directly for INSERT FROM df only.
+        # Use conn directly for INSERT with inline type casts (::JSON,
+        # ::TIMESTAMP) and CASE expressions that ingest_dataframe doesn't support.
         conn = self.db.conn
 
         # Load W2 forms (use INSERT OR REPLACE for idempotency)

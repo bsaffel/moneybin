@@ -60,6 +60,22 @@ Database(tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
 Database(tmp_path / "test.duckdb", secret_store=mock_store)
 ```
 
+## Test Fixture Factories
+
+When a dataclass or model requires 3+ fields and appears in multiple tests, write a module-level `_make_thing()` factory with sensible defaults. Tests override only the fields they care about, keeping the focus on the behavior under test rather than construction boilerplate.
+
+```python
+# Good — factory with defaults, tests override what matters
+def _make_migration(version: int = 1, filename: str = "V001__test.sql", **kw):
+    return Migration(version=version, filename=filename, content=b"SELECT 1;", ...)
+
+mock_runner.pending.return_value = [_make_migration(version=2, filename="V002__new.sql")]
+
+# Bad — full constructor repeated in every test
+Migration(version=2, name="new", filename="V002__new.sql", checksum="def456",
+          content=b"SELECT 1;", path=Path("/tmp/V002__new.sql"), file_type="sql")
+```
+
 ## Best Practices
 
 - Arrange-Act-Assert structure.

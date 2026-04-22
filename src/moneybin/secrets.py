@@ -98,7 +98,7 @@ class SecretStore:
             value: Secret value to store.
         """
         keyring.set_password(_SERVICE_NAME, name, value)
-        logger.debug("Stored secret '%s' in OS keychain", name)
+        logger.debug(f"Stored secret '{name}' in OS keychain")
 
     def delete_key(self, name: str) -> None:
         """Remove a secret from the OS keychain.
@@ -115,4 +115,4 @@ class SecretStore:
             raise SecretNotFoundError(
                 f"Secret '{name}' not found in keychain."
             ) from None
-        logger.debug("Removed secret '%s' from OS keychain", name)
+        logger.debug(f"Removed secret '{name}' from OS keychain")

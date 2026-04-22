@@ -63,7 +63,7 @@ def _query_to_json(sql: str, params: list[object] | None = None) -> str:
         records = [dict(zip(columns, row, strict=False)) for row in rows]
         return truncate_result(json.dumps(records, indent=2, default=str))
     except Exception as e:
-        logger.exception("Query failed: %s", sql)
+        logger.exception(f"Query failed: {sql}")
         return json.dumps({"error": str(e)})
 
 
@@ -103,7 +103,7 @@ def describe_table(table_name: str, schema_name: str = "raw") -> str:
         table_name: Name of the table to describe.
         schema_name: Schema containing the table (default: 'raw').
     """
-    logger.info("Tool called: describe_table(%s.%s)", schema_name, table_name)
+    logger.info(f"Tool called: describe_table({schema_name}.{table_name})")
 
     error = check_table_allowed(f"{schema_name}.{table_name}")
     if error:

@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
 
-# Execution order: schemas first, then tables
 _SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
     "core_schema.sql",
@@ -115,7 +114,8 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                 logger.debug(f"Applied column comment to {table_name}.{col_def.name}")
             except duckdb.CatalogException:
                 logger.debug(
-                    f"Skipping column comment for {table_name}.{col_def.name} — table does not exist yet"
+                    f"Skipping column comment for {table_name}.{col_def.name}"
+                    " — table does not exist yet"
                 )
 
 

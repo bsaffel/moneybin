@@ -53,6 +53,46 @@ class ImportResult:
         return "\n".join(lines)
 
 
+def _query_date_range(
+    db: Database,
+    table: str,
+    date_expr: str,
+    file_path: Path,
+) -> str:
+    """Query min/max date range for a source file from a raw table.
+
+    Both ``table`` and ``date_expr`` are interpolated into SQL — callers
+    must only pass hardcoded trusted strings, never user input.
+
+    Args:
+        db: Database instance.
+        table: Qualified table name (e.g. ``raw.ofx_transactions``).
+        date_expr: SQL expression for the date value — may be a bare column
+            name (``transaction_date``) or a cast expression
+            (``CAST(date_posted AS DATE)``).
+        file_path: Source file path to filter on.
+
+    Returns:
+        Date range string like ``"2024-01-01 to 2024-03-31"``, or empty
+        string if unavailable.
+    """
+    try:
+        result = db.execute(
+            f"""
+            SELECT MIN({date_expr}) AS min_date,
+                   MAX({date_expr}) AS max_date
+            FROM {table}
+            WHERE source_file = ?
+            """,  # noqa: S608 — table and date_expr are hardcoded by callers, not user input
+            [str(file_path)],
+        ).fetchone()
+        if result and result[0]:
+            return f"{result[0]} to {result[1]}"
+    except Exception:  # noqa: BLE001 — date range is best-effort; any DB failure returns empty string
+        logger.debug(f"Could not determine date range from {table}", exc_info=True)
+    return ""
+
+
 def _detect_file_type(file_path: Path) -> str:
     """Detect file type from extension.
 
@@ -102,6 +142,7 @@ def _run_transforms(db_path: Path) -> bool:
     )
     from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 
+    from moneybin.database import build_attach_sql
     from moneybin.secrets import SecretStore
     from sqlmesh import (
         Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
@@ -112,15 +153,9 @@ def _run_transforms(db_path: Path) -> bool:
     store = SecretStore()
     encryption_key = store.get_key("DATABASE__ENCRYPTION_KEY")
 
-    # Create an in-memory DuckDB connection and ATTACH the encrypted file.
-    # This mirrors the pattern in Database.__init__.
     conn = duckdb_mod.connect()
-    safe_path = str(db_path).replace("'", "''")
-    safe_key = encryption_key.replace("'", "''")
     conn.execute("INSTALL httpfs; LOAD httpfs;")
-    conn.execute(
-        f"ATTACH '{safe_path}' AS moneybin (TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"  # noqa: S608  # trusted internal values, single-quote escaped
-    )
+    conn.execute(build_attach_sql(db_path, encryption_key))
     conn.execute("USE moneybin")
 
     # Pre-populate SQLMesh's adapter cache (keyed by database path).
@@ -192,23 +227,10 @@ def _import_ofx(
     result.balances = row_counts.get("balances", 0)
     result.details = row_counts
 
-    # Get date range from transactions
     if result.transactions > 0:
-        try:
-            date_result = db.execute(
-                """
-                SELECT
-                    MIN(CAST(date_posted AS DATE)) AS min_date,
-                    MAX(CAST(date_posted AS DATE)) AS max_date
-                FROM raw.ofx_transactions
-                WHERE source_file = ?
-                """,
-                [str(file_path)],
-            ).fetchone()
-            if date_result and date_result[0]:
-                result.date_range = f"{date_result[0]} to {date_result[1]}"
-        except Exception:
-            logger.debug("Could not determine date range from transactions")
+        result.date_range = _query_date_range(
+            db, "raw.ofx_transactions", "CAST(date_posted AS DATE)", file_path
+        )
 
     return result
 
@@ -300,23 +322,10 @@ def _import_csv(
     result.transactions = row_counts.get("transactions", 0)
     result.details = row_counts
 
-    # Get date range from transactions
     if result.transactions > 0:
-        try:
-            date_result = db.execute(
-                """
-                SELECT
-                    MIN(transaction_date) AS min_date,
-                    MAX(transaction_date) AS max_date
-                FROM raw.csv_transactions
-                WHERE source_file = ?
-                """,
-                [str(file_path)],
-            ).fetchone()
-            if date_result and date_result[0]:
-                result.date_range = f"{date_result[0]} to {date_result[1]}"
-        except Exception:
-            logger.debug("Could not determine date range from CSV transactions")
+        result.date_range = _query_date_range(
+            db, "raw.csv_transactions", "transaction_date", file_path
+        )
 
     return result
 
@@ -356,7 +365,7 @@ def import_file(
         raise FileNotFoundError(f"File not found: {path}")
 
     file_type = _detect_file_type(path)
-    logger.info("Importing %s file: %s", file_type, path)
+    logger.info(f"Importing {file_type} file: {path}")
 
     if file_type == "ofx":
         result = _import_ofx(db, path, institution=institution)
@@ -374,7 +383,7 @@ def import_file(
         # Apply deterministic categorization to new transactions
         _apply_categorization(db)
 
-    logger.info("Import complete: %s", result.summary())
+    logger.info(f"Import complete: {result.summary()}")
     return result
 
 
@@ -395,10 +404,8 @@ def _apply_categorization(db: Database) -> None:
         stats = apply_deterministic_categorization(db)
         if stats["total"] > 0:
             logger.info(
-                "Auto-categorized %d transactions (%d merchant, %d rule)",
-                stats["total"],
-                stats["merchant"],
-                stats["rule"],
+                f"Auto-categorized {stats['total']} transactions "
+                f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
     except Exception:
         logger.debug(

@@ -25,7 +25,7 @@ class CSVLoader:
         """
         self.db = db
         self.sql_dir = Path(__file__).parent.parent / "sql" / "schema"
-        logger.info("Initialized CSV loader for database: %s", db.path)
+        logger.info(f"Initialized CSV loader for database: {db.path}")
 
     def create_raw_tables(self) -> None:
         """Create raw CSV tables in DuckDB by executing SQL schema files.
@@ -46,7 +46,7 @@ class CSVLoader:
             with open(sql_path) as f:
                 sql_content = f.read()
                 self.db.execute(sql_content)
-                logger.debug("Executed schema file: %s", sql_file)
+                logger.debug(f"Executed schema file: {sql_file}")
 
         logger.info("Created CSV raw tables in DuckDB")
 
@@ -61,20 +61,18 @@ class CSVLoader:
         """
         row_counts: dict[str, int] = {}
 
-        self.create_raw_tables()
-
         # Load accounts
         if len(data.get("accounts", pl.DataFrame())) > 0:
             df = data["accounts"]
             self.db.ingest_dataframe("raw.csv_accounts", df, on_conflict="upsert")
             row_counts["accounts"] = len(df)
-            logger.info("Loaded %d account(s)", row_counts["accounts"])
+            logger.info(f"Loaded {row_counts['accounts']} account(s)")
 
         # Load transactions
         if len(data.get("transactions", pl.DataFrame())) > 0:
             df = data["transactions"]
             self.db.ingest_dataframe("raw.csv_transactions", df, on_conflict="upsert")
             row_counts["transactions"] = len(df)
-            logger.info("Loaded %d transaction(s)", row_counts["transactions"])
+            logger.info(f"Loaded {row_counts['transactions']} transaction(s)")
 
         return row_counts
