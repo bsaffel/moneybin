@@ -51,6 +51,10 @@ class TestSeededRandomDistributions:
         samples = [rng.poisson(3.0) for _ in range(1000)]
         assert all(s >= 0 for s in samples)
 
+    def test_poisson_zero_lambda_returns_zero(self) -> None:
+        rng = SeededRandom(42)
+        assert rng.poisson(0.0) == 0
+
     def test_weighted_choice_respects_weights(self) -> None:
         rng = SeededRandom(42)
         items = ["a", "b", "c"]

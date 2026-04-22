@@ -76,6 +76,8 @@ class SeededRandom:
         Returns:
             A non-negative integer.
         """
+        if lam <= 0:
+            return 0
         big_l = math.exp(-lam)
         k = 0
         p = 1.0
