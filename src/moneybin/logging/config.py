@@ -120,14 +120,15 @@ def setup_logging(
         log_file = session_log_path(file_path, prefix=stream)
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Set restrictive permissions on log file (macOS/Linux)
-        if sys.platform != "win32" and log_file.exists():
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+
+        # Set restrictive permissions on log file (macOS/Linux).
+        # Runs after FileHandler creation so new files are also covered.
+        if sys.platform != "win32":
             try:
                 log_file.chmod(stat_mod.S_IRUSR | stat_mod.S_IWUSR)  # 0600
             except OSError:
                 pass
-
-        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         file_handler.setFormatter(SanitizedLogFormatter(inner_formatter))
         handlers.append(file_handler)
 

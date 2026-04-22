@@ -15,10 +15,16 @@ def fresh_registry() -> CollectorRegistry:
 
 @pytest.fixture()
 def mock_db() -> MagicMock:
-    """Create a mock Database with an in-memory DuckDB for real SQL."""
+    """Create a mock Database with an in-memory DuckDB for real SQL.
+
+    Uses duckdb.connect() directly because persistence.py accepts a
+    _DBExecutor Protocol — not the Database class. This tests the
+    Protocol contract against a real SQL engine without requiring
+    encryption keys or schema initialization.
+    """
     import duckdb
 
-    conn = duckdb.connect()
+    conn = duckdb.connect()  # noqa: S113  # Protocol-level test; see docstring
     conn.execute("CREATE SCHEMA IF NOT EXISTS app")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS app.metrics (

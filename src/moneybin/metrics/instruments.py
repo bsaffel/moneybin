@@ -110,9 +110,18 @@ def track_duration(
         "source_type": extra_labels.get("source_type", ""),
     }
     start = time.monotonic()
+    error: BaseException | None = None
     try:
         yield
+    except BaseException as exc:
+        error = exc
+        raise
     finally:
         duration = time.monotonic() - start
         _TRACKED_DURATION.labels(**call_labels).observe(duration)
-        logger.debug(f"{operation} completed in {duration:.3f}s")
+        if error is not None:
+            logger.debug(
+                f"{operation} failed after {duration:.3f}s: {type(error).__name__}"
+            )
+        else:
+            logger.debug(f"{operation} completed in {duration:.3f}s")
