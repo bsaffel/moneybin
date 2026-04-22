@@ -1,5 +1,6 @@
 """Tests for the tabular loader (Stage 5)."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -67,6 +68,27 @@ class TestFinalizeImportBatch:
         )
         call_args = mock_db.execute.call_args
         assert "complete" in str(call_args) or "partial" in str(call_args)
+
+    def test_finalize_persists_rejection_details(self, mock_db: MagicMock) -> None:
+        loader = TabularLoader(mock_db)
+        loader.finalize_import_batch(
+            import_id="test-123",
+            rows_total=10,
+            rows_imported=8,
+            rows_rejected=2,
+            rejection_details=[
+                {"row_number": "3", "reason": "Unparseable date: '32/01/2024'"},
+                {"row_number": "7", "reason": "Unparseable amount: 'n/a'"},
+            ],
+        )
+        call_args = mock_db.execute.call_args
+        params = call_args[0][1]
+        # rejection_details is the 6th parameter (index 5)
+        rejection_json = params[5]
+        parsed = json.loads(rejection_json)
+        assert len(parsed) == 2
+        assert parsed[0]["row_number"] == "3"
+        assert parsed[1]["reason"] == "Unparseable amount: 'n/a'"
 
 
 class TestRevertImport:

@@ -290,6 +290,9 @@ def _import_tabular(
     account_id: str | None = None,
     format_name: str | None = None,
     overrides: dict[str, str] | None = None,
+    sign: str | None = None,
+    date_format_override: str | None = None,
+    number_format_override: str | None = None,
     sheet: str | None = None,
     delimiter: str | None = None,
     encoding: str | None = None,
@@ -305,6 +308,9 @@ def _import_tabular(
         account_id: Explicit account ID (bypass matching).
         format_name: Explicit format name (bypass detection).
         overrides: Field→column overrides.
+        sign: Sign convention override.
+        date_format_override: Date format override (strptime string).
+        number_format_override: Number format override.
         sheet: Excel sheet name.
         delimiter: Explicit delimiter.
         encoding: Explicit encoding.
@@ -390,6 +396,14 @@ def _import_tabular(
                 f"{file_path.name}. Use --override to specify columns manually."
             )
 
+    # Apply CLI overrides (take precedence over detected/built-in values)
+    if sign:
+        mapping_result_sign_convention = sign
+    if date_format_override:
+        mapping_result_date_format = date_format_override
+    if number_format_override:
+        mapping_result_number_format = number_format_override
+
     # Determine account info
     source_type = format_info.file_type
     if source_type == "semicolon":
@@ -468,6 +482,11 @@ def _import_tabular(
         rows_imported=rows_imported,
         rows_rejected=transform_result.rows_rejected,
         rows_skipped_trailing=read_result.rows_skipped_trailing,
+        rejection_details=[
+            {"row_number": str(r.row_number), "reason": r.reason}
+            for r in transform_result.rejection_details
+        ]
+        or None,
         detection_confidence=mapping_result_confidence,
         number_format=mapping_result_number_format,
         date_format=mapping_result_date_format,
@@ -497,6 +516,9 @@ def import_file(
     account_name: str | None = None,
     format_name: str | None = None,
     overrides: dict[str, str] | None = None,
+    sign: str | None = None,
+    date_format: str | None = None,
+    number_format: str | None = None,
     sheet: str | None = None,
     delimiter: str | None = None,
     encoding: str | None = None,
@@ -521,6 +543,9 @@ def import_file(
         format_name: Explicit format name for tabular imports (bypasses
             auto-detection).
         overrides: Field→column overrides for tabular imports.
+        sign: Sign convention override for tabular imports.
+        date_format: Date format override for tabular imports.
+        number_format: Number format override for tabular imports.
         sheet: Excel sheet name for tabular imports.
         delimiter: Explicit delimiter for tabular imports.
         encoding: Explicit encoding for tabular imports.
@@ -554,6 +579,9 @@ def import_file(
             account_id=account_id,
             format_name=format_name,
             overrides=overrides,
+            sign=sign,
+            date_format_override=date_format,
+            number_format_override=number_format,
             sheet=sheet,
             delimiter=delimiter,
             encoding=encoding,
