@@ -23,6 +23,7 @@ from .commands import (
     profile,
     stats,
     sync,
+    synthetic,
     transform,
 )
 from .commands.stubs import (
@@ -118,6 +119,11 @@ app.add_typer(
     transform.app,
     name="transform",
     help="Run SQLMesh data transformations",
+)
+app.add_typer(
+    synthetic.app,
+    name="synthetic",
+    help="Generate and manage synthetic financial data for testing",
 )
 app.add_typer(track_app, name="track", help="Balance tracking and net worth")
 app.add_typer(stats.app, name="stats", help="Show lifetime metric aggregates")

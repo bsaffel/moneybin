@@ -1,4 +1,4 @@
-"""Tests for the import service — focused on _run_transforms encryption."""
+"""Tests for the import service — focused on run_transforms encryption."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -7,7 +7,7 @@ import pytest
 
 
 class TestRunTransforms:
-    """_run_transforms passes the encryption key to SQLMesh via DuckDB ATTACH."""
+    """run_transforms passes the encryption key to SQLMesh via DuckDB ATTACH."""
 
     @patch("moneybin.secrets.SecretStore")
     @patch("sqlmesh.core.engine_adapter.duckdb.DuckDBEngineAdapter")
@@ -33,11 +33,9 @@ class TestRunTransforms:
             "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
             {},
         ):
-            from moneybin.services.import_service import (
-                _run_transforms,  # type: ignore[reportPrivateUsage]  # testing private function
-            )
+            from moneybin.services.import_service import run_transforms
 
-            result = _run_transforms(db_path)
+            result = run_transforms(db_path)
 
         assert result is True
         mock_store.get_key.assert_called_once_with("DATABASE__ENCRYPTION_KEY")
@@ -79,12 +77,10 @@ class TestRunTransforms:
             "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
             {},
         ) as cache:
-            from moneybin.services.import_service import (
-                _run_transforms,  # type: ignore[reportPrivateUsage]  # testing private function
-            )
+            from moneybin.services.import_service import run_transforms
 
             with pytest.raises(RuntimeError, match="SQLMesh boom"):
-                _run_transforms(tmp_path / "test.duckdb")
+                run_transforms(tmp_path / "test.duckdb")
 
             # Cache cleaned up despite error
             assert len(cache) == 0

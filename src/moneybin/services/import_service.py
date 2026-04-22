@@ -116,7 +116,7 @@ def _detect_file_type(file_path: Path) -> str:
     )
 
 
-def _run_transforms(db_path: Path) -> bool:
+def run_transforms(db_path: Path) -> bool:
     """Run SQLMesh transforms to rebuild core tables.
 
     SQLMesh manages its own connection — the caller must close any
@@ -378,7 +378,7 @@ def import_file(
 
     # Run SQLMesh transforms after loading raw data
     if run_transforms and file_type in ("ofx", "csv"):
-        result.core_tables_rebuilt = _run_transforms(db.path)
+        result.core_tables_rebuilt = run_transforms(db.path)
 
         # Apply deterministic categorization to new transactions
         _apply_categorization(db)
