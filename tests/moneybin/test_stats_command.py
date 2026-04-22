@@ -16,6 +16,44 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+class TestTyperSingleCommandCollapse:
+    """Typer collapses single-command groups: bare invocation runs the command.
+
+    When a Typer() group has exactly one registered command and
+    no_args_is_help=True, Typer collapses the group — the single command
+    becomes the default. Passing the subcommand name explicitly causes
+    "Got unexpected extra argument".
+
+    These tests document and prove this behavior so reviewers stop
+    requesting ["show"] in invocations.
+    """
+
+    @pytest.mark.unit
+    def test_bare_invocation_runs_command_not_help(self, runner: CliRunner) -> None:
+        """stats_app([]) should run stats_show, not display help."""
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchall.return_value = []
+
+        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+            result = runner.invoke(stats_app, [])
+
+        assert result.exit_code == 0
+        # If help were shown, "No metrics" would not appear
+        assert "No metrics" in result.output
+
+    @pytest.mark.unit
+    def test_explicit_show_subcommand_is_rejected(self, runner: CliRunner) -> None:
+        """Passing ["show"] explicitly should fail — Typer treats it as an extra arg."""
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchall.return_value = []
+
+        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+            result = runner.invoke(stats_app, ["show"])
+
+        assert result.exit_code == 2
+        assert "unexpected extra argument" in result.output.lower()
+
+
 class TestStatsShow:
     """Tests for the stats show command."""
 
