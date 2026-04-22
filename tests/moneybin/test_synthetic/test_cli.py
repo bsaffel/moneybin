@@ -108,11 +108,12 @@ class TestResetCommand:
     def test_reset_requires_yes_or_prompt(self, runner: CliRunner) -> None:
         """Without --yes, reset should prompt for confirmation."""
         # CliRunner sends EOF on stdin by default, so prompt is declined
-        with patch("moneybin.database.get_database") as mock_db:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchone.return_value = (1,)
-            mock_db.return_value.conn = mock_conn
-            mock_db.return_value.path = Path("/tmp/test.duckdb")
+        with patch("moneybin.database.get_database") as mock_get_db:
+            mock_db = MagicMock()
+            # ground_truth table exists check returns 1
+            mock_db.execute.return_value.fetchone.return_value = (1,)
+            mock_db.path = Path("/tmp/test.duckdb")
+            mock_get_db.return_value = mock_db
             result = runner.invoke(app, ["reset", "--persona", "basic"])
             # Should either prompt and abort, or succeed with --yes
             assert result.exit_code != 0 or "Aborted" in (result.output or "")

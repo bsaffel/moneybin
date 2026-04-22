@@ -42,7 +42,7 @@ def _account_type_to_ofx(account_type: str) -> str:
     mapping = {
         "checking": "CHECKING",
         "savings": "SAVINGS",
-        "credit_card": "CREDITLINE",
+        "credit_card": "CREDITCARD",
     }
     return mapping.get(account_type, "CHECKING")
 

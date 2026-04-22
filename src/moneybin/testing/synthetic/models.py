@@ -212,6 +212,8 @@ def load_persona(persona_name: str) -> PersonaConfig:
     import yaml
 
     path = _DATA_DIR / "personas" / f"{persona_name}.yaml"
+    if not path.resolve().is_relative_to(_DATA_DIR.resolve()):
+        raise FileNotFoundError(f"Invalid persona name: {persona_name!r}")
     if not path.exists():
         available = sorted(p.stem for p in (_DATA_DIR / "personas").glob("*.yaml"))
         raise FileNotFoundError(
@@ -237,6 +239,8 @@ def load_merchant_catalog(category: str) -> MerchantCatalog:
     import yaml
 
     path = _DATA_DIR / "merchants" / f"{category}.yaml"
+    if not path.resolve().is_relative_to(_DATA_DIR.resolve()):
+        raise FileNotFoundError(f"Invalid merchant catalog name: {category!r}")
     if not path.exists():
         available = sorted(p.stem for p in (_DATA_DIR / "merchants").glob("*.yaml"))
         raise FileNotFoundError(

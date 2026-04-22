@@ -15,53 +15,48 @@ app = typer.Typer(
 # Persona -> default profile name mapping
 _PERSONA_PROFILES = {"basic": "alice", "family": "bob", "freelancer": "charlie"}
 
-# Tables to truncate during reset (hardcoded allowlist — not user input)
-_RESET_TABLES = [
-    "synthetic.ground_truth",
-    "raw.ofx_transactions",
-    "raw.ofx_accounts",
-    "raw.ofx_balances",
-    "raw.csv_transactions",
-    "raw.csv_accounts",
-]
+# Tables to scope-delete during reset (hardcoded allowlist — not user input)
+_RESET_DELETIONS = {
+    "synthetic.ground_truth": "WHERE TRUE",
+    "raw.ofx_transactions": "WHERE source_file LIKE 'synthetic://%'",
+    "raw.ofx_accounts": "WHERE source_file LIKE 'synthetic://%'",
+    "raw.ofx_balances": "WHERE source_file LIKE 'synthetic://%'",
+    "raw.csv_transactions": "WHERE source_file LIKE 'synthetic://%'",
+    "raw.csv_accounts": "WHERE source_file LIKE 'synthetic://%'",
+}
 
 
-@app.command("generate")
-def generate(
-    persona: str = typer.Option(
-        ..., "--persona", help="Persona to generate (basic, family, freelancer)"
-    ),
-    profile: str | None = typer.Option(
-        None, "--profile", help="Target profile name (auto-derived from persona)"
-    ),
-    years: int | None = typer.Option(
-        None, "--years", help="Number of years of history"
-    ),
-    seed: int | None = typer.Option(
-        None, "--seed", help="Seed for deterministic output (random if omitted)"
-    ),
-    skip_transform: bool = typer.Option(
-        False, "--skip-transform", help="Skip running SQLMesh after generation"
-    ),
+def _run_generate(
+    persona: str,
+    profile: str,
+    years: int | None,
+    seed: int | None,
+    skip_transform: bool,
 ) -> None:
-    """Generate synthetic financial data for a persona into a profile."""
+    """Core generate logic — called by both generate() and reset().
+
+    Args:
+        persona: Persona name (basic, family, freelancer).
+        profile: Target profile name.
+        years: Number of years of history (None for persona default).
+        seed: Deterministic seed (None for random).
+        skip_transform: If True, skip running SQLMesh after generation.
+    """
     from moneybin.config import set_current_profile
     from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.import_service import run_transforms
     from moneybin.testing.synthetic.engine import GeneratorEngine
     from moneybin.testing.synthetic.writer import SyntheticWriter
 
-    # Resolve profile
-    target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
     actual_seed = seed if seed is not None else random.randint(1, 999999)  # noqa: S311 — not crypto, just a reproducibility seed
 
     logger.info(
-        f"⚙️  Generating {persona!r} persona into profile {target_profile!r} "
+        f"⚙️  Generating {persona!r} persona into profile {profile!r} "
         f"(seed={actual_seed}{f', {years} years' if years else ''})"
     )
 
-    # Switch to target profile
-    set_current_profile(target_profile)
+    # Pre-flight: verify database access before switching profile
+    set_current_profile(profile)
 
     try:
         db = get_database()
@@ -82,8 +77,7 @@ def generate(
 
     if existing_count > 0:
         logger.error(
-            f"❌ Profile {target_profile!r} already has data "
-            f"({existing_count} transactions)"
+            f"❌ Profile {profile!r} already has data ({existing_count} transactions)"
         )
         logger.info(
             f"💡 Use 'moneybin synthetic reset --persona={persona}' "
@@ -129,9 +123,32 @@ def generate(
             )
 
     logger.info(
-        f"✅ Profile {target_profile!r} ready (seed={actual_seed}). "
-        f"Use --profile={target_profile} with any moneybin command."
+        f"✅ Profile {profile!r} ready (seed={actual_seed}). "
+        f"Use --profile={profile} with any moneybin command."
     )
+
+
+@app.command("generate")
+def generate(
+    persona: str = typer.Option(
+        ..., "--persona", help="Persona to generate (basic, family, freelancer)"
+    ),
+    profile: str | None = typer.Option(
+        None, "--profile", help="Target profile name (auto-derived from persona)"
+    ),
+    years: int | None = typer.Option(
+        None, "--years", help="Number of years of history"
+    ),
+    seed: int | None = typer.Option(
+        None, "--seed", help="Seed for deterministic output (random if omitted)"
+    ),
+    skip_transform: bool = typer.Option(
+        False, "--skip-transform", help="Skip running SQLMesh after generation"
+    ),
+) -> None:
+    """Generate synthetic financial data for a persona into a profile."""
+    target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
+    _run_generate(persona, target_profile, years, seed, skip_transform)
 
 
 @app.command("reset")
@@ -149,6 +166,7 @@ def reset(
     from moneybin.database import DatabaseKeyError, close_database, get_database
 
     target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
+
     set_current_profile(target_profile)
 
     try:
@@ -188,18 +206,18 @@ def reset(
             raise typer.Abort()
 
     logger.info(f"⚙️  Resetting profile {target_profile!r}...")
-    for table in _RESET_TABLES:
+    for table, where in _RESET_DELETIONS.items():
         try:
-            db.execute(f"DELETE FROM {table}")  # noqa: S608 — hardcoded table names from allowlist above
+            db.execute(f"DELETE FROM {table} {where}")  # noqa: S608 — allowlisted table names + literal WHERE clauses
         except Exception:  # noqa: BLE001,S110 — table may not exist
             pass
 
     db.close()
-    # Close the singleton so generate gets a fresh connection
+    # Close the singleton so _run_generate gets a fresh connection
     close_database()
 
     # Regenerate
-    generate(
+    _run_generate(
         persona=persona,
         profile=target_profile,
         years=years,
