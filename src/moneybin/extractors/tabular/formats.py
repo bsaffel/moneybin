@@ -172,7 +172,7 @@ def load_builtin_formats() -> dict[str, TabularFormat]:
             fmt = TabularFormat.from_yaml(yaml_path)
             formats[fmt.name] = fmt
             logger.debug(f"Loaded built-in format: {fmt.name}")
-        except Exception:
+        except (yaml.YAMLError, OSError, ValueError):
             logger.warning(f"Failed to load format: {yaml_path}", exc_info=True)
 
     return formats

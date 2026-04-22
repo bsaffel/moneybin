@@ -23,7 +23,7 @@ from moneybin.services.categorization_service import (
 from moneybin.services.categorization_service import (
     seed_categories as seed_categories_svc,
 )
-from moneybin.services.import_service import import_file as do_import
+from moneybin.services.import_service import import_file as run_import
 from moneybin.tables import (
     BUDGETS,
     CATEGORIES,
@@ -111,7 +111,7 @@ def import_file(
         )
 
     try:
-        result = do_import(
+        result = run_import(
             get_database(),
             str(resolved),
             account_id=account_id,
@@ -731,8 +731,7 @@ def bulk_categorize(
                             merchant_count += 1
             except Exception:
                 logger.debug(
-                    "Could not resolve merchant mapping for %s",
-                    txn_id,
+                    f"Could not resolve merchant mapping for {txn_id}",
                     exc_info=True,
                 )
 

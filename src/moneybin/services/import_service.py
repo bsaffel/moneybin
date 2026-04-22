@@ -293,6 +293,7 @@ def _import_tabular(
     sign: str | None = None,
     date_format_override: str | None = None,
     number_format_override: str | None = None,
+    save_format: bool = True,
     sheet: str | None = None,
     delimiter: str | None = None,
     encoding: str | None = None,
@@ -311,6 +312,7 @@ def _import_tabular(
         sign: Sign convention override.
         date_format_override: Date format override (strptime string).
         number_format_override: Number format override.
+        save_format: Auto-save detected format for future imports.
         sheet: Excel sheet name.
         delimiter: Explicit delimiter.
         encoding: Explicit encoding.
@@ -329,6 +331,7 @@ def _import_tabular(
         load_builtin_formats,
         load_formats_from_db,
         merge_formats,
+        save_format_to_db,
     )
     from moneybin.extractors.tabular.readers import read_file
     from moneybin.extractors.tabular.transforms import transform_dataframe
@@ -359,7 +362,8 @@ def _import_tabular(
         raise ValueError(f"No data rows found in {file_path.name}")
 
     # Stage 3: Column mapping
-    all_formats = merge_formats(load_builtin_formats(), load_formats_from_db(db))
+    builtin_formats = load_builtin_formats()
+    all_formats = merge_formats(builtin_formats, load_formats_from_db(db))
 
     matched_format: TabularFormat | None = None
     if format_name:
@@ -379,7 +383,9 @@ def _import_tabular(
         mapping_result_number_format = matched_format.number_format
         mapping_result_is_multi_account = matched_format.multi_account
         mapping_result_confidence = "high"
-        format_source = "built-in"
+        format_source = (
+            "built-in" if matched_format.name in builtin_formats else "user-saved"
+        )
     else:
         mapping_result = map_columns(df, overrides=overrides)
         mapping_result_mapping = mapping_result.field_mapping
@@ -503,6 +509,34 @@ def _import_tabular(
             db, "raw.tabular_transactions", "transaction_date", file_path
         )
 
+    # Auto-save detected format for future imports
+    if (
+        save_format
+        and not matched_format
+        and mapping_result_confidence in ("high", "medium")
+        and rows_imported > 0
+    ):
+        try:
+            detected_fmt = TabularFormat(
+                name=source_origin,
+                institution_name=account_name or source_origin,
+                file_type=format_info.file_type,
+                delimiter=format_info.delimiter,
+                encoding=format_info.encoding,
+                header_signature=list(df.columns),
+                field_mapping=mapping_result_mapping,
+                sign_convention=mapping_result_sign_convention,  # type: ignore[reportArgumentType]  # validated by CLI and Pydantic validator
+                date_format=mapping_result_date_format,
+                number_format=mapping_result_number_format,  # type: ignore[reportArgumentType]  # validated by CLI and Pydantic validator
+                multi_account=mapping_result_is_multi_account,
+                source="detected",
+                times_used=1,
+            )
+            save_format_to_db(db, detected_fmt)
+            logger.info(f"Auto-saved format {source_origin!r} for future imports")
+        except Exception:  # noqa: BLE001 — format save is best-effort; import already succeeded
+            logger.debug("Could not auto-save format", exc_info=True)
+
     return result
 
 
@@ -519,6 +553,7 @@ def import_file(
     sign: str | None = None,
     date_format: str | None = None,
     number_format: str | None = None,
+    save_format: bool = True,
     sheet: str | None = None,
     delimiter: str | None = None,
     encoding: str | None = None,
@@ -546,6 +581,7 @@ def import_file(
         sign: Sign convention override for tabular imports.
         date_format: Date format override for tabular imports.
         number_format: Number format override for tabular imports.
+        save_format: Auto-save detected format for future imports.
         sheet: Excel sheet name for tabular imports.
         delimiter: Explicit delimiter for tabular imports.
         encoding: Explicit encoding for tabular imports.
@@ -582,6 +618,7 @@ def import_file(
             sign=sign,
             date_format_override=date_format,
             number_format_override=number_format,
+            save_format=save_format,
             sheet=sheet,
             delimiter=delimiter,
             encoding=encoding,

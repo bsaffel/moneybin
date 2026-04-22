@@ -79,6 +79,7 @@ class TestImportFileAccountName:
             sign=None,
             date_format=None,
             number_format=None,
+            save_format=True,
             sheet=None,
             delimiter=None,
             encoding=None,
@@ -218,8 +219,13 @@ class TestDeleteFormat:
         result = runner.invoke(app, ["delete-format", "chase_credit", "--yes"])
         assert result.exit_code == 1
 
-    def test_unknown_format_exits_with_error(self) -> None:
+    def test_unknown_format_exits_with_error(self, mocker: Any) -> None:
         """Attempting to delete an unknown user format exits 1."""
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+        mocker.patch(
+            "moneybin.extractors.tabular.formats.delete_format_from_db",
+            return_value=False,
+        )
         result = runner.invoke(app, ["delete-format", "my_custom_format", "--yes"])
         assert result.exit_code == 1
 

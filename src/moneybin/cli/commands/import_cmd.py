@@ -130,7 +130,7 @@ def import_file(
         moneybin import file export.csv --override date=Date --override amount=Amount
     """
     from moneybin.database import DatabaseKeyError, get_database
-    from moneybin.services.import_service import import_file as do_import
+    from moneybin.services.import_service import import_file as run_import
 
     source = Path(file_path)
 
@@ -174,7 +174,7 @@ def import_file(
 
     try:
         db = get_database()
-        result = do_import(
+        result = run_import(
             db=db,
             file_path=source,
             apply_transforms=not skip_transform,
@@ -186,6 +186,7 @@ def import_file(
             sign=sign or None,
             date_format=date_format or None,
             number_format=number_format or None,
+            save_format=save_format,
             sheet=sheet,
             delimiter=delimiter,
             encoding=encoding,
@@ -464,22 +465,41 @@ def list_formats() -> None:
     Example:
         moneybin import list-formats
     """
-    from moneybin.extractors.tabular.formats import load_builtin_formats
+    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.extractors.tabular.formats import (
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+    )
 
     builtin = load_builtin_formats()
+    try:
+        db = get_database()
+        user_formats = load_formats_from_db(db)
+    except DatabaseKeyError as e:
+        logger.error(f"❌ Database is locked: {e}")
+        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        raise typer.Exit(1) from e
+    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
+        user_formats = {}
 
-    if not builtin:
-        logger.warning("⚠️  No built-in formats found")
+    all_formats = merge_formats(builtin, user_formats)
+
+    if not all_formats:
+        logger.warning("⚠️  No formats found")
         return
 
     print(f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} {'Date Format'}")
     print("-" * 100)
-    for fmt in sorted(builtin.values(), key=lambda f: f.name):
+    for fmt in sorted(all_formats.values(), key=lambda f: f.name):
+        source_tag = " (user)" if fmt.name in user_formats else ""
         print(
             f"{fmt.name:<24} {fmt.institution_name:<28} "
-            f"{fmt.sign_convention:<24} {fmt.date_format}"
+            f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
         )
-    print(f"\n{len(builtin)} built-in format(s)\n")
+    n_builtin = len(builtin)
+    n_user = len(user_formats)
+    print(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
 
 
 @app.command("show-format")
@@ -492,14 +512,30 @@ def show_format(name: str = typer.Argument(..., help="Format name to show")) -> 
     Example:
         moneybin import show-format chase_credit
     """
-    from moneybin.extractors.tabular.formats import load_builtin_formats
+    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.extractors.tabular.formats import (
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+    )
 
     builtin = load_builtin_formats()
-    fmt = builtin.get(name)
+    try:
+        db = get_database()
+        user_formats = load_formats_from_db(db)
+    except DatabaseKeyError as e:
+        logger.error(f"❌ Database is locked: {e}")
+        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        raise typer.Exit(1) from e
+    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
+        user_formats = {}
+
+    all_formats = merge_formats(builtin, user_formats)
+    fmt = all_formats.get(name)
 
     if fmt is None:
         logger.error(f"❌ Format not found: {name!r}")
-        available = ", ".join(sorted(builtin.keys())) or "(none)"
+        available = ", ".join(sorted(all_formats.keys())) or "(none)"
         logger.info(f"💡 Available formats: {available}")
         raise typer.Exit(1)
 
@@ -540,7 +576,11 @@ def delete_format(
         moneybin import delete-format my_custom_format
         moneybin import delete-format my_custom_format --yes
     """
-    from moneybin.extractors.tabular.formats import load_builtin_formats
+    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.extractors.tabular.formats import (
+        delete_format_from_db,
+        load_builtin_formats,
+    )
 
     # Check if it's a built-in format
     builtin = load_builtin_formats()
@@ -554,13 +594,18 @@ def delete_format(
             logger.info("Delete cancelled")
             raise typer.Exit(0)
 
-    # TODO(Task 29): Wire through format persistence from database once
-    # save/load from database is implemented. For now, user formats are not
-    # yet persisted, so we can only report not-found.
-    logger.warning(
-        f"⚠️  Format {name!r} not found (user format persistence not yet implemented)"
-    )
-    raise typer.Exit(1)
+    try:
+        db = get_database()
+        deleted = delete_format_from_db(db, name)
+    except DatabaseKeyError as e:
+        logger.error(f"❌ Database is locked: {e}")
+        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        raise typer.Exit(1) from e
+
+    if not deleted:
+        logger.error(f"❌ Format {name!r} not found")
+        raise typer.Exit(1)
+    logger.info(f"✅ Deleted format {name!r}")
 
 
 @app.command("status")
