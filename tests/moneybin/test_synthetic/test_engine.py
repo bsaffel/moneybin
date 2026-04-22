@@ -1,6 +1,9 @@
 # ruff: noqa: S101
 """Tests for the GeneratorEngine orchestrator."""
 
+from __future__ import annotations
+
+from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -109,7 +112,7 @@ class TestGeneratorEngineWithDB:
     """Test engine → writer → database integration."""
 
     @pytest.fixture
-    def db(self, tmp_path: Path, mock_secret_store: MagicMock) -> Database:
+    def db(self, tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database]:
         db = Database(
             tmp_path / "test.duckdb",
             secret_store=mock_secret_store,
@@ -134,8 +137,9 @@ class TestGeneratorEngineWithDB:
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         writer = SyntheticWriter(db)
         writer.write(result)
-        count = db.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()[0]
-        assert count > 0
+        row = db.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()
+        assert row is not None
+        assert row[0] > 0
 
     def test_ground_truth_matches_transactions(self, db: Database) -> None:
         from moneybin.testing.synthetic.engine import GeneratorEngine
@@ -144,13 +148,10 @@ class TestGeneratorEngineWithDB:
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         writer = SyntheticWriter(db)
         writer.write(result)
-        txn_count = db.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()[
-            0
-        ]
-        csv_count = db.execute("SELECT COUNT(*) FROM raw.csv_transactions").fetchone()[
-            0
-        ]
-        gt_count = db.execute("SELECT COUNT(*) FROM synthetic.ground_truth").fetchone()[
-            0
-        ]
-        assert gt_count == txn_count + csv_count
+        txn_row = db.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()
+        csv_row = db.execute("SELECT COUNT(*) FROM raw.csv_transactions").fetchone()
+        gt_row = db.execute("SELECT COUNT(*) FROM synthetic.ground_truth").fetchone()
+        assert txn_row is not None
+        assert csv_row is not None
+        assert gt_row is not None
+        assert gt_row[0] == txn_row[0] + csv_row[0]

@@ -34,8 +34,8 @@ class TestGenerateCommand:
         mock_result.seed = 42
         mock_result.accounts = [MagicMock()]
         mock_result.transactions = [MagicMock()] * 100
-        mock_result.start_date = MagicMock(__str__=lambda s: "2024-01-01")
-        mock_result.end_date = MagicMock(__str__=lambda s: "2024-12-31")
+        mock_result.start_date = MagicMock(__str__=lambda s: "2024-01-01")  # type: ignore[reportUnknownLambdaType]  # MagicMock dunder override
+        mock_result.end_date = MagicMock(__str__=lambda s: "2024-12-31")  # type: ignore[reportUnknownLambdaType]  # MagicMock dunder override
         mock_cls = mocker.patch(
             "moneybin.testing.synthetic.engine.GeneratorEngine",
         )

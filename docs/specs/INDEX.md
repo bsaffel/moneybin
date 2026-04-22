@@ -84,7 +84,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](testing-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
-| [Synthetic Data Generator](testing-synthetic-data.md) | Feature | ready | Persona-based synthetic financial data: YAML-driven personas/merchants, deterministic seeding, ground-truth labels, Level 2 realism |
+| [Synthetic Data Generator](testing-synthetic-data.md) | Feature | in-progress | Persona-based synthetic financial data: YAML-driven personas/merchants, deterministic seeding, ground-truth labels, Level 2 realism |
 | `testing-anonymized-data.md` | Feature | planned | Structure-preserving anonymization of real databases with statistical similarity guarantees |
 | `testing-csv-fixtures.md` | Feature | planned | Curated bank export samples with expected-result JSON for format detection testing |
 | `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |

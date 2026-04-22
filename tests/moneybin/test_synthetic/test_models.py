@@ -1,6 +1,8 @@
 # ruff: noqa: S101
 """Tests for Pydantic YAML validation models and data loading."""
 
+from typing import Any
+
 import pytest
 
 from moneybin.testing.synthetic.models import (
@@ -75,7 +77,7 @@ class TestPersonaConfig:
     """Test persona YAML validation."""
 
     @pytest.fixture
-    def minimal_persona_dict(self) -> dict:
+    def minimal_persona_dict(self) -> dict[str, Any]:
         return {
             "persona": "test",
             "profile": "test-profile",
@@ -124,28 +126,28 @@ class TestPersonaConfig:
             "transfers": [],
         }
 
-    def test_valid_persona_loads(self, minimal_persona_dict: dict) -> None:
+    def test_valid_persona_loads(self, minimal_persona_dict: dict[str, Any]) -> None:
         persona = PersonaConfig.model_validate(minimal_persona_dict)
         assert persona.persona == "test"
         assert len(persona.accounts) == 1
         assert persona.accounts[0].name == "Checking"
 
     def test_income_references_unknown_account_rejected(
-        self, minimal_persona_dict: dict
+        self, minimal_persona_dict: dict[str, Any]
     ) -> None:
         minimal_persona_dict["income"][0]["account"] = "Nonexistent"
         with pytest.raises(ValueError, match="unknown account.*Nonexistent"):
             PersonaConfig.model_validate(minimal_persona_dict)
 
     def test_recurring_references_unknown_account_rejected(
-        self, minimal_persona_dict: dict
+        self, minimal_persona_dict: dict[str, Any]
     ) -> None:
         minimal_persona_dict["recurring"][0]["account"] = "Nonexistent"
         with pytest.raises(ValueError, match="unknown account.*Nonexistent"):
             PersonaConfig.model_validate(minimal_persona_dict)
 
     def test_spending_references_unknown_account_rejected(
-        self, minimal_persona_dict: dict
+        self, minimal_persona_dict: dict[str, Any]
     ) -> None:
         minimal_persona_dict["spending"]["categories"][0]["accounts"] = ["Nonexistent"]
         with pytest.raises(ValueError, match="unknown account.*Nonexistent"):
@@ -174,7 +176,7 @@ class TestPersonaConfig:
         assert config.amount == "statement_balance"
 
     def test_recurring_amount_can_be_distribution(
-        self, minimal_persona_dict: dict
+        self, minimal_persona_dict: dict[str, Any]
     ) -> None:
         minimal_persona_dict["recurring"][0]["amount"] = {
             "mean": 145.0,

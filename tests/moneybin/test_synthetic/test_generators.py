@@ -8,6 +8,7 @@ import pytest
 
 from moneybin.testing.synthetic.models import (
     AmountDistribution,
+    GeneratedTransaction,
     IncomeConfig,
     MerchantCatalog,
     MerchantEntry,
@@ -57,7 +58,7 @@ class TestIncomeGenerator:
         from moneybin.testing.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([salary_config], 2024, 2024, rng)
-        all_txns = []
+        all_txns: list[GeneratedTransaction] = []
         for month in range(1, 13):
             all_txns.extend(gen.generate_month(2024, month))
         assert len(all_txns) == 26
@@ -124,7 +125,7 @@ class TestIncomeGenerator:
         from moneybin.testing.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([freelance_config], 2024, 2024, rng)
-        all_txns = []
+        all_txns: list[GeneratedTransaction] = []
         for month in range(1, 13):
             all_txns.extend(gen.generate_month(2024, month))
         assert all(t.amount > 0 for t in all_txns)
