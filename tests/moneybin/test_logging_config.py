@@ -116,6 +116,22 @@ class TestSetupLogging:
         assert isinstance(fhs[0].formatter, SanitizedLogFormatter)
 
     @pytest.mark.unit
+    def test_console_handler_uses_sanitized_formatter(self) -> None:
+        """Console handler must use SanitizedLogFormatter."""
+        from moneybin.log_sanitizer import SanitizedLogFormatter
+
+        setup_logging(stream="cli")
+        root = logging.getLogger()
+        shs = [
+            h
+            for h in root.handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert shs, "Expected at least one StreamHandler (console)"
+        assert isinstance(shs[0].formatter, SanitizedLogFormatter)
+
+    @pytest.mark.unit
     def test_file_handler_is_catch_all(self, tmp_path: Path) -> None:
         """File handler should accept records from any logger."""
         setup_logging(stream="cli", log_file_path=tmp_path / "moneybin.log")

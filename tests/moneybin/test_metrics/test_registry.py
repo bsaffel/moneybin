@@ -9,8 +9,7 @@ class TestMetricDefinitions:
 
     @pytest.fixture(autouse=True)
     def _fresh_registry(self) -> None:
-        """Import registry with a fresh prometheus registry each test."""
-        pass
+        """Placeholder for per-test registry isolation if needed later."""
 
     @pytest.mark.unit
     def test_import_records_total_is_counter(self) -> None:

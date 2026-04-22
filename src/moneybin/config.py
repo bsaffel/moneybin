@@ -153,6 +153,18 @@ class LoggingConfig(BaseModel):
     # disabled — it's a security invariant, not a tunable preference.
 
 
+class MetricsConfig(BaseModel):
+    """Metrics collection and persistence configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    flush_interval_seconds: int = Field(
+        default=300,
+        ge=10,
+        description="Periodic flush interval for MCP stream (seconds)",
+    )
+
+
 class MCPConfig(BaseModel):
     """MCP server runtime configuration."""
 
@@ -243,6 +255,7 @@ class MoneyBinSettings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 

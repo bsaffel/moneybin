@@ -73,7 +73,10 @@ def setup_observability(
 
     # Step 3: For MCP, start periodic flush (idempotent — checks _periodic_timer)
     if stream == "mcp" and _periodic_timer is None:
-        _start_periodic_flush()
+        from moneybin.config import get_settings
+
+        interval = get_settings().metrics.flush_interval_seconds
+        _start_periodic_flush(interval_seconds=interval)
 
     logger.debug(f"Observability initialized (stream={stream})")
 
