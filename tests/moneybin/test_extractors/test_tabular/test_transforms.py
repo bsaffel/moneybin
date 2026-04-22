@@ -184,3 +184,89 @@ class TestSignConventionTransform:
         )
         assert float(result.transactions["amount"][0]) == -42.50
         assert float(result.transactions["amount"][1]) == 100.00
+
+
+class TestRunningBalanceValidation:
+    """Tests for running balance validation in transforms."""
+
+    def test_balance_validates_amounts(self) -> None:
+        """Sequential balance deltas match amounts → balance_validated=True."""
+        df = _make_df(
+            Date=["01/15/2026", "01/16/2026", "01/17/2026"],
+            Amount=["-42.50", "100.00", "-10.00"],
+            Description=["A", "B", "C"],
+            Balance=["957.50", "1057.50", "1047.50"],
+        )
+        result = transform_dataframe(
+            df=df,
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+                "balance": "Balance",
+            },
+            date_format="%m/%d/%Y",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            account_id="test",
+            source_file="/tmp/test.csv",  # noqa: S108  # test fixture path, not a real temp file
+            source_type="csv",
+            source_origin="test",
+            import_id="test-123",
+        )
+        assert result.balance_validated is True
+
+    def test_balance_detects_wrong_sign(self) -> None:
+        """Balance validates after sign inversion → auto-correct sign convention."""
+        df = _make_df(
+            Date=["01/15/2026", "01/16/2026"],
+            Amount=["42.50", "-100.00"],
+            Description=["A", "B"],
+            Balance=["957.50", "1057.50"],
+        )
+        result = transform_dataframe(
+            df=df,
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+                "balance": "Balance",
+            },
+            date_format="%m/%d/%Y",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            account_id="test",
+            source_file="/tmp/test.csv",  # noqa: S108  # test fixture path, not a real temp file
+            source_type="csv",
+            source_origin="test",
+            import_id="test-123",
+        )
+        # Should auto-correct the sign and validate
+        assert result.balance_validated is True
+
+    def test_balance_inconsistent_warns(self) -> None:
+        """Balance doesn't match in either direction → balance_validated=False."""
+        df = _make_df(
+            Date=["01/15/2026", "01/16/2026"],
+            Amount=["-42.50", "100.00"],
+            Description=["A", "B"],
+            Balance=["500.00", "999.99"],
+        )
+        result = transform_dataframe(
+            df=df,
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+                "balance": "Balance",
+            },
+            date_format="%m/%d/%Y",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            account_id="test",
+            source_file="/tmp/test.csv",  # noqa: S108  # test fixture path, not a real temp file
+            source_type="csv",
+            source_origin="test",
+            import_id="test-123",
+        )
+        assert result.balance_validated is False

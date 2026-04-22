@@ -230,11 +230,23 @@ def transform_dataframe(
         f"Transform complete: {len(transactions)} accepted, {rows_rejected} rejected"
     )
 
-    return TransformResult(
+    result = TransformResult(
         transactions=transactions,
         rows_rejected=rows_rejected,
         rejection_details=rejection_details,
     )
+
+    # Running balance validation (Stage 4 optional check)
+    if "balance" in field_mapping:
+        balance_col = field_mapping["balance"]
+        if balance_col in df.columns:
+            balance_strs = [
+                str(v) if v is not None else ""
+                for v in df[balance_col].cast(pl.Utf8).to_list()
+            ]
+            result = _validate_running_balance(result, balance_strs, number_format)
+
+    return result
 
 
 def _parse_dates(
@@ -386,6 +398,98 @@ def _combine_original_debit_credit(
             result.append(f"credit:{c}")
         else:
             result.append("")
+    return result
+
+
+def _validate_running_balance(
+    result: TransformResult,
+    balance_strs: list[str],
+    number_format: str,
+) -> TransformResult:
+    """Validate running balance consistency against transaction amounts.
+
+    Checks that sequential balance deltas (balance[n] - balance[n-1]) match
+    the corresponding transaction amounts within a ±0.01 tolerance.
+
+    If the forward pass fails but succeeds after sign inversion, the amounts
+    in result.transactions are negated (auto-correcting an inverted sign
+    convention) and balance_validated is set to True.
+
+    Args:
+        result: Current TransformResult with a parsed ``transactions`` DataFrame.
+        balance_strs: Raw balance strings from the source file, one per source row.
+            May be longer than ``result.transactions`` if rows were rejected.
+        number_format: Number format used by ``parse_amount_str`` for balances.
+
+    Returns:
+        Updated TransformResult with ``balance_validated`` set and, when
+        auto-correction fires, negated amounts in ``transactions``.
+    """
+    _balance_tolerance = 0.01
+    _pass_threshold = 0.90
+
+    amounts: list[float] = result.transactions["amount"].to_list()
+    row_numbers: list[int] = result.transactions["row_number"].to_list()
+    n = len(amounts)
+
+    if n < 2:
+        # Need at least two rows to compute a delta
+        return result
+
+    # Map accepted 1-based row numbers back to the balance_strs list (0-indexed).
+    # balance_strs is indexed by original source position (row_number - 1).
+    balances: list[float | None] = []
+    for row_num in row_numbers:
+        idx = row_num - 1
+        if idx < len(balance_strs):
+            balances.append(parse_amount_str(balance_strs[idx], number_format))
+        else:
+            balances.append(None)
+
+    def _pass_rate(amt_list: list[float]) -> float:
+        """Fraction of consecutive pairs where delta ≈ amount."""
+        checks = n - 1
+        if checks == 0:
+            return 1.0
+        passed = 0
+        for i in range(1, n):
+            b_prev = balances[i - 1]
+            b_curr = balances[i]
+            if b_prev is None or b_curr is None:
+                continue
+            delta = round(b_curr - b_prev, 2)
+            if abs(delta - amt_list[i]) <= _balance_tolerance:
+                passed += 1
+        return passed / checks
+
+    forward_rate = _pass_rate(amounts)
+
+    if forward_rate >= _pass_threshold:
+        result.balance_validated = True
+        logger.info(
+            f"Running balance validated: {forward_rate:.0%} of deltas match amounts"
+        )
+        return result
+
+    # Try sign inversion
+    inverted = [-a for a in amounts]
+    inverted_rate = _pass_rate(inverted)
+
+    if inverted_rate >= _pass_threshold:
+        logger.info(
+            f"Running balance validated after sign inversion: "
+            f"{inverted_rate:.0%} pass rate — auto-correcting amounts"
+        )
+        result.transactions = result.transactions.with_columns(
+            (-pl.col("amount")).alias("amount")
+        )
+        result.balance_validated = True
+        return result
+
+    logger.warning(
+        f"Running balance inconsistent: forward {forward_rate:.0%}, "
+        f"inverted {inverted_rate:.0%} — balance_validated=False"
+    )
     return result
 
 
