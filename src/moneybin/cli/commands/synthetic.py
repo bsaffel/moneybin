@@ -51,7 +51,7 @@ def _run_generate(
         seed: Deterministic seed (None for random).
         skip_transform: If True, skip running SQLMesh after generation.
     """
-    from moneybin.config import set_current_profile
+    from moneybin.config import get_settings, set_current_profile
     from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.import_service import run_transforms
     from moneybin.testing.synthetic.engine import GeneratorEngine
@@ -64,12 +64,13 @@ def _run_generate(
         f"(seed={actual_seed}{f', {years} years' if years else ''})"
     )
 
-    # Pre-flight: verify database access before switching profile
+    original_profile = get_settings().profile
     set_current_profile(profile)
 
     try:
         db = get_database()
     except DatabaseKeyError:
+        set_current_profile(original_profile)
         logger.error("❌ Database encryption key not found")
         logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
         raise typer.Exit(1) from None

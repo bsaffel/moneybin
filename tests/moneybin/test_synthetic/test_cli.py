@@ -16,6 +16,14 @@ from moneybin.cli.commands.synthetic import app
 class TestGenerateCommand:
     """Test the 'synthetic generate' CLI command."""
 
+    @pytest.fixture(autouse=True)
+    def mock_profile(self, mocker: Any) -> None:
+        """Prevent generate/reset from mutating process-wide profile state."""
+        mock_settings = MagicMock()
+        mock_settings.profile = "default"
+        mocker.patch("moneybin.config.get_settings", return_value=mock_settings)
+        mocker.patch("moneybin.config.set_current_profile")
+
     @pytest.fixture
     def runner(self) -> CliRunner:
         return CliRunner()
@@ -97,6 +105,14 @@ class TestGenerateCommand:
 
 class TestResetCommand:
     """Test the 'synthetic reset' CLI command."""
+
+    @pytest.fixture(autouse=True)
+    def mock_profile(self, mocker: Any) -> None:
+        """Prevent reset from mutating process-wide profile state."""
+        mock_settings = MagicMock()
+        mock_settings.profile = "default"
+        mocker.patch("moneybin.config.get_settings", return_value=mock_settings)
+        mocker.patch("moneybin.config.set_current_profile")
 
     @pytest.fixture
     def runner(self) -> CliRunner:
