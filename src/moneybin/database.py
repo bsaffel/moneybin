@@ -38,21 +38,27 @@ def build_attach_sql(
 ) -> str:
     """Build a DuckDB ATTACH statement for an encrypted database.
 
-    Single-quote escapes the path and key to prevent injection. Both values
-    must come from trusted sources (config, SecretStore) — never user input.
+    Single-quote escapes the path and key to prevent injection. The alias
+    is double-quoted via sqlglot as defense in depth. All three parameters
+    must come from trusted sources (config, SecretStore, hardcoded literals)
+    — never user input.
 
     Args:
         db_path: Path to the DuckDB database file.
         encryption_key: AES-256-GCM encryption key.
-        alias: Database alias in DuckDB (default "moneybin").
+        alias: Database alias in DuckDB (default "moneybin"). Must be a
+            simple identifier — callers should only pass hardcoded literals.
 
     Returns:
         ATTACH SQL string ready for execution.
     """
+    from sqlglot import exp
+
     safe_path = str(db_path).replace("'", "''")
     safe_key = encryption_key.replace("'", "''")
+    safe_alias = exp.to_identifier(alias, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
     return (
-        f"ATTACH '{safe_path}' AS {alias} "  # noqa: S608 — trusted internal values, single-quote escaped
+        f"ATTACH '{safe_path}' AS {safe_alias} "  # noqa: S608 — trusted internal values, single-quote escaped, alias sqlglot-quoted
         f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"
     )
 

@@ -56,15 +56,20 @@ class ImportResult:
 def _query_date_range(
     db: Database,
     table: str,
-    date_column: str,
+    date_expr: str,
     file_path: Path,
 ) -> str:
     """Query min/max date range for a source file from a raw table.
 
+    Both ``table`` and ``date_expr`` are interpolated into SQL — callers
+    must only pass hardcoded trusted strings, never user input.
+
     Args:
         db: Database instance.
         table: Qualified table name (e.g. ``raw.ofx_transactions``).
-        date_column: Column containing the date value.
+        date_expr: SQL expression for the date value — may be a bare column
+            name (``transaction_date``) or a cast expression
+            (``CAST(date_posted AS DATE)``).
         file_path: Source file path to filter on.
 
     Returns:
@@ -74,16 +79,16 @@ def _query_date_range(
     try:
         result = db.execute(
             f"""
-            SELECT MIN({date_column}) AS min_date,
-                   MAX({date_column}) AS max_date
+            SELECT MIN({date_expr}) AS min_date,
+                   MAX({date_expr}) AS max_date
             FROM {table}
             WHERE source_file = ?
-            """,
+            """,  # noqa: S608 — table and date_expr are hardcoded by callers, not user input
             [str(file_path)],
         ).fetchone()
         if result and result[0]:
             return f"{result[0]} to {result[1]}"
-    except Exception:
+    except Exception:  # noqa: BLE001 — date range is best-effort; any DB failure returns empty string
         logger.debug(f"Could not determine date range from {table}", exc_info=True)
     return ""
 
@@ -399,10 +404,8 @@ def _apply_categorization(db: Database) -> None:
         stats = apply_deterministic_categorization(db)
         if stats["total"] > 0:
             logger.info(
-                "Auto-categorized %d transactions (%d merchant, %d rule)",
-                stats["total"],
-                stats["merchant"],
-                stats["rule"],
+                f"Auto-categorized {stats['total']} transactions "
+                f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
     except Exception:
         logger.debug(

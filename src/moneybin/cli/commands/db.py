@@ -309,6 +309,7 @@ def run_query(
         start_msg="",
         hint_msg="",
         error_noun="Query",
+        exit_msg="",
     )
 
 
