@@ -15,6 +15,7 @@ from moneybin.testing.synthetic.models import (
     RecurringConfig,
     SpendingCategoryConfig,
     SpendingConfig,
+    TransferConfig,
 )
 from moneybin.testing.synthetic.seed import SeededRandom
 
@@ -452,3 +453,125 @@ class TestSpendingGenerator:
         card = [t for t in txns if t.account_name == "Card"]
         # With 0.9/0.1 weights and ~30 txns, checking should have more
         assert len(checking) > len(card)
+
+
+class TestTransferGenerator:
+    """Test account-to-account transfer generation."""
+
+    @pytest.fixture
+    def rng(self) -> SeededRandom:
+        return SeededRandom(42)
+
+    @pytest.fixture
+    def fixed_transfer(self) -> TransferConfig:
+        return TransferConfig.model_validate({
+            "from": "Checking",
+            "to": "Savings",
+            "amount": 500.0,
+            "schedule": "monthly",
+            "day_of_month": 5,
+            "description_template": "TRANSFER TO SAVINGS",
+        })
+
+    @pytest.fixture
+    def statement_balance_transfer(self) -> TransferConfig:
+        return TransferConfig.model_validate({
+            "from": "Checking",
+            "to": "Credit Card",
+            "amount": "statement_balance",
+            "schedule": "monthly",
+            "day_of_month": 20,
+            "description_template": "ONLINE PAYMENT",
+        })
+
+    def test_fixed_transfer_generates_two_transactions(
+        self,
+        rng: SeededRandom,
+        fixed_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([fixed_transfer], rng)
+        balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
+        txns = gen.generate_month(2024, 3, balances)
+        assert len(txns) == 2
+
+    def test_fixed_transfer_amounts_opposite(
+        self,
+        rng: SeededRandom,
+        fixed_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([fixed_transfer], rng)
+        balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
+        txns = gen.generate_month(2024, 3, balances)
+        from_txn = [t for t in txns if t.account_name == "Checking"][0]
+        to_txn = [t for t in txns if t.account_name == "Savings"][0]
+        assert from_txn.amount == Decimal("-500.00")
+        assert to_txn.amount == Decimal("500.00")
+
+    def test_transfer_pair_ids_match(
+        self,
+        rng: SeededRandom,
+        fixed_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([fixed_transfer], rng)
+        balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
+        txns = gen.generate_month(2024, 3, balances)
+        assert txns[0].transfer_pair_id == txns[1].transfer_pair_id
+        assert txns[0].transfer_pair_id is not None
+
+    def test_statement_balance_pays_off_card(
+        self,
+        rng: SeededRandom,
+        statement_balance_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([statement_balance_transfer], rng)
+        # Credit card has -350 balance (accumulated charges)
+        balances = {"Checking": Decimal("5000"), "Credit Card": Decimal("-350")}
+        txns = gen.generate_month(2024, 3, balances)
+        from_txn = [t for t in txns if t.account_name == "Checking"][0]
+        to_txn = [t for t in txns if t.account_name == "Credit Card"][0]
+        assert from_txn.amount == Decimal("-350.00")
+        assert to_txn.amount == Decimal("350.00")
+
+    def test_statement_balance_zero_generates_nothing(
+        self,
+        rng: SeededRandom,
+        statement_balance_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([statement_balance_transfer], rng)
+        balances = {"Checking": Decimal("5000"), "Credit Card": Decimal("0")}
+        txns = gen.generate_month(2024, 3, balances)
+        assert len(txns) == 0
+
+    def test_transfer_type_is_xfer(
+        self,
+        rng: SeededRandom,
+        fixed_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([fixed_transfer], rng)
+        balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
+        txns = gen.generate_month(2024, 3, balances)
+        assert all(t.transaction_type == "XFER" for t in txns)
+
+    def test_transfer_category_is_none(
+        self,
+        rng: SeededRandom,
+        fixed_transfer: TransferConfig,
+    ) -> None:
+        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+
+        gen = TransferGenerator([fixed_transfer], rng)
+        balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
+        txns = gen.generate_month(2024, 3, balances)
+        assert all(t.category is None for t in txns)
