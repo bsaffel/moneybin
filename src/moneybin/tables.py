@@ -41,3 +41,6 @@ VERSIONS = TableRef("app", "versions")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
+
+# -- Synthetic tables (created on demand by the generator) --
+GROUND_TRUTH = TableRef("synthetic", "ground_truth")
