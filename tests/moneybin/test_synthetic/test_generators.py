@@ -1,6 +1,8 @@
 # ruff: noqa: S101
 """Tests for all synthetic data generators."""
 
+from datetime import date
+
 import pytest
 
 from moneybin.testing.synthetic.models import (
@@ -118,6 +120,45 @@ class TestIncomeGenerator:
         for month in range(1, 13):
             all_txns.extend(gen.generate_month(2024, month))
         assert all(t.amount > 0 for t in all_txns)
+
+    @pytest.fixture
+    def monthly_config(self) -> IncomeConfig:
+        return IncomeConfig(
+            type="salary",
+            account="Checking",
+            amount=5000.00,
+            schedule="monthly",
+            description_template="PAYROLL {employer}",
+            employer="Corp Inc",
+        )
+
+    def test_monthly_generates_one_per_month(
+        self, rng: SeededRandom, monthly_config: IncomeConfig
+    ) -> None:
+        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+
+        gen = IncomeGenerator([monthly_config], 2024, 2024, rng)
+        for month in range(1, 13):
+            txns = gen.generate_month(2024, month)
+            assert len(txns) == 1
+
+    def test_monthly_transaction_type_is_dep(
+        self, rng: SeededRandom, monthly_config: IncomeConfig
+    ) -> None:
+        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+
+        gen = IncomeGenerator([monthly_config], 2024, 2024, rng)
+        txns = gen.generate_month(2024, 1)
+        assert txns[0].transaction_type == "DEP"
+
+    def test_monthly_pay_date_is_first_of_month(
+        self, rng: SeededRandom, monthly_config: IncomeConfig
+    ) -> None:
+        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+
+        gen = IncomeGenerator([monthly_config], 2024, 2024, rng)
+        txns = gen.generate_month(2024, 6)
+        assert txns[0].date == date(2024, 6, 1)
 
     def test_deterministic_output(self) -> None:
         from moneybin.testing.synthetic.generators.income import IncomeGenerator

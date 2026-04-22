@@ -133,7 +133,7 @@ class IncomeGenerator:
             else float(config.amount)
         )
         amount = self._apply_raise(base, year, config.annual_raise_pct)
-        # Pay on the 1st or last business day
+        # Pay on the 1st of the month
         pay_date = date(year, month, 1)
         description = config.description_template.format(employer=config.employer or "")
         return [
