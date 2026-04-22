@@ -12,8 +12,13 @@ class TestSetupObservability:
     """Tests for setup_observability()."""
 
     @pytest.fixture(autouse=True)
-    def _reset_root_logger(self) -> Generator[None, Any, None]:
-        """Clean up handlers after each test."""
+    def _reset_root_logger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> Generator[None, Any, None]:
+        """Clean up handlers and reset _initialized after each test."""
+        import moneybin.observability as obs_mod
+
+        monkeypatch.setattr(obs_mod, "_initialized", False)
         root = logging.getLogger()
         original_handlers = list(root.handlers)
         original_level = root.level

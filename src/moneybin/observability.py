@@ -18,6 +18,7 @@ access.
 import atexit
 import logging
 import threading
+from typing import Literal
 
 from moneybin.logging.config import setup_logging
 from moneybin.metrics.instruments import track_duration, tracked
@@ -30,7 +31,7 @@ _initialized = False
 
 
 def setup_observability(
-    stream: str = "cli",
+    stream: Literal["cli", "mcp", "sqlmesh"] = "cli",
     verbose: bool = False,
     profile: str | None = None,
 ) -> None:

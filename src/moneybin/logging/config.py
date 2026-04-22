@@ -11,6 +11,7 @@ import stat as stat_mod
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from moneybin.log_sanitizer import SanitizedLogFormatter
 from moneybin.logging.formatters import HumanFormatter, JSONFormatter
@@ -50,7 +51,7 @@ def session_log_path(
 
 
 def setup_logging(
-    stream: str = "cli",
+    stream: Literal["cli", "mcp", "sqlmesh"] = "cli",
     verbose: bool = False,
     profile: str | None = None,
     *,
