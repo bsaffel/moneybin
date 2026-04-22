@@ -40,6 +40,7 @@ data/
 # Test fixtures are synthetic/non-sensitive and must be tracked for CI
 !tests/fixtures/*.csv
 !tests/fixtures/*.pdf
+!tests/fixtures/**/*.csv
 # Built-in CSV profiles are static config bundled with the package (not financial data)
 !src/moneybin/data/
 
