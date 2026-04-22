@@ -47,7 +47,7 @@ def db_with_transactions(db: Database) -> Database:
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
             amount_absolute, transaction_direction, description, memo,
-            transaction_type, is_pending, currency_code, source_system,
+            transaction_type, is_pending, currency_code, source_type,
             source_extracted_at, loaded_at,
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month,

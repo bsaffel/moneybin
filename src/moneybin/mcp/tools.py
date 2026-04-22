@@ -160,7 +160,7 @@ def list_accounts() -> str:
 
     return _query_to_json(f"""
         SELECT account_id, account_type, institution_name,
-            routing_number, source_system
+            routing_number, source_type
         FROM {DIM_ACCOUNTS.full_name}
         ORDER BY institution_name, account_type
     """)
@@ -227,7 +227,7 @@ def query_transactions(
     sql = f"""
         SELECT transaction_id, account_id, transaction_type,
             transaction_date, amount, description, memo,
-            source_system
+            source_type
         FROM {FCT_TRANSACTIONS.full_name} {where}
         ORDER BY transaction_date DESC LIMIT ?
     """
