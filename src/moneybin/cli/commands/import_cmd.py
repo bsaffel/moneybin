@@ -151,7 +151,7 @@ def _print_import_status(db: Database) -> None:
                 if dates and dates[0]:
                     date_info = f"  ({dates[0]} to {dates[1]})"
             except Exception:  # noqa: BLE001 — column may not exist in all tables
-                logger.debug("Could not get date range for %s.%s", schema, table)
+                logger.debug(f"Could not get date range for {schema}.{table}")
 
         print(f"  {schema}.{table}: {count:,} rows{date_info}")
 

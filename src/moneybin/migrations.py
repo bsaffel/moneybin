@@ -39,6 +39,7 @@ class Migration:
         name: Snake-case description parsed from filename.
         filename: Full filename including extension.
         checksum: Lowercase hex SHA-256 of file contents.
+        content: Raw file bytes (cached from discovery to avoid re-reads).
         path: Absolute path to the migration file.
         file_type: File extension — "sql" or "py".
     """
@@ -47,6 +48,7 @@ class Migration:
     name: str
     filename: str
     checksum: str
+    content: bytes
     path: Path
     file_type: str
 
@@ -79,6 +81,7 @@ class Migration:
             name=name,
             filename=path.name,
             checksum=checksum,
+            content=content,
             path=path,
             file_type=file_type,
         )
@@ -109,7 +112,6 @@ def discover_migrations(migrations_dir: Path | None = None) -> list[Migration]:
             continue
         migrations.append(Migration.from_file(path))
 
-    # Check for duplicate versions
     seen: dict[int, str] = {}
     for m in migrations:
         if m.version in seen:
@@ -133,15 +135,25 @@ class MigrationResult:
 
     Attributes:
         applied_count: Number of migrations successfully applied.
-        failed: Whether any migration failed.
         failed_migration: Filename of the failed migration, if any.
         error_message: Human-readable details for display to the user.
     """
 
     applied_count: int = 0
-    failed: bool = False
     failed_migration: str | None = None
     error_message: str | None = None
+
+    @property
+    def failed(self) -> bool:
+        """Whether any migration failed."""
+        return self.failed_migration is not None or self.error_message is not None
+
+    def log_failure(self) -> None:
+        """Log the failure details with standard icon formatting."""
+        msg = self.error_message or f"Migration {self.failed_migration} failed"
+        logger.error(f"❌ {msg}")
+        logger.info("💡 See logs for details")
+        logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
 
 
 @dataclass(frozen=True)
@@ -157,6 +169,25 @@ class DriftWarning:
     version: int
     filename: str
     reason: str
+
+
+@dataclass(frozen=True)
+class AppliedMigration:
+    """A migration record from the tracking table.
+
+    Attributes:
+        version: Migration version number.
+        filename: Migration filename.
+        success: Whether the migration succeeded.
+        execution_ms: Execution time in milliseconds (may be None).
+        applied_at: Timestamp when the migration was applied.
+    """
+
+    version: int
+    filename: str
+    success: bool
+    execution_ms: int | None
+    applied_at: str
 
 
 class MigrationRunner:
@@ -180,6 +211,14 @@ class MigrationRunner:
         """Initialize the runner."""
         self._db = db
         self._migrations_dir = migrations_dir or _MIGRATIONS_DIR
+        self._cached_migrations: list[Migration] | None = None
+
+    @property
+    def _migrations(self) -> list[Migration]:
+        """Lazily discover and cache migration files."""
+        if self._cached_migrations is None:
+            self._cached_migrations = discover_migrations(self._migrations_dir)
+        return self._cached_migrations
 
     def check_drift(self) -> list[DriftWarning]:
         """Check for checksum drift between applied migrations and current files.
@@ -194,10 +233,7 @@ class MigrationRunner:
         if not applied_rows:
             return []
 
-        # Build lookup of current files
-        current_files: dict[int, Migration] = {}
-        for m in discover_migrations(self._migrations_dir):
-            current_files[m.version] = m
+        current_files: dict[int, Migration] = {m.version: m for m in self._migrations}
 
         warnings: list[DriftWarning] = []
         for version, filename, stored_checksum in applied_rows:
@@ -254,6 +290,27 @@ class MigrationRunner:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
+    def applied_details(self) -> list[AppliedMigration]:
+        """Return full details of all applied migrations, ordered by version.
+
+        Returns:
+            List of AppliedMigration records.
+        """
+        rows = self._db.execute(
+            "SELECT version, filename, success, execution_ms, applied_at "
+            "FROM app.schema_migrations ORDER BY version"
+        ).fetchall()
+        return [
+            AppliedMigration(
+                version=row[0],
+                filename=row[1],
+                success=row[2],
+                execution_ms=row[3],
+                applied_at=row[4],
+            )
+            for row in rows
+        ]
+
     def pending(self) -> list[Migration]:
         """Return migrations that have not yet been applied, sorted by version.
 
@@ -261,8 +318,34 @@ class MigrationRunner:
             List of unapplied Migration objects in version order.
         """
         applied = self.applied_versions()
-        all_migrations = discover_migrations(self._migrations_dir)
-        return [m for m in all_migrations if m.version not in applied]
+        return [m for m in self._migrations if m.version not in applied]
+
+    def _record_migration(
+        self,
+        migration: Migration,
+        *,
+        success: bool,
+        elapsed_ms: int,
+    ) -> None:
+        """Write a row to the migration tracking table.
+
+        Args:
+            migration: The migration being recorded.
+            success: Whether the migration succeeded.
+            elapsed_ms: Execution time in milliseconds.
+        """
+        self._db.execute(
+            "INSERT INTO app.schema_migrations "
+            "(version, filename, checksum, success, execution_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                migration.version,
+                migration.filename,
+                migration.checksum,
+                success,
+                elapsed_ms,
+            ],
+        )
 
     def apply_one(self, migration: Migration) -> None:
         """Apply a single migration within a transaction.
@@ -295,8 +378,7 @@ class MigrationRunner:
             self._db.execute("BEGIN TRANSACTION")
 
             if migration.file_type == "sql":
-                sql = migration.path.read_text()
-                self._db.execute(sql)
+                self._db.execute(migration.content.decode())
             else:
                 self._execute_python_migration(migration)
 
@@ -304,12 +386,7 @@ class MigrationRunner:
 
             # Record success inside the transaction so DDL and tracking
             # are committed atomically — prevents orphaned DDL on crash.
-            self._db.execute(
-                "INSERT INTO app.schema_migrations "
-                "(version, filename, checksum, success, execution_ms) "
-                "VALUES (?, ?, ?, TRUE, ?)",
-                [migration.version, migration.filename, migration.checksum, elapsed_ms],
-            )
+            self._record_migration(migration, success=True, elapsed_ms=elapsed_ms)
             self._db.execute("COMMIT")
             logger.info(f"Applied {migration.filename} in {elapsed_ms}ms")
 
@@ -320,19 +397,8 @@ class MigrationRunner:
             except Exception:  # noqa: BLE001 S110 — rollback is best-effort; original exc re-raised below
                 pass
 
-            # Record failure — best-effort; original exception takes priority
             try:
-                self._db.execute(
-                    "INSERT INTO app.schema_migrations "
-                    "(version, filename, checksum, success, execution_ms) "
-                    "VALUES (?, ?, ?, FALSE, ?)",
-                    [
-                        migration.version,
-                        migration.filename,
-                        migration.checksum,
-                        elapsed_ms,
-                    ],
-                )
+                self._record_migration(migration, success=False, elapsed_ms=elapsed_ms)
             except Exception:  # noqa: BLE001 S110 — failure tracking is best-effort; original exc re-raised below
                 logger.warning("Failed to record migration failure in tracking table")
             raise MigrationError(
@@ -342,16 +408,13 @@ class MigrationRunner:
     def apply_all(self) -> MigrationResult:
         """Apply all pending migrations in version order.
 
-        Checks for stuck migrations first. Stops on first failure.
-
         Returns:
             MigrationResult with counts and failure info.
         """
-        # Check for stuck state before doing anything
         try:
             self.check_stuck()
         except MigrationError as exc:
-            return MigrationResult(failed=True, error_message=str(exc))
+            return MigrationResult(error_message=str(exc))
 
         pending = self.pending()
         if not pending:
@@ -363,9 +426,9 @@ class MigrationRunner:
             try:
                 self.apply_one(migration)
                 result.applied_count += 1
-            except MigrationError:
-                result.failed = True
+            except MigrationError as exc:
                 result.failed_migration = migration.filename
+                result.error_message = str(exc)
                 break
 
         return result

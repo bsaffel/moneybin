@@ -7,8 +7,27 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.migrate import app
+from moneybin.migrations import Migration
 
 runner = CliRunner()
+
+
+def _migration(
+    version: int = 1,
+    name: str = "test",
+    filename: str = "V001__test.sql",
+    checksum: str = "abc123",
+) -> Migration:
+    """Build a Migration with sensible defaults for CLI tests."""
+    return Migration(
+        version=version,
+        name=name,
+        filename=filename,
+        checksum=checksum,
+        content=b"SELECT 1;",
+        path=Path(f"/tmp/{filename}"),  # noqa: S108  # temp path in test only
+        file_type="sql",
+    )
 
 
 class TestMigrateApply:
@@ -51,19 +70,8 @@ class TestMigrateApply:
         self, mock_runner_cls: MagicMock, mock_get_db: MagicMock
     ) -> None:
         """Dry run lists pending migrations without executing."""
-        from moneybin.migrations import Migration
-
         mock_runner = mock_runner_cls.return_value
-        mock_runner.pending.return_value = [
-            Migration(
-                version=1,
-                name="test",
-                filename="V001__test.sql",
-                checksum="abc123",
-                path=Path("/tmp/V001__test.sql"),  # noqa: S108  # temp path in test only
-                file_type="sql",
-            )
-        ]
+        mock_runner.pending.return_value = [_migration()]
 
         result = runner.invoke(app, ["apply", "--dry-run"])
         assert result.exit_code == 0
@@ -92,7 +100,8 @@ class TestMigrateApply:
 
         mock_runner = mock_runner_cls.return_value
         mock_runner.apply_all.return_value = MigrationResult(
-            failed=True, failed_migration="V002__bad.sql"
+            failed_migration="V002__bad.sql",
+            error_message="Migration V002__bad.sql failed",
         )
         mock_runner.check_drift.return_value = []
 
@@ -153,26 +162,25 @@ class TestMigrateStatus:
         """Status command exits 0 and logs applied and pending migrations."""
         import logging
 
-        from moneybin.migrations import Migration
+        from moneybin.migrations import AppliedMigration
 
         mock_runner = mock_runner_cls.return_value
         mock_runner.pending.return_value = [
-            Migration(
-                version=2,
-                name="new",
-                filename="V002__new.sql",
-                checksum="def456",
-                path=Path("/tmp/V002__new.sql"),  # noqa: S108  # temp path in test only
-                file_type="sql",
+            _migration(
+                version=2, name="new", filename="V002__new.sql", checksum="def456"
+            )
+        ]
+        mock_runner.applied_details.return_value = [
+            AppliedMigration(
+                version=1,
+                filename="V001__init.sql",
+                success=True,
+                execution_ms=42,
+                applied_at="2026-01-01 00:00:00",
             )
         ]
         mock_runner.check_drift.return_value = []
         mock_get_versions.return_value = {"moneybin": "0.2.0"}
-
-        mock_db = mock_get_db.return_value
-        mock_db.execute.return_value.fetchall.return_value = [
-            (1, "V001__init.sql", True, 42, "2026-01-01 00:00:00")
-        ]
 
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.migrate"):
             result = runner.invoke(app, ["status"])
@@ -197,11 +205,9 @@ class TestMigrateStatus:
 
         mock_runner = mock_runner_cls.return_value
         mock_runner.pending.return_value = []
+        mock_runner.applied_details.return_value = []
         mock_runner.check_drift.return_value = []
         mock_get_versions.return_value = {}
-
-        mock_db = mock_get_db.return_value
-        mock_db.execute.return_value.fetchall.return_value = []
 
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.migrate"):
             result = runner.invoke(app, ["status"])

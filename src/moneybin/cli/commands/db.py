@@ -71,6 +71,7 @@ def _create_init_script(db_path: Path) -> Path:
     Returns:
         Path to the temporary init script.
     """
+    from moneybin.database import build_attach_sql
     from moneybin.secrets import SecretStore
 
     store = SecretStore()
@@ -81,12 +82,7 @@ def _create_init_script(db_path: Path) -> Path:
     try:
         with os.fdopen(fd, "w") as f:
             f.write("LOAD httpfs;\n")
-            safe_db_path = str(db_path).replace("'", "''")
-            safe_key = encryption_key.replace("'", "''")
-            f.write(
-                f"ATTACH '{safe_db_path}' AS moneybin "
-                f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}');\n"  # noqa: S608  # trusted internal values, single-quote escaped
-            )
+            f.write(f"{build_attach_sql(db_path, encryption_key)};\n")
             f.write("USE moneybin;\n")
         if sys.platform != "win32":
             os.chmod(script_path, 0o600)
@@ -173,7 +169,68 @@ def init_db(
     db = Database(db_path, secret_store=store)
     db.close()
 
-    logger.info("✅ Encrypted database created: %s", db_path)
+    logger.info(f"✅ Encrypted database created: {db_path}")
+
+
+def _run_duckdb_cli(
+    db_path: Path,
+    *,
+    extra_args: list[str] | None = None,
+    start_msg: str = "🦆 Opening DuckDB interactive shell...",
+    hint_msg: str = "   Type .help for commands, .quit to exit",
+    error_noun: str = "DuckDB shell",
+    exit_msg: str = "✅ DuckDB shell closed",
+) -> None:
+    """Run DuckDB CLI with encrypted database attached.
+
+    Handles the common preamble shared by shell, ui, and query commands:
+    db existence check, CLI availability check, init script lifecycle,
+    and subprocess error handling.
+
+    Args:
+        db_path: Path to the encrypted DuckDB database file.
+        extra_args: Additional CLI arguments (e.g. ["-ui"], ["-csv", "-c", sql]).
+        start_msg: Log message before launching.
+        hint_msg: Secondary log hint (empty string to skip).
+        error_noun: Noun for error messages (e.g. "DuckDB shell", "DuckDB UI").
+        exit_msg: Log message on KeyboardInterrupt.
+    """
+    if not db_path.exists():
+        logger.error(f"❌ Database file not found: {db_path}")
+        logger.info("💡 Run 'moneybin db init' to create the database first")
+        raise typer.Exit(1)
+
+    duckdb_path = _check_duckdb_cli()
+    if duckdb_path is None:
+        logger.error("❌ DuckDB CLI not found in PATH")
+        logger.info("💡 Install from: https://duckdb.org/docs/installation/")
+        raise typer.Exit(1)
+
+    from moneybin.secrets import SecretNotFoundError
+
+    try:
+        init_script = _create_init_script(db_path)
+    except SecretNotFoundError:
+        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        raise typer.Exit(1) from None
+
+    try:
+        if start_msg:
+            logger.info(start_msg)
+        if hint_msg:
+            logger.info(hint_msg)
+        cmd = [duckdb_path, "-init", str(init_script)]
+        if extra_args:
+            cmd.extend(extra_args)
+        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args and validated flags
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ {error_noun} failed: {e}")
+        raise typer.Exit(1) from e
+    except KeyboardInterrupt:
+        logger.info(f"\n{exit_msg}")
+        sys.exit(0)
+    finally:
+        init_script.unlink(missing_ok=True)
 
 
 @app.command("shell")
@@ -188,40 +245,7 @@ def open_shell(
     """Open an interactive DuckDB SQL shell with encrypted database attached."""
     from moneybin.config import get_settings
 
-    db_path = database or get_settings().database.path
-
-    if not db_path.exists():
-        logger.error(f"❌ Database file not found: {db_path}")
-        logger.info("💡 Run 'moneybin db init' to create the database first")
-        raise typer.Exit(1)
-
-    duckdb_path = _check_duckdb_cli()
-    if duckdb_path is None:
-        logger.error("❌ DuckDB CLI not found in PATH")
-        logger.info("💡 Install from: https://duckdb.org/docs/installation/")
-        raise typer.Exit(1)
-
-    from moneybin.secrets import SecretNotFoundError
-
-    try:
-        init_script = _create_init_script(db_path)
-    except SecretNotFoundError:
-        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
-        raise typer.Exit(1) from None
-
-    try:
-        logger.info("🦆 Opening DuckDB interactive shell...")
-        logger.info("   Type .help for commands, .quit to exit")
-        cmd = [duckdb_path, "-init", str(init_script)]
-        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args
-    except subprocess.CalledProcessError as e:
-        logger.error(f"❌ DuckDB shell failed: {e}")
-        raise typer.Exit(1) from e
-    except KeyboardInterrupt:
-        logger.info("\n✅ DuckDB shell closed")
-        sys.exit(0)
-    finally:
-        init_script.unlink(missing_ok=True)
+    _run_duckdb_cli(database or get_settings().database.path)
 
 
 @app.command("ui")
@@ -236,40 +260,14 @@ def open_ui(
     """Open DuckDB web UI with encrypted database auto-attached."""
     from moneybin.config import get_settings
 
-    db_path = database or get_settings().database.path
-
-    if not db_path.exists():
-        logger.error(f"❌ Database file not found: {db_path}")
-        logger.info("💡 Run 'moneybin db init' to create the database first")
-        raise typer.Exit(1)
-
-    duckdb_path = _check_duckdb_cli()
-    if duckdb_path is None:
-        logger.error("❌ DuckDB CLI not found in PATH")
-        logger.info("💡 Install from: https://duckdb.org/docs/installation/")
-        raise typer.Exit(1)
-
-    from moneybin.secrets import SecretNotFoundError
-
-    try:
-        init_script = _create_init_script(db_path)
-    except SecretNotFoundError:
-        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
-        raise typer.Exit(1) from None
-
-    try:
-        logger.info("🚀 Opening DuckDB web UI...")
-        logger.info("   Press Ctrl+C to stop the server")
-        cmd = [duckdb_path, "-init", str(init_script), "-ui"]
-        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args
-    except subprocess.CalledProcessError as e:
-        logger.error(f"❌ DuckDB UI failed to start: {e}")
-        raise typer.Exit(1) from e
-    except KeyboardInterrupt:
-        logger.info("\n✅ DuckDB UI stopped")
-        sys.exit(0)
-    finally:
-        init_script.unlink(missing_ok=True)
+    _run_duckdb_cli(
+        database or get_settings().database.path,
+        extra_args=["-ui"],
+        start_msg="🚀 Opening DuckDB web UI...",
+        hint_msg="   Press Ctrl+C to stop the server",
+        error_noun="DuckDB UI",
+        exit_msg="✅ DuckDB UI stopped",
+    )
 
 
 @app.command("query")
@@ -291,19 +289,6 @@ def run_query(
     """Execute a SQL query against the encrypted DuckDB database."""
     from moneybin.config import get_settings
 
-    db_path = database or get_settings().database.path
-
-    if not db_path.exists():
-        logger.error(f"❌ Database file not found: {db_path}")
-        logger.info("💡 Run 'moneybin db init' to create the database first")
-        raise typer.Exit(1)
-
-    duckdb_path = _check_duckdb_cli()
-    if duckdb_path is None:
-        logger.error("❌ DuckDB CLI not found in PATH")
-        logger.info("💡 Install from: https://duckdb.org/docs/installation/")
-        raise typer.Exit(1)
-
     format_map = {
         "table": "-table",
         "csv": "-csv",
@@ -311,29 +296,20 @@ def run_query(
         "markdown": "-markdown",
         "box": "-box",
     }
+    extra_args: list[str] = []
+    if output_format in format_map:
+        extra_args.append(format_map[output_format])
+    else:
+        logger.warning(f"⚠️  Unknown format '{output_format}', using table")
+    extra_args.extend(["-c", sql])
 
-    from moneybin.secrets import SecretNotFoundError
-
-    try:
-        init_script = _create_init_script(db_path)
-    except SecretNotFoundError:
-        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
-        raise typer.Exit(1) from None
-
-    try:
-        cmd = [duckdb_path, "-init", str(init_script)]
-        if output_format in format_map:
-            cmd.append(format_map[output_format])
-        else:
-            logger.warning(f"⚠️  Unknown format '{output_format}', using table")
-        cmd.extend(["-c", sql])
-
-        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args and format flag
-    except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Query failed: {e}")
-        raise typer.Exit(1) from e
-    finally:
-        init_script.unlink(missing_ok=True)
+    _run_duckdb_cli(
+        database or get_settings().database.path,
+        extra_args=extra_args,
+        start_msg="",
+        hint_msg="",
+        error_noun="Query",
+    )
 
 
 @app.command("info")
@@ -366,10 +342,10 @@ def db_info(
     else:
         size_str = f"{file_size / (1024 * 1024):.1f} MB"
 
-    logger.info("Database: %s", db_path)
-    logger.info("  File size: %s", size_str)
+    logger.info(f"Database: {db_path}")
+    logger.info(f"  File size: {size_str}")
     logger.info("  Encryption: AES-256-GCM (always on)")
-    logger.info("  Key mode: %s", settings.database.encryption_key_mode)
+    logger.info(f"  Key mode: {settings.database.encryption_key_mode}")
 
     # Check lock state
     store = SecretStore()
@@ -393,7 +369,7 @@ def db_info(
 
             from sqlglot import exp
 
-            logger.info("  Tables: %d", len(tables))
+            logger.info(f"  Tables: {len(tables)}")
             for schema, table in tables:
                 safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
                 safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
@@ -401,12 +377,12 @@ def db_info(
                     f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
                 ).fetchone()
                 count = count_result[0] if count_result else 0
-                logger.info("    %s.%s: %d rows", schema, table, count)
+                logger.info(f"    {schema}.{table}: {count} rows")
 
             # DuckDB version
             version = db.sql("SELECT version()").fetchone()
             if version:
-                logger.info("  DuckDB version: %s", version[0])
+                logger.info(f"  DuckDB version: {version[0]}")
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on connection/encryption failure
@@ -453,7 +429,7 @@ def db_backup(
             pass
 
     file_size = backup_path.stat().st_size / (1024 * 1024)
-    logger.info("✅ Backup created: %s (%.1f MB)", backup_path, file_size)
+    logger.info(f"✅ Backup created: {backup_path} ({file_size:.1f} MB)")
 
 
 @app.command("restore")
@@ -483,12 +459,12 @@ def db_restore(
     if from_path is None:
         backup_dir = settings.database.backup_path or db_path.parent / "backups"
         if not backup_dir.exists():
-            logger.error("❌ No backup directory found: %s", backup_dir)
+            logger.error(f"❌ No backup directory found: {backup_dir}")
             raise typer.Exit(1)
 
         backups: list[Path] = sorted(backup_dir.glob("*.duckdb"), reverse=True)
         if not backups:
-            logger.error("❌ No backups found in %s", backup_dir)
+            logger.error(f"❌ No backups found in {backup_dir}")
             raise typer.Exit(1)
 
         if latest:
@@ -497,7 +473,7 @@ def db_restore(
             logger.info("Available backups:")
             for i, b in enumerate(backups, 1):
                 size = b.stat().st_size / (1024 * 1024)
-                logger.info("  %d. %s (%.1f MB)", i, b.name, size)
+                logger.info(f"  {i}. {b.name} ({size:.1f} MB)")
 
             choice = typer.prompt("Select backup number", type=int)
             if choice < 1 or choice > len(backups):
@@ -506,17 +482,15 @@ def db_restore(
             from_path = backups[choice - 1]
 
     # from_path is guaranteed non-None here (either provided or selected above)
-    from typing import cast
+    selected_path: Path = from_path  # type: ignore[assignment]  # Pyright can't narrow across Typer Option | None
 
-    resolved_path = cast(Path, from_path)
-
-    if not resolved_path.exists():
-        logger.error(f"❌ Backup file not found: {resolved_path}")
+    if not selected_path.exists():
+        logger.error(f"❌ Backup file not found: {selected_path}")
         raise typer.Exit(1)
 
     if not yes:
         confirm = typer.confirm(
-            f"Restore from {resolved_path.name}? Current database will be backed up first."
+            f"Restore from {selected_path.name}? Current database will be backed up first."
         )
         if not confirm:
             raise typer.Exit(0)
@@ -528,9 +502,9 @@ def db_restore(
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         auto_backup = backup_dir / f"moneybin_{timestamp}_pre_restore.duckdb"
         shutil.copy2(str(db_path), str(auto_backup))
-        logger.info("Auto-backed up current database: %s", auto_backup.name)
+        logger.info(f"Auto-backed up current database: {auto_backup.name}")
 
-    shutil.copy2(str(resolved_path), str(db_path))
+    shutil.copy2(str(selected_path), str(db_path))
     if sys.platform != "win32":
         try:
             db_path.chmod(0o600)
@@ -541,7 +515,7 @@ def db_restore(
     try:
         db = Database(db_path, secret_store=store)
         db.close()
-        logger.info("✅ Database restored from %s", resolved_path.name)
+        logger.info(f"✅ Database restored from {selected_path.name}")
     except DatabaseKeyError:
         logger.warning(
             "⚠️  Could not open restored database with current key. "
@@ -618,7 +592,7 @@ def db_unlock() -> None:
 
     if not settings.database.path.exists():
         store.delete_key("DATABASE__ENCRYPTION_KEY")
-        logger.error("❌ Database file not found: %s", settings.database.path)
+        logger.error(f"❌ Database file not found: {settings.database.path}")
         logger.info("💡 Run 'moneybin db init --passphrase' to create a new database.")
         raise typer.Exit(1)
     try:
@@ -692,24 +666,16 @@ def db_rotate_key(
         raise typer.Exit(1) from None
     new_key = secrets_mod.token_hex(32)
 
+    from moneybin.database import build_attach_sql
+
     rotated_path = db_path.with_suffix(".rotated.duckdb")
     # Direct duckdb.connect() required here: COPY FROM DATABASE needs two
     # simultaneous open connections; the Database class wraps a single one.
     conn = duckdb_mod.connect()
     try:
         conn.execute("LOAD httpfs;")
-        safe_db_path = str(db_path).replace("'", "''")
-        safe_old_key = old_key.replace("'", "''")
-        conn.execute(
-            f"ATTACH '{safe_db_path}' AS old_db "
-            f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_old_key}')"  # noqa: S608  # trusted internal values, single-quote escaped
-        )
-        safe_rotated_path = str(rotated_path).replace("'", "''")
-        safe_new_key = new_key.replace("'", "''")
-        conn.execute(
-            f"ATTACH '{safe_rotated_path}' AS new_db "
-            f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_new_key}')"  # noqa: S608  # trusted internal values, single-quote escaped
-        )
+        conn.execute(build_attach_sql(db_path, old_key, alias="old_db"))
+        conn.execute(build_attach_sql(rotated_path, new_key, alias="new_db"))
         conn.execute("COPY FROM DATABASE old_db TO new_db")
     except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on ATTACH/COPY failure
         logger.error(f"❌ Key rotation failed: {e}")

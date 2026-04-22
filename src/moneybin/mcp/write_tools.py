@@ -14,6 +14,7 @@ import duckdb
 
 from moneybin.database import get_database
 from moneybin.services.categorization_service import (
+    MatchType,
     create_merchant,
     match_merchant,
     normalize_description,
@@ -33,6 +34,28 @@ from moneybin.tables import (
 from .server import mcp, table_exists
 
 logger = logging.getLogger(__name__)
+
+_VALID_MATCH_TYPES: set[MatchType] = {"exact", "contains", "regex"}
+
+
+def _validate_match_type(match_type: str) -> MatchType:
+    """Validate and narrow a match_type string at the MCP boundary.
+
+    Args:
+        match_type: Raw string from MCP tool input.
+
+    Returns:
+        Validated MatchType literal.
+
+    Raises:
+        ValueError: If match_type is not one of the valid values.
+    """
+    if match_type not in _VALID_MATCH_TYPES:
+        raise ValueError(
+            f"Invalid match_type: '{match_type}'. "
+            f"Must be one of: {', '.join(sorted(_VALID_MATCH_TYPES))}"
+        )
+    return match_type  # type: ignore[return-value]  # validated above
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +105,7 @@ def import_file(
         institution: Institution name (OFX) or CSV profile name (optional,
             auto-detects for CSV).
     """
-    logger.info("Tool called: import_file(%s)", file_path)
+    logger.info(f"Tool called: import_file({file_path})")
 
     # Expand ~ and resolve to canonical path (collapses '..' and follows
     # symlinks), then verify the result stays within the user's home directory.
@@ -106,7 +129,7 @@ def import_file(
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
-        logger.exception("Import failed: %s", file_path)
+        logger.exception(f"Import failed: {file_path}")
         return f"Import failed: {e}"
 
 
@@ -134,7 +157,7 @@ def categorize_transaction(
         subcategory: Optional subcategory (e.g. 'Groceries', 'Restaurants').
         categorized_by: Who is categorizing: 'user' (default), 'ai', 'rule', 'plaid'.
     """
-    logger.info("Tool called: categorize_transaction(%s, %s)", transaction_id, category)
+    logger.info(f"Tool called: categorize_transaction({transaction_id}, {category})")
 
     try:
         db = get_database()
@@ -265,7 +288,7 @@ def toggle_category(category_id: str, is_active: bool) -> str:
         category_id: The category ID to toggle (e.g. 'FND-COF').
         is_active: True to enable, False to disable.
     """
-    logger.info("Tool called: toggle_category(%s, %s)", category_id, is_active)
+    logger.info(f"Tool called: toggle_category({category_id}, {is_active})")
 
     try:
         db = get_database()
@@ -300,7 +323,7 @@ def create_category(
         subcategory: Optional subcategory (e.g. 'Daycare', 'Babysitter').
         description: Optional description of this category.
     """
-    logger.info("Tool called: create_category(%s, %s)", category, subcategory)
+    logger.info(f"Tool called: create_category({category}, {subcategory})")
 
     import uuid as _uuid
 
@@ -353,7 +376,12 @@ def create_merchant_mapping(
         category: Optional default category for this merchant.
         subcategory: Optional default subcategory.
     """
-    logger.info("Tool called: create_merchant_mapping(%s)", canonical_name)
+    logger.info(f"Tool called: create_merchant_mapping({canonical_name})")
+
+    try:
+        validated_match_type = _validate_match_type(match_type)
+    except ValueError as e:
+        return f"Error: {e}"
 
     try:
         db = get_database()
@@ -361,7 +389,7 @@ def create_merchant_mapping(
             db,
             raw_pattern,
             canonical_name,
-            match_type=match_type,
+            match_type=validated_match_type,
             category=category,
             subcategory=subcategory,
             created_by="user",
@@ -406,7 +434,12 @@ def create_categorization_rule(
         account_id: Optional account ID filter.
         priority: Rule priority (lower = higher priority, default 100).
     """
-    logger.info("Tool called: create_categorization_rule(%s)", name)
+    logger.info(f"Tool called: create_categorization_rule({name})")
+
+    try:
+        validated_match_type = _validate_match_type(match_type)
+    except ValueError as e:
+        return f"Error: {e}"
 
     import uuid as _uuid
 
@@ -428,7 +461,7 @@ def create_categorization_rule(
                 rule_id,
                 name,
                 merchant_pattern,
-                match_type,
+                validated_match_type,
                 min_amount,
                 max_amount,
                 account_id,
@@ -450,7 +483,7 @@ def delete_categorization_rule(rule_id: str) -> str:
     Args:
         rule_id: The rule ID to delete.
     """
-    logger.info("Tool called: delete_categorization_rule(%s)", rule_id)
+    logger.info(f"Tool called: delete_categorization_rule({rule_id})")
 
     try:
         db = get_database()
@@ -494,7 +527,7 @@ def bulk_categorize(
             mappings from transaction descriptions so future similar
             transactions are categorized automatically.
     """
-    logger.info("Tool called: bulk_categorize(%d items)", len(categorizations))
+    logger.info(f"Tool called: bulk_categorize({len(categorizations)} items)")
 
     if not categorizations:
         return "No categorizations provided."
@@ -601,7 +634,7 @@ def bulk_create_categorization_rules(
             - account_id: optional account ID filter
             - priority: rule priority (default 100, lower = higher priority)
     """
-    logger.info("Tool called: bulk_create_categorization_rules(%d items)", len(rules))
+    logger.info(f"Tool called: bulk_create_categorization_rules({len(rules)} items)")
 
     if not rules:
         return "No rules provided."
@@ -622,7 +655,14 @@ def bulk_create_categorization_rules(
                 continue
 
             subcategory = str(item.get("subcategory", "")).strip() or None
-            match_type = str(item.get("match_type", "contains")).strip()
+            raw_match_type = str(item.get("match_type", "contains")).strip()
+            try:
+                match_type = _validate_match_type(raw_match_type)
+            except ValueError:
+                errors.append(
+                    f"Skipped rule with invalid match_type '{raw_match_type}': {item}"
+                )
+                continue
             min_amount = item.get("min_amount")
             max_amount = item.get("max_amount")
             account_id = item.get("account_id")
@@ -683,7 +723,7 @@ def bulk_create_merchant_mappings(
             - category: optional default category
             - subcategory: optional default subcategory
     """
-    logger.info("Tool called: bulk_create_merchant_mappings(%d items)", len(mappings))
+    logger.info(f"Tool called: bulk_create_merchant_mappings({len(mappings)} items)")
 
     if not mappings:
         return "No mappings provided."
@@ -702,7 +742,14 @@ def bulk_create_merchant_mappings(
                 )
                 continue
 
-            match_type = str(item.get("match_type", "contains")).strip()
+            raw_match_type = str(item.get("match_type", "contains")).strip()
+            try:
+                match_type = _validate_match_type(raw_match_type)
+            except ValueError:
+                errors.append(
+                    f"Skipped mapping with invalid match_type '{raw_match_type}': {item}"
+                )
+                continue
             category = str(item.get("category", "")).strip() or None
             subcategory = str(item.get("subcategory", "")).strip() or None
 
@@ -748,7 +795,7 @@ def set_budget(
         monthly_amount: Monthly budget amount in dollars.
         start_month: Starting month (YYYY-MM). Defaults to current month.
     """
-    logger.info("Tool called: set_budget(%s)", category)
+    logger.info(f"Tool called: set_budget({category})")
 
     db = get_database()
 
@@ -1026,7 +1073,7 @@ def csv_preview_file(file_path: str) -> str:
     Args:
         file_path: Absolute path to the CSV file.
     """
-    logger.info("Tool called: csv_preview_file(%s)", file_path)
+    logger.info(f"Tool called: csv_preview_file({file_path})")
 
     import csv as csv_mod
     from pathlib import Path
@@ -1153,7 +1200,7 @@ def csv_save_profile(
         skip_rows: Rows to skip before header (default 0).
         encoding: File encoding (default 'utf-8').
     """
-    logger.info("Tool called: csv_save_profile(%s)", name)
+    logger.info(f"Tool called: csv_save_profile({name})")
 
     from moneybin.config import get_raw_data_path
     from moneybin.extractors.csv_profiles import CSVProfile, save_profile
