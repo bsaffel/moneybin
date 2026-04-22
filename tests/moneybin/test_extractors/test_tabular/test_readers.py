@@ -104,6 +104,7 @@ class TestExcelReader:
 
         wb = openpyxl.Workbook()
         ws = wb.active
+        assert ws is not None
         ws.append(["Date", "Amount", "Description"])
         ws.append(["2026-01-01", 42.50, "Coffee"])
         path = tmp_path / "test.xlsx"
@@ -119,6 +120,7 @@ class TestExcelReader:
 
         wb = openpyxl.Workbook()
         ws1 = wb.active
+        assert ws1 is not None
         ws1.title = "Summary"
         ws1.append(["Total", 100])
         ws2 = wb.create_sheet("Transactions")

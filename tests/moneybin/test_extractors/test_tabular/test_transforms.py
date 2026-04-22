@@ -1,5 +1,7 @@
 """Tests for Stage 4 transform and validation."""
 
+from typing import TypedDict
+
 import polars as pl
 
 from moneybin.extractors.tabular.transforms import (
@@ -13,7 +15,19 @@ def _make_df(**columns: list[str]) -> pl.DataFrame:
     return pl.DataFrame(columns)
 
 
-def _base_kwargs() -> dict:
+class _BaseKwargs(TypedDict):
+    field_mapping: dict[str, str]
+    date_format: str
+    sign_convention: str
+    number_format: str
+    account_id: str
+    source_file: str
+    source_type: str
+    source_origin: str
+    import_id: str
+
+
+def _base_kwargs() -> _BaseKwargs:
     return {
         "field_mapping": {
             "transaction_date": "Date",
@@ -129,8 +143,19 @@ class TestSignConventionTransform:
             Amount=["42.50"],
             Description=["PURCHASE"],
         )
-        kwargs = {**_base_kwargs(), "sign_convention": "negative_is_income"}
-        result = transform_dataframe(df=df, **kwargs)
+        base = _base_kwargs()
+        result = transform_dataframe(
+            df=df,
+            field_mapping=base["field_mapping"],
+            date_format=base["date_format"],
+            sign_convention="negative_is_income",
+            number_format=base["number_format"],
+            account_id=base["account_id"],
+            source_file=base["source_file"],
+            source_type=base["source_type"],
+            source_origin=base["source_origin"],
+            import_id=base["import_id"],
+        )
         assert float(result.transactions["amount"][0]) == -42.50
 
     def test_split_debit_credit(self) -> None:

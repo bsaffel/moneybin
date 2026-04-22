@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from moneybin.extractors.tabular.format_detector import (
-    FormatInfo,  # noqa: F401  # verifies FormatInfo is exported from the module
     detect_delimiter,
     detect_encoding,
     detect_format,
@@ -47,6 +46,7 @@ class TestDetectFormat:
 
         wb = openpyxl.Workbook()
         ws = wb.active
+        assert ws is not None
         ws.append(["Date", "Amount", "Desc"])
         ws.append(["2026-01-01", 42.50, "Test"])
         wb.save(tmp_path / "data.xlsx")

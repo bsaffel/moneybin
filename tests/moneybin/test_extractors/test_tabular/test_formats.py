@@ -4,10 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.extractors.tabular.formats import (
-    TabularFormat,
-    load_builtin_formats,  # noqa: F401  # used in TestLoadBuiltinFormats (Task 9)
-)
+from moneybin.extractors.tabular.formats import TabularFormat
 
 
 class TestTabularFormatModel:
@@ -53,7 +50,7 @@ class TestTabularFormatModel:
                 institution_name="Bad",
                 header_signature=["Date"],
                 field_mapping={"transaction_date": "Date"},
-                sign_convention="invalid",
+                sign_convention="invalid",  # type: ignore[arg-type]  # testing validation of invalid input
                 date_format="%Y",
             )
 
@@ -66,7 +63,7 @@ class TestTabularFormatModel:
                 field_mapping={"transaction_date": "Date"},
                 sign_convention="negative_is_expense",
                 date_format="%Y",
-                number_format="invalid",
+                number_format="invalid",  # type: ignore[arg-type]  # testing validation of invalid input
             )
 
     def test_header_signature_match_subset(self) -> None:
