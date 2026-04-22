@@ -227,7 +227,8 @@ def _run_duckdb_cli(
         logger.error(f"❌ {error_noun} failed: {e}")
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
-        logger.info(f"\n{exit_msg}")
+        if exit_msg:
+            logger.info(f"\n{exit_msg}")
         sys.exit(0)
     finally:
         init_script.unlink(missing_ok=True)
