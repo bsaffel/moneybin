@@ -432,22 +432,26 @@ class TestLogsTailFilters:
         assert "Database corrupted" in result.output
         assert "File not found" not in result.output
 
-    def test_invalid_level_exits_1(self) -> None:
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_level_exits_1(self, _mock_settings: MagicMock) -> None:
         """--level with an invalid value exits with code 1."""
         result = runner.invoke(app, ["tail", "--level", "BOGUS"])
         assert result.exit_code == 1
 
-    def test_invalid_grep_regex_exits_1(self) -> None:
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_grep_regex_exits_1(self, _mock_settings: MagicMock) -> None:
         """--grep with invalid regex exits with code 1."""
         result = runner.invoke(app, ["tail", "--grep", "[invalid"])
         assert result.exit_code == 1
 
-    def test_invalid_since_exits_1(self) -> None:
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_since_exits_1(self, _mock_settings: MagicMock) -> None:
         """--since with invalid duration exits with code 1."""
         result = runner.invoke(app, ["tail", "--since", "bogus"])
         assert result.exit_code == 1
 
-    def test_follow_without_stream_exits_1(self) -> None:
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_follow_without_stream_exits_1(self, _mock_settings: MagicMock) -> None:
         """--follow without --stream exits with code 1 (can't tail all)."""
         result = runner.invoke(app, ["tail", "-f"])
         assert result.exit_code == 1
