@@ -117,7 +117,7 @@ Then ask things like:
 |--------|--------|--------|
 | Bank statements | OFX / QFX | Working |
 | Tax forms | W-2 PDF | Working |
-| Bank transactions | CSV (institution profiles) | Working |
+| Bank transactions | CSV, TSV, Excel, Parquet, Feather | Working |
 
 ### Data Pipeline
 
