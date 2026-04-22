@@ -42,9 +42,6 @@ _DELIMITER_TYPE: dict[str, str] = {
     ";": "semicolon",
 }
 
-_TEXT_SIZE_LIMIT = 25 * 1024 * 1024
-_BINARY_SIZE_LIMIT = 100 * 1024 * 1024
-
 
 @dataclass(frozen=True)
 class FormatInfo:
@@ -148,9 +145,16 @@ def _verify_magic_bytes(path: Path, expected_type: str) -> None:
 
 
 def _check_size_limit(path: Path, file_type: str, file_size: int) -> None:
+    from moneybin.config import get_settings
+
+    tabular_cfg = get_settings().data.tabular
     is_binary = file_type in ("excel", "parquet", "feather")
-    limit = _BINARY_SIZE_LIMIT if is_binary else _TEXT_SIZE_LIMIT
-    limit_mb = limit // (1024 * 1024)
+    limit_mb = (
+        tabular_cfg.binary_size_limit_mb
+        if is_binary
+        else tabular_cfg.text_size_limit_mb
+    )
+    limit = limit_mb * 1024 * 1024
 
     if file_size > limit:
         size_mb = file_size / (1024 * 1024)

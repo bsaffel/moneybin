@@ -146,10 +146,12 @@ def map_columns(
                     date_format, _ = detect_date_format(_samples[req_field])
 
     # Sign convention inference
+    header_context = " ".join(df.columns).lower()
     sign_result = infer_sign_convention(
         amount_values=_samples.get("amount"),
         debit_values=_samples.get("debit_amount"),
         credit_values=_samples.get("credit_amount"),
+        header_context=header_context,
     )
 
     # Multi-account detection

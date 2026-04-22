@@ -16,8 +16,6 @@ from moneybin.extractors.tabular.format_detector import FormatInfo
 
 logger = logging.getLogger(__name__)
 
-_ROW_WARN_THRESHOLD = 10_000
-_ROW_REFUSE_THRESHOLD = 50_000
 
 DEFAULT_TRAILING_PATTERNS: list[str] = [
     r"^(Total|Grand Total|Sum|Totals)\b",
@@ -82,16 +80,20 @@ def read_file(
     else:
         raise ValueError(f"No reader for file type: {info.file_type}")
 
+    from moneybin.config import get_settings
+
+    tabular_cfg = get_settings().data.tabular
     row_count = len(result.df)
-    if row_count > _ROW_REFUSE_THRESHOLD and not no_row_limit:
+    if row_count > tabular_cfg.row_refuse_threshold and not no_row_limit:
         raise ValueError(
-            f"File has {row_count:,} rows, exceeding the 50,000 row limit. "
+            f"File has {row_count:,} rows, exceeding the "
+            f"{tabular_cfg.row_refuse_threshold:,} row limit. "
             f"Use --no-row-limit to override."
         )
-    if row_count > _ROW_WARN_THRESHOLD:
+    if row_count > tabular_cfg.row_warn_threshold:
         logger.warning(
             f"⚠️  File has {row_count:,} rows (warning threshold: "
-            f"{_ROW_WARN_THRESHOLD:,}). Proceeding with import."
+            f"{tabular_cfg.row_warn_threshold:,}). Proceeding with import."
         )
         result.row_count_warning = True
 

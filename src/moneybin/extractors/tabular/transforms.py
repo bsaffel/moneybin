@@ -447,10 +447,10 @@ def _validate_running_balance(
             valid_pairs.append((i, round(b_curr - b_prev, 2)))
 
     def _pass_rate(amt_list: list[float]) -> float:
-        """Fraction of consecutive pairs where delta ≈ amount."""
-        checks = n - 1
+        """Fraction of valid balance pairs where delta ≈ amount."""
+        checks = len(valid_pairs)
         if checks == 0:
-            return 1.0
+            return 1.0  # no balance data to validate
         passed = sum(
             1
             for i, delta in valid_pairs

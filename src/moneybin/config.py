@@ -118,6 +118,29 @@ class DatabaseConfig(BaseModel):
         return v
 
 
+class TabularConfig(BaseModel):
+    """Tabular import pipeline limits and thresholds."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text_size_limit_mb: int = Field(
+        default=25,
+        description="Maximum file size (MB) for text formats (CSV/TSV)",
+    )
+    binary_size_limit_mb: int = Field(
+        default=100,
+        description="Maximum file size (MB) for binary formats (Excel/Parquet/Feather)",
+    )
+    row_warn_threshold: int = Field(
+        default=10_000,
+        description="Row count above which a warning is logged",
+    )
+    row_refuse_threshold: int = Field(
+        default=50_000,
+        description="Row count above which import is refused (use --no-row-limit to override)",
+    )
+
+
 class DataConfig(BaseModel):
     """Data processing and storage configuration."""
 
@@ -132,6 +155,7 @@ class DataConfig(BaseModel):
     incremental_loading: bool = Field(
         default=True, description="Use incremental loading by default"
     )
+    tabular: TabularConfig = Field(default_factory=TabularConfig)
 
 
 class LoggingConfig(BaseModel):
