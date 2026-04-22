@@ -1,0 +1,50 @@
+category: travel
+merchants:
+  - name: "Delta Airlines"
+    weight: 12
+    amount: { mean: 350.00, stddev: 150.00 }
+    description_prefix: "DELTA AIR"
+  - name: "United Airlines"
+    weight: 10
+    amount: { mean: 380.00, stddev: 160.00 }
+    description_prefix: "UNITED AIRLINES"
+  - name: "Southwest Airlines"
+    weight: 12
+    amount: { mean: 250.00, stddev: 100.00 }
+    description_prefix: "SOUTHWEST AIR"
+  - name: "American Airlines"
+    weight: 10
+    amount: { mean: 360.00, stddev: 150.00 }
+    description_prefix: "AMERICAN AIR"
+  - name: "Marriott"
+    weight: 8
+    amount: { mean: 185.00, stddev: 60.00 }
+    description_prefix: "MARRIOTT"
+  - name: "Hilton"
+    weight: 7
+    amount: { mean: 175.00, stddev: 55.00 }
+    description_prefix: "HILTON"
+  - name: "Airbnb"
+    weight: 10
+    amount: { mean: 220.00, stddev: 80.00 }
+    description_prefix: "AIRBNB"
+  - name: "VRBO"
+    weight: 5
+    amount: { mean: 250.00, stddev: 90.00 }
+    description_prefix: "VRBO"
+  - name: "Hertz"
+    weight: 5
+    amount: { mean: 120.00, stddev: 45.00 }
+    description_prefix: "HERTZ RENT A CAR"
+  - name: "Enterprise"
+    weight: 6
+    amount: { mean: 95.00, stddev: 35.00 }
+    description_prefix: "ENTERPRISE RENT"
+  - name: "TSA PreCheck"
+    weight: 2
+    amount: { mean: 78.00, stddev: 0.00 }
+    description_prefix: "TSA PRECHECK"
+  - name: "Airport Parking"
+    weight: 5
+    amount: { mean: 45.00, stddev: 20.00 }
+    description_prefix: "AIRPORT PARKING"

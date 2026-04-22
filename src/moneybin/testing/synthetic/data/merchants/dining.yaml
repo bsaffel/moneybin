@@ -1,0 +1,81 @@
+category: dining
+merchants:
+  - name: "Chipotle"
+    weight: 12
+    amount: { mean: 14.50, stddev: 4.00 }
+    description_prefix: "CHIPOTLE"
+  - name: "Starbucks"
+    weight: 18
+    amount: { mean: 7.50, stddev: 3.00 }
+    description_prefix: "STARBUCKS"
+  - name: "McDonald's"
+    weight: 10
+    amount: { mean: 11.00, stddev: 4.00 }
+    description_prefix: "MCDONALDS"
+  - name: "Chick-fil-A"
+    weight: 10
+    amount: { mean: 12.00, stddev: 3.50 }
+    description_prefix: "CHICK-FIL-A"
+  - name: "DoorDash"
+    weight: 12
+    amount: { mean: 35.00, stddev: 12.00 }
+    description_prefix: "DOORDASH"
+  - name: "Uber Eats"
+    weight: 8
+    amount: { mean: 32.00, stddev: 11.00 }
+    description_prefix: "UBER EATS"
+  - name: "Olive Garden"
+    weight: 4
+    amount: { mean: 55.00, stddev: 18.00 }
+    description_prefix: "OLIVE GARDEN"
+  - name: "Texas Roadhouse"
+    weight: 4
+    amount: { mean: 48.00, stddev: 15.00 }
+    description_prefix: "TEXAS ROADHOUSE"
+  - name: "Panera Bread"
+    weight: 7
+    amount: { mean: 16.00, stddev: 5.00 }
+    description_prefix: "PANERA BREAD"
+  - name: "Wendy's"
+    weight: 6
+    amount: { mean: 10.50, stddev: 3.50 }
+    description_prefix: "WENDYS"
+  - name: "Taco Bell"
+    weight: 7
+    amount: { mean: 9.00, stddev: 3.00 }
+    description_prefix: "TACO BELL"
+  - name: "Panda Express"
+    weight: 5
+    amount: { mean: 13.00, stddev: 4.00 }
+    description_prefix: "PANDA EXPRESS"
+  - name: "Buffalo Wild Wings"
+    weight: 4
+    amount: { mean: 38.00, stddev: 12.00 }
+    description_prefix: "BUFFALO WILD WINGS"
+  - name: "Cheesecake Factory"
+    weight: 3
+    amount: { mean: 65.00, stddev: 20.00 }
+    description_prefix: "CHEESECAKE FACTORY"
+  - name: "Five Guys"
+    weight: 5
+    amount: { mean: 18.00, stddev: 5.00 }
+    description_prefix: "FIVE GUYS"
+  - name: "Wingstop"
+    weight: 4
+    amount: { mean: 22.00, stddev: 7.00 }
+    description_prefix: "WINGSTOP"
+  - name: "Domino's"
+    weight: 5
+    amount: { mean: 25.00, stddev: 8.00 }
+    description_prefix: "DOMINOS"
+  - name: "Grubhub"
+    weight: 5
+    amount: { mean: 33.00, stddev: 10.00 }
+    description_prefix: "GRUBHUB"
+  - name: "Local Restaurant"
+    weight: 8
+    amount: { mean: 52.00, stddev: 20.00 }
+  - name: "Crumbl Cookies"
+    weight: 3
+    amount: { mean: 15.00, stddev: 5.00 }
+    description_prefix: "CRUMBL"

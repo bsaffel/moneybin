@@ -1,0 +1,50 @@
+category: transport
+merchants:
+  - name: "Shell"
+    weight: 14
+    amount: { mean: 52.00, stddev: 15.00 }
+    description_prefix: "SHELL OIL"
+  - name: "Exxon Mobil"
+    weight: 12
+    amount: { mean: 50.00, stddev: 14.00 }
+    description_prefix: "EXXONMOBIL"
+  - name: "Chevron"
+    weight: 10
+    amount: { mean: 48.00, stddev: 14.00 }
+    description_prefix: "CHEVRON"
+  - name: "BP"
+    weight: 8
+    amount: { mean: 45.00, stddev: 13.00 }
+    description_prefix: "BP"
+  - name: "Uber"
+    weight: 14
+    amount: { mean: 18.00, stddev: 8.00 }
+    description_prefix: "UBER"
+  - name: "Lyft"
+    weight: 10
+    amount: { mean: 16.00, stddev: 7.00 }
+    description_prefix: "LYFT"
+  - name: "Parking"
+    weight: 8
+    amount: { mean: 12.00, stddev: 6.00 }
+    description_prefix: "PARKING"
+  - name: "Highway Tolls"
+    weight: 6
+    amount: { mean: 5.50, stddev: 3.00 }
+    description_prefix: "E-ZPASS"
+  - name: "Car Wash"
+    weight: 4
+    amount: { mean: 18.00, stddev: 6.00 }
+    description_prefix: "CAR WASH"
+  - name: "Jiffy Lube"
+    weight: 2
+    amount: { mean: 85.00, stddev: 25.00 }
+    description_prefix: "JIFFY LUBE"
+  - name: "AutoZone"
+    weight: 2
+    amount: { mean: 35.00, stddev: 20.00 }
+    description_prefix: "AUTOZONE"
+  - name: "Public Transit"
+    weight: 10
+    amount: { mean: 2.75, stddev: 0.50 }
+    description_prefix: "METRO TRANSIT"

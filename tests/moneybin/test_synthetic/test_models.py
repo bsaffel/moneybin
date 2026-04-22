@@ -13,6 +13,8 @@ from moneybin.testing.synthetic.models import (
     RecurringConfig,
     SpendingCategoryConfig,
     TransferConfig,
+    load_merchant_catalog,
+    load_persona,
 )
 
 
@@ -233,3 +235,57 @@ class TestRuntimeDataclasses:
         assert txn.category is None
         assert txn.transfer_pair_id is None
         assert txn.transaction_id == ""
+
+
+class TestYAMLDataLoading:
+    """Validate all shipped YAML data files load through Pydantic."""
+
+    MERCHANT_CATALOGS = [
+        "grocery",
+        "dining",
+        "transport",
+        "utilities",
+        "entertainment",
+        "shopping",
+        "health",
+        "travel",
+        "subscriptions",
+        "kids",
+        "personal_care",
+        "insurance",
+        "education",
+        "gifts",
+    ]
+    PERSONAS = ["basic", "family", "freelancer"]
+
+    @pytest.mark.parametrize("catalog", MERCHANT_CATALOGS)
+    def test_merchant_catalog_loads(self, catalog: str) -> None:
+        result = load_merchant_catalog(catalog)
+        assert result.category == catalog
+        assert len(result.merchants) >= 5
+
+    @pytest.mark.parametrize("persona", PERSONAS)
+    def test_persona_loads(self, persona: str) -> None:
+        result = load_persona(persona)
+        assert result.persona == persona
+        assert len(result.accounts) >= 1
+        assert len(result.income) >= 1
+
+    def test_unknown_persona_raises(self) -> None:
+        with pytest.raises(FileNotFoundError, match="Unknown persona"):
+            load_persona("nonexistent")
+
+    def test_unknown_catalog_raises(self) -> None:
+        with pytest.raises(FileNotFoundError, match="Unknown merchant catalog"):
+            load_merchant_catalog("nonexistent")
+
+    def test_persona_merchant_catalogs_exist(self) -> None:
+        """Every merchant_catalog referenced in personas has a matching file."""
+        for persona_name in self.PERSONAS:
+            persona = load_persona(persona_name)
+            for cat in persona.spending.categories:
+                catalog = load_merchant_catalog(cat.merchant_catalog)
+                assert len(catalog.merchants) > 0, (
+                    f"Persona {persona_name!r} references empty catalog "
+                    f"{cat.merchant_catalog!r}"
+                )

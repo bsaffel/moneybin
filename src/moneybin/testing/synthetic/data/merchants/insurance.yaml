@@ -1,0 +1,34 @@
+category: insurance
+merchants:
+  - name: "State Farm"
+    weight: 18
+    amount: { mean: 155.00, stddev: 30.00 }
+    description_prefix: "STATE FARM"
+  - name: "GEICO"
+    weight: 16
+    amount: { mean: 142.00, stddev: 28.00 }
+    description_prefix: "GEICO"
+  - name: "Progressive"
+    weight: 14
+    amount: { mean: 148.00, stddev: 32.00 }
+    description_prefix: "PROGRESSIVE"
+  - name: "Allstate"
+    weight: 12
+    amount: { mean: 160.00, stddev: 35.00 }
+    description_prefix: "ALLSTATE"
+  - name: "USAA"
+    weight: 10
+    amount: { mean: 135.00, stddev: 25.00 }
+    description_prefix: "USAA"
+  - name: "Liberty Mutual"
+    weight: 10
+    amount: { mean: 152.00, stddev: 30.00 }
+    description_prefix: "LIBERTY MUTUAL"
+  - name: "MetLife"
+    weight: 10
+    amount: { mean: 85.00, stddev: 20.00 }
+    description_prefix: "METLIFE"
+  - name: "Principal Financial"
+    weight: 10
+    amount: { mean: 95.00, stddev: 22.00 }
+    description_prefix: "PRINCIPAL LIFE"

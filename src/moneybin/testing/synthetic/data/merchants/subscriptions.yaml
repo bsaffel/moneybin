@@ -1,0 +1,50 @@
+category: subscriptions
+merchants:
+  - name: "Netflix"
+    weight: 15
+    amount: { mean: 17.99, stddev: 0.00 }
+    description_prefix: "NETFLIX"
+  - name: "Spotify Premium"
+    weight: 12
+    amount: { mean: 11.99, stddev: 0.00 }
+    description_prefix: "SPOTIFY"
+  - name: "Apple iCloud"
+    weight: 10
+    amount: { mean: 2.99, stddev: 0.00 }
+    description_prefix: "APPLE.COM/BILL"
+  - name: "Amazon Prime"
+    weight: 12
+    amount: { mean: 14.99, stddev: 0.00 }
+    description_prefix: "AMAZON PRIME"
+  - name: "Hulu"
+    weight: 8
+    amount: { mean: 17.99, stddev: 0.00 }
+    description_prefix: "HULU"
+  - name: "Disney+"
+    weight: 8
+    amount: { mean: 13.99, stddev: 0.00 }
+    description_prefix: "DISNEYPLUS"
+  - name: "YouTube Premium"
+    weight: 7
+    amount: { mean: 13.99, stddev: 0.00 }
+    description_prefix: "GOOGLE YOUTUBE"
+  - name: "New York Times"
+    weight: 5
+    amount: { mean: 17.00, stddev: 0.00 }
+    description_prefix: "NYT DIGITAL"
+  - name: "Adobe Creative Cloud"
+    weight: 4
+    amount: { mean: 54.99, stddev: 0.00 }
+    description_prefix: "ADOBE"
+  - name: "Microsoft 365"
+    weight: 6
+    amount: { mean: 9.99, stddev: 0.00 }
+    description_prefix: "MICROSOFT 365"
+  - name: "ChatGPT Plus"
+    weight: 5
+    amount: { mean: 20.00, stddev: 0.00 }
+    description_prefix: "OPENAI"
+  - name: "Paramount+"
+    weight: 4
+    amount: { mean: 11.99, stddev: 0.00 }
+    description_prefix: "PARAMOUNT PLUS"

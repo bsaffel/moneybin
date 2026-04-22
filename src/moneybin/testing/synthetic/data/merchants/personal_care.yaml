@@ -1,0 +1,34 @@
+category: personal_care
+merchants:
+  - name: "Great Clips"
+    weight: 15
+    amount: { mean: 22.00, stddev: 5.00 }
+    description_prefix: "GREAT CLIPS"
+  - name: "Sport Clips"
+    weight: 10
+    amount: { mean: 28.00, stddev: 5.00 }
+    description_prefix: "SPORT CLIPS"
+  - name: "Hair Salon"
+    weight: 12
+    amount: { mean: 55.00, stddev: 20.00 }
+    description_prefix: "SALON"
+  - name: "Nail Salon"
+    weight: 10
+    amount: { mean: 45.00, stddev: 15.00 }
+    description_prefix: "NAIL SPA"
+  - name: "Spa Treatment"
+    weight: 5
+    amount: { mean: 95.00, stddev: 30.00 }
+    description_prefix: "DAY SPA"
+  - name: "Massage Envy"
+    weight: 8
+    amount: { mean: 75.00, stddev: 15.00 }
+    description_prefix: "MASSAGE ENVY"
+  - name: "Skincare Products"
+    weight: 8
+    amount: { mean: 35.00, stddev: 15.00 }
+    description_prefix: "SKINCARE"
+  - name: "Barbershop"
+    weight: 12
+    amount: { mean: 30.00, stddev: 8.00 }
+    description_prefix: "BARBERSHOP"
