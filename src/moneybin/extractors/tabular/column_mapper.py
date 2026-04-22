@@ -15,7 +15,6 @@ from moneybin.extractors.tabular.date_detection import (
 )
 from moneybin.extractors.tabular.field_aliases import (
     ACCOUNT_IDENTIFYING_FIELDS,
-    REQUIRED_FIELDS,
     match_header_to_field,
 )
 from moneybin.extractors.tabular.sign_convention import (
@@ -117,8 +116,12 @@ def map_columns(
     )
     number_format = detect_number_format(amount_vals) if amount_vals else "us"
 
-    # Fallback discovery for required fields not yet mapped
-    for req_field in REQUIRED_FIELDS:
+    # Fallback discovery for required fields not yet mapped.
+    # Ordered so specific detectors (date, amount) run before the
+    # broad description detector, preventing dates from being
+    # misidentified as descriptions and claimed prematurely.
+    discovery_order = ("transaction_date", "amount", "description")
+    for req_field in discovery_order:
         if req_field not in mapping:
             candidate = _discover_by_content(df, req_field, claimed)
             if candidate:
