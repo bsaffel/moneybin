@@ -29,6 +29,11 @@ W2_FORMS = TableRef("raw", "w2_forms")
 CSV_ACCOUNTS = TableRef("raw", "csv_accounts")
 CSV_TRANSACTIONS = TableRef("raw", "csv_transactions")
 
+# -- Raw tabular tables (replaces csv_* tables) --
+TABULAR_TRANSACTIONS = TableRef("raw", "tabular_transactions")
+TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
+IMPORT_LOG = TableRef("raw", "import_log")
+
 # -- App tables (application-managed data) --
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories")
 BUDGETS = TableRef("app", "budgets")
@@ -38,6 +43,9 @@ MERCHANTS = TableRef("app", "merchants")
 CATEGORIZATION_RULES = TableRef("app", "categorization_rules")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
+
+# -- App tabular tables --
+TABULAR_FORMATS = TableRef("app", "tabular_formats")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
