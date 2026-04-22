@@ -1,0 +1,446 @@
+"""Stage 4: Transform and validate mapped DataFrame.
+
+Takes the mapped DataFrame from Stage 3 (column_mapper) and transforms it
+into the raw.tabular_transactions schema shape:
+- Parses dates and amounts according to detected/specified formats
+- Normalizes amounts to MoneyBin sign convention (negative = expense)
+- Generates deterministic transaction IDs for dedup
+- Preserves original values for audit
+- Filters invalid rows and tracks rejection details
+- Assigns 1-based row numbers for debugging
+"""
+
+import hashlib
+import logging
+from dataclasses import dataclass, field
+from datetime import date
+
+import polars as pl
+
+from moneybin.extractors.tabular.date_detection import parse_amount_str
+
+logger = logging.getLogger(__name__)
+
+# Fields the transform layer understands in field_mapping
+_SIGN_FIELDS = {"amount", "debit_amount", "credit_amount"}
+
+
+@dataclass
+class RejectionDetail:
+    """Details about a rejected row."""
+
+    row_number: int
+    """1-based row number in the source file."""
+
+    reason: str
+    """Human-readable rejection reason."""
+
+
+@dataclass
+class TransformResult:
+    """Result of Stage 4 transform and validation."""
+
+    transactions: pl.DataFrame
+    """Transformed rows ready for raw.tabular_transactions ingestion."""
+
+    rows_rejected: int = 0
+    """Count of rows that failed validation and were excluded."""
+
+    rejection_details: list[RejectionDetail] = field(default_factory=list)
+    """Per-row rejection details for error reporting."""
+
+    balance_validated: bool = False
+    """True if running balance was checked and matched."""
+
+
+def transform_dataframe(
+    *,
+    df: pl.DataFrame,
+    field_mapping: dict[str, str],
+    date_format: str,
+    sign_convention: str,
+    number_format: str,
+    account_id: str,
+    source_file: str,
+    source_type: str,
+    source_origin: str,
+    import_id: str,
+) -> TransformResult:
+    """Transform a mapped DataFrame into the raw.tabular_transactions shape.
+
+    Args:
+        df: Source DataFrame with original column names.
+        field_mapping: Destination field → source column mapping from Stage 3.
+        date_format: strptime format string for parsing dates.
+        sign_convention: One of: negative_is_expense, negative_is_income,
+            split_debit_credit.
+        number_format: One of: us, european, swiss_french, zero_decimal.
+        account_id: Account identifier to attach to every row.
+        source_file: Path to the source file (for provenance).
+        source_type: File format type (csv, tsv, excel, parquet, etc.).
+        source_origin: Institution or source name (e.g. "chase_credit").
+        import_id: Unique ID for this import run.
+
+    Returns:
+        TransformResult with validated transactions DataFrame and rejection stats.
+    """
+    # Assign 1-based row numbers before any filtering
+    df = df.with_columns(pl.Series("row_number", range(1, len(df) + 1), dtype=pl.Int32))
+
+    # Extract raw string columns by canonical field name
+    date_col = field_mapping.get("transaction_date")
+    desc_col = field_mapping.get("description")
+    src_txn_id_col = field_mapping.get("source_transaction_id")
+
+    # Preserve originals before parsing
+    original_date_strs: list[str] = []
+    original_amount_strs: list[str] = []
+
+    if date_col and date_col in df.columns:
+        original_date_strs = df[date_col].cast(pl.Utf8).to_list()
+    else:
+        original_date_strs = [""] * len(df)
+
+    # Determine original amount string — for audit, use whichever column was mapped
+    if sign_convention == "split_debit_credit":
+        debit_col = field_mapping.get("debit_amount")
+        credit_col = field_mapping.get("credit_amount")
+        # Combine debit/credit into a single original string representation
+        original_amount_strs = _combine_original_debit_credit(df, debit_col, credit_col)
+    else:
+        amount_col = field_mapping.get("amount")
+        if amount_col and amount_col in df.columns:
+            original_amount_strs = df[amount_col].cast(pl.Utf8).to_list()
+        else:
+            original_amount_strs = [""] * len(df)
+
+    # Parse amounts
+    parsed_amounts, amount_rejections = _extract_amounts(
+        df=df,
+        field_mapping=field_mapping,
+        sign_convention=sign_convention,
+        number_format=number_format,
+    )
+
+    # Parse dates
+    parsed_dates, date_rejections = _parse_dates(original_date_strs, date_format)
+
+    # Build per-row rejection set
+    rejected_rows: set[int] = set()
+    rejection_details: list[RejectionDetail] = []
+
+    row_numbers = df["row_number"].to_list()
+
+    for idx, row_num in enumerate(row_numbers):
+        reasons: list[str] = []
+        if idx in date_rejections:
+            reasons.append(date_rejections[idx])
+        if idx in amount_rejections:
+            reasons.append(amount_rejections[idx])
+        if reasons:
+            rejected_rows.add(idx)
+            rejection_details.append(
+                RejectionDetail(
+                    row_number=row_num,
+                    reason="; ".join(reasons),
+                )
+            )
+
+    # Generate transaction IDs
+    descriptions: list[str] = []
+    if desc_col and desc_col in df.columns:
+        descriptions = [str(v) if v is not None else "" for v in df[desc_col].to_list()]
+    else:
+        descriptions = [""] * len(df)
+
+    transaction_ids = _generate_transaction_ids(
+        df=df,
+        src_txn_id_col=src_txn_id_col,
+        account_id=account_id,
+        original_date_strs=original_date_strs,
+        parsed_amounts=parsed_amounts,
+        descriptions=descriptions,
+        row_numbers=row_numbers,
+        source_type=source_type,
+    )
+
+    # Build output rows, skipping rejected indices
+    out_transaction_ids: list[str] = []
+    out_transaction_dates: list[date] = []
+    out_amounts: list[float] = []
+    out_descriptions: list[str] = []
+    out_original_amounts: list[str] = []
+    out_original_dates: list[str] = []
+    out_row_numbers: list[int] = []
+    out_account_ids: list[str] = []
+    out_source_files: list[str] = []
+    out_source_types: list[str] = []
+    out_source_origins: list[str] = []
+    out_import_ids: list[str] = []
+
+    for idx in range(len(df)):
+        if idx in rejected_rows:
+            continue
+        out_transaction_ids.append(transaction_ids[idx])
+        out_transaction_dates.append(parsed_dates[idx])  # type: ignore[arg-type]  # None rows are filtered above
+        out_amounts.append(parsed_amounts[idx])  # type: ignore[arg-type]  # None rows are filtered above
+        out_descriptions.append(descriptions[idx])
+        out_original_amounts.append(original_amount_strs[idx])
+        out_original_dates.append(original_date_strs[idx])
+        out_row_numbers.append(row_numbers[idx])
+        out_account_ids.append(account_id)
+        out_source_files.append(source_file)
+        out_source_types.append(source_type)
+        out_source_origins.append(source_origin)
+        out_import_ids.append(import_id)
+
+    transactions = pl.DataFrame(
+        {
+            "transaction_id": out_transaction_ids,
+            "transaction_date": out_transaction_dates,
+            "amount": out_amounts,
+            "description": out_descriptions,
+            "original_amount": out_original_amounts,
+            "original_date_str": out_original_dates,
+            "row_number": out_row_numbers,
+            "account_id": out_account_ids,
+            "source_file": out_source_files,
+            "source_type": out_source_types,
+            "source_origin": out_source_origins,
+            "import_id": out_import_ids,
+        },
+        schema={
+            "transaction_id": pl.Utf8,
+            "transaction_date": pl.Date,
+            "amount": pl.Float64,
+            "description": pl.Utf8,
+            "original_amount": pl.Utf8,
+            "original_date_str": pl.Utf8,
+            "row_number": pl.Int32,
+            "account_id": pl.Utf8,
+            "source_file": pl.Utf8,
+            "source_type": pl.Utf8,
+            "source_origin": pl.Utf8,
+            "import_id": pl.Utf8,
+        },
+    )
+
+    rows_rejected = len(rejected_rows)
+    logger.info(
+        f"Transform complete: {len(transactions)} accepted, {rows_rejected} rejected"
+    )
+
+    return TransformResult(
+        transactions=transactions,
+        rows_rejected=rows_rejected,
+        rejection_details=rejection_details,
+    )
+
+
+def _parse_dates(
+    date_strings: list[str],
+    date_format: str,
+) -> tuple[list[date | None], dict[int, str]]:
+    """Parse date strings using the given strptime format.
+
+    Args:
+        date_strings: Raw date strings, one per row.
+        date_format: strptime format string.
+
+    Returns:
+        Tuple of (parsed dates list, rejection map {idx: reason}).
+    """
+    from datetime import datetime
+
+    parsed: list[date | None] = []
+    rejections: dict[int, str] = {}
+
+    for idx, s in enumerate(date_strings):
+        if not s or not s.strip():
+            parsed.append(None)
+            rejections[idx] = "Missing date value"
+            continue
+        try:
+            dt = datetime.strptime(s.strip(), date_format)
+            parsed.append(dt.date())
+        except ValueError:
+            parsed.append(None)
+            rejections[idx] = f"Unparseable date: {s!r} with format {date_format!r}"
+
+    return parsed, rejections
+
+
+def _extract_amounts(
+    *,
+    df: pl.DataFrame,
+    field_mapping: dict[str, str],
+    sign_convention: str,
+    number_format: str,
+) -> tuple[list[float | None], dict[int, str]]:
+    """Extract and normalize amounts from the DataFrame.
+
+    Handles both single-amount and split debit/credit columns.
+
+    Args:
+        df: Source DataFrame.
+        field_mapping: Destination field → source column mapping.
+        sign_convention: One of: negative_is_expense, negative_is_income,
+            split_debit_credit.
+        number_format: Number format convention.
+
+    Returns:
+        Tuple of (amounts list, rejection map {idx: reason}).
+    """
+    parsed: list[float | None] = []
+    rejections: dict[int, str] = {}
+    n = len(df)
+
+    if sign_convention == "split_debit_credit":
+        debit_col = field_mapping.get("debit_amount")
+        credit_col = field_mapping.get("credit_amount")
+
+        debit_strs: list[str] = (
+            [str(v) if v is not None else "" for v in df[debit_col].to_list()]
+            if debit_col and debit_col in df.columns
+            else [""] * n
+        )
+        credit_strs: list[str] = (
+            [str(v) if v is not None else "" for v in df[credit_col].to_list()]
+            if credit_col and credit_col in df.columns
+            else [""] * n
+        )
+
+        for idx in range(n):
+            debit_val = parse_amount_str(debit_strs[idx], number_format)
+            credit_val = parse_amount_str(credit_strs[idx], number_format)
+
+            if debit_val is not None and debit_val != 0.0:
+                # Debit = expense → negative
+                parsed.append(-abs(debit_val))
+            elif credit_val is not None and credit_val != 0.0:
+                # Credit = income → positive
+                parsed.append(abs(credit_val))
+            else:
+                # Both empty/zero — treat as rejection
+                parsed.append(None)
+                rejections[idx] = "Both debit and credit are empty or zero"
+
+    else:
+        amount_col = field_mapping.get("amount")
+        if not amount_col or amount_col not in df.columns:
+            return [None] * n, dict.fromkeys(range(n), "Missing amount column")
+
+        amount_strs = [
+            str(v) if v is not None else "" for v in df[amount_col].to_list()
+        ]
+
+        for idx, s in enumerate(amount_strs):
+            val = parse_amount_str(s, number_format)
+            if val is None:
+                parsed.append(None)
+                rejections[idx] = f"Unparseable amount: {s!r}"
+            elif sign_convention == "negative_is_income":
+                # Source convention is inverted: flip the sign
+                parsed.append(-val)
+            else:
+                # negative_is_expense — MoneyBin native convention, no change
+                parsed.append(val)
+
+    return parsed, rejections
+
+
+def _combine_original_debit_credit(
+    df: pl.DataFrame,
+    debit_col: str | None,
+    credit_col: str | None,
+) -> list[str]:
+    """Build original amount strings from split debit/credit columns.
+
+    Produces a string like "debit:42.50" or "credit:100.00" for audit.
+
+    Args:
+        df: Source DataFrame.
+        debit_col: Column name for debits (or None if absent).
+        credit_col: Column name for credits (or None if absent).
+
+    Returns:
+        List of original amount strings, one per row.
+    """
+    n = len(df)
+    debit_strs = (
+        [str(v) if v is not None else "" for v in df[debit_col].to_list()]
+        if debit_col and debit_col in df.columns
+        else [""] * n
+    )
+    credit_strs = (
+        [str(v) if v is not None else "" for v in df[credit_col].to_list()]
+        if credit_col and credit_col in df.columns
+        else [""] * n
+    )
+
+    result: list[str] = []
+    for d, c in zip(debit_strs, credit_strs, strict=True):
+        if d and d.strip():
+            result.append(f"debit:{d}")
+        elif c and c.strip():
+            result.append(f"credit:{c}")
+        else:
+            result.append("")
+    return result
+
+
+def _generate_transaction_ids(
+    *,
+    df: pl.DataFrame,
+    src_txn_id_col: str | None,
+    account_id: str,
+    original_date_strs: list[str],
+    parsed_amounts: list[float | None],
+    descriptions: list[str],
+    row_numbers: list[int],
+    source_type: str,
+) -> list[str]:
+    """Generate transaction IDs using source ID if available, else content hash.
+
+    ID strategy (per identifiers.md):
+    1. Source-provided ID → "{account_id}:{source_txn_id}"
+    2. Content hash → "{source_type}_{sha256_16hex}"
+       Input: "{date}|{amount}|{description}|{account_id}|{row_number}"
+
+    Args:
+        df: Source DataFrame.
+        src_txn_id_col: Column name holding source transaction IDs, or None.
+        account_id: Account identifier.
+        original_date_strs: Raw date strings, one per row.
+        parsed_amounts: Parsed float amounts (None for invalid rows).
+        descriptions: Description strings, one per row.
+        row_numbers: 1-based row numbers.
+        source_type: File type prefix for content-hash IDs.
+
+    Returns:
+        List of transaction ID strings, one per row.
+    """
+    n = len(df)
+    src_txn_ids: list[str | None] = [None] * n
+
+    if src_txn_id_col and src_txn_id_col in df.columns:
+        raw = df[src_txn_id_col].cast(pl.Utf8).to_list()
+        src_txn_ids = [str(v) if v is not None else None for v in raw]
+
+    ids: list[str] = []
+    for idx in range(n):
+        src_id = src_txn_ids[idx]
+        if src_id and src_id.strip():
+            ids.append(f"{account_id}:{src_id.strip()}")
+        else:
+            date_str = original_date_strs[idx] if idx < len(original_date_strs) else ""
+            amount_str = (
+                str(parsed_amounts[idx]) if parsed_amounts[idx] is not None else ""
+            )
+            desc_str = descriptions[idx] if idx < len(descriptions) else ""
+            row_str = str(row_numbers[idx]) if idx < len(row_numbers) else ""
+            raw_key = f"{date_str}|{amount_str}|{desc_str}|{account_id}|{row_str}"
+            digest = hashlib.sha256(raw_key.encode()).hexdigest()[:16]
+            ids.append(f"{source_type}_{digest}")
+
+    return ids
