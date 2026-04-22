@@ -66,6 +66,7 @@ class TestImportFileCommand:
             run_transforms=True,
             institution=None,
             account_id=None,
+            account_name=None,
         )
 
     def test_import_file_skip_transform(
@@ -87,6 +88,7 @@ class TestImportFileCommand:
             run_transforms=False,
             institution=None,
             account_id=None,
+            account_name=None,
         )
 
     def test_import_file_with_institution(
@@ -110,6 +112,7 @@ class TestImportFileCommand:
             run_transforms=True,
             institution="Wells Fargo",
             account_id=None,
+            account_name=None,
         )
 
     def test_import_file_not_found(

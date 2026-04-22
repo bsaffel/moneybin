@@ -282,69 +282,6 @@ def _import_w2(
     return result
 
 
-def _import_csv(  # type: ignore[reportUnusedFunction]  # retained for Task 24 removal
-    db: Database,
-    file_path: Path,
-    *,
-    account_id: str | None = None,
-    institution: str | None = None,
-) -> ImportResult:
-    """Import a CSV file.
-
-    Args:
-        db: Database instance.
-        file_path: Path to the CSV file.
-        account_id: Account identifier (required for CSV).
-        institution: Optional profile name to use instead of auto-detection.
-
-    Returns:
-        ImportResult with summary of imported data.
-    """
-    from moneybin.config import get_raw_data_path
-    from moneybin.extractors.csv_extractor import CSVExtractor
-    from moneybin.extractors.csv_profiles import load_profiles
-    from moneybin.loaders.csv_loader import CSVLoader
-
-    result = ImportResult(file_path=str(file_path), file_type="csv")
-
-    user_profiles_dir = get_raw_data_path().parent / "csv_profiles"
-
-    # Resolve profile if institution name provided
-    profile = None
-    if institution:
-        profiles = load_profiles(user_profiles_dir)
-        if institution not in profiles:
-            available = ", ".join(sorted(profiles.keys())) or "(none)"
-            raise ValueError(
-                f"Unknown institution profile: '{institution}'. Available: {available}"
-            )
-        profile = profiles[institution]
-
-    # Extract
-    extractor = CSVExtractor()
-    data = extractor.extract_from_file(
-        file_path,
-        profile=profile,
-        account_id=account_id,
-        user_profiles_dir=user_profiles_dir,
-    )
-
-    # Load
-    loader = CSVLoader(db)
-    row_counts = loader.load_data(data)
-
-    result.accounts = row_counts.get("accounts", 0)
-    result.transactions = row_counts.get("transactions", 0)
-    result.details = row_counts
-
-    if result.transactions > 0:
-        result.date_range = _query_date_range(
-            db, "raw.csv_transactions", "transaction_date", file_path
-        )
-
-    return result
-
-
 def _import_tabular(
     db: Database,
     file_path: Path,

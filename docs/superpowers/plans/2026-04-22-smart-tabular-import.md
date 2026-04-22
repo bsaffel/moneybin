@@ -386,10 +386,10 @@ TABULAR_FORMATS = TableRef("app", "tabular_formats")
 Add to `_SCHEMA_FILES` list in `src/moneybin/schema.py` (after the existing `raw_csv_*` entries):
 
 ```python
-    "raw_tabular_transactions.sql",
-    "raw_tabular_accounts.sql",
-    "raw_import_log.sql",
-    "app_tabular_formats.sql",
+("raw_tabular_transactions.sql",)
+("raw_tabular_accounts.sql",)
+("raw_import_log.sql",)
+("app_tabular_formats.sql",)
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -672,14 +672,19 @@ for _field, _aliases in FIELD_ALIASES.items():
             _ALIAS_TO_FIELD[_alias] = _field
 
 # Fields that trigger multi-account mode when detected
-ACCOUNT_IDENTIFYING_FIELDS: frozenset[str] = frozenset(
-    {"account_name", "account_number", "institution_name", "account_type"}
-)
+ACCOUNT_IDENTIFYING_FIELDS: frozenset[str] = frozenset({
+    "account_name",
+    "account_number",
+    "institution_name",
+    "account_type",
+})
 
 # Required fields — detection fails if any of these can't be mapped
-REQUIRED_FIELDS: frozenset[str] = frozenset(
-    {"transaction_date", "amount", "description"}
-)
+REQUIRED_FIELDS: frozenset[str] = frozenset({
+    "transaction_date",
+    "amount",
+    "description",
+})
 
 _NORMALIZE_RE = re.compile(r"[\s_\-]+")
 _QUOTE_RE = re.compile(r"""^["']|["']$""")
@@ -1005,9 +1010,7 @@ class TabularFormat(BaseModel, frozen=True):
     def _validate_sign_convention(cls, v: str) -> str:
         valid = {"negative_is_expense", "negative_is_income", "split_debit_credit"}
         if v not in valid:
-            raise ValueError(
-                f"sign_convention must be one of {valid}, got {v!r}"
-            )
+            raise ValueError(f"sign_convention must be one of {valid}, got {v!r}")
         return v
 
     @field_validator("number_format", mode="before")
@@ -1015,9 +1018,7 @@ class TabularFormat(BaseModel, frozen=True):
     def _validate_number_format(cls, v: str) -> str:
         valid = {"us", "european", "swiss_french", "zero_decimal"}
         if v not in valid:
-            raise ValueError(
-                f"number_format must be one of {valid}, got {v!r}"
-            )
+            raise ValueError(f"number_format must be one of {valid}, got {v!r}")
         return v
 
     def matches_headers(self, file_headers: list[str]) -> bool:
@@ -1034,8 +1035,7 @@ class TabularFormat(BaseModel, frozen=True):
         """
         normalized_file = {h.strip().lower() for h in file_headers}
         return all(
-            sig.strip().lower() in normalized_file
-            for sig in self.header_signature
+            sig.strip().lower() in normalized_file for sig in self.header_signature
         )
 
     def to_yaml(self, path: Path) -> None:
@@ -2065,7 +2065,8 @@ def read_file(
     """
     if info.file_type in ("csv", "tsv", "pipe", "semicolon"):
         result = _read_text(
-            path, info,
+            path,
+            info,
             skip_rows=skip_rows,
             skip_trailing_patterns=skip_trailing_patterns,
         )
@@ -2222,8 +2223,7 @@ def _remove_trailing_rows(
         val = str(values[i]) if values[i] is not None else ""
         # Also check the full row as CSV text for delimiter-only rows
         row_str = ",".join(
-            str(df[col][i]) if df[col][i] is not None else ""
-            for col in df.columns
+            str(df[col][i]) if df[col][i] is not None else "" for col in df.columns
         )
         if any(p.search(val) or p.search(row_str) for p in compiled):
             remove_from = i
@@ -2244,9 +2244,7 @@ def _remove_repeated_headers(df: pl.DataFrame) -> pl.DataFrame:
     if len(df) == 0:
         return df
     headers_lower = [c.lower() for c in df.columns]
-    mask = pl.Series(
-        [True] * len(df)
-    )
+    mask = pl.Series([True] * len(df))
     first_col = df.columns[0]
     first_col_values = df[first_col].cast(pl.Utf8).to_list()
     for i, val in enumerate(first_col_values):
@@ -2609,12 +2607,8 @@ def _disambiguate_dd_mm(
         return None, "low"
 
     # Neither exceeds 12 — use range reasonableness from scores
-    dd_mm_score = next(
-        (s[1] * s[2] for s in scores if s[0] == "%d/%m/%Y"), 0
-    )
-    mm_dd_score = next(
-        (s[1] * s[2] for s in scores if s[0] == "%m/%d/%Y"), 0
-    )
+    dd_mm_score = next((s[1] * s[2] for s in scores if s[0] == "%d/%m/%Y"), 0)
+    mm_dd_score = next((s[1] * s[2] for s in scores if s[0] == "%m/%d/%Y"), 0)
     if mm_dd_score > dd_mm_score:
         return "%m/%d/%Y", "medium"
     if dd_mm_score > mm_dd_score:
@@ -2917,8 +2911,7 @@ def infer_sign_convention(
         )
 
     has_negative = any(
-        v.startswith("-") or (v.startswith("(") and v.endswith(")"))
-        for v in clean
+        v.startswith("-") or (v.startswith("(") and v.endswith(")")) for v in clean
     )
     has_positive = any(
         not v.startswith("-") and not (v.startswith("(") and v.endswith(")"))
@@ -3242,9 +3235,7 @@ def map_columns(
                 ]
                 # Detect date format if this is the date field
                 if req_field == "transaction_date" and date_format is None:
-                    date_format, _ = detect_date_format(
-                        sample_values[req_field]
-                    )
+                    date_format, _ = detect_date_format(sample_values[req_field])
 
     # Handle amount as debit+credit if no single amount column
     if "amount" not in mapping and (
@@ -3260,9 +3251,7 @@ def map_columns(
     )
 
     # Step 6: Multi-account detection
-    is_multi_account = bool(
-        set(mapping.keys()) & ACCOUNT_IDENTIFYING_FIELDS
-    )
+    is_multi_account = bool(set(mapping.keys()) & ACCOUNT_IDENTIFYING_FIELDS)
 
     # Step 7: Confidence tier
     unmapped = [c for c in df.columns if c not in claimed]
@@ -3450,7 +3439,11 @@ class TestTransformBasic:
         )
         result = transform_dataframe(
             df=df,
-            field_mapping={"transaction_date": "Date", "amount": "Amount", "description": "Description"},
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
             date_format="%m/%d/%Y",
             sign_convention="negative_is_expense",
             number_format="us",
@@ -3473,7 +3466,11 @@ class TestTransformBasic:
         )
         result = transform_dataframe(
             df=df,
-            field_mapping={"transaction_date": "Date", "amount": "Amount", "description": "Description"},
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
             date_format="%m/%d/%Y",
             sign_convention="negative_is_expense",
             number_format="us",
@@ -3494,7 +3491,11 @@ class TestTransformBasic:
         )
         result = transform_dataframe(
             df=df,
-            field_mapping={"transaction_date": "Date", "amount": "Amount", "description": "Description"},
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
             date_format="%m/%d/%Y",
             sign_convention="negative_is_expense",
             number_format="us",
@@ -3514,7 +3515,11 @@ class TestTransformBasic:
             Description=["KROGER"],
         )
         kwargs = dict(
-            field_mapping={"transaction_date": "Date", "amount": "Amount", "description": "Description"},
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
             date_format="%m/%d/%Y",
             sign_convention="negative_is_expense",
             number_format="us",
@@ -3526,7 +3531,9 @@ class TestTransformBasic:
         )
         r1 = transform_dataframe(df=df, **kwargs)
         r2 = transform_dataframe(df=df, **kwargs)
-        assert r1.transactions["transaction_id"][0] == r2.transactions["transaction_id"][0]
+        assert (
+            r1.transactions["transaction_id"][0] == r2.transactions["transaction_id"][0]
+        )
 
     def test_source_transaction_id_used_when_present(self) -> None:
         df = _make_df(
@@ -3564,7 +3571,11 @@ class TestSignConventionTransform:
         )
         result = transform_dataframe(
             df=df,
-            field_mapping={"transaction_date": "Date", "amount": "Amount", "description": "Description"},
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
             date_format="%m/%d/%Y",
             sign_convention="negative_is_income",
             number_format="us",
@@ -3727,7 +3738,12 @@ def transform_dataframe(
 
     # Extract and normalize amounts
     amounts, original_amounts = _extract_amounts(
-        df, field_mapping, sign_convention, number_format, row_numbers, rejection_details
+        df,
+        field_mapping,
+        sign_convention,
+        number_format,
+        row_numbers,
+        rejection_details,
     )
 
     # Extract description
@@ -3757,8 +3773,7 @@ def transform_dataframe(
 
     # Filter valid rows (non-None date and amount)
     valid_mask = [
-        parsed_dates[i] is not None and amounts[i] is not None
-        for i in range(rows)
+        parsed_dates[i] is not None and amounts[i] is not None for i in range(rows)
     ]
     rows_rejected = sum(1 for v in valid_mask if not v)
 
@@ -3795,8 +3810,7 @@ def transform_dataframe(
     if balance_col and balance_col in df.columns:
         balance_strs = df[balance_col].cast(pl.Utf8).to_list()
         balance_vals = [
-            parse_amount_str(v, number_format) if v else None
-            for v in balance_strs
+            parse_amount_str(v, number_format) if v else None for v in balance_strs
         ]
         result_df = result_df.with_columns(
             pl.Series("balance", balance_vals, dtype=pl.Float64)
@@ -4149,9 +4163,7 @@ class TabularLoader:
         """
         if len(df) == 0:
             return 0
-        self.db.ingest_dataframe(
-            "raw.tabular_transactions", df, on_conflict="upsert"
-        )
+        self.db.ingest_dataframe("raw.tabular_transactions", df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} transactions")
         return len(df)
 
@@ -4166,9 +4178,7 @@ class TabularLoader:
         """
         if len(df) == 0:
             return 0
-        self.db.ingest_dataframe(
-            "raw.tabular_accounts", df, on_conflict="upsert"
-        )
+        self.db.ingest_dataframe("raw.tabular_accounts", df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} accounts")
         return len(df)
 
@@ -4288,9 +4298,7 @@ class TabularLoader:
             [import_id],
         )
 
-        logger.info(
-            f"Reverted import {import_id[:8]}...: {txn_deleted} rows deleted"
-        )
+        logger.info(f"Reverted import {import_id[:8]}...: {txn_deleted} rows deleted")
         return {"status": "reverted", "rows_deleted": txn_deleted}
 
     def get_import_history(
@@ -4333,9 +4341,17 @@ class TabularLoader:
             ).fetchall()
 
         columns = [
-            "import_id", "source_file", "source_type", "source_origin",
-            "format_name", "status", "rows_imported", "rows_rejected",
-            "detection_confidence", "started_at", "completed_at",
+            "import_id",
+            "source_file",
+            "source_type",
+            "source_origin",
+            "format_name",
+            "status",
+            "rows_imported",
+            "rows_rejected",
+            "detection_confidence",
+            "started_at",
+            "completed_at",
         ]
         return [dict(zip(columns, row)) for row in rows]
 ```
@@ -4386,34 +4402,42 @@ class TestDetectFileType:
 
     def test_csv_detected(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.csv")) == "tabular"
 
     def test_tsv_detected(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.tsv")) == "tabular"
 
     def test_xlsx_detected(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.xlsx")) == "tabular"
 
     def test_parquet_detected(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.parquet")) == "tabular"
 
     def test_feather_detected(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.feather")) == "tabular"
 
     def test_txt_detected(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.txt")) == "tabular"
 
     def test_ofx_still_works(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.ofx")) == "ofx"
 
     def test_pdf_still_works(self) -> None:
         from moneybin.services.import_service import _detect_file_type
+
         assert _detect_file_type(Path("test.pdf")) == "w2"
 ```
 
@@ -4448,10 +4472,18 @@ def _detect_file_type(file_path: Path) -> str:
     if suffix == ".pdf":
         return "w2"
     if suffix in (
-        ".csv", ".tsv", ".tab", ".txt", ".dat",
-        ".xlsx", ".xls",
-        ".parquet", ".pq",
-        ".feather", ".arrow", ".ipc",
+        ".csv",
+        ".tsv",
+        ".tab",
+        ".txt",
+        ".dat",
+        ".xlsx",
+        ".xls",
+        ".parquet",
+        ".pq",
+        ".feather",
+        ".arrow",
+        ".ipc",
     ):
         return "tabular"
     raise ValueError(
@@ -4590,13 +4622,12 @@ def _import_tabular(
     elif account_name:
         # Generate deterministic slug
         import re
+
         acct_id = re.sub(r"[^a-z0-9]+", "-", account_name.lower()).strip("-")
     elif mapping_result_is_multi_account:
         acct_id = "multi-account"  # Placeholder — per-row extraction below
     else:
-        raise ValueError(
-            "Single-account files require --account-name or --account-id"
-        )
+        raise ValueError("Single-account files require --account-name or --account-id")
 
     source_origin = (
         matched_format.name
@@ -4646,6 +4677,7 @@ def _import_tabular(
     # Stage 5: Load
     # Build account DataFrame
     import polars as pl
+
     account_df = pl.DataFrame({
         "account_id": [acct_id],
         "account_name": [account_name or acct_id],
@@ -4693,18 +4725,19 @@ def _import_tabular(
 Update the `import_file()` dispatcher to use `_import_tabular()`:
 
 ```python
-    if file_type == "ofx":
-        result = _import_ofx(db, path, institution=institution)
-    elif file_type == "w2":
-        result = _import_w2(db, path)
-    elif file_type == "tabular":
-        result = _import_tabular(
-            db, path,
-            account_name=account_name,
-            account_id=account_id,
-        )
-    else:
-        raise ValueError(f"Unsupported file type: {file_type}")
+if file_type == "ofx":
+    result = _import_ofx(db, path, institution=institution)
+elif file_type == "w2":
+    result = _import_w2(db, path)
+elif file_type == "tabular":
+    result = _import_tabular(
+        db,
+        path,
+        account_name=account_name,
+        account_id=account_id,
+    )
+else:
+    raise ValueError(f"Unsupported file type: {file_type}")
 ```
 
 Also add `account_name` parameter to `import_file()` signature.
@@ -4959,7 +4992,9 @@ Add `--account-name`, `--yes`, `--override`, `--save-format`/`--no-save-format`,
 @app.command("history")
 def import_history(
     limit: int = typer.Option(20, "--limit", "-n", help="Max records to show"),
-    import_id: str = typer.Option(None, "--import-id", help="Show details for a specific import"),
+    import_id: str = typer.Option(
+        None, "--import-id", help="Show details for a specific import"
+    ),
 ) -> None:
     """List recent imports with batch details."""
     # Query raw.import_log and display as table
@@ -4995,9 +5030,11 @@ def import_preview(
 def list_formats() -> None:
     """List all formats (built-in + user-saved)."""
 
+
 @app.command("show-format")
 def show_format(name: str = typer.Argument(...)) -> None:
     """Show format details."""
+
 
 @app.command("delete-format")
 def delete_format(name: str = typer.Argument(...)) -> None:
@@ -5223,6 +5260,7 @@ Prioritize the highest-value fixtures from the spec: preamble rows, trailing tot
 ```python
 # tests/moneybin/test_integration/test_tabular_e2e.py
 """End-to-end integration test for the tabular import pipeline."""
+
 
 @pytest.mark.integration
 class TestTabularEndToEnd:
@@ -5472,6 +5510,7 @@ Add to `test_formats.py`:
 class TestFormatDBOperations:
     def test_save_format_to_db(self, mock_db: MagicMock) -> None:
         from moneybin.extractors.tabular.formats import save_format_to_db
+
         fmt = TabularFormat(
             name="test_bank",
             institution_name="Test Bank",
@@ -5485,6 +5524,7 @@ class TestFormatDBOperations:
 
     def test_load_formats_from_db(self, mock_db: MagicMock) -> None:
         from moneybin.extractors.tabular.formats import load_formats_from_db
+
         mock_db.execute.return_value.fetchall.return_value = []
         formats = load_formats_from_db(mock_db)
         assert isinstance(formats, dict)
@@ -5494,15 +5534,21 @@ class TestFormatDBOperations:
             merge_formats,
             load_builtin_formats,
         )
+
         builtins = load_builtin_formats()
-        user = {"chase_credit": TabularFormat(
-            name="chase_credit",
-            institution_name="Chase (custom)",
-            header_signature=["Custom Date", "Custom Amount"],
-            field_mapping={"transaction_date": "Custom Date", "amount": "Custom Amount"},
-            sign_convention="negative_is_expense",
-            date_format="%Y-%m-%d",
-        )}
+        user = {
+            "chase_credit": TabularFormat(
+                name="chase_credit",
+                institution_name="Chase (custom)",
+                header_signature=["Custom Date", "Custom Amount"],
+                field_mapping={
+                    "transaction_date": "Custom Date",
+                    "amount": "Custom Amount",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+            )
+        }
         merged = merge_formats(builtins, user)
         assert merged["chase_credit"].institution_name == "Chase (custom)"
 ```
@@ -5587,8 +5633,11 @@ class TestMatchAccount:
 
     def test_account_number_match(self) -> None:
         existing = [
-            {"account_id": "chase-checking", "account_name": "Chase Checking",
-             "account_number": "1234567890"},
+            {
+                "account_id": "chase-checking",
+                "account_name": "Chase Checking",
+                "account_number": "1234567890",
+            },
         ]
         result = match_account(
             "Chase Checking",
@@ -5681,9 +5730,7 @@ def match_account(
     if account_number:
         for acct in existing:
             if acct.get("account_number") == account_number:
-                return AccountMatch(
-                    matched=True, account_id=acct["account_id"]
-                )
+                return AccountMatch(matched=True, account_id=acct["account_id"])
 
     # 2. Exact slug match
     target_slug = _slugify(account_name)
@@ -5691,22 +5738,21 @@ def match_account(
         if acct.get("account_id") == target_slug:
             return AccountMatch(matched=True, account_id=target_slug)
         if _slugify(acct.get("account_name", "")) == target_slug:
-            return AccountMatch(
-                matched=True, account_id=acct["account_id"]
-            )
+            return AccountMatch(matched=True, account_id=acct["account_id"])
 
     # 3. Fuzzy matching
     candidates: list[tuple[float, dict[str, str]]] = []
     for acct in existing:
         name = acct.get("account_name", "")
-        ratio = SequenceMatcher(
-            None, account_name.lower(), name.lower()
-        ).ratio()
+        ratio = SequenceMatcher(None, account_name.lower(), name.lower()).ratio()
         if ratio >= 0.6:
-            candidates.append((ratio, {
-                "account_id": acct.get("account_id", ""),
-                "account_name": name,
-            }))
+            candidates.append((
+                ratio,
+                {
+                    "account_id": acct.get("account_id", ""),
+                    "account_name": name,
+                },
+            ))
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)

@@ -42,8 +42,6 @@ _SCHEMA_FILES: list[str] = [
     "raw_ofx_transactions.sql",
     "raw_ofx_balances.sql",
     "raw_w2_forms.sql",
-    "raw_csv_accounts.sql",
-    "raw_csv_transactions.sql",
     "raw_tabular_transactions.sql",
     "raw_tabular_accounts.sql",
     "raw_import_log.sql",
