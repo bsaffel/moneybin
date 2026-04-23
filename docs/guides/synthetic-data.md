@@ -63,7 +63,7 @@ moneybin synthetic reset --persona <name> --profile <profile>
 ### Safety
 
 - `reset` checks for the `synthetic.ground_truth` table before wiping — it will not destroy real financial data
-- All generated data is tagged with `source_origin = 'synthetic'` and `source_file` starting with `synthetic://`
+- All generated data is tagged with `source_origin = 'synthetic_{persona}'` (e.g., `synthetic_basic`, `synthetic_family`) and `source_file` starting with `synthetic://`
 - Generated profiles are fully isolated from your real data (separate profile = separate database)
 
 ## Data Sources

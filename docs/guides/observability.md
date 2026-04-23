@@ -72,7 +72,7 @@ Two instrumentation primitives for zero-boilerplate operation timing:
 Wraps a function with automatic duration tracking:
 
 ```python
-from moneybin.metrics import tracked
+from moneybin.observability import tracked
 
 
 @tracked
@@ -86,7 +86,7 @@ def import_ofx(
 Measures arbitrary code blocks:
 
 ```python
-from moneybin.metrics import track_duration
+from moneybin.observability import track_duration
 
 with track_duration("transform_pipeline"):
     sqlmesh_apply()
