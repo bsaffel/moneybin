@@ -1,7 +1,7 @@
 # MCP Architecture & Design
 
-> Last updated: 2026-04-17
-> Status: Ready
+> Last updated: 2026-04-23
+> Status: In-Progress
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`mcp-tool-surface.md`](mcp-tool-surface.md) (concrete tool/prompt/resource definitions), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 > Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 

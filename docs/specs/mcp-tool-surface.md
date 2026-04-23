@@ -1,7 +1,7 @@
 # MCP Tool Surface
 
-> Last updated: 2026-04-17
-> Status: Ready
+> Last updated: 2026-04-23
+> Status: In-Progress
 > Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 

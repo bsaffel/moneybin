@@ -68,8 +68,8 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Architecture & Design](mcp-architecture.md) | Architecture | ready | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness. Supersedes archived `mcp-read-tools` and `mcp-write-tools` specs. |
-| [Tool Surface](mcp-tool-surface.md) | Architecture | ready | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (46 tools, 4 prompts, 4 resources) |
+| [Architecture & Design](mcp-architecture.md) | Architecture | in-progress | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness. Supersedes archived `mcp-read-tools` and `mcp-write-tools` specs. |
+| [Tool Surface](mcp-tool-surface.md) | Architecture | in-progress | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (46 tools, 4 prompts, 4 resources) |
 
 ## Sync
 
