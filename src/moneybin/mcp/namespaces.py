@@ -39,7 +39,7 @@ EXTENDED_NAMESPACES: frozenset[str] = frozenset({
 })
 
 # Descriptions for each namespace (used in moneybin://tools resource).
-_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
+NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "overview": "Data status and financial health snapshot",
     "spending": "Expense analysis, trends, category breakdowns",
     "cashflow": "Income vs outflows, net cash position",
@@ -99,7 +99,7 @@ class NamespaceRegistry:
         """Initialize registry with empty tool and loaded namespace sets."""
         self._tools: dict[str, list[ToolDefinition]] = {}
         self._loaded: set[str] = set()
-        self._descriptions: dict[str, str] = dict(_NAMESPACE_DESCRIPTIONS)
+        self._descriptions: dict[str, str] = dict(NAMESPACE_DESCRIPTIONS)
 
     def register(self, tool: ToolDefinition) -> None:
         """Register a tool definition (does not register with FastMCP)."""
