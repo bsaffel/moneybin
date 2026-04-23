@@ -11,6 +11,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
@@ -25,7 +26,7 @@ class BudgetSetResult:
     """Result of setting a budget target."""
 
     category: str
-    monthly_amount: float
+    monthly_amount: Decimal
     action: str  # "created" or "updated"
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,9 +54,9 @@ class BudgetCategoryStatus:
     """Budget status for a single category."""
 
     category: str
-    budget: float
-    spent: float
-    remaining: float
+    budget: Decimal
+    spent: Decimal
+    remaining: Decimal
     status: str  # "OK", "WARNING", "OVER"
 
     def to_dict(self) -> dict[str, Any]:
@@ -102,7 +103,7 @@ class BudgetService:
     def set_budget(
         self,
         category: str,
-        monthly_amount: float,
+        monthly_amount: Decimal,
         start_month: str | None = None,
     ) -> BudgetSetResult:
         """Create or update a budget target for a category.
@@ -204,13 +205,13 @@ class BudgetService:
 
         categories: list[BudgetCategoryStatus] = []
         for row in rows:
-            budget_amount = float(row[1])
-            spent = float(row[2])
+            budget_amount = Decimal(str(row[1]))
+            spent = Decimal(str(row[2]))
             remaining = budget_amount - spent
 
             if spent > budget_amount:
                 status = "OVER"
-            elif spent > budget_amount * 0.8:
+            elif spent > budget_amount * Decimal("0.8"):
                 status = "WARNING"
             else:
                 status = "OK"

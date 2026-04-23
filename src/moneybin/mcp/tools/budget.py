@@ -9,6 +9,7 @@ Tools:
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 from moneybin.database import get_database
 from moneybin.mcp.decorator import mcp_tool
@@ -38,7 +39,7 @@ def budget_set(
     service = BudgetService(get_database())
     result = service.set_budget(
         category=category,
-        monthly_amount=monthly_amount,
+        monthly_amount=Decimal(str(monthly_amount)),
         start_month=start_month,
     )
     return result.to_envelope()

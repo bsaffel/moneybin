@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
@@ -24,9 +25,9 @@ class MonthlySpending:
     """Income vs expense totals for a single month."""
 
     period: str
-    income: float
-    expenses: float
-    net: float
+    income: Decimal
+    expenses: Decimal
+    net: Decimal
     transaction_count: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -66,9 +67,9 @@ class CategorySpending:
 
     category: str
     subcategory: str | None
-    total: float
+    total: Decimal
     transaction_count: int
-    percent_of_total: float
+    percent_of_total: float  # non-financial percentage, float is fine
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""
@@ -174,9 +175,9 @@ class SpendingService:
         monthly = [
             MonthlySpending(
                 period=str(row[0]),
-                income=float(row[1]),
-                expenses=float(row[2]),
-                net=float(row[3]),
+                income=Decimal(str(row[1])),
+                expenses=Decimal(str(row[2])),
+                net=Decimal(str(row[3])),
                 transaction_count=int(row[4]),
             )
             for row in rows
@@ -250,19 +251,20 @@ class SpendingService:
         result = self._db.execute(sql, params)
         rows = result.fetchall()
 
-        grand_total = sum(float(row[2]) for row in rows) or 1.0
+        grand_total = sum(Decimal(str(row[2])) for row in rows) or Decimal("1")
         categories: list[CategorySpending] = []
         for row in rows:
             cat_name = str(row[0])
             if not include_uncategorized and cat_name == "Uncategorized":
                 continue
+            row_total = Decimal(str(row[2]))
             categories.append(
                 CategorySpending(
                     category=cat_name,
                     subcategory=row[1],
-                    total=float(row[2]),
+                    total=row_total,
                     transaction_count=int(row[3]),
-                    percent_of_total=round(float(row[2]) / grand_total * 100, 1),
+                    percent_of_total=round(float(row_total / grand_total * 100), 1),
                 )
             )
 

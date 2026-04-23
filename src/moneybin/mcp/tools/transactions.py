@@ -9,6 +9,7 @@ Tools:
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 from moneybin.database import get_database
 from moneybin.mcp.decorator import mcp_tool
@@ -54,8 +55,8 @@ def transactions_search(
     result = service.search(
         start_date=start_date,
         end_date=end_date,
-        min_amount=min_amount,
-        max_amount=max_amount,
+        min_amount=Decimal(str(min_amount)) if min_amount is not None else None,
+        max_amount=Decimal(str(max_amount)) if max_amount is not None else None,
         description=description,
         account_id=account_id,
         category=category,

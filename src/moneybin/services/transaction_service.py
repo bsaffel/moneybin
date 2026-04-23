@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
@@ -25,7 +26,7 @@ class Transaction:
     transaction_id: str
     account_id: str
     transaction_date: str
-    amount: float
+    amount: Decimal
     description: str
     memo: str | None
     source_type: str
@@ -76,7 +77,7 @@ class RecurringTransaction:
     """A detected recurring transaction pattern."""
 
     description: str
-    avg_amount: float
+    avg_amount: Decimal
     occurrence_count: int
     first_seen: str
     last_seen: str
@@ -125,8 +126,8 @@ class TransactionService:
         *,
         start_date: str | None = None,
         end_date: str | None = None,
-        min_amount: float | None = None,
-        max_amount: float | None = None,
+        min_amount: Decimal | None = None,
+        max_amount: Decimal | None = None,
         description: str | None = None,
         account_id: str | None = None,
         category: str | None = None,
@@ -222,7 +223,7 @@ class TransactionService:
                 transaction_id=str(row[0]),
                 account_id=str(row[1]),
                 transaction_date=str(row[2]),
-                amount=float(row[3]),
+                amount=Decimal(str(row[3])),
                 description=str(row[4]),
                 memo=str(row[5]) if row[5] else None,
                 source_type=str(row[6]),
@@ -272,7 +273,7 @@ class TransactionService:
         transactions = [
             RecurringTransaction(
                 description=str(row[0]),
-                avg_amount=float(row[1]),
+                avg_amount=Decimal(str(row[1])),
                 occurrence_count=int(row[2]),
                 first_seen=str(row[3]),
                 last_seen=str(row[4]),

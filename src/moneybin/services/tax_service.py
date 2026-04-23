@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
@@ -25,12 +26,12 @@ class W2Summary:
 
     tax_year: int
     employer_name: str
-    wages: float
-    federal_income_tax: float
-    social_security_wages: float | None
-    social_security_tax: float | None
-    medicare_wages: float | None
-    medicare_tax: float | None
+    wages: Decimal
+    federal_income_tax: Decimal
+    social_security_wages: Decimal | None
+    social_security_tax: Decimal | None
+    medicare_wages: Decimal | None
+    medicare_tax: Decimal | None
     state_local_info: Any  # JSON — list of state/local tax entries
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,12 +128,16 @@ class TaxService:
             W2Summary(
                 tax_year=int(row[0]),
                 employer_name=str(row[1]),
-                wages=float(row[2]),
-                federal_income_tax=float(row[3]),
-                social_security_wages=(float(row[4]) if row[4] is not None else None),
-                social_security_tax=(float(row[5]) if row[5] is not None else None),
-                medicare_wages=(float(row[6]) if row[6] is not None else None),
-                medicare_tax=(float(row[7]) if row[7] is not None else None),
+                wages=Decimal(str(row[2])),
+                federal_income_tax=Decimal(str(row[3])),
+                social_security_wages=(
+                    Decimal(str(row[4])) if row[4] is not None else None
+                ),
+                social_security_tax=(
+                    Decimal(str(row[5])) if row[5] is not None else None
+                ),
+                medicare_wages=(Decimal(str(row[6])) if row[6] is not None else None),
+                medicare_tax=(Decimal(str(row[7])) if row[7] is not None else None),
                 state_local_info=row[8],
             )
             for row in rows

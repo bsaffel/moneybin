@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
@@ -62,8 +63,8 @@ class AccountBalance:
     account_id: str
     institution_name: str | None
     account_type: str | None
-    ledger_balance: float
-    available_balance: float | None
+    ledger_balance: Decimal
+    available_balance: Decimal | None
     as_of_date: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -196,8 +197,8 @@ class AccountService:
                 account_id=str(row[0]),
                 institution_name=str(row[1]) if row[1] else None,
                 account_type=str(row[2]) if row[2] else None,
-                ledger_balance=float(row[3]),
-                available_balance=float(row[4]) if row[4] is not None else None,
+                ledger_balance=Decimal(str(row[3])),
+                available_balance=Decimal(str(row[4])) if row[4] is not None else None,
                 as_of_date=str(row[5]),
             )
             for row in rows

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -76,26 +77,32 @@ class TestSetBudget:
     @pytest.mark.unit
     def test_creates_new_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
-        result = service.set_budget("Food & Drink", 200.00, start_month="2026-04")
+        result = service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04"
+        )
         assert isinstance(result, BudgetSetResult)
         assert result.category == "Food & Drink"
-        assert result.monthly_amount == 200.00
+        assert result.monthly_amount == Decimal("200.00")
         assert result.action == "created"
 
     @pytest.mark.unit
     def test_updates_existing_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Create first
-        service.set_budget("Food & Drink", 200.00, start_month="2026-04")
+        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
         # Update
-        result = service.set_budget("Food & Drink", 300.00, start_month="2026-04")
+        result = service.set_budget(
+            "Food & Drink", Decimal("300.00"), start_month="2026-04"
+        )
         assert result.action == "updated"
-        assert result.monthly_amount == 300.00
+        assert result.monthly_amount == Decimal("300.00")
 
     @pytest.mark.unit
     def test_to_envelope_sensitivity_low(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
-        result = service.set_budget("Food & Drink", 200.00, start_month="2026-04")
+        result = service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04"
+        )
         envelope = result.to_envelope()
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "low"
@@ -110,7 +117,7 @@ class TestBudgetStatus:
     def test_returns_status_result(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Set a budget first
-        service.set_budget("Food & Drink", 200.00, start_month="2026-04")
+        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
         result = service.status(month="2026-04")
         assert isinstance(result, BudgetStatusResult)
         assert result.month == "2026-04"
@@ -119,22 +126,22 @@ class TestBudgetStatus:
     @pytest.mark.unit
     def test_status_fields(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
-        service.set_budget("Food & Drink", 200.00, start_month="2026-04")
+        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert isinstance(cat, BudgetCategoryStatus)
         assert cat.category == "Food & Drink"
-        assert cat.budget == 200.00
+        assert cat.budget == Decimal("200.00")
         # T1 (-50) + T2 (-30) = 80 spent
-        assert cat.spent == 80.00
-        assert cat.remaining == 120.00
+        assert cat.spent == Decimal("80.00")
+        assert cat.remaining == Decimal("120.00")
         assert cat.status == "OK"
 
     @pytest.mark.unit
     def test_status_over_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Set budget lower than spending (80.00)
-        service.set_budget("Food & Drink", 50.00, start_month="2026-04")
+        service.set_budget("Food & Drink", Decimal("50.00"), start_month="2026-04")
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert cat.status == "OVER"
@@ -144,7 +151,7 @@ class TestBudgetStatus:
     def test_status_warning_threshold(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Budget of 90 with 80 spent = 88.9% => WARNING
-        service.set_budget("Food & Drink", 90.00, start_month="2026-04")
+        service.set_budget("Food & Drink", Decimal("90.00"), start_month="2026-04")
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert cat.status == "WARNING"
@@ -152,7 +159,7 @@ class TestBudgetStatus:
     @pytest.mark.unit
     def test_to_envelope_structure(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
-        service.set_budget("Food & Drink", 200.00, start_month="2026-04")
+        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
         result = service.status(month="2026-04")
         envelope = result.to_envelope()
         d = envelope.to_dict()
