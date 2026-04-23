@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -96,7 +97,7 @@ class TestTransactionSearch:
         txn = next(t for t in result.transactions if t.transaction_id == "T1")
         assert isinstance(txn, Transaction)
         assert txn.account_id == "A1"
-        assert txn.amount == -50.00
+        assert txn.amount == Decimal("-50.00")
         assert txn.description == "Coffee Shop"
         assert txn.category == "Food & Drink"
 
@@ -159,7 +160,7 @@ class TestRecurring:
         assert isinstance(rec, RecurringTransaction)
         assert rec.description == "Coffee Shop"
         assert rec.occurrence_count == 3
-        assert rec.avg_amount == -50.00
+        assert rec.avg_amount == Decimal("-50.00")
 
     @pytest.mark.unit
     def test_min_occurrences_filter(self, transaction_db: Database) -> None:

@@ -210,10 +210,10 @@ class TransactionService:
                 ON t.transaction_id = c.transaction_id
             {where}
             ORDER BY t.transaction_date DESC, t.transaction_id
-            LIMIT {int(limit)} OFFSET {int(offset)}
+            LIMIT ? OFFSET ?
         """
 
-        result = self._db.execute(sql, params)
+        result = self._db.execute(sql, [*params, limit, offset])
         rows = result.fetchall()
 
         transactions = [

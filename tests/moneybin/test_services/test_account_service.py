@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -113,8 +114,8 @@ class TestBalances:
         result = service.balances()
         bal = next(b for b in result.balances if b.account_id == "ACC001")
         assert isinstance(bal, AccountBalance)
-        assert bal.ledger_balance == 5000.00
-        assert bal.available_balance == 4800.00
+        assert bal.ledger_balance == Decimal("5000.00")
+        assert bal.available_balance == Decimal("4800.00")
         assert bal.institution_name == "Test Bank"
 
     @pytest.mark.unit

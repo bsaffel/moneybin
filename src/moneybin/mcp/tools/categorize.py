@@ -469,9 +469,13 @@ def categorize_create_rules(
                 ],
             )
             created += 1
-        except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
             skipped += 1
-            error_details.append({"name": name, "reason": str(e)})
+            logger.exception(f"create_rules failed for {name!r}")
+            error_details.append({
+                "name": name,
+                "reason": "Failed to create rule — check logs for details.",
+            })
 
     return build_envelope(
         data={
@@ -517,10 +521,10 @@ def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
             data={"error": f"Rule {rule_id} not found"},
             sensitivity="low",
         )
-    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception(f"delete_rule failed for {rule_id}")
         return build_envelope(
-            data={"error": str(e)},
+            data={"error": "Failed to delete rule — check logs for details."},
             sensitivity="low",
         )
 
@@ -585,11 +589,12 @@ def categorize_create_merchants(
                 created_by="ai",
             )
             created += 1
-        except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
             skipped += 1
+            logger.exception(f"create_merchants failed for {canonical_name!r}")
             error_details.append({
                 "canonical_name": canonical_name,
-                "reason": str(e),
+                "reason": "Failed to create merchant — check logs for details.",
             })
 
     return build_envelope(
@@ -652,10 +657,10 @@ def categorize_create_category(
             data={"error": f"Category already exists: {category}{sub}"},
             sensitivity="low",
         )
-    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("create_category failed")
         return build_envelope(
-            data={"error": str(e)},
+            data={"error": "Failed to create category — check logs for details."},
             sensitivity="low",
         )
 
@@ -695,10 +700,10 @@ def categorize_toggle_category(
             data={"error": f"Category {category_id} not found"},
             sensitivity="low",
         )
-    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("toggle_category failed")
         return build_envelope(
-            data={"error": str(e)},
+            data={"error": "Failed to toggle category — check logs for details."},
             sensitivity="low",
         )
 
@@ -717,10 +722,10 @@ def categorize_seed() -> ResponseEnvelope:
         from moneybin.services.categorization_service import SeedResult
 
         return SeedResult(seeded_count=count).to_envelope()
-    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("seed_categories failed")
         return build_envelope(
-            data={"error": str(e)},
+            data={"error": "Failed to seed categories — check logs for details."},
             sensitivity="low",
         )
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -74,12 +75,12 @@ class TestW2:
         form = next(f for f in result.forms if f.tax_year == 2025)
         assert isinstance(form, W2Summary)
         assert form.employer_name == "Test Corp"
-        assert form.wages == 85000.00
-        assert form.federal_income_tax == 15000.00
-        assert form.social_security_wages == 85000.00
-        assert form.social_security_tax == 5270.00
-        assert form.medicare_wages == 85000.00
-        assert form.medicare_tax == 1232.50
+        assert form.wages == Decimal("85000.00")
+        assert form.federal_income_tax == Decimal("15000.00")
+        assert form.social_security_wages == Decimal("85000.00")
+        assert form.social_security_tax == Decimal("5270.00")
+        assert form.medicare_wages == Decimal("85000.00")
+        assert form.medicare_tax == Decimal("1232.50")
 
     @pytest.mark.unit
     def test_filter_by_tax_year(self, tax_db: Database) -> None:

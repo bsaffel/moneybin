@@ -168,7 +168,8 @@ class SpendingService:
         """
 
         if not start_date:
-            sql += f"\n            LIMIT {int(months)}"
+            sql += "\n            LIMIT ?"
+            params.append(months)
 
         result = self._db.execute(sql, params)
         rows = result.fetchall()
@@ -224,8 +225,10 @@ class SpendingService:
             conditions.append("t.transaction_date >= ?")
             params.append(start_date)
         else:
+            # safe: months is range-validated to [1, 120] above; DuckDB INTERVAL
+            # syntax does not support parameterized values
             conditions.append(
-                f"t.transaction_year_month >= strftime(CURRENT_DATE - INTERVAL '{months} months', '%Y-%m')"
+                f"t.transaction_year_month >= strftime(CURRENT_DATE - INTERVAL '{int(months)} months', '%Y-%m')"
             )
         if end_date:
             conditions.append("t.transaction_date <= ?")
@@ -276,4 +279,14 @@ class SpendingService:
         if top_n and len(categories) > top_n:
             categories = categories[:top_n]
 
-        return CategoryBreakdown(categories=categories)
+        period_label = ""
+        if rows:
+            # Build period label from the date range in the query
+            if start_date:
+                period_label = start_date
+                if end_date:
+                    period_label = f"{start_date} to {end_date}"
+            else:
+                period_label = f"last {months} months"
+
+        return CategoryBreakdown(categories=categories, period_label=period_label)
