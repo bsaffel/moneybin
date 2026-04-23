@@ -181,3 +181,5 @@ class TestResetCommand:
             result = runner.invoke(app, ["reset", "--persona", "basic"])
             # Should either prompt and abort, or succeed with --yes
             assert result.exit_code != 0 or "Aborted" in (result.output or "")
+        # Profile must be restored even after user declines
+        self.mock_set_profile.assert_called_with("default")

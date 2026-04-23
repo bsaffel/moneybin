@@ -142,9 +142,10 @@ def _run_generate(
             f"Use --profile={profile} with any moneybin command."
         )
     finally:
-        # When called from reset(), original_profile == profile (reset already
-        # switched), so this is a no-op; reset()'s own finally does the real restore.
         close_database()
+        # When called from reset(), original_profile == profile (reset already
+        # switched), so set_current_profile is a no-op; reset()'s own finally
+        # does the real restore.
         set_current_profile(original_profile)
 
 
