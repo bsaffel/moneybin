@@ -193,7 +193,8 @@ class TestResourceTools:
         data: dict[str, Any] = json.loads(result)
         assert "core" in data
         assert isinstance(data["core"], list)
-        assert len(data["core"]) > 0
+        core: list[dict[str, Any]] = data["core"]
+        assert len(core) > 0
 
     @pytest.mark.unit
     def test_core_namespaces_have_required_fields(self) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -119,8 +120,8 @@ class TestW2:
         envelope = result.to_envelope()
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "high"
-        assert isinstance(d["data"], list)
-        assert len(d["data"]) == 2
+        data: list[dict[str, Any]] = d["data"]
+        assert len(data) == 2
 
     @pytest.mark.unit
     def test_envelope_json_no_pii(self, tax_db: Database) -> None:

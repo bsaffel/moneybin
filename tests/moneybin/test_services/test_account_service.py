@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -90,9 +91,10 @@ class TestListAccounts:
         envelope = result.to_envelope()
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "low"
-        assert isinstance(d["data"], list)
-        assert len(d["data"]) == 2
-        assert len(d["actions"]) > 0
+        data: list[dict[str, Any]] = d["data"]
+        assert len(data) == 2
+        actions: list[str] = d["actions"]
+        assert len(actions) > 0
 
 
 class TestBalances:
@@ -129,5 +131,5 @@ class TestBalances:
         envelope = result.to_envelope()
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "medium"
-        assert isinstance(d["data"], list)
-        assert len(d["data"]) == 2
+        data: list[dict[str, Any]] = d["data"]
+        assert len(data) == 2
