@@ -8,12 +8,14 @@ auto-categorization lives in the MCP layer (auto_categorize tool).
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import duckdb
 
 from moneybin.database import Database
+from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -26,6 +28,76 @@ from moneybin.tables import (
 logger = logging.getLogger(__name__)
 
 MatchType = Literal["exact", "contains", "regex"]
+
+
+@dataclass(slots=True)
+class CategorizationStats:
+    """Typed result for categorization statistics."""
+
+    total: int
+    categorized: int
+    uncategorized: int
+    percent_categorized: float
+    by_source: dict[str, int]
+
+    def to_envelope(self) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this categorization stats result."""
+        data: dict[str, Any] = {
+            "total_transactions": self.total,
+            "categorized": self.categorized,
+            "uncategorized": self.uncategorized,
+            "percent_categorized": self.percent_categorized,
+            "by_source": self.by_source,
+        }
+        return build_envelope(
+            data=data,
+            sensitivity="low",
+            actions=["Use categorize.uncategorized to see uncategorized transactions"],
+        )
+
+
+@dataclass(slots=True)
+class BulkCategorizationResult:
+    """Typed result for bulk categorization operations."""
+
+    applied: int
+    skipped: int
+    errors: int
+    error_details: list[dict[str, str]]
+    merchants_created: int = 0
+
+    def to_envelope(self, input_count: int) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this bulk categorization result."""
+        return build_envelope(
+            data={
+                "applied": self.applied,
+                "skipped": self.skipped,
+                "errors": self.errors,
+                "error_details": self.error_details,
+                "merchants_created": self.merchants_created,
+            },
+            sensitivity="medium",
+            total_count=input_count,
+            actions=[
+                "Use categorize.rules to review auto-created rules",
+                "Use categorize.uncategorized to fetch the next batch",
+            ],
+        )
+
+
+@dataclass(slots=True)
+class SeedResult:
+    """Typed result for category seeding."""
+
+    seeded_count: int
+
+    def to_envelope(self) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this seed result."""
+        return build_envelope(
+            data={"seeded_count": self.seeded_count},
+            sensitivity="low",
+        )
+
 
 # -- Merchant name normalization patterns --
 
@@ -605,3 +677,23 @@ def get_categorization_stats(
         pass
 
     return stats
+
+
+def get_stats(db: Database) -> CategorizationStats:
+    """Get categorization stats as a typed result.
+
+    Wrapper around get_categorization_stats() that returns a typed object.
+    """
+    raw = get_categorization_stats(db)
+    by_source = {
+        k.removeprefix("by_"): v
+        for k, v in raw.items()
+        if k.startswith("by_") and isinstance(v, int)
+    }
+    return CategorizationStats(
+        total=int(raw["total"]),
+        categorized=int(raw["categorized"]),
+        uncategorized=int(raw["uncategorized"]),
+        percent_categorized=float(raw["pct_categorized"]),
+        by_source=by_source,
+    )
