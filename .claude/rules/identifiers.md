@@ -1,3 +1,8 @@
+---
+description: "Identifier generation: content hashes, truncated UUIDs, source-provided IDs, semantic slugs"
+globs: ["src/moneybin/**/*.py", "sqlmesh/models/**"]
+---
+
 # Identifiers
 
 ## Decision Tree

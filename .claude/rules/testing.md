@@ -1,5 +1,6 @@
 ---
-description: "When writing or modifying tests"
+description: "Testing standards: pytest patterns, fixtures, mocking strategy, database test helpers"
+globs: ["tests/**", "**/conftest.py", "src/moneybin/testing/**"]
 ---
 
 # Testing Standards

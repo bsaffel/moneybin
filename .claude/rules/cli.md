@@ -1,5 +1,6 @@
 ---
-globs: ["src/moneybin/cli/**"]
+description: "CLI development: Typer patterns, error handling, command registration, non-interactive parity"
+globs: ["src/moneybin/cli/**", "src/moneybin/main.py"]
 ---
 
 # CLI Development
@@ -76,20 +77,4 @@ Use icons **sparingly** — only where they add scanability, not decoration.
 | Bug report | `🐛` | Link to issue tracker after an unexpected error |
 | Review | `👀` | Items that need user attention or review |
 
-Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data.
-
-```python
-# Good
-logger.info("⚙️  Starting sync from all institutions...")
-logger.info(f"✅ Imported {count} transactions")
-logger.error(f"❌ File not found: {path}")
-logger.warning("⚠️  No new data to sync")
-logger.info("💡 Run 'moneybin db init' to create the database first")
-logger.error("🐛 Report issues at https://github.com/bsaffel/moneybin/issues")
-logger.info("👀 3 auto-generated rules need review")
-
-# Bad — wrong icon semantics or decorative noise
-logger.info("📈 Beginning incremental sync...")  # chart ≠ working
-logger.info("📊 Loading results:")  # chart ≠ working
-logger.info(f"📁 Data saved to: {path}")  # no icon needed for paths
-```
+Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data. No decorative icons (📈📊📁) — only the semantic icons in the table above.
