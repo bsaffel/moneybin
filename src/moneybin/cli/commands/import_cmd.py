@@ -357,7 +357,11 @@ def import_preview(
     """
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
-    from moneybin.extractors.tabular.formats import load_builtin_formats
+    from moneybin.extractors.tabular.formats import (
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+    )
     from moneybin.extractors.tabular.readers import read_file
 
     source = Path(file_path)
@@ -396,18 +400,25 @@ def import_preview(
             logger.warning(f"⚠️  No data rows found in {source.name}")
             return
 
-        # Stage 3: Column mapping
+        # Stage 3: Column mapping — load built-in + user-saved formats
         matched_format = None
         builtin = load_builtin_formats()
+        from moneybin.database import DatabaseKeyError, get_database
+
+        try:
+            preview_db = get_database()
+            all_formats = merge_formats(builtin, load_formats_from_db(preview_db))
+        except (DatabaseKeyError, Exception):  # noqa: BLE001 — DB may not exist yet; use built-in only
+            all_formats = builtin
         if format_name:
-            matched_format = builtin.get(format_name)
+            matched_format = all_formats.get(format_name)
             if matched_format is None:
                 logger.warning(
-                    f"⚠️  Format {format_name!r} not found in built-in formats"
+                    f"⚠️  Format {format_name!r} not found in available formats"
                 )
         else:
             headers = list(df.columns)
-            for fmt in builtin.values():
+            for fmt in all_formats.values():
                 if fmt.matches_headers(headers):
                     matched_format = fmt
                     break
@@ -676,9 +687,12 @@ def _print_import_status(db: Database) -> None:
         # Try to get date range for transaction-like tables
         date_info = ""
         if "transaction" in table:
+            # OFX uses date_posted; tabular and future tables use transaction_date
+            date_col = "date_posted" if "ofx" in table else "transaction_date"
+            safe_date_col = exp.to_identifier(date_col, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
             try:
                 dates = db.execute(
-                    f"SELECT MIN(CAST(date_posted AS DATE)), MAX(CAST(date_posted AS DATE)) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
+                    f"SELECT MIN(CAST({safe_date_col} AS DATE)), MAX(CAST({safe_date_col} AS DATE)) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers; date_col from hardcoded map
                 ).fetchone()
                 if dates and dates[0]:
                     date_info = f"  ({dates[0]} to {dates[1]})"

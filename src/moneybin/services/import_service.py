@@ -6,10 +6,18 @@ MCP tools call this same service — no duplication.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from moneybin.database import Database
+from moneybin.metrics.registry import (
+    IMPORT_DURATION_SECONDS,
+    IMPORT_ERRORS_TOTAL,
+    IMPORT_RECORDS_TOTAL,
+    TABULAR_DETECTION_CONFIDENCE,
+    TABULAR_FORMAT_MATCHES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +347,7 @@ def _import_tabular(
     from moneybin.utils import slugify
 
     result = ImportResult(file_path=str(file_path), file_type="tabular")
+    _t0 = time.monotonic()
 
     # Stage 1: Format detection
     format_info = detect_format(
@@ -402,6 +411,13 @@ def _import_tabular(
                 f"{file_path.name}. Use --override to specify columns manually."
             )
 
+    # Record format match and detection confidence metrics
+    if matched_format:
+        TABULAR_FORMAT_MATCHES.labels(
+            format_name=matched_format.name, format_source=format_source
+        ).inc()
+    TABULAR_DETECTION_CONFIDENCE.labels(confidence=mapping_result_confidence).inc()
+
     # Apply CLI overrides (take precedence over detected/built-in values)
     if sign:
         mapping_result_sign_convention = sign
@@ -460,6 +476,9 @@ def _import_tabular(
             rows_imported=0,
             rows_rejected=len(df),
         )
+        IMPORT_ERRORS_TOTAL.labels(
+            source_type=source_type, error_type="transform"
+        ).inc()
         raise ValueError(f"Transform failed: {e}") from e
 
     # Stage 5: Load
@@ -498,6 +517,12 @@ def _import_tabular(
         date_format=mapping_result_date_format,
         sign_convention=mapping_result_sign_convention,
         balance_validated=transform_result.balance_validated,
+    )
+
+    # Record import metrics
+    IMPORT_RECORDS_TOTAL.labels(source_type=source_type).inc(rows_imported)
+    IMPORT_DURATION_SECONDS.labels(source_type=source_type).observe(
+        time.monotonic() - _t0
     )
 
     result.accounts = 1

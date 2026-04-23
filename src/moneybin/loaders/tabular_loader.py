@@ -11,6 +11,7 @@ import uuid
 import polars as pl
 
 from moneybin.database import Database
+from moneybin.metrics.registry import TABULAR_IMPORT_BATCHES
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,7 @@ class TabularLoader:
             balance_validated: Whether balance validation passed.
         """
         status = "complete" if rows_rejected == 0 else "partial"
+        TABULAR_IMPORT_BATCHES.labels(status=status).inc()
         self.db.execute(
             """
             UPDATE raw.import_log SET
