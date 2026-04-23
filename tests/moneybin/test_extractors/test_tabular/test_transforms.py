@@ -21,7 +21,7 @@ class _BaseKwargs(TypedDict):
     date_format: str
     sign_convention: str
     number_format: str
-    account_id: str
+    account_id: str | list[str]
     source_file: str
     source_type: str
     source_origin: str
@@ -133,6 +133,91 @@ class TestTransformBasic:
             import_id="test-123",
         )
         assert result.transactions["transaction_id"][0] == "test:TXN90812"
+
+    def test_optional_fields_passed_through(self) -> None:
+        """Mapped optional fields (memo, category, etc.) appear in output."""
+        df = _make_df(
+            Date=["01/15/2026"],
+            Amount=["-42.50"],
+            Description=["KROGER"],
+            Memo=["Full description here"],
+            Category=["Groceries"],
+            TxnType=["Sale"],
+        )
+        result = transform_dataframe(
+            df=df,
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+                "memo": "Memo",
+                "category": "Category",
+                "transaction_type": "TxnType",
+            },
+            date_format="%m/%d/%Y",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            account_id="test",
+            source_file=_SOURCE_FILE,
+            source_type="csv",
+            source_origin="test",
+            import_id="test-123",
+        )
+        assert result.transactions["memo"][0] == "Full description here"
+        assert result.transactions["category"][0] == "Groceries"
+        assert result.transactions["transaction_type"][0] == "Sale"
+
+    def test_unmapped_optional_fields_are_null(self) -> None:
+        """Optional fields not in field_mapping produce NULL columns."""
+        df = _make_df(
+            Date=["01/15/2026"],
+            Amount=["-42.50"],
+            Description=["KROGER"],
+        )
+        result = transform_dataframe(df=df, **_base_kwargs())
+        assert result.transactions["memo"][0] is None
+        assert result.transactions["category"][0] is None
+
+    def test_multi_account_per_row_ids(self) -> None:
+        """Per-row account_id list assigns different IDs per row."""
+        df = _make_df(
+            Date=["01/15/2026", "01/16/2026"],
+            Amount=["-42.50", "-10.00"],
+            Description=["KROGER", "TARGET"],
+        )
+        kwargs = _base_kwargs()
+        kwargs["account_id"] = ["chase-checking", "wells-checking"]
+        result = transform_dataframe(df=df, **kwargs)
+        assert result.transactions["account_id"][0] == "chase-checking"
+        assert result.transactions["account_id"][1] == "wells-checking"
+
+    def test_balance_column_passed_through(self) -> None:
+        """Mapped balance column appears as parsed Decimal in output."""
+        df = _make_df(
+            Date=["01/15/2026", "01/16/2026"],
+            Amount=["-42.50", "100.00"],
+            Description=["A", "B"],
+            Balance=["957.50", "1057.50"],
+        )
+        result = transform_dataframe(
+            df=df,
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+                "balance": "Balance",
+            },
+            date_format="%m/%d/%Y",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            account_id="test",
+            source_file=_SOURCE_FILE,
+            source_type="csv",
+            source_origin="test",
+            import_id="test-123",
+        )
+        assert result.transactions["balance"][0] == Decimal("957.50")
+        assert result.transactions["balance"][1] == Decimal("1057.50")
 
 
 class TestSignConventionTransform:

@@ -25,6 +25,22 @@ logger = logging.getLogger(__name__)
 # Fields the transform layer understands in field_mapping
 _SIGN_FIELDS = {"amount", "debit_amount", "credit_amount"}
 
+# Optional string fields that pass through unchanged from source to raw table.
+# These are read from the DataFrame column identified by field_mapping and
+# written to the output as-is (NULL when unmapped or cell is empty).
+_OPTIONAL_STR_FIELDS = (
+    "memo",
+    "category",
+    "subcategory",
+    "transaction_type",
+    "status",
+    "check_number",
+    "source_transaction_id",
+    "reference_number",
+    "currency",
+    "member_name",
+)
+
 
 def _col_as_strings(df: pl.DataFrame, col: str | None, n: int) -> list[str]:
     """Extract a column from a DataFrame as a list of strings.
@@ -82,7 +98,7 @@ def transform_dataframe(
     date_format: str,
     sign_convention: str,
     number_format: str,
-    account_id: str,
+    account_id: str | list[str],
     source_file: str,
     source_type: str,
     source_origin: str,
@@ -97,7 +113,8 @@ def transform_dataframe(
         sign_convention: One of: negative_is_expense, negative_is_income,
             split_debit_credit.
         number_format: One of: us, european, swiss_french, zero_decimal.
-        account_id: Account identifier to attach to every row.
+        account_id: Account identifier — single string (broadcast to all rows)
+            or list of per-row IDs (for multi-account files).
         source_file: Path to the source file (for provenance).
         source_type: File format type (csv, tsv, excel, parquet, etc.).
         source_origin: Institution or source name (e.g. "chase_credit").
@@ -106,6 +123,11 @@ def transform_dataframe(
     Returns:
         TransformResult with validated transactions DataFrame and rejection stats.
     """
+    # Normalize account_id to per-row list
+    account_ids: list[str] = (
+        account_id if isinstance(account_id, list) else [account_id] * len(df)
+    )
+
     # Assign 1-based row numbers before any filtering
     df = df.with_columns(pl.Series("row_number", range(1, len(df) + 1), dtype=pl.Int32))
 
@@ -158,6 +180,34 @@ def transform_dataframe(
                 )
             )
 
+    # Extract optional string field values (None for unmapped/null cells)
+    optional_strs: dict[str, list[str | None]] = {}
+    for field_name in _OPTIONAL_STR_FIELDS:
+        col = field_mapping.get(field_name)
+        if not col or col not in df.columns:
+            optional_strs[field_name] = [None] * len(df)
+        else:
+            optional_strs[field_name] = [
+                str(v) if v is not None else None for v in df[col].to_list()
+            ]
+
+    # Parse optional post_date (non-fatal — failures produce None, not rejections)
+    post_date_col = field_mapping.get("post_date")
+    parsed_post_dates: list[date | None] = [None] * len(df)
+    if post_date_col and post_date_col in df.columns:
+        parsed_post_dates, _ = _parse_dates(
+            _col_as_strings(df, post_date_col, len(df)), date_format
+        )
+
+    # Parse optional balance column
+    balance_col = field_mapping.get("balance")
+    parsed_balances: list[Decimal | None] = [None] * len(df)
+    if balance_col and balance_col in df.columns:
+        balance_strs_for_output = _col_as_strings(df, balance_col, len(df))
+        parsed_balances = [
+            parse_amount_str(s, number_format) for s in balance_strs_for_output
+        ]
+
     # Generate transaction IDs
     descriptions: list[str] = []
     if desc_col and desc_col in df.columns:
@@ -168,7 +218,7 @@ def transform_dataframe(
     transaction_ids = _generate_transaction_ids(
         df=df,
         src_txn_id_col=src_txn_id_col,
-        account_id=account_id,
+        account_ids=account_ids,
         original_date_strs=original_date_strs,
         parsed_amounts=parsed_amounts,
         descriptions=descriptions,
@@ -179,63 +229,79 @@ def transform_dataframe(
     # Build output rows, skipping rejected indices
     out_transaction_ids: list[str] = []
     out_transaction_dates: list[date] = []
+    out_post_dates: list[date | None] = []
     out_amounts: list[Decimal] = []
     out_descriptions: list[str] = []
     out_original_amounts: list[str] = []
     out_original_dates: list[str] = []
+    out_balances: list[Decimal | None] = []
     out_row_numbers: list[int] = []
     out_account_ids: list[str] = []
     out_source_files: list[str] = []
     out_source_types: list[str] = []
     out_source_origins: list[str] = []
     out_import_ids: list[str] = []
+    optional_out: dict[str, list[str | None]] = {f: [] for f in _OPTIONAL_STR_FIELDS}
 
     for idx in range(len(df)):
         if idx in rejected_rows:
             continue
         out_transaction_ids.append(transaction_ids[idx])
         out_transaction_dates.append(parsed_dates[idx])  # type: ignore[arg-type]  # None rows are filtered above
+        out_post_dates.append(parsed_post_dates[idx])
         out_amounts.append(parsed_amounts[idx])  # type: ignore[arg-type]  # None rows are filtered above
         out_descriptions.append(descriptions[idx])
         out_original_amounts.append(original_amount_strs[idx])
         out_original_dates.append(original_date_strs[idx])
+        out_balances.append(parsed_balances[idx])
         out_row_numbers.append(row_numbers[idx])
-        out_account_ids.append(account_id)
+        out_account_ids.append(account_ids[idx])
         out_source_files.append(source_file)
         out_source_types.append(source_type)
         out_source_origins.append(source_origin)
         out_import_ids.append(import_id)
+        for field_name in _OPTIONAL_STR_FIELDS:
+            optional_out[field_name].append(optional_strs[field_name][idx])
 
-    transactions = pl.DataFrame(
-        {
-            "transaction_id": out_transaction_ids,
-            "transaction_date": out_transaction_dates,
-            "amount": out_amounts,
-            "description": out_descriptions,
-            "original_amount": out_original_amounts,
-            "original_date_str": out_original_dates,
-            "row_number": out_row_numbers,
-            "account_id": out_account_ids,
-            "source_file": out_source_files,
-            "source_type": out_source_types,
-            "source_origin": out_source_origins,
-            "import_id": out_import_ids,
-        },
-        schema={
-            "transaction_id": pl.Utf8,
-            "transaction_date": pl.Date,
-            "amount": pl.Decimal(precision=18, scale=2),
-            "description": pl.Utf8,
-            "original_amount": pl.Utf8,
-            "original_date_str": pl.Utf8,
-            "row_number": pl.Int32,
-            "account_id": pl.Utf8,
-            "source_file": pl.Utf8,
-            "source_type": pl.Utf8,
-            "source_origin": pl.Utf8,
-            "import_id": pl.Utf8,
-        },
-    )
+    # Build output DataFrame — data and schema dicts are constructed in
+    # column order matching raw.tabular_transactions.
+    data: dict[str, object] = {
+        "transaction_id": out_transaction_ids,
+        "transaction_date": out_transaction_dates,
+        "post_date": out_post_dates,
+        "amount": out_amounts,
+        "description": out_descriptions,
+        "original_amount": out_original_amounts,
+        "original_date_str": out_original_dates,
+        "balance": out_balances,
+        "row_number": out_row_numbers,
+        "account_id": out_account_ids,
+        "source_file": out_source_files,
+        "source_type": out_source_types,
+        "source_origin": out_source_origins,
+        "import_id": out_import_ids,
+    }
+    schema = {
+        "transaction_id": pl.Utf8,
+        "transaction_date": pl.Date,
+        "post_date": pl.Date,
+        "amount": pl.Decimal(precision=18, scale=2),
+        "description": pl.Utf8,
+        "original_amount": pl.Utf8,
+        "original_date_str": pl.Utf8,
+        "balance": pl.Decimal(precision=18, scale=2),
+        "row_number": pl.Int32,
+        "account_id": pl.Utf8,
+        "source_file": pl.Utf8,
+        "source_type": pl.Utf8,
+        "source_origin": pl.Utf8,
+        "import_id": pl.Utf8,
+    }
+    for field_name in _OPTIONAL_STR_FIELDS:
+        data[field_name] = optional_out[field_name]
+        schema[field_name] = pl.Utf8
+
+    transactions = pl.DataFrame(data, schema=schema)
 
     rows_rejected = len(rejected_rows)
     logger.info(
@@ -496,7 +562,7 @@ def _generate_transaction_ids(
     *,
     df: pl.DataFrame,
     src_txn_id_col: str | None,
-    account_id: str,
+    account_ids: list[str],
     original_date_strs: list[str],
     parsed_amounts: list[Decimal | None],
     descriptions: list[str],
@@ -513,7 +579,7 @@ def _generate_transaction_ids(
     Args:
         df: Source DataFrame.
         src_txn_id_col: Column name holding source transaction IDs, or None.
-        account_id: Account identifier.
+        account_ids: Per-row account identifiers.
         original_date_strs: Raw date strings, one per row.
         parsed_amounts: Parsed Decimal amounts (None for invalid rows).
         descriptions: Description strings, one per row.
@@ -532,9 +598,10 @@ def _generate_transaction_ids(
 
     ids: list[str] = []
     for idx in range(n):
+        acct_id = account_ids[idx]
         src_id = src_txn_ids[idx]
         if src_id and src_id.strip():
-            ids.append(f"{account_id}:{src_id.strip()}")
+            ids.append(f"{acct_id}:{src_id.strip()}")
         else:
             date_str = original_date_strs[idx] if idx < len(original_date_strs) else ""
             amount_str = (
@@ -542,7 +609,7 @@ def _generate_transaction_ids(
             )
             desc_str = descriptions[idx] if idx < len(descriptions) else ""
             row_str = str(row_numbers[idx]) if idx < len(row_numbers) else ""
-            raw_key = f"{date_str}|{amount_str}|{desc_str}|{account_id}|{row_str}"
+            raw_key = f"{date_str}|{amount_str}|{desc_str}|{acct_id}|{row_str}"
             digest = hashlib.sha256(raw_key.encode()).hexdigest()[:16]
             ids.append(f"{source_type}_{digest}")
 

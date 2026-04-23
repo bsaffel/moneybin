@@ -448,12 +448,30 @@ def _import_tabular(
     if source_type in ("semicolon", "pipe"):
         source_type = "csv"
 
+    # Build per-row account_ids and a name→id mapping for the accounts table
+    acct_name_col = mapping_result_mapping.get("account_name")
+    acct_id_to_name: dict[str, str] = {}
+
     if account_id:
-        acct_id = account_id
+        account_ids: str | list[str] = account_id
+        acct_id_to_name[account_id] = account_name or account_id
     elif account_name:
-        acct_id = slugify(account_name)
-    elif mapping_result_is_multi_account:
-        acct_id = "multi-account"
+        aid = slugify(account_name)
+        account_ids = aid
+        acct_id_to_name[aid] = account_name
+    elif (
+        mapping_result_is_multi_account
+        and acct_name_col
+        and acct_name_col in df.columns
+    ):
+        # Per-row account assignment from the DataFrame column
+        raw_names = [
+            str(v) if v is not None else "unknown" for v in df[acct_name_col].to_list()
+        ]
+        account_ids = [slugify(name) for name in raw_names]
+        for aid, name in zip(account_ids, raw_names, strict=True):
+            if aid not in acct_id_to_name:
+                acct_id_to_name[aid] = name
     else:
         raise ValueError("Single-account files require --account-name or --account-id")
 
@@ -467,7 +485,7 @@ def _import_tabular(
         source_file=str(file_path),
         source_type=source_type,
         source_origin=source_origin,
-        account_names=[account_name or acct_id],
+        account_names=sorted(acct_id_to_name.values()),
         format_name=matched_format.name if matched_format else None,
         format_source=format_source,
     )
@@ -480,7 +498,7 @@ def _import_tabular(
             date_format=mapping_result_date_format,
             sign_convention=mapping_result_sign_convention,
             number_format=mapping_result_number_format,
-            account_id=acct_id,
+            account_id=account_ids,
             source_file=str(file_path),
             source_type=source_type,
             source_origin=source_origin,
@@ -498,21 +516,21 @@ def _import_tabular(
         ).inc()
         raise ValueError(f"Transform failed: {e}") from e
 
-    # Stage 5: Load
+    # Stage 5: Load — one account record per unique account
+    institution = matched_format.institution_name if matched_format else None
+    unique_ids = sorted(acct_id_to_name.keys())
     account_df = pl.DataFrame({
-        "account_id": [acct_id],
-        "account_name": [account_name or acct_id],
-        "account_number": [None],
-        "account_number_masked": [None],
-        "account_type": [None],
-        "institution_name": [
-            matched_format.institution_name if matched_format else None
-        ],
-        "currency": [None],
-        "source_file": [str(file_path)],
-        "source_type": [source_type],
-        "source_origin": [source_origin],
-        "import_id": [import_id],
+        "account_id": unique_ids,
+        "account_name": [acct_id_to_name[aid] for aid in unique_ids],
+        "account_number": [None] * len(unique_ids),
+        "account_number_masked": [None] * len(unique_ids),
+        "account_type": [None] * len(unique_ids),
+        "institution_name": [institution] * len(unique_ids),
+        "currency": [None] * len(unique_ids),
+        "source_file": [str(file_path)] * len(unique_ids),
+        "source_type": [source_type] * len(unique_ids),
+        "source_origin": [source_origin] * len(unique_ids),
+        "import_id": [import_id] * len(unique_ids),
     })
 
     rows_imported = loader.load_transactions(transform_result.transactions)
@@ -542,9 +560,9 @@ def _import_tabular(
         time.monotonic() - _t0
     )
 
-    result.accounts = 1
+    result.accounts = len(unique_ids)
     result.transactions = rows_imported
-    result.details = {"transactions": rows_imported, "accounts": 1}
+    result.details = {"transactions": rows_imported, "accounts": len(unique_ids)}
 
     if rows_imported > 0:
         result.date_range = _query_date_range(
