@@ -1,5 +1,22 @@
 # MoneyBin Documentation
 
+## Feature Guide
+
+Detailed per-feature documentation with usage examples and reference material.
+
+| Guide | Description |
+|-------|-------------|
+| [Data Import](guides/data-import.md) | OFX/QFX, CSV, TSV, Excel, Parquet, Feather, W-2 PDF |
+| [Data Pipeline](guides/data-pipeline.md) | Three-layer architecture, SQLMesh transforms |
+| [Categorization](guides/categorization.md) | Rule engine, merchants, bulk operations |
+| [Database & Security](guides/database-security.md) | Encryption, key management, migrations |
+| [Multi-Profile Support](guides/profiles.md) | Isolation boundaries, profile lifecycle |
+| [MCP Server](guides/mcp-server.md) | AI integration — tools, prompts, client setup |
+| [CLI Reference](guides/cli-reference.md) | Complete command tree |
+| [Observability](guides/observability.md) | Logging, metrics, instrumentation |
+| [Synthetic Data](guides/synthetic-data.md) | Test data generation — personas, ground truth |
+| [Direct SQL Access](guides/sql-access.md) | DuckDB shell, UI, key tables, example queries |
+
 ## Decisions (ADRs)
 
 Architecture Decision Records.
@@ -16,37 +33,11 @@ Architecture Decision Records.
 
 ## Feature Specs
 
-Self-contained documents for driving feature development. Follow the [spec template](specs/_template.md).
-
-### Ready to Build
-
-| Spec | Description |
-|------|-------------|
-| [CSV Import](specs/csv-import.md) | Bank-specific CSV parsers with generic fallback |
-| [MCP Tier 1 Tools](specs/mcp-tier1-tools.md) | 11 analytical tools buildable with existing data model |
-
-### Draft
-
-| Spec | Description |
-|------|-------------|
-| [Transaction Categorization](specs/transaction-categorization.md) | Category hierarchy, rules engine, bulk operations |
-| [Budget Tracking](specs/budget-tracking.md) | Budget definitions, rollover, status tracking |
-| [Plaid Integration](specs/sync-plaid.md) | Plaid API + E2E encryption for Encrypted Sync tier |
-| [Privacy & Security Roadmap](specs/privacy-security-roadmap.md) | Future privacy tiers (Encrypted Sync, Managed) and security controls |
-
-
-### Implemented (Pattern Reference)
-
-| Spec | Description |
-|------|-------------|
-| [OFX Import](specs/archived/ofx-import.md) | OFX/QFX bank file import |
-| [W-2 Extraction](specs/archived/w2-extraction.md) | W-2 PDF extraction with dual strategy |
-| [MCP Read Tools](specs/archived/mcp-read-tools.md) | 8 read-only MCP tools, 5 resources, 5 prompts |
-| [MCP Write Tools](specs/archived/mcp-write-tools.md) | Import, categorization, budgets, analytics tools |
+Self-contained documents for driving feature development. See the [Spec Index](specs/INDEX.md) for full status tracking.
 
 ## Reference
 
-Lookup material -- not specs, not decisions.
+Lookup material — not specs, not decisions.
 
 | Document | Description |
 |----------|-------------|
@@ -59,9 +50,9 @@ Lookup material -- not specs, not decisions.
 
 Coding rules live in `.claude/rules/` and `CLAUDE.md`, not in docs. See:
 
-- `CLAUDE.md` -- Package manager, linting, type checking, architecture, security
-- `.claude/rules/cli.md` -- CLI development patterns
-- `.claude/rules/testing.md` -- Testing standards
-- `.claude/rules/mcp-server.md` -- MCP server rules
-- `.claude/rules/duckdb-sql.md` -- DuckDB and SQL standards
-- `.claude/rules/data-extraction.md` -- Data extraction patterns
+- `CLAUDE.md` — Package manager, linting, type checking, architecture, security
+- `.claude/rules/cli.md` — CLI development patterns
+- `.claude/rules/testing.md` — Testing standards
+- `.claude/rules/mcp-server.md` — MCP server rules
+- `.claude/rules/database.md` — DuckDB and SQL standards
+- `.claude/rules/data-extraction.md` — Data extraction patterns

@@ -119,6 +119,11 @@ Then ask things like:
 | Tax forms | W-2 PDF | Working |
 | Bank transactions | CSV, TSV, Excel, Parquet, Feather | Working |
 
+- **Heuristic column detection** — 100+ header aliases, content validation, date format disambiguation, international number formats. Most bank exports just work without configuration.
+- **Built-in migration formats** — Tiller, Mint, YNAB, Maybe. Bring your history from other tools.
+- **Saved formats** — auto-detected mappings are saved so repeat imports are instant.
+- **Import management** — batch tracking, preview (dry run), and revert.
+
 ### Data Pipeline
 
 ```
@@ -175,6 +180,19 @@ moneybin mcp list-prompts          # See all registered prompts
 moneybin mcp config                # Show current MCP config
 ```
 
+### Synthetic Data Generator
+
+Generate realistic, deterministic financial data for testing and demos.
+
+```bash
+moneybin synthetic generate --persona basic --profile test-data
+```
+
+- **Three personas** — `basic` (single income), `family` (dual income, kids), `freelancer` (variable income).
+- **~200 real merchants** across 14+ spending categories with realistic amounts and seasonal patterns.
+- **Ground-truth labels** — every transaction has a known-correct category and transfer pair, enabling automated accuracy testing.
+- **Deterministic** — same persona + same seed = same data every time.
+
 ### CLI
 
 Domain commands at the top level for fast access:
@@ -189,6 +207,8 @@ moneybin db ps                     # Show processes holding the database
 moneybin logs tail -f              # Follow log output
 ```
 
+> For full command documentation, see the [CLI Reference](docs/guides/cli-reference.md). For detailed feature guides, see the [Feature Guide](docs/guides/).
+
 ## Roadmap
 
 Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
@@ -200,9 +220,9 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | OFX/QFX bank statement import | ✅ |
 | W-2 PDF extraction | ✅ |
 | CSV import with institution profiles | ✅ |
-| Universal tabular import (CSV, TSV, Excel, Parquet, Feather) | 📐 |
-| Heuristic column detection | 📐 |
-| Competitor migration profiles (Tiller, Mint, YNAB) | 📐 |
+| Universal tabular import (CSV, TSV, Excel, Parquet, Feather) | ✅ |
+| Heuristic column detection | ✅ |
+| Competitor migration profiles (Tiller, Mint, YNAB) | ✅ |
 | Native PDF parsing (beyond W-2) | 🗓️ |
 | AI-assisted file parsing fallback | 🗓️ |
 
@@ -252,7 +272,7 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | CLI restructure (profiles, domain commands, base dir) | ✅ |
 | Database migration system | ✅ |
 | Observability (metrics, structured logging) | ✅ |
-| Synthetic test data generator | 📐 |
+| Synthetic test data generator | ✅ |
 | Privacy tiers & consent model | 📐 |
 | Export (CSV, Excel, Google Sheets) | 🗓️ |
 
@@ -319,6 +339,7 @@ MoneyBin uses [uv](https://docs.astral.sh/uv/) for package management, [Ruff](ht
 
 ## Documentation
 
+- [Feature Guide](docs/guides/) — Detailed documentation for every shipped feature
 - [Spec Index](docs/specs/INDEX.md) — Feature specs and status tracking
 - [Architecture Decision Records](docs/decisions/) — Key design decisions and rationale
 - [Privacy & Data Protection](docs/specs/privacy-data-protection.md) — Encryption, key management, threat model
