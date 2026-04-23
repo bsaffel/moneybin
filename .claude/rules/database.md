@@ -91,7 +91,14 @@ Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
 
 - No MySQL/PostgreSQL-specific syntax (this is DuckDB).
 - No `LIMIT` without `ORDER BY` (non-deterministic).
-- No `FLOAT` for currency (use `DECIMAL(18,2)`).
+- No `FLOAT` for financial quantities. Floating-point arithmetic produces rounding errors that compound across records. Use `decimal.Decimal` in Python, `pl.Decimal` in Polars, and `DECIMAL` in SQL. Use `Decimal` string literals everywhere including tests: `Decimal("52.30")`, never `Decimal(52.30)` (which captures the float imprecision). Non-financial floats (confidence scores, weights, percentages, returns) are fine as `float`.
+
+  | Data type | SQL | Polars | Examples |
+  |---|---|---|---|
+  | Money amounts | `DECIMAL(18,2)` | `pl.Decimal(18, 2)` | Balances, transaction amounts, wages, taxes, budget targets, gains/losses, filter thresholds on money |
+  | Quantities | `DECIMAL(18,8)` | `pl.Decimal(18, 8)` | Share counts (fractional shares), units held |
+  | Unit prices | `DECIMAL(18,8)` | `pl.Decimal(18, 8)` | Stock/crypto prices, NAV, cost basis per share |
+  | Exchange rates | `DECIMAL(18,8)` | `pl.Decimal(18, 8)` | Currency conversion rates |
 - No string concatenation for queries (use parameterized).
 
 ### Authoritative References

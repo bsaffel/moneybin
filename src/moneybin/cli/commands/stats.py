@@ -40,11 +40,10 @@ def stats_show(
     try:
         db = get_database()
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        typer.echo(
-            "💡 Run 'moneybin db unlock' to unlock the database first.",
-            err=True,
-        )
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     # Build query with optional filters

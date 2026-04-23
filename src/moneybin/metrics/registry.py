@@ -29,6 +29,26 @@ IMPORT_ERRORS_TOTAL = Counter(
     ["source_type", "error_type"],
 )
 
+# ── Tabular import ───────────────────────────────────────────────────────────
+
+TABULAR_FORMAT_MATCHES = Counter(
+    "moneybin_tabular_format_matches_total",
+    "Tabular format matches by format name and source",
+    ["format_name", "format_source"],
+)
+
+TABULAR_DETECTION_CONFIDENCE = Counter(
+    "moneybin_tabular_detection_confidence_total",
+    "Column mapping detection confidence distribution",
+    ["confidence"],
+)
+
+TABULAR_IMPORT_BATCHES = Counter(
+    "moneybin_tabular_import_batches_total",
+    "Import batch lifecycle events",
+    ["status"],
+)
+
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
 
 SQLMESH_RUN_DURATION_SECONDS = Histogram(

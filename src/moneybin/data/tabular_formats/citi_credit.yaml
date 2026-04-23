@@ -1,0 +1,21 @@
+name: citi_credit
+institution_name: Citi
+format: csv
+header_signature:
+  - Status
+  - Date
+  - Description
+  - Debit
+  - Credit
+  - Member Name
+field_mapping:
+  transaction_date: Date
+  description: Description
+  debit_amount: Debit
+  credit_amount: Credit
+  status: Status
+  member_name: Member Name
+sign_convention: split_debit_credit
+date_format: "%m/%d/%Y"
+number_format: us
+skip_trailing_patterns: null

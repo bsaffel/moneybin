@@ -125,7 +125,7 @@ def accounts_summary() -> str:
                 a.account_id,
                 a.account_type,
                 a.institution_name,
-                a.source_system,
+                a.source_type,
                 b.ledger_balance,
                 b.available_balance,
                 b.ledger_balance_date
@@ -133,7 +133,7 @@ def accounts_summary() -> str:
             LEFT JOIN latest_balances b
                 ON a.account_id = b.account_id AND b.rn = 1
             GROUP BY a.account_id, a.account_type, a.institution_name,
-                     a.source_system,
+                     a.source_type,
                      b.ledger_balance, b.available_balance, b.ledger_balance_date
             ORDER BY a.institution_name, a.account_type
         """)
@@ -143,7 +143,7 @@ def accounts_summary() -> str:
                 account_id,
                 account_type,
                 institution_name,
-                source_system
+                source_type
             FROM {DIM_ACCOUNTS.full_name}
             ORDER BY institution_name, account_type
         """)
@@ -176,7 +176,7 @@ def recent_transactions() -> str:
         f"""
         SELECT transaction_id, account_id, transaction_date, amount,
             description, merchant_name, memo, transaction_type,
-            source_system
+            source_type
         FROM {FCT_TRANSACTIONS.full_name}
         WHERE transaction_date >= CAST(? AS DATE)
         ORDER BY transaction_date DESC

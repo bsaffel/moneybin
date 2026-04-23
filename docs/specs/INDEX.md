@@ -34,7 +34,8 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](smart-import-overview.md) | Umbrella | ready | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
-| [Tabular Import](smart-import-tabular.md) | Feature | ready | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB). Supersedes archived `csv-import` spec. |
+| [Tabular Import](smart-import-tabular.md) | Feature | in-progress | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB). Supersedes archived `csv-import` spec. |
+| [Tabular Cleanup](tabular-import-cleanup.md) | Feature | draft | Post-ship cleanup: ResolvedMapping dataclass, Literal types, config params, DatabaseKeyError handler, Decimal correctness, account matching wiring |
 | `smart-import-pdf.md` | Feature | planned | Pillar C: native-text PDF import |
 | `smart-import-ai-parsing.md` | Feature | planned | Pillar F: LLM fallback for file parsing |
 
@@ -100,6 +101,12 @@ Single source of truth for spec status. Update this table when a spec's status c
 | `export.md` | Feature | planned | Export analysis results to CSV, Excel, Google Sheets |
 | `cli-ux-standards.md` | Architecture | planned | CLI interaction patterns: progressive disclosure, review queues, status commands, output formatting |
 | `mcp-ux-standards.md` | Architecture | planned | MCP interaction patterns: tool naming, error surfaces, prompt design, resource conventions |
+
+## Data Quality
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Data Pipeline Reconciliation](data-reconciliation.md) | Feature | draft | Automated pipeline integrity checks: raw→prep→core row accounting, import batch validation, temporal coverage gaps, orphan detection. Complements financial balance reconciliation in `net-worth.md`. |
 
 ## Standalone
 | [Net Worth & Balance Tracking](net-worth.md) | Feature | draft | Authoritative balance tracking per account, daily carry-forward interpolation, reconciliation deltas, `agg_net_worth` aggregation; cash-only v1. CLI updated by `cli-restructure.md`: `track balance` and `track networth` replace top-level `balance`/`networth`/`reconciliation`. |

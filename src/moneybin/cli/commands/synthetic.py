@@ -6,12 +6,12 @@ import random
 import typer
 
 from moneybin.tables import (
-    CSV_ACCOUNTS,
-    CSV_TRANSACTIONS,
     GROUND_TRUTH,
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_TRANSACTIONS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,8 +30,8 @@ _RESET_DELETIONS = {
     OFX_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
     OFX_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
     OFX_BALANCES.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    CSV_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    CSV_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
+    TABULAR_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
+    TABULAR_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
 }
 
 
@@ -70,16 +70,18 @@ def _run_generate(
     try:
         try:
             db = get_database()
-        except DatabaseKeyError:
-            logger.error("❌ Database encryption key not found")
-            logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
-            raise typer.Exit(1) from None
+        except DatabaseKeyError as e:
+            from moneybin.database import database_key_error_hint
+
+            logger.error(f"❌ {e}")
+            logger.info(database_key_error_hint())
+            raise typer.Exit(1) from e
 
         # Check if profile already has data
         try:
             row = db.execute(
                 """SELECT (SELECT COUNT(*) FROM raw.ofx_transactions)
-                        + (SELECT COUNT(*) FROM raw.csv_transactions)"""
+                        + (SELECT COUNT(*) FROM raw.tabular_transactions)"""
             ).fetchone()
             existing_count = row[0] if row else 0
         except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
@@ -107,9 +109,9 @@ def _run_generate(
         writer = SyntheticWriter(db)
         counts = writer.write(result)
 
-        acct_count = counts.get("ofx_accounts", 0) + counts.get("csv_accounts", 0)
+        acct_count = counts.get("ofx_accounts", 0) + counts.get("tabular_accounts", 0)
         txn_count = counts.get("ofx_transactions", 0) + counts.get(
-            "csv_transactions", 0
+            "tabular_transactions", 0
         )
         gt_count = counts.get("ground_truth", 0)
         transfer_count = sum(1 for t in result.transactions if t.transfer_pair_id) // 2
@@ -196,11 +198,13 @@ def reset(
 
     try:
         db = get_database()
-    except DatabaseKeyError:
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
         set_current_profile(original_profile)
-        logger.error("❌ Database encryption key not found")
-        logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
-        raise typer.Exit(1) from None
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
     # Safety check: only reset profiles created by the generator
     try:

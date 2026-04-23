@@ -130,9 +130,9 @@ class TestSyntheticWriter:
         result = _make_result(accounts=[acct], transactions=[txn])
         writer = SyntheticWriter(db)
         counts = writer.write(result)
-        assert counts["csv_accounts"] == 1
+        assert counts["tabular_accounts"] == 1
         row = db.execute(
-            "SELECT account_id, institution_name FROM raw.csv_accounts"
+            "SELECT account_id, institution_name FROM raw.tabular_accounts"
         ).fetchone()
         assert row is not None
         assert row[0] == "SYN00420002"
@@ -171,7 +171,7 @@ class TestSyntheticWriter:
         writer = SyntheticWriter(db)
         writer.write(result)
         rows = db.execute(
-            "SELECT balance FROM raw.csv_transactions ORDER BY transaction_date"
+            "SELECT balance FROM raw.tabular_transactions ORDER BY transaction_date"
         ).fetchall()
         assert float(rows[0][0]) == pytest.approx(-50.00)  # type: ignore[reportUnknownArgumentType]  # 0 + (-50)
         assert float(rows[1][0]) == pytest.approx(-80.00)  # type: ignore[reportUnknownArgumentType]  # -50 + (-30)

@@ -80,10 +80,10 @@ class TestAccountsResource:
         assert "Test Bank" in names
 
     @pytest.mark.unit
-    def test_includes_source_system(self) -> None:
+    def test_includes_source_type(self) -> None:
         result = accounts_summary()
         data: list[dict[str, Any]] = json.loads(result)
-        assert all(r["source_system"] == "ofx" for r in data)
+        assert all(r["source_type"] == "ofx" for r in data)
 
 
 class TestRecentTransactions:
@@ -96,7 +96,7 @@ class TestRecentTransactions:
             INSERT INTO core.fct_transactions (
                 transaction_id, account_id, transaction_date, amount,
                 amount_absolute, transaction_direction, description, memo,
-                transaction_type, is_pending, currency_code, source_system,
+                transaction_type, is_pending, currency_code, source_type,
                 source_extracted_at, loaded_at,
                 transaction_year, transaction_month, transaction_day,
                 transaction_day_of_week, transaction_year_month,
@@ -123,7 +123,7 @@ class TestRecentTransactions:
         data: list[dict[str, Any]] = json.loads(result)
         assert "transaction_date" in data[0]
         assert "description" in data[0]
-        assert "source_system" in data[0]
+        assert "source_type" in data[0]
 
 
 # ---------------------------------------------------------------------------

@@ -6,10 +6,18 @@ MCP tools call this same service — no duplication.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from moneybin.database import Database
+from moneybin.metrics.registry import (
+    IMPORT_DURATION_SECONDS,
+    IMPORT_ERRORS_TOTAL,
+    IMPORT_RECORDS_TOTAL,
+    TABULAR_DETECTION_CONFIDENCE,
+    TABULAR_FORMAT_MATCHES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,19 +108,23 @@ def _detect_file_type(file_path: Path) -> str:
         file_path: Path to the file.
 
     Returns:
-        File type string: 'ofx', 'w2', or raises ValueError.
+        File type string: 'ofx', 'w2', or 'tabular'.
+
+    Raises:
+        ValueError: If extension is not recognized.
     """
+    from moneybin.extractors.tabular.format_detector import TABULAR_EXTENSIONS
+
     suffix = file_path.suffix.lower()
     if suffix in (".ofx", ".qfx"):
         return "ofx"
     if suffix == ".pdf":
         return "w2"
-    if suffix == ".csv":
-        return "csv"
+    if suffix in TABULAR_EXTENSIONS:
+        return "tabular"
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx (bank statements), .pdf (W-2 forms), "
-        f".csv (bank transaction exports)"
+        f"Supported: .ofx, .qfx, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
     )
 
 
@@ -267,65 +279,323 @@ def _import_w2(
     return result
 
 
-def _import_csv(
+def _import_tabular(
     db: Database,
     file_path: Path,
     *,
+    account_name: str | None = None,
     account_id: str | None = None,
-    institution: str | None = None,
+    format_name: str | None = None,
+    overrides: dict[str, str] | None = None,
+    sign: str | None = None,
+    date_format_override: str | None = None,
+    number_format_override: str | None = None,
+    save_format: bool = True,
+    sheet: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+    no_row_limit: bool = False,
+    no_size_limit: bool = False,
 ) -> ImportResult:
-    """Import a CSV file.
+    """Import a tabular file through the five-stage pipeline.
 
     Args:
         db: Database instance.
-        file_path: Path to the CSV file.
-        account_id: Account identifier (required for CSV).
-        institution: Optional profile name to use instead of auto-detection.
+        file_path: Path to the file.
+        account_name: Account name for single-account files.
+        account_id: Explicit account ID (bypass matching).
+        format_name: Explicit format name (bypass detection).
+        overrides: Field→column overrides.
+        sign: Sign convention override.
+        date_format_override: Date format override (strptime string).
+        number_format_override: Number format override.
+        save_format: Auto-save detected format for future imports.
+        sheet: Excel sheet name.
+        delimiter: Explicit delimiter.
+        encoding: Explicit encoding.
+        no_row_limit: Override row count limit.
+        no_size_limit: Override file size limit.
 
     Returns:
-        ImportResult with summary of imported data.
+        ImportResult with summary.
     """
-    from moneybin.config import get_raw_data_path
-    from moneybin.extractors.csv_extractor import CSVExtractor
-    from moneybin.extractors.csv_profiles import load_profiles
-    from moneybin.loaders.csv_loader import CSVLoader
+    import polars as pl
 
-    result = ImportResult(file_path=str(file_path), file_type="csv")
+    from moneybin.extractors.tabular.column_mapper import map_columns
+    from moneybin.extractors.tabular.format_detector import detect_format
+    from moneybin.extractors.tabular.formats import (
+        TabularFormat,
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+        save_format_to_db,
+    )
+    from moneybin.extractors.tabular.readers import read_file
+    from moneybin.extractors.tabular.transforms import transform_dataframe
+    from moneybin.loaders.tabular_loader import TabularLoader
+    from moneybin.utils import slugify
 
-    user_profiles_dir = get_raw_data_path().parent / "csv_profiles"
+    result = ImportResult(file_path=str(file_path), file_type="tabular")
+    _t0 = time.monotonic()
 
-    # Resolve profile if institution name provided
-    profile = None
-    if institution:
-        profiles = load_profiles(user_profiles_dir)
-        if institution not in profiles:
-            available = ", ".join(sorted(profiles.keys())) or "(none)"
+    # Load formats early so explicit --format can influence file reading
+    builtin_formats = load_builtin_formats()
+    all_formats = merge_formats(builtin_formats, load_formats_from_db(db))
+
+    matched_format: TabularFormat | None = None
+    if format_name:
+        if format_name not in all_formats:
             raise ValueError(
-                f"Unknown institution profile: '{institution}'. Available: {available}"
+                f"Unknown format {format_name!r}. Available: {sorted(all_formats)}"
             )
-        profile = profiles[institution]
+        matched_format = all_formats[format_name]
 
-    # Extract
-    extractor = CSVExtractor()
-    data = extractor.extract_from_file(
+    # Stage 1: Format detection — apply matched format's properties as defaults
+    effective_delimiter = delimiter or (
+        matched_format.delimiter if matched_format else None
+    )
+    effective_encoding = encoding or (
+        matched_format.encoding if matched_format else None
+    )
+    effective_sheet = sheet or (matched_format.sheet if matched_format else None)
+
+    format_info = detect_format(
         file_path,
-        profile=profile,
-        account_id=account_id,
-        user_profiles_dir=user_profiles_dir,
+        format_override=matched_format.file_type
+        if matched_format and matched_format.file_type != "auto"
+        else None,
+        delimiter_override=effective_delimiter,
+        encoding_override=effective_encoding,
+        no_size_limit=no_size_limit,
     )
 
-    # Load
-    loader = CSVLoader(db)
-    row_counts = loader.load_data(data)
+    # Stage 2: Read file
+    read_result = read_file(
+        file_path,
+        format_info,
+        sheet=effective_sheet,
+        skip_rows=matched_format.skip_rows
+        if matched_format and matched_format.skip_rows
+        else None,
+        skip_trailing_patterns=matched_format.skip_trailing_patterns
+        if matched_format
+        else None,
+        no_row_limit=no_row_limit,
+    )
+    df = read_result.df
 
-    result.accounts = row_counts.get("accounts", 0)
-    result.transactions = row_counts.get("transactions", 0)
-    result.details = row_counts
+    if len(df) == 0:
+        raise ValueError(f"No data rows found in {file_path.name}")
 
-    if result.transactions > 0:
-        result.date_range = _query_date_range(
-            db, "raw.csv_transactions", "transaction_date", file_path
+    # Stage 3: Column mapping — match by headers if not already matched by name
+    if not matched_format:
+        headers = list(df.columns)
+        for fmt in all_formats.values():
+            if fmt.matches_headers(headers):
+                matched_format = fmt
+                break
+
+    if matched_format:
+        mapping_result_mapping = matched_format.field_mapping
+        mapping_result_date_format = matched_format.date_format
+        mapping_result_sign_convention = matched_format.sign_convention
+        mapping_result_number_format = matched_format.number_format
+        mapping_result_is_multi_account = matched_format.multi_account
+        mapping_result_confidence = "high"
+        format_source = (
+            "built-in" if matched_format.name in builtin_formats else "saved"
         )
+    else:
+        mapping_result = map_columns(df, overrides=overrides)
+        mapping_result_mapping = mapping_result.field_mapping
+        mapping_result_date_format = mapping_result.date_format or "%Y-%m-%d"
+        mapping_result_sign_convention = mapping_result.sign_convention
+        mapping_result_number_format = mapping_result.number_format
+        mapping_result_is_multi_account = mapping_result.is_multi_account
+        mapping_result_confidence = mapping_result.confidence
+        format_source = "detected"
+
+        if mapping_result.sign_needs_confirmation and not sign:
+            logger.warning(
+                "⚠️  Sign convention is ambiguous (all amounts appear positive). "
+                f"Proceeding with '{mapping_result_sign_convention}' — "
+                "use --sign to override if expense amounts look wrong."
+            )
+
+        if mapping_result.confidence == "low":
+            raise ValueError(
+                f"Could not reliably detect column mapping for "
+                f"{file_path.name}. Use --override to specify columns manually."
+            )
+
+    # Record format match and detection confidence metrics
+    if matched_format:
+        TABULAR_FORMAT_MATCHES.labels(
+            format_name=matched_format.name, format_source=format_source
+        ).inc()
+    TABULAR_DETECTION_CONFIDENCE.labels(confidence=mapping_result_confidence).inc()
+
+    # Apply CLI overrides (take precedence over detected/built-in values)
+    if sign:
+        mapping_result_sign_convention = sign
+    if date_format_override:
+        mapping_result_date_format = date_format_override
+    if number_format_override:
+        mapping_result_number_format = number_format_override
+
+    # Determine account info
+    source_type = format_info.file_type
+    if source_type in ("semicolon", "pipe"):
+        source_type = "csv"
+
+    # Build per-row account_ids and a name→id mapping for the accounts table
+    acct_name_col = mapping_result_mapping.get("account_name")
+    acct_id_to_name: dict[str, str] = {}
+
+    if account_id:
+        account_ids: str | list[str] = account_id
+        acct_id_to_name[account_id] = account_name or account_id
+    elif account_name:
+        aid = slugify(account_name)
+        account_ids = aid
+        acct_id_to_name[aid] = account_name
+    elif (
+        mapping_result_is_multi_account
+        and acct_name_col
+        and acct_name_col in df.columns
+    ):
+        # Per-row account assignment from the DataFrame column
+        raw_names = [
+            str(v) if v is not None else "unknown" for v in df[acct_name_col].to_list()
+        ]
+        account_ids = [slugify(name) for name in raw_names]
+        for aid, name in zip(account_ids, raw_names, strict=True):
+            if aid not in acct_id_to_name:
+                acct_id_to_name[aid] = name
+    else:
+        raise ValueError("Single-account files require --account-name or --account-id")
+
+    source_origin = (
+        matched_format.name if matched_format else slugify(account_name or "unknown")
+    )
+
+    # Create import batch
+    loader = TabularLoader(db)
+    import_id = loader.create_import_batch(
+        source_file=str(file_path),
+        source_type=source_type,
+        source_origin=source_origin,
+        account_names=sorted(acct_id_to_name.values()),
+        format_name=matched_format.name if matched_format else None,
+        format_source=format_source,
+    )
+
+    # Stage 4: Transform
+    try:
+        transform_result = transform_dataframe(
+            df=df,
+            field_mapping=mapping_result_mapping,
+            date_format=mapping_result_date_format,
+            sign_convention=mapping_result_sign_convention,
+            number_format=mapping_result_number_format,
+            account_id=account_ids,
+            source_file=str(file_path),
+            source_type=source_type,
+            source_origin=source_origin,
+            import_id=import_id,
+        )
+    except Exception as e:  # noqa: BLE001  # re-raised as ValueError after recording rejection in DB
+        loader.finalize_import_batch(
+            import_id=import_id,
+            rows_total=len(df),
+            rows_imported=0,
+            rows_rejected=len(df),
+        )
+        IMPORT_ERRORS_TOTAL.labels(
+            source_type=source_type, error_type="transform"
+        ).inc()
+        raise ValueError(f"Transform failed: {e}") from e
+
+    # Stage 5: Load — one account record per unique account
+    institution = matched_format.institution_name if matched_format else None
+    unique_ids = sorted(acct_id_to_name.keys())
+    account_df = pl.DataFrame({
+        "account_id": unique_ids,
+        "account_name": [acct_id_to_name[aid] for aid in unique_ids],
+        "account_number": [None] * len(unique_ids),
+        "account_number_masked": [None] * len(unique_ids),
+        "account_type": [None] * len(unique_ids),
+        "institution_name": [institution] * len(unique_ids),
+        "currency": [None] * len(unique_ids),
+        "source_file": [str(file_path)] * len(unique_ids),
+        "source_type": [source_type] * len(unique_ids),
+        "source_origin": [source_origin] * len(unique_ids),
+        "import_id": [import_id] * len(unique_ids),
+    })
+
+    rows_imported = loader.load_transactions(transform_result.transactions)
+    loader.load_accounts(account_df)
+
+    loader.finalize_import_batch(
+        import_id=import_id,
+        rows_total=len(df),
+        rows_imported=rows_imported,
+        rows_rejected=transform_result.rows_rejected,
+        rows_skipped_trailing=read_result.rows_skipped_trailing,
+        rejection_details=[
+            {"row_number": str(r.row_number), "reason": r.reason}
+            for r in transform_result.rejection_details
+        ]
+        or None,
+        detection_confidence=mapping_result_confidence,
+        number_format=mapping_result_number_format,
+        date_format=mapping_result_date_format,
+        sign_convention=mapping_result_sign_convention,
+        balance_validated=transform_result.balance_validated,
+    )
+
+    # Record import metrics
+    IMPORT_RECORDS_TOTAL.labels(source_type=source_type).inc(rows_imported)
+    IMPORT_DURATION_SECONDS.labels(source_type=source_type).observe(
+        time.monotonic() - _t0
+    )
+
+    result.accounts = len(unique_ids)
+    result.transactions = rows_imported
+    result.details = {"transactions": rows_imported, "accounts": len(unique_ids)}
+
+    if rows_imported > 0:
+        result.date_range = _query_date_range(
+            db, "raw.tabular_transactions", "transaction_date", file_path
+        )
+
+    # Auto-save detected format for future imports
+    if (
+        save_format
+        and not matched_format
+        and mapping_result_confidence in ("high", "medium")
+        and rows_imported > 0
+    ):
+        try:
+            detected_fmt = TabularFormat(
+                name=source_origin,
+                institution_name=account_name or source_origin,
+                file_type=format_info.file_type,
+                delimiter=format_info.delimiter,
+                encoding=format_info.encoding,
+                header_signature=list(df.columns),
+                field_mapping=mapping_result_mapping,
+                sign_convention=mapping_result_sign_convention,  # type: ignore[reportArgumentType]  # validated by CLI and Pydantic validator
+                date_format=mapping_result_date_format,
+                number_format=mapping_result_number_format,  # type: ignore[reportArgumentType]  # validated by CLI and Pydantic validator
+                multi_account=mapping_result_is_multi_account,
+                source="detected",
+                times_used=1,
+            )
+            save_format_to_db(db, detected_fmt)
+            logger.info(f"Auto-saved format {source_origin!r} for future imports")
+        except Exception:  # noqa: BLE001 — format save is best-effort; import already succeeded
+            logger.debug("Could not auto-save format", exc_info=True)
 
     return result
 
@@ -334,9 +604,21 @@ def import_file(
     db: Database,
     file_path: str | Path,
     *,
-    do_transforms: bool = True,
+    apply_transforms: bool = True,
     institution: str | None = None,
     account_id: str | None = None,
+    account_name: str | None = None,
+    format_name: str | None = None,
+    overrides: dict[str, str] | None = None,
+    sign: str | None = None,
+    date_format: str | None = None,
+    number_format: str | None = None,
+    save_format: bool = True,
+    sheet: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+    no_row_limit: bool = False,
+    no_size_limit: bool = False,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -346,11 +628,25 @@ def import_file(
     Args:
         db: Database instance.
         file_path: Path to the file to import.
-        do_transforms: Whether to run SQLMesh transforms after loading.
+        apply_transforms: Whether to run SQLMesh transforms after loading.
             Defaults to True.
-        institution: Institution name (OFX) or CSV profile name. Auto-detected
-            for CSV if omitted.
-        account_id: Account identifier (CSV only, required).
+        institution: Institution name (OFX only). Auto-detected for OFX if
+            omitted.
+        account_id: Explicit account ID for tabular imports (bypasses name
+            matching).
+        account_name: Account name for single-account tabular files.
+        format_name: Explicit format name for tabular imports (bypasses
+            auto-detection).
+        overrides: Field→column overrides for tabular imports.
+        sign: Sign convention override for tabular imports.
+        date_format: Date format override for tabular imports.
+        number_format: Number format override for tabular imports.
+        save_format: Auto-save detected format for future imports.
+        sheet: Excel sheet name for tabular imports.
+        delimiter: Explicit delimiter for tabular imports.
+        encoding: Explicit encoding for tabular imports.
+        no_row_limit: Override row count limit for tabular imports.
+        no_size_limit: Override file size limit for tabular imports.
 
     Returns:
         ImportResult with summary of what was imported.
@@ -371,13 +667,29 @@ def import_file(
         result = _import_ofx(db, path, institution=institution)
     elif file_type == "w2":
         result = _import_w2(db, path)
-    elif file_type == "csv":
-        result = _import_csv(db, path, account_id=account_id, institution=institution)
+    elif file_type == "tabular":
+        result = _import_tabular(
+            db,
+            path,
+            account_name=account_name,
+            account_id=account_id,
+            format_name=format_name,
+            overrides=overrides,
+            sign=sign,
+            date_format_override=date_format,
+            number_format_override=number_format,
+            save_format=save_format,
+            sheet=sheet,
+            delimiter=delimiter,
+            encoding=encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
+        )
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
     # Run SQLMesh transforms after loading raw data
-    if do_transforms and file_type in ("ofx", "csv"):
+    if apply_transforms and file_type in ("ofx", "tabular"):
         result.core_tables_rebuilt = run_transforms(db.path)
 
         # Apply deterministic categorization to new transactions
@@ -407,7 +719,7 @@ def _apply_categorization(db: Database) -> None:
                 f"Auto-categorized {stats['total']} transactions "
                 f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 — categorization is best-effort; failure skips without aborting import
         logger.debug(
             "Categorization skipped (tables may not exist yet)",
             exc_info=True,

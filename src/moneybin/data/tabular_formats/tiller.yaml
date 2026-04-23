@@ -1,0 +1,27 @@
+name: tiller
+institution_name: Tiller
+format: csv
+multi_account: true
+header_signature:
+  - Date
+  - Description
+  - Category
+  - Amount
+  - Account
+  - Account #
+  - Institution
+  - Transaction ID
+field_mapping:
+  transaction_date: Date
+  description: Description
+  category: Category
+  amount: Amount
+  account_name: Account
+  account_number: "Account #"
+  institution_name: Institution
+  source_transaction_id: Transaction ID
+  memo: Full Description
+sign_convention: negative_is_expense
+date_format: "%m/%d/%Y"
+number_format: us
+skip_trailing_patterns: null

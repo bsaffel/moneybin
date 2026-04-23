@@ -1,0 +1,8 @@
+Date,Description,Category,Amount,Account,Account #,Institution,Month,Week,Transaction ID,Account ID,Check Number,Full Description
+01/05/2026,GROCERY STORE,Food & Dining,-89.12,Personal Checking,9876,Test Bank,January 2026,Week 1,txn_abc001,acct_001,,GROCERY STORE MARKET
+01/06/2026,PAYROLL DEPOSIT,Income,2500.00,Personal Checking,9876,Test Bank,January 2026,Week 1,txn_abc002,acct_001,,DIRECT DEP PAYROLL
+01/08/2026,ELECTRIC COMPANY,Utilities,-120.00,Personal Checking,9876,Test Bank,January 2026,Week 2,txn_abc003,acct_001,,ELECTRIC CO PAYMENT
+01/10/2026,COFFEE SHOP,Food & Dining,-4.75,Personal Checking,9876,Test Bank,January 2026,Week 2,txn_abc004,acct_001,,PEETS COFFEE 01234
+01/12/2026,GAS FILL UP,Auto & Transport,-45.00,Personal Checking,9876,Test Bank,January 2026,Week 2,txn_abc005,acct_001,,CHEVRON 87654
+01/14/2026,RESTAURANT DINNER,Food & Dining,-67.40,Personal Checking,9876,Test Bank,January 2026,Week 3,txn_abc006,acct_001,,NICE RESTAURANT
+01/15/2026,ONLINE PAYMENT,Shopping,-34.99,Personal Checking,9876,Test Bank,January 2026,Week 3,txn_abc007,acct_001,,AMAZON MARKETPLACE

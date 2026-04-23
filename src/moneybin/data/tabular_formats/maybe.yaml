@@ -1,0 +1,25 @@
+name: maybe
+institution_name: Maybe / Sure
+format: csv
+multi_account: true
+header_signature:
+  - date
+  - name
+  - amount
+  - currency
+  - account
+  - category
+  - tags
+  - note
+field_mapping:
+  transaction_date: date
+  description: name
+  amount: amount
+  currency: currency
+  account_name: account
+  category: category
+  memo: note
+sign_convention: negative_is_expense
+date_format: "%Y-%m-%d"
+number_format: us
+skip_trailing_patterns: null

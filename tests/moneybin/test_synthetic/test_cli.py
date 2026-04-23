@@ -61,7 +61,7 @@ class TestGenerateCommand:
         mock_cls.return_value.write.return_value = {
             "ofx_accounts": 1,
             "ofx_transactions": 80,
-            "csv_transactions": 20,
+            "tabular_transactions": 20,
             "ground_truth": 100,
         }
         return mock_cls

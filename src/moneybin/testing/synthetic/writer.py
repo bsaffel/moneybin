@@ -87,7 +87,9 @@ class SyntheticWriter:
             counts["ofx_accounts"] = self._write_ofx_accounts(ofx_accts, result, now)
             counts["ofx_balances"] = self._write_ofx_balances(ofx_accts, result, now)
         if csv_accts:
-            counts["csv_accounts"] = self._write_csv_accounts(csv_accts, result, now)
+            counts["tabular_accounts"] = self._write_tabular_accounts(
+                csv_accts, result, now
+            )
 
         # Split transactions by account source_type
         ofx_txns = [
@@ -106,7 +108,7 @@ class SyntheticWriter:
                 ofx_txns, account_lookup, result, now
             )
         if csv_txns:
-            counts["csv_transactions"] = self._write_csv_transactions(
+            counts["tabular_transactions"] = self._write_tabular_transactions(
                 csv_txns, account_lookup, result, now
             )
 
@@ -186,7 +188,7 @@ class SyntheticWriter:
         self._db.ingest_dataframe("raw.ofx_transactions", df, on_conflict="upsert")
         return len(rows)
 
-    def _write_csv_accounts(
+    def _write_tabular_accounts(
         self,
         accounts: list[GeneratedAccount],
         result: GenerationResult,
@@ -197,16 +199,20 @@ class SyntheticWriter:
             slug = _slugify(acct.name)
             rows.append({
                 "account_id": acct.account_id,
+                "account_name": acct.name,
                 "account_type": acct.account_type,
                 "institution_name": acct.institution,
                 "source_file": f"synthetic://{result.persona}/{result.seed}/{slug}",
+                "source_type": "csv",
+                "source_origin": f"synthetic_{result.persona}",
+                "import_id": f"synthetic-{result.seed}",
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("raw.csv_accounts", df, on_conflict="upsert")
+        self._db.ingest_dataframe("raw.tabular_accounts", df, on_conflict="upsert")
         return len(rows)
 
-    def _write_csv_transactions(
+    def _write_tabular_transactions(
         self,
         txns: list[GeneratedTransaction],
         account_lookup: dict[str, GeneratedAccount],
@@ -231,14 +237,17 @@ class SyntheticWriter:
                     "transaction_date": txn.date,
                     "amount": float(txn.amount),
                     "description": txn.description,
-                    "transaction_status": "Posted",
+                    "status": "Posted",
                     "balance": float(balance),
                     "source_file": f"synthetic://{result.persona}/{result.seed}/{txn.date.year}",
+                    "source_type": "csv",
+                    "source_origin": f"synthetic_{result.persona}",
+                    "import_id": f"synthetic-{result.seed}",
                     "extracted_at": now,
                 })
 
         df = pl.DataFrame(rows)
-        self._db.ingest_dataframe("raw.csv_transactions", df, on_conflict="upsert")
+        self._db.ingest_dataframe("raw.tabular_transactions", df, on_conflict="upsert")
         return len(rows)
 
     def _write_ground_truth(

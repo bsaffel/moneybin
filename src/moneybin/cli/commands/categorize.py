@@ -39,12 +39,12 @@ def apply_rules_cmd() -> None:
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
-    except DatabaseKeyError:
-        logger.error(
-            "Database is locked. Run 'moneybin db unlock' "
-            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
-        )
-        raise typer.Exit(1) from None
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
 
 @app.command("seed")
@@ -64,12 +64,12 @@ def seed_cmd() -> None:
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
-    except DatabaseKeyError:
-        logger.error(
-            "Database is locked. Run 'moneybin db unlock' "
-            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
-        )
-        raise typer.Exit(1) from None
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
 
 @app.command("stats")
@@ -84,12 +84,12 @@ def stats_cmd() -> None:
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
-    except DatabaseKeyError:
-        logger.error(
-            "Database is locked. Run 'moneybin db unlock' "
-            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
-        )
-        raise typer.Exit(1) from None
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
     total = stats["total"]
     categorized = stats["categorized"]
@@ -128,12 +128,12 @@ def list_rules_cmd() -> None:
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
-    except DatabaseKeyError:
-        logger.error(
-            "Database is locked. Run 'moneybin db unlock' "
-            "or set MONEYBIN_DATABASE__ENCRYPTION_KEY."
-        )
-        raise typer.Exit(1) from None
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
     if not rows:
         logger.info("No active categorization rules.")

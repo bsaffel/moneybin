@@ -42,8 +42,9 @@ _SCHEMA_FILES: list[str] = [
     "raw_ofx_transactions.sql",
     "raw_ofx_balances.sql",
     "raw_w2_forms.sql",
-    "raw_csv_accounts.sql",
-    "raw_csv_transactions.sql",
+    "raw_tabular_transactions.sql",
+    "raw_tabular_accounts.sql",
+    "raw_import_log.sql",
     "app_categories.sql",
     "app_merchants.sql",
     "app_categorization_rules.sql",
@@ -53,6 +54,7 @@ _SCHEMA_FILES: list[str] = [
     "app_metrics.sql",
     "app_schema_migrations.sql",
     "app_versions.sql",
+    "app_tabular_formats.sql",
 ]
 
 

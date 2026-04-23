@@ -116,7 +116,7 @@ class TestStatsShow:
 
     @pytest.mark.unit
     def test_show_locked_database_exits_1(self, runner: CliRunner) -> None:
-        """Should exit 1 and display unlock hint when database is locked."""
+        """Should exit 1 when database key is missing."""
         from moneybin.database import DatabaseKeyError
 
         with patch(
@@ -126,4 +126,3 @@ class TestStatsShow:
             result = runner.invoke(stats_app, [])
 
         assert result.exit_code == 1
-        assert "unlock" in result.output.lower()

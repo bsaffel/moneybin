@@ -63,9 +63,21 @@ class TestImportFileCommand:
         mock_import_file.assert_called_once_with(
             db=mock_get_database.return_value,
             file_path=test_file,
-            do_transforms=True,
+            apply_transforms=True,
             institution=None,
             account_id=None,
+            account_name=None,
+            format_name=None,
+            overrides=None,
+            sign=None,
+            date_format=None,
+            number_format=None,
+            save_format=True,
+            sheet=None,
+            delimiter=None,
+            encoding=None,
+            no_row_limit=False,
+            no_size_limit=False,
         )
 
     def test_import_file_skip_transform(
@@ -75,7 +87,7 @@ class TestImportFileCommand:
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Test --skip-transform flag passes do_transforms=False."""
+        """Test --skip-transform flag passes apply_transforms=False."""
         test_file = tmp_path / "test.ofx"
         test_file.touch()
 
@@ -84,9 +96,21 @@ class TestImportFileCommand:
         mock_import_file.assert_called_once_with(
             db=mock_get_database.return_value,
             file_path=test_file,
-            do_transforms=False,
+            apply_transforms=False,
             institution=None,
             account_id=None,
+            account_name=None,
+            format_name=None,
+            overrides=None,
+            sign=None,
+            date_format=None,
+            number_format=None,
+            save_format=True,
+            sheet=None,
+            delimiter=None,
+            encoding=None,
+            no_row_limit=False,
+            no_size_limit=False,
         )
 
     def test_import_file_with_institution(
@@ -107,9 +131,21 @@ class TestImportFileCommand:
         mock_import_file.assert_called_once_with(
             db=mock_get_database.return_value,
             file_path=test_file,
-            do_transforms=True,
+            apply_transforms=True,
             institution="Wells Fargo",
             account_id=None,
+            account_name=None,
+            format_name=None,
+            overrides=None,
+            sign=None,
+            date_format=None,
+            number_format=None,
+            save_format=True,
+            sheet=None,
+            delimiter=None,
+            encoding=None,
+            no_row_limit=False,
+            no_size_limit=False,
         )
 
     def test_import_file_not_found(

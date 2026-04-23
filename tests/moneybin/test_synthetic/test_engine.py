@@ -149,7 +149,7 @@ class TestGeneratorEngineWithDB:
         writer = SyntheticWriter(db)
         writer.write(result)
         txn_row = db.execute("SELECT COUNT(*) FROM raw.ofx_transactions").fetchone()
-        csv_row = db.execute("SELECT COUNT(*) FROM raw.csv_transactions").fetchone()
+        csv_row = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         gt_row = db.execute("SELECT COUNT(*) FROM synthetic.ground_truth").fetchone()
         assert txn_row is not None
         assert csv_row is not None
