@@ -9,13 +9,19 @@ and migrations handled transparently.
 Documentation: https://modelcontextprotocol.github.io/python-sdk/
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import duckdb
 from mcp.server.fastmcp import FastMCP
 
 from moneybin.tables import TableRef
+
+if TYPE_CHECKING:
+    from moneybin.mcp.namespaces import NamespaceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +30,16 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     "MoneyBin",
     instructions=(
-        "MoneyBin is an AI-powered personal finance app. You can import bank "
-        "statements (OFX/QFX files), query transactions and accounts, categorize "
-        "spending, set budgets, and get financial insights. All data stays local "
-        "in a DuckDB database — nothing is sent to any external service.\n\n"
-        "IMPORTANT: When categorizing transactions or creating rules/merchant "
-        "mappings, always prefer the bulk tools (bulk_categorize, "
-        "bulk_create_categorization_rules, bulk_create_merchant_mappings) over "
-        "their single-item equivalents. Fetch a batch with a read tool, reason "
-        "about all items, then submit the full list in one bulk call."
+        "MoneyBin is an AI-powered personal finance app. Tools use "
+        "dot-separated namespaces (spending.summary, accounts.balances, etc.). "
+        "Core tools are available immediately. Extended namespaces "
+        "(categorize, budget, tax, privacy) can be loaded with "
+        "moneybin.discover. All data stays local in DuckDB.\n\n"
+        "IMPORTANT: Prefer bulk tools (categorize.bulk, categorize.create_rules) "
+        "over single-item operations. Fetch a batch, reason about all items, "
+        "then submit in one call.\n\n"
+        "Every tool returns {summary, data, actions}. Check summary.has_more "
+        "for pagination and actions[] for suggested next steps."
     ),
 )
 
@@ -84,16 +91,12 @@ def table_exists(table: TableRef) -> bool:
 
 
 def init_db() -> None:
-    """Initialize the database singleton.
-
-    The Database class handles encryption, schema initialization, and
-    migrations transparently via ``get_database()``, which reads the
-    database path from ``get_settings().database.path``.
-    """
+    """Initialize the database and register MCP tools."""
     from moneybin.database import get_database
 
     db = get_database()
     logger.info(f"Database initialized: {db.path}")
+    register_core_tools()
 
 
 def close_db() -> None:
@@ -105,3 +108,74 @@ def close_db() -> None:
         logger.info("DuckDB connection closed")
     except ValueError:
         pass  # stderr already closed during MCP stdio shutdown
+
+
+_registry: NamespaceRegistry | None = None
+
+
+def get_registry() -> NamespaceRegistry:
+    """Get the namespace registry singleton."""
+    global _registry  # noqa: PLW0603 — module-level singleton
+    if _registry is None:
+        _registry = _build_registry()
+    return _registry
+
+
+def _build_registry() -> NamespaceRegistry:
+    """Build and populate the namespace registry with all tool modules."""
+    from moneybin.mcp.namespaces import NamespaceRegistry
+    from moneybin.mcp.tools.accounts import register_accounts_tools
+    from moneybin.mcp.tools.budget import register_budget_tools
+    from moneybin.mcp.tools.categorize import register_categorize_tools
+    from moneybin.mcp.tools.discover import register_discover_tool
+    from moneybin.mcp.tools.import_tools import register_import_tools
+    from moneybin.mcp.tools.spending import register_spending_tools
+    from moneybin.mcp.tools.sql import register_sql_tools
+    from moneybin.mcp.tools.tax import register_tax_tools
+    from moneybin.mcp.tools.transactions import register_transactions_tools
+
+    registry = NamespaceRegistry()
+    register_spending_tools(registry)
+    register_accounts_tools(registry)
+    register_transactions_tools(registry)
+    register_import_tools(registry)
+    register_categorize_tools(registry)
+    register_budget_tools(registry)
+    register_tax_tools(registry)
+    register_sql_tools(registry)
+    register_discover_tool(registry)
+    return registry
+
+
+def register_core_tools() -> None:
+    """Register core namespace tools with FastMCP at startup."""
+    from moneybin.config import get_settings
+    from moneybin.mcp.namespaces import CORE_NAMESPACES_DEFAULT
+
+    registry = get_registry()
+    cfg = get_settings().mcp
+
+    # Determine core namespaces from config or defaults
+    if cfg.core_namespaces and cfg.core_namespaces == ["*"]:
+        core_ns = registry.all_namespaces()
+    elif cfg.core_namespaces:
+        core_ns = set(cfg.core_namespaces)
+    else:
+        core_ns = set(CORE_NAMESPACES_DEFAULT)
+
+    # Register core tools with FastMCP
+    for tool in registry.get_core_tools(core_ns):
+        mcp.tool(name=tool.name, description=tool.description)(tool.fn)
+        registry.mark_loaded(tool.namespace)
+
+    # moneybin.discover is always registered
+    discover_tools = registry.get_namespace_tools("moneybin")
+    for tool in discover_tools:
+        if not registry.is_loaded("moneybin"):
+            mcp.tool(name=tool.name, description=tool.description)(tool.fn)
+    registry.mark_loaded("moneybin")
+
+    logger.info(
+        f"Registered {sum(len(registry.get_namespace_tools(ns)) for ns in core_ns)} "
+        f"core tools from {len(core_ns)} namespaces"
+    )
