@@ -1,3 +1,8 @@
+---
+description: "Security: SQL injection prevention, input validation, XSS, PII in logs, exception wrapping"
+globs: ["src/moneybin/**/*.py", "**/*.sql"]
+---
+
 # Security
 
 ## SQL Injection Prevention
@@ -70,6 +75,12 @@ When catching exceptions from external libraries (keyring, duckdb, argon2, base6
 2. **Wrap at the boundary module**, not in callers. E.g., `SecretStore.delete_key()` catches `keyring.errors.PasswordDeleteError` and raises `SecretNotFoundError`.
 3. **Comment untyped exceptions**: DuckDB raises generic errors on bad encryption keys. Use `# noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY` to document why a broad catch is needed.
 4. **Test the wrapping**: mock the real library exception type, verify the project exception is raised.
+
+## General Practices
+
+- `SecretStr` for passwords/API keys in Pydantic Settings.
+- Subprocess commands as lists (`["cmd", "arg"]`), never `shell=True` with user input.
+- Log detailed errors internally; return generic messages to users.
 
 ## PII in Logs and Errors
 

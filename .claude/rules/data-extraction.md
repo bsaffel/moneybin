@@ -1,4 +1,5 @@
 ---
+description: "Data extraction and loading: day-boundary extraction, incremental sync, dedup strategy, parameter design"
 globs: ["src/moneybin/extractors/**", "src/moneybin/connectors/**", "src/moneybin/loaders/**"]
 ---
 
@@ -55,11 +56,4 @@ Only expose parameters for values that **cannot be reliably determined from the 
 - **CLI/MCP callers**: Do not expose options for extractor-derivable fields. Only surface parameters for truly external context (e.g., `account_id` for CSV files that lack one).
 - **MCP prompts**: When a workflow requires values that can't be extracted, the prompt template should explicitly ask the user for them rather than silently defaulting.
 
-This captures the principle you're applying with the tax_year removal and generalizes it. The CSV account_id is a good counter-example — CSVs genuinely don't contain account identifiers, so that parameter is justified.
-
-## Adding a New Data Source
-
-1. Create extractor/connector in `src/moneybin/extractors/` or `src/moneybin/connectors/`
-2. Create loader in `src/moneybin/loaders/`
-3. Add staging models in `sqlmesh/models/prep/`
-4. Add CTE + `UNION ALL` in the relevant core model
+For example, CSV `account_id` is justified — CSVs genuinely don't contain account identifiers.
