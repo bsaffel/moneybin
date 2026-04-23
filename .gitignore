@@ -94,3 +94,4 @@ private/
 
 # Git worktrees (isolated workspaces)
 .worktrees/
+.claude/worktrees/
