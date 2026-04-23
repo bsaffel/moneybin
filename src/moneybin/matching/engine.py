@@ -14,8 +14,6 @@ from moneybin.database import Database
 from moneybin.matching.assignment import assign_greedy
 from moneybin.matching.persistence import (
     create_match_decision,
-    get_active_matches,
-    get_pending_matches,
     get_rejected_pairs,
 )
 from moneybin.matching.scoring import (
@@ -75,13 +73,13 @@ class TransactionMatcher:
         already_matched = self._get_already_matched_ids()
 
         # Tier 2b: within-source overlap (high-confidence only)
-        # get_candidates_within_source does not accept excluded_ids
         tier_2b_matched = self._run_tier(
             tier="2b",
             candidates_fn=lambda excluded: get_candidates_within_source(
                 self._db,
                 table=self._table,
                 date_window_days=self._settings.date_window_days,
+                excluded_ids=excluded,
                 rejected_pairs=rejected,
             ),
             excluded_ids=already_matched,
@@ -182,11 +180,17 @@ class TransactionMatcher:
 
     def _get_already_matched_ids(self) -> set[str]:
         """Get source_transaction_ids in active or pending matches."""
+        rows = self._db.execute(
+            """
+            SELECT source_transaction_id_a, source_transaction_id_b
+            FROM app.match_decisions
+            WHERE match_status IN ('accepted', 'pending')
+              AND reversed_at IS NULL
+              AND match_type = 'dedup'
+            """
+        ).fetchall()
         ids: set[str] = set()
-        for m in get_active_matches(self._db):
-            ids.add(m["source_transaction_id_a"])
-            ids.add(m["source_transaction_id_b"])
-        for m in get_pending_matches(self._db):
-            ids.add(m["source_transaction_id_a"])
-            ids.add(m["source_transaction_id_b"])
+        for row in rows:
+            ids.add(row[0])
+            ids.add(row[1])
         return ids

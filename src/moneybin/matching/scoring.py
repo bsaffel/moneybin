@@ -39,12 +39,16 @@ class CandidatePair:
 
 
 def compute_confidence(
-    *, date_distance_days: int, description_similarity: float
+    *,
+    date_distance_days: int,
+    description_similarity: float,
+    date_window_days: int = 3,
 ) -> float:
     """Compute a confidence score from matching signals."""
-    max_days = 3
     date_score = (
-        max(0.0, 1.0 - (date_distance_days / max_days)) if max_days > 0 else 1.0
+        max(0.0, 1.0 - (date_distance_days / date_window_days))
+        if date_window_days > 0
+        else 1.0
     )
     return (_WEIGHT_DATE * date_score) + (_WEIGHT_DESCRIPTION * description_similarity)
 
@@ -77,6 +81,7 @@ def get_candidates_within_source(
     *,
     table: str = "prep.int_transactions__unioned",
     date_window_days: int = 3,
+    excluded_ids: set[str] | None = None,
     rejected_pairs: list[dict[str, Any]] | None = None,
 ) -> list[CandidatePair]:
     """Find within-source candidate pairs (Tier 2b).
@@ -89,7 +94,7 @@ def get_candidates_within_source(
         table=table,
         date_window_days=date_window_days,
         tier="2b",
-        excluded_ids=None,
+        excluded_ids=excluded_ids,
         rejected_pairs=rejected_pairs,
     )
 
@@ -116,7 +121,7 @@ def _get_candidates(
         """
 
     # Validate table name for non-defaults
-    if table != "prep.int_transactions__unioned" and table != "_test_unioned":
+    if table != "prep.int_transactions__unioned":
         from sqlglot import exp
 
         parts = table.split(".")
@@ -197,6 +202,7 @@ def _get_candidates(
         confidence = compute_confidence(
             date_distance_days=int(date_dist),
             description_similarity=float(desc_sim),
+            date_window_days=date_window_days,
         )
 
         results.append(

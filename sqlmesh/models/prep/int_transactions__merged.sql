@@ -42,7 +42,7 @@ SELECT
     m.check_number,
     CASE WHEN NOT m.check_number IS NULL THEN sp.priority ELSE 2147483647 END
   ) AS check_number,
-  BOOL_OR(CAST(m.is_pending AS BOOLEAN)) AS is_pending,
+  BOOL_OR(m.is_pending::BOOLEAN) AS is_pending,
   ARG_MIN(
     m.pending_transaction_id,
     CASE WHEN NOT m.pending_transaction_id IS NULL THEN sp.priority ELSE 2147483647 END

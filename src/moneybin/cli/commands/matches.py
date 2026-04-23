@@ -47,7 +47,7 @@ def matches_run(
         from moneybin.database import database_key_error_hint
 
         logger.error(f"❌ {e}")
-        logger.info(f"💡 {database_key_error_hint()}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
@@ -99,7 +99,7 @@ def matches_review() -> None:
         from moneybin.database import database_key_error_hint
 
         logger.error(f"❌ {e}")
-        logger.info(f"💡 {database_key_error_hint()}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
@@ -137,7 +137,7 @@ def matches_log_cmd(
         from moneybin.database import database_key_error_hint
 
         logger.error(f"❌ {e}")
-        logger.info(f"💡 {database_key_error_hint()}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
@@ -161,7 +161,7 @@ def matches_undo_cmd(
         from moneybin.database import database_key_error_hint
 
         logger.error(f"❌ {e}")
-        logger.info(f"💡 {database_key_error_hint()}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
@@ -203,5 +203,5 @@ def matches_backfill(
         from moneybin.database import database_key_error_hint
 
         logger.error(f"❌ {e}")
-        logger.info(f"💡 {database_key_error_hint()}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
