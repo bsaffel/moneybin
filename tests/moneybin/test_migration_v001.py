@@ -50,6 +50,6 @@ class TestOFXExtractorColumnName:
         from moneybin.extractors.ofx_extractor import OFXExtractor
 
         extractor = OFXExtractor()
-        empty_df = extractor._build_empty_transactions_df()
+        empty_df = extractor._build_empty_transactions_df()  # pyright: ignore[reportPrivateUsage]  # testing protected method output
         assert "source_transaction_id" in empty_df.columns
         assert "transaction_id" not in empty_df.columns

@@ -1,5 +1,6 @@
 """Tests for matching schema initialization."""
 
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -13,7 +14,9 @@ class TestMatchingSchema:
     """Tests for app.match_decisions and app.seed_source_priority schema initialization."""
 
     @pytest.fixture()
-    def db(self, tmp_path: Path, mock_secret_store: MagicMock) -> Database:
+    def db(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
         database = Database(
             tmp_path / "test.duckdb",
             secret_store=mock_secret_store,
@@ -27,6 +30,7 @@ class TestMatchingSchema:
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema = 'app' AND table_name = 'match_decisions'"
         ).fetchone()
+        assert result is not None
         assert result[0] == 1
 
     def test_match_decisions_columns(self, db: Database) -> None:
@@ -50,6 +54,7 @@ class TestMatchingSchema:
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema = 'app' AND table_name = 'seed_source_priority'"
         ).fetchone()
+        assert result is not None
         assert result[0] == 1
 
     def test_table_ref_constants(self) -> None:

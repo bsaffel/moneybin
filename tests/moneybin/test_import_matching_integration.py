@@ -21,6 +21,8 @@ class TestImportMatchingIntegration:
         mock_matching.return_value = MatchResult(auto_merged=2, pending_review=0)
         mock_transforms.return_value = True
 
-        from moneybin.services.import_service import _run_matching
+        from moneybin.services.import_service import (
+            _run_matching,  # pyright: ignore[reportPrivateUsage]  # testing private function exists
+        )
 
         assert callable(_run_matching)
