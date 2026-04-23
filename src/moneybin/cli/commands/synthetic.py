@@ -51,8 +51,8 @@ def _run_generate(
         seed: Deterministic seed (None for random).
         skip_transform: If True, skip running SQLMesh after generation.
     """
-    from moneybin.config import get_settings, set_current_profile
-    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.config import get_current_profile, set_current_profile
+    from moneybin.database import DatabaseKeyError, close_database, get_database
     from moneybin.services.import_service import run_transforms
     from moneybin.testing.synthetic.engine import GeneratorEngine
     from moneybin.testing.synthetic.writer import SyntheticWriter
@@ -64,7 +64,8 @@ def _run_generate(
         f"(seed={actual_seed}{f', {years} years' if years else ''})"
     )
 
-    original_profile = get_settings().profile
+    original_profile = get_current_profile()
+    close_database()
     set_current_profile(profile)
 
     try:
@@ -140,9 +141,9 @@ def _run_generate(
             f"✅ Profile {profile!r} ready (seed={actual_seed}). "
             f"Use --profile={profile} with any moneybin command."
         )
-    except typer.Exit:
+    finally:
+        close_database()
         set_current_profile(original_profile)
-        raise
 
 
 @app.command("generate")
@@ -188,72 +189,76 @@ def reset(
     ),
 ) -> None:
     """Wipe a generated profile and regenerate from scratch."""
-    from moneybin.config import get_settings, set_current_profile
+    from moneybin.config import get_current_profile, set_current_profile
     from moneybin.database import DatabaseKeyError, close_database, get_database
 
     target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
 
-    original_profile = get_settings().profile
+    original_profile = get_current_profile()
+    close_database()
     set_current_profile(target_profile)
 
     try:
-        db = get_database()
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        set_current_profile(original_profile)
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
-
-    # Safety check: only reset profiles created by the generator
-    try:
-        gt_row = db.execute(
-            """SELECT COUNT(*) FROM information_schema.tables
-            WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"""
-        ).fetchone()
-        gt_exists = gt_row[0] if gt_row else 0
-    except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
-        gt_exists = 0
-
-    if not gt_exists:
-        logger.error(
-            f"❌ Profile {target_profile!r} was not created by the "
-            f"generator. Refusing to reset."
-        )
-        logger.info(
-            f"💡 To destroy a non-generated profile, use "
-            f"'moneybin db destroy --profile={target_profile}'"
-        )
-        raise typer.Exit(1) from None
-
-    if not yes:
-        confirmed = typer.confirm(
-            f"This will destroy all data in profile {target_profile!r} "
-            f"and regenerate. Continue?"
-        )
-        if not confirmed:
-            raise typer.Abort()
-
-    from moneybin.metrics.registry import SYNTHETIC_RESET_TOTAL
-
-    SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
-    logger.info(f"⚙️  Resetting profile {target_profile!r}...")
-    for table, where in _RESET_DELETIONS.items():
         try:
-            db.execute(f"DELETE FROM {table} {where}")  # noqa: S608 — allowlisted table names + literal WHERE clauses
-        except Exception:  # noqa: BLE001,S110 — table may not exist
-            pass
+            db = get_database()
+        except DatabaseKeyError as e:
+            from moneybin.database import database_key_error_hint
 
-    db.close()
-    # Close the singleton so _run_generate gets a fresh connection
-    close_database()
+            logger.error(f"❌ {e}")
+            logger.info(database_key_error_hint())
+            raise typer.Exit(1) from e
 
-    # Regenerate
-    _run_generate(
-        persona=persona,
-        profile=target_profile,
-        years=years,
-        seed=seed,
-        skip_transform=skip_transform,
-    )
+        # Safety check: only reset profiles created by the generator
+        try:
+            gt_row = db.execute(
+                """SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"""
+            ).fetchone()
+            gt_exists = gt_row[0] if gt_row else 0
+        except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
+            gt_exists = 0
+
+        if not gt_exists:
+            logger.error(
+                f"❌ Profile {target_profile!r} was not created by the "
+                f"generator. Refusing to reset."
+            )
+            logger.info(
+                f"💡 To destroy a non-generated profile, use "
+                f"'moneybin db destroy --profile={target_profile}'"
+            )
+            raise typer.Exit(1) from None
+
+        if not yes:
+            confirmed = typer.confirm(
+                f"This will destroy all data in profile {target_profile!r} "
+                f"and regenerate. Continue?"
+            )
+            if not confirmed:
+                raise typer.Abort()
+
+        from moneybin.metrics.registry import SYNTHETIC_RESET_TOTAL
+
+        SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
+        logger.info(f"⚙️  Resetting profile {target_profile!r}...")
+        for table, where in _RESET_DELETIONS.items():
+            try:
+                db.execute(f"DELETE FROM {table} {where}")  # noqa: S608 — allowlisted table names + literal WHERE clauses
+            except Exception:  # noqa: BLE001,S110 — table may not exist
+                pass
+
+        db.close()
+        # Close the singleton so _run_generate gets a fresh connection
+        close_database()
+
+        # Regenerate
+        _run_generate(
+            persona=persona,
+            profile=target_profile,
+            years=years,
+            seed=seed,
+            skip_transform=skip_transform,
+        )
+    finally:
+        close_database()
+        set_current_profile(original_profile)
