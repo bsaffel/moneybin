@@ -5,6 +5,7 @@ query tool, managed write validation for dedicated write tools, and
 result size limits.
 """
 
+import functools
 import logging
 import re
 from enum import StrEnum
@@ -43,14 +44,17 @@ def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:
     logger.debug(f"MCP tool call: {tool_name} (sensitivity={sensitivity.value})")
 
 
-def _get_mcp_limits() -> tuple[int, int, set[str] | None]:
-    """Load MCP limits from config (lazy, not at import time).
+@functools.lru_cache(maxsize=1)
+def _get_mcp_limits() -> tuple[int, int, frozenset[str] | None]:
+    """Load MCP limits from config (lazy, cached after first call).
 
     Returns:
         Tuple of (max_rows, max_chars, allowed_tables).
     """
     cfg = get_settings().mcp
-    allowed = {t.lower() for t in cfg.allowed_tables} if cfg.allowed_tables else None
+    allowed = (
+        frozenset(t.lower() for t in cfg.allowed_tables) if cfg.allowed_tables else None
+    )
     return cfg.max_rows, cfg.max_chars, allowed
 
 

@@ -100,12 +100,7 @@ def import_file(
                 "Use categorize.uncategorized to categorize new transactions",
             ],
         )
-    except FileNotFoundError as e:
-        return build_envelope(
-            data={"error": str(e)},
-            sensitivity="low",
-        )
-    except ValueError as e:
+    except (FileNotFoundError, ValueError) as e:
         return build_envelope(
             data={"error": str(e)},
             sensitivity="low",
@@ -172,9 +167,7 @@ def import_csv_preview(file_path: str) -> ResponseEnvelope:
                 "Use import.list_formats for available named formats",
             ],
         )
-    except FileNotFoundError as e:
-        return build_envelope(data={"error": str(e)}, sensitivity="low")
-    except ValueError as e:
+    except (FileNotFoundError, ValueError) as e:
         return build_envelope(data={"error": str(e)}, sensitivity="low")
     except Exception as e:
         logger.exception(f"Preview failed: {Path(file_path).name!r}")

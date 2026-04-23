@@ -33,6 +33,7 @@ from moneybin.services.categorization_service import (
     create_merchant,
     get_active_categories,
     get_stats,
+    match_merchant,
     normalize_description,
 )
 from moneybin.services.categorization_service import (
@@ -326,8 +327,6 @@ def categorize_bulk(
             # Resolve merchant_id from description
             merchant_id = None
             try:
-                from moneybin.services.categorization_service import match_merchant
-
                 txn = db.execute(
                     f"""
                     SELECT description FROM {FCT_TRANSACTIONS.full_name}

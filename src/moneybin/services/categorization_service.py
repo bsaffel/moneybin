@@ -488,10 +488,7 @@ def apply_deterministic_categorization(
 
     if total:
         logger.info(
-            "Deterministic categorization: %d merchant, %d rule, %d total",
-            merchant_count,
-            rule_count,
-            total,
+            f"Deterministic categorization: {merchant_count} merchant, {rule_count} rule, {total} total"
         )
 
     return {

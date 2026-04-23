@@ -210,13 +210,11 @@ class TransactionService:
                 ON t.transaction_id = c.transaction_id
             {where}
             ORDER BY t.transaction_date DESC, t.transaction_id
+            LIMIT {int(limit)} OFFSET {int(offset)}
         """
 
         result = self._db.execute(sql, params)
         rows = result.fetchall()
-
-        # Apply limit/offset in Python (DuckDB LIMIT ? is unreliable)
-        rows = rows[offset : offset + limit]
 
         transactions = [
             Transaction(
