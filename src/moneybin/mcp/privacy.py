@@ -7,10 +7,40 @@ result size limits.
 
 import logging
 import re
+from enum import StrEnum
 
 from moneybin.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+class Sensitivity(StrEnum):
+    """Data sensitivity tier for MCP tools.
+
+    Every tool declares its maximum data sensitivity. The privacy
+    middleware uses this to enforce consent gates and response filtering.
+
+    See ``mcp-architecture.md`` section 5 for tier definitions.
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:
+    """Log an MCP tool invocation with its sensitivity tier.
+
+    This is a privacy middleware stub. In v1, it only logs.
+    When the consent management and audit log specs are implemented,
+    this will check consent status, apply redaction, and write to
+    the audit table.
+
+    Args:
+        tool_name: The v1 dot-separated tool name.
+        sensitivity: The tool's declared sensitivity tier.
+    """
+    logger.debug(f"MCP tool call: {tool_name} (sensitivity={sensitivity.value})")
 
 
 def _get_mcp_limits() -> tuple[int, int, set[str] | None]:
