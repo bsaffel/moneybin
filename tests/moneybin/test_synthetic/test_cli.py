@@ -103,6 +103,22 @@ class TestGenerateCommand:
             result = runner.invoke(app, ["generate", "--persona", "bad"])
             assert result.exit_code == 1
 
+    def test_generate_restores_profile_on_error(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+    ) -> None:
+        """Profile must be restored even when generate fails."""
+        from moneybin.database import DatabaseKeyError
+
+        mocker.patch(
+            "moneybin.database.get_database",
+            side_effect=DatabaseKeyError("no key"),
+        )
+        result = runner.invoke(app, ["generate", "--persona", "basic"])
+        assert result.exit_code == 1
+        self.mock_set_profile.assert_called_with("default")
+
 
 class TestResetCommand:
     """Test the 'synthetic reset' CLI command."""
@@ -111,7 +127,7 @@ class TestResetCommand:
     def mock_profile(self, mocker: Any) -> None:
         """Prevent reset from mutating process-wide profile state."""
         mocker.patch("moneybin.config.get_current_profile", return_value="default")
-        mocker.patch("moneybin.config.set_current_profile")
+        self.mock_set_profile = mocker.patch("moneybin.config.set_current_profile")
         mocker.patch("moneybin.database.close_database")
 
     @pytest.fixture
@@ -150,6 +166,8 @@ class TestResetCommand:
             seed=42,
             skip_transform=False,
         )
+        # Profile must be restored after successful reset
+        self.mock_set_profile.assert_called_with("default")
 
     def test_reset_requires_yes_or_prompt(self, runner: CliRunner) -> None:
         """Without --yes, reset should prompt for confirmation."""
