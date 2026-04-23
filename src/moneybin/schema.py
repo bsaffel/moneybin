@@ -55,6 +55,8 @@ _SCHEMA_FILES: list[str] = [
     "app_schema_migrations.sql",
     "app_versions.sql",
     "app_tabular_formats.sql",
+    "app_match_decisions.sql",
+    "app_seed_source_priority.sql",
 ]
 
 

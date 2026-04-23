@@ -47,6 +47,10 @@ VERSIONS = TableRef("app", "versions")
 # -- App tabular tables --
 TABULAR_FORMATS = TableRef("app", "tabular_formats")
 
+# -- App matching tables --
+MATCH_DECISIONS = TableRef("app", "match_decisions")
+SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
+
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 
