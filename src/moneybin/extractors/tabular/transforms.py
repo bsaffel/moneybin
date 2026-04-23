@@ -115,9 +115,6 @@ def transform_dataframe(
     src_txn_id_col = field_mapping.get("source_transaction_id")
 
     # Preserve originals before parsing
-    original_date_strs: list[str] = []
-    original_amount_strs: list[str] = []
-
     original_date_strs = _col_as_strings(df, date_col, len(df))
 
     # Determine original amount string — for audit, use whichever column was mapped

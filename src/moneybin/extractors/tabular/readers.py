@@ -297,7 +297,7 @@ def _read_excel(
             best_rows = 0
             for name in wb.sheetnames:
                 ws = wb[name]
-                row_count = sum(1 for _ in ws.iter_rows(min_row=1))
+                row_count = ws.max_row or 0
                 if row_count > best_rows:
                     best_rows = row_count
                     best_sheet = name

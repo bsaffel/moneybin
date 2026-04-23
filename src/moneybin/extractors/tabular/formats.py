@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from moneybin.database import Database
@@ -87,22 +87,6 @@ class TabularFormat(BaseModel, frozen=True):
 
     last_used_at: str | None = None
     """Timestamp of last successful import."""
-
-    @field_validator("sign_convention", mode="before")
-    @classmethod
-    def _validate_sign_convention(cls, v: str) -> str:
-        valid = {"negative_is_expense", "negative_is_income", "split_debit_credit"}
-        if v not in valid:
-            raise ValueError(f"sign_convention must be one of {valid}, got {v!r}")
-        return v
-
-    @field_validator("number_format", mode="before")
-    @classmethod
-    def _validate_number_format(cls, v: str) -> str:
-        valid = {"us", "european", "swiss_french", "zero_decimal"}
-        if v not in valid:
-            raise ValueError(f"number_format must be one of {valid}, got {v!r}")
-        return v
 
     def matches_headers(self, file_headers: list[str]) -> bool:
         """Check if a file's headers match this format's signature.

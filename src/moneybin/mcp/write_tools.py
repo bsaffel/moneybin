@@ -273,9 +273,19 @@ def list_formats() -> str:
     logger.info("Tool called: list_formats")
 
     try:
-        from moneybin.extractors.tabular.formats import load_builtin_formats
+        from moneybin.database import get_database
+        from moneybin.extractors.tabular.formats import (
+            load_builtin_formats,
+            load_formats_from_db,
+            merge_formats,
+        )
 
-        formats = load_builtin_formats()
+        builtin = load_builtin_formats()
+        try:
+            db = get_database()
+            formats = merge_formats(builtin, load_formats_from_db(db))
+        except Exception:  # noqa: BLE001 — DB may not exist; fall back to built-in
+            formats = builtin
         format_list = [
             {
                 "name": fmt.name,

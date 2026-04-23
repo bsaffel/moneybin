@@ -113,25 +113,14 @@ def _detect_file_type(file_path: Path) -> str:
     Raises:
         ValueError: If extension is not recognized.
     """
+    from moneybin.extractors.tabular.format_detector import TABULAR_EXTENSIONS
+
     suffix = file_path.suffix.lower()
     if suffix in (".ofx", ".qfx"):
         return "ofx"
     if suffix == ".pdf":
         return "w2"
-    if suffix in (
-        ".csv",
-        ".tsv",
-        ".tab",
-        ".txt",
-        ".dat",
-        ".xlsx",
-        ".xls",
-        ".parquet",
-        ".pq",
-        ".feather",
-        ".arrow",
-        ".ipc",
-    ):
+    if suffix in TABULAR_EXTENSIONS:
         return "tabular"
     raise ValueError(
         f"Unsupported file type: {suffix}. "
@@ -456,7 +445,7 @@ def _import_tabular(
 
     # Determine account info
     source_type = format_info.file_type
-    if source_type == "semicolon":
+    if source_type in ("semicolon", "pipe"):
         source_type = "csv"
 
     if account_id:

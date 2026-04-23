@@ -18,6 +18,7 @@ from moneybin.extractors.tabular.formats import NumberFormatType, SignConvention
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.extractors.tabular.formats import TabularFormat
 
 app = typer.Typer(
     help=(
@@ -30,6 +31,46 @@ logger = logging.getLogger(__name__)
 
 _VALID_SIGN_CONVENTIONS = frozenset(get_args(SignConventionType))
 _VALID_NUMBER_FORMATS = frozenset(get_args(NumberFormatType))
+
+
+def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
+    """Parse and validate --override field=column values."""
+    if not override:
+        return None
+    result: dict[str, str] = {}
+    for raw in override:
+        if "=" not in raw:
+            logger.error(
+                f"❌ Invalid --override format (expected field=column): {raw!r}"
+            )
+            raise typer.Exit(1)
+        field, _, col = raw.partition("=")
+        result[field.strip()] = col.strip()
+    return result
+
+
+def _load_all_formats(
+    db: Database | None = None,
+) -> tuple[dict[str, TabularFormat], dict[str, TabularFormat]]:
+    """Load built-in + user-saved formats, returning (all_formats, builtin).
+
+    Falls back to built-in only if DB is unavailable.
+    """
+    from moneybin.extractors.tabular.formats import (
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+    )
+
+    builtin = load_builtin_formats()
+    user_formats: dict[str, TabularFormat] = {}
+    if db is not None:
+        try:
+            user_formats = load_formats_from_db(db)
+        except Exception:  # noqa: BLE001, S110 — DB table may not exist yet
+            logger.debug("Could not load user formats from DB, using built-in only")
+    all_formats = merge_formats(builtin, user_formats)
+    return all_formats, builtin
 
 
 @app.command("file")
@@ -138,15 +179,7 @@ def import_file(
         logger.error(f"❌ File not found: {source}")
         raise typer.Exit(1)
 
-    # Validate --override values (format: "field=column") — parsing deferred until
-    # the service function accepts them; validated here for early error reporting.
-    if override:
-        for raw in override:
-            if "=" not in raw:
-                logger.error(
-                    f"❌ Invalid --override format (expected field=column): {raw!r}"
-                )
-                raise typer.Exit(1)
+    overrides = _parse_overrides(override)
 
     # Validate sign convention if provided
     if sign and sign not in _VALID_SIGN_CONVENTIONS:
@@ -163,14 +196,6 @@ def import_file(
             f"Valid options: {', '.join(sorted(_VALID_NUMBER_FORMATS))}"
         )
         raise typer.Exit(1)
-
-    # Parse --override values into dict
-    overrides: dict[str, str] | None = None
-    if override:
-        overrides = {}
-        for raw in override:
-            field_name, col_name = raw.split("=", 1)
-            overrides[field_name.strip()] = col_name.strip()
 
     try:
         db = get_database()
@@ -363,11 +388,6 @@ def import_preview(
     """
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
-    from moneybin.extractors.tabular.formats import (
-        load_builtin_formats,
-        load_formats_from_db,
-        merge_formats,
-    )
     from moneybin.extractors.tabular.readers import read_file
 
     source = Path(file_path)
@@ -376,19 +396,7 @@ def import_preview(
         logger.error(f"❌ File not found: {source}")
         raise typer.Exit(1)
 
-    # Parse --override values
-    overrides: dict[str, str] | None = None
-    if override:
-        parsed: dict[str, str] = {}
-        for raw in override:
-            if "=" not in raw:
-                logger.error(
-                    f"❌ Invalid --override format (expected field=column): {raw!r}"
-                )
-                raise typer.Exit(1)
-            field, _, col = raw.partition("=")
-            parsed[field.strip()] = col.strip()
-        overrides = parsed
+    overrides = _parse_overrides(override)
 
     try:
         # Stage 1: Detect format
@@ -408,14 +416,13 @@ def import_preview(
 
         # Stage 3: Column mapping — load built-in + user-saved formats
         matched_format = None
-        builtin = load_builtin_formats()
-        from moneybin.database import DatabaseKeyError, get_database
+        from moneybin.database import get_database
 
         try:
-            preview_db = get_database()
-            all_formats = merge_formats(builtin, load_formats_from_db(preview_db))
-        except (DatabaseKeyError, Exception):  # noqa: BLE001 — DB may not exist yet; use built-in only
-            all_formats = builtin
+            preview_db: Database | None = get_database()
+        except Exception:  # noqa: BLE001 — DB may not exist yet; use built-in only
+            preview_db = None
+        all_formats, _ = _load_all_formats(preview_db)
         if format_name:
             matched_format = all_formats.get(format_name)
             if matched_format is None:
@@ -485,27 +492,14 @@ def list_formats() -> None:
     Example:
         moneybin import list-formats
     """
-    from moneybin.database import DatabaseKeyError, get_database
-    from moneybin.extractors.tabular.formats import (
-        load_builtin_formats,
-        load_formats_from_db,
-        merge_formats,
-    )
+    from moneybin.database import get_database
 
-    builtin = load_builtin_formats()
     try:
-        db = get_database()
-        user_formats = load_formats_from_db(db)
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+        db: Database | None = get_database()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
-        user_formats = {}
+        db = None
 
-    all_formats = merge_formats(builtin, user_formats)
+    all_formats, builtin = _load_all_formats(db)
 
     if not all_formats:
         logger.warning("⚠️  No formats found")
@@ -516,13 +510,13 @@ def list_formats() -> None:
     )
     typer.echo("-" * 100)
     for fmt in sorted(all_formats.values(), key=lambda f: f.name):
-        source_tag = " (user)" if fmt.name in user_formats else ""
+        source_tag = " (user)" if fmt.name not in builtin else ""
         typer.echo(
             f"{fmt.name:<24} {fmt.institution_name:<28} "
             f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
         )
     n_builtin = len(builtin)
-    n_user = len(user_formats)
+    n_user = len(all_formats) - len(builtin)
     typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
 
 
@@ -536,27 +530,14 @@ def show_format(name: str = typer.Argument(..., help="Format name to show")) -> 
     Example:
         moneybin import show-format chase_credit
     """
-    from moneybin.database import DatabaseKeyError, get_database
-    from moneybin.extractors.tabular.formats import (
-        load_builtin_formats,
-        load_formats_from_db,
-        merge_formats,
-    )
+    from moneybin.database import get_database
 
-    builtin = load_builtin_formats()
     try:
-        db = get_database()
-        user_formats = load_formats_from_db(db)
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+        db: Database | None = get_database()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
-        user_formats = {}
+        db = None
 
-    all_formats = merge_formats(builtin, user_formats)
+    all_formats, _ = _load_all_formats(db)
     fmt = all_formats.get(name)
 
     if fmt is None:

@@ -10,7 +10,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Extension → file_type mapping
+# Extension → file_type mapping (also used by import_service._detect_file_type)
 _EXTENSION_MAP: dict[str, str] = {
     ".csv": "csv",
     ".tsv": "tsv",
@@ -30,6 +30,9 @@ _MAGIC_BYTES: dict[str, tuple[bytes, ...]] = {
     "excel": (b"PK\x03\x04",),
     "feather": (b"ARROW1",),
 }
+
+# Extensions recognized as tabular formats (exported for import_service)
+TABULAR_EXTENSIONS: frozenset[str] = frozenset(_EXTENSION_MAP.keys()) | {".txt", ".dat"}
 
 # File types that are text-based
 _TEXT_TYPES: frozenset[str] = frozenset({"csv", "tsv", "pipe", "semicolon"})
@@ -93,7 +96,7 @@ def detect_format(
     if not no_size_limit:
         _check_size_limit(path, file_type, file_size)
 
-    if file_type in _TEXT_TYPES or file_type in ("csv", "tsv", "pipe", "semicolon"):
+    if file_type in _TEXT_TYPES:
         encoding = encoding_override or detect_encoding(path)
         if delimiter_override:
             delimiter = delimiter_override

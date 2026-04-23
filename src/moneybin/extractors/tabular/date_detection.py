@@ -32,7 +32,10 @@ _DATE_FORMATS: list[str] = [
 ]
 
 _MIN_YEAR = 1970
-_MAX_YEAR = datetime.now().year + 1
+
+
+def _max_year() -> int:
+    return datetime.now().year + 1
 
 
 def detect_date_format(
@@ -62,7 +65,7 @@ def detect_date_format(
             try:
                 dt = datetime.strptime(val, fmt)
                 parse_count += 1
-                if _MIN_YEAR <= dt.year <= _MAX_YEAR:
+                if _MIN_YEAR <= dt.year <= _max_year():
                     reasonable_count += 1
             except ValueError:
                 continue
