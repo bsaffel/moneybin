@@ -15,6 +15,7 @@ from moneybin.matching.assignment import assign_greedy
 from moneybin.matching.persistence import (
     create_match_decision,
     get_active_matches,
+    get_pending_matches,
     get_rejected_pairs,
 )
 from moneybin.matching.scoring import (
@@ -121,6 +122,8 @@ class TransactionMatcher:
 
         assigned = assign_greedy(candidates)
         newly_matched: set[str] = set()
+        tier_merged = 0
+        tier_pending = 0
 
         for pair in assigned:
             DEDUP_MATCH_CONFIDENCE.observe(pair.confidence_score)
@@ -129,6 +132,7 @@ class TransactionMatcher:
                 status = "accepted"
                 decided_by = "auto"
                 result.auto_merged += 1
+                tier_merged += 1
                 DEDUP_MATCHES_TOTAL.labels(match_tier=tier, decided_by="auto").inc()
             elif (
                 tier == "3" and pair.confidence_score >= self._settings.review_threshold
@@ -136,6 +140,7 @@ class TransactionMatcher:
                 status = "pending"
                 decided_by = "auto"
                 result.pending_review += 1
+                tier_pending += 1
                 DEDUP_REVIEW_PENDING.inc()
             else:
                 continue
@@ -168,19 +173,20 @@ class TransactionMatcher:
             newly_matched.add(pair.source_transaction_id_a)
             newly_matched.add(pair.source_transaction_id_b)
 
-        if assigned:
+        if tier_merged or tier_pending:
             logger.info(
-                f"Tier {tier}: {result.auto_merged} auto-merged, "
-                f"{result.pending_review} pending review"
+                f"Tier {tier}: {tier_merged} auto-merged, {tier_pending} pending review"
             )
 
         return newly_matched
 
     def _get_already_matched_ids(self) -> set[str]:
-        """Get source_transaction_ids that are already in active matches."""
-        active = get_active_matches(self._db)
+        """Get source_transaction_ids in active or pending matches."""
         ids: set[str] = set()
-        for m in active:
+        for m in get_active_matches(self._db):
+            ids.add(m["source_transaction_id_a"])
+            ids.add(m["source_transaction_id_b"])
+        for m in get_pending_matches(self._db):
             ids.add(m["source_transaction_id_a"])
             ids.add(m["source_transaction_id_b"])
         return ids
