@@ -40,7 +40,7 @@ def sample_ofx_data() -> dict[str, pl.DataFrame]:
             "extracted_at": ["2025-01-24T12:00:00"],
         }),
         "transactions": pl.DataFrame({
-            "transaction_id": ["TXN001", "TXN002"],
+            "source_transaction_id": ["TXN001", "TXN002"],
             "account_id": ["ACC001", "ACC001"],
             "transaction_type": ["DEBIT", "CREDIT"],
             "date_posted": ["2025-01-15T12:00:00", "2025-01-20T12:00:00"],
@@ -123,14 +123,14 @@ def test_load_data(test_db: Database, sample_ofx_data: dict[str, pl.DataFrame]) 
     # Check transaction data
     tx_df = conn.execute(
         """
-        SELECT transaction_id, amount, payee
+        SELECT source_transaction_id, amount, payee
         FROM raw.ofx_transactions
         ORDER BY date_posted
         """
     ).pl()
 
     assert len(tx_df) == 2
-    assert tx_df["transaction_id"][0] == "TXN001"
+    assert tx_df["source_transaction_id"][0] == "TXN001"
     assert float(tx_df["amount"][0]) == -50.00
     assert tx_df["payee"][0] == "Coffee Shop"
 
@@ -170,7 +170,7 @@ def test_query_raw_data(
 
     assert isinstance(df, pl.DataFrame)
     assert len(df) == 2
-    assert "transaction_id" in df.columns
+    assert "source_transaction_id" in df.columns
     assert "amount" in df.columns
 
 

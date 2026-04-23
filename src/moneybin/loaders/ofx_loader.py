@@ -100,9 +100,9 @@ class OFXLoader:
             df = data["transactions"]
             conn.execute("""
                 INSERT OR REPLACE INTO raw.ofx_transactions
-                (transaction_id, account_id, transaction_type, date_posted,
+                (source_transaction_id, account_id, transaction_type, date_posted,
                  amount, payee, memo, check_number, source_file, extracted_at)
-                SELECT transaction_id, account_id, transaction_type,
+                SELECT source_transaction_id, account_id, transaction_type,
                        date_posted::TIMESTAMP, amount, payee, memo,
                        check_number, source_file, extracted_at::TIMESTAMP
                 FROM df

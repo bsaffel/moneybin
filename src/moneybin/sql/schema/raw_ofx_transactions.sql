@@ -1,6 +1,6 @@
 /* Transaction records extracted from OFX/QFX files; one record per transaction per account per source file */
 CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
-    transaction_id VARCHAR, -- Unique transaction identifier from OFX <FITID> element; part of primary key
+    source_transaction_id VARCHAR, -- OFX FITID element; institution-assigned unique transaction identifier
     account_id VARCHAR, -- Account this transaction belongs to; foreign key to raw.ofx_accounts; part of primary key
     transaction_type VARCHAR, -- OFX TRNTYPE element, e.g. DEBIT, CREDIT, CHECK, INT, DIV
     date_posted TIMESTAMP, -- OFX DTPOSTED element; mapped to transaction_date in core
@@ -11,5 +11,5 @@ CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     source_file VARCHAR, -- Path to the OFX/QFX file this record was loaded from; part of primary key
     extracted_at TIMESTAMP, -- Timestamp when the OFX file was parsed
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this record was inserted into the database
-    PRIMARY KEY (transaction_id, account_id, source_file)
+    PRIMARY KEY (source_transaction_id, account_id, source_file)
 );
