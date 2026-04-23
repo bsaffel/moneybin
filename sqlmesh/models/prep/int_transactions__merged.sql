@@ -15,7 +15,7 @@ SELECT
     m.authorized_date,
     CASE WHEN NOT m.authorized_date IS NULL THEN sp.priority ELSE 2147483647 END
   ) AS authorized_date,
-  ARG_MIN(m.amount, sp.priority) AS amount,
+  ARG_MIN(m.amount, COALESCE(sp.priority, 2147483647)) AS amount,
   ARG_MIN(
     m.description,
     CASE WHEN NOT m.description IS NULL THEN sp.priority ELSE 2147483647 END
@@ -75,8 +75,8 @@ SELECT
     m.location_longitude,
     CASE WHEN NOT m.location_longitude IS NULL THEN sp.priority ELSE 2147483647 END
   ) AS location_longitude,
-  ARG_MIN(m.currency_code, sp.priority) AS currency_code,
-  ARG_MIN(m.source_type, sp.priority) AS canonical_source_type,
+  ARG_MIN(m.currency_code, COALESCE(sp.priority, 2147483647)) AS currency_code,
+  ARG_MIN(m.source_type, COALESCE(sp.priority, 2147483647)) AS canonical_source_type,
   COUNT(*) AS source_count,
   MAX(m.match_confidence) AS match_confidence,
   MAX(m.source_extracted_at) AS source_extracted_at,
