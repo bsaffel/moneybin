@@ -405,6 +405,13 @@ def _import_tabular(
         mapping_result_confidence = mapping_result.confidence
         format_source = "detected"
 
+        if mapping_result.sign_needs_confirmation and not sign:
+            logger.warning(
+                "⚠️  Sign convention is ambiguous (all amounts appear positive). "
+                f"Proceeding with '{mapping_result_sign_convention}' — "
+                "use --sign to override if expense amounts look wrong."
+            )
+
         if mapping_result.confidence == "low":
             raise ValueError(
                 f"Could not reliably detect column mapping for "
@@ -684,7 +691,7 @@ def _apply_categorization(db: Database) -> None:
                 f"Auto-categorized {stats['total']} transactions "
                 f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 — categorization is best-effort; failure skips without aborting import
         logger.debug(
             "Categorization skipped (tables may not exist yet)",
             exc_info=True,

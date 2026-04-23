@@ -7,6 +7,7 @@ disambiguation and convention scoring for number format detection.
 
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 _CURRENCY_SYMBOLS = re.compile(
     r"[$€£¥₩₹₽₺₫kr\s]|CHF|R\$|kr\b|SEK|NOK|DKK", re.IGNORECASE
@@ -200,7 +201,7 @@ def detect_number_format(values: list[str | None]) -> str:
     return best
 
 
-def parse_amount_str(value: str, number_format: str) -> float | None:
+def parse_amount_str(value: str, number_format: str) -> Decimal | None:
     """Parse an amount string using the specified number format convention.
 
     Handles currency symbols, parentheses-as-negative, DR/CR suffixes.
@@ -210,7 +211,7 @@ def parse_amount_str(value: str, number_format: str) -> float | None:
         number_format: Convention: us, european, swiss_french, zero_decimal.
 
     Returns:
-        Parsed float, or None if the string is empty/unparseable.
+        Parsed Decimal, or None if the string is empty/unparseable.
     """
     if not value or not value.strip():
         return None
@@ -248,7 +249,7 @@ def parse_amount_str(value: str, number_format: str) -> float | None:
         s = s.replace(",", "")
 
     try:
-        result = float(s)
+        result = Decimal(s)
         return -result if is_negative else result
-    except ValueError:
+    except (ValueError, InvalidOperation):
         return None

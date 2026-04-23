@@ -249,10 +249,10 @@ def import_history(
             logger.warning("⚠️  No import history found")
         return
 
-    print(
+    typer.echo(
         f"\n{'Import ID':<38} {'Status':<10} {'Imported':>8} {'Rejected':>8}  {'Source File'}"
     )
-    print("-" * 100)
+    typer.echo("-" * 100)
     for rec in records:
         imp_id = str(rec.get("import_id", ""))
         status = str(rec.get("status", ""))
@@ -261,18 +261,18 @@ def import_history(
         source_file = str(rec.get("source_file", ""))
         # Truncate source file path for display
         display_path = Path(source_file).name if source_file else ""
-        print(
+        typer.echo(
             f"{imp_id:<38} {status:<10} {rows_imported:>8} {rows_rejected:>8}  "
             f"{display_path}"
         )
 
     if import_id and records:
         rec = records[0]
-        print("\nDetails:")
+        typer.echo("\nDetails:")
         for key, value in rec.items():
             if value is not None:
-                print(f"  {key}: {value}")
-    print()
+                typer.echo(f"  {key}: {value}")
+    typer.echo()
 
 
 @app.command("revert")
@@ -429,43 +429,43 @@ def import_preview(
                     matched_format = fmt
                     break
 
-        print(f"\nFile: {source.name}")
-        print(f"Type: {format_info.file_type}")
+        typer.echo(f"\nFile: {source.name}")
+        typer.echo(f"Type: {format_info.file_type}")
         if format_info.delimiter:
-            print(f"Delimiter: {format_info.delimiter!r}")
-        print(f"Encoding: {format_info.encoding}")
-        print(f"Rows: {len(df):,}")
+            typer.echo(f"Delimiter: {format_info.delimiter!r}")
+        typer.echo(f"Encoding: {format_info.encoding}")
+        typer.echo(f"Rows: {len(df):,}")
         if read_result.rows_skipped_trailing:
-            print(f"Trailing rows skipped: {read_result.rows_skipped_trailing}")
-        print(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
+            typer.echo(f"Trailing rows skipped: {read_result.rows_skipped_trailing}")
+        typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
         if matched_format:
-            print(
+            typer.echo(
                 f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
             )
-            print(f"Sign convention: {matched_format.sign_convention}")
-            print(f"Date format: {matched_format.date_format}")
-            print(f"Number format: {matched_format.number_format}")
-            print("\nColumn mapping:")
+            typer.echo(f"Sign convention: {matched_format.sign_convention}")
+            typer.echo(f"Date format: {matched_format.date_format}")
+            typer.echo(f"Number format: {matched_format.number_format}")
+            typer.echo("\nColumn mapping:")
             for field, col in matched_format.field_mapping.items():
-                print(f"  {field} ← {col}")
+                typer.echo(f"  {field} ← {col}")
         else:
             mapping_result = map_columns(df, overrides=overrides)
-            print(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
+            typer.echo(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
             for field, col in mapping_result.field_mapping.items():
-                print(f"  {field} ← {col}")
+                typer.echo(f"  {field} ← {col}")
             if mapping_result.sign_convention:
-                print(f"Sign convention: {mapping_result.sign_convention}")
+                typer.echo(f"Sign convention: {mapping_result.sign_convention}")
             if mapping_result.date_format:
-                print(f"Date format: {mapping_result.date_format}")
+                typer.echo(f"Date format: {mapping_result.date_format}")
             if mapping_result.number_format:
-                print(f"Number format: {mapping_result.number_format}")
+                typer.echo(f"Number format: {mapping_result.number_format}")
 
         # Show sample rows
         sample_n = min(5, len(df))
-        print(f"\nSample ({sample_n} rows):")
-        print(df.head(sample_n))
-        print()
+        typer.echo(f"\nSample ({sample_n} rows):")
+        typer.echo(df.head(sample_n))
+        typer.echo()
 
     except ValueError as e:
         logger.error(f"❌ {e}")
@@ -511,17 +511,19 @@ def list_formats() -> None:
         logger.warning("⚠️  No formats found")
         return
 
-    print(f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} {'Date Format'}")
-    print("-" * 100)
+    typer.echo(
+        f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} {'Date Format'}"
+    )
+    typer.echo("-" * 100)
     for fmt in sorted(all_formats.values(), key=lambda f: f.name):
         source_tag = " (user)" if fmt.name in user_formats else ""
-        print(
+        typer.echo(
             f"{fmt.name:<24} {fmt.institution_name:<28} "
             f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
         )
     n_builtin = len(builtin)
     n_user = len(user_formats)
-    print(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
+    typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
 
 
 @app.command("show-format")
@@ -563,27 +565,27 @@ def show_format(name: str = typer.Argument(..., help="Format name to show")) -> 
         logger.info(f"💡 Available formats: {available}")
         raise typer.Exit(1)
 
-    print(f"\nFormat: {fmt.name}")
-    print(f"Institution: {fmt.institution_name}")
-    print(f"File type: {fmt.file_type}")
+    typer.echo(f"\nFormat: {fmt.name}")
+    typer.echo(f"Institution: {fmt.institution_name}")
+    typer.echo(f"File type: {fmt.file_type}")
     if fmt.delimiter:
-        print(f"Delimiter: {fmt.delimiter!r}")
-    print(f"Encoding: {fmt.encoding}")
+        typer.echo(f"Delimiter: {fmt.delimiter!r}")
+    typer.echo(f"Encoding: {fmt.encoding}")
     if fmt.skip_rows:
-        print(f"Skip rows: {fmt.skip_rows}")
+        typer.echo(f"Skip rows: {fmt.skip_rows}")
     if fmt.sheet:
-        print(f"Sheet: {fmt.sheet}")
-    print(f"Sign convention: {fmt.sign_convention}")
-    print(f"Date format: {fmt.date_format}")
-    print(f"Number format: {fmt.number_format}")
-    print(f"Multi-account: {fmt.multi_account}")
-    print(f"\nHeader signature: {fmt.header_signature}")
-    print("\nField mapping:")
+        typer.echo(f"Sheet: {fmt.sheet}")
+    typer.echo(f"Sign convention: {fmt.sign_convention}")
+    typer.echo(f"Date format: {fmt.date_format}")
+    typer.echo(f"Number format: {fmt.number_format}")
+    typer.echo(f"Multi-account: {fmt.multi_account}")
+    typer.echo(f"\nHeader signature: {fmt.header_signature}")
+    typer.echo("\nField mapping:")
     for field, col in fmt.field_mapping.items():
-        print(f"  {field} ← {col}")
+        typer.echo(f"  {field} ← {col}")
     if fmt.skip_trailing_patterns:
-        print(f"\nSkip trailing patterns: {fmt.skip_trailing_patterns}")
-    print()
+        typer.echo(f"\nSkip trailing patterns: {fmt.skip_trailing_patterns}")
+    typer.echo()
 
 
 @app.command("delete-format")
@@ -681,12 +683,12 @@ def _print_import_status(db: Database) -> None:
     """).fetchall()
 
     if not tables:
-        print("\n📭 No imported data found.")
-        print("   Run 'moneybin import file <path>' to get started.")
+        typer.echo("\n📭 No imported data found.")
+        typer.echo("   Run 'moneybin import file <path>' to get started.")
         return
 
-    print("\n📊 Imported Data Summary")
-    print("=" * 60)
+    typer.echo("\n📊 Imported Data Summary")
+    typer.echo("=" * 60)
 
     from sqlglot import exp
 
@@ -713,6 +715,6 @@ def _print_import_status(db: Database) -> None:
             except Exception:  # noqa: BLE001 — column may not exist in all tables
                 logger.debug(f"Could not get date range for {schema}.{table}")
 
-        print(f"  {schema}.{table}: {count:,} rows{date_info}")
+        typer.echo(f"  {schema}.{table}: {count:,} rows{date_info}")
 
-    print()
+    typer.echo()

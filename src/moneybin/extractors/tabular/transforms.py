@@ -14,6 +14,7 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 
 import polars as pl
 
@@ -178,7 +179,7 @@ def transform_dataframe(
     # Build output rows, skipping rejected indices
     out_transaction_ids: list[str] = []
     out_transaction_dates: list[date] = []
-    out_amounts: list[float] = []
+    out_amounts: list[Decimal] = []
     out_descriptions: list[str] = []
     out_original_amounts: list[str] = []
     out_original_dates: list[str] = []
@@ -223,7 +224,7 @@ def transform_dataframe(
         schema={
             "transaction_id": pl.Utf8,
             "transaction_date": pl.Date,
-            "amount": pl.Float64,
+            "amount": pl.Decimal(precision=18, scale=2),
             "description": pl.Utf8,
             "original_amount": pl.Utf8,
             "original_date_str": pl.Utf8,
@@ -299,7 +300,7 @@ def _extract_amounts(
     field_mapping: dict[str, str],
     sign_convention: str,
     number_format: str,
-) -> tuple[list[float | None], dict[int, str]]:
+) -> tuple[list[Decimal | None], dict[int, str]]:
     """Extract and normalize amounts from the DataFrame.
 
     Handles both single-amount and split debit/credit columns.
@@ -314,7 +315,7 @@ def _extract_amounts(
     Returns:
         Tuple of (amounts list, rejection map {idx: reason}).
     """
-    parsed: list[float | None] = []
+    parsed: list[Decimal | None] = []
     rejections: dict[int, str] = {}
     n = len(df)
 
@@ -329,10 +330,10 @@ def _extract_amounts(
             debit_val = parse_amount_str(debit_strs[idx], number_format)
             credit_val = parse_amount_str(credit_strs[idx], number_format)
 
-            if debit_val is not None and debit_val != 0.0:
+            if debit_val is not None and debit_val != 0:
                 # Debit = expense → negative
                 parsed.append(-abs(debit_val))
-            elif credit_val is not None and credit_val != 0.0:
+            elif credit_val is not None and credit_val != 0:
                 # Credit = income → positive
                 parsed.append(abs(credit_val))
             else:
@@ -418,10 +419,10 @@ def _validate_running_balance(
         Updated TransformResult with ``balance_validated`` set and, when
         auto-correction fires, negated amounts in ``transactions``.
     """
-    _balance_tolerance = 0.01
+    _balance_tolerance = Decimal("0.01")
     _pass_threshold = 0.90
 
-    amounts: list[float] = result.transactions["amount"].to_list()
+    amounts: list[Decimal] = result.transactions["amount"].to_list()
     row_numbers: list[int] = result.transactions["row_number"].to_list()
     n = len(amounts)
 
@@ -430,7 +431,7 @@ def _validate_running_balance(
         return result
 
     # Parse balance strings once, mapped by accepted row numbers (0-indexed).
-    balances: list[float | None] = []
+    balances: list[Decimal | None] = []
     for row_num in row_numbers:
         idx = row_num - 1
         if idx < len(balance_strs):
@@ -439,14 +440,14 @@ def _validate_running_balance(
             balances.append(None)
 
     # Pre-compute valid consecutive pairs where both balances are present
-    valid_pairs: list[tuple[int, float]] = []
+    valid_pairs: list[tuple[int, Decimal]] = []
     for i in range(1, n):
         b_prev = balances[i - 1]
         b_curr = balances[i]
         if b_prev is not None and b_curr is not None:
-            valid_pairs.append((i, round(b_curr - b_prev, 2)))
+            valid_pairs.append((i, (b_curr - b_prev).quantize(Decimal("0.01"))))
 
-    def _pass_rate(amt_list: list[float]) -> float:
+    def _pass_rate(amt_list: list[Decimal]) -> float:
         """Fraction of valid balance pairs where delta ≈ amount."""
         checks = len(valid_pairs)
         if checks == 0:
@@ -495,7 +496,7 @@ def _generate_transaction_ids(
     src_txn_id_col: str | None,
     account_id: str,
     original_date_strs: list[str],
-    parsed_amounts: list[float | None],
+    parsed_amounts: list[Decimal | None],
     descriptions: list[str],
     row_numbers: list[int],
     source_type: str,

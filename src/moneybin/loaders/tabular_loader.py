@@ -224,24 +224,29 @@ class TabularLoader:
                     ),
                 }
 
-        self.db.execute(
-            "DELETE FROM raw.tabular_transactions WHERE import_id = ?",
-            [import_id],
-        )
-        self.db.execute(
-            "DELETE FROM raw.tabular_accounts WHERE import_id = ?",
-            [import_id],
-        )
-
-        self.db.execute(
-            """
-            UPDATE raw.import_log SET
-                status = 'reverted',
-                reverted_at = CURRENT_TIMESTAMP
-            WHERE import_id = ?
-            """,
-            [import_id],
-        )
+        self.db.begin()
+        try:
+            self.db.execute(
+                "DELETE FROM raw.tabular_transactions WHERE import_id = ?",
+                [import_id],
+            )
+            self.db.execute(
+                "DELETE FROM raw.tabular_accounts WHERE import_id = ?",
+                [import_id],
+            )
+            self.db.execute(
+                """
+                UPDATE raw.import_log SET
+                    status = 'reverted',
+                    reverted_at = CURRENT_TIMESTAMP
+                WHERE import_id = ?
+                """,
+                [import_id],
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         logger.info(f"Reverted import {import_id[:8]}...: {txn_deleted} rows deleted")
         return {"status": "reverted", "rows_deleted": txn_deleted}

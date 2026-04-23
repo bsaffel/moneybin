@@ -4,6 +4,7 @@ These tests exercise the full detect → read → map → transform pipeline
 using real fixture files. The load stage uses a mock database.
 """
 
+from decimal import Decimal
 from pathlib import Path
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "tabular"
@@ -387,11 +388,11 @@ class TestEdgeCases:
         assert len(result.transactions) > 0
         amounts = result.transactions["amount"].to_list()
         # Grocery purchase should be -52.30, not -5230.0
-        assert any(abs(a - (-52.30)) < 0.01 for a in amounts), (
+        assert Decimal("-52.30") in amounts, (
             f"Expected -52.30 in amounts, got {amounts}"
         )
         # Payroll should be 2500.00
-        assert any(abs(a - 2500.00) < 0.01 for a in amounts), (
+        assert Decimal("2500.00") in amounts, (
             f"Expected 2500.00 in amounts, got {amounts}"
         )
 

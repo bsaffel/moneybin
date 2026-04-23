@@ -1,5 +1,7 @@
 """Tests for date format detection and number format detection."""
 
+from decimal import Decimal
+
 from moneybin.extractors.tabular.date_detection import (
     detect_date_format,
     detect_number_format,
@@ -84,33 +86,33 @@ class TestParseAmountStr:
     """Tests for amount string parsing."""
 
     def test_us_basic(self) -> None:
-        assert parse_amount_str("1,234.56", "us") == 1234.56
+        assert parse_amount_str("1,234.56", "us") == Decimal("1234.56")
 
     def test_european_basic(self) -> None:
-        assert parse_amount_str("1.234,56", "european") == 1234.56
+        assert parse_amount_str("1.234,56", "european") == Decimal("1234.56")
 
     def test_swiss_french_basic(self) -> None:
-        assert parse_amount_str("1 234,56", "swiss_french") == 1234.56
+        assert parse_amount_str("1 234,56", "swiss_french") == Decimal("1234.56")
 
     def test_zero_decimal(self) -> None:
-        assert parse_amount_str("1,234", "zero_decimal") == 1234.0
+        assert parse_amount_str("1,234", "zero_decimal") == Decimal("1234")
 
     def test_currency_symbol_stripped(self) -> None:
-        assert parse_amount_str("$1,234.56", "us") == 1234.56
-        assert parse_amount_str("€1.234,56", "european") == 1234.56
-        assert parse_amount_str("¥1,234", "zero_decimal") == 1234.0
+        assert parse_amount_str("$1,234.56", "us") == Decimal("1234.56")
+        assert parse_amount_str("€1.234,56", "european") == Decimal("1234.56")
+        assert parse_amount_str("¥1,234", "zero_decimal") == Decimal("1234")
 
     def test_parentheses_as_negative(self) -> None:
-        assert parse_amount_str("(42.50)", "us") == -42.50
+        assert parse_amount_str("(42.50)", "us") == Decimal("-42.50")
 
     def test_dr_suffix(self) -> None:
-        assert parse_amount_str("42.50 DR", "us") == -42.50
+        assert parse_amount_str("42.50 DR", "us") == Decimal("-42.50")
 
     def test_cr_suffix(self) -> None:
-        assert parse_amount_str("42.50 CR", "us") == 42.50
+        assert parse_amount_str("42.50 CR", "us") == Decimal("42.50")
 
     def test_negative_sign(self) -> None:
-        assert parse_amount_str("-42.50", "us") == -42.50
+        assert parse_amount_str("-42.50", "us") == Decimal("-42.50")
 
     def test_empty_returns_none(self) -> None:
         assert parse_amount_str("", "us") is None
