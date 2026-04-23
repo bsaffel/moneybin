@@ -207,6 +207,13 @@ class MCPConfig(BaseModel):
             '(e.g. ["core.fct_transactions"]). None means all tables are permitted.'
         ),
     )
+    core_namespaces: list[str] | None = Field(
+        default=None,
+        description=(
+            "MCP namespaces registered at connection time. "
+            "None uses the default core set. Set to ['*'] to load all tools."
+        ),
+    )
 
 
 class SyncConfig(BaseModel):
