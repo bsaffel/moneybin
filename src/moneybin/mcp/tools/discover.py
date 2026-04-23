@@ -16,21 +16,6 @@ from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 logger = logging.getLogger(__name__)
 
 
-def _get_registry() -> NamespaceRegistry | None:
-    """Try to obtain the NamespaceRegistry from server.py.
-
-    ``get_registry()`` is added in Task 13. Until then, this returns
-    None so the discover tool can degrade gracefully.
-    """
-    import moneybin.mcp.server as server_mod
-
-    fn = getattr(server_mod, "get_registry", None)
-    if fn is None:
-        return None
-    registry: NamespaceRegistry = fn()
-    return registry
-
-
 @mcp_tool(sensitivity="low")
 def moneybin_discover(namespace: str) -> ResponseEnvelope:
     """Load tools from an extended namespace on demand.
@@ -42,18 +27,9 @@ def moneybin_discover(namespace: str) -> ResponseEnvelope:
     Args:
         namespace: The namespace to load (e.g. 'categorize', 'budget', 'tax').
     """
-    from moneybin.mcp.server import mcp
+    from moneybin.mcp.server import get_registry, mcp
 
-    registry = _get_registry()
-    if registry is None:
-        logger.warning("get_registry not available yet — discover is a no-op")
-        return build_envelope(
-            data={
-                "namespace": namespace,
-                "error": "Namespace registry not initialized yet",
-            },
-            sensitivity="low",
-        )
+    registry = get_registry()
 
     tools = registry.get_namespace_tools(namespace)
     if not tools:

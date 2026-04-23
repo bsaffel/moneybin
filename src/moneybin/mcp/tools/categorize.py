@@ -254,12 +254,10 @@ def categorize_uncategorized(
                 ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
             ORDER BY t.transaction_date DESC
-            LIMIT ?
             """,
-            [clamped_limit],
         )
         columns = [desc[0] for desc in result.description]
-        fetched = result.fetchall()
+        fetched = result.fetchmany(clamped_limit)
     except duckdb.CatalogException:
         return build_envelope(
             data=[],

@@ -119,14 +119,9 @@ def resource_schema() -> str:
 def resource_tools() -> str:
     """Available tool namespaces with descriptions and loaded status."""
     logger.info("Resource read: moneybin://tools")
-    from moneybin.mcp.namespaces import CORE_NAMESPACES_DEFAULT, NAMESPACE_DESCRIPTIONS
+    from moneybin.mcp.namespaces import CORE_NAMESPACES_DEFAULT
+    from moneybin.mcp.server import get_registry
 
-    core = [
-        {
-            "namespace": ns,
-            "loaded": True,
-            "description": NAMESPACE_DESCRIPTIONS.get(ns, ""),
-        }
-        for ns in sorted(CORE_NAMESPACES_DEFAULT)
-    ]
-    return json.dumps({"core": core, "discover_tool": "moneybin.discover"}, indent=2)
+    registry = get_registry()
+    data = registry.tools_resource_data(CORE_NAMESPACES_DEFAULT)
+    return json.dumps(data, indent=2)
