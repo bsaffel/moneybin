@@ -59,8 +59,8 @@ SELECT
   source_origin, /* Institution/format that produced this data */
   import_id, /* UUID linking to import batch */
   row_number, /* 1-based source file row number */
-  extracted_at,
-  loaded_at
+  extracted_at, /* When data was parsed from source */
+  loaded_at /* When record was loaded into database */
 FROM ranked
 WHERE
   _row_num = 1

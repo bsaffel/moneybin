@@ -13,10 +13,10 @@ SELECT
   currency, /* Default currency */
   NULL::TEXT AS routing_number, /* Not available from tabular imports */
   NULL::TEXT AS institution_fid, /* Not available from tabular imports */
-  source_file,
-  source_type,
-  source_origin,
-  import_id,
-  extracted_at,
-  loaded_at
+  source_file, /* Path to source file */
+  source_type, /* Import pathway: csv, tsv, excel, parquet, feather, pipe */
+  source_origin, /* Institution/format that produced this data */
+  import_id, /* UUID linking to import batch */
+  extracted_at, /* When data was parsed from source */
+  loaded_at /* When record was loaded into database */
 FROM raw.tabular_accounts
