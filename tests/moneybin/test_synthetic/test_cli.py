@@ -20,7 +20,7 @@ class TestGenerateCommand:
     def mock_profile(self, mocker: Any) -> None:
         """Prevent generate/reset from mutating process-wide profile state."""
         mocker.patch("moneybin.config.get_current_profile", return_value="default")
-        mocker.patch("moneybin.config.set_current_profile")
+        self.mock_set_profile = mocker.patch("moneybin.config.set_current_profile")
         mocker.patch("moneybin.database.close_database")
 
     @pytest.fixture
@@ -88,6 +88,8 @@ class TestGenerateCommand:
         assert result.exit_code == 0
         mock_engine.assert_called_once()
         mock_writer.return_value.write.assert_called_once()
+        # Profile must be restored after successful generation
+        self.mock_set_profile.assert_called_with("default")
 
     def test_generate_unknown_persona(
         self,
@@ -131,7 +133,6 @@ class TestResetCommand:
         mock_db.execute.return_value.fetchone.return_value = (1,)
         mock_db.path = Path("/tmp/test.duckdb")
         mocker.patch("moneybin.database.get_database", return_value=mock_db)
-        mocker.patch("moneybin.database.close_database")
 
         # Mock _run_generate to avoid the full pipeline
         mock_run = mocker.patch(
