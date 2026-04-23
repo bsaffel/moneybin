@@ -74,9 +74,11 @@ Wraps a function with automatic duration tracking:
 ```python
 from moneybin.metrics import tracked
 
+
 @tracked
-def import_ofx(file_path: Path) -> ImportResult:
-    ...  # duration and success/failure automatically recorded
+def import_ofx(
+    file_path: Path,
+) -> ImportResult: ...  # duration and success/failure automatically recorded
 ```
 
 ### `track_duration` Context Manager

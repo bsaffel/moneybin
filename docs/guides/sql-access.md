@@ -42,8 +42,10 @@ Connect from any DuckDB-compatible tool (Python, R, DBeaver, etc.) using:
 import duckdb
 
 # You'll need the encryption key from `moneybin db key`
-conn = duckdb.connect("~/.moneybin/profiles/default/moneybin.duckdb",
-                       config={"encryption_key": "your-key-here"})
+conn = duckdb.connect(
+    "~/.moneybin/profiles/default/moneybin.duckdb",
+    config={"encryption_key": "your-key-here"},
+)
 df = conn.execute("SELECT * FROM core.fct_transactions").fetchdf()
 ```
 
