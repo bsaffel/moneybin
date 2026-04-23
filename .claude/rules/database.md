@@ -1,5 +1,6 @@
 ---
-globs: ["**/*.sql", "sqlmesh/models/**", "src/moneybin/sql/**", "src/moneybin/**/*.py"]
+description: "Database standards: DuckDB patterns, SQL formatting, schema conventions, model naming, column comments"
+globs: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.py", "src/moneybin/schema.py", "src/moneybin/loaders/**"]
 ---
 
 # Database Standards
@@ -38,15 +39,7 @@ A column name — especially identifiers — must contain the same logical value
 
 ## Model Naming Conventions
 
-| Prefix | Schema | Purpose |
-|---|---|---|
-| `stg_` | `prep` | 1:1 with a source table; light cleaning, type casting, within-source dedup |
-| `int_` | `prep` | Intermediate transformations; not for direct consumption |
-| `dim_` | `core` | Dimension: descriptive entity |
-| `fct_` | `core` | Fact: event/transaction with measures |
-| `bridge_` | `core` | Many-to-many link between facts or dimensions |
-| `agg_` | `core` | Pre-aggregated summary |
-| `seed_` | `prep` | Static reference data loaded from files |
+`stg_`, `int_`, `dim_`, `fct_`, `bridge_`, `agg_`, `seed_` — see CLAUDE.md "Architecture: Data Layers" for the full prefix/schema/purpose table.
 
 `stg_` models use double-underscore to separate source system from entity: `stg_ofx__transactions`. `int_` models use it to separate domain from transformation: `int_transactions__merged`.
 
@@ -81,27 +74,18 @@ Both SQLMesh models and schema DDL use the same pattern: `/* description */` blo
 - `sqlmesh format` converts `--` to `/* */` — both styles work.
 - **Do not use** the `columns` block with `COMMENT` keyword — SQLMesh silently swallows it without writing to DuckDB's catalog. Use inline comments instead.
 
-## DuckDB Function Reference
+## DuckDB vs. PostgreSQL
 
-### Date/Time
-- Parse: `strptime(date_string, '%Y-%m-%d')`
-- Format: `strftime(date_col, '%Y-%m')`
-- Extract: `YEAR(date_col)`, `MONTH(date_col)`, `DAY(date_col)`
-- Truncate: `date_trunc('month', date_col)`
+Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
 
-### Aggregation & Windows
-- Running total: `SUM(amount) OVER (ORDER BY date ROWS UNBOUNDED PRECEDING)`
-- Previous period: `LAG(amount, 1) OVER (PARTITION BY account ORDER BY date)`
-- Round currency: `ROUND(amount, 2)`
-
-### File I/O
-- Read: `read_csv('file.csv', auto_detect=true)`, `read_parquet('data/*.parquet')`
-- Write: `COPY (SELECT ...) TO 'output.csv' (HEADER, DELIMITER ',')`
-
-### String
-- Pattern: `regexp_matches(description, 'PATTERN')`
-- Match: `description LIKE '%MERCHANT%'`
-- Case: `UPPER()`, `LOWER()`
+| Task | DuckDB (correct) | PostgreSQL (wrong) |
+|------|-------------------|--------------------|
+| Parse date string | `strptime(s, '%Y-%m-%d')` | `TO_DATE(s, 'YYYY-MM-DD')` |
+| Format date | `strftime(d, '%Y-%m')` | `TO_CHAR(d, 'YYYY-MM')` |
+| Extract year | `YEAR(d)`, `MONTH(d)`, `DAY(d)` | `EXTRACT(YEAR FROM d)` |
+| Regex match | `regexp_matches(s, 'PAT')` | `s ~ 'PAT'` |
+| Read file | `read_csv('f.csv')`, `read_parquet('*.parquet')` | N/A |
+| Write file | `COPY (...) TO 'f.csv' (HEADER, DELIMITER ',')` | `\copy` or `COPY` with different options |
 
 ## Anti-Patterns
 

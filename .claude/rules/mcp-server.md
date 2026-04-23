@@ -1,5 +1,6 @@
 ---
-paths: ["src/moneybin/mcp/**", "src/moneybin/services/**"]
+description: "MCP server: tool taxonomy, response envelope, sensitivity tiers, service layer architecture"
+globs: ["src/moneybin/mcp/**", "src/moneybin/services/**"]
 ---
 
 # MCP Server
