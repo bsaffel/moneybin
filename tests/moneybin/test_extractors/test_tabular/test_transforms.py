@@ -1,5 +1,6 @@
 """Tests for Stage 4 transform and validation."""
 
+from decimal import Decimal
 from typing import TypedDict
 
 import polars as pl
@@ -71,8 +72,8 @@ class TestTransformBasic:
             import_id="test-import-123",
         )
         assert len(result.transactions) == 2
-        assert float(result.transactions["amount"][0]) == -42.50
-        assert float(result.transactions["amount"][1]) == 100.00
+        assert result.transactions["amount"][0] == Decimal("-42.50")
+        assert result.transactions["amount"][1] == Decimal("100.00")
         assert result.transactions["description"][0] == "KROGER #1234"
 
     def test_original_values_preserved(self) -> None:
@@ -156,7 +157,7 @@ class TestSignConventionTransform:
             source_origin=base["source_origin"],
             import_id=base["import_id"],
         )
-        assert float(result.transactions["amount"][0]) == -42.50
+        assert result.transactions["amount"][0] == Decimal("-42.50")
 
     def test_split_debit_credit(self) -> None:
         df = _make_df(
@@ -182,8 +183,8 @@ class TestSignConventionTransform:
             source_origin="test",
             import_id="test-123",
         )
-        assert float(result.transactions["amount"][0]) == -42.50
-        assert float(result.transactions["amount"][1]) == 100.00
+        assert result.transactions["amount"][0] == Decimal("-42.50")
+        assert result.transactions["amount"][1] == Decimal("100.00")
 
 
 class TestRunningBalanceValidation:

@@ -28,6 +28,10 @@ class AccountMatch:
     """Fuzzy match candidates for "did you mean?" prompt."""
 
 
+# TODO: wire into import pipeline (_import_tabular in import_service.py)
+# Currently the pipeline uses slugify(account_name) directly. This function
+# should replace that to enable matching against existing accounts by number,
+# slug, or fuzzy name — preventing duplicate account records on re-import.
 def match_account(
     account_name: str,
     *,

@@ -71,6 +71,9 @@ class TransformResult:
     balance_validated: bool = False
     """True if running balance was checked and matched."""
 
+    sign_auto_corrected: bool = False
+    """True if amounts were negated to match running balance."""
+
 
 def transform_dataframe(
     *,
@@ -473,14 +476,16 @@ def _validate_running_balance(
     inverted_rate = _pass_rate(inverted)
 
     if inverted_rate >= _pass_threshold:
-        logger.info(
-            f"Running balance validated after sign inversion: "
-            f"{inverted_rate:.0%} pass rate — auto-correcting amounts"
+        logger.warning(
+            f"⚠️  Running balance validated after sign inversion: "
+            f"{inverted_rate:.0%} pass rate — auto-correcting amounts. "
+            f"Use --sign to override if this is wrong."
         )
         result.transactions = result.transactions.with_columns(
             (-pl.col("amount")).alias("amount")
         )
         result.balance_validated = True
+        result.sign_auto_corrected = True
         return result
 
     logger.warning(

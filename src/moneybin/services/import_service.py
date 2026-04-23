@@ -349,12 +349,34 @@ def _import_tabular(
     result = ImportResult(file_path=str(file_path), file_type="tabular")
     _t0 = time.monotonic()
 
-    # Stage 1: Format detection
+    # Load formats early so explicit --format can influence file reading
+    builtin_formats = load_builtin_formats()
+    all_formats = merge_formats(builtin_formats, load_formats_from_db(db))
+
+    matched_format: TabularFormat | None = None
+    if format_name:
+        if format_name not in all_formats:
+            raise ValueError(
+                f"Unknown format {format_name!r}. Available: {sorted(all_formats)}"
+            )
+        matched_format = all_formats[format_name]
+
+    # Stage 1: Format detection — apply matched format's properties as defaults
+    effective_delimiter = delimiter or (
+        matched_format.delimiter if matched_format else None
+    )
+    effective_encoding = encoding or (
+        matched_format.encoding if matched_format else None
+    )
+    effective_sheet = sheet or (matched_format.sheet if matched_format else None)
+
     format_info = detect_format(
         file_path,
-        format_override=None,
-        delimiter_override=delimiter,
-        encoding_override=encoding,
+        format_override=matched_format.file_type
+        if matched_format and matched_format.file_type != "auto"
+        else None,
+        delimiter_override=effective_delimiter,
+        encoding_override=effective_encoding,
         no_size_limit=no_size_limit,
     )
 
@@ -362,7 +384,13 @@ def _import_tabular(
     read_result = read_file(
         file_path,
         format_info,
-        sheet=sheet,
+        sheet=effective_sheet,
+        skip_rows=matched_format.skip_rows
+        if matched_format and matched_format.skip_rows
+        else None,
+        skip_trailing_patterns=matched_format.skip_trailing_patterns
+        if matched_format
+        else None,
         no_row_limit=no_row_limit,
     )
     df = read_result.df
@@ -370,15 +398,8 @@ def _import_tabular(
     if len(df) == 0:
         raise ValueError(f"No data rows found in {file_path.name}")
 
-    # Stage 3: Column mapping
-    builtin_formats = load_builtin_formats()
-    all_formats = merge_formats(builtin_formats, load_formats_from_db(db))
-
-    matched_format: TabularFormat | None = None
-    if format_name:
-        if format_name in all_formats:
-            matched_format = all_formats[format_name]
-    else:
+    # Stage 3: Column mapping — match by headers if not already matched by name
+    if not matched_format:
         headers = list(df.columns)
         for fmt in all_formats.values():
             if fmt.matches_headers(headers):
@@ -393,7 +414,7 @@ def _import_tabular(
         mapping_result_is_multi_account = matched_format.multi_account
         mapping_result_confidence = "high"
         format_source = (
-            "built-in" if matched_format.name in builtin_formats else "user-saved"
+            "built-in" if matched_format.name in builtin_formats else "saved"
         )
     else:
         mapping_result = map_columns(df, overrides=overrides)
