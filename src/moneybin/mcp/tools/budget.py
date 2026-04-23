@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 @mcp_tool(sensitivity="low")
 def budget_set(
     category: str,
-    monthly_amount: float,
+    monthly_amount: str,
     start_month: str | None = None,
 ) -> ResponseEnvelope:
     """Create or update a monthly budget target for a category.
@@ -33,13 +33,13 @@ def budget_set(
 
     Args:
         category: Spending category name (should match transaction categories).
-        monthly_amount: Monthly spending target in USD.
+        monthly_amount: Monthly spending target in USD (as string, e.g. "200.00").
         start_month: First active month (YYYY-MM). Defaults to current month.
     """
     service = BudgetService(get_database())
     result = service.set_budget(
         category=category,
-        monthly_amount=Decimal(str(monthly_amount)),
+        monthly_amount=Decimal(monthly_amount),
         start_month=start_month,
     )
     return result.to_envelope()

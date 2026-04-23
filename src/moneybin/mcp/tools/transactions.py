@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 def transactions_search(
     start_date: str | None = None,
     end_date: str | None = None,
-    min_amount: float | None = None,
-    max_amount: float | None = None,
+    min_amount: str | None = None,
+    max_amount: str | None = None,
     description: str | None = None,
     account_id: str | None = None,
     category: str | None = None,
@@ -42,8 +42,8 @@ def transactions_search(
     Args:
         start_date: ISO 8601 start date (inclusive).
         end_date: ISO 8601 end date (inclusive).
-        min_amount: Minimum amount (use negative for expenses).
-        max_amount: Maximum amount (use negative for expenses).
+        min_amount: Minimum amount as string (use negative for expenses).
+        max_amount: Maximum amount as string (use negative for expenses).
         description: Pattern matched against description and memo (case-insensitive).
         account_id: Filter to a specific account.
         category: Filter by assigned category.
@@ -55,8 +55,8 @@ def transactions_search(
     result = service.search(
         start_date=start_date,
         end_date=end_date,
-        min_amount=Decimal(str(min_amount)) if min_amount is not None else None,
-        max_amount=Decimal(str(max_amount)) if max_amount is not None else None,
+        min_amount=Decimal(min_amount) if min_amount is not None else None,
+        max_amount=Decimal(max_amount) if max_amount is not None else None,
         description=description,
         account_id=account_id,
         category=category,

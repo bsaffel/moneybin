@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 
 class DetailLevel(StrEnum):
@@ -44,7 +44,7 @@ class SummaryMeta:
     returned_count: int
     has_more: bool = False
     period: str | None = None
-    sensitivity: str = "low"
+    sensitivity: Literal["low", "medium", "high"] = "low"
     display_currency: str = "USD"
     degraded: bool = False
     degraded_reason: str | None = None
@@ -106,7 +106,7 @@ class ResponseEnvelope:
 def build_envelope(
     *,
     data: list[dict[str, Any]] | dict[str, Any],
-    sensitivity: str,
+    sensitivity: Literal["low", "medium", "high"],
     total_count: int | None = None,
     period: str | None = None,
     display_currency: str = "USD",

@@ -105,7 +105,7 @@ def import_file(
             data={"error": str(e)},
             sensitivity="low",
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — import pipeline raises varied exception types
         logger.exception(f"Import failed: {Path(file_path).name!r}")
         return build_envelope(
             data={"error": f"Import failed: {e}"},
@@ -169,7 +169,7 @@ def import_csv_preview(file_path: str) -> ResponseEnvelope:
         )
     except (FileNotFoundError, ValueError) as e:
         return build_envelope(data={"error": str(e)}, sensitivity="low")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — import pipeline raises varied exception types
         logger.exception(f"Preview failed: {Path(file_path).name!r}")
         return build_envelope(
             data={"error": f"Preview failed: {e}"},
@@ -207,7 +207,7 @@ def import_status(
                 "Use import.file to import a new file",
             ],
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("import_status failed")
         return build_envelope(
             data={"error": str(e)},
@@ -258,7 +258,7 @@ def import_list_formats() -> ResponseEnvelope:
                 "Use import.file with format_name to import using a specific format",
             ],
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("import_list_formats failed")
         return build_envelope(
             data={"error": str(e)},

@@ -1,7 +1,7 @@
 # MCP Tool Surface
 
-> Last updated: 2026-04-23
-> Status: In-Progress
+> Last updated: 2026-04-17
+> Status: Ready
 > Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
@@ -1101,6 +1101,60 @@ Active consent grants, configured AI backend (name, type, is_local), consent mod
 
 Core and app table schemas with column names, types, and descriptions. Lets the AI write accurate SQL for `sql.query` without calling a discovery tool first.
 
+### `moneybin://tools`
+
+Available tool namespaces with one-line descriptions, tool counts, and loaded/unloaded status. Lets the AI know what capabilities exist without seeing every tool schema. Example:
+
+```json
+{
+  "core": [
+    {"namespace": "overview", "tools": 2, "loaded": true, "description": "Data status and financial health snapshot"},
+    {"namespace": "spending", "tools": 4, "loaded": true, "description": "Expense analysis, trends, category breakdowns"},
+    {"namespace": "accounts", "tools": 4, "loaded": true, "description": "Account listing, balances, net worth"}
+  ],
+  "extended": [
+    {"namespace": "categorize", "tools": 15, "loaded": false, "description": "Rules, merchant mappings, bulk categorization, auto-rule review, ML"},
+    {"namespace": "budget", "tools": 4, "loaded": false, "description": "Budget targets, status, rollovers"},
+    {"namespace": "tax", "tools": 2, "loaded": false, "description": "W-2 data, deductible expense search"}
+  ],
+  "discover_tool": "moneybin.discover"
+}
+```
+
+Updated dynamically as namespaces are loaded during a session.
+
+---
+
+## 15b. `moneybin.discover` — Namespace discovery meta-tool
+
+Always registered regardless of namespace configuration. Enables progressive disclosure of the full tool surface without overwhelming the AI's context at connection time. See `mcp-architecture.md` §3 "Progressive disclosure via namespace registration" for the design rationale.
+
+- **Name:** `moneybin.discover`
+- **Description:** "Load tools from a namespace. Call this when you need capabilities not in the currently loaded tools. Use the moneybin://tools resource to see available namespaces."
+- **Sensitivity:** `low` — no financial data, just tool metadata.
+- **Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `namespace` | `str` | (required) | Namespace to load (e.g., `categorize`, `budget`, `tax`, `matches`) |
+
+- **Behavior:** Registers all tools in the requested namespace, sends `tools/list_changed` notification, and returns tool names with descriptions so the AI can immediately use them. Idempotent — calling discover on an already-loaded namespace returns the tool list without side effects.
+- **Response `data` shape:**
+
+```json
+{
+  "namespace": "categorize",
+  "tools_loaded": [
+    {"name": "categorize.uncategorized", "description": "Fetch transactions that haven't been categorized yet"},
+    {"name": "categorize.bulk", "description": "Apply categories to multiple transactions at once"},
+    {"name": "categorize.rules", "description": "List active categorization rules"}
+  ],
+  "already_loaded": false
+}
+```
+
+- **CLI equivalent:** N/A — the CLI has all commands available via `--help`. Progressive disclosure is an MCP-specific optimization for AI context management.
+
 ---
 
 ## 16. Migration from prototype
@@ -1181,6 +1235,7 @@ Tools that depend on unbuilt subsystems are included in the full catalog with de
 
 These tools can be fully implemented with the current codebase and existing infrastructure:
 
+**Infrastructure**: `moneybin.discover`
 **`spending.*`**: `summary`, `by_category`, `merchants`, `compare`
 **`cashflow.*`**: `summary`, `income`
 **`accounts.*`**: `list`, `balances`, `networth`
@@ -1191,5 +1246,7 @@ These tools can be fully implemented with the current codebase and existing infr
 **`tax.*`**: `w2`
 **`overview.*`**: `status`, `health`
 **`sql.*`**: `query`
+
+This is a 34-tool surface (33 domain tools + `moneybin.discover`) that can ship independently of any pending spec work. With progressive disclosure, the AI sees ~19 core tools at connection time plus `moneybin.discover`; extended namespaces load on demand.
 
 This is a 33-tool surface that can ship independently of any pending spec work.

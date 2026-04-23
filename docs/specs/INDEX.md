@@ -35,7 +35,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 |---|---|---|---|
 | [Overview](smart-import-overview.md) | Umbrella | ready | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
 | [Tabular Import](smart-import-tabular.md) | Feature | implemented | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB, Maybe). Supersedes archived `csv-import` spec. |
-| [Tabular Cleanup](tabular-import-cleanup.md) | Feature | draft | Post-ship cleanup: ResolvedMapping dataclass, Literal types, config params, DatabaseKeyError handler, Decimal correctness, account matching wiring |
+| [Tabular Cleanup](tabular-import-cleanup.md) | Feature | draft | Post-ship cleanup: ResolvedMapping dataclass, Literal types, config params, DatabaseKeyError handler, Decimal correctness, N+1 merchant batch optimization, account matching wiring |
 | `smart-import-pdf.md` | Feature | planned | Pillar C: native-text PDF import |
 | `smart-import-ai-parsing.md` | Feature | planned | Pillar F: LLM fallback for file parsing |
 

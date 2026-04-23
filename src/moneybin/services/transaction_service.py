@@ -239,10 +239,10 @@ class TransactionService:
         )
 
     def recurring(self, min_occurrences: int = 3) -> RecurringResult:
-        """Detect recurring transaction patterns.
+        """Detect recurring expense transaction patterns (amount < 0).
 
-        Groups transactions by description and rounded absolute amount
-        to identify subscriptions and recurring charges.
+        Groups expense transactions by description and rounded absolute
+        amount to identify subscriptions and recurring charges.
 
         Args:
             min_occurrences: Minimum number of occurrences to consider

@@ -350,7 +350,7 @@ def categorize_bulk(
                                 subcategory=subcategory,
                                 created_by="ai",
                             )
-            except Exception:
+            except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
                 logger.debug(
                     f"Could not resolve merchant for {txn_id}",
                     exc_info=True,
@@ -366,11 +366,12 @@ def categorize_bulk(
                 [txn_id, category, subcategory, merchant_id],
             )
             applied += 1
-        except Exception as e:
+        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
             errors += 1
+            logger.exception(f"categorize_bulk failed for transaction {txn_id!r}")
             error_details.append({
                 "transaction_id": txn_id,
-                "reason": str(e),
+                "reason": "Failed to apply category — check logs for details.",
             })
 
     return build_envelope(
@@ -468,7 +469,7 @@ def categorize_create_rules(
                 ],
             )
             created += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
             skipped += 1
             error_details.append({"name": name, "reason": str(e)})
 
@@ -516,7 +517,7 @@ def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
             data={"error": f"Rule {rule_id} not found"},
             sensitivity="low",
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception(f"delete_rule failed for {rule_id}")
         return build_envelope(
             data={"error": str(e)},
@@ -584,7 +585,7 @@ def categorize_create_merchants(
                 created_by="ai",
             )
             created += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
             skipped += 1
             error_details.append({
                 "canonical_name": canonical_name,
@@ -651,7 +652,7 @@ def categorize_create_category(
             data={"error": f"Category already exists: {category}{sub}"},
             sensitivity="low",
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("create_category failed")
         return build_envelope(
             data={"error": str(e)},
@@ -694,7 +695,7 @@ def categorize_toggle_category(
             data={"error": f"Category {category_id} not found"},
             sensitivity="low",
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("toggle_category failed")
         return build_envelope(
             data={"error": str(e)},
@@ -716,7 +717,7 @@ def categorize_seed() -> ResponseEnvelope:
         from moneybin.services.categorization_service import SeedResult
 
         return SeedResult(seeded_count=count).to_envelope()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("seed_categories failed")
         return build_envelope(
             data={"error": str(e)},

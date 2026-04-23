@@ -49,10 +49,10 @@ def sql_query(query: str) -> ResponseEnvelope:
         rows = result.fetchmany(get_max_rows())
         records = [dict(zip(columns, row, strict=False)) for row in rows]
         return build_envelope(data=records, sensitivity="medium")
-    except Exception as e:
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on query execution
         logger.exception("sql.query failed")
         return build_envelope(
-            data={"error": str(e)},
+            data={"error": "Query execution failed — check syntax and column names."},
             sensitivity="low",
         )
 

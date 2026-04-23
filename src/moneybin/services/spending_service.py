@@ -135,6 +135,9 @@ class SpendingService:
         Returns:
             SpendingSummary with monthly breakdown.
         """
+        if not start_date and not (1 <= months <= 120):
+            raise ValueError(f"months must be between 1 and 120, got {months}")
+
         conditions: list[str] = []
         params: list[object] = []
 
@@ -164,13 +167,11 @@ class SpendingService:
             ORDER BY transaction_year_month DESC
         """
 
+        if not start_date:
+            sql += f"\n            LIMIT {int(months)}"
+
         result = self._db.execute(sql, params)
         rows = result.fetchall()
-
-        # Apply months-based limit in Python when no explicit start_date is given.
-        # DuckDB LIMIT ? with a parameterized value is unreliable in all contexts.
-        if not start_date:
-            rows = rows[:months]
 
         monthly = [
             MonthlySpending(
@@ -213,6 +214,9 @@ class SpendingService:
         Returns:
             CategoryBreakdown with per-category totals.
         """
+        if not start_date and not (1 <= months <= 120):
+            raise ValueError(f"months must be between 1 and 120, got {months}")
+
         conditions: list[str] = ["t.amount < 0"]
         params: list[object] = []
 
@@ -220,7 +224,6 @@ class SpendingService:
             conditions.append("t.transaction_date >= ?")
             params.append(start_date)
         else:
-            # months is a validated integer, safe to interpolate in INTERVAL
             conditions.append(
                 f"t.transaction_year_month >= strftime(CURRENT_DATE - INTERVAL '{months} months', '%Y-%m')"
             )
@@ -251,7 +254,9 @@ class SpendingService:
         result = self._db.execute(sql, params)
         rows = result.fetchall()
 
-        grand_total = sum(Decimal(str(row[2])) for row in rows) or Decimal("1")
+        grand_total = sum(Decimal(str(row[2])) for row in rows)
+        if not grand_total:
+            return CategoryBreakdown(categories=[], period_label="")
         categories: list[CategorySpending] = []
         for row in rows:
             cat_name = str(row[0])
