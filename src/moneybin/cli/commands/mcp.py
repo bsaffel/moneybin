@@ -348,11 +348,10 @@ def serve(
         logger.info(f"MCP server starting (transport={transport}, db={db_path})")
         mcp.run(transport=validated_transport)
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        typer.echo(
-            "💡 Run 'moneybin db unlock' to unlock the database first.",
-            err=True,
-        )
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except FileNotFoundError as e:
         logger.error(f"Database not found: {e}")

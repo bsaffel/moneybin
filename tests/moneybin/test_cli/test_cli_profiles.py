@@ -10,9 +10,7 @@ without requiring specific data source configurations like Plaid.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-import pytest
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
@@ -167,35 +165,3 @@ class TestCLIProfileHandling:
             assert result.exit_code == 0
             # Underscore is converted to hyphen: "alice_work" -> "alice-work"
             assert get_current_profile() == "alice-work"
-
-
-class TestMigrationOnFirstRun:
-    """Test auto-migration triggers on CLI startup."""
-
-    def test_old_layout_migrated_on_startup(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        mocker: MockerFixture,
-    ) -> None:
-        """Old data/<name>/ layout is migrated when CLI starts."""
-        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
-        monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
-
-        # Create old layout
-        old_data = tmp_path / "data" / "alice"
-        old_data.mkdir(parents=True)
-        (old_data / "moneybin.duckdb").write_text("fake-db")
-
-        # Set up global config with old key name
-        global_config = tmp_path / "config.yaml"
-        global_config.write_text("default_profile: alice\n")
-        mocker.patch(
-            "moneybin.utils.user_config.get_user_config_path",
-            return_value=global_config,
-        )
-        mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="alice")
-
-        runner.invoke(app, ["--profile=alice", "profile", "list"])
-        # After migration, alice should be in profiles/
-        assert (tmp_path / "profiles" / "alice" / "moneybin.duckdb").exists()

@@ -28,10 +28,12 @@ def migrate_apply(
     """Apply pending database migrations."""
     try:
         db = get_database()
-    except DatabaseKeyError:
-        logger.error("❌ Database encryption key not found")
-        logger.info("💡 Run 'moneybin db unlock' to provide your passphrase")
-        raise typer.Exit(1) from None
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
     runner = MigrationRunner(db)
 
@@ -66,10 +68,12 @@ def migrate_status() -> None:
     """Show migration state — applied, pending, and drift warnings."""
     try:
         db = get_database()
-    except DatabaseKeyError:
-        logger.error("❌ Database encryption key not found")
-        logger.info("💡 Run 'moneybin db unlock' to provide your passphrase")
-        raise typer.Exit(1) from None
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
     runner = MigrationRunner(db)
 

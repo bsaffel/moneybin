@@ -415,6 +415,24 @@ class Database:
         logger.debug(f"Database connection closed: {self._db_path}")
 
 
+def database_key_error_hint() -> str:
+    """Return the appropriate hint for a DatabaseKeyError.
+
+    Checks whether the database file exists to distinguish first-run
+    (need ``db init``) from locked (need ``db unlock``).
+
+    Returns:
+        A hint string with the correct recovery command.
+    """
+    try:
+        db_path = get_settings().database.path
+        if db_path.exists():
+            return "💡 Run 'moneybin db unlock' to unlock the database first"
+        return "💡 Run 'moneybin db init' to create the database first"
+    except Exception:  # noqa: BLE001 — fallback if settings can't load
+        return "💡 Run 'moneybin db init' to create the database"
+
+
 # Singleton instance
 _database_instance: Database | None = None
 

@@ -622,10 +622,10 @@ def db_key() -> None:
     try:
         key = store.get_key("DATABASE__ENCRYPTION_KEY")
     except SecretNotFoundError as e:
-        logger.error(
-            "❌ No encryption key found. Database may be locked. "
-            "Run 'moneybin db unlock' first."
-        )
+        from moneybin.database import database_key_error_hint
+
+        logger.error("❌ No encryption key found")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     logger.warning(

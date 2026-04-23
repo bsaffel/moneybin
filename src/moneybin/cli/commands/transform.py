@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 
 from moneybin.config import get_database_path
+from moneybin.database import DatabaseKeyError, database_key_error_hint
 
 # Context is imported at module level so tests can patch
 # moneybin.cli.commands.transform.Context. SQLMesh has no type stubs.
@@ -39,6 +40,10 @@ def plan_transforms(
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
+    except DatabaseKeyError as e:
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh plan failed: {e}")
         raise typer.Exit(1) from e
@@ -58,6 +63,10 @@ def apply_transforms() -> None:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("✅ SQLMesh transforms applied")
+    except DatabaseKeyError as e:
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh apply failed: {e}")
         raise typer.Exit(1) from e
@@ -76,6 +85,10 @@ def transform_status() -> None:
         else:
             logger.info("No SQLMesh environment initialized yet")
             logger.info("💡 Run 'moneybin transform apply' to initialize")
+    except DatabaseKeyError as e:
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh status failed: {e}")
         raise typer.Exit(1) from e
@@ -89,6 +102,10 @@ def transform_validate() -> None:
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
+    except DatabaseKeyError as e:
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Validation failed: {e}")
         raise typer.Exit(1) from e
@@ -109,6 +126,10 @@ def transform_audit(
         ctx = Context(paths=str(_SQLMESH_ROOT))
         ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
+    except DatabaseKeyError as e:
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Audit failed: {e}")
         raise typer.Exit(1) from e
@@ -143,6 +164,10 @@ def transform_restate(
             no_prompts=True,
         )
         logger.info(f"✅ Restated {model}")
+    except DatabaseKeyError as e:
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Restatement failed: {e}")
         raise typer.Exit(1) from e

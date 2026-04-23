@@ -195,8 +195,10 @@ def import_file(
         )
         logger.info(f"✅ {result.summary()}")
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except ValueError as e:
         logger.error(f"❌ {e}")
@@ -234,8 +236,10 @@ def import_history(
         loader = TabularLoader(db)
         records = loader.get_import_history(limit=limit, import_id=import_id)
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     if not records:
@@ -302,8 +306,10 @@ def import_revert(
         loader = TabularLoader(db)
         result = loader.revert_import(import_id)
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     status = result.get("status")
@@ -491,8 +497,10 @@ def list_formats() -> None:
         db = get_database()
         user_formats = load_formats_from_db(db)
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
         user_formats = {}
@@ -538,8 +546,10 @@ def show_format(name: str = typer.Argument(..., help="Format name to show")) -> 
         db = get_database()
         user_formats = load_formats_from_db(db)
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
         user_formats = {}
@@ -612,8 +622,10 @@ def delete_format(
         db = get_database()
         deleted = delete_format_from_db(db, name)
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     if not deleted:
@@ -645,8 +657,10 @@ def import_status() -> None:
         db = get_database()
         _print_import_status(db)
     except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run `moneybin db unlock` to unlock the database first")
+        from moneybin.database import database_key_error_hint
+
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except Exception as e:  # noqa: BLE001 — surface connection errors generically
         logger.error(f"❌ Could not open database: {e}")

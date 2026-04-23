@@ -104,8 +104,7 @@ track_app.add_typer(track_recurring_app, name="recurring")
 @track_recurring_app.command("show")
 def track_recurring_show() -> None:
     """Show detected recurring transactions."""
-    logger.info("This command is not yet implemented.")
-    logger.info("💡 This feature is planned for a future spec")
+    _not_implemented("recurring-transactions.md")
 
 
 track_investments_app = typer.Typer(help="Investment tracking", no_args_is_help=True)

@@ -70,10 +70,12 @@ def _run_generate(
     try:
         try:
             db = get_database()
-        except DatabaseKeyError:
-            logger.error("❌ Database encryption key not found")
-            logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
-            raise typer.Exit(1) from None
+        except DatabaseKeyError as e:
+            from moneybin.database import database_key_error_hint
+
+            logger.error(f"❌ {e}")
+            logger.info(database_key_error_hint())
+            raise typer.Exit(1) from e
 
         # Check if profile already has data
         try:
@@ -196,11 +198,13 @@ def reset(
 
     try:
         db = get_database()
-    except DatabaseKeyError:
+    except DatabaseKeyError as e:
+        from moneybin.database import database_key_error_hint
+
         set_current_profile(original_profile)
-        logger.error("❌ Database encryption key not found")
-        logger.info("💡 Run 'moneybin db unlock' to set up the encryption key")
-        raise typer.Exit(1) from None
+        logger.error(f"❌ {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
 
     # Safety check: only reset profiles created by the generator
     try:
