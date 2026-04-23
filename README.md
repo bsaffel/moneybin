@@ -37,7 +37,7 @@ It's designed for people who want to understand their money without handing it t
 
 The long-term vision for MoneyBin is a personal finance platform where AI does the tedious work and you stay in control. Not all of this is built yet — see the [roadmap](#roadmap) for current status — but this is what we're building toward:
 
-- **Import once, never again.** Connect your banks via Plaid or SimpleFIN. New transactions flow in automatically. File imports handle everything else — CSV exports from any institution, OFX statements, tax documents. Migration profiles let you bring your history from Tiller, Mint, or YNAB without starting over.
+- **Import once, never again.** Connect your banks via Plaid or SimpleFIN. New transactions flow in automatically. File imports handle everything else — CSV exports from any institution, OFX statements, tax documents. Migration profiles let you bring your history from Tiller, Mint, YNAB, or Maybe without starting over.
 - **AI that understands your finances.** Ask your AI assistant to review your month, find subscriptions you forgot about, prepare for taxes, or explain a spending spike. MoneyBin's MCP server gives the AI structured access to your data with built-in privacy controls — it sees what you allow, nothing more.
 - **Categorization that learns.** Start with rules you define. Over time, MoneyBin proposes new rules from your corrections — so each import requires less manual work. The goal is near-zero-touch categorization by your third month.
 - **One database, many views.** Your canonical financial data lives in DuckDB. Query it with SQL, explore it in the DuckDB web UI, pipe it to notebooks, or let an AI assistant summarize it. No proprietary format, no export needed.
@@ -222,7 +222,7 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | CSV import with institution profiles | ✅ |
 | Universal tabular import (CSV, TSV, Excel, Parquet, Feather) | ✅ |
 | Heuristic column detection | ✅ |
-| Competitor migration profiles (Tiller, Mint, YNAB) | ✅ |
+| Competitor migration profiles (Tiller, Mint, YNAB, Maybe) | ✅ |
 | Native PDF parsing (beyond W-2) | 🗓️ |
 | AI-assisted file parsing fallback | 🗓️ |
 

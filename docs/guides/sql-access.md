@@ -40,12 +40,12 @@ Connect from any DuckDB-compatible tool (Python, R, DBeaver, etc.) using:
 
 ```python
 import duckdb
+from pathlib import Path
 
-# You'll need the encryption key from `moneybin db key`
-conn = duckdb.connect(
-    "~/.moneybin/profiles/default/moneybin.duckdb",
-    config={"encryption_key": "your-key-here"},
-)
+# DuckDB does not expand ~; use Path.home() to resolve the full path
+db_path = Path.home() / ".moneybin/profiles/default/moneybin.duckdb"
+# Get the encryption key from `moneybin db key`
+conn = duckdb.connect(str(db_path), config={"encryption_key": "your-key-here"})
 df = conn.execute("SELECT * FROM core.fct_transactions").fetchdf()
 ```
 
@@ -98,11 +98,11 @@ ORDER BY month DESC, total
 SELECT
     description,
     COUNT(*) AS txn_count,
-    SUM(amount) AS total_spent
+    SUM(-amount) AS total_spent
 FROM core.fct_transactions
 WHERE amount < 0
 GROUP BY description
-ORDER BY total_spent
+ORDER BY total_spent DESC
 LIMIT 20
 ```
 

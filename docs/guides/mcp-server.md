@@ -1,6 +1,6 @@
 # MCP Server (AI Integration)
 
-The MCP ([Model Context Protocol](https://modelcontextprotocol.io)) server exposes your financial data to AI assistants like Claude, ChatGPT, Cursor, and any MCP-compatible client. It's the primary programmatic interface — not an afterthought.
+The MCP ([Model Context Protocol](https://modelcontextprotocol.io)) server exposes your financial data to AI assistants like Claude, Cursor, and any MCP-compatible client. It's the primary programmatic interface — not an afterthought.
 
 ## Connecting to AI Clients
 
@@ -117,8 +117,8 @@ moneybin mcp list-prompts
 # Start the MCP server (used by AI clients, not typically run manually)
 moneybin mcp serve
 
-# Show current MCP config
-moneybin mcp config
+# Generate or inspect MCP config
+moneybin mcp config generate --help
 ```
 
 The MCP server uses stdio transport by default — the AI client starts and communicates with it through stdin/stdout. You don't normally need to run `mcp serve` directly; the client handles this based on the generated config.
