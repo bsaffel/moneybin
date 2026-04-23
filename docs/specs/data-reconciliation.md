@@ -164,6 +164,7 @@ The financial balance reconciliation command (`moneybin reconciliation show`) is
 ```python
 class ReconciliationConfig(BaseModel, frozen=True):
     """Pipeline reconciliation settings."""
+
     coverage_gap_threshold_days: int = Field(default=45, ge=1)
     stale_account_threshold_days: int = Field(default=90, ge=1)
     abandoned_import_threshold_minutes: int = Field(default=60, ge=1)
