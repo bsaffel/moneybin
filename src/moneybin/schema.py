@@ -37,6 +37,7 @@ _SCHEMA_FILES: list[str] = [
     "core_schema.sql",
     "app_schema.sql",
     "analytics_schema.sql",
+    "meta_schema.sql",
     "raw_ofx_institutions.sql",
     "raw_ofx_accounts.sql",
     "raw_ofx_transactions.sql",
