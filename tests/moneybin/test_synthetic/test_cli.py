@@ -19,10 +19,9 @@ class TestGenerateCommand:
     @pytest.fixture(autouse=True)
     def mock_profile(self, mocker: Any) -> None:
         """Prevent generate/reset from mutating process-wide profile state."""
-        mock_settings = MagicMock()
-        mock_settings.profile = "default"
-        mocker.patch("moneybin.config.get_settings", return_value=mock_settings)
+        mocker.patch("moneybin.config.get_current_profile", return_value="default")
         mocker.patch("moneybin.config.set_current_profile")
+        mocker.patch("moneybin.database.close_database")
 
     @pytest.fixture
     def runner(self) -> CliRunner:
@@ -109,10 +108,9 @@ class TestResetCommand:
     @pytest.fixture(autouse=True)
     def mock_profile(self, mocker: Any) -> None:
         """Prevent reset from mutating process-wide profile state."""
-        mock_settings = MagicMock()
-        mock_settings.profile = "default"
-        mocker.patch("moneybin.config.get_settings", return_value=mock_settings)
+        mocker.patch("moneybin.config.get_current_profile", return_value="default")
         mocker.patch("moneybin.config.set_current_profile")
+        mocker.patch("moneybin.database.close_database")
 
     @pytest.fixture
     def runner(self) -> CliRunner:
