@@ -1,0 +1,70 @@
+# src/moneybin/mcp/tools/sql.py
+"""SQL namespace tools — direct read-only SQL queries.
+
+Tools:
+    - sql.query — Execute a read-only SQL query (medium sensitivity)
+"""
+
+from __future__ import annotations
+
+import logging
+
+from moneybin.database import get_database
+from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
+
+logger = logging.getLogger(__name__)
+
+
+@mcp_tool(sensitivity="medium")
+def sql_query(query: str) -> ResponseEnvelope:
+    """Execute a read-only SQL query against the database.
+
+    Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries
+    are allowed. Write operations and file-access functions are blocked.
+
+    Use this for ad-hoc analysis not covered by other tools. Results
+    are limited to the configured maximum row count.
+
+    Args:
+        query: The SQL query to execute.
+    """
+    error = validate_read_only_query(query)
+    if error:
+        return build_envelope(
+            data={"error": error},
+            sensitivity="low",
+        )
+
+    db = get_database()
+    try:
+        result = db.execute(query)
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchmany(get_max_rows())
+        records = [dict(zip(columns, row, strict=False)) for row in rows]
+        return build_envelope(data=records, sensitivity="medium")
+    except Exception as e:
+        logger.exception("sql.query failed")
+        return build_envelope(
+            data={"error": str(e)},
+            sensitivity="low",
+        )
+
+
+def register_sql_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:
+    """Register all sql namespace tools with the registry."""
+    tools = [
+        ToolDefinition(
+            name="sql.query",
+            description=(
+                "Execute a read-only SQL query against the database. "
+                "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN."
+            ),
+            fn=sql_query,
+        ),
+    ]
+    for tool in tools:
+        registry.register(tool)
+    return tools
