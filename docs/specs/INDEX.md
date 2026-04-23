@@ -110,4 +110,5 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 ## Standalone
 | [Net Worth & Balance Tracking](net-worth.md) | Feature | draft | Authoritative balance tracking per account, daily carry-forward interpolation, reconciliation deltas, `agg_net_worth` aggregation; cash-only v1. CLI updated by `cli-restructure.md`: `track balance` and `track networth` replace top-level `balance`/`networth`/`reconciliation`. |
+| [Asset Tracking](asset-tracking.md) | Feature | draft | Physical asset registry (real estate, vehicles, valuables) with periodic valuations, staleness warnings, liability linking, and net worth integration. CLI namespace: `track asset` per `cli-restructure.md`. |
 | [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers. CLI namespace: `track budget` per `cli-restructure.md`. |
