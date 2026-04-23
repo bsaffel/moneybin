@@ -6,8 +6,8 @@ Each tier: blocking -> scoring -> 1:1 assignment -> persist decisions.
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
@@ -41,7 +41,7 @@ class MatchResult:
 
     def summary(self) -> str:
         """Return a human-readable summary of the matching run."""
-        parts = []
+        parts: list[str] = []
         if self.auto_merged:
             parts.append(f"{self.auto_merged} auto-merged")
         if self.pending_review:
@@ -108,7 +108,7 @@ class TransactionMatcher:
         self,
         *,
         tier: str,
-        candidates_fn: Any,
+        candidates_fn: Callable[[set[str]], list[CandidatePair]],
         excluded_ids: set[str],
         result: MatchResult,
     ) -> set[str]:
