@@ -98,9 +98,6 @@ def import_file(
         "-n",
         help="Account name for single-account tabular files",
     ),
-    yes: bool = typer.Option(
-        False, "--yes", "-y", help="Auto-confirm high-confidence detections"
-    ),
     format_name: str | None = typer.Option(
         None,
         "--format",

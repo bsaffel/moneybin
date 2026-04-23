@@ -515,7 +515,7 @@ def _generate_transaction_ids(
         src_txn_id_col: Column name holding source transaction IDs, or None.
         account_id: Account identifier.
         original_date_strs: Raw date strings, one per row.
-        parsed_amounts: Parsed float amounts (None for invalid rows).
+        parsed_amounts: Parsed Decimal amounts (None for invalid rows).
         descriptions: Description strings, one per row.
         row_numbers: 1-based row numbers.
         source_type: File type prefix for content-hash IDs.

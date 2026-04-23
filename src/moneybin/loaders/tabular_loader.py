@@ -131,7 +131,12 @@ class TabularLoader:
             sign_convention: Sign convention applied.
             balance_validated: Whether balance validation passed.
         """
-        status = "complete" if rows_rejected == 0 else "partial"
+        if rows_imported == 0 and rows_rejected > 0:
+            status = "failed"
+        elif rows_rejected == 0:
+            status = "complete"
+        else:
+            status = "partial"
         TABULAR_IMPORT_BATCHES.labels(status=status).inc()
         self.db.execute(
             """

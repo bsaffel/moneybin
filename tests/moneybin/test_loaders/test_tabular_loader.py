@@ -52,7 +52,7 @@ class TestCreateImportBatch:
 class TestFinalizeImportBatch:
     """Tests for import batch finalization."""
 
-    def test_finalize_sets_complete_status(self, mock_db: MagicMock) -> None:
+    def test_finalize_sets_partial_status(self, mock_db: MagicMock) -> None:
         loader = TabularLoader(mock_db)
         loader.finalize_import_batch(
             import_id="test-123",
@@ -66,8 +66,30 @@ class TestFinalizeImportBatch:
             sign_convention="negative_is_expense",
             balance_validated=True,
         )
-        call_args = mock_db.execute.call_args
-        assert "complete" in str(call_args) or "partial" in str(call_args)
+        params = mock_db.execute.call_args[0][1]
+        assert params[0] == "partial"  # rows_rejected=5 → "partial"
+
+    def test_finalize_sets_complete_status(self, mock_db: MagicMock) -> None:
+        loader = TabularLoader(mock_db)
+        loader.finalize_import_batch(
+            import_id="test-123",
+            rows_total=100,
+            rows_imported=100,
+            rows_rejected=0,
+        )
+        params = mock_db.execute.call_args[0][1]
+        assert params[0] == "complete"
+
+    def test_finalize_sets_failed_status(self, mock_db: MagicMock) -> None:
+        loader = TabularLoader(mock_db)
+        loader.finalize_import_batch(
+            import_id="test-123",
+            rows_total=10,
+            rows_imported=0,
+            rows_rejected=10,
+        )
+        params = mock_db.execute.call_args[0][1]
+        assert params[0] == "failed"
 
     def test_finalize_persists_rejection_details(self, mock_db: MagicMock) -> None:
         loader = TabularLoader(mock_db)
@@ -95,10 +117,25 @@ class TestRevertImport:
     """Tests for import reverting."""
 
     def test_revert_deletes_rows(self, mock_db: MagicMock) -> None:
-        mock_db.execute.return_value.fetchone.return_value = ("test-123", "complete")
+        call_count = 0
+
+        def side_effect(*_args: object) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            m = MagicMock()
+            if call_count == 1:
+                # import_log lookup
+                m.fetchone.return_value = ("test-123", "complete")
+            elif call_count == 2:
+                # COUNT(*) = 5 rows
+                m.fetchone.return_value = (5,)
+            return m
+
+        mock_db.execute.side_effect = side_effect
         loader = TabularLoader(mock_db)
         result = loader.revert_import("test-123")
         assert result["status"] == "reverted"
+        assert result["rows_deleted"] == 5
 
     def test_revert_already_reverted(self, mock_db: MagicMock) -> None:
         mock_db.execute.return_value.fetchone.return_value = ("test-123", "reverted")
