@@ -1,14 +1,20 @@
 """Tests for transfer detection scoring and blocking."""
 
+from collections.abc import Generator
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
+from moneybin.database import Database
 from moneybin.matching.transfer import (
+    TransferCandidatePair,
     compute_amount_roundness,
     compute_keyword_score,
     compute_pair_frequency,
     compute_transfer_confidence,
+    get_candidates_transfers,
 )
 
 
@@ -154,3 +160,324 @@ class TestComputeTransferConfidence:
                     pair_frequency=0.5,
                 )
                 assert 0.0 <= score <= 1.0
+
+
+@pytest.fixture()
+def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
+    """Provide a fresh test database for transfer tests."""
+    database = Database(
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    yield database
+    database.close()
+
+
+def _insert_transfer_row(
+    db: Database,
+    *,
+    source_transaction_id: str,
+    account_id: str,
+    transaction_date: str,
+    amount: str,
+    description: str,
+    source_type: str = "csv",
+    source_origin: str = "bank",
+    source_file: str = "test.csv",
+) -> None:
+    db.execute(
+        """
+        INSERT INTO _test_unioned (
+            source_transaction_id, account_id, transaction_date, amount,
+            description, source_type, source_origin, source_file
+        ) VALUES (?, ?, ?::DATE, ?::DECIMAL(18,2), ?, ?, ?, ?)
+        """,
+        [
+            source_transaction_id,
+            account_id,
+            transaction_date,
+            amount,
+            description,
+            source_type,
+            source_origin,
+            source_file,
+        ],
+    )
+
+
+@pytest.fixture()
+def transfer_table(db: Database) -> Database:
+    """Create a minimal unioned-style table for transfer blocking tests."""
+    db.execute("""
+        CREATE TABLE _test_unioned (
+            source_transaction_id VARCHAR,
+            account_id VARCHAR,
+            transaction_date DATE,
+            amount DECIMAL(18, 2),
+            description VARCHAR,
+            source_type VARCHAR,
+            source_origin VARCHAR,
+            source_file VARCHAR
+        )
+    """)
+    return db
+
+
+class TestGetCandidatesTransfers:
+    """Tests for transfer candidate blocking query."""
+
+    def test_finds_opposite_sign_pair(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_chk1",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="ONLINE TRANSFER TO SAV",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_sav1",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="TRANSFER FROM CHK",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 1
+        pair = candidates[0]
+        assert isinstance(pair, TransferCandidatePair)
+        assert pair.account_id_a == "checking"
+        assert pair.account_id_b == "savings"
+        assert pair.amount == Decimal("500.00")
+        assert pair.date_distance_days == 0
+
+    def test_excludes_same_account(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="a",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="REFUND",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="b",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="DEPOSIT",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 0
+
+    def test_excludes_same_sign(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="a",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="PAYMENT",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="b",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="PAYMENT",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 0
+
+    def test_excludes_different_amount(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="a",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="TRANSFER",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="b",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="501.00",
+            description="TRANSFER",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 0
+
+    def test_excludes_outside_date_window(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="a",
+            account_id="checking",
+            transaction_date="2026-03-10",
+            amount="-500.00",
+            description="TRANSFER",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="b",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="TRANSFER",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 0
+
+    def test_respects_excluded_ids(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_chk1",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="TRANSFER",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_sav1",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="TRANSFER",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            excluded_ids={("csv_chk1", "checking")},
+        )
+        assert len(candidates) == 0
+
+    def test_respects_rejected_pairs(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_chk1",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="TRANSFER",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_sav1",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="TRANSFER",
+        )
+        rejected = [
+            {
+                "source_type_a": "csv",
+                "source_transaction_id_a": "csv_chk1",
+                "source_origin_a": "bank",
+                "source_type_b": "csv",
+                "source_transaction_id_b": "csv_sav1",
+                "source_origin_b": "bank",
+                "account_id": "checking",
+            }
+        ]
+        candidates = get_candidates_transfers(
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            rejected_pairs=rejected,
+        )
+        assert len(candidates) == 0
+
+    def test_scores_all_four_signals(self, transfer_table: Database) -> None:
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_chk1",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="ONLINE TRANSFER TO SAV",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_sav1",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="TRANSFER FROM CHK",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 1
+        pair = candidates[0]
+        assert pair.date_distance_score == 1.0
+        assert pair.keyword_score > 0.0
+        assert pair.amount_roundness_score == 1.0
+        assert pair.pair_frequency_score > 0.0
+        assert 0.0 < pair.confidence_score <= 1.0
+
+    def test_debit_side_is_a_credit_side_is_b(self, transfer_table: Database) -> None:
+        """Verify the debit (negative) transaction is always side A."""
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_sav1",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="TRANSFER FROM CHK",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="csv_chk1",
+            account_id="checking",
+            transaction_date="2026-03-15",
+            amount="-500.00",
+            description="ONLINE TRANSFER TO SAV",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 1
+        pair = candidates[0]
+        assert pair.source_transaction_id_a == "csv_chk1"
+        assert pair.source_transaction_id_b == "csv_sav1"
+
+    def test_near_boundary_date(self, transfer_table: Database) -> None:
+        """Pair exactly at date_window_days boundary is included."""
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="a",
+            account_id="checking",
+            transaction_date="2026-03-12",
+            amount="-500.00",
+            description="TRANSFER",
+        )
+        _insert_transfer_row(
+            transfer_table,
+            source_transaction_id="b",
+            account_id="savings",
+            transaction_date="2026-03-15",
+            amount="500.00",
+            description="TRANSFER",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 1
+        assert candidates[0].date_distance_days == 3

@@ -9,6 +9,9 @@ import logging
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
+
+from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -150,3 +153,165 @@ def compute_transfer_confidence(
         + w["roundness"] * amount_roundness
         + w["pair_frequency"] * pair_frequency
     )
+
+
+def get_candidates_transfers(
+    db: Database,
+    *,
+    table: str = UNIONED_TABLE,
+    date_window_days: int = 3,
+    excluded_ids: set[tuple[str, str]] | None = None,
+    rejected_pairs: list[dict[str, Any]] | None = None,
+    signal_weights: dict[str, float] | None = None,
+) -> list[TransferCandidatePair]:
+    """Find transfer candidate pairs (Tier 4).
+
+    Blocking: different accounts, opposite signs, exact absolute amount,
+    date within window. Side A is always the debit (negative amount).
+    """
+    from sqlglot import exp
+
+    parts = table.split(".")
+    if len(parts) != 2:
+        raise ValueError(f"table must be schema.name, got: {table!r}")
+    safe_schema = exp.to_identifier(parts[0], quoted=True).sql("duckdb")
+    safe_table = exp.to_identifier(parts[1], quoted=True).sql("duckdb")
+    safe_ref = f"{safe_schema}.{safe_table}"
+
+    query = f"""
+        SELECT
+            a.source_transaction_id AS stid_a,
+            a.source_type AS st_a,
+            a.source_origin AS so_a,
+            a.account_id AS acct_a,
+            a.description AS desc_a,
+            a.amount AS amount_a,
+            b.source_transaction_id AS stid_b,
+            b.source_type AS st_b,
+            b.source_origin AS so_b,
+            b.account_id AS acct_b,
+            b.description AS desc_b,
+            b.amount AS amount_b,
+            ABS(DATEDIFF('day', a.transaction_date, b.transaction_date)) AS date_dist
+        FROM {safe_ref} AS a
+        JOIN {safe_ref} AS b
+            ON a.account_id != b.account_id
+            AND a.amount < 0
+            AND b.amount > 0
+            AND ABS(a.amount) = b.amount
+            AND ABS(DATEDIFF('day', a.transaction_date, b.transaction_date)) <= ?
+        ORDER BY date_dist ASC
+    """  # noqa: S608 — table name validated above; date_window_days is parameterized
+
+    rows = db.execute(query, [date_window_days]).fetchall()
+
+    rejected_set: set[tuple[str, ...]] = set()
+    if rejected_pairs:
+        for rp in rejected_pairs:
+            rejected_set.add((
+                rp["source_type_a"],
+                rp["source_transaction_id_a"],
+                rp["source_type_b"],
+                rp["source_transaction_id_b"],
+            ))
+            rejected_set.add((
+                rp["source_type_b"],
+                rp["source_transaction_id_b"],
+                rp["source_type_a"],
+                rp["source_transaction_id_a"],
+            ))
+
+    raw_pairs: list[tuple[Any, ...]] = []
+    pair_counts: dict[tuple[str, str], int] = {}
+
+    for row in rows:
+        (
+            stid_a,
+            st_a,
+            so_a,
+            acct_a,
+            desc_a,
+            amount_a,
+            stid_b,
+            st_b,
+            so_b,
+            acct_b,
+            desc_b,
+            amount_b,
+            date_dist,
+        ) = row
+
+        if excluded_ids and (
+            (stid_a, acct_a) in excluded_ids or (stid_b, acct_b) in excluded_ids
+        ):
+            continue
+
+        if (st_a, stid_a, st_b, stid_b) in rejected_set:
+            continue
+
+        raw_pairs.append(row)
+        freq_key = tuple(sorted([acct_a, acct_b]))
+        pair_counts[freq_key] = pair_counts.get(freq_key, 0) + 1
+
+    max_count = max(pair_counts.values()) if pair_counts else 1
+
+    results: list[TransferCandidatePair] = []
+    for row in raw_pairs:
+        (
+            stid_a,
+            st_a,
+            so_a,
+            acct_a,
+            desc_a,
+            amount_a,
+            stid_b,
+            st_b,
+            so_b,
+            acct_b,
+            desc_b,
+            amount_b,
+            date_dist,
+        ) = row
+
+        abs_amount = abs(Decimal(str(amount_a)))
+        kw_score = compute_keyword_score(desc_a or "", desc_b or "")
+        roundness = compute_amount_roundness(abs_amount)
+        pair_freq = compute_pair_frequency(acct_a, acct_b, pair_counts, max_count)
+        date_dist_int = int(date_dist)
+        date_score = (
+            max(0.0, 1.0 - (date_dist_int / date_window_days))
+            if date_window_days > 0
+            else 1.0
+        )
+        confidence = compute_transfer_confidence(
+            date_distance_days=date_dist_int,
+            date_window_days=date_window_days,
+            keyword_score=kw_score,
+            amount_roundness=roundness,
+            pair_frequency=pair_freq,
+            weights=signal_weights,
+        )
+
+        results.append(
+            TransferCandidatePair(
+                source_transaction_id_a=stid_a,
+                source_type_a=st_a,
+                source_origin_a=so_a,
+                account_id_a=acct_a,
+                source_transaction_id_b=stid_b,
+                source_type_b=st_b,
+                source_origin_b=so_b,
+                account_id_b=acct_b,
+                amount=abs_amount,
+                date_distance_days=date_dist_int,
+                description_a=desc_a or "",
+                description_b=desc_b or "",
+                date_distance_score=date_score,
+                keyword_score=kw_score,
+                amount_roundness_score=roundness,
+                pair_frequency_score=pair_freq,
+                confidence_score=confidence,
+            )
+        )
+
+    return results
