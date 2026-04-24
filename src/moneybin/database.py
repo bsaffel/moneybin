@@ -257,10 +257,7 @@ class Database:
         cache_key = str(self._db_path)
         try:
             conn = self._conn
-            if (
-                conn is None
-            ):  # pragma: no cover — unreachable; called from __init__ after connect
-                return True
+            assert conn is not None  # noqa: S101 — invariant: called from __init__ after connect
             adapter = DuckDBEngineAdapter(
                 lambda: conn,
                 default_catalog=_DATABASE_ALIAS,
