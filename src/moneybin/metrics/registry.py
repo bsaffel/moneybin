@@ -80,6 +80,23 @@ DEDUP_MATCH_CONFIDENCE = Histogram(
     "Distribution of match confidence scores",
 )
 
+# ── Transfer detection ───────────────────────────────────────────────────────
+
+TRANSFER_PAIRS_SCORED = Counter(
+    "moneybin_transfer_pairs_scored_total",
+    "Total transfer candidate pairs scored by the matching engine",
+)
+
+TRANSFER_MATCHES_PROPOSED = Counter(
+    "moneybin_transfer_matches_proposed_total",
+    "Total transfer pairs proposed for review",
+)
+
+TRANSFER_MATCH_CONFIDENCE = Histogram(
+    "moneybin_transfer_match_confidence",
+    "Distribution of transfer match confidence scores",
+)
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(
