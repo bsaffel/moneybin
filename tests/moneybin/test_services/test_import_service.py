@@ -1,4 +1,5 @@
-"""Tests for the import service — focused on run_transforms encryption."""
+# ruff: noqa: S101
+"""Tests for sqlmesh_context — encrypted DB injection into SQLMesh."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -6,10 +7,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-class TestRunTransforms:
-    """run_transforms passes the encryption key to SQLMesh via DuckDB ATTACH."""
+class TestSQLMeshContext:
+    """sqlmesh_context injects an encrypted adapter into SQLMesh's cache."""
 
-    @patch("moneybin.secrets.SecretStore")
+    @patch("moneybin.database.SecretStore")
     @patch("sqlmesh.core.engine_adapter.duckdb.DuckDBEngineAdapter")
     @patch("sqlmesh.Context")
     @patch("duckdb.connect")
@@ -29,15 +30,20 @@ class TestRunTransforms:
         mock_duckdb_connect.return_value = mock_conn
         db_path = tmp_path / "test.duckdb"
 
-        with patch(
-            "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
-            {},
+        with (
+            patch(
+                "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
+                {},
+            ),
+            patch("moneybin.database.get_settings") as mock_settings,
         ):
-            from moneybin.services.import_service import run_transforms
+            mock_settings.return_value.database.path = db_path
 
-            result = run_transforms(db_path)
+            from moneybin.database import sqlmesh_context
 
-        assert result is True
+            with sqlmesh_context() as ctx:
+                ctx.plan(auto_apply=True, no_prompts=True)
+
         mock_store.get_key.assert_called_once_with("DATABASE__ENCRYPTION_KEY")
 
         # Verify ATTACH was called with encryption key
@@ -50,10 +56,10 @@ class TestRunTransforms:
         mock_ctx_cls.return_value.plan.assert_called_once_with(
             auto_apply=True, no_prompts=True
         )
-        # Connection closed in finally
+        # Connection closed after context manager exits
         mock_conn.close.assert_called_once()
 
-    @patch("moneybin.secrets.SecretStore")
+    @patch("moneybin.database.SecretStore")
     @patch("sqlmesh.core.engine_adapter.duckdb.DuckDBEngineAdapter")
     @patch("sqlmesh.Context")
     @patch("duckdb.connect")
@@ -72,15 +78,22 @@ class TestRunTransforms:
         mock_conn = MagicMock()
         mock_duckdb_connect.return_value = mock_conn
         mock_ctx_cls.return_value.plan.side_effect = RuntimeError("SQLMesh boom")
+        db_path = tmp_path / "test.duckdb"
 
-        with patch(
-            "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
-            {},
-        ) as cache:
-            from moneybin.services.import_service import run_transforms
+        with (
+            patch(
+                "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
+                {},
+            ) as cache,
+            patch("moneybin.database.get_settings") as mock_settings,
+        ):
+            mock_settings.return_value.database.path = db_path
+
+            from moneybin.database import sqlmesh_context
 
             with pytest.raises(RuntimeError, match="SQLMesh boom"):
-                run_transforms(tmp_path / "test.duckdb")
+                with sqlmesh_context() as ctx:
+                    ctx.plan(auto_apply=True, no_prompts=True)
 
             # Cache cleaned up despite error
             assert len(cache) == 0

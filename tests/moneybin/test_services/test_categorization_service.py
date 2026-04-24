@@ -482,10 +482,17 @@ class TestEnsureSeedTable:
         self, db: Database, mocker: MockerFixture
     ) -> None:
         """Runs targeted SQLMesh apply when seed table is missing."""
+        from contextlib import contextmanager
+
         mock_ctx = mocker.MagicMock()
-        mock_context_cls = mocker.patch(
-            "sqlmesh.Context",
-            return_value=mock_ctx,
+
+        @contextmanager
+        def mock_sqlmesh_ctx(**kwargs):  # noqa: ARG001 — absorb kwargs
+            yield mock_ctx
+
+        mocker.patch(
+            "moneybin.services.categorization_service.sqlmesh_context",
+            side_effect=mock_sqlmesh_ctx,
         )
         # Table doesn't exist, but after plan() it would — simulate by
         # having plan() create the table as a side effect
@@ -498,7 +505,6 @@ class TestEnsureSeedTable:
 
         ensure_seed_table(db)
 
-        mock_context_cls.assert_called_once()
         mock_ctx.plan.assert_called_once_with(
             auto_apply=True,
             no_prompts=True,

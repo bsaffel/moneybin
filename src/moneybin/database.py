@@ -19,6 +19,8 @@ import importlib.metadata
 import logging
 import stat
 import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -501,3 +503,92 @@ def close_database() -> None:
     if _database_instance is not None:
         _database_instance.close()
         _database_instance = None
+
+
+# ---------------------------------------------------------------------------
+# SQLMesh encrypted-context helper
+# ---------------------------------------------------------------------------
+
+_SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
+
+
+@contextmanager
+def sqlmesh_context(
+    sqlmesh_root: Path | None = None,
+) -> Generator[Any, None, None]:
+    """Create a SQLMesh Context that can open the encrypted database.
+
+    SQLMesh's DuckDBConnectionConfig does not support encryption_key,
+    so we create a properly-connected DuckDB adapter and pre-populate
+    SQLMesh's internal adapter cache. SQLMesh then reuses our encrypted
+    connection instead of opening its own unencrypted one.
+
+    Usage::
+
+        with sqlmesh_context() as ctx:
+            ctx.plan(auto_apply=True, no_prompts=True)
+
+    Args:
+        sqlmesh_root: Path to the sqlmesh/ directory. Defaults to the
+            project's ``sqlmesh/`` directory.
+
+    Yields:
+        A ``sqlmesh.Context`` connected to the encrypted database.
+
+    Raises:
+        DatabaseKeyError: If the encryption key cannot be retrieved.
+    """
+    from sqlmesh.core.config import Config, GatewayConfig
+    from sqlmesh.core.config.connection import (
+        BaseDuckDBConnectionConfig,
+        DuckDBConnectionConfig,
+    )
+    from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
+
+    from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
+        Context,
+    )
+
+    root = sqlmesh_root or _SQLMESH_ROOT
+    db_path = get_settings().database.path
+
+    store = SecretStore()
+    try:
+        encryption_key = store.get_key(_KEY_NAME)
+    except SecretNotFoundError as e:
+        raise DatabaseKeyError(
+            f"Cannot open database — encryption key not found. "
+            f"Run 'moneybin db init' to create a new database, or set "
+            f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
+        ) from e
+
+    conn = duckdb.connect()
+    conn.execute(build_attach_sql(db_path, encryption_key))
+    conn.execute(f"USE {_DATABASE_ALIAS}")
+
+    adapter = DuckDBEngineAdapter(
+        lambda: conn,
+        default_catalog=_DATABASE_ALIAS,
+        register_comments=True,
+    )
+    cache_key = str(db_path)
+    BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
+
+    try:
+        config = Config(
+            default_gateway=_DATABASE_ALIAS,
+            gateways={
+                _DATABASE_ALIAS: GatewayConfig(
+                    connection=DuckDBConnectionConfig(database=str(db_path)),
+                ),
+            },
+        )
+        ctx = Context(
+            paths=str(root),
+            config=config,
+            gateway=_DATABASE_ALIAS,
+        )
+        yield ctx
+    finally:
+        BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
+        conn.close()

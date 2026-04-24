@@ -5,21 +5,14 @@ loaded DuckDB data.
 """
 
 import logging
-from pathlib import Path
 
 import typer
 
 from moneybin.config import get_database_path
-from moneybin.database import DatabaseKeyError, database_key_error_hint
-
-# Context is imported at module level so tests can patch
-# moneybin.cli.commands.transform.Context. SQLMesh has no type stubs.
-from sqlmesh import Context  # type: ignore[import-untyped] — sqlmesh has no type stubs
+from moneybin.database import DatabaseKeyError, database_key_error_hint, sqlmesh_context
 
 app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
 logger = logging.getLogger(__name__)
-
-_SQLMESH_ROOT = Path(__file__).resolve().parents[4] / "sqlmesh"
 
 
 @app.command("plan")
@@ -37,8 +30,8 @@ def plan_transforms(
     logger.info(f"Running SQLMesh plan against {db_path}")
 
     try:
-        ctx = Context(paths=str(_SQLMESH_ROOT))
-        ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
+        with sqlmesh_context() as ctx:
+            ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
     except DatabaseKeyError as e:
         logger.error(f"❌ {e}")
@@ -60,8 +53,8 @@ def apply_transforms() -> None:
     logger.info(f"Applying SQLMesh transforms against {db_path}")
 
     try:
-        ctx = Context(paths=str(_SQLMESH_ROOT))
-        ctx.plan(auto_apply=True, no_prompts=True)
+        with sqlmesh_context() as ctx:
+            ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("✅ SQLMesh transforms applied")
     except DatabaseKeyError as e:
         logger.error(f"❌ {e}")
@@ -77,14 +70,14 @@ def transform_status() -> None:
     """Show current model state and environment."""
     logger.info("⚙️  Checking SQLMesh status...")
     try:
-        ctx = Context(paths=str(_SQLMESH_ROOT))
-        env = ctx.state_reader.get_environment("prod")
-        if env:
-            logger.info("Environment: prod")
-            logger.info(f"  Last updated: {env.expiration_ts}")
-        else:
-            logger.info("No SQLMesh environment initialized yet")
-            logger.info("💡 Run 'moneybin transform apply' to initialize")
+        with sqlmesh_context() as ctx:
+            env = ctx.state_reader.get_environment("prod")
+            if env:
+                logger.info("Environment: prod")
+                logger.info(f"  Last updated: {env.expiration_ts}")
+            else:
+                logger.info("No SQLMesh environment initialized yet")
+                logger.info("💡 Run 'moneybin transform apply' to initialize")
     except DatabaseKeyError as e:
         logger.error(f"❌ {e}")
         logger.info(database_key_error_hint())
@@ -99,8 +92,8 @@ def transform_validate() -> None:
     """Check that model SQL parses and resolves without errors."""
     logger.info("⚙️  Validating SQLMesh models...")
     try:
-        ctx = Context(paths=str(_SQLMESH_ROOT))
-        ctx.plan(no_prompts=True, auto_apply=False)
+        with sqlmesh_context() as ctx:
+            ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
     except DatabaseKeyError as e:
         logger.error(f"❌ {e}")
@@ -123,8 +116,8 @@ def transform_audit(
     """Run data quality assertions defined in SQLMesh models."""
     logger.info("⚙️  Running SQLMesh audits...")
     try:
-        ctx = Context(paths=str(_SQLMESH_ROOT))
-        ctx.audit(start=start, end=end)
+        with sqlmesh_context() as ctx:
+            ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
     except DatabaseKeyError as e:
         logger.error(f"❌ {e}")
@@ -155,14 +148,14 @@ def transform_restate(
             return
     logger.info(f"⚙️  Restating {model} from {start}...")
     try:
-        ctx = Context(paths=str(_SQLMESH_ROOT))
-        ctx.plan(
-            restate_models=[model],
-            start=start,
-            end=end,
-            auto_apply=True,
-            no_prompts=True,
-        )
+        with sqlmesh_context() as ctx:
+            ctx.plan(
+                restate_models=[model],
+                start=start,
+                end=end,
+                auto_apply=True,
+                no_prompts=True,
+            )
         logger.info(f"✅ Restated {model}")
     except DatabaseKeyError as e:
         logger.error(f"❌ {e}")
