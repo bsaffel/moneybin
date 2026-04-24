@@ -44,7 +44,7 @@ When a command modifies multiple persistent stores in sequence (e.g., file move 
 ## Command Group Registration
 
 - **Workflow ordering**: Top-level commands in `main.py` are registered in workflow order: setup → ingest → enrich → pipeline → analyze → output → integrations → ops. New commands should be inserted at the appropriate workflow stage.
-- **`no_args_is_help=True`**: Every `typer.Typer()` group must set this flag so bare invocation shows help text consistently. Do not use `invoke_without_command=True` callbacks as a substitute for showing help.
+- **`no_args_is_help=True`**: Every `typer.Typer()` group must set this flag so bare invocation shows help text consistently. Do not use `invoke_without_command=True` callbacks as a substitute — that flag runs the callback even when a subcommand is provided, causing confusing side effects like duplicate setup or output.
 
 ## Conventions
 
