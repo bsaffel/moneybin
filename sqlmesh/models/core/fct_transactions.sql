@@ -38,12 +38,20 @@ WITH enriched AS (
     t.source_count,
     t.match_confidence,
     t.source_extracted_at,
+    COALESCE(bt_debit.transfer_id, bt_credit.transfer_id) AS transfer_pair_id,
+    (
+      bt_debit.transfer_id IS NOT NULL OR bt_credit.transfer_id IS NOT NULL
+    ) AS is_transfer,
     t.loaded_at
   FROM prep.int_transactions__merged AS t
   LEFT JOIN app.transaction_categories AS c
     ON t.transaction_id = c.transaction_id
   LEFT JOIN app.merchants AS m
     ON c.merchant_id = m.merchant_id
+  LEFT JOIN core.bridge_transfers AS bt_debit
+    ON t.transaction_id = bt_debit.debit_transaction_id
+  LEFT JOIN core.bridge_transfers AS bt_credit
+    ON t.transaction_id = bt_credit.credit_transaction_id
 )
 SELECT
   transaction_id, /* Gold key: deterministic SHA-256 hash, unique per real-world transaction */
@@ -77,6 +85,8 @@ SELECT
   match_confidence, /* Match confidence score; NULL for unmatched records */
   source_extracted_at, /* When the data was parsed from the source file */
   loaded_at, /* When this record was last written */
+  is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
+  transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
   DATE_PART('year', transaction_date) AS transaction_year, /* Calendar year */
   DATE_PART('month', transaction_date) AS transaction_month, /* Calendar month (1-12) */
   DATE_PART('day', transaction_date) AS transaction_day, /* Calendar day (1-31) */

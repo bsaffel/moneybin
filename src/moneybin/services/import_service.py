@@ -129,11 +129,10 @@ def _detect_file_type(file_path: Path) -> str:
 def run_transforms() -> bool:
     """Run SQLMesh transforms to rebuild core tables.
 
-    SQLMesh manages its own connection — the caller must close any
-    existing connections before calling this.
-
     Uses ``sqlmesh_context()`` to handle encrypted DB injection into
-    SQLMesh's adapter cache.
+    SQLMesh's adapter cache.  Safe to call with or without an open
+    database connection — ``sqlmesh_context()`` reuses the singleton
+    when available.
 
     Returns:
         True if transforms ran successfully.
@@ -661,9 +660,9 @@ def _run_matching(db: Database) -> None:
     matcher = TransactionMatcher(db, settings)
     result = matcher.run()
 
-    if result.auto_merged or result.pending_review:
+    if result.has_matches:
         logger.info(f"Matching: {result.summary()}")
-        if result.pending_review:
+        if result.has_pending:
             logger.info("Run 'moneybin matches review' when ready")
 
 

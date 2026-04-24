@@ -12,7 +12,7 @@ from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
-_VALID_MATCH_TYPES = {"dedup", "transfer"}
+VALID_MATCH_TYPES = {"dedup", "transfer"}
 
 
 def _columns(db: Database) -> list[str]:
@@ -75,35 +75,52 @@ def create_match_decision(
     )
 
 
-def get_active_matches(db: Database, match_type: str = "dedup") -> list[dict[str, Any]]:
+def get_active_matches(
+    db: Database, match_type: str | None = None
+) -> list[dict[str, Any]]:
     """Return accepted, non-reversed match decisions."""
+    where = "WHERE match_status = 'accepted' AND reversed_at IS NULL"
+    params: list[Any] = []
+    if match_type:
+        if match_type not in VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
+        where += " AND match_type = ?"
+        params.append(match_type)
     rows = db.execute(
-        """
+        f"""
         SELECT * FROM app.match_decisions
-        WHERE match_status = 'accepted'
-          AND reversed_at IS NULL
-          AND match_type = ?
+        {where}
         ORDER BY decided_at DESC
-        """,
-        [match_type],
+        """,  # noqa: S608 — match_type validated above
+        params,
     ).fetchall()
     cols = _columns(db)
     return [dict(zip(cols, row, strict=True)) for row in rows]
 
 
 def get_pending_matches(
-    db: Database, match_type: str = "dedup"
+    db: Database, match_type: str | None = None
 ) -> list[dict[str, Any]]:
-    """Return pending match decisions awaiting user review."""
+    """Return pending match decisions awaiting user review.
+
+    Args:
+        db: Database instance.
+        match_type: Filter by type ('dedup', 'transfer'), or None for all.
+    """
+    where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
+    params: list[Any] = []
+    if match_type:
+        if match_type not in VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
+        where += " AND match_type = ?"
+        params.append(match_type)
     rows = db.execute(
-        """
+        f"""
         SELECT * FROM app.match_decisions
-        WHERE match_status = 'pending'
-          AND reversed_at IS NULL
-          AND match_type = ?
+        {where}
         ORDER BY confidence_score DESC
-        """,
-        [match_type],
+        """,  # noqa: S608 — match_type validated above
+        params,
     ).fetchall()
     cols = _columns(db)
     return [dict(zip(cols, row, strict=True)) for row in rows]
@@ -147,7 +164,7 @@ def get_rejected_pairs(db: Database, match_type: str = "dedup") -> list[dict[str
         """
         SELECT source_type_a, source_transaction_id_a, source_origin_a,
                source_type_b, source_transaction_id_b, source_origin_b,
-               account_id
+               account_id, account_id_b
         FROM app.match_decisions
         WHERE match_status = 'rejected'
           AND match_type = ?
@@ -162,6 +179,7 @@ def get_rejected_pairs(db: Database, match_type: str = "dedup") -> list[dict[str
         "source_transaction_id_b",
         "source_origin_b",
         "account_id",
+        "account_id_b",
     ]
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
@@ -173,7 +191,7 @@ def get_match_log(
     where = "WHERE 1=1"
     params: list[Any] = []
     if match_type:
-        if match_type not in _VALID_MATCH_TYPES:
+        if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
         params.append(match_type)

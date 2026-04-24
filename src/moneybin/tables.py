@@ -21,6 +21,7 @@ class TableRef(NamedTuple):
 # -- Core layer (canonical tables built by SQLMesh transforms) --
 DIM_ACCOUNTS = TableRef("core", "dim_accounts")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions")
+BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")

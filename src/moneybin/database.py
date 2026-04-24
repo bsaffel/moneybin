@@ -553,6 +553,10 @@ def sqlmesh_context(
     root = sqlmesh_root or _SQLMESH_ROOT
     db_path = get_settings().database.path
 
+    # httpfs is NOT loaded — no SQLMesh models use remote file access.
+    # If a future model needs read_parquet over HTTP or s3://, add
+    # conn.execute("INSTALL httpfs; LOAD httpfs;") here.
+    #
     # DuckDB only allows one connection per file — reuse the singleton's
     # connection to avoid "Unique file handle conflict" errors.
     owns_conn = False
@@ -571,8 +575,12 @@ def sqlmesh_context(
 
         conn = duckdb.connect()
         owns_conn = True
-        conn.execute(build_attach_sql(db_path, encryption_key))
-        conn.execute(f"USE {_DATABASE_ALIAS}")
+        try:
+            conn.execute(build_attach_sql(db_path, encryption_key))
+            conn.execute(f"USE {_DATABASE_ALIAS}")
+        except Exception:
+            conn.close()
+            raise
 
     cache_key = str(db_path)
     try:
