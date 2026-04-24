@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 _WEIGHT_DATE = 0.40
 _WEIGHT_DESCRIPTION = 0.60
 
+# Default source table for candidate queries — avoids hardcoded strings in signatures.
+UNIONED_TABLE = "prep.int_transactions__unioned"
+
 
 @dataclass(frozen=True)
 class CandidatePair:
@@ -56,7 +59,7 @@ def compute_confidence(
 def get_candidates_cross_source(
     db: Database,
     *,
-    table: str = "prep.int_transactions__unioned",
+    table: str = UNIONED_TABLE,
     date_window_days: int = 3,
     excluded_ids: set[tuple[str, str]] | None = None,
     rejected_pairs: list[dict[str, Any]] | None = None,
@@ -79,7 +82,7 @@ def get_candidates_cross_source(
 def get_candidates_within_source(
     db: Database,
     *,
-    table: str = "prep.int_transactions__unioned",
+    table: str = UNIONED_TABLE,
     date_window_days: int = 3,
     excluded_ids: set[tuple[str, str]] | None = None,
     rejected_pairs: list[dict[str, Any]] | None = None,

@@ -12,6 +12,8 @@ from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
+_VALID_MATCH_TYPES = {"dedup", "transfer"}
+
 
 def _columns(db: Database) -> list[str]:
     """Return column names for app.match_decisions."""
@@ -171,6 +173,8 @@ def get_match_log(
     where = "WHERE 1=1"
     params: list[Any] = []
     if match_type:
+        if match_type not in _VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
         params.append(match_type)
     params.append(limit)
@@ -180,7 +184,7 @@ def get_match_log(
         {where}
         ORDER BY decided_at DESC
         LIMIT ?
-        """,  # noqa: S608 — WHERE clause built from validated parameters, not user input
+        """,  # noqa: S608 — match_type validated above; limit is parameterized
         params,
     ).fetchall()
     cols = _columns(db)

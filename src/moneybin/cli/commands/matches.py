@@ -195,6 +195,9 @@ def matches_undo_cmd(
         db = get_database()
         undo_match(db, match_id, reversed_by="user")
         logger.info(f"Reversed match {match_id[:8]}...")
+    except ValueError as e:
+        logger.error(f"❌ {e}")
+        raise typer.Exit(1) from e
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
 

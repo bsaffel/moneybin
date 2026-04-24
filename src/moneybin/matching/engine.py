@@ -17,6 +17,7 @@ from moneybin.matching.persistence import (
     get_rejected_pairs,
 )
 from moneybin.matching.scoring import (
+    UNIONED_TABLE,
     CandidatePair,
     get_candidates_cross_source,
     get_candidates_within_source,
@@ -58,7 +59,7 @@ class TransactionMatcher:
         db: Database,
         settings: MatchingSettings,
         *,
-        table: str = "prep.int_transactions__unioned",
+        table: str = UNIONED_TABLE,
     ) -> None:
         """Initialize the matcher with a database connection, settings, and source table."""
         self._db = db

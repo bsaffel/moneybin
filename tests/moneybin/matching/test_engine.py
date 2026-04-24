@@ -148,14 +148,14 @@ class TestTransactionMatcher:
             "chase_ofx",
         )
         settings = MatchingSettings(
-            high_confidence_threshold=0.95, review_threshold=0.50
+            high_confidence_threshold=0.95, review_threshold=0.10
         )
         matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result = matcher.run()
-        # Same amount, date within window, but different descriptions + date offset
-        assert (
-            result.auto_merged + result.pending_review >= 0
-        )  # At least runs without error
+        # Same amount, date within window, low description similarity + date offset
+        # → confidence below auto-merge (0.95) but above review threshold (0.10)
+        assert result.pending_review >= 1
+        assert result.auto_merged == 0
 
     def test_rejected_pairs_not_reproposed(self, db: Database) -> None:
         _create_test_table(db)
