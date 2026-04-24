@@ -1,6 +1,8 @@
 """Match review and management commands."""
 
+import json
 import logging
+from typing import Any
 
 import typer
 
@@ -31,14 +33,14 @@ def matches_run(
         seed_source_priority(db, settings)
         matcher = TransactionMatcher(db, settings)
         result = matcher.run()
-        if result.auto_merged or result.pending_review:
+        if result.auto_merged or result.pending_review or result.pending_transfers:
             logger.info(f"Matching: {result.summary()}")
-            if result.pending_review:
+            if result.pending_review or result.pending_transfers:
                 logger.info("Run 'moneybin matches review' when ready")
         else:
             logger.info("No new matches found")
 
-        if not skip_transform and (result.auto_merged or result.pending_review):
+        if not skip_transform and (result.auto_merged or result.pending_transfers):
             from moneybin.services.import_service import run_transforms
 
             db.close()
@@ -51,8 +53,50 @@ def matches_run(
         raise typer.Exit(1) from e
 
 
+def _display_dedup_match(match: dict[str, Any]) -> None:
+    """Display a dedup match for interactive review."""
+    typer.echo(
+        f"  Match {match['match_id'][:8]}... "
+        f"(confidence: {match['confidence_score']:.2f})"
+    )
+    typer.echo(
+        f"    A: [{match['source_type_a']}] {match['source_transaction_id_a'][:20]}"
+    )
+    typer.echo(
+        f"    B: [{match['source_type_b']}] {match['source_transaction_id_b'][:20]}"
+    )
+    if match.get("match_reason"):
+        typer.echo(f"    Reason: {match['match_reason']}")
+
+
+def _display_transfer_match(match: dict[str, Any]) -> None:
+    """Display a transfer match for interactive review."""
+    typer.echo(f"  Transfer pair (confidence: {match['confidence_score']:.2f})")
+    typer.echo(
+        f"    DEBIT:  [{match['source_type_a']}] "
+        f"{match['source_transaction_id_a'][:16]}  "
+        f"acct:{match['account_id'][:8]}"
+    )
+    typer.echo(
+        f"    CREDIT: [{match['source_type_b']}] "
+        f"{match['source_transaction_id_b'][:16]}  "
+        f"acct:{(match.get('account_id_b') or '?')[:8]}"
+    )
+    signals = match.get("match_signals")
+    if signals:
+        if isinstance(signals, str):
+            signals = json.loads(signals)
+        parts = [f"{k}={v:.1f}" for k, v in signals.items()]
+        typer.echo(f"    Signals: {'  '.join(parts)}")
+    if match.get("match_reason"):
+        typer.echo(f"    Reason: {match['match_reason']}")
+
+
 @app.command("review")
 def matches_review(
+    match_type: str | None = typer.Option(
+        None, "--type", help="Filter by match type: dedup or transfer"
+    ),
     accept_all: bool = typer.Option(
         False, "--accept-all", help="Accept all pending matches without prompting"
     ),
@@ -82,6 +126,10 @@ def matches_review(
         logger.error("❌ --decision must be 'accept' or 'reject'")
         raise typer.Exit(2)
 
+    if match_type and match_type not in ("dedup", "transfer"):
+        logger.error("❌ --type must be 'dedup' or 'transfer'")
+        raise typer.Exit(2)
+
     try:
         db = get_database()
         accepted_count = 0
@@ -99,7 +147,7 @@ def matches_review(
                     run_transforms(get_settings().database.path)
             return
 
-        pending = get_pending_matches(db)
+        pending = get_pending_matches(db, match_type=match_type)
 
         if not pending:
             logger.info("No pending matches to review")
@@ -123,18 +171,10 @@ def matches_review(
         # Interactive review
         logger.info(f"{len(pending)} match(es) to review\n")
         for match in pending:
-            typer.echo(
-                f"  Match {match['match_id'][:8]}... "
-                f"(confidence: {match['confidence_score']:.2f})"
-            )
-            typer.echo(
-                f"    A: [{match['source_type_a']}] {match['source_transaction_id_a'][:20]}"
-            )
-            typer.echo(
-                f"    B: [{match['source_type_b']}] {match['source_transaction_id_b'][:20]}"
-            )
-            if match.get("match_reason"):
-                typer.echo(f"    Reason: {match['match_reason']}")
+            if match.get("match_type") == "transfer":
+                _display_transfer_match(match)
+            else:
+                _display_dedup_match(match)
 
             action = typer.prompt(
                 "  [a]ccept / [r]eject / [s]kip / [q]uit", default="s"
@@ -170,24 +210,32 @@ def matches_review(
 @app.command("history")
 def matches_history_cmd(
     limit: int = typer.Option(20, "--limit", "-n", help="Max records to show"),
+    match_type: str | None = typer.Option(
+        None, "--type", help="Filter by match type: dedup or transfer"
+    ),
 ) -> None:
     """Show recent match decisions."""
+    if match_type and match_type not in ("dedup", "transfer"):
+        logger.error("❌ --type must be 'dedup' or 'transfer'")
+        raise typer.Exit(2)
+
     try:
         db = get_database()
-        entries = get_match_log(db, limit=limit, match_type="dedup")
+        entries = get_match_log(db, limit=limit, match_type=match_type)
 
         if not entries:
             logger.info("No match decisions found")
             return
 
         typer.echo(
-            f"\n{'Match ID':<14} {'Status':<10} {'Tier':<5} {'Score':>6} "
+            f"\n{'Match ID':<14} {'Type':<9} {'Status':<10} {'Tier':<5} {'Score':>6} "
             f"{'Decided By':<10} {'Type A':<6} {'Type B':<6}"
         )
-        typer.echo("-" * 70)
+        typer.echo("-" * 80)
         for entry in entries:
             typer.echo(
                 f"{entry['match_id'][:12]:<14} "
+                f"{entry.get('match_type', 'dedup'):<9} "
                 f"{entry['match_status']:<10} "
                 f"{(entry.get('match_tier') or '-'):<5} "
                 f"{float(entry.get('confidence_score') or 0):>6.2f} "
@@ -250,17 +298,19 @@ def matches_backfill(
             "SELECT COUNT(*) FROM prep.int_transactions__unioned"
         ).fetchone()
         total = count[0] if count else 0
-        logger.info(f"Scanning {total:,} existing transactions for duplicates...")
+        logger.info(
+            f"Scanning {total:,} existing transactions for duplicates and transfers..."
+        )
 
         seed_source_priority(db, settings)
         matcher = TransactionMatcher(db, settings)
         result = matcher.run()
 
         logger.info(f"Backfill complete: {result.summary()}")
-        if result.pending_review:
+        if result.pending_review or result.pending_transfers:
             logger.info("Run 'moneybin matches review' when ready")
 
-        if not skip_transform and result.auto_merged:
+        if not skip_transform and (result.auto_merged or result.pending_transfers):
             from moneybin.services.import_service import run_transforms
 
             db.close()
