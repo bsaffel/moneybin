@@ -9,9 +9,13 @@ Covers three groups:
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
 from tests.e2e.conftest import FIXTURES_DIR, run_cli
+
+_has_duckdb_cli = shutil.which("duckdb") is not None
 
 pytestmark = pytest.mark.e2e
 
@@ -124,6 +128,7 @@ class TestDBReadOnlyCommands:
         result = run_cli("db", "info", env=e2e_profile)
         result.assert_success()
 
+    @pytest.mark.skipif(not _has_duckdb_cli, reason="DuckDB CLI not installed")
     def test_db_query(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("db", "query", "SELECT 1 AS ok", env=e2e_profile)
         result.assert_success()

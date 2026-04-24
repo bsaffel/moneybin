@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess  # noqa: S404 — subprocess is intentional; we invoke uv as a test harness
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +63,12 @@ TEST_ENCRYPTION_KEY = (
 
 TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105 — test-only passphrase, not a real secret
 
+# Fallback MONEYBIN_HOME for tests that don't provide their own env.
+# Prevents the first-run setup wizard from intercepting CLI commands.
+_FALLBACK_HOME = tempfile.mkdtemp(prefix="moneybin-e2e-fallback-")
+_FALLBACK_PROFILE = "e2e-fallback"
+_fallback_profile_created = False
+
 
 def _base_env(home: Path, profile: str) -> dict[str, str]:
     """Base environment dict for E2E tests with encryption key."""
@@ -90,7 +97,21 @@ def run_cli(
         CLIResult with exit_code, stdout, stderr.
     """
     cmd = ["uv", "run", "moneybin", *args]  # noqa: S607 — uv is on PATH in dev environments
-    full_env = {**os.environ, **FAST_ARGON2_ENV, **(env or {})}
+    # When no env is provided, override MONEYBIN_PROFILE and MONEYBIN_HOME
+    # to prevent the first-run setup wizard and isolate from the user's
+    # real profile. The fallback profile dir is created on first use.
+    if env is None:
+        global _fallback_profile_created  # noqa: PLW0603 — lazy init for module-level state
+        if not _fallback_profile_created:
+            Path(_FALLBACK_HOME, "profiles", _FALLBACK_PROFILE).mkdir(
+                parents=True, exist_ok=True
+            )
+            _fallback_profile_created = True
+        env = {
+            "MONEYBIN_HOME": _FALLBACK_HOME,
+            "MONEYBIN_PROFILE": _FALLBACK_PROFILE,
+        }
+    full_env = {**os.environ, **FAST_ARGON2_ENV, **env}
 
     result = subprocess.run(  # noqa: S603 — input is controlled test commands, not user input
         cmd,
