@@ -125,26 +125,11 @@ def e2e_env(e2e_home: Path) -> dict[str, str]:
 def e2e_profile(e2e_env: dict[str, str], e2e_home: Path) -> dict[str, str]:
     """Initialize the e2e-test profile's database with encryption.
 
-    Returns the same env dict as e2e_env. The database is ready for
-    commands that need get_database().
+    Returns the env dict with MONEYBIN_PROFILE set. The database is
+    ready for commands that need get_database(). Delegates to
+    make_workflow_env() which is idempotent.
     """
-    # Skip init if DB already exists (idempotent across pytest invocations)
-    db_path = e2e_home / "profiles" / "e2e-test" / "moneybin.duckdb"
-    if db_path.exists():
-        return e2e_env
-
-    passphrase_input = f"{_TEST_PASSPHRASE}\n{_TEST_PASSPHRASE}\n"
-    result = run_cli(
-        "db",
-        "init",
-        "--passphrase",
-        "--yes",
-        env=e2e_env,
-        input_text=passphrase_input,
-    )
-    assert result.exit_code == 0, f"Failed to init database: {result.stderr}"
-
-    return e2e_env
+    return make_workflow_env(e2e_home, "e2e-test")
 
 
 def make_workflow_env(

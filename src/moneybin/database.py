@@ -235,7 +235,7 @@ class Database:
                 or sqlmesh not installed),
             False if migration failed.
         """
-        sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
+        sqlmesh_root = _SQLMESH_ROOT
         if not sqlmesh_root.is_dir():
             logger.debug("sqlmesh project dir not found, skipping migrate")
             return True

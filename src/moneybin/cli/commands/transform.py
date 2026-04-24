@@ -8,7 +8,6 @@ import logging
 
 import typer
 
-from moneybin.config import get_database_path
 from moneybin.database import DatabaseKeyError, database_key_error_hint, sqlmesh_context
 
 app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
@@ -26,8 +25,7 @@ def plan_transforms(
     Shows which models would be rebuilt based on changes since the last run.
     Use --apply to apply the plan immediately.
     """
-    db_path = get_database_path()
-    logger.info(f"Running SQLMesh plan against {db_path}")
+    logger.info("⚙️  Running SQLMesh plan...")
 
     try:
         with sqlmesh_context() as ctx:
@@ -49,8 +47,7 @@ def apply_transforms() -> None:
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
     models since the last run.
     """
-    db_path = get_database_path()
-    logger.info(f"Applying SQLMesh transforms against {db_path}")
+    logger.info("⚙️  Applying SQLMesh transforms...")
 
     try:
         with sqlmesh_context() as ctx:

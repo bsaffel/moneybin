@@ -126,7 +126,7 @@ def _detect_file_type(file_path: Path) -> str:
     )
 
 
-def run_transforms(db_path: Path) -> bool:
+def run_transforms() -> bool:
     """Run SQLMesh transforms to rebuild core tables.
 
     SQLMesh manages its own connection — the caller must close any
@@ -134,9 +134,6 @@ def run_transforms(db_path: Path) -> bool:
 
     Uses ``sqlmesh_context()`` to handle encrypted DB injection into
     SQLMesh's adapter cache.
-
-    Args:
-        db_path: Path to the DuckDB database file.
 
     Returns:
         True if transforms ran successfully.
@@ -640,7 +637,7 @@ def import_file(
             _run_matching(db)
         except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
-        result.core_tables_rebuilt = run_transforms(db.path)
+        result.core_tables_rebuilt = run_transforms()
 
         # Apply deterministic categorization to new transactions
         _apply_categorization(db)
