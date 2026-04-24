@@ -174,7 +174,7 @@ def test_extract_transactions_data(
 
     # Check expected columns
     expected_cols = [
-        "transaction_id",
+        "source_transaction_id",
         "account_id",
         "transaction_type",
         "date_posted",
@@ -187,14 +187,14 @@ def test_extract_transactions_data(
 
     # Check first transaction (debit)
     tx1 = transactions.row(0, named=True)
-    assert tx1["transaction_id"] == "TXN001"
+    assert tx1["source_transaction_id"] == "TXN001"
     assert tx1["transaction_type"].upper() == "DEBIT"
     assert tx1["amount"] == -50.00
     assert tx1["payee"] == "Coffee Shop"
 
     # Check second transaction (credit)
     tx2 = transactions.row(1, named=True)
-    assert tx2["transaction_id"] == "TXN002"
+    assert tx2["source_transaction_id"] == "TXN002"
     assert tx2["transaction_type"].upper() == "CREDIT"
     assert tx2["amount"] == 1000.00
     assert tx2["payee"] == "Payroll Deposit"

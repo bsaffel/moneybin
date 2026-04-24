@@ -330,7 +330,7 @@ class OFXExtractor:
                 )
 
                 tx_data = {
-                    "transaction_id": tx_schema.id,
+                    "source_transaction_id": tx_schema.id,
                     "account_id": account.account_id,
                     "transaction_type": tx_schema.type,
                     "date_posted": tx_schema.date.isoformat(),
@@ -345,9 +345,13 @@ class OFXExtractor:
 
         if transactions_data:
             return pl.DataFrame(transactions_data)
+        return self._build_empty_transactions_df()
+
+    def _build_empty_transactions_df(self) -> pl.DataFrame:
+        """Build an empty transactions DataFrame with the correct schema."""
         return pl.DataFrame(
             schema={
-                "transaction_id": pl.String,
+                "source_transaction_id": pl.String,
                 "account_id": pl.String,
                 "transaction_type": pl.String,
                 "date_posted": pl.String,

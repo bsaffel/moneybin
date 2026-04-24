@@ -173,7 +173,7 @@ class SyntheticWriter:
         for txn in txns:
             acct = account_lookup[txn.account_name]
             rows.append({
-                "transaction_id": txn.transaction_id,
+                "source_transaction_id": txn.transaction_id,
                 "account_id": acct.account_id,
                 "transaction_type": txn.transaction_type,
                 "date_posted": datetime.combine(txn.date, time()),

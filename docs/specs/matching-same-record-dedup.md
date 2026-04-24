@@ -1,7 +1,7 @@
 # Same-Record Dedup & Golden-Record Merge Rules
 
 > Last updated: 2026-04-19
-> Status: Ready
+> Status: in-progress
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
 
@@ -277,7 +277,7 @@ Standard import commands gain matching output:
 |---|---|
 | `moneybin matches run` | Run matcher + SQLMesh without importing. For re-running after config changes or reviews. |
 | `moneybin matches review` | Interactive review of pending matches. `[a]ccept / [r]eject / [s]kip / [q]uit` |
-| `moneybin matches log` | Show recent match decisions (auto and user) |
+| `moneybin matches history` | Show recent match decisions (auto and user) |
 | `moneybin matches undo <match_id>` | Reverse a match decision. Sets `reversed_at`/`reversed_by`. |
 | `moneybin matches backfill` | One-time scan of all existing transactions for latent duplicates |
 

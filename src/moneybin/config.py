@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -267,6 +267,61 @@ class SyncConfig(BaseModel):
     )
 
 
+class MatchingSettings(BaseModel):
+    """Transaction matching and dedup configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    high_confidence_threshold: float = Field(
+        default=0.95,
+        ge=0.0,
+        le=1.0,
+        description="Auto-merge threshold (>= this score = accepted)",
+    )
+    review_threshold: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description="Review queue threshold (>= this but < high = pending)",
+    )
+    date_window_days: int = Field(
+        default=3,
+        ge=0,
+        description="Maximum days between transaction dates for candidate pairs",
+    )
+    source_priority: list[str] = Field(
+        default=[
+            "plaid",
+            "csv",
+            "excel",
+            "tsv",
+            "parquet",
+            "feather",
+            "pipe",
+            "ofx",
+        ],
+        description="Source types in priority order (first = highest priority)",
+    )
+
+    @field_validator("source_priority")
+    @classmethod
+    def validate_source_priority(cls, v: list[str]) -> list[str]:
+        """Ensure source_priority is not empty."""
+        if not v:
+            raise ValueError("source_priority must not be empty")
+        return v
+
+    @model_validator(mode="after")
+    def validate_threshold_ordering(self) -> "MatchingSettings":
+        """Ensure review_threshold does not exceed high_confidence_threshold."""
+        if self.review_threshold > self.high_confidence_threshold:
+            raise ValueError(
+                f"review_threshold ({self.review_threshold}) must be <= "
+                f"high_confidence_threshold ({self.high_confidence_threshold})"
+            )
+        return self
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -289,6 +344,7 @@ class MoneyBinSettings(BaseSettings):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
+    matching: MatchingSettings = Field(default_factory=MatchingSettings)
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")

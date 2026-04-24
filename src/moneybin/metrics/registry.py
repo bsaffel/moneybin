@@ -62,6 +62,22 @@ SQLMESH_RUN_DURATION_SECONDS = Histogram(
 DEDUP_MATCHES_TOTAL = Counter(
     "moneybin_dedup_matches_total",
     "Total duplicate records matched and merged",
+    ["match_tier", "decided_by"],
+)
+
+DEDUP_PAIRS_SCORED = Counter(
+    "moneybin_dedup_pairs_scored_total",
+    "Total candidate pairs scored by the matching engine",
+)
+
+DEDUP_REVIEW_PENDING = Gauge(
+    "moneybin_dedup_review_pending",
+    "Number of match proposals awaiting user review",
+)
+
+DEDUP_MATCH_CONFIDENCE = Histogram(
+    "moneybin_dedup_match_confidence",
+    "Distribution of match confidence scores",
 )
 
 # ── Categorization ────────────────────────────────────────────────────────────

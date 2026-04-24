@@ -22,43 +22,6 @@ def _not_implemented(owning_spec: str) -> None:
     logger.info(f"💡 See docs/specs/{owning_spec} for the design")
 
 
-# --- matches ---
-matches_app = typer.Typer(
-    help="Review and manage transaction matches (dedup, transfers)",
-    no_args_is_help=True,
-)
-
-
-@matches_app.command("run")
-def matches_run() -> None:
-    """Run matcher against existing transactions."""
-    _not_implemented("matching-same-record-dedup.md")
-
-
-@matches_app.command("review")
-def matches_review() -> None:
-    """Interactive: accept/reject/skip/quit match proposals."""
-    _not_implemented("matching-same-record-dedup.md")
-
-
-@matches_app.command("log")
-def matches_log() -> None:
-    """Show recent match decisions."""
-    _not_implemented("matching-same-record-dedup.md")
-
-
-@matches_app.command("undo")
-def matches_undo() -> None:
-    """Reverse a match decision."""
-    _not_implemented("matching-same-record-dedup.md")
-
-
-@matches_app.command("backfill")
-def matches_backfill() -> None:
-    """One-time scan of all existing transactions."""
-    _not_implemented("matching-same-record-dedup.md")
-
-
 # --- track ---
 track_app = typer.Typer(
     help="Balance tracking, net worth, and financial monitoring",

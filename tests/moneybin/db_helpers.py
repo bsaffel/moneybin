@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     location_longitude DOUBLE,
     currency_code VARCHAR,
     source_type VARCHAR,
+    source_count INTEGER,
+    match_confidence DECIMAL(5, 4),
     source_extracted_at TIMESTAMP,
     loaded_at TIMESTAMP,
     transaction_year INTEGER,

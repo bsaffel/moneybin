@@ -688,8 +688,12 @@ def import_file(
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
-    # Run SQLMesh transforms after loading raw data
+    # Run matching and SQLMesh transforms after loading raw data
     if apply_transforms and file_type in ("ofx", "tabular"):
+        try:
+            _run_matching(db)
+        except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
+            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
         result.core_tables_rebuilt = run_transforms(db.path)
 
         # Apply deterministic categorization to new transactions
@@ -697,6 +701,27 @@ def import_file(
 
     logger.info(f"Import complete: {result.summary()}")
     return result
+
+
+def _run_matching(db: Database) -> None:
+    """Run transaction matching after import.
+
+    Seeds source priority from config and runs the matcher engine.
+    Results are logged; pending matches prompt user action.
+    """
+    from moneybin.config import get_settings
+    from moneybin.matching.engine import TransactionMatcher
+    from moneybin.matching.priority import seed_source_priority
+
+    settings = get_settings().matching
+    seed_source_priority(db, settings)
+    matcher = TransactionMatcher(db, settings)
+    result = matcher.run()
+
+    if result.auto_merged or result.pending_review:
+        logger.info(f"Matching: {result.summary()}")
+        if result.pending_review:
+            logger.info("Run 'moneybin matches review' when ready")
 
 
 def _apply_categorization(db: Database) -> None:
