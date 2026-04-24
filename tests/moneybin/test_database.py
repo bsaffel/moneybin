@@ -3,10 +3,12 @@
 import sys
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import duckdb
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database, DatabaseKeyError, get_database
 
@@ -249,6 +251,100 @@ class TestIngestDataframe:
         df = pl.DataFrame({"id": [1]})
         with pytest.raises(ValueError, match="on_conflict"):
             db.ingest_dataframe("test_items", df, on_conflict="bad")
+
+
+class TestRunSqlmeshMigrate:
+    """Database._run_sqlmesh_migrate() — in-process SQLMesh state migration."""
+
+    @pytest.fixture()
+    def db(
+        self, db_dir: Path, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        db_path = db_dir / "moneybin.duckdb"
+        database = Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        )
+        yield database
+        database.close()
+
+    def test_skips_when_no_sqlmesh_dir(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns True immediately when sqlmesh project dir doesn't exist."""
+        monkeypatch.setattr("moneybin.database.Path.is_dir", lambda self: False)  # type: ignore[reportUnknownLambdaType]
+        assert db._run_sqlmesh_migrate() is True  # type: ignore[reportPrivateUsage]
+
+    def test_skips_when_sqlmesh_not_installed(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns True and skips when sqlmesh is not importable."""
+        # Ensure sqlmesh_root exists so we get past the dir check
+        sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
+        assert sqlmesh_root.is_dir()  # project has sqlmesh dir
+
+        # Evict sqlmesh from module cache so __import__ is actually called.
+        # Without this, cached modules bypass fake_import entirely and the
+        # real migrate path runs — passing for the wrong reason.
+        import builtins
+
+        for key in [k for k in sys.modules if k.startswith("sqlmesh")]:
+            monkeypatch.delitem(sys.modules, key)
+
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name.startswith("sqlmesh"):
+                raise ImportError("mocked")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        assert db._run_sqlmesh_migrate() is True  # type: ignore[reportPrivateUsage]
+
+    def test_success_calls_migrate_and_cleans_cache(
+        self, db: Database, mocker: MockerFixture
+    ) -> None:
+        """Successful path: adapter injected, ctx.migrate() called, cache cleaned."""
+        mock_ctx_class = mocker.patch("sqlmesh.Context")
+        mock_ctx = mock_ctx_class.return_value
+        from sqlmesh.core.config.connection import BaseDuckDBConnectionConfig
+
+        cache = BaseDuckDBConnectionConfig._data_file_to_adapter  # type: ignore[reportPrivateUsage]
+        cache_key = str(db.path)
+
+        # Verify adapter is in cache when migrate() is called
+        injected_during_migrate: list[bool] = []
+        mock_ctx.migrate.side_effect = lambda: injected_during_migrate.append(
+            cache_key in cache
+        )
+
+        result = db._run_sqlmesh_migrate()  # type: ignore[reportPrivateUsage]
+
+        assert result is True
+        mock_ctx.migrate.assert_called_once()
+        assert injected_during_migrate == [True]  # adapter was present during migrate
+        # Cache should be cleaned up in finally
+        assert cache_key not in cache
+
+    def test_failure_logs_warning_and_returns_false(
+        self, db: Database, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Failure path: exception caught, warning logged with traceback, False returned."""
+        mock_ctx_class = mocker.patch("sqlmesh.Context")
+        mock_ctx_class.return_value.migrate.side_effect = RuntimeError("boom")
+        from sqlmesh.core.config.connection import BaseDuckDBConnectionConfig
+
+        cache = BaseDuckDBConnectionConfig._data_file_to_adapter  # type: ignore[reportPrivateUsage]
+        cache_key = str(db.path)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result = db._run_sqlmesh_migrate()  # type: ignore[reportPrivateUsage]
+
+        assert result is False
+        assert "sqlmesh migrate failed" in caplog.text
+        # Cache should still be cleaned up in finally
+        assert cache_key not in cache
 
 
 class TestGetDatabase:

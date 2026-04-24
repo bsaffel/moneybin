@@ -7,7 +7,7 @@ globs: ["src/moneybin/extractors/**", "src/moneybin/connectors/**", "src/moneybi
 
 ## Day-Boundary Extraction
 
-Only extract complete days. Calculate range from last extraction date to yesterday.
+Only extract complete days. Calculate range from last extraction date to yesterday. Partial-day extraction breaks idempotency — re-running the same extraction later in the day would pick up new transactions, producing different record counts and content hashes that defeat dedup.
 
 ```python
 def get_incremental_date_range(

@@ -20,7 +20,7 @@ Use the first strategy that applies:
 
 For records whose identity *is* their content — reimporting the same file must produce the same IDs.
 
-- **Algorithm**: SHA-256, truncated to 16 hex chars (64 bits).
+- **Algorithm**: SHA-256, truncated to 16 hex chars (64 bits). 64 bits gives ~1-in-a-billion collision probability at 100k records — sufficient for per-source transaction dedup, and short enough to be readable in logs and debugging. Use full SHA-256 if a single table could exceed ~1M records.
 - **Prefix**: Source-specific prefix to prevent cross-source collisions (`csv_`, `pdf_`, etc.).
 - **Input**: Pipe-delimited concatenation of the fields that define uniqueness.
 

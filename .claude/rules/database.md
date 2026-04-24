@@ -35,13 +35,17 @@ See [`smart-import-tabular.md`](../../docs/specs/smart-import-tabular.md) for th
 
 A column name — especially identifiers — must contain the same logical values in every table and view where it appears. Any column named `X` should be joinable to any other column named `X` across raw, prep, core, and app schemas. When a new layer introduces a new concept (e.g., a synthetic key), give it a new name. Never reuse an existing column name with different semantics.
 
-**One concept, one column name.** If two columns across layers carry the same semantic (same values, same meaning), they must share the same name. Don't introduce a layer-specific alias (e.g., `source_format` in raw vs `source_type` in core) — use one name throughout. The canonical provenance column is `source_type` (values: `csv`, `tsv`, `excel`, `parquet`, `ofx`, `plaid`, etc.) — neutral enough for both file formats and API/sync sources. If a trivial mapping is needed (e.g., `xlsx` → `excel`), resolve it at write time so downstream layers never see the raw variant.
+**One concept, one column name.** If two columns across layers carry the same semantic (same values, same meaning), they must share the same name. Don't introduce a layer-specific alias (e.g., `source_format` in raw vs `source_type` in core) — use one name throughout. The canonical provenance column is `source_type` (values: `csv`, `tsv`, `excel`, `parquet`, `ofx`, `plaid`, etc.) — neutral enough for both file formats and API/sync sources. If a trivial mapping is needed (e.g., `xlsx` → `excel`), resolve it at write time so downstream layers never see the raw variant — if both values coexist, JOIN predicates between layers silently produce empty results.
 
 ## Model Naming Conventions
 
 `stg_`, `int_`, `dim_`, `fct_`, `bridge_`, `agg_`, `seed_` — see CLAUDE.md "Architecture: Data Layers" for the full prefix/schema/purpose table.
 
 `stg_` models use double-underscore to separate source system from entity: `stg_ofx__transactions`. `int_` models use it to separate domain from transformation: `int_transactions__merged`.
+
+## SQLMesh Invocation
+
+**Always use the Python API** (`sqlmesh.Context`), never subprocess. Subprocess calls break profile isolation — child processes read `~/.moneybin/config.yaml` and connect to the wrong database. Since SQLMesh's DuckDB config doesn't support `ENCRYPTION_KEY`, inject a pre-connected adapter into `BaseDuckDBConnectionConfig._data_file_to_adapter` keyed by db path — SQLMesh will reuse it instead of opening its own connection. See `run_transforms()` in `import_service.py` and `_run_sqlmesh_migrate()` in `database.py`.
 
 ## SQL Formatting
 
