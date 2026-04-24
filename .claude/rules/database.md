@@ -87,9 +87,12 @@ Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
 | Parse date string | `strptime(s, '%Y-%m-%d')` | `TO_DATE(s, 'YYYY-MM-DD')` |
 | Format date | `strftime(d, '%Y-%m')` | `TO_CHAR(d, 'YYYY-MM')` |
 | Extract year | `YEAR(d)`, `MONTH(d)`, `DAY(d)` | `EXTRACT(YEAR FROM d)` |
+| Date difference (days) | `ABS(a.date - b.date)` or `DATEDIFF('day', a.date, b.date)` | `a.date - b.date` (same, but see note) |
 | Regex match | `regexp_matches(s, 'PAT')` | `s ~ 'PAT'` |
 | Read file | `read_csv('f.csv')`, `read_parquet('*.parquet')` | N/A |
 | Write file | `COPY (...) TO 'f.csv' (HEADER, DELIMITER ',')` | `\copy` or `COPY` with different options |
+
+**Date arithmetic in SQLMesh models:** In raw SQL or Python-executed queries, both `DATE - DATE` and `DATEDIFF('day', ...)` work. However, **in SQLMesh model files**, use `DATE - DATE` subtraction — sqlglot's transpiler misparses `DATEDIFF('day', a, b)` as `DATE_DIFF(a, b, CAST('day' AS DATE))`, producing a runtime `BinderError`. Direct date subtraction survives transpilation correctly.
 
 ## Anti-Patterns
 
