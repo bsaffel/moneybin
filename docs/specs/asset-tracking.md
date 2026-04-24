@@ -48,7 +48,7 @@ User-created asset registry. Managed via CLI (`track asset add/update/sell/remov
 CREATE TABLE IF NOT EXISTS app.assets (
     asset_id VARCHAR NOT NULL PRIMARY KEY,              -- Truncated UUID4 (12 hex chars)
     name VARCHAR NOT NULL,                              -- Human-readable label ("123 Main St", "2021 Tesla Model 3")
-    asset_type VARCHAR NOT NULL,                        -- Asset classification: real_estate, vehicle, valuable, other
+    asset_type VARCHAR NOT NULL CHECK (asset_type IN ('real_estate', 'vehicle', 'valuable', 'other')), -- Asset classification
     description VARCHAR,                                -- Optional free-text details about the asset
     acquisition_date DATE,                              -- Date the asset was acquired; NULL if unknown
     acquisition_cost DECIMAL(18, 2),                    -- Original purchase price; NULL if unknown; enables gain/loss tracking
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS app.assets (
     staleness_threshold_days INTEGER,                   -- Per-asset staleness override in days; NULL falls back to type/global default
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE, -- Whether this asset contributes to net worth calculations
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the asset record was created
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the asset record was last modified
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the asset record was last modified; service layer must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
 );
 ```
 
@@ -128,7 +128,7 @@ FROM manual_valuations
 
 ### SQLMesh model: `core.fct_asset_valuations_daily` (TABLE)
 
-One row per asset per day. Materialized as a FULL table — recomputed on every `sqlmesh run`. Simpler than `fct_balances_daily` because there are no transactions to adjust for — just carry the latest valuation forward.
+One row per asset per day. Materialized as a FULL table — recomputed on every `sqlmesh run`. Simpler than `fct_balances_daily` because there are no transactions to adjust for — just carry the latest valuation forward. FULL is acceptable at v1 scale (dozens of assets, years of daily rows). If it becomes a bottleneck, switch to INCREMENTAL with a date-spine watermark — easy to add later since downstream consumers already expect complete daily coverage.
 
 For each asset:
 1. Find all valuations from `fct_asset_valuations`.
@@ -147,7 +147,7 @@ Columns:
 
 Only produces rows between the first valuation and either `disposal_date` (for disposed assets) or the current date (for active assets). Assets with zero valuations produce no rows.
 
-**Source precedence within a day:** When multiple sources provide a valuation for the same asset on the same date, precedence is: manual > appraisal > automated estimate (zillow, kbb). Most authoritative source wins.
+**Source precedence within a day:** When multiple sources provide a valuation for the same asset on the same date, precedence is: manual > appraisal > automated estimate (zillow, kbb). Most authoritative source wins. Implementation: use `ROW_NUMBER()` with a `CASE WHEN source_type = 'manual' THEN 1 WHEN source_type = 'appraisal' THEN 2 ELSE 3 END` ordering to make the precedence explicit and stable.
 
 **Implementation note:** The date spine generation and carry-forward logic can use DuckDB's `generate_series` for the date spine and window functions with `IGNORE NULLS` for carry-forward, matching the approach in `fct_balances_daily`.
 
@@ -217,7 +217,9 @@ GROUP BY balance_date
 A new field in `MoneyBinSettings`:
 
 ```python
-asset_staleness_default_days: int = 180  # Global fallback when no per-type or per-asset threshold is set
+asset_staleness_default_days: int = (
+    180  # Global fallback when no per-type or per-asset threshold is set
+)
 ```
 
 ### Resolution order
