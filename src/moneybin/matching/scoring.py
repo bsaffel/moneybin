@@ -154,7 +154,18 @@ def _get_candidates(
             ON a.account_id = b.account_id
             AND a.amount = b.amount
             AND ABS(DATEDIFF('day', a.transaction_date, b.transaction_date)) <= ?
-            AND a.source_transaction_id < b.source_transaction_id
+            AND (
+                a.source_type < b.source_type
+                OR (
+                    a.source_type = b.source_type
+                    AND a.source_origin < b.source_origin
+                )
+                OR (
+                    a.source_type = b.source_type
+                    AND a.source_origin = b.source_origin
+                    AND a.source_transaction_id < b.source_transaction_id
+                )
+            )
             {source_filter}
         ORDER BY desc_sim DESC
     """  # noqa: S608 — table name validated above; date_window_days is parameterized

@@ -134,6 +134,38 @@ class TestGetCandidatesCrossSource:
         assert candidates[0].source_transaction_id_a == "csv_abc"
         assert candidates[0].source_transaction_id_b == "ofx_xyz"
 
+    def test_finds_cross_source_pair_with_equal_source_ids(
+        self, unioned_table: Database
+    ) -> None:
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="shared-id",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="STARBUCKS #1234",
+            source_type="csv",
+            source_origin="chase",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="shared-id",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="STARBUCKS 1234 NEW YORK",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+
+        candidates = get_candidates_cross_source(
+            unioned_table, table="main._test_unioned", date_window_days=3
+        )
+
+        assert len(candidates) == 1
+        assert candidates[0].source_transaction_id_a == "shared-id"
+        assert candidates[0].source_transaction_id_b == "shared-id"
+
     def test_excludes_same_source_type_and_origin(
         self, unioned_table: Database
     ) -> None:
