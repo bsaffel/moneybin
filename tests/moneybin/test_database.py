@@ -271,7 +271,7 @@ class TestRunSqlmeshMigrate:
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Returns True immediately when sqlmesh project dir doesn't exist."""
-        monkeypatch.setattr(Path, "is_dir", lambda self: False)  # type: ignore[reportUnknownLambdaType]
+        monkeypatch.setattr("moneybin.database.Path.is_dir", lambda self: False)  # type: ignore[reportUnknownLambdaType]
         assert db._run_sqlmesh_migrate() is True  # type: ignore[reportPrivateUsage]
 
     def test_skips_when_sqlmesh_not_installed(
@@ -306,10 +306,17 @@ class TestRunSqlmeshMigrate:
         cache = BaseDuckDBConnectionConfig._data_file_to_adapter  # type: ignore[reportPrivateUsage]
         cache_key = str(db.path)
 
+        # Verify adapter is in cache when migrate() is called
+        injected_during_migrate: list[bool] = []
+        mock_ctx.migrate.side_effect = lambda: injected_during_migrate.append(
+            cache_key in cache
+        )
+
         result = db._run_sqlmesh_migrate()  # type: ignore[reportPrivateUsage]
 
         assert result is True
         mock_ctx.migrate.assert_called_once()
+        assert injected_during_migrate == [True]  # adapter was present during migrate
         # Cache should be cleaned up in finally
         assert cache_key not in cache
 

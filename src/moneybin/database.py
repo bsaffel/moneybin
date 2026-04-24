@@ -257,7 +257,10 @@ class Database:
         cache_key = str(self._db_path)
         try:
             conn = self._conn
-            assert conn is not None  # noqa: S101 — invariant: called from __init__ after connect
+            if conn is None:
+                raise RuntimeError(
+                    "_run_sqlmesh_migrate called before connection is established"
+                )
             adapter = DuckDBEngineAdapter(
                 lambda: conn,
                 default_catalog=_DATABASE_ALIAS,
