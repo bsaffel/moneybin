@@ -108,6 +108,27 @@ class TestTransformBasic:
             r1.transactions["transaction_id"][0] == r2.transactions["transaction_id"][0]
         )
 
+    def test_transaction_id_ignores_source_row_number(self) -> None:
+        original = _make_df(
+            Date=["01/15/2026"],
+            Amount=["-42.50"],
+            Description=["KROGER"],
+        )
+        shifted = _make_df(
+            Date=["01/14/2026", "01/15/2026"],
+            Amount=["-1.00", "-42.50"],
+            Description=["PREVIOUS ROW", "KROGER"],
+        )
+        kwargs = _base_kwargs()
+
+        original_result = transform_dataframe(df=original, **kwargs)
+        shifted_result = transform_dataframe(df=shifted, **kwargs)
+
+        assert (
+            original_result.transactions["transaction_id"][0]
+            == shifted_result.transactions["transaction_id"][1]
+        )
+
     def test_source_transaction_id_used_when_present(self) -> None:
         df = _make_df(
             Date=["01/15/2026"],

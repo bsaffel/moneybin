@@ -56,6 +56,11 @@ def matches_review(
     accept_all: bool = typer.Option(
         False, "--accept-all", help="Accept all pending matches without prompting"
     ),
+    skip_transform: bool = typer.Option(
+        False,
+        "--skip-transform",
+        help="Skip SQLMesh transforms after accepting matches",
+    ),
     match_id: str | None = typer.Option(
         None, "--match-id", help="Specific match ID to act on (use with --decision)"
     ),
@@ -66,6 +71,7 @@ def matches_review(
     ),
 ) -> None:
     """Review pending match proposals. Interactive by default."""
+    from moneybin.config import get_settings
     from moneybin.matching.persistence import get_pending_matches, update_match_status
 
     if decision and not match_id:
@@ -78,12 +84,19 @@ def matches_review(
 
     try:
         db = get_database()
+        accepted_count = 0
 
         # Non-interactive: single match decision
         if match_id and decision:
             status = "accepted" if decision == "accept" else "rejected"
             update_match_status(db, match_id, status=status, decided_by="user")
             logger.info(f"{status.capitalize()} {match_id[:8]}")
+            if status == "accepted":
+                if not skip_transform:
+                    from moneybin.services.import_service import run_transforms
+
+                    db.close()
+                    run_transforms(get_settings().database.path)
             return
 
         pending = get_pending_matches(db)
@@ -98,7 +111,13 @@ def matches_review(
                 update_match_status(
                     db, match["match_id"], status="accepted", decided_by="user"
                 )
+                accepted_count += 1
             logger.info(f"Accepted {len(pending)} pending match(es)")
+            if accepted_count and not skip_transform:
+                from moneybin.services.import_service import run_transforms
+
+                db.close()
+                run_transforms(get_settings().database.path)
             return
 
         # Interactive review
@@ -124,6 +143,7 @@ def matches_review(
                 update_match_status(
                     db, match["match_id"], status="accepted", decided_by="user"
                 )
+                accepted_count += 1
                 logger.info(f"Accepted {match['match_id'][:8]}")
             elif action.lower().startswith("r"):
                 update_match_status(
@@ -132,6 +152,12 @@ def matches_review(
                 logger.info(f"Rejected {match['match_id'][:8]}")
             elif action.lower().startswith("q"):
                 break
+
+        if accepted_count and not skip_transform:
+            from moneybin.services.import_service import run_transforms
+
+            db.close()
+            run_transforms(get_settings().database.path)
 
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
