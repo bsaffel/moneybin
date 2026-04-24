@@ -164,7 +164,7 @@ def get_rejected_pairs(db: Database, match_type: str = "dedup") -> list[dict[str
         """
         SELECT source_type_a, source_transaction_id_a, source_origin_a,
                source_type_b, source_transaction_id_b, source_origin_b,
-               account_id
+               account_id, account_id_b
         FROM app.match_decisions
         WHERE match_status = 'rejected'
           AND match_type = ?
@@ -179,6 +179,7 @@ def get_rejected_pairs(db: Database, match_type: str = "dedup") -> list[dict[str
         "source_transaction_id_b",
         "source_origin_b",
         "account_id",
+        "account_id_b",
     ]
     return [dict(zip(columns, row, strict=True)) for row in rows]
 

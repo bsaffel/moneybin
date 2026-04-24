@@ -128,9 +128,12 @@ class TransactionMatcher:
         already_matched.update(tier_3_matched)
 
         # Tier 4: transfer detection (runs after dedup).
-        # Deduped transactions are still valid transfer candidates, so only
-        # exclude transactions already in an accepted/pending transfer.
+        # Exclude transactions in active transfers AND the non-primary side of
+        # each dedup group. Without this, duplicate source rows (e.g., csv_chk1
+        # and ofx_chk1 both deduped) can each form separate transfer proposals
+        # that resolve to the same merged transaction pair in bridge_transfers.
         transfer_excluded = self._get_matched_ids("transfer")
+        transfer_excluded |= self._get_dedup_secondary_ids()
         rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
 
         self._run_transfer_tier(
@@ -248,6 +251,25 @@ class TransactionMatcher:
                 ids.add((row[0], row[2]))
                 ids.add((row[1], row[2]))
         return ids
+
+    def _get_dedup_secondary_ids(self) -> set[tuple[str, str]]:
+        """Get (source_transaction_id, account_id) for non-primary dedup rows.
+
+        For each accepted/pending dedup match, side B is the lower-priority
+        source row. Excluding these from transfer matching prevents duplicate
+        transfer proposals when both sides of a dedup group appear as separate
+        transfer candidates.
+        """
+        rows = self._db.execute(
+            """
+            SELECT source_transaction_id_b, account_id
+            FROM app.match_decisions
+            WHERE match_status IN ('accepted', 'pending')
+              AND reversed_at IS NULL
+              AND match_type = 'dedup'
+            """
+        ).fetchall()
+        return {(row[0], row[1]) for row in rows}
 
     def _run_transfer_tier(
         self,

@@ -41,3 +41,20 @@ class TestTransferSettings:
         }
         settings = MatchingSettings(transfer_signal_weights=custom)
         assert settings.transfer_signal_weights == custom
+
+    def test_transfer_signal_weights_missing_key(self) -> None:
+        with pytest.raises(ValidationError, match="missing keys"):
+            MatchingSettings(
+                transfer_signal_weights={"date_distance": 0.5, "keyword": 0.5}
+            )
+
+    def test_transfer_signal_weights_bad_sum(self) -> None:
+        with pytest.raises(ValidationError, match="must sum to 1.0"):
+            MatchingSettings(
+                transfer_signal_weights={
+                    "date_distance": 0.5,
+                    "keyword": 0.4,
+                    "roundness": 0.2,
+                    "pair_frequency": 0.2,
+                }
+            )

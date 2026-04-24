@@ -125,6 +125,52 @@ class TestAssignGreedyTransfers:
         assert assigned[0].confidence_score == 0.90
         assert assigned[0].account_id_b == "savings"
 
+    def test_same_source_id_different_accounts(self) -> None:
+        """Same source_transaction_id in different accounts are distinct slots."""
+        candidates = [
+            TransferCandidatePair(
+                source_transaction_id_a="txn_1",
+                source_type_a="ofx",
+                source_origin_a="bank_a",
+                account_id_a="checking_a",
+                source_transaction_id_b="txn_1",
+                source_type_b="ofx",
+                source_origin_b="bank_b",
+                account_id_b="savings_a",
+                amount=Decimal("200.00"),
+                date_distance_days=0,
+                description_a="TRANSFER",
+                description_b="TRANSFER",
+                date_distance_score=1.0,
+                keyword_score=1.0,
+                amount_roundness_score=1.0,
+                pair_frequency_score=1.0,
+                confidence_score=0.95,
+            ),
+            TransferCandidatePair(
+                source_transaction_id_a="txn_1",
+                source_type_a="ofx",
+                source_origin_a="bank_c",
+                account_id_a="checking_b",
+                source_transaction_id_b="txn_1",
+                source_type_b="ofx",
+                source_origin_b="bank_d",
+                account_id_b="savings_b",
+                amount=Decimal("200.00"),
+                date_distance_days=0,
+                description_a="TRANSFER",
+                description_b="TRANSFER",
+                date_distance_score=1.0,
+                keyword_score=1.0,
+                amount_roundness_score=1.0,
+                pair_frequency_score=1.0,
+                confidence_score=0.90,
+            ),
+        ]
+        assigned = assign_greedy(candidates)
+        # Both pairs should be assigned since account_id distinguishes the slots
+        assert len(assigned) == 2
+
     def test_one_to_one_enforcement(self) -> None:
         """Each transaction participates in at most one transfer pair."""
         candidates = [

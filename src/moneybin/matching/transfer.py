@@ -54,7 +54,10 @@ _TRANSFER_KEYWORDS = frozenset({
 # Regex that matches keywords longest-first, non-overlapping left-to-right.
 # Built once at import time.
 _KEYWORD_PATTERN = re.compile(
-    "|".join(re.escape(kw) for kw in sorted(_TRANSFER_KEYWORDS, key=len, reverse=True))
+    "|".join(
+        r"\b" + re.escape(kw) + r"\b"
+        for kw in sorted(_TRANSFER_KEYWORDS, key=len, reverse=True)
+    )
 )
 
 
@@ -194,17 +197,23 @@ def get_candidates_transfers(
     rejected_set: set[tuple[str, ...]] = set()
     if rejected_pairs:
         for rp in rejected_pairs:
+            acct_a = rp.get("account_id") or ""
+            acct_b = rp.get("account_id_b") or ""
             rejected_set.add((
                 rp["source_type_a"],
                 rp["source_transaction_id_a"],
+                acct_a,
                 rp["source_type_b"],
                 rp["source_transaction_id_b"],
+                acct_b,
             ))
             rejected_set.add((
                 rp["source_type_b"],
                 rp["source_transaction_id_b"],
+                acct_b,
                 rp["source_type_a"],
                 rp["source_transaction_id_a"],
+                acct_a,
             ))
 
     # Pass 1: filter rows and build pair-frequency counts (needed for scoring).
@@ -220,7 +229,7 @@ def get_candidates_transfers(
         ):
             continue
 
-        if (st_a, stid_a, st_b, stid_b) in rejected_set:
+        if (st_a, stid_a, acct_a, st_b, stid_b, acct_b) in rejected_set:
             continue
 
         filtered.append({

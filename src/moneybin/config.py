@@ -5,6 +5,7 @@ that consolidates all application settings with environment variable integration
 type validation, and clear error handling.
 """
 
+import math
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -329,11 +330,16 @@ class MatchingSettings(BaseModel):
     @field_validator("transfer_signal_weights")
     @classmethod
     def validate_transfer_weights(cls, v: dict[str, float]) -> dict[str, float]:
-        """Ensure all required scoring keys are present."""
+        """Ensure all required scoring keys are present and sum to 1.0."""
         required = {"date_distance", "keyword", "roundness", "pair_frequency"}
         missing = required - v.keys()
         if missing:
             raise ValueError(f"transfer_signal_weights missing keys: {missing}")
+        total = sum(v.values())
+        if not math.isclose(total, 1.0, abs_tol=1e-6):
+            raise ValueError(
+                f"transfer_signal_weights must sum to 1.0, got {total:.6f}"
+            )
         return v
 
     @model_validator(mode="after")

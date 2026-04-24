@@ -49,6 +49,10 @@ class TestComputeKeywordScore:
         score = compute_keyword_score("TRANSFER", "ACH DEPOSIT")
         assert score >= 0.8
 
+    def test_no_substring_matches(self) -> None:
+        """Keywords must match whole words, not substrings."""
+        assert compute_keyword_score("MARCH WIRELESS", "PURCHASE") == 0.0
+
 
 class TestComputeAmountRoundness:
     """Tests for amount roundness scoring."""
@@ -417,6 +421,7 @@ class TestGetCandidatesTransfers:
                 "source_transaction_id_b": "csv_sav1",
                 "source_origin_b": "bank",
                 "account_id": "checking",
+                "account_id_b": "savings",
             }
         ]
         candidates = get_candidates_transfers(

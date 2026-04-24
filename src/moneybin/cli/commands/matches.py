@@ -40,7 +40,7 @@ def matches_run(
         else:
             logger.info("No new matches found")
 
-        if not skip_transform and (result.auto_merged or result.pending_transfers):
+        if not skip_transform and result.auto_merged:
             from moneybin.services.import_service import run_transforms
 
             db.close()
@@ -306,7 +306,7 @@ def matches_backfill(
         if result.has_pending:
             logger.info("Run 'moneybin matches review' when ready")
 
-        if not skip_transform and (result.auto_merged or result.pending_transfers):
+        if not skip_transform and result.auto_merged:
             from moneybin.services.import_service import run_transforms
 
             db.close()
