@@ -27,6 +27,10 @@ The goal is that someone reading the README gets an accurate picture of what Mon
 
 - Add a 🗓️ entry to the relevant roadmap table in `README.md`.
 
+### Test Layer Check
+
+Before marking a spec as `implemented`, verify the feature has tests at every applicable layer (see testing.md "Test Coverage by Layer"). Unit tests alone are not sufficient for features that add CLI commands or cross subsystem boundaries.
+
 ## Pre-Push Quality Pass
 
 After implementation is complete and documentation is updated, run `/simplify` **before the final commit and push**. This reviews the changed code for reuse opportunities, quality issues, and efficiency problems — then fixes what it finds. The goal is to catch copy-paste patterns, redundant state, missing validations, and other issues that accumulate during implementation before they land on `main`.

@@ -15,16 +15,18 @@ globs: ["tests/**", "**/conftest.py", "src/moneybin/testing/**"]
 ```python
 @pytest.mark.unit         # Fast unit tests (default)
 @pytest.mark.integration  # Requires external systems
+@pytest.mark.e2e          # End-to-end subprocess tests
 @pytest.mark.slow         # Long-running
 ```
 
 ## Commands
 
 ```bash
-uv run pytest tests/ -v                                    # All tests
-uv run pytest tests/ -v -m "not integration"               # Unit only
-uv run pytest tests/test_file.py -v                        # Specific file
-uv run pytest tests/ --cov=src/moneybin --cov-report=html  # Coverage
+uv run pytest tests/ -v                                       # All tests
+uv run pytest tests/ -v -m "not integration and not e2e"      # Unit only
+uv run pytest tests/test_file.py -v                           # Specific file
+uv run pytest tests/e2e/ -m "e2e" -v                          # E2E only
+uv run pytest tests/ --cov=src/moneybin --cov-report=html     # Coverage
 ```
 
 ## Mocking Strategy
@@ -76,6 +78,22 @@ mock_runner.pending.return_value = [_make_migration(version=2, filename="V002__n
 Migration(version=2, name="new", filename="V002__new.sql", checksum="def456",
           content=b"SELECT 1;", path=Path("/tmp/V002__new.sql"), file_type="sql")
 ```
+
+## Test Coverage by Layer
+
+Every shipped feature must have tests at the appropriate layers:
+
+| Layer | What it catches | Required when |
+|---|---|---|
+| Unit (`tests/moneybin/`) | Logic bugs, edge cases | Always |
+| Integration (`tests/integration/`) | Cross-subsystem wiring | Feature touches >1 subsystem |
+| E2E smoke (`tests/e2e/test_e2e_smoke.py`) | Boot/schema/init/registration errors | Feature adds or modifies a CLI command |
+| E2E workflow (`tests/e2e/test_e2e_workflows.py`) | Multi-step pipeline breakage | Feature adds a user-facing workflow |
+
+- New CLI commands: add to the smoke test parametrize list in `tests/e2e/test_e2e_smoke.py`
+- New import formats or data sources: add an E2E workflow test that imports a fixture file
+- New DB schema changes: covered automatically by existing smoke tests (they exercise `init_schemas`)
+- Unit tests alone are not sufficient for shipped features that add CLI commands or cross subsystem boundaries
 
 ## Best Practices
 

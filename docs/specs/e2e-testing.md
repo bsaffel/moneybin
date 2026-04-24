@@ -1,6 +1,6 @@
 # End-to-End Testing
 
-**Status:** draft
+**Status:** in-progress
 **Created:** 2026-04-23
 
 ## Problem
