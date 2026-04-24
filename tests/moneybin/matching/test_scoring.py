@@ -163,6 +163,8 @@ class TestGetCandidatesCrossSource:
         )
 
         assert len(candidates) == 1
+        assert candidates[0].source_type_a == "csv"
+        assert candidates[0].source_type_b == "ofx"
         assert candidates[0].source_transaction_id_a == "shared-id"
         assert candidates[0].source_transaction_id_b == "shared-id"
 

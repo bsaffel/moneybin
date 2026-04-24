@@ -89,7 +89,7 @@ _URL_SCHEME_PATTERNS = re.compile(
 # without using read_csv/read_parquet. A single-quoted table source is not a
 # normal catalog table reference, so reject it before execution.
 _QUOTED_TABLE_SCAN = re.compile(
-    r"\b(FROM|JOIN)\s*'[^']+'",
+    r"(?<!')\b(FROM|JOIN)\s*'[^']+'",
     re.IGNORECASE,
 )
 

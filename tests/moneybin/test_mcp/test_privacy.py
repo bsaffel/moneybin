@@ -160,6 +160,16 @@ class TestValidateReadOnlyQuery:
         )
         assert result is None
 
+    @pytest.mark.unit
+    def test_bare_keyword_string_filters_allowed(self) -> None:
+        result = validate_read_only_query(
+            """
+            SELECT * FROM "core"."fct_transactions"
+            WHERE action = 'JOIN' AND note = 'something'
+            """
+        )
+        assert result is None
+
 
 class TestCheckTableAllowed:
     """Tests for table allowlist checking."""
