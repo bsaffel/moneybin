@@ -95,7 +95,13 @@ class TestImportPipeline:
         from moneybin.services.import_service import run_transforms
 
         with pytest.MonkeyPatch.context() as mp:
+            # Patch SecretStore in both modules that import it
             mp.setattr("moneybin.secrets.SecretStore", lambda: mock_store)
+            mp.setattr("moneybin.database.SecretStore", lambda: mock_store)
+            # Point get_settings().database.path at the test database
+            mock_settings = MagicMock()
+            mock_settings.database.path = db_path
+            mp.setattr("moneybin.database.get_settings", lambda: mock_settings)
             result = run_transforms()
 
         assert result is True

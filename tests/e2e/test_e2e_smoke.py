@@ -78,10 +78,6 @@ class TestNoDBCommands:
         result = run_cli("logs", "path", env=e2e_env)
         result.assert_success()
 
-    def test_mcp_list_tools(self) -> None:
-        result = run_cli("mcp", "list-tools")
-        result.assert_success()
-
     def test_mcp_list_prompts(self) -> None:
         result = run_cli("mcp", "list-prompts")
         result.assert_success()
@@ -135,8 +131,12 @@ class TestDBCommands:
         result = run_cli("categorize", "list-rules", env=e2e_profile)
         result.assert_success()
 
-    def test_matches_log(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("matches", "log", env=e2e_profile)
+    def test_matches_history(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("matches", "history", env=e2e_profile)
+        result.assert_success()
+
+    def test_mcp_list_tools(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("mcp", "list-tools", env=e2e_profile)
         result.assert_success()
 
     def test_stats_show(self, e2e_profile: dict[str, str]) -> None:

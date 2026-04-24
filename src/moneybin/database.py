@@ -288,10 +288,11 @@ class Database:
             logger.debug("sqlmesh migrate completed successfully")
             return True
         except Exception:  # noqa: BLE001 — sqlmesh migration failures are non-fatal
-            logger.warning(
-                "⚠️  sqlmesh migrate failed — see logs for details",
+            logger.debug(
+                "sqlmesh migrate failed",
                 exc_info=True,
             )
+            logger.warning("⚠️  sqlmesh migrate failed — see logs for details")
             return False
         finally:
             BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
@@ -567,6 +568,7 @@ def sqlmesh_context(
     # No current SQLMesh models use httpfs (remote file access); if one is
     # added, INSTALL/LOAD httpfs must be added here.
     conn = duckdb.connect()
+    cache_key = str(db_path)
     try:
         conn.execute(build_attach_sql(db_path, encryption_key))
         conn.execute(f"USE {_DATABASE_ALIAS}")
@@ -576,7 +578,6 @@ def sqlmesh_context(
             default_catalog=_DATABASE_ALIAS,
             register_comments=True,
         )
-        cache_key = str(db_path)
         BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
 
         config = Config(

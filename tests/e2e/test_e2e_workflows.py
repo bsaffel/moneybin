@@ -43,6 +43,8 @@ class TestSyntheticPipeline:
             "db",
             "query",
             "SELECT COUNT(*) AS n FROM core.fct_transactions",
+            "--format",
+            "csv",
             env=env,
         )
         result.assert_success()
@@ -79,6 +81,8 @@ class TestCSVImportPipeline:
             "db",
             "query",
             "SELECT COUNT(*) AS n FROM core.fct_transactions",
+            "--format",
+            "csv",
             env=env,
         )
         result.assert_success()
@@ -113,6 +117,8 @@ class TestOFXImportPipeline:
             "db",
             "query",
             "SELECT COUNT(*) AS n FROM core.fct_transactions",
+            "--format",
+            "csv",
             env=env,
         )
         result.assert_success()
