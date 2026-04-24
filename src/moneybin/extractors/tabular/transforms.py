@@ -222,7 +222,6 @@ def transform_dataframe(
         original_date_strs=original_date_strs,
         parsed_amounts=parsed_amounts,
         descriptions=descriptions,
-        row_numbers=row_numbers,
         source_type=source_type,
     )
 
@@ -566,7 +565,6 @@ def _generate_transaction_ids(
     original_date_strs: list[str],
     parsed_amounts: list[Decimal | None],
     descriptions: list[str],
-    row_numbers: list[int],
     source_type: str,
 ) -> list[str]:
     """Generate transaction IDs using source ID if available, else content hash.
@@ -574,7 +572,7 @@ def _generate_transaction_ids(
     ID strategy (per identifiers.md):
     1. Source-provided ID → "{account_id}:{source_txn_id}"
     2. Content hash → "{source_type}_{sha256_16hex}"
-       Input: "{date}|{amount}|{description}|{account_id}|{row_number}"
+       Input: "{date}|{amount}|{description}|{account_id}"
 
     Args:
         df: Source DataFrame.
@@ -583,7 +581,6 @@ def _generate_transaction_ids(
         original_date_strs: Raw date strings, one per row.
         parsed_amounts: Parsed Decimal amounts (None for invalid rows).
         descriptions: Description strings, one per row.
-        row_numbers: 1-based row numbers.
         source_type: File type prefix for content-hash IDs.
 
     Returns:
@@ -608,8 +605,7 @@ def _generate_transaction_ids(
                 str(parsed_amounts[idx]) if parsed_amounts[idx] is not None else ""
             )
             desc_str = descriptions[idx] if idx < len(descriptions) else ""
-            row_str = str(row_numbers[idx]) if idx < len(row_numbers) else ""
-            raw_key = f"{date_str}|{amount_str}|{desc_str}|{acct_id}|{row_str}"
+            raw_key = f"{date_str}|{amount_str}|{desc_str}|{acct_id}"
             digest = hashlib.sha256(raw_key.encode()).hexdigest()[:16]
             ids.append(f"{source_type}_{digest}")
 

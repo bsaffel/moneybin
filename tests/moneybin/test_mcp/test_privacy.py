@@ -139,6 +139,37 @@ class TestValidateReadOnlyQuery:
             assert result is not None, f"URL {url!r} should be blocked"
             assert "URL" in result
 
+    @pytest.mark.unit
+    def test_quoted_path_scans_rejected(self) -> None:
+        for path in [
+            "/Users/example/Downloads/transactions.csv",
+            "relative/transactions.parquet",
+            "~/Downloads/export.json",
+        ]:
+            result = validate_read_only_query(f"SELECT * FROM '{path}'")  # noqa: S608  # building test input string, not executing SQL
+            assert result is not None, f"Path scan {path!r} should be blocked"
+            assert "path scans" in result
+
+    @pytest.mark.unit
+    def test_quoted_identifiers_and_string_filters_allowed(self) -> None:
+        result = validate_read_only_query(
+            """
+            SELECT * FROM "core"."fct_transactions"
+            WHERE description = 'JOIN gym' OR note = 'FROM here'
+            """
+        )
+        assert result is None
+
+    @pytest.mark.unit
+    def test_bare_keyword_string_filters_allowed(self) -> None:
+        result = validate_read_only_query(
+            """
+            SELECT * FROM "core"."fct_transactions"
+            WHERE action = 'JOIN' AND note = 'something'
+            """
+        )
+        assert result is None
+
 
 class TestCheckTableAllowed:
     """Tests for table allowlist checking."""
