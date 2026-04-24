@@ -103,37 +103,48 @@ def e2e_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="session")
 def e2e_env(e2e_home: Path) -> dict[str, str]:
-    """Base env dict pointing at the temp MONEYBIN_HOME."""
-    return {"MONEYBIN_HOME": str(e2e_home)}
+    """Temp MONEYBIN_HOME with a profile created (but no DB initialized).
+
+    Sets MONEYBIN_PROFILE so commands don't trigger ensure_default_profile()
+    or fall through to the user's real profile.
+    """
+    profile_name = "e2e-test"
+    env = {"MONEYBIN_HOME": str(e2e_home), "MONEYBIN_PROFILE": profile_name}
+
+    # Create profile — accept "already exists" as success since
+    # set_current_profile() may create the directory as a side effect
+    result = run_cli("profile", "create", profile_name, env=env)
+    if result.exit_code != 0 and "already exists" not in result.stderr:
+        msg = f"Failed to create profile: {result.stderr}"
+        raise AssertionError(msg)
+
+    return env
 
 
 @pytest.fixture(scope="session")
-def e2e_profile(e2e_env: dict[str, str]) -> dict[str, str]:
-    """Create a test profile with an initialized, encrypted database.
+def e2e_profile(e2e_env: dict[str, str], e2e_home: Path) -> dict[str, str]:
+    """Initialize the e2e-test profile's database with encryption.
 
-    Returns the env dict with MONEYBIN_HOME set. The profile is named
-    'e2e-test' and is ready for commands that need get_database().
+    Returns the same env dict as e2e_env. The database is ready for
+    commands that need get_database().
     """
-    profile_name = "e2e-test"
-    env = {**e2e_env, "MONEYBIN_PROFILE": profile_name}
+    # Skip init if DB already exists (idempotent across pytest invocations)
+    db_path = e2e_home / "profiles" / "e2e-test" / "moneybin.duckdb"
+    if db_path.exists():
+        return e2e_env
 
-    # Create profile
-    result = run_cli("profile", "create", profile_name, env=env)
-    assert result.exit_code == 0, f"Failed to create profile: {result.stderr}"
-
-    # Initialize database with passphrase
     passphrase_input = f"{_TEST_PASSPHRASE}\n{_TEST_PASSPHRASE}\n"
     result = run_cli(
         "db",
         "init",
         "--passphrase",
         "--yes",
-        env=env,
+        env=e2e_env,
         input_text=passphrase_input,
     )
     assert result.exit_code == 0, f"Failed to init database: {result.stderr}"
 
-    return env
+    return e2e_env
 
 
 def make_workflow_env(
