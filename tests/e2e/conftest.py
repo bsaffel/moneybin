@@ -155,26 +155,33 @@ def make_workflow_env(
 
     Runs profile create + db init. Returns the env dict.
     Call this at the start of each workflow test for isolation.
+    Idempotent — accepts "already exists" for profile create and
+    skips db init if the .duckdb file already exists.
     """
     env = {"MONEYBIN_HOME": str(e2e_home), "MONEYBIN_PROFILE": profile_name}
 
+    # Create profile — accept "already exists" as success since
+    # set_current_profile() may create the directory as a side effect
     result = run_cli("profile", "create", profile_name, env=env)
-    assert result.exit_code == 0, (
-        f"Failed to create profile '{profile_name}': {result.stderr}"
-    )
+    if result.exit_code != 0 and "already exists" not in result.stderr:
+        msg = f"Failed to create profile '{profile_name}': {result.stderr}"
+        raise AssertionError(msg)
 
-    passphrase_input = f"{_TEST_PASSPHRASE}\n{_TEST_PASSPHRASE}\n"
-    result = run_cli(
-        "db",
-        "init",
-        "--passphrase",
-        "--yes",
-        env=env,
-        input_text=passphrase_input,
-    )
-    assert result.exit_code == 0, (
-        f"Failed to init DB for '{profile_name}': {result.stderr}"
-    )
+    # Skip init if DB already exists (idempotent across test re-runs)
+    db_path = e2e_home / "profiles" / profile_name / "moneybin.duckdb"
+    if not db_path.exists():
+        passphrase_input = f"{_TEST_PASSPHRASE}\n{_TEST_PASSPHRASE}\n"
+        result = run_cli(
+            "db",
+            "init",
+            "--passphrase",
+            "--yes",
+            env=env,
+            input_text=passphrase_input,
+        )
+        if result.exit_code != 0:
+            msg = f"Failed to init DB for '{profile_name}': {result.stderr}"
+            raise AssertionError(msg)
 
     return env
 
