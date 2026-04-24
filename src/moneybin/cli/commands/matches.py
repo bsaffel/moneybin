@@ -2,6 +2,7 @@
 
 import logging
 
+import duckdb as duckdb_mod
 import typer
 
 from moneybin.database import DatabaseKeyError, get_database
@@ -49,6 +50,11 @@ def matches_run(
         logger.error(f"❌ {e}")
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
+    except duckdb_mod.CatalogException:
+        logger.error(
+            "❌ No transaction data available — run 'moneybin transform apply' first"
+        )
+        raise typer.Exit(1) from None
 
 
 @app.command("review")
@@ -246,3 +252,8 @@ def matches_backfill(
         logger.error(f"❌ {e}")
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
+    except duckdb_mod.CatalogException:
+        logger.error(
+            "❌ No transaction data available — run 'moneybin transform apply' first"
+        )
+        raise typer.Exit(1) from None

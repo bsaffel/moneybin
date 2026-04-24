@@ -127,9 +127,16 @@ class TestOFXImportPipeline:
 
 
 class TestLockUnlockCycle:
-    """Workflow 4: profile create → db init → query → lock → unlock → query."""
+    """Workflow 4: lock exits cleanly, unlock fails gracefully without salt.
 
-    def test_lock_unlock_preserves_access(self, e2e_home: Path) -> None:
+    The full passphrase round-trip (init --passphrase → lock → unlock →
+    verify) is tested in ``tests/integration/test_integration_existing.py::
+    TestPassphraseRoundTrip``.  E2E subprocess tests use a null keyring
+    backend, so the passphrase salt is never persisted and unlock cannot
+    succeed — but it must fail gracefully.
+    """
+
+    def test_lock_unlock_graceful(self, e2e_home: Path) -> None:
         from tests.e2e.conftest import TEST_PASSPHRASE
 
         env = make_workflow_env(e2e_home, "wf-lock")
@@ -138,20 +145,22 @@ class TestLockUnlockCycle:
         result = run_cli("db", "query", "SELECT 1 AS ok", env=env)
         result.assert_success()
 
-        # Lock
+        # Lock — clears key from keychain (no-op with null keyring)
         result = run_cli("db", "lock", env=env)
         result.assert_success()
 
-        # Unlock with passphrase
+        # Unlock — fails because no passphrase salt in null keyring
         result = run_cli(
             "db",
             "unlock",
             env=env,
             input_text=f"{TEST_PASSPHRASE}\n",
         )
-        result.assert_success()
+        assert result.exit_code == 1
+        assert "Traceback (most recent call last)" not in result.output
+        assert "passphrase" in result.stderr.lower()
 
-        # Verify DB still works
+        # DB still works via env var key (lock only clears keychain)
         result = run_cli("db", "query", "SELECT 1 AS ok", env=env)
         result.assert_success()
 

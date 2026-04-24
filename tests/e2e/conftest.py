@@ -50,7 +50,15 @@ FAST_ARGON2_ENV = {
     "MONEYBIN_DATABASE__ARGON2_TIME_COST": "1",
     "MONEYBIN_DATABASE__ARGON2_MEMORY_COST": "1024",
     "MONEYBIN_DATABASE__ARGON2_PARALLELISM": "1",
+    # Use null keyring backend so E2E subprocess tests don't read/write the
+    # real system keychain. The encryption key is provided via
+    # MONEYBIN_DATABASE__ENCRYPTION_KEY env var instead.
+    "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
 }
+
+TEST_ENCRYPTION_KEY = (
+    "e2e-test-key-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"  # noqa: S105 — test-only key, not a real secret
+)
 
 TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105 — test-only passphrase, not a real secret
 
@@ -106,10 +114,15 @@ def e2e_env(e2e_home: Path) -> dict[str, str]:
     """Temp MONEYBIN_HOME with a profile created (but no DB initialized).
 
     Sets MONEYBIN_PROFILE so commands don't trigger ensure_default_profile()
-    or fall through to the user's real profile.
+    or fall through to the user's real profile. Includes the test encryption
+    key so commands that touch the DB can create/open it.
     """
     profile_name = "e2e-test"
-    env = {"MONEYBIN_HOME": str(e2e_home), "MONEYBIN_PROFILE": profile_name}
+    env = {
+        "MONEYBIN_HOME": str(e2e_home),
+        "MONEYBIN_PROFILE": profile_name,
+        "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
+    }
 
     # Create profile — accept "already exists" as success since
     # set_current_profile() may create the directory as a side effect
@@ -136,14 +149,22 @@ def make_workflow_env(
     e2e_home: Path,
     profile_name: str,
 ) -> dict[str, str]:
-    """Create a fresh profile for a workflow test.
+    """Create a fresh profile with an initialized database for a workflow test.
 
-    Runs profile create + db init. Returns the env dict.
-    Call this at the start of each workflow test for isolation.
-    Idempotent — accepts "already exists" for profile create and
-    skips db init if the .duckdb file already exists.
+    Uses a fixed encryption key via env var (MONEYBIN_DATABASE__ENCRYPTION_KEY)
+    instead of ``db init`` to avoid system keychain interference.  The Database
+    class creates and encrypts the file on first access, so no explicit init
+    step is needed — the first command that calls ``get_database()`` will
+    create the DB.
+
+    Returns the env dict.  Call this at the start of each workflow test for
+    isolation.  Idempotent — accepts "already exists" for profile create.
     """
-    env = {"MONEYBIN_HOME": str(e2e_home), "MONEYBIN_PROFILE": profile_name}
+    env = {
+        "MONEYBIN_HOME": str(e2e_home),
+        "MONEYBIN_PROFILE": profile_name,
+        "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
+    }
 
     # Create profile — accept "already exists" as success since
     # set_current_profile() may create the directory as a side effect
@@ -152,20 +173,14 @@ def make_workflow_env(
         msg = f"Failed to create profile '{profile_name}': {result.stderr}"
         raise AssertionError(msg)
 
-    # Skip init if DB already exists (idempotent across test re-runs)
+    # Create the encrypted DB if it doesn't exist yet.
+    # ``db migrate status`` calls get_database() which creates and encrypts
+    # the file on first access.
     db_path = e2e_home / "profiles" / profile_name / "moneybin.duckdb"
     if not db_path.exists():
-        passphrase_input = f"{TEST_PASSPHRASE}\n{TEST_PASSPHRASE}\n"
-        result = run_cli(
-            "db",
-            "init",
-            "--passphrase",
-            "--yes",
-            env=env,
-            input_text=passphrase_input,
-        )
+        result = run_cli("db", "migrate", "status", env=env)
         if result.exit_code != 0:
-            msg = f"Failed to init DB for '{profile_name}': {result.stderr}"
+            msg = f"Failed to create DB for '{profile_name}': {result.stderr}"
             raise AssertionError(msg)
 
     return env

@@ -553,26 +553,31 @@ def sqlmesh_context(
     root = sqlmesh_root or _SQLMESH_ROOT
     db_path = get_settings().database.path
 
-    store = SecretStore()
-    try:
-        encryption_key = store.get_key(_KEY_NAME)
-    except SecretNotFoundError as e:
-        raise DatabaseKeyError(
-            f"Cannot open database — encryption key not found. "
-            f"Run 'moneybin db init' to create a new database, or set "
-            f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
-        ) from e
+    # Reuse the Database singleton's connection when available.
+    # DuckDB only allows one connection per file — creating a second
+    # connection and attaching the same file raises a
+    # "Unique file handle conflict" error.
+    owns_conn = False
+    if _database_instance is not None and _database_instance._conn is not None:  # type: ignore[reportPrivateUsage]  # sqlmesh_context must reuse the singleton's connection to avoid DuckDB file handle conflicts
+        conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
+    else:
+        store = SecretStore()
+        try:
+            encryption_key = store.get_key(_KEY_NAME)
+        except SecretNotFoundError as e:
+            raise DatabaseKeyError(
+                f"Cannot open database — encryption key not found. "
+                f"Run 'moneybin db init' to create a new database, or set "
+                f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
+            ) from e
 
-    # duckdb.connect() is intentional here — SQLMesh needs its own connection
-    # separate from the Database singleton, with the encrypted DB attached.
-    # No current SQLMesh models use httpfs (remote file access); if one is
-    # added, INSTALL/LOAD httpfs must be added here.
-    conn = duckdb.connect()
-    cache_key = str(db_path)
-    try:
+        conn = duckdb.connect()
+        owns_conn = True
         conn.execute(build_attach_sql(db_path, encryption_key))
         conn.execute(f"USE {_DATABASE_ALIAS}")
 
+    cache_key = str(db_path)
+    try:
         adapter = DuckDBEngineAdapter(
             lambda: conn,
             default_catalog=_DATABASE_ALIAS,
@@ -596,4 +601,5 @@ def sqlmesh_context(
         yield ctx
     finally:
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
-        conn.close()
+        if owns_conn:
+            conn.close()
