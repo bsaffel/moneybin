@@ -153,7 +153,10 @@ class TestValidateReadOnlyQuery:
     @pytest.mark.unit
     def test_quoted_identifiers_and_string_filters_allowed(self) -> None:
         result = validate_read_only_query(
-            """SELECT * FROM "core"."fct_transactions" WHERE description = 'JOIN gym'"""
+            """
+            SELECT * FROM "core"."fct_transactions"
+            WHERE description = 'JOIN gym' OR note = 'FROM here'
+            """
         )
         assert result is None
 
