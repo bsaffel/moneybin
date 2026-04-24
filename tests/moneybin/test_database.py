@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import duckdb
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database, DatabaseKeyError, get_database
 
@@ -266,6 +267,13 @@ class TestRunSqlmeshMigrate:
         yield database
         database.close()
 
+    def test_skips_when_no_sqlmesh_dir(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns True immediately when sqlmesh project dir doesn't exist."""
+        monkeypatch.setattr(Path, "is_dir", lambda self: False)  # type: ignore[reportUnknownLambdaType]
+        assert db._run_sqlmesh_migrate() is True  # type: ignore[reportPrivateUsage]
+
     def test_skips_when_sqlmesh_not_installed(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -288,7 +296,7 @@ class TestRunSqlmeshMigrate:
         assert db._run_sqlmesh_migrate() is True  # type: ignore[reportPrivateUsage]
 
     def test_success_calls_migrate_and_cleans_cache(
-        self, db: Database, mocker: MagicMock
+        self, db: Database, mocker: MockerFixture
     ) -> None:
         """Successful path: adapter injected, ctx.migrate() called, cache cleaned."""
         mock_ctx_class = mocker.patch("sqlmesh.Context")
@@ -306,7 +314,7 @@ class TestRunSqlmeshMigrate:
         assert cache_key not in cache
 
     def test_failure_logs_warning_and_returns_false(
-        self, db: Database, mocker: MagicMock, caplog: pytest.LogCaptureFixture
+        self, db: Database, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Failure path: exception caught, warning logged with traceback, False returned."""
         mock_ctx_class = mocker.patch("sqlmesh.Context")
