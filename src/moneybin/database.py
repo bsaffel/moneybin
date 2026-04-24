@@ -229,7 +229,8 @@ class Database:
         current profile's encrypted connection — no subprocess needed.
 
         Returns:
-            True if migration succeeded or was skipped (no sqlmesh dir),
+            True if migration succeeded or was skipped (no sqlmesh dir
+                or sqlmesh not installed),
             False if migration failed.
         """
         sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"

@@ -282,8 +282,13 @@ class TestRunSqlmeshMigrate:
         sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
         assert sqlmesh_root.is_dir()  # project has sqlmesh dir
 
-        # Block the import
+        # Evict sqlmesh from module cache so __import__ is actually called.
+        # Without this, cached modules bypass fake_import entirely and the
+        # real migrate path runs — passing for the wrong reason.
         import builtins
+
+        for key in [k for k in sys.modules if k.startswith("sqlmesh")]:
+            monkeypatch.delitem(sys.modules, key)
 
         real_import = builtins.__import__
 
