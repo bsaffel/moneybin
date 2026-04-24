@@ -132,6 +132,13 @@ def compute_pair_frequency(
     return min(1.0, count / max(max_count, 1))
 
 
+def compute_date_score(date_distance_days: int, date_window_days: int) -> float:
+    """Score based on temporal proximity within the date window."""
+    if date_window_days <= 0:
+        return 1.0
+    return max(0.0, 1.0 - (date_distance_days / date_window_days))
+
+
 def compute_transfer_confidence(
     *,
     date_distance_days: int,
@@ -143,13 +150,8 @@ def compute_transfer_confidence(
 ) -> float:
     """Compute transfer confidence from four weighted signals."""
     w = weights or _DEFAULT_WEIGHTS
-    date_score = (
-        max(0.0, 1.0 - (date_distance_days / date_window_days))
-        if date_window_days > 0
-        else 1.0
-    )
     return (
-        w["date_distance"] * date_score
+        w["date_distance"] * compute_date_score(date_distance_days, date_window_days)
         + w["keyword"] * keyword_score
         + w["roundness"] * amount_roundness
         + w["pair_frequency"] * pair_frequency
@@ -280,11 +282,7 @@ def get_candidates_transfers(
         roundness = compute_amount_roundness(abs_amount)
         pair_freq = compute_pair_frequency(acct_a, acct_b, pair_counts, max_count)
         date_dist_int = int(date_dist)
-        date_score = (
-            max(0.0, 1.0 - (date_dist_int / date_window_days))
-            if date_window_days > 0
-            else 1.0
-        )
+        date_score = compute_date_score(date_dist_int, date_window_days)
         confidence = compute_transfer_confidence(
             date_distance_days=date_dist_int,
             date_window_days=date_window_days,

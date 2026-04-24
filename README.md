@@ -232,7 +232,7 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 |---------|--------|
 | Within-source dedup | ✅ |
 | Cross-source dedup (same transaction from different imports) | 📐 |
-| Transfer detection across accounts | 🗓️ |
+| Transfer detection across accounts | 📐 |
 | Golden-record merge rules | 📐 |
 
 ### Categorization
