@@ -41,7 +41,6 @@ class TestMatchesRun:
 class TestMatchesReview:
     """Tests for the matches review command."""
 
-    @patch("moneybin.config.get_settings")
     @patch("moneybin.services.import_service.run_transforms")
     @patch("moneybin.cli.commands.matches.get_database")
     @patch("moneybin.matching.persistence.update_match_status")
@@ -50,10 +49,8 @@ class TestMatchesReview:
         mock_update: MagicMock,
         mock_get_db: MagicMock,
         mock_run_transforms: MagicMock,
-        mock_get_settings: MagicMock,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_get_settings.return_value.database.path = "test.duckdb"
 
         result = runner.invoke(
             app,
@@ -65,7 +62,7 @@ class TestMatchesReview:
             mock_get_db.return_value, "abc123", status="accepted", decided_by="user"
         )
         mock_get_db.return_value.close.assert_called_once()
-        mock_run_transforms.assert_called_once_with("test.duckdb")
+        mock_run_transforms.assert_called_once_with()
 
     @patch("moneybin.services.import_service.run_transforms")
     @patch("moneybin.cli.commands.matches.get_database")
@@ -89,7 +86,6 @@ class TestMatchesReview:
         )
         mock_run_transforms.assert_not_called()
 
-    @patch("moneybin.config.get_settings")
     @patch("moneybin.services.import_service.run_transforms")
     @patch("moneybin.cli.commands.matches.get_database")
     @patch("moneybin.matching.persistence.get_pending_matches")
@@ -100,10 +96,8 @@ class TestMatchesReview:
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
         mock_run_transforms: MagicMock,
-        mock_get_settings: MagicMock,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_get_settings.return_value.database.path = "test.duckdb"
         mock_pending.return_value = [
             {"match_id": "abc123"},
             {"match_id": "def456"},
@@ -114,7 +108,7 @@ class TestMatchesReview:
         assert result.exit_code == 0
         assert mock_update.call_count == 2
         mock_get_db.return_value.close.assert_called_once()
-        mock_run_transforms.assert_called_once_with("test.duckdb")
+        mock_run_transforms.assert_called_once_with()
 
     @patch("moneybin.services.import_service.run_transforms")
     @patch("moneybin.cli.commands.matches.get_database")
@@ -143,7 +137,6 @@ class TestMatchesReview:
         mock_update.assert_called_once()
         mock_run_transforms.assert_not_called()
 
-    @patch("moneybin.config.get_settings")
     @patch("moneybin.services.import_service.run_transforms")
     @patch("moneybin.cli.commands.matches.get_database")
     @patch("moneybin.matching.persistence.get_pending_matches")
@@ -154,10 +147,8 @@ class TestMatchesReview:
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
         mock_run_transforms: MagicMock,
-        mock_get_settings: MagicMock,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_get_settings.return_value.database.path = "test.duckdb"
         mock_pending.return_value = [
             {
                 "match_id": "abc123",
@@ -176,7 +167,7 @@ class TestMatchesReview:
             mock_get_db.return_value, "abc123", status="accepted", decided_by="user"
         )
         mock_get_db.return_value.close.assert_called_once()
-        mock_run_transforms.assert_called_once_with("test.duckdb")
+        mock_run_transforms.assert_called_once_with()
 
 
 class TestMatchesHistory:

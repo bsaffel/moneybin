@@ -79,7 +79,6 @@ def matches_review(
     ),
 ) -> None:
     """Review pending match proposals. Interactive by default."""
-    from moneybin.config import get_settings
     from moneybin.matching.persistence import get_pending_matches, update_match_status
 
     if decision and not match_id:
@@ -104,7 +103,7 @@ def matches_review(
                     from moneybin.services.import_service import run_transforms
 
                     db.close()
-                    run_transforms(get_settings().database.path)
+                    run_transforms()
             return
 
         pending = get_pending_matches(db)
@@ -125,7 +124,7 @@ def matches_review(
                 from moneybin.services.import_service import run_transforms
 
                 db.close()
-                run_transforms(get_settings().database.path)
+                run_transforms()
             return
 
         # Interactive review
@@ -165,7 +164,7 @@ def matches_review(
             from moneybin.services.import_service import run_transforms
 
             db.close()
-            run_transforms(get_settings().database.path)
+            run_transforms()
 
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
