@@ -177,7 +177,8 @@ def _create_test_unioned_view(db: Database) -> None:
             TRIM(payee) AS description,
             'ofx' AS source_type,
             COALESCE(a.institution_org, 'ofx_unknown') AS source_origin,
-            t.source_file
+            t.source_file,
+            'USD' AS currency_code
         FROM raw.ofx_transactions t
         LEFT JOIN raw.ofx_accounts a ON t.account_id = a.account_id
         UNION ALL
@@ -189,7 +190,8 @@ def _create_test_unioned_view(db: Database) -> None:
             description,
             source_type,
             source_origin,
-            source_file
+            source_file,
+            'USD' AS currency_code
         FROM raw.tabular_transactions
     """)  # noqa: S608  # test input, not executing SQL
 

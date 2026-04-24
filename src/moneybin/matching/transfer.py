@@ -188,6 +188,7 @@ def get_candidates_transfers(
             AND a.amount < 0
             AND b.amount > 0
             AND ABS(a.amount) = b.amount
+            AND a.currency_code = b.currency_code
             AND ABS(DATEDIFF('day', a.transaction_date, b.transaction_date)) <= ?
         ORDER BY date_dist ASC
     """  # noqa: S608 — table name validated above; date_window_days is parameterized

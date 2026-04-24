@@ -66,7 +66,8 @@ def _setup_tables(db: Database) -> None:
             description VARCHAR,
             source_type VARCHAR,
             source_origin VARCHAR,
-            source_file VARCHAR
+            source_file VARCHAR,
+            currency_code VARCHAR DEFAULT 'USD'
         )
     """)
 
@@ -84,7 +85,10 @@ def _insert(
 ) -> None:
     db.execute(
         """
-        INSERT INTO _test_unioned VALUES (?, ?, ?::DATE, ?::DECIMAL(18,2), ?, ?, ?, ?)
+        INSERT INTO _test_unioned (
+            source_transaction_id, account_id, transaction_date, amount,
+            description, source_type, source_origin, source_file
+        ) VALUES (?, ?, ?::DATE, ?::DECIMAL(18,2), ?, ?, ?, ?)
         """,
         [stid, acct, txn_date, amount, desc, stype, sorigin, sfile],
     )

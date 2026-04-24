@@ -229,7 +229,8 @@ def transfer_table(db: Database) -> Database:
             description VARCHAR,
             source_type VARCHAR,
             source_origin VARCHAR,
-            source_file VARCHAR
+            source_file VARCHAR,
+            currency_code VARCHAR DEFAULT 'USD'
         )
     """)
     return db
@@ -360,6 +361,26 @@ class TestGetCandidatesTransfers:
             transaction_date="2026-03-15",
             amount="500.00",
             description="TRANSFER",
+        )
+        candidates = get_candidates_transfers(
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
+        )
+        assert len(candidates) == 0
+
+    def test_excludes_currency_mismatch(self, transfer_table: Database) -> None:
+        """Cross-currency pairs must not be proposed as transfers."""
+        transfer_table.execute(
+            """
+            INSERT INTO _test_unioned (
+                source_transaction_id, account_id, transaction_date, amount,
+                description, source_type, source_origin, source_file, currency_code
+            ) VALUES
+                ('a', 'checking', '2026-03-15'::DATE, -100.00, 'TRANSFER', 'csv', 'bank', 'f.csv', 'EUR'),
+                ('b', 'savings',  '2026-03-15'::DATE,  100.00, 'TRANSFER', 'csv', 'bank', 'f.csv', 'USD')
+            """
         )
         candidates = get_candidates_transfers(
             transfer_table,
