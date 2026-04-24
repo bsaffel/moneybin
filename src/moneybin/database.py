@@ -225,37 +225,62 @@ class Database:
         """Run sqlmesh migrate to update SQLMesh internal state.
 
         Called when the installed SQLMesh version differs from the recorded
-        version. Uses subprocess to invoke the sqlmesh CLI.
+        version. Uses the SQLMesh Python API in-process so it inherits the
+        current profile's encrypted connection — no subprocess needed.
 
         Returns:
             True if migration succeeded or was skipped (no sqlmesh dir),
             False if migration failed.
         """
-        import subprocess  # noqa: S404  # subprocess is required to invoke the sqlmesh CLI
-
-        # Assumes editable install — __file__ resolves to the project tree.
-        # Non-editable installs skip cleanly (sqlmesh dir won't exist).
         sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
         if not sqlmesh_root.is_dir():
             logger.debug("sqlmesh project dir not found, skipping migrate")
             return True
+
         try:
-            subprocess.run(  # noqa: S603  # fixed args from trusted internal config, not user input
-                ["uv", "run", "sqlmesh", "-p", str(sqlmesh_root), "migrate"],  # noqa: S607  # uv is a trusted internal tool
-                check=True,
-                capture_output=True,
-                text=True,
+            from sqlmesh.core.config import Config, GatewayConfig
+            from sqlmesh.core.config.connection import (
+                BaseDuckDBConnectionConfig,
+                DuckDBConnectionConfig,
             )
+            from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
+
+            from sqlmesh import Context  # type: ignore[import-untyped]
+        except ImportError:
+            logger.debug("sqlmesh not installed, skipping migrate")
+            return True
+
+        conn = self._conn
+        adapter = DuckDBEngineAdapter(
+            lambda: conn,
+            default_catalog=_DATABASE_ALIAS,
+            register_comments=True,
+        )
+        cache_key = str(self._db_path)
+        BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
+
+        try:
+            config = Config(
+                default_gateway="moneybin",
+                gateways={
+                    "moneybin": GatewayConfig(
+                        connection=DuckDBConnectionConfig(database=str(self._db_path)),
+                    ),
+                },
+            )
+            ctx = Context(
+                paths=str(sqlmesh_root),
+                config=config,
+                gateway="moneybin",
+            )
+            ctx.migrate()
             logger.debug("sqlmesh migrate completed successfully")
             return True
-        except subprocess.CalledProcessError as exc:
-            logger.warning(
-                f"⚠️  sqlmesh migrate failed (exit {exc.returncode}): {exc.stderr.strip()}"
-            )
+        except Exception:  # noqa: BLE001 — sqlmesh migration failures are non-fatal
+            logger.warning("⚠️  sqlmesh migrate failed — see logs for details")
             return False
-        except FileNotFoundError:
-            logger.debug("sqlmesh CLI not found, skipping migrate")
-            return True
+        finally:
+            BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
