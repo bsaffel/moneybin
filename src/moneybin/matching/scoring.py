@@ -12,15 +12,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.matching import UNIONED_TABLE, quote_table_ref
 
 logger = logging.getLogger(__name__)
 
 # Scoring weights — sum to 1.0.
 _WEIGHT_DATE = 0.40
 _WEIGHT_DESCRIPTION = 0.60
-
-# Default source table for candidate queries — avoids hardcoded strings in signatures.
-UNIONED_TABLE = "prep.int_transactions__unioned"
 
 
 @dataclass(frozen=True)
@@ -123,15 +121,7 @@ def _get_candidates(
             AND (a.source_type != b.source_type OR a.source_origin != b.source_origin)
         """
 
-    # Always validate and quote table identifier
-    from sqlglot import exp
-
-    parts = table.split(".")
-    if len(parts) != 2:
-        raise ValueError(f"table must be schema.name, got: {table!r}")
-    safe_schema = exp.to_identifier(parts[0], quoted=True).sql("duckdb")
-    safe_table = exp.to_identifier(parts[1], quoted=True).sql("duckdb")
-    table = f"{safe_schema}.{safe_table}"
+    table = quote_table_ref(table)
 
     query = f"""
         SELECT

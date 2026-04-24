@@ -11,11 +11,19 @@ from moneybin.database import Database
 from moneybin.matching.transfer import (
     TransferCandidatePair,
     compute_amount_roundness,
+    compute_date_score,
     compute_keyword_score,
     compute_pair_frequency,
     compute_transfer_confidence,
     get_candidates_transfers,
 )
+
+_DEFAULT_WEIGHTS: dict[str, float] = {
+    "date_distance": 0.4,
+    "keyword": 0.3,
+    "roundness": 0.15,
+    "pair_frequency": 0.15,
+}
 
 
 class TestComputeKeywordScore:
@@ -97,38 +105,38 @@ class TestComputeTransferConfidence:
 
     def test_perfect_signals(self) -> None:
         score = compute_transfer_confidence(
-            date_distance_days=0,
-            date_window_days=3,
+            date_score=compute_date_score(0, 3),
             keyword_score=1.0,
             amount_roundness=1.0,
             pair_frequency=1.0,
+            weights=_DEFAULT_WEIGHTS,
         )
         assert score == pytest.approx(1.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
 
     def test_zero_signals(self) -> None:
         score = compute_transfer_confidence(
-            date_distance_days=3,
-            date_window_days=3,
+            date_score=compute_date_score(3, 3),
             keyword_score=0.0,
             amount_roundness=0.0,
             pair_frequency=0.0,
+            weights=_DEFAULT_WEIGHTS,
         )
         assert score == pytest.approx(0.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
 
     def test_date_distance_impact(self) -> None:
         same_day = compute_transfer_confidence(
-            date_distance_days=0,
-            date_window_days=3,
+            date_score=compute_date_score(0, 3),
             keyword_score=0.5,
             amount_roundness=0.5,
             pair_frequency=0.5,
+            weights=_DEFAULT_WEIGHTS,
         )
         one_day = compute_transfer_confidence(
-            date_distance_days=1,
-            date_window_days=3,
+            date_score=compute_date_score(1, 3),
             keyword_score=0.5,
             amount_roundness=0.5,
             pair_frequency=0.5,
+            weights=_DEFAULT_WEIGHTS,
         )
         assert same_day > one_day
 
@@ -140,8 +148,7 @@ class TestComputeTransferConfidence:
             "pair_frequency": 0.0,
         }
         score = compute_transfer_confidence(
-            date_distance_days=0,
-            date_window_days=3,
+            date_score=compute_date_score(0, 3),
             keyword_score=1.0,
             amount_roundness=1.0,
             pair_frequency=1.0,
@@ -153,11 +160,11 @@ class TestComputeTransferConfidence:
         for days in range(4):
             for kw in [0.0, 0.5, 1.0]:
                 score = compute_transfer_confidence(
-                    date_distance_days=days,
-                    date_window_days=3,
+                    date_score=compute_date_score(days, 3),
                     keyword_score=kw,
                     amount_roundness=0.5,
                     pair_frequency=0.5,
+                    weights=_DEFAULT_WEIGHTS,
                 )
                 assert 0.0 <= score <= 1.0
 
@@ -245,7 +252,10 @@ class TestGetCandidatesTransfers:
             description="TRANSFER FROM CHK",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 1
         pair = candidates[0]
@@ -273,7 +283,10 @@ class TestGetCandidatesTransfers:
             description="DEPOSIT",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 0
 
@@ -295,7 +308,10 @@ class TestGetCandidatesTransfers:
             description="PAYMENT",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 0
 
@@ -317,7 +333,10 @@ class TestGetCandidatesTransfers:
             description="TRANSFER",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 0
 
@@ -339,7 +358,10 @@ class TestGetCandidatesTransfers:
             description="TRANSFER",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 0
 
@@ -364,6 +386,7 @@ class TestGetCandidatesTransfers:
             transfer_table,
             table="main._test_unioned",
             date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
             excluded_ids={("csv_chk1", "checking")},
         )
         assert len(candidates) == 0
@@ -400,6 +423,7 @@ class TestGetCandidatesTransfers:
             transfer_table,
             table="main._test_unioned",
             date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
             rejected_pairs=rejected,
         )
         assert len(candidates) == 0
@@ -422,7 +446,10 @@ class TestGetCandidatesTransfers:
             description="TRANSFER FROM CHK",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 1
         pair = candidates[0]
@@ -451,7 +478,10 @@ class TestGetCandidatesTransfers:
             description="ONLINE TRANSFER TO SAV",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 1
         pair = candidates[0]
@@ -477,7 +507,10 @@ class TestGetCandidatesTransfers:
             description="TRANSFER",
         )
         candidates = get_candidates_transfers(
-            transfer_table, table="main._test_unioned", date_window_days=3
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
         )
         assert len(candidates) == 1
         assert candidates[0].date_distance_days == 3

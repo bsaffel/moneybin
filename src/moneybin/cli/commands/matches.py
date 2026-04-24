@@ -8,7 +8,7 @@ import typer
 
 from moneybin.database import DatabaseKeyError, get_database
 from moneybin.matching.engine import TransactionMatcher
-from moneybin.matching.persistence import get_match_log, undo_match
+from moneybin.matching.persistence import VALID_MATCH_TYPES, get_match_log, undo_match
 
 app = typer.Typer(
     help="Review and manage transaction matches (dedup, transfers)",
@@ -33,9 +33,9 @@ def matches_run(
         seed_source_priority(db, settings)
         matcher = TransactionMatcher(db, settings)
         result = matcher.run()
-        if result.auto_merged or result.pending_review or result.pending_transfers:
+        if result.has_matches:
             logger.info(f"Matching: {result.summary()}")
-            if result.pending_review or result.pending_transfers:
+            if result.has_pending:
                 logger.info("Run 'moneybin matches review' when ready")
         else:
             logger.info("No new matches found")
@@ -126,7 +126,7 @@ def matches_review(
         logger.error("❌ --decision must be 'accept' or 'reject'")
         raise typer.Exit(2)
 
-    if match_type and match_type not in ("dedup", "transfer"):
+    if match_type and match_type not in VALID_MATCH_TYPES:
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
@@ -215,7 +215,7 @@ def matches_history_cmd(
     ),
 ) -> None:
     """Show recent match decisions."""
-    if match_type and match_type not in ("dedup", "transfer"):
+    if match_type and match_type not in VALID_MATCH_TYPES:
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
@@ -307,7 +307,7 @@ def matches_backfill(
         result = matcher.run()
 
         logger.info(f"Backfill complete: {result.summary()}")
-        if result.pending_review or result.pending_transfers:
+        if result.has_pending:
             logger.info("Run 'moneybin matches review' when ready")
 
         if not skip_transform and (result.auto_merged or result.pending_transfers):

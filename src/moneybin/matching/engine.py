@@ -12,13 +12,13 @@ from typing import Any
 
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
+from moneybin.matching import UNIONED_TABLE
 from moneybin.matching.assignment import assign_greedy
 from moneybin.matching.persistence import (
     create_match_decision,
     get_rejected_pairs,
 )
 from moneybin.matching.scoring import (
-    UNIONED_TABLE,
     CandidatePair,
     get_candidates_cross_source,
     get_candidates_within_source,
@@ -46,6 +46,20 @@ class MatchResult:
     auto_merged: int = 0
     pending_review: int = 0
     pending_transfers: int = 0
+
+    @property
+    def has_matches(self) -> bool:
+        """True if any matches (auto-merged or pending) were found."""
+        return (
+            self.auto_merged > 0
+            or self.pending_review > 0
+            or self.pending_transfers > 0
+        )
+
+    @property
+    def has_pending(self) -> bool:
+        """True if any matches are awaiting user review."""
+        return self.pending_review > 0 or self.pending_transfers > 0
 
     def summary(self) -> str:
         """Return a human-readable summary of the matching run."""
@@ -81,7 +95,7 @@ class TransactionMatcher:
         result = MatchResult()
         rejected = get_rejected_pairs(self._db)
 
-        already_matched = self._get_already_matched_ids()
+        already_matched = self._get_matched_ids("dedup")
 
         # Tier 2b: within-source overlap (high-confidence only)
         tier_2b_matched = self._run_tier(
@@ -113,7 +127,7 @@ class TransactionMatcher:
         )
 
         # Tier 4: transfer detection (runs after dedup)
-        already_matched.update(self._get_transfer_matched_ids())
+        already_matched.update(self._get_matched_ids("transfer"))
         rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
 
         self._run_transfer_tier(
@@ -199,39 +213,37 @@ class TransactionMatcher:
 
         return newly_matched
 
-    def _get_already_matched_ids(self) -> set[tuple[str, str]]:
-        """Get (source_transaction_id, account_id) tuples in active or pending matches."""
-        rows = self._db.execute(
-            """
-            SELECT source_transaction_id_a, source_transaction_id_b, account_id
-            FROM app.match_decisions
-            WHERE match_status IN ('accepted', 'pending')
-              AND reversed_at IS NULL
-              AND match_type = 'dedup'
-            """
-        ).fetchall()
-        ids: set[tuple[str, str]] = set()
-        for row in rows:
-            ids.add((row[0], row[2]))
-            ids.add((row[1], row[2]))
-        return ids
-
-    def _get_transfer_matched_ids(self) -> set[tuple[str, str]]:
-        """Get (source_transaction_id, account_id) tuples in active/pending transfer matches."""
-        rows = self._db.execute(
-            """
-            SELECT source_transaction_id_a, account_id,
-                   source_transaction_id_b, account_id_b
-            FROM app.match_decisions
-            WHERE match_status IN ('accepted', 'pending')
-              AND reversed_at IS NULL
-              AND match_type = 'transfer'
-            """
-        ).fetchall()
-        ids: set[tuple[str, str]] = set()
-        for row in rows:
-            ids.add((row[0], row[1]))
-            ids.add((row[2], row[3]))
+    def _get_matched_ids(self, match_type: str) -> set[tuple[str, str]]:
+        """Get (source_transaction_id, account_id) tuples in active/pending matches."""
+        if match_type == "transfer":
+            rows = self._db.execute(
+                """
+                SELECT source_transaction_id_a, account_id,
+                       source_transaction_id_b, account_id_b
+                FROM app.match_decisions
+                WHERE match_status IN ('accepted', 'pending')
+                  AND reversed_at IS NULL
+                  AND match_type = 'transfer'
+                """
+            ).fetchall()
+            ids: set[tuple[str, str]] = set()
+            for row in rows:
+                ids.add((row[0], row[1]))
+                ids.add((row[2], row[3]))
+        else:
+            rows = self._db.execute(
+                """
+                SELECT source_transaction_id_a, source_transaction_id_b, account_id
+                FROM app.match_decisions
+                WHERE match_status IN ('accepted', 'pending')
+                  AND reversed_at IS NULL
+                  AND match_type = 'dedup'
+                """
+            ).fetchall()
+            ids = set()
+            for row in rows:
+                ids.add((row[0], row[2]))
+                ids.add((row[1], row[2]))
         return ids
 
     def _run_transfer_tier(
