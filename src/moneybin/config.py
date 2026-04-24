@@ -326,6 +326,16 @@ class MatchingSettings(BaseModel):
             raise ValueError("source_priority must not be empty")
         return v
 
+    @field_validator("transfer_signal_weights")
+    @classmethod
+    def validate_transfer_weights(cls, v: dict[str, float]) -> dict[str, float]:
+        """Ensure all required scoring keys are present."""
+        required = {"date_distance", "keyword", "roundness", "pair_frequency"}
+        missing = required - v.keys()
+        if missing:
+            raise ValueError(f"transfer_signal_weights missing keys: {missing}")
+        return v
+
     @model_validator(mode="after")
     def validate_threshold_ordering(self) -> "MatchingSettings":
         """Ensure review_threshold does not exceed high_confidence_threshold."""

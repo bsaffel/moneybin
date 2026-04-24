@@ -113,7 +113,7 @@ class TransactionMatcher:
         already_matched.update(tier_2b_matched)
 
         # Tier 3: cross-source
-        self._run_tier(
+        tier_3_matched = self._run_tier(
             tier="3",
             candidates_fn=lambda excluded: get_candidates_cross_source(
                 self._db,
@@ -125,13 +125,16 @@ class TransactionMatcher:
             excluded_ids=already_matched,
             result=result,
         )
+        already_matched.update(tier_3_matched)
 
-        # Tier 4: transfer detection (runs after dedup)
-        already_matched.update(self._get_matched_ids("transfer"))
+        # Tier 4: transfer detection (runs after dedup).
+        # Deduped transactions are still valid transfer candidates, so only
+        # exclude transactions already in an accepted/pending transfer.
+        transfer_excluded = self._get_matched_ids("transfer")
         rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
 
         self._run_transfer_tier(
-            excluded_ids=already_matched,
+            excluded_ids=transfer_excluded,
             rejected_pairs=rejected_transfer,
             result=result,
         )

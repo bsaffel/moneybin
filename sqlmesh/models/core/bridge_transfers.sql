@@ -7,10 +7,9 @@ MODEL (
 );
 
 SELECT
-  md.match_id AS transfer_id, /* UUID identifying this transfer pair */
+  md.match_id AS transfer_id, /* UUID identifying this transfer pair; also FK to app.match_decisions */
   debit.transaction_id AS debit_transaction_id, /* FK to fct_transactions; the outgoing side (negative amount) */
   credit.transaction_id AS credit_transaction_id, /* FK to fct_transactions; the incoming side (positive amount) */
-  md.match_id, /* FK to app.match_decisions */
   ABS(credit.transaction_date - debit.transaction_date) AS date_offset_days, /* Days between the two post dates (0 = same day) */
   ABS(debit.amount) AS amount /* Absolute transfer amount */
 FROM app.match_decisions AS md
