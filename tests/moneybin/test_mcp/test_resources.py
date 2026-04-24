@@ -1,98 +1,51 @@
-"""Tests for MCP resource definitions."""
+"""Tests for MCP v1 resource definitions."""
+
+from __future__ import annotations
 
 import json
 from typing import Any
 
 import pytest
 
-from moneybin.mcp import server
 from moneybin.mcp.resources import (
-    accounts_summary,
-    recent_transactions,
-    schema_table_detail,
-    schema_tables,
-    w2_by_year,
+    resource_accounts,
+    resource_privacy,
+    resource_schema,
+    resource_status,
+    resource_tools,
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
+
 # ---------------------------------------------------------------------------
-# Schema resources
+# moneybin://status
 # ---------------------------------------------------------------------------
 
 
-class TestSchemaResources:
-    """Tests for schema-related resources."""
+class TestResourceStatus:
+    """Tests for moneybin://status resource."""
 
     @pytest.mark.unit
-    def test_schema_tables_returns_list(self) -> None:
-        result = schema_tables()
-        data: list[Any] = json.loads(result)
-        assert isinstance(data, list)
-        assert len(data) >= 4  # At least the tables we created
-
-    @pytest.mark.unit
-    def test_schema_table_detail_with_schema(self) -> None:
-        result = schema_table_detail("core.dim_accounts")
-        data: list[dict[str, Any]] = json.loads(result)
-        assert isinstance(data, list)
-        column_names = [r["column_name"] for r in data]
-        assert "account_id" in column_names
-        assert "account_type" in column_names
-
-    @pytest.mark.unit
-    def test_schema_table_detail_without_schema(self) -> None:
-        result = schema_table_detail("dim_accounts")
-        data: list[Any] = json.loads(result)
-        assert isinstance(data, list)
-        assert len(data) > 0
-
-    @pytest.mark.unit
-    def test_schema_table_not_found(self) -> None:
-        result = schema_table_detail("nonexistent_table")
+    def test_returns_accounts_count(self) -> None:
+        result = resource_status()
         data: dict[str, Any] = json.loads(result)
-        assert "error" in data
-
-
-# ---------------------------------------------------------------------------
-# Account and transaction resources
-# ---------------------------------------------------------------------------
-
-
-class TestAccountsResource:
-    """Tests for accounts summary resource."""
+        assert "accounts" in data
+        assert data["accounts"]["total"] == 2
 
     @pytest.mark.unit
-    def test_returns_accounts_with_balances(self) -> None:
-        result = accounts_summary()
-        data: list[dict[str, Any]] = json.loads(result)
-        assert isinstance(data, list)
-        assert len(data) == 2
-        by_id = {r["account_id"]: r for r in data}
-        assert float(by_id["ACC001"]["ledger_balance"]) == 5000.0
-        assert float(by_id["ACC002"]["ledger_balance"]) == 15000.0
+    def test_transactions_absent_when_empty(self) -> None:
+        # No transactions inserted — key should be absent or total 0
+        result = resource_status()
+        data: dict[str, Any] = json.loads(result)
+        transactions = data.get("transactions", {})
+        assert transactions.get("total", 0) == 0
 
     @pytest.mark.unit
-    def test_includes_institution_name(self) -> None:
-        result = accounts_summary()
-        data: list[dict[str, Any]] = json.loads(result)
-        names = {r["institution_name"] for r in data}
-        assert "Test Bank" in names
+    def test_transactions_present_after_insert(self, mcp_db: object) -> None:
+        from moneybin.mcp import server
 
-    @pytest.mark.unit
-    def test_includes_source_type(self) -> None:
-        result = accounts_summary()
-        data: list[dict[str, Any]] = json.loads(result)
-        assert all(r["source_type"] == "ofx" for r in data)
-
-
-class TestRecentTransactions:
-    """Tests for recent transactions resource."""
-
-    @pytest.fixture(autouse=True)
-    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        db = server.get_db()
-        db.execute("""
+        server.get_db().execute("""
             INSERT INTO core.fct_transactions (
                 transaction_id, account_id, transaction_date, amount,
                 amount_absolute, transaction_direction, description, memo,
@@ -102,61 +55,189 @@ class TestRecentTransactions:
                 transaction_day_of_week, transaction_year_month,
                 transaction_year_quarter
             ) VALUES
-            ('TXN001', 'ACC001', CURRENT_DATE - INTERVAL '5 days',
-             -42.50, 42.50, 'expense', 'Grocery Store', 'Weekly groceries',
-             'DEBIT', false, 'USD', 'ofx',
+            ('TXN_S01', 'ACC001', '2025-06-15', -42.50, 42.50, 'expense',
+             'Grocery Store', 'Weekly groceries', 'DEBIT', false, 'USD', 'ofx',
              '2025-01-24', CURRENT_TIMESTAMP,
              2025, 6, 15, 0, '2025-06', '2025-Q2')
         """)
-
-    @pytest.mark.unit
-    def test_returns_recent_transactions(self) -> None:
-        result = recent_transactions()
-        data: list[Any] = json.loads(result)
-        # Should have our transaction from 5 days ago
-        assert isinstance(data, list)
-        assert len(data) >= 1
-
-    @pytest.mark.unit
-    def test_transaction_has_canonical_fields(self) -> None:
-        result = recent_transactions()
-        data: list[dict[str, Any]] = json.loads(result)
-        assert "transaction_date" in data[0]
-        assert "description" in data[0]
-        assert "source_type" in data[0]
+        result = resource_status()
+        data: dict[str, Any] = json.loads(result)
+        assert data["transactions"]["total"] == 1
+        assert data["transactions"]["date_range_start"] == "2025-06-15"
+        assert data["transactions"]["date_range_end"] == "2025-06-15"
 
 
 # ---------------------------------------------------------------------------
-# W2 resource
+# moneybin://accounts
 # ---------------------------------------------------------------------------
 
 
-class TestW2Resource:
-    """Tests for W2 tax year resource."""
+class TestResourceAccounts:
+    """Tests for moneybin://accounts resource."""
+
+    @pytest.mark.unit
+    def test_returns_accounts_list(self) -> None:
+        result = resource_accounts()
+        data: dict[str, Any] = json.loads(result)
+        assert "accounts" in data
+        assert len(data["accounts"]) == 2
+
+    @pytest.mark.unit
+    def test_account_fields_present(self) -> None:
+        result = resource_accounts()
+        data: dict[str, Any] = json.loads(result)
+        account = data["accounts"][0]
+        assert "account_id" in account
+        assert "account_type" in account
+        assert "institution_name" in account
+        assert "source_type" in account
+
+    @pytest.mark.unit
+    def test_no_balance_fields(self) -> None:
+        result = resource_accounts()
+        data: dict[str, Any] = json.loads(result)
+        for account in data["accounts"]:
+            assert "ledger_balance" not in account
+            assert "available_balance" not in account
+
+    @pytest.mark.unit
+    def test_institution_names_present(self) -> None:
+        result = resource_accounts()
+        data: dict[str, Any] = json.loads(result)
+        names = {a["institution_name"] for a in data["accounts"]}
+        assert "Test Bank" in names
+        assert "Other Bank" in names
+
+
+# ---------------------------------------------------------------------------
+# moneybin://privacy
+# ---------------------------------------------------------------------------
+
+
+class TestResourcePrivacy:
+    """Tests for moneybin://privacy resource."""
+
+    @pytest.mark.unit
+    def test_returns_consent_grants(self) -> None:
+        result = resource_privacy()
+        data: dict[str, Any] = json.loads(result)
+        assert "consent_grants" in data
+        assert isinstance(data["consent_grants"], list)
+
+    @pytest.mark.unit
+    def test_consent_mode_opt_in(self) -> None:
+        result = resource_privacy()
+        data: dict[str, Any] = json.loads(result)
+        assert data["consent_mode"] == "opt-in"
+
+    @pytest.mark.unit
+    def test_unmask_critical_false(self) -> None:
+        result = resource_privacy()
+        data: dict[str, Any] = json.loads(result)
+        assert data["unmask_critical"] is False
+
+
+# ---------------------------------------------------------------------------
+# moneybin://schema
+# ---------------------------------------------------------------------------
+
+
+class TestResourceSchema:
+    """Tests for moneybin://schema resource."""
+
+    @pytest.mark.unit
+    def test_returns_tables_list(self) -> None:
+        result = resource_schema()
+        data: dict[str, Any] = json.loads(result)
+        assert "tables" in data
+        assert isinstance(data["tables"], list)
+
+    @pytest.mark.unit
+    def test_tables_have_required_fields(self) -> None:
+        result = resource_schema()
+        data: dict[str, Any] = json.loads(result)
+        if data["tables"]:
+            table = data["tables"][0]
+            assert "schema" in table
+            assert "table" in table
+            assert "columns" in table
+
+    @pytest.mark.unit
+    def test_columns_have_name_and_type(self) -> None:
+        result = resource_schema()
+        data: dict[str, Any] = json.loads(result)
+        for table in data["tables"]:
+            for col in table["columns"]:
+                assert "name" in col
+                assert "type" in col
+
+    @pytest.mark.unit
+    def test_core_schema_included(self) -> None:
+        result = resource_schema()
+        data: dict[str, Any] = json.loads(result)
+        schemas = {t["schema"] for t in data["tables"]}
+        assert "core" in schemas
+
+
+# ---------------------------------------------------------------------------
+# moneybin://tools
+# ---------------------------------------------------------------------------
+
+
+class TestResourceTools:
+    """Tests for moneybin://tools resource."""
 
     @pytest.fixture(autouse=True)
-    def _insert_data(self, mcp_db: object) -> None:  # pyright: ignore[reportUnusedFunction] — pytest autouse fixture
-        db = server.get_db()
-        db.execute("""
-            INSERT INTO raw.w2_forms (
-                tax_year, employee_ssn, employer_ein, employee_first_name,
-                employee_last_name, employer_name, wages, federal_income_tax,
-                source_file, extracted_at
-            ) VALUES
-            (2024, '***-**-1234', '12-3456789', 'Jane', 'Smith',
-             'BigCo', 90000.00, 15000.00, 'w2.pdf', '2025-02-01')
-        """)
+    def _mock_registry(self) -> Any:
+        """Provide a populated registry for resource_tools()."""
+        from unittest.mock import patch
+
+        from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+
+        registry = NamespaceRegistry()
+        for ns in ("spending", "accounts", "transactions", "import", "sql"):
+            tool = ToolDefinition(f"{ns}.stub", f"{ns} stub tool", lambda: None)
+            registry.register(tool)
+            registry.mark_loaded(ns)
+
+        with patch("moneybin.mcp.server.get_registry", return_value=registry):
+            yield registry
 
     @pytest.mark.unit
-    def test_returns_w2_for_year(self) -> None:
-        result = w2_by_year("2024")
-        data: list[dict[str, Any]] = json.loads(result)
-        assert isinstance(data, list)
-        assert len(data) == 1
-        assert data[0]["employer_name"] == "BigCo"
-
-    @pytest.mark.unit
-    def test_no_data_for_year(self) -> None:
-        result = w2_by_year("2020")
+    def test_returns_core_namespaces(self) -> None:
+        result = resource_tools()
         data: dict[str, Any] = json.loads(result)
-        assert "message" in data
+        assert "core" in data
+        assert isinstance(data["core"], list)
+        core: list[dict[str, Any]] = data["core"]
+        assert len(core) > 0
+
+    @pytest.mark.unit
+    def test_core_namespaces_have_required_fields(self) -> None:
+        result = resource_tools()
+        data: dict[str, Any] = json.loads(result)
+        for entry in data["core"]:
+            assert "namespace" in entry
+            assert "loaded" in entry
+            assert "description" in entry
+
+    @pytest.mark.unit
+    def test_core_namespaces_loaded_true(self) -> None:
+        result = resource_tools()
+        data: dict[str, Any] = json.loads(result)
+        core_entries: list[dict[str, Any]] = data["core"]
+        assert all(entry["loaded"] is True for entry in core_entries)
+
+    @pytest.mark.unit
+    def test_discover_tool_present(self) -> None:
+        result = resource_tools()
+        data: dict[str, Any] = json.loads(result)
+        assert data["discover_tool"] == "moneybin.discover"
+
+    @pytest.mark.unit
+    def test_known_namespaces_present(self) -> None:
+        result = resource_tools()
+        data: dict[str, Any] = json.loads(result)
+        namespaces = {e["namespace"] for e in data["core"]}
+        assert "spending" in namespaces
+        assert "accounts" in namespaces

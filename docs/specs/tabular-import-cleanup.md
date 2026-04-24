@@ -132,6 +132,34 @@ tabular import review and may have changed):
 
 ---
 
+## Stream B2: N+1 merchant lookup in `categorize.bulk`
+
+### B2.1 Batch merchant resolution
+
+**Problem**: `categorize_bulk()` in `src/moneybin/mcp/tools/categorize.py`
+resolves merchants one transaction at a time inside a loop. For each item it:
+1. Queries `fct_transactions` for the description
+2. Calls `match_merchant()` against all merchant mappings
+3. Optionally calls `create_merchant()` for new merchants
+
+With N transactions, this produces 2–3N database round-trips. Bulk
+categorization of 100+ transactions is noticeably slow.
+
+**Fix**:
+1. Collect all `transaction_id`s up front, batch-fetch descriptions in one query
+2. Pre-load the merchant mapping table into memory once (it's small — typically
+   <1,000 rows)
+3. Run `match_merchant()` against the in-memory mappings
+4. Batch-insert any new merchants at the end
+
+This keeps the same behavior but reduces round-trips from O(N) to O(1).
+
+**Files**: `src/moneybin/mcp/tools/categorize.py` (primary),
+`src/moneybin/services/categorization_service.py` (may need a
+`match_merchant_batch()` or `get_all_merchants()` helper).
+
+---
+
 ## Stream C: Account matching (one `feat/` or `fix/` PR)
 
 ### C1. Wire `match_account()` into the import pipeline

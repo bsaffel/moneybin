@@ -136,6 +136,51 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 - **Verb = action.** `categorize.bulk`, `transactions.correct`, `import.file` — mutates state.
 - **Dot separator** per MCP SEP-986. Tool names are lowercase, no underscores within segments.
 
+### Progressive disclosure via namespace registration
+
+The full tool surface (46+ tools across 10+ namespaces) exceeds the practical limit for AI tool selection accuracy (~20-30 tools). LLM performance degrades when tool descriptions overlap or when the schema payload consumes too much context. Rather than consolidating tools (which trades tool count for schema complexity and loses the "one tool does one thing" clarity), the server uses **namespace-based progressive disclosure**.
+
+**Core namespaces** are registered at connection time. A namespace is core if the AI would need it in **nearly every session** — orientation, common queries, primary data entry. Extended namespaces serve **specific workflows** the user enters intentionally (categorization triage, tax prep, match review).
+
+The default core set keeps the initial tool count under ~20:
+
+| Namespace | Tools | Why core |
+|---|---|---|
+| `overview.*` | 2 | Orientation — the AI's first call |
+| `spending.*` | 4 | Most common user intent |
+| `cashflow.*` | 2 | Complements spending |
+| `accounts.*` | 4 | Foundational context |
+| `transactions.*` | 4 | Universal query + corrections (excludes `matches` sub-domain) |
+| `import.*` | 2–4 | Primary data entry (core subset: `file`, `status`) |
+| `sql.*` | 1 | Power-user escape hatch |
+
+**Extended namespaces** are loaded on demand via the `moneybin.discover` meta-tool:
+
+| Namespace | Tools | When needed |
+|---|---|---|
+| `categorize.*` | 6–15 | Categorization workflow |
+| `budget.*` | 4 | Budget tracking |
+| `tax.*` | 2 | Tax prep |
+| `privacy.*` | 4 | Privacy management |
+| `transactions.matches.*` | 6 | Match review workflow |
+| `import.*` (extended) | 3 | AI parsing, folder import |
+
+**The core set is configurable.** Users who primarily budget can add `budget` to core; users doing tax prep can add `tax`. Configuration lives in the profile's `config.yaml` under `mcp.core_namespaces`. Setting the list to `["*"]` disables progressive disclosure and loads all tools at connection (equivalent to `MONEYBIN_MCP_LOAD_ALL=true`).
+
+**How it works:**
+
+1. **At connection time:** The server registers core namespace tools only. The `moneybin://tools` resource lists all available namespaces with one-line descriptions, so the AI knows what's available without seeing every schema.
+2. **On `moneybin.discover(namespace="categorize")`:** The server registers the `categorize.*` tools dynamically and sends a `tools/list_changed` notification. The response includes tool names and descriptions so the AI can immediately use them.
+3. **Once loaded, tools stay loaded** for the session. No unloading — the AI might reference a loaded tool later.
+4. **The `actions` array** in response envelopes serves as lightweight progressive disclosure within a session — when `spending.summary` suggests "Use spending.by_category for breakdown", the AI already has that tool (core namespace). When a tool suggests a tool from an extended namespace, the AI calls `discover` first.
+
+**Design constraints:**
+
+- **`moneybin.discover` is always registered.** It's the only tool outside of core namespaces that's available at connection time.
+- **No tool consolidation.** Each tool does one thing with a clean schema. The progressive disclosure pattern handles scale; individual tools stay simple.
+- **Graceful fallback.** If a client doesn't support `tools/list_changed`, the server can be configured to register all tools at startup (`MONEYBIN_MCP_LOAD_ALL=true`). The progressive disclosure pattern is an optimization, not a requirement.
+- **Prompts reference tools by name.** When a prompt references a tool from an extended namespace, the prompt template includes a discover step.
+
 ### Multi-currency as a crosscutting concern
 
 Multi-currency is not a tool domain. It surfaces as:
@@ -565,6 +610,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | **Service layer formalization** | Explicit shared services consumed by both MCP and CLI, returning typed Python objects |
 | **Response envelope** | Consistent `{summary, data, actions}` shape across all tools |
 | **Sensitivity declarations** | Static per-tool sensitivity tier driving automatic privacy enforcement |
+| **Progressive disclosure** | Namespace-based tool registration with `moneybin.discover` meta-tool; core namespaces at connection, extended on demand via `tools/list_changed` |
 
 ---
 
@@ -599,3 +645,4 @@ These decisions and their rationale should be documented in the 12-month plan.
 - **Prompt count.** Four prompts: `monthly-review`, `categorization-organize`, `onboarding`, `tax-prep`. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §14.
 - **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
 - **Privacy middleware implementation.** Decorator-based (`@mcp_tool(sensitivity="medium")`) that delegates to a middleware class. Decorator for ergonomics at the tool definition site; class for testability of the consent/audit/redaction logic.
+- **Tool count strategy.** Progressive disclosure via namespace-based registration, not tool consolidation. The full surface (46+ tools) exceeds practical limits for AI tool selection (~20-30 tools). Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Instead: core namespaces (~19 tools) registered at connection time, extended namespaces loaded on demand via `moneybin.discover` meta-tool and `tools/list_changed` notification. Each tool stays clean and single-purpose. See §3 "Progressive disclosure via namespace registration" and [`mcp-tool-surface.md`](mcp-tool-surface.md) §15b.

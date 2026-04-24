@@ -1,236 +1,127 @@
-"""MCP resource definitions for MoneyBin.
+# src/moneybin/mcp/resources.py
+"""MCP v1 resource definitions.
 
-Resources provide read-only data endpoints that AI assistants can access
-directly. They are registered with the FastMCP server via decorators.
+Resources provide ambient context loaded when the AI connects — schema
+information, account list, privacy status, data freshness. They are
+read-only, compact, and change infrequently.
 
-Documentation: https://modelcontextprotocol.github.io/python-sdk/servers/resources/
+See ``mcp-tool-surface.md`` section 15.
 """
+
+from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from typing import Any
 
-from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, OFX_BALANCES, W2_FORMS
+from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS
 
-from .privacy import get_max_rows, truncate_result
 from .server import get_db, mcp, table_exists
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Schema resources
-# ---------------------------------------------------------------------------
+@mcp.resource("moneybin://status")
+def resource_status() -> str:
+    """Data freshness: row counts, date ranges, last import, categorization coverage."""
+    logger.info("Resource read: moneybin://status")
+    db = get_db()
+    status: dict[str, Any] = {}
+
+    if table_exists(FCT_TRANSACTIONS):
+        row = db.execute(f"""
+            SELECT COUNT(*), MIN(transaction_date), MAX(transaction_date)
+            FROM {FCT_TRANSACTIONS.full_name}
+        """).fetchone()
+        if row:
+            status["transactions"] = {
+                "total": row[0],
+                "date_range_start": str(row[1]) if row[1] else None,
+                "date_range_end": str(row[2]) if row[2] else None,
+            }
+
+    if table_exists(DIM_ACCOUNTS):
+        row = db.execute(f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}").fetchone()
+        status["accounts"] = {"total": row[0] if row else 0}
+
+    return json.dumps(status, indent=2, default=str)
 
 
-@mcp.resource("moneybin://schema/tables")
-def schema_tables() -> str:
-    """List of all tables in the database with schema, type, and column count."""
-    logger.info("Resource read: schema/tables")
+@mcp.resource("moneybin://accounts")
+def resource_accounts() -> str:
+    """Account list with types, institutions, currencies. No balances."""
+    logger.info("Resource read: moneybin://accounts")
+    db = get_db()
+
+    if not table_exists(DIM_ACCOUNTS):
+        return json.dumps({"accounts": []})
+
+    result = db.execute(f"""
+        SELECT account_id, account_type, institution_name, source_type
+        FROM {DIM_ACCOUNTS.full_name}
+        ORDER BY institution_name, account_type
+    """)
+    columns = [desc[0] for desc in result.description]
+    rows = result.fetchall()
+    records = [dict(zip(columns, row, strict=False)) for row in rows]
+    return json.dumps({"accounts": records}, indent=2, default=str)
+
+
+@mcp.resource("moneybin://privacy")
+def resource_privacy() -> str:
+    """Active consent grants and configured AI backend. Stub until privacy specs land."""
+    logger.info("Resource read: moneybin://privacy")
+    return json.dumps(
+        {
+            "consent_grants": [],
+            "configured_backend": None,
+            "consent_mode": "opt-in",
+            "unmask_critical": False,
+        },
+        indent=2,
+    )
+
+
+@mcp.resource("moneybin://schema")
+def resource_schema() -> str:
+    """Core and app table schemas with column names, types, and descriptions."""
+    logger.info("Resource read: moneybin://schema")
     db = get_db()
 
     result = db.execute("""
         SELECT
-            table_schema,
-            table_name,
-            table_type
-        FROM information_schema.tables
-        WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
-        ORDER BY table_schema, table_name
-    """)
-
-    columns = [desc[0] for desc in result.description]
-    rows = result.fetchmany(get_max_rows())
-    records = [dict(zip(columns, row, strict=False)) for row in rows]
-    return json.dumps(records, indent=2, default=str)
-
-
-@mcp.resource("moneybin://schema/{table_name}")
-def schema_table_detail(table_name: str) -> str:
-    """Column definitions for a specific table.
-
-    The table_name can be schema-qualified (e.g. 'raw.ofx_transactions')
-    or just the table name (searches all schemas).
-    """
-    logger.info(f"Resource read: schema/{table_name}")
-    db = get_db()
-
-    # Handle schema-qualified names
-    if "." in table_name:
-        schema, tbl = table_name.split(".", 1)
-        where = "WHERE table_schema = ? AND table_name = ?"
-        params: list[str] = [schema, tbl]
-    else:
-        where = "WHERE table_name = ?"
-        params = [table_name]
-
-    result = db.execute(
-        f"""
-        SELECT
-            table_schema,
+            schema_name,
             table_name,
             column_name,
             data_type,
-            is_nullable,
-            column_default
-        FROM information_schema.columns
-        {where}
-        ORDER BY table_schema, ordinal_position
-        """,
-        params,
-    )
+            comment
+        FROM duckdb_columns()
+        WHERE schema_name IN ('core', 'app', 'raw')
+        ORDER BY schema_name, table_name, column_index
+    """)
+    rows = result.fetchall()
 
-    columns = [desc[0] for desc in result.description]
-    rows = result.fetchmany(get_max_rows())
-    records = [dict(zip(columns, row, strict=False)) for row in rows]
-
-    if not records:
-        return json.dumps({"error": f"Table '{table_name}' not found"})
-
-    return json.dumps(records, indent=2, default=str)
-
-
-# ---------------------------------------------------------------------------
-# Account resources
-# ---------------------------------------------------------------------------
-
-
-@mcp.resource("moneybin://accounts/summary")
-def accounts_summary() -> str:
-    """Account listing with latest balances from OFX data."""
-    logger.info("Resource read: accounts/summary")
-    db = get_db()
-
-    if not table_exists(DIM_ACCOUNTS):
-        return json.dumps({"message": "No account data loaded yet."})
-
-    # Join accounts with latest balances
-    has_balances = table_exists(OFX_BALANCES)
-
-    if has_balances:
-        result = db.execute(f"""
-            WITH latest_balances AS (
-                SELECT
-                    account_id,
-                    ledger_balance,
-                    available_balance,
-                    ledger_balance_date,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY account_id
-                        ORDER BY ledger_balance_date DESC
-                    ) AS rn
-                FROM {OFX_BALANCES.full_name}
-            )
-            SELECT
-                a.account_id,
-                a.account_type,
-                a.institution_name,
-                a.source_type,
-                b.ledger_balance,
-                b.available_balance,
-                b.ledger_balance_date
-            FROM {DIM_ACCOUNTS.full_name} a
-            LEFT JOIN latest_balances b
-                ON a.account_id = b.account_id AND b.rn = 1
-            GROUP BY a.account_id, a.account_type, a.institution_name,
-                     a.source_type,
-                     b.ledger_balance, b.available_balance, b.ledger_balance_date
-            ORDER BY a.institution_name, a.account_type
-        """)
-    else:
-        result = db.execute(f"""
-            SELECT DISTINCT
-                account_id,
-                account_type,
-                institution_name,
-                source_type
-            FROM {DIM_ACCOUNTS.full_name}
-            ORDER BY institution_name, account_type
-        """)
-
-    columns = [desc[0] for desc in result.description]
-    rows = result.fetchmany(get_max_rows())
-    records = [dict(zip(columns, row, strict=False)) for row in rows]
-    return json.dumps(records, indent=2, default=str)
-
-
-# ---------------------------------------------------------------------------
-# Transaction resources
-# ---------------------------------------------------------------------------
-
-
-@mcp.resource("moneybin://transactions/recent")
-def recent_transactions() -> str:
-    """Last 30 days of transactions across all sources."""
-    logger.info("Resource read: transactions/recent")
-    db = get_db()
-
-    cutoff = (date.today() - timedelta(days=30)).isoformat()
-
-    if not table_exists(FCT_TRANSACTIONS):
-        return json.dumps({
-            "message": "No recent transactions found in the last 30 days."
+    tables: dict[str, Any] = {}
+    for row in rows:
+        key = f"{row[0]}.{row[1]}"
+        if key not in tables:
+            tables[key] = {"schema": row[0], "table": row[1], "columns": []}
+        tables[key]["columns"].append({
+            "name": row[2],
+            "type": row[3],
+            "description": row[4],
         })
 
-    result = db.execute(
-        f"""
-        SELECT transaction_id, account_id, transaction_date, amount,
-            description, merchant_name, memo, transaction_type,
-            source_type
-        FROM {FCT_TRANSACTIONS.full_name}
-        WHERE transaction_date >= CAST(? AS DATE)
-        ORDER BY transaction_date DESC
-        LIMIT ?
-        """,
-        [cutoff, get_max_rows()],
-    )
-    columns = [desc[0] for desc in result.description]
-    rows = result.fetchall()
-    records = [dict(zip(columns, row, strict=False)) for row in rows]
-
-    if not records:
-        return json.dumps({
-            "message": "No recent transactions found in the last 30 days."
-        })
-
-    return truncate_result(json.dumps(records, indent=2, default=str))
+    return json.dumps({"tables": list(tables.values())}, indent=2, default=str)
 
 
-# ---------------------------------------------------------------------------
-# W2 resources
-# ---------------------------------------------------------------------------
+@mcp.resource("moneybin://tools")
+def resource_tools() -> str:
+    """Available tool namespaces with descriptions and loaded status."""
+    logger.info("Resource read: moneybin://tools")
+    from moneybin.mcp.namespaces import CORE_NAMESPACES_DEFAULT
+    from moneybin.mcp.server import get_registry
 
-
-@mcp.resource("moneybin://w2/{tax_year}")
-def w2_by_year(tax_year: str) -> str:
-    """W-2 tax form data for a specific year.
-
-    Args:
-        tax_year: The tax year (e.g. '2024').
-    """
-    logger.info(f"Resource read: w2/{tax_year}")
-    db = get_db()
-
-    if not table_exists(W2_FORMS):
-        return json.dumps({"message": "No W-2 data loaded yet."})
-
-    result = db.execute(
-        f"""
-        SELECT tax_year, employer_name, wages, federal_income_tax,
-            social_security_wages, social_security_tax, medicare_wages,
-            medicare_tax, state_local_info
-        FROM {W2_FORMS.full_name}
-        WHERE tax_year = ?
-        ORDER BY employer_name
-        """,
-        [int(tax_year)],
-    )
-
-    columns = [desc[0] for desc in result.description]
-    rows = result.fetchall()
-    records = [dict(zip(columns, row, strict=False)) for row in rows]
-
-    if not records:
-        return json.dumps({"message": f"No W-2 data found for tax year {tax_year}."})
-
-    return json.dumps(records, indent=2, default=str)
+    registry = get_registry()
+    data = registry.tools_resource_data(CORE_NAMESPACES_DEFAULT)
+    return json.dumps(data, indent=2)

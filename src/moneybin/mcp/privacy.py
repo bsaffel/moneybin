@@ -5,22 +5,56 @@ query tool, managed write validation for dedicated write tools, and
 result size limits.
 """
 
+import functools
 import logging
 import re
+from enum import StrEnum
 
 from moneybin.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-def _get_mcp_limits() -> tuple[int, int, set[str] | None]:
-    """Load MCP limits from config (lazy, not at import time).
+class Sensitivity(StrEnum):
+    """Data sensitivity tier for MCP tools.
+
+    Every tool declares its maximum data sensitivity. The privacy
+    middleware uses this to enforce consent gates and response filtering.
+
+    See ``mcp-architecture.md`` section 5 for tier definitions.
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:
+    """Log an MCP tool invocation with its sensitivity tier.
+
+    This is a privacy middleware stub. In v1, it only logs.
+    When the consent management and audit log specs are implemented,
+    this will check consent status, apply redaction, and write to
+    the audit table.
+
+    Args:
+        tool_name: The v1 dot-separated tool name.
+        sensitivity: The tool's declared sensitivity tier.
+    """
+    logger.debug(f"MCP tool call: {tool_name} (sensitivity={sensitivity.value})")
+
+
+@functools.lru_cache(maxsize=1)
+def _get_mcp_limits() -> tuple[int, int, frozenset[str] | None]:
+    """Load MCP limits from config (lazy, cached after first call).
 
     Returns:
         Tuple of (max_rows, max_chars, allowed_tables).
     """
     cfg = get_settings().mcp
-    allowed = {t.lower() for t in cfg.allowed_tables} if cfg.allowed_tables else None
+    allowed = (
+        frozenset(t.lower() for t in cfg.allowed_tables) if cfg.allowed_tables else None
+    )
     return cfg.max_rows, cfg.max_chars, allowed
 
 

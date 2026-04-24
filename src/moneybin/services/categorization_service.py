@@ -8,12 +8,14 @@ auto-categorization lives in the MCP layer (auto_categorize tool).
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import duckdb
 
 from moneybin.database import Database
+from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -26,6 +28,76 @@ from moneybin.tables import (
 logger = logging.getLogger(__name__)
 
 MatchType = Literal["exact", "contains", "regex"]
+
+
+@dataclass(slots=True)
+class CategorizationStats:
+    """Typed result for categorization statistics."""
+
+    total: int
+    categorized: int
+    uncategorized: int
+    percent_categorized: float
+    by_source: dict[str, int]
+
+    def to_envelope(self) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this categorization stats result."""
+        data: dict[str, Any] = {
+            "total_transactions": self.total,
+            "categorized": self.categorized,
+            "uncategorized": self.uncategorized,
+            "percent_categorized": self.percent_categorized,
+            "by_source": self.by_source,
+        }
+        return build_envelope(
+            data=data,
+            sensitivity="low",
+            actions=["Use categorize.uncategorized to see uncategorized transactions"],
+        )
+
+
+@dataclass(slots=True)
+class BulkCategorizationResult:
+    """Typed result for bulk categorization operations."""
+
+    applied: int
+    skipped: int
+    errors: int
+    error_details: list[dict[str, str]]
+    merchants_created: int = 0
+
+    def to_envelope(self, input_count: int) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this bulk categorization result."""
+        return build_envelope(
+            data={
+                "applied": self.applied,
+                "skipped": self.skipped,
+                "errors": self.errors,
+                "error_details": self.error_details,
+                "merchants_created": self.merchants_created,
+            },
+            sensitivity="medium",
+            total_count=input_count,
+            actions=[
+                "Use categorize.rules to review auto-created rules",
+                "Use categorize.uncategorized to fetch the next batch",
+            ],
+        )
+
+
+@dataclass(slots=True)
+class SeedResult:
+    """Typed result for category seeding."""
+
+    seeded_count: int
+
+    def to_envelope(self) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this seed result."""
+        return build_envelope(
+            data={"seeded_count": self.seeded_count},
+            sensitivity="low",
+        )
+
 
 # -- Merchant name normalization patterns --
 
@@ -233,6 +305,103 @@ def create_merchant(
     return merchant_id
 
 
+def bulk_categorize(
+    db: Database,
+    items: list[dict[str, str]],
+) -> BulkCategorizationResult:
+    """Assign categories to multiple transactions with merchant auto-creation.
+
+    For each item, looks up the transaction description, resolves or creates
+    a merchant mapping, then inserts/replaces the category assignment.
+    Merchant resolution is best-effort — failures do not prevent categorization.
+
+    Args:
+        db: Database instance (read-write).
+        items: List of dicts with transaction_id, category, and optional subcategory.
+
+    Returns:
+        BulkCategorizationResult with applied/skipped/error counts.
+    """
+    applied = 0
+    skipped = 0
+    errors = 0
+    merchants_created = 0
+    error_details: list[dict[str, str]] = []
+
+    for item in items:
+        txn_id = item.get("transaction_id", "").strip()
+        category = item.get("category", "").strip()
+        if not txn_id or not category:
+            skipped += 1
+            error_details.append({
+                "transaction_id": txn_id or "(missing)",
+                "reason": "Missing transaction_id or category",
+            })
+            continue
+
+        subcategory = item.get("subcategory", "").strip() or None
+
+        try:
+            # Resolve merchant_id from description (best-effort)
+            merchant_id = None
+            try:
+                txn = db.execute(
+                    f"""
+                    SELECT description FROM {FCT_TRANSACTIONS.full_name}
+                    WHERE transaction_id = ?
+                    """,
+                    [txn_id],
+                ).fetchone()
+                if txn and txn[0]:
+                    existing = match_merchant(db, txn[0])
+                    if existing:
+                        merchant_id = existing["merchant_id"]
+                    else:
+                        normalized = normalize_description(txn[0])
+                        if normalized:
+                            merchant_id = create_merchant(
+                                db,
+                                normalized,
+                                normalized,
+                                match_type="contains",
+                                category=category,
+                                subcategory=subcategory,
+                                created_by="ai",
+                            )
+                            merchants_created += 1
+            except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
+                logger.debug(
+                    f"Could not resolve merchant for {txn_id}",
+                    exc_info=True,
+                )
+
+            db.execute(
+                f"""
+                INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
+                (transaction_id, category, subcategory,
+                 categorized_at, categorized_by, merchant_id)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
+                """,
+                [txn_id, category, subcategory, merchant_id],
+            )
+            applied += 1
+        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+            errors += 1
+            logger.exception(f"bulk_categorize failed for transaction {txn_id!r}")
+            error_details.append({
+                "transaction_id": txn_id,
+                "reason": "Failed to apply category — check logs for details.",
+            })
+
+    return BulkCategorizationResult(
+        applied=applied,
+        skipped=skipped,
+        errors=errors,
+        error_details=error_details,
+        merchants_created=merchants_created,
+    )
+
+
 def apply_merchant_categories(
     db: Database,
 ) -> int:
@@ -416,10 +585,7 @@ def apply_deterministic_categorization(
 
     if total:
         logger.info(
-            "Deterministic categorization: %d merchant, %d rule, %d total",
-            merchant_count,
-            rule_count,
-            total,
+            f"Deterministic categorization: {merchant_count} merchant, {rule_count} rule, {total} total"
         )
 
     return {
@@ -605,3 +771,23 @@ def get_categorization_stats(
         pass
 
     return stats
+
+
+def get_stats(db: Database) -> CategorizationStats:
+    """Get categorization stats as a typed result.
+
+    Wrapper around get_categorization_stats() that returns a typed object.
+    """
+    raw = get_categorization_stats(db)
+    by_source = {
+        k.removeprefix("by_"): v
+        for k, v in raw.items()
+        if k.startswith("by_") and isinstance(v, int)
+    }
+    return CategorizationStats(
+        total=int(raw["total"]),
+        categorized=int(raw["categorized"]),
+        uncategorized=int(raw["uncategorized"]),
+        percent_categorized=float(raw["pct_categorized"]),
+        by_source=by_source,
+    )

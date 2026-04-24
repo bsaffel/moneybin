@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.mcp import app
+from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 
 runner = CliRunner()
 
@@ -14,30 +15,41 @@ runner = CliRunner()
 class TestMCPListTools:
     """Tests for the list-tools command."""
 
-    @patch("moneybin.cli.commands.mcp.importlib")
-    def test_list_tools(self, mock_importlib: MagicMock) -> None:
+    def test_list_tools(self) -> None:
         """list-tools enumerates registered MCP tools."""
-        result = runner.invoke(app, ["list-tools"])
+        registry = NamespaceRegistry()
+        registry.register(ToolDefinition("test.tool", "A test tool", lambda: None))
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.get_registry", return_value=registry),
+        ):
+            result = runner.invoke(app, ["list-tools"])
         assert result.exit_code == 0
+        assert "test.tool" in result.output
 
-    @patch("moneybin.cli.commands.mcp.importlib")
-    def test_list_tools_shows_tool_names(self, mock_importlib: MagicMock) -> None:
-        """list-tools shows tool names and descriptions from mcp server."""
-        mock_tool = MagicMock()
-        mock_tool.description = "A test tool"
-
-        with patch("moneybin.cli.commands.mcp.mcp_server") as mock_server:
-            mock_server._tool_manager._tools = {"test_tool": mock_tool}
+    def test_list_tools_shows_tool_names(self) -> None:
+        """list-tools shows tool names and descriptions from v1 registry."""
+        registry = NamespaceRegistry()
+        registry.register(
+            ToolDefinition("spending.summary", "Monthly spending", lambda: None)
+        )
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.get_registry", return_value=registry),
+        ):
             result = runner.invoke(app, ["list-tools"])
 
         assert result.exit_code == 0
-        assert "test_tool" in result.output
+        assert "spending.summary" in result.output
+        assert "Monthly spending" in result.output
 
-    @patch("moneybin.cli.commands.mcp.importlib")
-    def test_list_tools_empty(self, mock_importlib: MagicMock) -> None:
+    def test_list_tools_empty(self) -> None:
         """list-tools handles empty tool registry gracefully."""
-        with patch("moneybin.cli.commands.mcp.mcp_server") as mock_server:
-            mock_server._tool_manager._tools = {}
+        registry = NamespaceRegistry()
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.get_registry", return_value=registry),
+        ):
             result = runner.invoke(app, ["list-tools"])
 
         assert result.exit_code == 0

@@ -226,28 +226,21 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
 def list_tools() -> None:
     """List all registered MCP tools.
 
-    Imports tool modules to trigger decorator registration, then
-    enumerates the FastMCP tool registry. Useful for verifying that
+    Enumerates the v1 namespace registry. Useful for verifying that
     all expected tools are available before connecting an AI client.
 
     Examples:
         moneybin mcp list-tools
     """
-    for module in (
-        "moneybin.mcp.tools",
-        "moneybin.mcp.write_tools",
-    ):
-        importlib.import_module(module)
+    from moneybin.mcp.server import get_registry, init_db
 
-    tools: dict[str, object] = mcp_server._tool_manager._tools  # type: ignore[reportAttributeAccessIssue] — accessing FastMCP internals
+    init_db()
+    registry = get_registry()
 
-    if not tools:
-        typer.echo("No tools registered.")
-        return
-
-    for name, tool in sorted(tools.items()):
-        description = getattr(tool, "description", None) or ""
-        typer.echo(f"  {name}  {description}")
+    for ns in sorted(registry.all_namespaces()):
+        tools = registry.get_namespace_tools(ns)
+        for tool in tools:
+            typer.echo(f"  {tool.name}: {tool.description}")
 
 
 # ── list-prompts ─────────────────────────────────────────────────────────────
@@ -317,10 +310,9 @@ def serve(
     from moneybin.database import DatabaseKeyError
     from moneybin.mcp.server import close_db, init_db, mcp
 
-    # Import tools/resources/prompts to register their decorators with the server
+    # Import resources/prompts to register their decorators with the server.
+    # Tools are registered via register_core_tools() in init_db().
     for module in (
-        "moneybin.mcp.tools",
-        "moneybin.mcp.write_tools",
         "moneybin.mcp.resources",
         "moneybin.mcp.prompts",
     ):
