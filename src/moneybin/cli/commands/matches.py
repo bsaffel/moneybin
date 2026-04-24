@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Any
 
+import duckdb as duckdb_mod
 import typer
 
 from moneybin.database import DatabaseKeyError, get_database
@@ -15,6 +16,10 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
+
+_NO_TRANSFORMS_MSG = (
+    "❌ No transaction data available — run 'moneybin transform apply' first"
+)
 
 
 @app.command("run")
@@ -43,14 +48,16 @@ def matches_run(
         if not skip_transform and result.auto_merged:
             from moneybin.services.import_service import run_transforms
 
-            db.close()
-            run_transforms(get_settings().database.path)
+            run_transforms()
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
 
         logger.error(f"❌ {e}")
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
+    except duckdb_mod.CatalogException:
+        logger.error(_NO_TRANSFORMS_MSG)
+        raise typer.Exit(1) from None
 
 
 def _display_dedup_match(match: dict[str, Any]) -> None:
@@ -113,7 +120,6 @@ def matches_review(
     ),
 ) -> None:
     """Review pending match proposals. Interactive by default."""
-    from moneybin.config import get_settings
     from moneybin.matching.persistence import get_pending_matches, update_match_status
 
     if decision and not match_id:
@@ -203,8 +209,7 @@ def matches_review(
         if accepted_any and not skip_transform:
             from moneybin.services.import_service import run_transforms
 
-            db.close()
-            run_transforms(get_settings().database.path)
+            run_transforms()
 
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
@@ -320,8 +325,7 @@ def matches_backfill(
         if not skip_transform and result.auto_merged:
             from moneybin.services.import_service import run_transforms
 
-            db.close()
-            run_transforms(get_settings().database.path)
+            run_transforms()
 
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
@@ -329,3 +333,6 @@ def matches_backfill(
         logger.error(f"❌ {e}")
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
+    except duckdb_mod.CatalogException:
+        logger.error(_NO_TRANSFORMS_MSG)
+        raise typer.Exit(1) from None

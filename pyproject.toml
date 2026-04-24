@@ -246,6 +246,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+    "e2e: marks tests as end-to-end subprocess tests",
 ]
 filterwarnings = [
     # Ignore deprecation warnings from third-party libraries we don't control

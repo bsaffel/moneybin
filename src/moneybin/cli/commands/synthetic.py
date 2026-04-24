@@ -130,7 +130,7 @@ def _run_generate(
         if not skip_transform:
             logger.info("⚙️  Running SQLMesh to materialize pipeline...")
             try:
-                run_transforms(db.path)
+                run_transforms()
             except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
                 logger.warning(
                     "⚠️  SQLMesh transforms failed — raw data is intact, "

@@ -86,6 +86,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 |---|---|---|---|
 | [Overview](testing-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
 | [Synthetic Data Generator](testing-synthetic-data.md) | Feature | implemented | Persona-based synthetic financial data: YAML-driven personas/merchants, deterministic seeding, ground-truth labels, Level 2 realism |
+| [E2E Testing](e2e-testing.md) | Feature | implemented | Subprocess-based E2E tests: smoke tests (help, no-DB, DB commands), golden-path workflow tests (synthetic, CSV, OFX, lock/unlock, categorization) |
 | `testing-anonymized-data.md` | Feature | planned | Structure-preserving anonymization of real databases with statistical similarity guarantees |
 | `testing-csv-fixtures.md` | Feature | planned | Curated bank export samples with expected-result JSON for format detection testing |
 | `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |

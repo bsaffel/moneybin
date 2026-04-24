@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv
+.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv test-e2e
 
 # Default target
 .DEFAULT_GOAL := help
@@ -29,14 +29,14 @@ help: ## Show this help message
 	@echo "$(BLUE)MoneyBin Development Commands$(RESET)"
 	@echo ""
 	@echo "$(GREEN)Setup & Installation:$(RESET)"
-	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z_-]+:.*?## / && /Setup|Install|Environment/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z0-9_-]+:.*?## / && /Setup|Install|Environment/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
 	@echo "$(GREEN)Development:$(RESET)"
-	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z_-]+:.*?## / && /Development|Code|Format|Lint|Type|Test/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z0-9_-]+:.*?## / && /Development|Code|Format|Lint|Type|Test/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
 
 	@echo "$(GREEN)Utility:$(RESET)"
-	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z_-]+:.*?## / && /Clean|Status|Utility/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z0-9_-]+:.*?## / && /Clean|Status|Utility/ {printf "  $(YELLOW)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
 	@echo "$(BLUE)Quick Start:$(RESET)"
 	@echo "  make setup          # Complete development environment setup"
@@ -130,9 +130,9 @@ pre-commit: venv ## Setup & Installation: Install pre-commit hooks
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
 	@echo "$(BLUE)ℹ️  Pre-commit will use uv run for consistent tool versions$(RESET)"
 
-test-unit: venv ## Development: Run unit tests only (excludes integration tests)
+test-unit: venv ## Development: Run unit tests only (excludes integration and e2e tests)
 	@echo "$(BLUE)🧪 Running unit tests (use 'make test-all' for all tests)...$(RESET)"
-	@uv run pytest tests/ -m "not integration"
+	@uv run pytest tests/ -m "not integration and not e2e"
 
 test: test-unit ## Development: Run unit tests (alias for test-unit)
 
@@ -142,12 +142,16 @@ test-all: venv ## Development: Run all tests including integration tests with ve
 
 test-cov: venv ## Development: Run tests with coverage report
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
-	@uv run pytest --cov=src tests/ -m "not integration"
+	@uv run pytest --cov=src tests/ -m "not integration and not e2e"
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"
 
 test-integration: venv ## Development: Run integration tests only
 	@echo "$(BLUE)🧪 Running integration tests...$(RESET)"
 	@uv run pytest tests/ -m "integration"
+
+test-e2e: venv ## Development: Run end-to-end subprocess tests
+	@echo "$(BLUE)🧪 Running end-to-end tests...$(RESET)"
+	@uv run pytest tests/e2e/ -m "e2e" -v
 
 format: venv ## Development: Format code with ruff
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"

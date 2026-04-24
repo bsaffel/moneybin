@@ -48,22 +48,21 @@ class TestCategorizeToolRegistration:
         assert parsed["summary"]["sensitivity"] == "low"
 
     @pytest.mark.unit
-    def test_categorize_seed_returns_envelope_on_error(self, mcp_db: object) -> None:
-        """Seed fails gracefully when seeds.categories table is absent.
+    def test_categorize_seed_returns_envelope(self, mcp_db: object) -> None:
+        """Seed materializes the SQLMesh seed table and seeds categories.
 
-        The seeds.categories table is created by SQLMesh, which isn't
-        available in unit tests. The tool should still return a valid
-        envelope with an error payload.
+        ``ensure_seed_table`` runs a targeted SQLMesh plan to create
+        ``seeds.categories`` before seeding, so this succeeds even
+        without a prior ``sqlmesh apply``.
         """
         registry = NamespaceRegistry()
         tools = register_categorize_tools(registry)
 
         seed_tool = next(t for t in tools if t.name == "categorize.seed")
         seed_result = json.loads(seed_tool.fn())
-        # Returns a valid envelope even on failure
         assert "summary" in seed_result
         assert "data" in seed_result
-        assert "error" in seed_result["data"]
+        assert "seeded_count" in seed_result["data"]
 
     @pytest.mark.unit
     def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:

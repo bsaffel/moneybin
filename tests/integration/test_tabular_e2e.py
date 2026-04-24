@@ -7,7 +7,7 @@ using real fixture files. The load stage uses a mock database.
 from decimal import Decimal
 from pathlib import Path
 
-FIXTURES = Path(__file__).parents[2] / "fixtures" / "tabular"
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "tabular"
 
 
 class TestCSVImportPipeline:

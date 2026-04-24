@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from moneybin.database import Database
+from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import (
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
@@ -20,8 +20,6 @@ from moneybin.metrics.registry import (
 )
 
 logger = logging.getLogger(__name__)
-
-_SQLMESH_ROOT = Path(__file__).resolve().parents[3] / "sqlmesh"
 
 
 @dataclass
@@ -128,80 +126,24 @@ def _detect_file_type(file_path: Path) -> str:
     )
 
 
-def run_transforms(db_path: Path) -> bool:
+def run_transforms() -> bool:
     """Run SQLMesh transforms to rebuild core tables.
 
-    SQLMesh manages its own connection — the caller must close any
-    existing connections before calling this.
-
-    Because the database is encrypted with AES-256-GCM (ATTACH ...
-    ENCRYPTION_KEY), and SQLMesh's DuckDB gateway config does not support
-    encryption_key, we create a properly-connected DuckDB adapter and
-    pre-populate SQLMesh's adapter cache so it reuses our connection
-    instead of creating one that can't decrypt the file.
-
-    Args:
-        db_path: Path to the DuckDB database file.
+    Uses ``sqlmesh_context()`` to handle encrypted DB injection into
+    SQLMesh's adapter cache.  Requires an active Database singleton
+    (via ``get_database()``) — ``sqlmesh_context()`` reuses its
+    connection.
 
     Returns:
         True if transforms ran successfully.
     """
-    import duckdb as duckdb_mod
-    from sqlmesh.core.config import Config, GatewayConfig
-    from sqlmesh.core.config.connection import (
-        BaseDuckDBConnectionConfig,
-        DuckDBConnectionConfig,
-    )
-    from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
-
-    from moneybin.database import build_attach_sql
-    from moneybin.secrets import SecretStore
-    from sqlmesh import (
-        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
-    )
-
     logger.info("Running SQLMesh transforms")
 
-    store = SecretStore()
-    encryption_key = store.get_key("DATABASE__ENCRYPTION_KEY")
-
-    conn = duckdb_mod.connect()
-    conn.execute("INSTALL httpfs; LOAD httpfs;")
-    conn.execute(build_attach_sql(db_path, encryption_key))
-    conn.execute("USE moneybin")
-
-    # Pre-populate SQLMesh's adapter cache (keyed by database path).
-    # BaseDuckDBConnectionConfig.create_engine_adapter checks this cache
-    # before creating a new adapter, so SQLMesh will reuse our encrypted
-    # connection rather than opening its own unencrypted one.
-    adapter = DuckDBEngineAdapter(
-        lambda: conn,
-        default_catalog="moneybin",
-        register_comments=True,
-    )
-    cache_key = str(db_path)
-    BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
-
-    try:
-        config = Config(
-            default_gateway="moneybin",
-            gateways={
-                "moneybin": GatewayConfig(
-                    connection=DuckDBConnectionConfig(database=str(db_path)),
-                ),
-            },
-        )
-        ctx = Context(
-            paths=str(_SQLMESH_ROOT),
-            config=config,
-            gateway="moneybin",
-        )
+    with sqlmesh_context() as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
-        logger.info("SQLMesh transforms completed")
-        return True
-    finally:
-        BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
-        conn.close()
+
+    logger.info("SQLMesh transforms completed")
+    return True
 
 
 def _import_ofx(
@@ -694,7 +636,7 @@ def import_file(
             _run_matching(db)
         except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
-        result.core_tables_rebuilt = run_transforms(db.path)
+        result.core_tables_rebuilt = run_transforms()
 
         # Apply deterministic categorization to new transactions
         _apply_categorization(db)

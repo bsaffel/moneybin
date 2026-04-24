@@ -9,12 +9,11 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
 import duckdb
 
-from moneybin.database import Database
+from moneybin.database import Database, sqlmesh_context
 from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import (
     CATEGORIES,
@@ -595,9 +594,6 @@ def apply_deterministic_categorization(
     }
 
 
-_SQLMESH_ROOT = Path(__file__).resolve().parents[3] / "sqlmesh"
-
-
 def ensure_seed_table(db: Database) -> None:
     """Materialize the SQLMesh seed table if it doesn't exist yet.
 
@@ -619,16 +615,13 @@ def ensure_seed_table(db: Database) -> None:
         return  # already exists
 
     logger.info("Seed table missing — running targeted SQLMesh apply")
-    from sqlmesh import (
-        Context,  # type: ignore[import-untyped] — sqlmesh has no type stubs
-    )
 
-    ctx = Context(paths=str(_SQLMESH_ROOT))
-    ctx.plan(
-        auto_apply=True,
-        no_prompts=True,
-        select_models=[SEED_CATEGORIES.full_name],
-    )
+    with sqlmesh_context() as ctx:
+        ctx.plan(
+            auto_apply=True,
+            no_prompts=True,
+            select_models=[SEED_CATEGORIES.full_name],
+        )
     logger.info("SQLMesh seed apply completed")
 
 

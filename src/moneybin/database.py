@@ -19,6 +19,8 @@ import importlib.metadata
 import logging
 import stat
 import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -233,7 +235,7 @@ class Database:
                 or sqlmesh not installed),
             False if migration failed.
         """
-        sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
+        sqlmesh_root = _SQLMESH_ROOT
         if not sqlmesh_root.is_dir():
             logger.debug("sqlmesh project dir not found, skipping migrate")
             return True
@@ -286,10 +288,11 @@ class Database:
             logger.debug("sqlmesh migrate completed successfully")
             return True
         except Exception:  # noqa: BLE001 — sqlmesh migration failures are non-fatal
-            logger.warning(
-                "⚠️  sqlmesh migrate failed — see logs for details",
+            logger.debug(
+                "sqlmesh migrate failed",
                 exc_info=True,
             )
+            logger.warning("⚠️  sqlmesh migrate failed — see logs for details")
             return False
         finally:
             BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
@@ -440,6 +443,12 @@ class Database:
         """
         return self.conn.sql(query)
 
+    def __enter__(self) -> "Database":  # noqa: D105
+        return self
+
+    def __exit__(self, *_: object) -> None:  # noqa: D105
+        self.close()
+
     def close(self) -> None:
         """Close the database connection and release resources."""
         if self._conn is not None:
@@ -501,3 +510,96 @@ def close_database() -> None:
     if _database_instance is not None:
         _database_instance.close()
         _database_instance = None
+
+
+# ---------------------------------------------------------------------------
+# SQLMesh encrypted-context helper
+# ---------------------------------------------------------------------------
+
+_SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
+
+
+@contextmanager
+def sqlmesh_context(
+    sqlmesh_root: Path | None = None,
+) -> Generator[Any, None, None]:
+    """Create a SQLMesh Context that can open the encrypted database.
+
+    SQLMesh's DuckDBConnectionConfig does not support encryption_key,
+    so we create a properly-connected DuckDB adapter and pre-populate
+    SQLMesh's internal adapter cache. SQLMesh then reuses our encrypted
+    connection instead of opening its own unencrypted one.
+
+    Requires the Database singleton to be initialized via
+    ``get_database()`` before calling.  Callers should NOT close the
+    database before invoking this — ``sqlmesh_context()`` borrows the
+    singleton's connection.
+
+    Usage::
+
+        db = get_database()          # ensure singleton is open
+        with sqlmesh_context() as ctx:
+            ctx.plan(auto_apply=True, no_prompts=True)
+
+    Args:
+        sqlmesh_root: Path to the sqlmesh/ directory. Defaults to the
+            project's ``sqlmesh/`` directory.
+
+    Yields:
+        A ``sqlmesh.Context`` connected to the encrypted database.
+
+    Raises:
+        DatabaseKeyError: If the Database singleton is not initialized.
+    """
+    from sqlmesh.core.config import Config, GatewayConfig
+    from sqlmesh.core.config.connection import (
+        BaseDuckDBConnectionConfig,
+        DuckDBConnectionConfig,
+    )
+    from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
+
+    from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
+        Context,
+    )
+
+    root = sqlmesh_root or _SQLMESH_ROOT
+    db_path = get_settings().database.path
+
+    # Reuse the singleton's connection — DuckDB only allows one
+    # connection per file.  Callers must call get_database() first.
+    # httpfs is NOT loaded — no SQLMesh models use remote file access.
+    # If a future model needs read_parquet over HTTP or s3://, add
+    # conn.execute("INSTALL httpfs; LOAD httpfs;") to Database.__init__.
+    if _database_instance is None or _database_instance._conn is None:  # type: ignore[reportPrivateUsage]  # must check singleton's connection state
+        raise DatabaseKeyError(
+            "Database not initialized — call get_database() before "
+            "sqlmesh_context(). If the database was explicitly closed, "
+            "re-open it first."
+        )
+    conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
+
+    cache_key = str(db_path)
+    try:
+        adapter = DuckDBEngineAdapter(
+            lambda: conn,
+            default_catalog=_DATABASE_ALIAS,
+            register_comments=True,
+        )
+        BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
+
+        config = Config(
+            default_gateway=_DATABASE_ALIAS,
+            gateways={
+                _DATABASE_ALIAS: GatewayConfig(
+                    connection=DuckDBConnectionConfig(database=str(db_path)),
+                ),
+            },
+        )
+        ctx = Context(
+            paths=str(root),
+            config=config,
+            gateway=_DATABASE_ALIAS,
+        )
+        yield ctx
+    finally:
+        BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
