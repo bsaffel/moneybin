@@ -45,7 +45,9 @@ A column name — especially identifiers — must contain the same logical value
 
 ## SQLMesh Invocation
 
-**Always use the Python API** (`sqlmesh.Context`), never subprocess. Subprocess calls break profile isolation — child processes read `~/.moneybin/config.yaml` and connect to the wrong database. Since SQLMesh's DuckDB config doesn't support `ENCRYPTION_KEY`, inject a pre-connected adapter into `BaseDuckDBConnectionConfig._data_file_to_adapter` keyed by db path — SQLMesh will reuse it instead of opening its own connection. See `run_transforms()` in `import_service.py` and `_run_sqlmesh_migrate()` in `database.py`.
+**Always use `sqlmesh_context()`** from `database.py`, never subprocess or raw `sqlmesh.Context()`. Subprocess calls break profile isolation — child processes read `~/.moneybin/config.yaml` and connect to the wrong database. Since SQLMesh's DuckDB config doesn't support `ENCRYPTION_KEY`, `sqlmesh_context()` injects a pre-connected encrypted adapter into `BaseDuckDBConnectionConfig._data_file_to_adapter` keyed by db path — SQLMesh reuses it instead of opening its own unencrypted connection. See `sqlmesh_context()` in `database.py` and `_run_sqlmesh_migrate()` in `database.py`.
+
+**httpfs is not needed.** The DuckDB connection inside `sqlmesh_context()` does not load the `httpfs` extension. All SQLMesh models read from local DuckDB tables — no models use remote file access (`read_parquet` over HTTP, `s3://`, etc.). If a future model requires remote access, `INSTALL httpfs; LOAD httpfs;` must be added to the connection setup in `sqlmesh_context()`.
 
 ## SQL Formatting
 

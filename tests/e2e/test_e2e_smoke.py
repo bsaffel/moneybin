@@ -113,13 +113,11 @@ class TestDBCommands:
 
     def test_transform_status(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("transform", "status", env=e2e_profile)
-        # May exit 1 on a fresh DB without materialized models — no traceback is the bar
-        assert "Traceback" not in result.stderr
+        result.assert_success()
 
     def test_transform_validate(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("transform", "validate", env=e2e_profile)
-        # May exit 1 on a fresh DB without materialized models — no traceback is the bar
-        assert "Traceback" not in result.stderr
+        result.assert_success()
 
     def test_import_status(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("import", "status", env=e2e_profile)

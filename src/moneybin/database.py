@@ -562,19 +562,23 @@ def sqlmesh_context(
             f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
         ) from e
 
+    # duckdb.connect() is intentional here — SQLMesh needs its own connection
+    # separate from the Database singleton, with the encrypted DB attached.
+    # No current SQLMesh models use httpfs (remote file access); if one is
+    # added, INSTALL/LOAD httpfs must be added here.
     conn = duckdb.connect()
-    conn.execute(build_attach_sql(db_path, encryption_key))
-    conn.execute(f"USE {_DATABASE_ALIAS}")
-
-    adapter = DuckDBEngineAdapter(
-        lambda: conn,
-        default_catalog=_DATABASE_ALIAS,
-        register_comments=True,
-    )
-    cache_key = str(db_path)
-    BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
-
     try:
+        conn.execute(build_attach_sql(db_path, encryption_key))
+        conn.execute(f"USE {_DATABASE_ALIAS}")
+
+        adapter = DuckDBEngineAdapter(
+            lambda: conn,
+            default_catalog=_DATABASE_ALIAS,
+            register_comments=True,
+        )
+        cache_key = str(db_path)
+        BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
+
         config = Config(
             default_gateway=_DATABASE_ALIAS,
             gateways={

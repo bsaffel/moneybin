@@ -46,6 +46,8 @@ class TestSyntheticPipeline:
             env=env,
         )
         result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, f"Expected rows in core.fct_transactions, got {count}"
 
 
 class TestCSVImportPipeline:
@@ -80,6 +82,8 @@ class TestCSVImportPipeline:
             env=env,
         )
         result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, f"Expected rows after CSV import, got {count}"
 
 
 class TestOFXImportPipeline:
@@ -112,6 +116,8 @@ class TestOFXImportPipeline:
             env=env,
         )
         result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, f"Expected rows after OFX import, got {count}"
 
 
 class TestLockUnlockCycle:

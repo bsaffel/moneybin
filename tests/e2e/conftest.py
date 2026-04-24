@@ -46,7 +46,7 @@ class CLIResult:
 # CLI runner
 # ---------------------------------------------------------------------------
 
-_FAST_ARGON2_ENV = {
+FAST_ARGON2_ENV = {
     "MONEYBIN_DATABASE__ARGON2_TIME_COST": "1",
     "MONEYBIN_DATABASE__ARGON2_MEMORY_COST": "1024",
     "MONEYBIN_DATABASE__ARGON2_PARALLELISM": "1",
@@ -73,7 +73,7 @@ def run_cli(
         CLIResult with exit_code, stdout, stderr.
     """
     cmd = ["uv", "run", "moneybin", *args]  # noqa: S607 — uv is on PATH in dev environments
-    full_env = {**os.environ, **_FAST_ARGON2_ENV, **(env or {})}
+    full_env = {**os.environ, **FAST_ARGON2_ENV, **(env or {})}
 
     result = subprocess.run(  # noqa: S603 — input is controlled test commands, not user input
         cmd,
