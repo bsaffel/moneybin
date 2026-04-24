@@ -85,6 +85,14 @@ _URL_SCHEME_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# DuckDB replacement scans can read files with `FROM 'path/to/file.csv'`
+# without using read_csv/read_parquet. A single-quoted table source is not a
+# normal catalog table reference, so reject it before execution.
+_QUOTED_TABLE_SCAN = re.compile(
+    r"(?<!')\b(FROM|JOIN)\s*'[^']+'",
+    re.IGNORECASE,
+)
+
 # Patterns that indicate read-only SQL statements
 _READ_ONLY_PREFIXES = re.compile(
     r"^\s*(SELECT|WITH|DESCRIBE|SHOW|PRAGMA|EXPLAIN)\b",
@@ -149,6 +157,12 @@ def validate_read_only_query(sql: str) -> str | None:
     if _URL_SCHEME_PATTERNS.search(stripped):
         return (
             "URL literals (https://, s3://, etc.) are not allowed. "
+            "Queries must read from database tables only."
+        )
+
+    if _QUOTED_TABLE_SCAN.search(stripped):
+        return (
+            "Quoted file/table path scans are not allowed through the MCP server. "
             "Queries must read from database tables only."
         )
 
