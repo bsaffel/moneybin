@@ -24,7 +24,7 @@ from moneybin.loaders.ofx_loader import OFXLoader
 # Fixtures
 # ---------------------------------------------------------------------------
 
-FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 
 @pytest.fixture()
