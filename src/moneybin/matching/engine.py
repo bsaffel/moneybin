@@ -107,10 +107,10 @@ class TransactionMatcher:
         self,
         *,
         tier: str,
-        candidates_fn: Callable[[set[str]], list[CandidatePair]],
-        excluded_ids: set[str],
+        candidates_fn: Callable[[set[tuple[str, str]]], list[CandidatePair]],
+        excluded_ids: set[tuple[str, str]],
         result: MatchResult,
-    ) -> set[str]:
+    ) -> set[tuple[str, str]]:
         """Run blocking -> scoring -> assignment -> persist for one tier."""
         candidates: list[CandidatePair] = candidates_fn(excluded_ids)
         DEDUP_PAIRS_SCORED.inc(len(candidates))
@@ -119,7 +119,7 @@ class TransactionMatcher:
             return set()
 
         assigned = assign_greedy(candidates)
-        newly_matched: set[str] = set()
+        newly_matched: set[tuple[str, str]] = set()
         tier_merged = 0
         tier_pending = 0
 
@@ -168,8 +168,8 @@ class TransactionMatcher:
                 ),
             )
 
-            newly_matched.add(pair.source_transaction_id_a)
-            newly_matched.add(pair.source_transaction_id_b)
+            newly_matched.add((pair.source_transaction_id_a, pair.account_id))
+            newly_matched.add((pair.source_transaction_id_b, pair.account_id))
 
         if tier_merged or tier_pending:
             logger.info(
@@ -178,19 +178,19 @@ class TransactionMatcher:
 
         return newly_matched
 
-    def _get_already_matched_ids(self) -> set[str]:
-        """Get source_transaction_ids in active or pending matches."""
+    def _get_already_matched_ids(self) -> set[tuple[str, str]]:
+        """Get (source_transaction_id, account_id) tuples in active or pending matches."""
         rows = self._db.execute(
             """
-            SELECT source_transaction_id_a, source_transaction_id_b
+            SELECT source_transaction_id_a, source_transaction_id_b, account_id
             FROM app.match_decisions
             WHERE match_status IN ('accepted', 'pending')
               AND reversed_at IS NULL
               AND match_type = 'dedup'
             """
         ).fetchall()
-        ids: set[str] = set()
+        ids: set[tuple[str, str]] = set()
         for row in rows:
-            ids.add(row[0])
-            ids.add(row[1])
+            ids.add((row[0], row[2]))
+            ids.add((row[1], row[2]))
         return ids

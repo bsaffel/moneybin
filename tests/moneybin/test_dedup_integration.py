@@ -205,7 +205,7 @@ class TestEndToEndDedup:
         seed_source_priority(db, settings)
         _create_test_unioned_view(db)
 
-        matcher = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result = matcher.run()
 
         assert result.auto_merged == 1, (
@@ -224,7 +224,7 @@ class TestEndToEndDedup:
         seed_source_priority(db, settings)
         _create_test_unioned_view(db)
 
-        matcher = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result = matcher.run()
 
         # Only the Starbucks pair should match; Subway stays separate
@@ -238,7 +238,7 @@ class TestEndToEndDedup:
         _create_test_unioned_view(db)
 
         # First run
-        matcher = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result1 = matcher.run()
         assert result1.auto_merged >= 1
 
@@ -247,7 +247,7 @@ class TestEndToEndDedup:
         undo_match(db, active[0]["match_id"], reversed_by="user")
 
         # Re-run: should re-propose
-        matcher2 = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher2 = TransactionMatcher(db, settings, table="main._test_unioned")
         result2 = matcher2.run()
         assert result2.auto_merged >= 1
 

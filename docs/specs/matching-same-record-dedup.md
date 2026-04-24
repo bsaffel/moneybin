@@ -277,7 +277,7 @@ Standard import commands gain matching output:
 |---|---|
 | `moneybin matches run` | Run matcher + SQLMesh without importing. For re-running after config changes or reviews. |
 | `moneybin matches review` | Interactive review of pending matches. `[a]ccept / [r]eject / [s]kip / [q]uit` |
-| `moneybin matches log` | Show recent match decisions (auto and user) |
+| `moneybin matches history` | Show recent match decisions (auto and user) |
 | `moneybin matches undo <match_id>` | Reverse a match decision. Sets `reversed_at`/`reversed_by`. |
 | `moneybin matches backfill` | One-time scan of all existing transactions for latent duplicates |
 

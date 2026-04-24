@@ -128,7 +128,7 @@ class TestGetCandidatesCrossSource:
             source_origin="chase_ofx",
         )
         candidates = get_candidates_cross_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 1
         assert candidates[0].source_transaction_id_a == "csv_abc"
@@ -158,7 +158,7 @@ class TestGetCandidatesCrossSource:
             source_origin="chase",
         )
         candidates = get_candidates_cross_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 0
 
@@ -184,7 +184,7 @@ class TestGetCandidatesCrossSource:
             source_origin="chase",
         )
         candidates = get_candidates_cross_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 0
 
@@ -210,7 +210,7 @@ class TestGetCandidatesCrossSource:
             source_origin="chase",
         )
         candidates = get_candidates_cross_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 0
 
@@ -236,7 +236,7 @@ class TestGetCandidatesCrossSource:
             source_origin="chase_ofx",
         )
         candidates = get_candidates_cross_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 0
 
@@ -263,9 +263,9 @@ class TestGetCandidatesCrossSource:
         )
         candidates = get_candidates_cross_source(
             unioned_table,
-            table="_test_unioned",
+            table="main._test_unioned",
             date_window_days=3,
-            excluded_ids={"csv_abc"},
+            excluded_ids={("csv_abc", "acct1")},
         )
         assert len(candidates) == 0
 
@@ -301,7 +301,7 @@ class TestGetCandidatesCrossSource:
         ]
         candidates = get_candidates_cross_source(
             unioned_table,
-            table="_test_unioned",
+            table="main._test_unioned",
             date_window_days=3,
             rejected_pairs=rejected,
         )
@@ -329,7 +329,7 @@ class TestGetCandidatesCrossSource:
             source_origin="chase_ofx",
         )
         candidates = get_candidates_cross_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 1
         pair = candidates[0]
@@ -363,7 +363,7 @@ class TestGetCandidatesCrossSource:
             source_origin="tiller",
         )
         candidates = get_candidates_cross_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 1
 
@@ -396,7 +396,7 @@ class TestGetCandidatesWithinSource:
             source_file="feb.csv",
         )
         candidates = get_candidates_within_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 1
 
@@ -423,7 +423,7 @@ class TestGetCandidatesWithinSource:
             source_origin="chase_ofx",
         )
         candidates = get_candidates_within_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 0
 
@@ -452,7 +452,7 @@ class TestGetCandidatesWithinSource:
             source_file="same.csv",
         )
         candidates = get_candidates_within_source(
-            unioned_table, table="_test_unioned", date_window_days=3
+            unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 0
 
@@ -490,7 +490,7 @@ class TestGetCandidatesWithinSource:
         ]
         candidates = get_candidates_within_source(
             unioned_table,
-            table="_test_unioned",
+            table="main._test_unioned",
             date_window_days=3,
             rejected_pairs=rejected,
         )

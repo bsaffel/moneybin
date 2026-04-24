@@ -52,18 +52,56 @@ def matches_run(
 
 
 @app.command("review")
-def matches_review() -> None:
-    """Interactive: accept/reject/skip/quit match proposals."""
+def matches_review(
+    accept_all: bool = typer.Option(
+        False, "--accept-all", help="Accept all pending matches without prompting"
+    ),
+    match_id: str | None = typer.Option(
+        None, "--match-id", help="Specific match ID to act on (use with --decision)"
+    ),
+    decision: str | None = typer.Option(
+        None,
+        "--decision",
+        help="accept or reject (use with --match-id)",
+    ),
+) -> None:
+    """Review pending match proposals. Interactive by default."""
     from moneybin.matching.persistence import get_pending_matches, update_match_status
+
+    if decision and not match_id:
+        logger.error("❌ --decision requires --match-id")
+        raise typer.Exit(2)
+
+    if match_id and decision and decision not in ("accept", "reject"):
+        logger.error("❌ --decision must be 'accept' or 'reject'")
+        raise typer.Exit(2)
 
     try:
         db = get_database()
+
+        # Non-interactive: single match decision
+        if match_id and decision:
+            status = "accepted" if decision == "accept" else "rejected"
+            update_match_status(db, match_id, status=status, decided_by="user")
+            logger.info(f"{status.capitalize()} {match_id[:8]}")
+            return
+
         pending = get_pending_matches(db)
 
         if not pending:
             logger.info("No pending matches to review")
             return
 
+        # Non-interactive: accept all
+        if accept_all:
+            for match in pending:
+                update_match_status(
+                    db, match["match_id"], status="accepted", decided_by="user"
+                )
+            logger.info(f"Accepted {len(pending)} pending match(es)")
+            return
+
+        # Interactive review
         logger.info(f"{len(pending)} match(es) to review\n")
         for match in pending:
             typer.echo(
@@ -103,8 +141,8 @@ def matches_review() -> None:
         raise typer.Exit(1) from e
 
 
-@app.command("log")
-def matches_log_cmd(
+@app.command("history")
+def matches_history_cmd(
     limit: int = typer.Option(20, "--limit", "-n", help="Max records to show"),
 ) -> None:
     """Show recent match decisions."""

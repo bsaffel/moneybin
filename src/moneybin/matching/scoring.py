@@ -58,7 +58,7 @@ def get_candidates_cross_source(
     *,
     table: str = "prep.int_transactions__unioned",
     date_window_days: int = 3,
-    excluded_ids: set[str] | None = None,
+    excluded_ids: set[tuple[str, str]] | None = None,
     rejected_pairs: list[dict[str, Any]] | None = None,
 ) -> list[CandidatePair]:
     """Find cross-source candidate pairs (Tier 3).
@@ -81,7 +81,7 @@ def get_candidates_within_source(
     *,
     table: str = "prep.int_transactions__unioned",
     date_window_days: int = 3,
-    excluded_ids: set[str] | None = None,
+    excluded_ids: set[tuple[str, str]] | None = None,
     rejected_pairs: list[dict[str, Any]] | None = None,
 ) -> list[CandidatePair]:
     """Find within-source candidate pairs (Tier 2b).
@@ -105,7 +105,7 @@ def _get_candidates(
     table: str,
     date_window_days: int,
     tier: str,
-    excluded_ids: set[str] | None,
+    excluded_ids: set[tuple[str, str]] | None,
     rejected_pairs: list[dict[str, Any]] | None,
 ) -> list[CandidatePair]:
     """Internal: run blocking + scoring query for a given tier."""
@@ -120,15 +120,15 @@ def _get_candidates(
             AND (a.source_type != b.source_type OR a.source_origin != b.source_origin)
         """
 
-    # Validate table name for non-defaults
-    if table != "prep.int_transactions__unioned":
-        from sqlglot import exp
+    # Always validate and quote table identifier
+    from sqlglot import exp
 
-        parts = table.split(".")
-        if len(parts) == 2:
-            safe_schema = exp.to_identifier(parts[0], quoted=True).sql("duckdb")
-            safe_table = exp.to_identifier(parts[1], quoted=True).sql("duckdb")
-            table = f"{safe_schema}.{safe_table}"
+    parts = table.split(".")
+    if len(parts) != 2:
+        raise ValueError(f"table must be schema.name, got: {table!r}")
+    safe_schema = exp.to_identifier(parts[0], quoted=True).sql("duckdb")
+    safe_table = exp.to_identifier(parts[1], quoted=True).sql("duckdb")
+    table = f"{safe_schema}.{safe_table}"
 
     query = f"""
         SELECT
@@ -193,7 +193,9 @@ def _get_candidates(
             desc_sim,
         ) = row
 
-        if excluded_ids and (stid_a in excluded_ids or stid_b in excluded_ids):
+        if excluded_ids and (
+            (stid_a, acct) in excluded_ids or (stid_b, acct) in excluded_ids
+        ):
             continue
 
         if (st_a, stid_a, st_b, stid_b, acct) in rejected_set:

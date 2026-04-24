@@ -97,6 +97,7 @@ def get_pending_matches(
         """
         SELECT * FROM app.match_decisions
         WHERE match_status = 'pending'
+          AND reversed_at IS NULL
           AND match_type = ?
         ORDER BY confidence_score DESC
         """,
@@ -121,11 +122,17 @@ def update_match_status(
 
 
 def undo_match(db: Database, match_id: str, *, reversed_by: str) -> None:
-    """Reverse a match decision. Sets reversed_at and reversed_by."""
+    """Reverse a match decision. Sets reversed_at, reversed_by, and match_status."""
+    row = db.execute(
+        "SELECT match_id FROM app.match_decisions WHERE match_id = ?",
+        [match_id],
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Match not found: {match_id}")
     db.execute(
         """
         UPDATE app.match_decisions
-        SET reversed_at = ?, reversed_by = ?
+        SET reversed_at = ?, reversed_by = ?, match_status = 'reversed'
         WHERE match_id = ?
         """,
         [datetime.now(tz=UTC).isoformat(), reversed_by, match_id],

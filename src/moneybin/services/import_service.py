@@ -690,7 +690,10 @@ def import_file(
 
     # Run matching and SQLMesh transforms after loading raw data
     if apply_transforms and file_type in ("ofx", "tabular"):
-        _run_matching(db)
+        try:
+            _run_matching(db)
+        except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
+            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
         result.core_tables_rebuilt = run_transforms(db.path)
 
         # Apply deterministic categorization to new transactions

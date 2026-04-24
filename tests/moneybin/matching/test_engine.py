@@ -91,7 +91,7 @@ class TestTransactionMatcher:
     def test_no_data_no_matches(self, db: Database) -> None:
         _create_test_table(db)
         settings = MatchingSettings()
-        matcher = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result = matcher.run()
         assert isinstance(result, MatchResult)
         assert result.auto_merged == 0
@@ -120,7 +120,7 @@ class TestTransactionMatcher:
             "chase_ofx",
         )
         settings = MatchingSettings()
-        matcher = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result = matcher.run()
         assert result.auto_merged == 1
         assert result.pending_review == 0
@@ -150,7 +150,7 @@ class TestTransactionMatcher:
         settings = MatchingSettings(
             high_confidence_threshold=0.95, review_threshold=0.50
         )
-        matcher = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result = matcher.run()
         # Same amount, date within window, but different descriptions + date offset
         assert (
@@ -173,7 +173,7 @@ class TestTransactionMatcher:
             "chase_ofx",
         )
         settings = MatchingSettings()
-        matcher = TransactionMatcher(db, settings, table="_test_unioned")
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
 
         # First run: auto-merge
         result1 = matcher.run()

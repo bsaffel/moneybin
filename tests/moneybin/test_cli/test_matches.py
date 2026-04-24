@@ -38,15 +38,15 @@ class TestMatchesRun:
         mock_matcher.run.assert_called_once()
 
 
-class TestMatchesLog:
-    """Tests for the matches log command."""
+class TestMatchesHistory:
+    """Tests for the matches history command."""
 
     @patch("moneybin.cli.commands.matches.get_database")
     @patch("moneybin.cli.commands.matches.get_match_log")
-    def test_log_empty(self, mock_log: MagicMock, mock_get_db: MagicMock) -> None:
+    def test_history_empty(self, mock_log: MagicMock, mock_get_db: MagicMock) -> None:
         mock_get_db.return_value = MagicMock()
         mock_log.return_value = []
-        result = runner.invoke(app, ["log"])
+        result = runner.invoke(app, ["history"])
         assert result.exit_code == 0
 
 
