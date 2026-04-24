@@ -141,12 +141,6 @@ class TestDBReadOnlyCommands:
         result = run_cli("db", "migrate", "status", env=e2e_profile)
         result.assert_success()
 
-    def test_db_migrate_apply(self, e2e_profile: dict[str, str]) -> None:
-        # Technically writes migration state, but idempotent on an already-
-        # migrated DB — safe to keep in the read-only tier.
-        result = run_cli("db", "migrate", "apply", env=e2e_profile)
-        result.assert_success()
-
     # ── transform ───────────────────────────────────────────────────────
 
     def test_transform_status(self, e2e_profile: dict[str, str]) -> None:

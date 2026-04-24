@@ -141,6 +141,11 @@ class TestDBOperations:
         result = run_cli("db", "rotate-key", "--yes", env=env)
         result.assert_success()
 
+    def test_db_migrate_apply(self, tmp_path: Path) -> None:
+        env = make_workflow_env(tmp_path, "migrateapply")
+        result = run_cli("db", "migrate", "apply", env=env)
+        result.assert_success()
+
     def test_db_kill_no_processes(self, tmp_path: Path) -> None:
         """Db kill with no matching processes exits cleanly."""
         env = make_workflow_env(tmp_path, "killtest")
