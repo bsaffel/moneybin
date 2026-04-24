@@ -206,6 +206,7 @@ import pytest
 # Result type
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class CLIResult:
     """Result from a CLI subprocess invocation."""
@@ -282,6 +283,7 @@ def run_cli(
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def e2e_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Temporary MONEYBIN_HOME — auto-removed after the test session."""
@@ -306,20 +308,19 @@ def e2e_profile(e2e_env: dict[str, str]) -> dict[str, str]:
 
     # Create profile
     result = run_cli("profile", "create", profile_name, env=env)
-    assert result.exit_code == 0, (
-        f"Failed to create profile: {result.stderr}"
-    )
+    assert result.exit_code == 0, f"Failed to create profile: {result.stderr}"
 
     # Initialize database with passphrase
     passphrase_input = f"{_TEST_PASSPHRASE}\n{_TEST_PASSPHRASE}\n"
     result = run_cli(
-        "db", "init", "--passphrase", "--yes",
+        "db",
+        "init",
+        "--passphrase",
+        "--yes",
         env=env,
         input_text=passphrase_input,
     )
-    assert result.exit_code == 0, (
-        f"Failed to init database: {result.stderr}"
-    )
+    assert result.exit_code == 0, f"Failed to init database: {result.stderr}"
 
     return env
 
@@ -342,7 +343,10 @@ def make_workflow_env(
 
     passphrase_input = f"{_TEST_PASSPHRASE}\n{_TEST_PASSPHRASE}\n"
     result = run_cli(
-        "db", "init", "--passphrase", "--yes",
+        "db",
+        "init",
+        "--passphrase",
+        "--yes",
         env=env,
         input_text=passphrase_input,
     )
@@ -399,7 +403,7 @@ pytestmark = pytest.mark.e2e
 # ---------------------------------------------------------------------------
 
 _HELP_COMMANDS: list[list[str]] = [
-    [],                         # moneybin --help
+    [],  # moneybin --help
     ["profile"],
     ["import"],
     ["sync"],
@@ -633,18 +637,23 @@ class TestSyntheticPipeline:
     """Workflow 1: profile create → db init → synthetic generate → transform → query."""
 
     def test_synthetic_generate_and_transform(
-        self, e2e_home: Path,
+        self,
+        e2e_home: Path,
     ) -> None:
         home = e2e_home
         env = make_workflow_env(home, "wf-synthetic")
 
         # Generate synthetic data (skip transform — we'll run it separately)
         result = run_cli(
-            "synthetic", "generate",
-            "--persona", "basic",
-            "--profile", "wf-synthetic",
+            "synthetic",
+            "generate",
+            "--persona",
+            "basic",
+            "--profile",
+            "wf-synthetic",
             "--skip-transform",
-            "--seed", "42",
+            "--seed",
+            "42",
             env=env,
             timeout=120,
         )
@@ -657,7 +666,8 @@ class TestSyntheticPipeline:
 
         # Verify core tables have data
         result = run_cli(
-            "db", "query",
+            "db",
+            "query",
             "SELECT COUNT(*) AS n FROM core.fct_transactions",
             env=env,
         )
@@ -677,8 +687,11 @@ class TestCSVImportPipeline:
 
         # Import CSV
         result = run_cli(
-            "import", "file", str(fixture),
-            "--account-id", "e2e-test-acct",
+            "import",
+            "file",
+            str(fixture),
+            "--account-id",
+            "e2e-test-acct",
             "--skip-transform",
             env=env,
         )
@@ -690,7 +703,8 @@ class TestCSVImportPipeline:
 
         # Verify core tables have data
         result = run_cli(
-            "db", "query",
+            "db",
+            "query",
             "SELECT COUNT(*) AS n FROM core.fct_transactions",
             env=env,
         )
@@ -708,7 +722,9 @@ class TestOFXImportPipeline:
 
         # Import OFX
         result = run_cli(
-            "import", "file", str(fixture),
+            "import",
+            "file",
+            str(fixture),
             "--skip-transform",
             env=env,
         )
@@ -720,7 +736,8 @@ class TestOFXImportPipeline:
 
         # Verify core tables have data
         result = run_cli(
-            "db", "query",
+            "db",
+            "query",
             "SELECT COUNT(*) AS n FROM core.fct_transactions",
             env=env,
         )
@@ -746,7 +763,8 @@ class TestLockUnlockCycle:
 
         # Unlock with passphrase
         result = run_cli(
-            "db", "unlock",
+            "db",
+            "unlock",
             env=env,
             input_text=f"{_TEST_PASSPHRASE}\n",
         )
@@ -768,8 +786,11 @@ class TestCategorizationPipeline:
 
         # Import
         result = run_cli(
-            "import", "file", str(fixture),
-            "--account-id", "e2e-cat-acct",
+            "import",
+            "file",
+            str(fixture),
+            "--account-id",
+            "e2e-cat-acct",
             "--skip-transform",
             env=env,
         )
