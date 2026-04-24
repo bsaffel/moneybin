@@ -96,7 +96,7 @@ class TestImportPipeline:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("moneybin.secrets.SecretStore", lambda: mock_store)
-            result = run_transforms(db_path)
+            result = run_transforms()
 
         assert result is True
 

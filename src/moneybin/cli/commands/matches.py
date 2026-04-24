@@ -42,7 +42,7 @@ def matches_run(
             from moneybin.services.import_service import run_transforms
 
             db.close()
-            run_transforms(get_settings().database.path)
+            run_transforms()
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
 
@@ -238,7 +238,7 @@ def matches_backfill(
             from moneybin.services.import_service import run_transforms
 
             db.close()
-            run_transforms(get_settings().database.path)
+            run_transforms()
 
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
