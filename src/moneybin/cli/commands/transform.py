@@ -8,7 +8,12 @@ import logging
 
 import typer
 
-from moneybin.database import DatabaseKeyError, database_key_error_hint, sqlmesh_context
+from moneybin.database import (
+    DatabaseKeyError,
+    database_key_error_hint,
+    get_database,
+    sqlmesh_context,
+)
 
 app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -28,6 +33,7 @@ def plan_transforms(
     logger.info("⚙️  Running SQLMesh plan...")
 
     try:
+        get_database()
         with sqlmesh_context() as ctx:
             ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
@@ -50,6 +56,7 @@ def apply_transforms() -> None:
     logger.info("⚙️  Applying SQLMesh transforms...")
 
     try:
+        get_database()
         with sqlmesh_context() as ctx:
             ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("✅ SQLMesh transforms applied")
@@ -67,6 +74,7 @@ def transform_status() -> None:
     """Show current model state and environment."""
     logger.info("⚙️  Checking SQLMesh status...")
     try:
+        get_database()
         with sqlmesh_context() as ctx:
             env = ctx.state_reader.get_environment("prod")
             if env:
@@ -89,6 +97,7 @@ def transform_validate() -> None:
     """Check that model SQL parses and resolves without errors."""
     logger.info("⚙️  Validating SQLMesh models...")
     try:
+        get_database()
         with sqlmesh_context() as ctx:
             ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
@@ -113,6 +122,7 @@ def transform_audit(
     """Run data quality assertions defined in SQLMesh models."""
     logger.info("⚙️  Running SQLMesh audits...")
     try:
+        get_database()
         with sqlmesh_context() as ctx:
             ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
@@ -145,6 +155,7 @@ def transform_restate(
             return
     logger.info(f"⚙️  Restating {model} from {start}...")
     try:
+        get_database()
         with sqlmesh_context() as ctx:
             ctx.plan(
                 restate_models=[model],

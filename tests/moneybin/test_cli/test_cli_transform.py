@@ -27,8 +27,11 @@ def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
 class TestTransformStatus:
     """Test transform status command."""
 
+    @patch("moneybin.cli.commands.transform.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_status_succeeds(self, mock_ctx_factory: MagicMock) -> None:
+    def test_status_succeeds(
+        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
+    ) -> None:
         """Transform status calls SQLMesh info."""
         ctx_fn, _mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
@@ -39,8 +42,11 @@ class TestTransformStatus:
 class TestTransformValidate:
     """Test transform validate command."""
 
+    @patch("moneybin.cli.commands.transform.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_validate_succeeds(self, mock_ctx_factory: MagicMock) -> None:
+    def test_validate_succeeds(
+        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
+    ) -> None:
         """Transform validate runs plan in dry-run mode."""
         ctx_fn, mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
@@ -52,8 +58,11 @@ class TestTransformValidate:
 class TestTransformAudit:
     """Test transform audit command."""
 
+    @patch("moneybin.cli.commands.transform.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_audit_succeeds(self, mock_ctx_factory: MagicMock) -> None:
+    def test_audit_succeeds(
+        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
+    ) -> None:
         """Transform audit runs SQLMesh audit."""
         ctx_fn, mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
@@ -67,8 +76,11 @@ class TestTransformAudit:
 class TestTransformRestate:
     """Test transform restate command."""
 
+    @patch("moneybin.cli.commands.transform.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_restate_requires_confirmation(self, mock_ctx_factory: MagicMock) -> None:
+    def test_restate_requires_confirmation(
+        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
+    ) -> None:
         """Transform restate prompts for confirmation."""
         ctx_fn, mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
@@ -80,8 +92,11 @@ class TestTransformRestate:
         assert result.exit_code == 0
         mock_ctx.plan.assert_not_called()
 
+    @patch("moneybin.cli.commands.transform.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_restate_with_yes(self, mock_ctx_factory: MagicMock) -> None:
+    def test_restate_with_yes(
+        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
+    ) -> None:
         """Transform restate --yes skips confirmation."""
         ctx_fn, _mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
