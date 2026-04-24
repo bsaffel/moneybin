@@ -78,9 +78,9 @@ These `.claude/rules/` files load only when editing matching files. If you need 
 | Rule | Covers | Loads for |
 |------|--------|-----------|
 | `security.md` | SQL injection, input validation, XSS, PII, exception wrapping | `src/moneybin/**/*.py`, `**/*.sql` |
-| `database.md` | DuckDB patterns, SQL conventions, schema, column comments | `**/*.sql`, `sqlmesh/**`, `database.py`, `schema.py`, `loaders/**` |
-| `mcp-server.md` | Tool taxonomy, response envelope, sensitivity tiers, services | `src/moneybin/mcp/**`, `services/**` |
-| `cli.md` | Typer patterns, error handling, command registration, icons | `src/moneybin/cli/**`, `main.py` |
-| `testing.md` | Pytest patterns, fixtures, mocking strategy, DB test helpers | `tests/**`, `**/conftest.py` |
-| `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources | `extractors/**`, `connectors/**`, `loaders/**` |
+| `database.md` | DuckDB patterns, SQL conventions, schema, column comments | `**/*.sql`, `sqlmesh/**`, `src/moneybin/sql/**`, `src/moneybin/database.py`, `src/moneybin/schema.py`, `src/moneybin/loaders/**` |
+| `mcp-server.md` | Tool taxonomy, response envelope, sensitivity tiers, services | `src/moneybin/mcp/**`, `src/moneybin/services/**` |
+| `cli.md` | Typer patterns, error handling, command registration, icons | `src/moneybin/cli/**`, `src/moneybin/main.py` |
+| `testing.md` | Pytest patterns, fixtures, mocking strategy, DB test helpers | `tests/**`, `**/conftest.py`, `src/moneybin/testing/**` |
+| `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources | `src/moneybin/extractors/**`, `src/moneybin/connectors/**`, `src/moneybin/loaders/**` |
 | `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs | `src/moneybin/**/*.py`, `sqlmesh/models/**` |
