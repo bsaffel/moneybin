@@ -167,3 +167,14 @@ class TestBudgetStatus:
         assert d["summary"]["period"] == "2026-04"
         assert isinstance(d["data"], list)
         assert len(d["actions"]) > 0
+
+
+class TestEmptyResults:
+    """Tests for service behavior with no budgets set."""
+
+    @pytest.mark.unit
+    def test_status_no_budgets(self, budget_db: Database) -> None:
+        service = BudgetService(budget_db)
+        result = service.status(month="2026-04")
+        assert isinstance(result, BudgetStatusResult)
+        assert result.categories == []

@@ -176,3 +176,37 @@ class TestRecurring:
         envelope = result.to_envelope()
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "medium"
+
+
+class TestEmptyResults:
+    """Tests for service behavior with no data in tables."""
+
+    @pytest.fixture()
+    def empty_db(self, tmp_path: Path) -> Generator[Database, None, None]:
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+        database = Database(
+            tmp_path / "test.duckdb",
+            secret_store=mock_store,
+            no_auto_upgrade=True,
+        )
+        create_core_tables_raw(database.conn)
+        db_module._database_instance = database  # type: ignore[attr-defined]
+        yield database
+        db_module._database_instance = None  # type: ignore[attr-defined]
+        database.close()
+
+    @pytest.mark.unit
+    def test_search_empty_db(self, empty_db: Database) -> None:
+        service = TransactionService(empty_db)
+        result = service.search()
+        assert isinstance(result, TransactionSearchResult)
+        assert result.total_count == 0
+        assert result.transactions == []
+
+    @pytest.mark.unit
+    def test_recurring_empty_db(self, empty_db: Database) -> None:
+        service = TransactionService(empty_db)
+        result = service.recurring()
+        assert isinstance(result, RecurringResult)
+        assert result.transactions == []

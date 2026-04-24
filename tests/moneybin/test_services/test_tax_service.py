@@ -133,3 +133,29 @@ class TestW2:
         assert "123-45-6789" not in json_str
         assert "98-7654321" not in json_str
         assert "11-2233445" not in json_str
+
+
+class TestEmptyResults:
+    """Tests for service behavior with no data in tables."""
+
+    @pytest.fixture()
+    def empty_db(self, tmp_path: Path) -> Generator[Database, None, None]:
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+        database = Database(
+            tmp_path / "test.duckdb",
+            secret_store=mock_store,
+            no_auto_upgrade=True,
+        )
+        create_core_tables_raw(database.conn)
+        db_module._database_instance = database  # type: ignore[attr-defined]
+        yield database
+        db_module._database_instance = None  # type: ignore[attr-defined]
+        database.close()
+
+    @pytest.mark.unit
+    def test_w2_empty_db(self, empty_db: Database) -> None:
+        service = TaxService(empty_db)
+        result = service.w2()
+        assert isinstance(result, W2Result)
+        assert result.forms == []

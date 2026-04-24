@@ -19,6 +19,21 @@ from tests.moneybin.db_helpers import create_core_tables_raw
 
 
 @pytest.fixture()
+def empty_db(tmp_path: Path) -> Generator[Database, None, None]:
+    """Yield a Database with tables created but no data."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+    database = Database(
+        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+    )
+    create_core_tables_raw(database.conn)
+    db_module._database_instance = database  # type: ignore[attr-defined]
+    yield database
+    db_module._database_instance = None  # type: ignore[attr-defined]
+    database.close()
+
+
+@pytest.fixture()
 def spending_db(tmp_path: Path) -> Generator[Database, None, None]:
     """Yield a Database with core + app tables and test transactions seeded."""
     mock_store = MagicMock()
@@ -104,9 +119,76 @@ class TestSpendingByCategory:
         assert len(result.categories) > 0
 
     @pytest.mark.unit
+    def test_period_label_set(self, spending_db: Database) -> None:
+        service = SpendingService(spending_db)
+        result = service.by_category(months=3)
+        assert result.period_label != ""
+
+    @pytest.mark.unit
     def test_to_envelope_structure(self, spending_db: Database) -> None:
         service = SpendingService(spending_db)
         result = service.by_category(months=3)
         envelope = result.to_envelope()
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "low"
+
+
+class TestMonthsValidation:
+    """Tests for months parameter validation."""
+
+    @pytest.mark.unit
+    def test_summary_rejects_zero_months(self, spending_db: Database) -> None:
+        service = SpendingService(spending_db)
+        with pytest.raises(ValueError, match="months must be between 1 and 120"):
+            service.summary(months=0)
+
+    @pytest.mark.unit
+    def test_summary_rejects_negative_months(self, spending_db: Database) -> None:
+        service = SpendingService(spending_db)
+        with pytest.raises(ValueError, match="months must be between 1 and 120"):
+            service.summary(months=-1)
+
+    @pytest.mark.unit
+    def test_summary_rejects_over_120_months(self, spending_db: Database) -> None:
+        service = SpendingService(spending_db)
+        with pytest.raises(ValueError, match="months must be between 1 and 120"):
+            service.summary(months=121)
+
+    @pytest.mark.unit
+    def test_summary_allows_valid_months(self, spending_db: Database) -> None:
+        service = SpendingService(spending_db)
+        result = service.summary(months=1)
+        assert isinstance(result, SpendingSummary)
+
+    @pytest.mark.unit
+    def test_by_category_rejects_zero_months(self, spending_db: Database) -> None:
+        service = SpendingService(spending_db)
+        with pytest.raises(ValueError, match="months must be between 1 and 120"):
+            service.by_category(months=0)
+
+    @pytest.mark.unit
+    def test_summary_skips_validation_with_start_date(
+        self, spending_db: Database
+    ) -> None:
+        """Months validation is skipped when start_date is provided."""
+        service = SpendingService(spending_db)
+        result = service.summary(months=0, start_date="2026-01-01")
+        assert isinstance(result, SpendingSummary)
+
+
+class TestEmptyResults:
+    """Tests for service behavior with no data in tables."""
+
+    @pytest.mark.unit
+    def test_summary_empty_db(self, empty_db: Database) -> None:
+        service = SpendingService(empty_db)
+        result = service.summary(months=3)
+        assert isinstance(result, SpendingSummary)
+        assert result.months == []
+
+    @pytest.mark.unit
+    def test_by_category_empty_db(self, empty_db: Database) -> None:
+        service = SpendingService(empty_db)
+        result = service.by_category(months=3)
+        assert isinstance(result, CategoryBreakdown)
+        assert result.categories == []

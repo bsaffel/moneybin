@@ -33,8 +33,9 @@ from moneybin.services.categorization_service import (
     create_merchant,
     get_active_categories,
     get_stats,
-    match_merchant,
-    normalize_description,
+)
+from moneybin.services.categorization_service import (
+    bulk_categorize as bulk_categorize_svc,
 )
 from moneybin.services.categorization_service import (
     seed_categories as seed_categories_svc,
@@ -304,90 +305,8 @@ def categorize_bulk(
             sensitivity="medium",
         )
 
-    db = get_database()
-    applied = 0
-    skipped = 0
-    errors = 0
-    error_details: list[dict[str, str]] = []
-
-    for item in items:
-        txn_id = item.get("transaction_id", "").strip()
-        category = item.get("category", "").strip()
-        if not txn_id or not category:
-            skipped += 1
-            error_details.append({
-                "transaction_id": txn_id or "(missing)",
-                "reason": "Missing transaction_id or category",
-            })
-            continue
-
-        subcategory = item.get("subcategory", "").strip() or None
-
-        try:
-            # Resolve merchant_id from description
-            merchant_id = None
-            try:
-                txn = db.execute(
-                    f"""
-                    SELECT description FROM {FCT_TRANSACTIONS.full_name}
-                    WHERE transaction_id = ?
-                    """,
-                    [txn_id],
-                ).fetchone()
-                if txn and txn[0]:
-                    existing = match_merchant(db, txn[0])
-                    if existing:
-                        merchant_id = existing["merchant_id"]
-                    else:
-                        normalized = normalize_description(txn[0])
-                        if normalized:
-                            merchant_id = create_merchant(
-                                db,
-                                normalized,
-                                normalized,
-                                match_type="contains",
-                                category=category,
-                                subcategory=subcategory,
-                                created_by="ai",
-                            )
-            except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
-                logger.debug(
-                    f"Could not resolve merchant for {txn_id}",
-                    exc_info=True,
-                )
-
-            db.execute(
-                f"""
-                INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory,
-                 categorized_at, categorized_by, merchant_id)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
-                """,
-                [txn_id, category, subcategory, merchant_id],
-            )
-            applied += 1
-        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
-            errors += 1
-            logger.exception(f"categorize_bulk failed for transaction {txn_id!r}")
-            error_details.append({
-                "transaction_id": txn_id,
-                "reason": "Failed to apply category — check logs for details.",
-            })
-
-    return build_envelope(
-        data={
-            "applied": applied,
-            "skipped": skipped,
-            "errors": errors,
-            "error_details": error_details,
-        },
-        sensitivity="medium",
-        total_count=len(items),
-        actions=[
-            "Use categorize.rules to review auto-created rules",
-            "Use categorize.uncategorized to fetch the next batch",
-        ],
-    )
+    result = bulk_categorize_svc(get_database(), items)
+    return result.to_envelope(len(items))
 
 
 @mcp_tool(sensitivity="low")
