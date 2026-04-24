@@ -412,7 +412,7 @@ class TestGetCandidatesTransfers:
             table="main._test_unioned",
             date_window_days=3,
             signal_weights=_DEFAULT_WEIGHTS,
-            excluded_ids={("csv_chk1", "checking")},
+            excluded_ids={("csv_chk1", "csv", "checking")},
         )
         assert len(candidates) == 0
 

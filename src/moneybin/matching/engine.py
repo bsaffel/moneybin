@@ -95,7 +95,7 @@ class TransactionMatcher:
         result = MatchResult()
         rejected = get_rejected_pairs(self._db)
 
-        already_matched = self._get_matched_ids("dedup")
+        already_matched = self._get_matched_ids()
 
         # Tier 2b: within-source overlap (high-confidence only)
         tier_2b_matched = self._run_tier(
@@ -132,7 +132,7 @@ class TransactionMatcher:
         # each dedup group. Without this, duplicate source rows (e.g., csv_chk1
         # and ofx_chk1 both deduped) can each form separate transfer proposals
         # that resolve to the same merged transaction pair in bridge_transfers.
-        transfer_excluded = self._get_matched_ids("transfer")
+        transfer_excluded = self._get_transfer_matched_ids()
         transfer_excluded |= self._get_dedup_secondary_ids()
         rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
 
@@ -219,62 +219,82 @@ class TransactionMatcher:
 
         return newly_matched
 
-    def _get_matched_ids(self, match_type: str) -> set[tuple[str, str]]:
-        """Get (source_transaction_id, account_id) tuples in active/pending matches."""
-        if match_type == "transfer":
-            rows = self._db.execute(
-                """
-                SELECT source_transaction_id_a, account_id,
-                       source_transaction_id_b, account_id_b
-                FROM app.match_decisions
-                WHERE match_status IN ('accepted', 'pending')
-                  AND reversed_at IS NULL
-                  AND match_type = 'transfer'
-                """
-            ).fetchall()
-            ids: set[tuple[str, str]] = set()
-            for row in rows:
-                ids.add((row[0], row[1]))
-                ids.add((row[2], row[3]))
-        else:
-            rows = self._db.execute(
-                """
-                SELECT source_transaction_id_a, source_transaction_id_b, account_id
-                FROM app.match_decisions
-                WHERE match_status IN ('accepted', 'pending')
-                  AND reversed_at IS NULL
-                  AND match_type = 'dedup'
-                """
-            ).fetchall()
-            ids = set()
-            for row in rows:
-                ids.add((row[0], row[2]))
-                ids.add((row[1], row[2]))
-        return ids
-
-    def _get_dedup_secondary_ids(self) -> set[tuple[str, str]]:
-        """Get (source_transaction_id, account_id) for non-primary dedup rows.
-
-        For each accepted/pending dedup match, side B is the lower-priority
-        source row. Excluding these from transfer matching prevents duplicate
-        transfer proposals when both sides of a dedup group appear as separate
-        transfer candidates.
-        """
+    def _get_matched_ids(self) -> set[tuple[str, str]]:
+        """Get (source_transaction_id, account_id) tuples in active/pending dedup matches."""
         rows = self._db.execute(
             """
-            SELECT source_transaction_id_b, account_id
+            SELECT source_transaction_id_a, source_transaction_id_b, account_id
             FROM app.match_decisions
             WHERE match_status IN ('accepted', 'pending')
               AND reversed_at IS NULL
               AND match_type = 'dedup'
             """
         ).fetchall()
-        return {(row[0], row[1]) for row in rows}
+        ids: set[tuple[str, str]] = set()
+        for row in rows:
+            ids.add((row[0], row[2]))
+            ids.add((row[1], row[2]))
+        return ids
+
+    def _get_transfer_matched_ids(self) -> set[tuple[str, str, str]]:
+        """Get (source_transaction_id, source_type, account_id) in active/pending transfers.
+
+        Includes source_type in the key to avoid false collisions when
+        account-scoped IDs repeat across different source types.
+        """
+        rows = self._db.execute(
+            """
+            SELECT source_transaction_id_a, source_type_a, account_id,
+                   source_transaction_id_b, source_type_b, account_id_b
+            FROM app.match_decisions
+            WHERE match_status IN ('accepted', 'pending')
+              AND reversed_at IS NULL
+              AND match_type = 'transfer'
+            """
+        ).fetchall()
+        ids: set[tuple[str, str, str]] = set()
+        for row in rows:
+            ids.add((row[0], row[1], row[2]))
+            ids.add((row[3], row[4], row[5]))
+        return ids
+
+    def _get_dedup_secondary_ids(self) -> set[tuple[str, str, str]]:
+        """Get (source_transaction_id, source_type, account_id) for non-primary dedup rows.
+
+        Uses source_priority to determine which side is lower-priority rather
+        than assuming side B. Dedup pair ordering is lexicographic, not
+        priority-based, so the secondary could be on either side.
+        """
+        rows = self._db.execute(
+            """
+            SELECT source_transaction_id_a, source_type_a,
+                   source_transaction_id_b, source_type_b,
+                   account_id
+            FROM app.match_decisions
+            WHERE match_status IN ('accepted', 'pending')
+              AND reversed_at IS NULL
+              AND match_type = 'dedup'
+            """
+        ).fetchall()
+        priority = self._settings.source_priority
+        max_pri = len(priority)
+        ids: set[tuple[str, str, str]] = set()
+        for row in rows:
+            stid_a, st_a, stid_b, st_b, acct = row
+            pri_a = priority.index(st_a) if st_a in priority else max_pri
+            pri_b = priority.index(st_b) if st_b in priority else max_pri
+            if pri_a <= pri_b:
+                # A has higher or equal priority; exclude B
+                ids.add((stid_b, st_b, acct))
+            else:
+                # B has higher priority; exclude A
+                ids.add((stid_a, st_a, acct))
+        return ids
 
     def _run_transfer_tier(
         self,
         *,
-        excluded_ids: set[tuple[str, str]],
+        excluded_ids: set[tuple[str, str, str]],
         rejected_pairs: list[dict[str, Any]],
         result: MatchResult,
     ) -> None:

@@ -156,7 +156,7 @@ def get_candidates_transfers(
     *,
     table: str = UNIONED_TABLE,
     date_window_days: int = 3,
-    excluded_ids: set[tuple[str, str]] | None = None,
+    excluded_ids: set[tuple[str, str, str]] | None = None,
     rejected_pairs: list[dict[str, Any]] | None = None,
     signal_weights: dict[str, float],
 ) -> list[TransferCandidatePair]:
@@ -226,7 +226,8 @@ def get_candidates_transfers(
         stid_b, st_b, so_b, acct_b, desc_b, _amount_b, date_dist = row[6:]
 
         if excluded_ids and (
-            (stid_a, acct_a) in excluded_ids or (stid_b, acct_b) in excluded_ids
+            (stid_a, st_a, acct_a) in excluded_ids
+            or (stid_b, st_b, acct_b) in excluded_ids
         ):
             continue
 

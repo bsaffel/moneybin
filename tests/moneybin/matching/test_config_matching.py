@@ -48,6 +48,17 @@ class TestTransferSettings:
                 transfer_signal_weights={"date_distance": 0.5, "keyword": 0.5}
             )
 
+    def test_transfer_signal_weights_negative(self) -> None:
+        with pytest.raises(ValidationError, match="negative values"):
+            MatchingSettings(
+                transfer_signal_weights={
+                    "date_distance": 1.2,
+                    "keyword": -0.2,
+                    "roundness": 0.0,
+                    "pair_frequency": 0.0,
+                }
+            )
+
     def test_transfer_signal_weights_bad_sum(self) -> None:
         with pytest.raises(ValidationError, match="must sum to 1.0"):
             MatchingSettings(
