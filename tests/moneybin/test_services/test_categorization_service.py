@@ -4,6 +4,7 @@ Covers merchant normalization, pattern matching, rule engine, merchant
 matching, prompt construction, and response parsing.
 """
 
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -487,7 +488,7 @@ class TestEnsureSeedTable:
         mock_ctx = mocker.MagicMock()
 
         @contextmanager
-        def mock_sqlmesh_ctx(**kwargs):  # noqa: ARG001 — absorb kwargs
+        def mock_sqlmesh_ctx(**kwargs: object) -> Generator[MagicMock, None, None]:  # noqa: ARG001 — absorb kwargs
             yield mock_ctx
 
         mocker.patch(

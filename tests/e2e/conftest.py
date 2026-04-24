@@ -52,7 +52,7 @@ _FAST_ARGON2_ENV = {
     "MONEYBIN_DATABASE__ARGON2_PARALLELISM": "1",
 }
 
-_TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105 — test-only passphrase, not a real secret
+TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105 — test-only passphrase, not a real secret
 
 
 def run_cli(
@@ -155,7 +155,7 @@ def make_workflow_env(
     # Skip init if DB already exists (idempotent across test re-runs)
     db_path = e2e_home / "profiles" / profile_name / "moneybin.duckdb"
     if not db_path.exists():
-        passphrase_input = f"{_TEST_PASSPHRASE}\n{_TEST_PASSPHRASE}\n"
+        passphrase_input = f"{TEST_PASSPHRASE}\n{TEST_PASSPHRASE}\n"
         result = run_cli(
             "db",
             "init",

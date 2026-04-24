@@ -118,7 +118,7 @@ class TestLockUnlockCycle:
     """Workflow 4: profile create → db init → query → lock → unlock → query."""
 
     def test_lock_unlock_preserves_access(self, e2e_home: Path) -> None:
-        from tests.e2e.conftest import _TEST_PASSPHRASE
+        from tests.e2e.conftest import TEST_PASSPHRASE
 
         env = make_workflow_env(e2e_home, "wf-lock")
 
@@ -135,7 +135,7 @@ class TestLockUnlockCycle:
             "db",
             "unlock",
             env=env,
-            input_text=f"{_TEST_PASSPHRASE}\n",
+            input_text=f"{TEST_PASSPHRASE}\n",
         )
         result.assert_success()
 

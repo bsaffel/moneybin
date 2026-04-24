@@ -1,6 +1,8 @@
 """Tests for transform CLI commands."""
 
+from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -10,13 +12,13 @@ from moneybin.cli.commands.transform import app
 runner = CliRunner()
 
 
-def _mock_sqlmesh_context():
+def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
     """Create a mock sqlmesh_context that yields a MagicMock context."""
     mock_ctx = MagicMock()
     mock_ctx.state_reader.get_environment.return_value = None
 
     @contextmanager
-    def _ctx(**kwargs):  # noqa: ARG001 — absorb sqlmesh_root kwarg
+    def _ctx(**kwargs: Any) -> Generator[MagicMock, None, None]:  # noqa: ARG001 — absorb sqlmesh_root kwarg
         yield mock_ctx
 
     return _ctx, mock_ctx
@@ -28,7 +30,7 @@ class TestTransformStatus:
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_status_succeeds(self, mock_ctx_factory: MagicMock) -> None:
         """Transform status calls SQLMesh info."""
-        ctx_fn, mock_ctx = _mock_sqlmesh_context()
+        ctx_fn, _mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
@@ -81,7 +83,7 @@ class TestTransformRestate:
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_restate_with_yes(self, mock_ctx_factory: MagicMock) -> None:
         """Transform restate --yes skips confirmation."""
-        ctx_fn, mock_ctx = _mock_sqlmesh_context()
+        ctx_fn, _mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
         result = runner.invoke(
             app,
