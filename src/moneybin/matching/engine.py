@@ -350,7 +350,7 @@ class TransactionMatcher:
                 decided_by="auto",
                 match_reason=(
                     f"Transfer: {pair.account_id_a[:8]} -> {pair.account_id_b[:8]}, "
-                    f"${pair.amount}, {pair.date_distance_days}d apart"
+                    f"{pair.date_distance_days}d apart"
                 ),
             )
 

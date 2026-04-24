@@ -214,7 +214,7 @@ class TestEndToEndDedup:
             f"Expected 1 auto-merge, got {result.auto_merged}"
         )
 
-        active = get_active_matches(db)
+        active = get_active_matches(db, match_type="dedup")
         assert len(active) == 1
         assert active[0]["source_type_a"] in ("csv", "ofx")
         assert active[0]["source_type_b"] in ("csv", "ofx")
@@ -245,7 +245,7 @@ class TestEndToEndDedup:
         assert result1.auto_merged >= 1
 
         # Undo (but don't reject)
-        active = get_active_matches(db)
+        active = get_active_matches(db, match_type="dedup")
         undo_match(db, active[0]["match_id"], reversed_by="user")
 
         # Re-run: should re-propose

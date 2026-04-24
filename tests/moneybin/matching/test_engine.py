@@ -190,7 +190,7 @@ class TestTransactionMatcher:
             update_match_status,
         )
 
-        matches = get_active_matches(db)
+        matches = get_active_matches(db, match_type="dedup")
         undo_match(db, matches[0]["match_id"], reversed_by="user")
         update_match_status(
             db, matches[0]["match_id"], status="rejected", decided_by="user"

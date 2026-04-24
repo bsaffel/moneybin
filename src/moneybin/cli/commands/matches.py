@@ -134,6 +134,17 @@ def matches_review(
 
         # Non-interactive: single match decision
         if match_id and decision:
+            if match_type:
+                row = db.execute(
+                    "SELECT match_type FROM app.match_decisions WHERE match_id = ?",
+                    [match_id],
+                ).fetchone()
+                if row and row[0] != match_type:
+                    logger.error(
+                        f"❌ Match {match_id[:8]} is type '{row[0]}', "
+                        f"not '{match_type}'"
+                    )
+                    raise typer.Exit(2)
             status = "accepted" if decision == "accept" else "rejected"
             update_match_status(db, match_id, status=status, decided_by="user")
             logger.info(f"{status.capitalize()} {match_id[:8]}")
