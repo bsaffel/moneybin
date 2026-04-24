@@ -130,9 +130,9 @@ def run_transforms() -> bool:
     """Run SQLMesh transforms to rebuild core tables.
 
     Uses ``sqlmesh_context()`` to handle encrypted DB injection into
-    SQLMesh's adapter cache.  Safe to call with or without an open
-    database connection — ``sqlmesh_context()`` reuses the singleton
-    when available.
+    SQLMesh's adapter cache.  Requires an active Database singleton
+    (via ``get_database()``) — ``sqlmesh_context()`` reuses its
+    connection.
 
     Returns:
         True if transforms ran successfully.

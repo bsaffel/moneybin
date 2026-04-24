@@ -48,7 +48,6 @@ def matches_run(
         if not skip_transform and result.auto_merged:
             from moneybin.services.import_service import run_transforms
 
-            db.close()
             run_transforms()
     except DatabaseKeyError as e:
         from moneybin.database import database_key_error_hint
@@ -210,7 +209,6 @@ def matches_review(
         if accepted_any and not skip_transform:
             from moneybin.services.import_service import run_transforms
 
-            db.close()
             run_transforms()
 
     except DatabaseKeyError as e:
@@ -327,7 +325,6 @@ def matches_backfill(
         if not skip_transform and result.auto_merged:
             from moneybin.services.import_service import run_transforms
 
-            db.close()
             run_transforms()
 
     except DatabaseKeyError as e:

@@ -323,8 +323,8 @@ def ensure_default_profile() -> str:
         encryption_key = secrets_mod.token_hex(32)
         store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
 
-        db = Database(db_path, secret_store=store)
-        db.close()
+        with Database(db_path, secret_store=store):
+            pass
 
         typer.echo(f"    Encrypted database initialized: {db_path}\n")
     except Exception:  # noqa: BLE001 — best-effort; don't block first-run if keychain or disk fails

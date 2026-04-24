@@ -85,19 +85,16 @@ class TestImportPipeline:
         assert raw_count is not None
         assert raw_count[0] == 3
 
-        # Close DB before SQLMesh (it manages its own connection)
-        db_path = encrypted_db.path
-        encrypted_db.close()
-
         # Run SQLMesh transforms against the encrypted database.
         # This is the exact code path that was broken before the fix —
         # SQLMesh needs the encryption key passed via adapter cache.
+        # sqlmesh_context() reuses the singleton's open connection.
+        db_path = encrypted_db.path
         from moneybin.services.import_service import run_transforms
 
         with pytest.MonkeyPatch.context() as mp:
-            # Patch SecretStore in both modules that import it
-            mp.setattr("moneybin.secrets.SecretStore", lambda: mock_store)
-            mp.setattr("moneybin.database.SecretStore", lambda: mock_store)
+            # Set the singleton so sqlmesh_context() can reuse the connection
+            mp.setattr("moneybin.database._database_instance", encrypted_db)
             # Point get_settings().database.path at the test database
             mock_settings = MagicMock()
             mock_settings.database.path = db_path
@@ -106,31 +103,27 @@ class TestImportPipeline:
 
         assert result is True
 
-        # Reopen and verify core tables have data
-        db2 = Database(db_path, secret_store=mock_store)
-        try:
-            core_txns = db2.execute(
-                "SELECT COUNT(*) FROM core.fct_transactions"
-            ).fetchone()
-            assert core_txns is not None
-            assert core_txns[0] >= 3  # at least the 3 OFX transactions
+        # Verify core tables have data
+        core_txns = encrypted_db.execute(
+            "SELECT COUNT(*) FROM core.fct_transactions"
+        ).fetchone()
+        assert core_txns is not None
+        assert core_txns[0] >= 3  # at least the 3 OFX transactions
 
-            core_accts = db2.execute(
-                "SELECT COUNT(*) FROM core.dim_accounts"
-            ).fetchone()
-            assert core_accts is not None
-            assert core_accts[0] >= 1
+        core_accts = encrypted_db.execute(
+            "SELECT COUNT(*) FROM core.dim_accounts"
+        ).fetchone()
+        assert core_accts is not None
+        assert core_accts[0] >= 1
 
-            # Verify data fidelity — amounts survived the pipeline
-            amounts = db2.execute(
-                "SELECT amount FROM core.fct_transactions ORDER BY amount"
-            ).fetchall()
-            amount_values = [float(r[0]) for r in amounts]
-            assert -100.50 in amount_values
-            assert -50.00 in amount_values
-            assert 1000.00 in amount_values
-        finally:
-            db2.close()
+        # Verify data fidelity — amounts survived the pipeline
+        amounts = encrypted_db.execute(
+            "SELECT amount FROM core.fct_transactions ORDER BY amount"
+        ).fetchall()
+        amount_values = [float(r[0]) for r in amounts]
+        assert -100.50 in amount_values
+        assert -50.00 in amount_values
+        assert 1000.00 in amount_values
 
 
 # ---------------------------------------------------------------------------

@@ -61,7 +61,6 @@ class TestMatchesReview:
         mock_update.assert_called_once_with(
             mock_get_db.return_value, "abc123", status="accepted", decided_by="user"
         )
-        mock_get_db.return_value.close.assert_called_once()
         mock_run_transforms.assert_called_once_with()
 
     @patch("moneybin.services.import_service.run_transforms")
@@ -107,7 +106,6 @@ class TestMatchesReview:
 
         assert result.exit_code == 0
         assert mock_update.call_count == 2
-        mock_get_db.return_value.close.assert_called_once()
         mock_run_transforms.assert_called_once_with()
 
     @patch("moneybin.services.import_service.run_transforms")
@@ -166,7 +164,6 @@ class TestMatchesReview:
         mock_update.assert_called_once_with(
             mock_get_db.return_value, "abc123", status="accepted", decided_by="user"
         )
-        mock_get_db.return_value.close.assert_called_once()
         mock_run_transforms.assert_called_once_with()
 
 

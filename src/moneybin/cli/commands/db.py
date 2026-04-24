@@ -166,8 +166,8 @@ def init_db(
     # Create the database using the Database class
     from moneybin.database import Database
 
-    db = Database(db_path, secret_store=store)
-    db.close()
+    with Database(db_path, secret_store=store):
+        pass
 
     logger.info(f"✅ Encrypted database created: {db_path}")
 
@@ -360,8 +360,7 @@ def db_info(
 
     # Open database to get table info
     try:
-        db = Database(db_path, secret_store=store)
-        try:
+        with Database(db_path, secret_store=store) as db:
             tables = db.execute("""
                 SELECT table_schema, table_name
                 FROM information_schema.tables
@@ -386,8 +385,6 @@ def db_info(
             version = db.sql("SELECT version()").fetchone()
             if version:
                 logger.info(f"  DuckDB version: {version[0]}")
-        finally:
-            db.close()
     except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on connection/encryption failure
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
@@ -516,8 +513,8 @@ def db_restore(
 
     store = SecretStore()
     try:
-        db = Database(db_path, secret_store=store)
-        db.close()
+        with Database(db_path, secret_store=store):
+            pass
         logger.info(f"✅ Database restored from {selected_path.name}")
     except DatabaseKeyError:
         logger.warning(
@@ -599,8 +596,8 @@ def db_unlock() -> None:
         logger.info("💡 Run 'moneybin db init --passphrase' to create a new database.")
         raise typer.Exit(1)
     try:
-        db = Database(settings.database.path, secret_store=store)
-        db.close()
+        with Database(settings.database.path, secret_store=store):
+            pass
         logger.info("✅ Database unlocked")
     except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
         try:

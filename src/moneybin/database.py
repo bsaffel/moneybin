@@ -443,6 +443,12 @@ class Database:
         """
         return self.conn.sql(query)
 
+    def __enter__(self) -> "Database":  # noqa: D105
+        return self
+
+    def __exit__(self, *_: object) -> None:  # noqa: D105
+        self.close()
+
     def close(self) -> None:
         """Close the database connection and release resources."""
         if self._conn is not None:
@@ -524,8 +530,14 @@ def sqlmesh_context(
     SQLMesh's internal adapter cache. SQLMesh then reuses our encrypted
     connection instead of opening its own unencrypted one.
 
+    Requires the Database singleton to be initialized via
+    ``get_database()`` before calling.  Callers should NOT close the
+    database before invoking this — ``sqlmesh_context()`` borrows the
+    singleton's connection.
+
     Usage::
 
+        db = get_database()          # ensure singleton is open
         with sqlmesh_context() as ctx:
             ctx.plan(auto_apply=True, no_prompts=True)
 
@@ -537,7 +549,7 @@ def sqlmesh_context(
         A ``sqlmesh.Context`` connected to the encrypted database.
 
     Raises:
-        DatabaseKeyError: If the encryption key cannot be retrieved.
+        DatabaseKeyError: If the Database singleton is not initialized.
     """
     from sqlmesh.core.config import Config, GatewayConfig
     from sqlmesh.core.config.connection import (
@@ -553,34 +565,18 @@ def sqlmesh_context(
     root = sqlmesh_root or _SQLMESH_ROOT
     db_path = get_settings().database.path
 
+    # Reuse the singleton's connection — DuckDB only allows one
+    # connection per file.  Callers must call get_database() first.
     # httpfs is NOT loaded — no SQLMesh models use remote file access.
     # If a future model needs read_parquet over HTTP or s3://, add
-    # conn.execute("INSTALL httpfs; LOAD httpfs;") here.
-    #
-    # DuckDB only allows one connection per file — reuse the singleton's
-    # connection to avoid "Unique file handle conflict" errors.
-    owns_conn = False
-    if _database_instance is not None and _database_instance._conn is not None:  # type: ignore[reportPrivateUsage]  # sqlmesh_context must reuse the singleton's connection to avoid DuckDB file handle conflicts
-        conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
-    else:
-        store = SecretStore()
-        try:
-            encryption_key = store.get_key(_KEY_NAME)
-        except SecretNotFoundError as e:
-            raise DatabaseKeyError(
-                f"Cannot open database — encryption key not found. "
-                f"Run 'moneybin db init' to create a new database, or set "
-                f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
-            ) from e
-
-        conn = duckdb.connect()
-        owns_conn = True
-        try:
-            conn.execute(build_attach_sql(db_path, encryption_key))
-            conn.execute(f"USE {_DATABASE_ALIAS}")
-        except Exception:
-            conn.close()
-            raise
+    # conn.execute("INSTALL httpfs; LOAD httpfs;") to Database.__init__.
+    if _database_instance is None or _database_instance._conn is None:  # type: ignore[reportPrivateUsage]  # must check singleton's connection state
+        raise DatabaseKeyError(
+            "Database not initialized — call get_database() before "
+            "sqlmesh_context(). If the database was explicitly closed, "
+            "re-open it first."
+        )
+    conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
 
     cache_key = str(db_path)
     try:
@@ -607,5 +603,3 @@ def sqlmesh_context(
         yield ctx
     finally:
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
-        if owns_conn:
-            conn.close()

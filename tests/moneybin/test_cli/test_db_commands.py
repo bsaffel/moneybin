@@ -479,7 +479,7 @@ class TestDbInitCommand:
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
         """Auto-key mode generates a key, stores it, and creates the database."""
-        mock_store, mock_db = self._mock_deps(mocker, tmp_path)
+        mock_store, _mock_db = self._mock_deps(mocker, tmp_path)
 
         result = runner.invoke(app, ["init", "--yes"])
 
@@ -488,7 +488,6 @@ class TestDbInitCommand:
         key_name, key_value = mock_store.set_key.call_args[0]
         assert key_name == "DATABASE__ENCRYPTION_KEY"
         assert len(key_value) == 64  # 32 bytes → 64 hex chars
-        mock_db.close.assert_called_once()
 
     def test_init_passphrase_mismatch_exits_1(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -506,7 +505,7 @@ class TestDbInitCommand:
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
         """Passphrase mode derives a key via Argon2id and stores key + salt."""
-        mock_store, mock_db = self._mock_deps(mocker, tmp_path)
+        mock_store, _mock_db = self._mock_deps(mocker, tmp_path)
         fake_raw_key = b"\xde\xad\xbe\xef" * 8  # 32 bytes
         mocker.patch("argon2.low_level.hash_secret_raw", return_value=fake_raw_key)
 
@@ -519,7 +518,6 @@ class TestDbInitCommand:
         key_calls = {c[0][0]: c[0][1] for c in mock_store.set_key.call_args_list}
         assert key_calls["DATABASE__ENCRYPTION_KEY"] == fake_raw_key.hex()
         assert "DATABASE__PASSPHRASE_SALT" in key_calls
-        mock_db.close.assert_called_once()
 
     def test_init_existing_db_prompt_declined_exits_0(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -527,13 +525,12 @@ class TestDbInitCommand:
         """Declining the overwrite prompt exits 0 without creating the database."""
         db_path = tmp_path / "moneybin.duckdb"
         db_path.touch()
-        mock_store, mock_db = self._mock_deps(mocker, tmp_path)
+        mock_store, _mock_db = self._mock_deps(mocker, tmp_path)
 
         result = runner.invoke(app, ["init"], input="n\n")
 
         assert result.exit_code == 0
         mock_store.set_key.assert_not_called()
-        mock_db.close.assert_not_called()
 
     def test_init_yes_flag_skips_overwrite_prompt(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -633,7 +630,6 @@ class TestDbUnlockCommand:
         mock_store.set_key.assert_called_once_with(
             "DATABASE__ENCRYPTION_KEY", (b"\xaa" * 32).hex()
         )
-        mock_db.close.assert_called_once()
 
 
 class TestDbRotateKeyCommand:
@@ -850,6 +846,7 @@ class TestDbInfoCommand:
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
 
         mock_db = MagicMock()
+        mock_db.__enter__ = lambda self: self  # type: ignore[assignment]
         mock_db.execute.return_value.fetchall.return_value = [
             ("core", "fct_transactions")
         ]
