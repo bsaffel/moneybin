@@ -8,6 +8,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
@@ -22,11 +23,17 @@ from moneybin.matching.scoring import (
     get_candidates_cross_source,
     get_candidates_within_source,
 )
+from moneybin.matching.transfer import (
+    get_candidates_transfers,
+)
 from moneybin.metrics.registry import (
     DEDUP_MATCH_CONFIDENCE,
     DEDUP_MATCHES_TOTAL,
     DEDUP_PAIRS_SCORED,
     DEDUP_REVIEW_PENDING,
+    TRANSFER_MATCH_CONFIDENCE,
+    TRANSFER_MATCHES_PROPOSED,
+    TRANSFER_PAIRS_SCORED,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +45,7 @@ class MatchResult:
 
     auto_merged: int = 0
     pending_review: int = 0
+    pending_transfers: int = 0
 
     def summary(self) -> str:
         """Return a human-readable summary of the matching run."""
@@ -46,6 +54,8 @@ class MatchResult:
             parts.append(f"{self.auto_merged} auto-merged")
         if self.pending_review:
             parts.append(f"{self.pending_review} pending review")
+        if self.pending_transfers:
+            parts.append(f"{self.pending_transfers} potential transfers")
         if not parts:
             return "No new matches found"
         return ", ".join(parts)
@@ -99,6 +109,16 @@ class TransactionMatcher:
                 rejected_pairs=rejected,
             ),
             excluded_ids=already_matched,
+            result=result,
+        )
+
+        # Tier 4: transfer detection (runs after dedup)
+        already_matched.update(self._get_transfer_matched_ids())
+        rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
+
+        self._run_transfer_tier(
+            excluded_ids=already_matched,
+            rejected_pairs=rejected_transfer,
             result=result,
         )
 
@@ -195,3 +215,91 @@ class TransactionMatcher:
             ids.add((row[0], row[2]))
             ids.add((row[1], row[2]))
         return ids
+
+    def _get_transfer_matched_ids(self) -> set[tuple[str, str]]:
+        """Get (source_transaction_id, account_id) tuples in active/pending transfer matches."""
+        rows = self._db.execute(
+            """
+            SELECT source_transaction_id_a, account_id,
+                   source_transaction_id_b, account_id_b
+            FROM app.match_decisions
+            WHERE match_status IN ('accepted', 'pending')
+              AND reversed_at IS NULL
+              AND match_type = 'transfer'
+            """
+        ).fetchall()
+        ids: set[tuple[str, str]] = set()
+        for row in rows:
+            ids.add((row[0], row[1]))
+            ids.add((row[2], row[3]))
+        return ids
+
+    def _run_transfer_tier(
+        self,
+        *,
+        excluded_ids: set[tuple[str, str]],
+        rejected_pairs: list[dict[str, Any]],
+        result: MatchResult,
+    ) -> None:
+        """Run transfer detection (Tier 4): blocking -> scoring -> assignment -> persist."""
+        candidates = get_candidates_transfers(
+            self._db,
+            table=self._table,
+            date_window_days=self._settings.date_window_days,
+            excluded_ids=excluded_ids,
+            rejected_pairs=rejected_pairs,
+            signal_weights=self._settings.transfer_signal_weights,
+        )
+        TRANSFER_PAIRS_SCORED.inc(len(candidates))
+
+        if not candidates:
+            return
+
+        assigned = assign_greedy(candidates)
+        tier_pending = 0
+
+        for pair in assigned:
+            TRANSFER_MATCH_CONFIDENCE.observe(pair.confidence_score)
+
+            if pair.confidence_score < self._settings.transfer_review_threshold:
+                logger.debug(
+                    f"Transfer below threshold ({pair.confidence_score:.2f}): "
+                    f"{pair.account_id_a[:8]} -> {pair.account_id_b[:8]}"
+                )
+                continue
+
+            match_id = uuid.uuid4().hex[:12]
+            create_match_decision(
+                self._db,
+                match_id=match_id,
+                source_transaction_id_a=pair.source_transaction_id_a,
+                source_type_a=pair.source_type_a,
+                source_origin_a=pair.source_origin_a,
+                source_transaction_id_b=pair.source_transaction_id_b,
+                source_type_b=pair.source_type_b,
+                source_origin_b=pair.source_origin_b,
+                account_id=pair.account_id_a,
+                account_id_b=pair.account_id_b,
+                confidence_score=pair.confidence_score,
+                match_signals={
+                    "date_distance": round(pair.date_distance_score, 4),
+                    "keyword": round(pair.keyword_score, 4),
+                    "roundness": round(pair.amount_roundness_score, 4),
+                    "pair_frequency": round(pair.pair_frequency_score, 4),
+                },
+                match_type="transfer",
+                match_tier=None,
+                match_status="pending",
+                decided_by="auto",
+                match_reason=(
+                    f"Transfer: {pair.account_id_a[:8]} -> {pair.account_id_b[:8]}, "
+                    f"${pair.amount}, {pair.date_distance_days}d apart"
+                ),
+            )
+
+            result.pending_transfers += 1
+            tier_pending += 1
+            TRANSFER_MATCHES_PROPOSED.inc()
+
+        if tier_pending:
+            logger.info(f"Tier 4: {tier_pending} potential transfers found")
