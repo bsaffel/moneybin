@@ -302,6 +302,21 @@ class MatchingSettings(BaseModel):
         ],
         description="Source types in priority order (first = highest priority)",
     )
+    transfer_review_threshold: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description="Review queue threshold for transfer pairs",
+    )
+    transfer_signal_weights: dict[str, float] = Field(
+        default={
+            "date_distance": 0.4,
+            "keyword": 0.3,
+            "roundness": 0.15,
+            "pair_frequency": 0.15,
+        },
+        description="Per-signal weights for transfer confidence scoring",
+    )
 
     @field_validator("source_priority")
     @classmethod
