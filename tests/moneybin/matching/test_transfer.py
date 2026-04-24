@@ -78,7 +78,7 @@ class TestComputePairFrequency:
     def test_infrequent_pair(self) -> None:
         counts = {("acct1", "acct2"): 5, ("acct1", "acct3"): 2}
         score = compute_pair_frequency("acct1", "acct3", counts, max_count=5)
-        assert score == pytest.approx(0.4)
+        assert score == pytest.approx(0.4)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
 
     def test_order_independent(self) -> None:
         counts = {("acct1", "acct2"): 3}
@@ -103,7 +103,7 @@ class TestComputeTransferConfidence:
             amount_roundness=1.0,
             pair_frequency=1.0,
         )
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(1.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
 
     def test_zero_signals(self) -> None:
         score = compute_transfer_confidence(
@@ -113,7 +113,7 @@ class TestComputeTransferConfidence:
             amount_roundness=0.0,
             pair_frequency=0.0,
         )
-        assert score == pytest.approx(0.0)
+        assert score == pytest.approx(0.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
 
     def test_date_distance_impact(self) -> None:
         same_day = compute_transfer_confidence(
@@ -147,7 +147,7 @@ class TestComputeTransferConfidence:
             pair_frequency=1.0,
             weights=weights,
         )
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(1.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
 
     def test_score_between_zero_and_one(self) -> None:
         for days in range(4):

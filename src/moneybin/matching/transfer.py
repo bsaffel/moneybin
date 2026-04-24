@@ -126,7 +126,8 @@ def compute_pair_frequency(
     max_count: int,
 ) -> float:
     """Score based on how often this account pair appears in the batch."""
-    key = tuple(sorted([account_id_a, account_id_b]))
+    sorted_ids = sorted([account_id_a, account_id_b])
+    key: tuple[str, str] = (sorted_ids[0], sorted_ids[1])
     count = pair_counts.get(key, 0)
     return min(1.0, count / max(max_count, 1))
 
@@ -237,7 +238,7 @@ def get_candidates_transfers(
             so_b,
             acct_b,
             desc_b,
-            amount_b,
+            _amount_b,
             date_dist,
         ) = row
 
@@ -250,7 +251,8 @@ def get_candidates_transfers(
             continue
 
         raw_pairs.append(row)
-        freq_key = tuple(sorted([acct_a, acct_b]))
+        sorted_accts = sorted([acct_a, acct_b])
+        freq_key: tuple[str, str] = (sorted_accts[0], sorted_accts[1])
         pair_counts[freq_key] = pair_counts.get(freq_key, 0) + 1
 
     max_count = max(pair_counts.values()) if pair_counts else 1
@@ -269,7 +271,7 @@ def get_candidates_transfers(
             so_b,
             acct_b,
             desc_b,
-            amount_b,
+            _amount_b,
             date_dist,
         ) = row
 
