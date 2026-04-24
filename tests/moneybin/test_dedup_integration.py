@@ -177,7 +177,8 @@ def _create_test_unioned_view(db: Database) -> None:
             TRIM(payee) AS description,
             'ofx' AS source_type,
             COALESCE(a.institution_org, 'ofx_unknown') AS source_origin,
-            t.source_file
+            t.source_file,
+            'USD' AS currency_code
         FROM raw.ofx_transactions t
         LEFT JOIN raw.ofx_accounts a ON t.account_id = a.account_id
         UNION ALL
@@ -189,7 +190,8 @@ def _create_test_unioned_view(db: Database) -> None:
             description,
             source_type,
             source_origin,
-            source_file
+            source_file,
+            'USD' AS currency_code
         FROM raw.tabular_transactions
     """)  # noqa: S608  # test input, not executing SQL
 
@@ -212,7 +214,7 @@ class TestEndToEndDedup:
             f"Expected 1 auto-merge, got {result.auto_merged}"
         )
 
-        active = get_active_matches(db)
+        active = get_active_matches(db, match_type="dedup")
         assert len(active) == 1
         assert active[0]["source_type_a"] in ("csv", "ofx")
         assert active[0]["source_type_b"] in ("csv", "ofx")
@@ -243,7 +245,7 @@ class TestEndToEndDedup:
         assert result1.auto_merged >= 1
 
         # Undo (but don't reject)
-        active = get_active_matches(db)
+        active = get_active_matches(db, match_type="dedup")
         undo_match(db, active[0]["match_id"], reversed_by="user")
 
         # Re-run: should re-propose

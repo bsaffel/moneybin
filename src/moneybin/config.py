@@ -5,6 +5,7 @@ that consolidates all application settings with environment variable integration
 type validation, and clear error handling.
 """
 
+import math
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -302,6 +303,21 @@ class MatchingSettings(BaseModel):
         ],
         description="Source types in priority order (first = highest priority)",
     )
+    transfer_review_threshold: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description="Review queue threshold for transfer pairs",
+    )
+    transfer_signal_weights: dict[str, float] = Field(
+        default={
+            "date_distance": 0.4,
+            "keyword": 0.3,
+            "roundness": 0.15,
+            "pair_frequency": 0.15,
+        },
+        description="Per-signal weights for transfer confidence scoring",
+    )
 
     @field_validator("source_priority")
     @classmethod
@@ -309,6 +325,24 @@ class MatchingSettings(BaseModel):
         """Ensure source_priority is not empty."""
         if not v:
             raise ValueError("source_priority must not be empty")
+        return v
+
+    @field_validator("transfer_signal_weights")
+    @classmethod
+    def validate_transfer_weights(cls, v: dict[str, float]) -> dict[str, float]:
+        """Ensure all required scoring keys are present and sum to 1.0."""
+        required = {"date_distance", "keyword", "roundness", "pair_frequency"}
+        missing = required - v.keys()
+        if missing:
+            raise ValueError(f"transfer_signal_weights missing keys: {missing}")
+        negative = {k: w for k, w in v.items() if w < 0}
+        if negative:
+            raise ValueError(f"transfer_signal_weights has negative values: {negative}")
+        total = sum(v.values())
+        if not math.isclose(total, 1.0, abs_tol=1e-6):
+            raise ValueError(
+                f"transfer_signal_weights must sum to 1.0, got {total:.6f}"
+            )
         return v
 
     @model_validator(mode="after")

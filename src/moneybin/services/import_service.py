@@ -718,9 +718,9 @@ def _run_matching(db: Database) -> None:
     matcher = TransactionMatcher(db, settings)
     result = matcher.run()
 
-    if result.auto_merged or result.pending_review:
+    if result.has_matches:
         logger.info(f"Matching: {result.summary()}")
-        if result.pending_review:
+        if result.has_pending:
             logger.info("Run 'moneybin matches review' when ready")
 
 

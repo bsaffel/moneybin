@@ -61,7 +61,8 @@ def _create_test_table(db: Database) -> None:
             description VARCHAR,
             source_type VARCHAR,
             source_origin VARCHAR,
-            source_file VARCHAR
+            source_file VARCHAR,
+            currency_code VARCHAR DEFAULT 'USD'
         )
     """)
 
@@ -79,7 +80,10 @@ def _insert(
 ) -> None:
     db.execute(
         """
-        INSERT INTO _test_unioned VALUES (?, ?, ?::DATE, ?::DECIMAL(18,2), ?, ?, ?, ?)
+        INSERT INTO _test_unioned (
+            source_transaction_id, account_id, transaction_date, amount,
+            description, source_type, source_origin, source_file
+        ) VALUES (?, ?, ?::DATE, ?::DECIMAL(18,2), ?, ?, ?, ?)
         """,
         [stid, acct, txn_date, amount, desc, stype, sorigin, sfile],
     )
@@ -186,7 +190,7 @@ class TestTransactionMatcher:
             update_match_status,
         )
 
-        matches = get_active_matches(db)
+        matches = get_active_matches(db, match_type="dedup")
         undo_match(db, matches[0]["match_id"], reversed_by="user")
         update_match_status(
             db, matches[0]["match_id"], status="rejected", decided_by="user"
@@ -201,3 +205,168 @@ class TestTransactionMatcher:
         result = MatchResult(auto_merged=5, pending_review=2)
         assert "5 auto-merged" in result.summary()
         assert "2 pending review" in result.summary()
+
+
+class TestTransferDetection:
+    """Tests for Tier 4 transfer detection."""
+
+    def test_transfer_pair_goes_to_review(self, db: Database) -> None:
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_chk1",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "ONLINE TRANSFER TO SAV",
+            "csv",
+            "chase",
+        )
+        _insert(
+            db,
+            "csv_sav1",
+            "savings",
+            "2026-03-15",
+            "500.00",
+            "TRANSFER FROM CHK",
+            "csv",
+            "chase",
+        )
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        result = matcher.run()
+        assert result.pending_transfers >= 1
+        assert result.auto_merged == 0
+
+    def test_no_auto_merge_for_transfers(self, db: Database) -> None:
+        """Transfers are always-review in v1, even with perfect scores."""
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_chk1",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "TRANSFER TO SAV",
+            "csv",
+            "chase",
+        )
+        _insert(
+            db,
+            "csv_sav1",
+            "savings",
+            "2026-03-15",
+            "500.00",
+            "TRANSFER FROM CHK",
+            "csv",
+            "chase",
+        )
+        settings = MatchingSettings(transfer_review_threshold=0.0)
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        result = matcher.run()
+        assert result.auto_merged == 0
+        assert result.pending_transfers >= 1
+
+    def test_dedup_then_transfer_sequencing(self, db: Database) -> None:
+        """Dedup runs first; deduped transactions then match as transfers."""
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_chk1",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "ONLINE TRANSFER TO SAV",
+            "csv",
+            "chase",
+        )
+        _insert(
+            db,
+            "ofx_chk1",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "ONLINE TRANSFER TO SAV",
+            "ofx",
+            "chase_ofx",
+        )
+        _insert(
+            db,
+            "csv_sav1",
+            "savings",
+            "2026-03-15",
+            "500.00",
+            "TRANSFER FROM CHK",
+            "csv",
+            "chase",
+        )
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        result = matcher.run()
+        assert result.auto_merged == 1
+        assert result.pending_transfers >= 1
+
+    def test_rejected_transfer_not_reproposed(self, db: Database) -> None:
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_chk1",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "TRANSFER",
+            "csv",
+            "chase",
+        )
+        _insert(
+            db,
+            "csv_sav1",
+            "savings",
+            "2026-03-15",
+            "500.00",
+            "TRANSFER",
+            "csv",
+            "chase",
+        )
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+
+        result1 = matcher.run()
+        assert result1.pending_transfers >= 1
+
+        from moneybin.matching.persistence import (
+            get_pending_matches,
+            update_match_status,
+        )
+
+        pending = get_pending_matches(db, match_type="transfer")
+        for m in pending:
+            update_match_status(db, m["match_id"], status="rejected", decided_by="user")
+
+        result2 = matcher.run()
+        assert result2.pending_transfers == 0
+
+    def test_match_result_includes_transfers(self) -> None:
+        result = MatchResult(auto_merged=3, pending_review=1, pending_transfers=2)
+        summary = result.summary()
+        assert "3 auto-merged" in summary
+        assert "1 pending review" in summary
+        assert "2 potential transfers" in summary
+
+    def test_one_sided_transfer_no_match(self, db: Database) -> None:
+        """Only one side imported — no transfer pair proposed."""
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_chk1",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "TRANSFER",
+            "csv",
+            "chase",
+        )
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        result = matcher.run()
+        assert result.pending_transfers == 0
