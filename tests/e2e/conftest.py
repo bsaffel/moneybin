@@ -6,7 +6,9 @@ boot, schema, and init wiring bugs that in-process tests miss.
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
 import subprocess  # noqa: S404 — subprocess is intentional; we invoke uv as a test harness
 import tempfile
 from dataclasses import dataclass
@@ -49,7 +51,7 @@ class CLIResult:
 
 FAST_ARGON2_ENV = {
     "MONEYBIN_DATABASE__ARGON2_TIME_COST": "1",
-    "MONEYBIN_DATABASE__ARGON2_MEMORY_COST": "1024",
+    "MONEYBIN_DATABASE__ARGON2_MEMORY_COST": "8192",
     "MONEYBIN_DATABASE__ARGON2_PARALLELISM": "1",
     # Use null keyring backend so E2E subprocess tests don't read/write the
     # real system keychain. The encryption key is provided via
@@ -66,6 +68,7 @@ TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105 — test-only passphr
 # Fallback MONEYBIN_HOME for tests that don't provide their own env.
 # Prevents the first-run setup wizard from intercepting CLI commands.
 _FALLBACK_HOME = tempfile.mkdtemp(prefix="moneybin-e2e-fallback-")
+atexit.register(shutil.rmtree, _FALLBACK_HOME, ignore_errors=True)
 _FALLBACK_PROFILE = "e2e-fallback"
 _fallback_profile_created = False
 
@@ -118,6 +121,7 @@ def run_cli(
         capture_output=True,
         text=True,
         input=input_text,
+        stdin=subprocess.DEVNULL if input_text is None else None,
         timeout=timeout,
         env=full_env,
     )
