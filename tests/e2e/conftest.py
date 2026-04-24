@@ -63,6 +63,15 @@ TEST_ENCRYPTION_KEY = (
 TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105 — test-only passphrase, not a real secret
 
 
+def _base_env(home: Path, profile: str) -> dict[str, str]:
+    """Base environment dict for E2E tests with encryption key."""
+    return {
+        "MONEYBIN_HOME": str(home),
+        "MONEYBIN_PROFILE": profile,
+        "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
+    }
+
+
 def run_cli(
     *args: str,
     env: dict[str, str] | None = None,
@@ -118,11 +127,7 @@ def e2e_env(e2e_home: Path) -> dict[str, str]:
     key so commands that touch the DB can create/open it.
     """
     profile_name = "e2e-test"
-    env = {
-        "MONEYBIN_HOME": str(e2e_home),
-        "MONEYBIN_PROFILE": profile_name,
-        "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
-    }
+    env = _base_env(e2e_home, profile_name)
 
     # Create profile — accept "already exists" as success since
     # set_current_profile() may create the directory as a side effect
@@ -160,11 +165,7 @@ def make_workflow_env(
     Returns the env dict.  Call this at the start of each workflow test for
     isolation.  Idempotent — accepts "already exists" for profile create.
     """
-    env = {
-        "MONEYBIN_HOME": str(e2e_home),
-        "MONEYBIN_PROFILE": profile_name,
-        "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
-    }
+    env = _base_env(e2e_home, profile_name)
 
     # Create profile — accept "already exists" as success since
     # set_current_profile() may create the directory as a side effect
@@ -173,15 +174,12 @@ def make_workflow_env(
         msg = f"Failed to create profile '{profile_name}': {result.stderr}"
         raise AssertionError(msg)
 
-    # Create the encrypted DB if it doesn't exist yet.
-    # ``db migrate status`` calls get_database() which creates and encrypts
-    # the file on first access.
-    db_path = e2e_home / "profiles" / profile_name / "moneybin.duckdb"
-    if not db_path.exists():
-        result = run_cli("db", "migrate", "status", env=env)
-        if result.exit_code != 0:
-            msg = f"Failed to create DB for '{profile_name}': {result.stderr}"
-            raise AssertionError(msg)
+    # Ensure DB exists — ``db migrate status`` calls get_database() which
+    # creates and encrypts the file on first access. Idempotent.
+    result = run_cli("db", "migrate", "status", env=env)
+    if result.exit_code != 0:
+        msg = f"Failed to create DB for '{profile_name}': {result.stderr}"
+        raise AssertionError(msg)
 
     return env
 

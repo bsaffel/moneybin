@@ -146,7 +146,6 @@ class TestDBOperations:
         env = make_workflow_env(tmp_path, "killtest")
         result = run_cli("db", "kill", env=env)
         result.assert_success()
-        assert "no other processes" in result.output.lower() or result.exit_code == 0
 
 
 class TestTransformMutating:

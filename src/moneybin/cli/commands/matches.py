@@ -15,6 +15,10 @@ app = typer.Typer(
 )
 logger = logging.getLogger(__name__)
 
+_NO_TRANSFORMS_MSG = (
+    "❌ No transaction data available — run 'moneybin transform apply' first"
+)
+
 
 @app.command("run")
 def matches_run(
@@ -51,9 +55,7 @@ def matches_run(
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except duckdb_mod.CatalogException:
-        logger.error(
-            "❌ No transaction data available — run 'moneybin transform apply' first"
-        )
+        logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None
 
 
@@ -253,7 +255,5 @@ def matches_backfill(
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except duckdb_mod.CatalogException:
-        logger.error(
-            "❌ No transaction data available — run 'moneybin transform apply' first"
-        )
+        logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None

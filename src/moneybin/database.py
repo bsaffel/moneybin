@@ -553,10 +553,8 @@ def sqlmesh_context(
     root = sqlmesh_root or _SQLMESH_ROOT
     db_path = get_settings().database.path
 
-    # Reuse the Database singleton's connection when available.
-    # DuckDB only allows one connection per file — creating a second
-    # connection and attaching the same file raises a
-    # "Unique file handle conflict" error.
+    # DuckDB only allows one connection per file — reuse the singleton's
+    # connection to avoid "Unique file handle conflict" errors.
     owns_conn = False
     if _database_instance is not None and _database_instance._conn is not None:  # type: ignore[reportPrivateUsage]  # sqlmesh_context must reuse the singleton's connection to avoid DuckDB file handle conflicts
         conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
