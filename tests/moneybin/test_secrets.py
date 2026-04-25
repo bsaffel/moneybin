@@ -12,14 +12,14 @@ class TestGetKey:
 
     def test_returns_key_from_keychain(self) -> None:
         """Keychain contains the secret — returns it directly."""
-        store = SecretStore()
+        store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
             mock_kr.get_password.return_value = "secret-from-keychain"
             result = store.get_key("DATABASE__ENCRYPTION_KEY")
 
         assert result == "secret-from-keychain"
         mock_kr.get_password.assert_called_once_with(
-            "moneybin", "DATABASE__ENCRYPTION_KEY"
+            "moneybin-alice", "DATABASE__ENCRYPTION_KEY"
         )
 
     def test_falls_back_to_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,26 +61,37 @@ class TestSetAndDeleteKey:
     """SecretStore.set_key() and delete_key() — keychain writes."""
 
     def test_set_key_writes_to_keychain(self) -> None:
-        store = SecretStore()
+        store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
             store.set_key("DATABASE__ENCRYPTION_KEY", "new-key-value")
 
         mock_kr.set_password.assert_called_once_with(
-            "moneybin", "DATABASE__ENCRYPTION_KEY", "new-key-value"
+            "moneybin-alice", "DATABASE__ENCRYPTION_KEY", "new-key-value"
         )
 
     def test_delete_key_clears_from_keychain(self) -> None:
-        store = SecretStore()
+        store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
             store.delete_key("DATABASE__ENCRYPTION_KEY")
 
         mock_kr.delete_password.assert_called_once_with(
-            "moneybin", "DATABASE__ENCRYPTION_KEY"
+            "moneybin-alice", "DATABASE__ENCRYPTION_KEY"
         )
+
+    def test_two_profiles_use_distinct_service_names(self) -> None:
+        """Different profiles must hit different keychain services."""
+        alice = SecretStore(profile="alice")
+        bob = SecretStore(profile="bob")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            alice.set_key("DATABASE__ENCRYPTION_KEY", "alice-key")
+            bob.set_key("DATABASE__ENCRYPTION_KEY", "bob-key")
+
+        services = {call.args[0] for call in mock_kr.set_password.call_args_list}
+        assert services == {"moneybin-alice", "moneybin-bob"}
 
     def test_delete_key_raises_secret_not_found_when_absent(self) -> None:
         """PasswordDeleteError from keyring backend is wrapped as SecretNotFoundError."""
-        store = SecretStore()
+        store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
             mock_kr.errors.PasswordDeleteError = type(
                 "PasswordDeleteError", (Exception,), {}

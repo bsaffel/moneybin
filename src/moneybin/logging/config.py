@@ -29,13 +29,12 @@ class _SuppressFilter(logging.Filter):
         return "Shutting down the event dispatcher" not in record.getMessage()
 
 
-# SQLMesh loggers whose INFO output is too noisy for the console but
-# should still reach log files for debugging.
-_CONSOLE_SUPPRESSED_LOGGERS = frozenset({
-    "sqlmesh.core.analytics.dispatcher",
-    "sqlmesh.core.state_sync.db.migrator",
-    "sqlmesh.core.config.connection",
-})
+# Logger-name prefixes whose INFO/DEBUG output is too noisy for the console
+# but should still reach log files for debugging. SQLMesh emits a lot of
+# operational logging (model evaluation, plan creation, state sync, analytics)
+# that drowns out user-facing CLI output — route it all to the sqlmesh log
+# file instead.
+_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = ("sqlmesh",)
 
 
 class _ConsoleNoiseFilter(logging.Filter):
@@ -45,9 +44,9 @@ class _ConsoleNoiseFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if (
-            record.name in _CONSOLE_SUPPRESSED_LOGGERS
-            and record.levelno < logging.WARNING
+        if record.levelno < logging.WARNING and any(
+            record.name == p or record.name.startswith(f"{p}.")
+            for p in _CONSOLE_SUPPRESSED_PREFIXES
         ):
             return False
         return True
@@ -108,8 +107,9 @@ def _setup_sqlmesh_file_handler(
 
     Per the observability spec, SQLMesh output goes to
     ``sqlmesh_YYYY-MM-DD.log`` (file only — suppressed from console).
-    This attaches a file handler directly to the SQLMesh loggers so their
-    output reaches the sqlmesh stream log regardless of the active CLI stream.
+    The handler is attached to the root ``sqlmesh`` logger so every
+    ``sqlmesh.*`` descendant inherits it, and propagation is disabled so
+    the same records don't also land in the CLI log file.
 
     Args:
         log_file_path: Base log file path (used to derive the sqlmesh log path).
@@ -118,16 +118,15 @@ def _setup_sqlmesh_file_handler(
     sqlmesh_log = session_log_path(log_file_path, prefix="sqlmesh")
     resolved_path = str(sqlmesh_log.resolve())
 
-    for logger_name in _CONSOLE_SUPPRESSED_LOGGERS:
-        sqlmesh_logger = logging.getLogger(logger_name)
-        # Avoid duplicate handlers on reconfiguration
-        if not any(
-            isinstance(h, logging.FileHandler)
-            and getattr(h, "baseFilename", None) == resolved_path
-            for h in sqlmesh_logger.handlers
-        ):
-            # Each logger gets its own handler to avoid shared file-handle state
-            sqlmesh_logger.addHandler(_make_file_handler(sqlmesh_log, formatter))
+    sqlmesh_logger = logging.getLogger("sqlmesh")
+    if not any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == resolved_path
+        for h in sqlmesh_logger.handlers
+    ):
+        sqlmesh_logger.addHandler(_make_file_handler(sqlmesh_log, formatter))
+    # Don't double-log to the CLI/MCP file via root propagation.
+    sqlmesh_logger.propagate = False
 
 
 def setup_logging(

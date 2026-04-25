@@ -39,7 +39,8 @@ class ImportResult:
 
     def summary(self) -> str:
         """Human-readable import summary."""
-        lines = [f"Imported {self.file_type.upper()} file: {self.file_path}"]
+        label = _display_label(self.file_type, Path(self.file_path))
+        lines = [f"Imported {label} file: {self.file_path}"]
 
         if self.institutions:
             lines.append(f"  Institutions: {self.institutions}")
@@ -97,6 +98,20 @@ def _query_date_range(
     except Exception:  # noqa: BLE001 — date range is best-effort; any DB failure returns empty string
         logger.debug(f"Could not determine date range from {table}", exc_info=True)
     return ""
+
+
+def _display_label(file_type: str, file_path: Path) -> str:
+    """User-facing label for a detected file type.
+
+    ``"tabular"`` is an internal bucket (CSV/TSV/XLSX/Parquet/Feather all
+    share one pipeline). Resolve it to the file's actual extension so the
+    user sees ``CSV`` / ``XLSX`` / ``OFX`` / ``W-2`` instead of ``TABULAR``.
+    """
+    if file_type == "tabular":
+        return file_path.suffix.lstrip(".").upper() or "TABULAR"
+    if file_type == "w2":
+        return "W-2"
+    return file_type.upper()
 
 
 def _detect_file_type(file_path: Path) -> str:
@@ -603,7 +618,7 @@ def import_file(
         raise FileNotFoundError(f"File not found: {path}")
 
     file_type = _detect_file_type(path)
-    logger.info(f"Importing {file_type} file: {path}")
+    logger.info(f"Importing {_display_label(file_type, path)} file: {path}")
 
     if file_type == "ofx":
         result = _import_ofx(db, path, institution=institution)

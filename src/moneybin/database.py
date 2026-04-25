@@ -249,12 +249,17 @@ class Database:
                 BaseDuckDBConnectionConfig,
                 DuckDBConnectionConfig,
             )
+            from sqlmesh.core.console import NoopConsole, set_console
             from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 
             from sqlmesh import Context  # type: ignore[import-untyped]
         except ImportError:
             logger.debug("sqlmesh not installed, skipping migrate")
             return True
+
+        # See sqlmesh_context() — silence SQLMesh's rich console; logs still
+        # flow to the sqlmesh log file.
+        set_console(NoopConsole())
 
         # Adapter construction and cache injection are inside the try block
         # so that failures degrade gracefully instead of breaking DB init.
@@ -569,11 +574,18 @@ def sqlmesh_context(
         BaseDuckDBConnectionConfig,
         DuckDBConnectionConfig,
     )
+    from sqlmesh.core.console import NoopConsole, set_console
     from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 
     from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
         Context,
     )
+
+    # SQLMesh's rich-based TerminalConsole writes plan/progress directly to
+    # stdout, bypassing stdlib logging. Swap in NoopConsole so import/transform
+    # commands don't drown the user in SQLMesh chatter — diagnostic output
+    # still reaches the sqlmesh_*.log file via the stdlib loggers.
+    set_console(NoopConsole())
 
     root = sqlmesh_root or _SQLMESH_ROOT
     db_path = get_settings().database.path
@@ -664,6 +676,7 @@ def init_db(
     *,
     passphrase: str | None = None,
     secret_store: SecretStore | None = None,
+    profile: str | None = None,
     argon2_time_cost: int = 3,
     argon2_memory_cost: int = 65536,
     argon2_parallelism: int = 4,
@@ -684,6 +697,8 @@ def init_db(
             instead of auto-generated key.
         secret_store: SecretStore instance for key storage. If None,
             creates a new one (uses OS keychain by default).
+        profile: Profile name used to scope the keychain service when
+            ``secret_store`` is None. Ignored if ``secret_store`` is provided.
         argon2_time_cost: Argon2id time cost (only used with passphrase).
         argon2_memory_cost: Argon2id memory cost in KiB (only used with passphrase).
         argon2_parallelism: Argon2id parallelism (only used with passphrase).
@@ -698,7 +713,7 @@ def init_db(
     # recreating deleted profile trees during normal operation.
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    store = secret_store or SecretStore()
+    store = secret_store or SecretStore(profile=profile)
 
     if passphrase is not None:
         import base64

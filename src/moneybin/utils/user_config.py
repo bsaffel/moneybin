@@ -286,10 +286,11 @@ def ensure_default_profile() -> str:
     # Prompt user for their name
     profile_name = prompt_for_profile_name()
 
-    # Save as default
-    set_default_profile(profile_name)
-
-    # Create the profile directory structure
+    # Create the profile directory structure first; only persist as the
+    # default after creation (and DB init) succeed. Persisting before
+    # success would leave config.yaml pointing at a profile that doesn't
+    # exist if create/init fails — every subsequent command would then
+    # error out with "profile directory not found".
     from moneybin.services.profile_service import ProfileExistsError, ProfileService
 
     try:
@@ -299,13 +300,8 @@ def ensure_default_profile() -> str:
         from moneybin.config import get_base_dir
 
         profile_dir = get_base_dir() / "profiles" / profile_name
-    except Exception as e:  # noqa: BLE001 — best-effort first-run; don't block with a traceback
-        logger.debug("Profile/DB init failed during first-run wizard", exc_info=True)
-        logger.warning(f"Profile setup incomplete: {e}")
-        typer.echo("    💡 Run 'moneybin db init' to finish database setup")
-        from moneybin.config import get_base_dir
 
-        profile_dir = get_base_dir() / "profiles" / profile_name
+    set_default_profile(profile_name)
 
     typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
     typer.echo(f"    Data will be stored in: {profile_dir}")

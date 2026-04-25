@@ -109,7 +109,7 @@ class ProfileService:
             (profile_dir / "logs").mkdir()
             (profile_dir / "temp").mkdir()
             generate_profile_config(profile_dir, normalized)
-            self._init_database(profile_dir)
+            self._init_database(profile_dir, normalized)
         except Exception:
             # Roll back the partially created profile so the user can retry
             # without hitting ProfileExistsError.
@@ -118,15 +118,17 @@ class ProfileService:
         logger.debug(f"Created profile: {normalized}")
         return profile_dir
 
-    def _init_database(self, profile_dir: Path) -> None:
+    def _init_database(self, profile_dir: Path, profile: str) -> None:
         """Initialize an encrypted database for the profile.
 
         Args:
             profile_dir: Path to the profile directory.
+            profile: Normalized profile name. Scopes the keychain entry so
+                profiles never share encryption keys.
         """
         from moneybin.database import init_db
 
-        init_db(profile_dir / "moneybin.duckdb")
+        init_db(profile_dir / "moneybin.duckdb", profile=profile)
 
     def list(self) -> list[dict[str, str | bool]]:
         """List all profiles with their active status.
@@ -192,6 +194,16 @@ class ProfileService:
                 "Switch to another profile first: moneybin profile switch <name>"
             )
         shutil.rmtree(profile_dir)
+        # Clear the profile's keychain entries — each profile has its own
+        # service ("moneybin-<profile>"), so this never touches sibling profiles.
+        from moneybin.secrets import SecretNotFoundError, SecretStore
+
+        store = SecretStore(profile=normalized)
+        for key_name in ("DATABASE__ENCRYPTION_KEY", "DATABASE__PASSPHRASE_SALT"):
+            try:
+                store.delete_key(key_name)
+            except SecretNotFoundError:
+                pass
         logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(

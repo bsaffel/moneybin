@@ -108,7 +108,9 @@ class TestUserConfig:
 class TestUserConfigFileOperations:
     """Test suite for user config file operations."""
 
-    def test_get_user_config_path(self, tmp_path: Path, monkeypatch):
+    def test_get_user_config_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """User config path lives under MONEYBIN_HOME, not real $HOME."""
         monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
         assert get_user_config_path() == tmp_path / "config.yaml"
