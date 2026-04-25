@@ -57,7 +57,9 @@ FAST_ARGON2_ENV = {
     # real system keychain but set_key/get_key round-trips still work.
     # PYTHONPATH ensures the subprocess can import tests.e2e.memory_keyring.
     "PYTHON_KEYRING_BACKEND": "tests.e2e.memory_keyring.MemoryKeyring",
-    "PYTHONPATH": str(Path(__file__).resolve().parent.parent.parent),
+    "PYTHONPATH": str(Path(__file__).resolve().parent.parent.parent)
+    + os.pathsep
+    + os.environ.get("PYTHONPATH", ""),
 }
 
 TEST_ENCRYPTION_KEY = (

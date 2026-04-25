@@ -141,7 +141,7 @@ def save_user_config(config: UserConfig) -> None:
         with open(config_path, "w") as f:
             data = config.model_dump(exclude_none=True)
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-        logger.info(f"Saved user config to {config_path}")
+        logger.debug(f"Saved user config to {config_path}")
     except OSError as e:
         logger.error(f"Failed to save user config to {config_path}: {e}")
         raise
@@ -178,7 +178,7 @@ def set_default_profile(profile_name: str) -> None:
     # Save config
     save_user_config(config)
 
-    logger.info(f"Set active profile to: {normalized}")
+    logger.debug(f"Set active profile to: {normalized}")
 
 
 def generate_profile_config(profile_dir: Path, profile_name: str) -> Path:
@@ -295,8 +295,10 @@ def ensure_default_profile() -> str:
         from moneybin.config import get_base_dir
 
         profile_dir = get_base_dir() / "profiles" / profile_name
-    except OSError as e:
-        logger.warning(f"Could not create profile directory: {e}")
+    except Exception as e:  # noqa: BLE001 — best-effort first-run; don't block with a traceback
+        logger.debug("Profile/DB init failed during first-run wizard", exc_info=True)
+        logger.warning(f"Profile setup incomplete: {e}")
+        typer.echo("    💡 Run 'moneybin db init' to finish database setup")
         from moneybin.config import get_base_dir
 
         profile_dir = get_base_dir() / "profiles" / profile_name

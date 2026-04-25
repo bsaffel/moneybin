@@ -68,7 +68,15 @@ def main_callback(
     # Commands that manage profiles don't operate within a profile context
     needs_profile = ctx.invoked_subcommand not in ("profile",)
 
+    profile_source = None
     if needs_profile:
+        import os
+
+        if os.environ.get("MONEYBIN_PROFILE"):
+            profile_source = "MONEYBIN_PROFILE env var"
+        elif profile_name is not None:
+            profile_source = "--profile flag"
+
         if profile_name is None:
             try:
                 profile_name = ensure_default_profile()
@@ -97,7 +105,10 @@ def main_callback(
         profile=profile_name if needs_profile else None,
     )
     if needs_profile and profile_name is not None:
-        logger.info(f"Using profile: {profile_name}")
+        if profile_source:
+            logger.info(f"Using profile: {profile_name} (from {profile_source})")
+        else:
+            logger.info(f"Using profile: {profile_name}")
 
 
 # Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops
