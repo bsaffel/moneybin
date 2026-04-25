@@ -194,7 +194,8 @@ def setup_logging(
         try:
             log_file.parent.mkdir(parents=False, exist_ok=True)
         except FileNotFoundError:
-            log_file = None  # Profile dir doesn't exist; skip file logging
+            logging.warning("Log directory not found; writing logs to console only")
+            log_file = None
 
         if log_file is not None:
             file_handler = _make_file_handler(log_file, inner_formatter)

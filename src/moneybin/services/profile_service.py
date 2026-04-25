@@ -105,10 +105,10 @@ class ProfileService:
             profile_dir.mkdir(parents=True, exist_ok=False)
         except FileExistsError:
             raise ProfileExistsError(f"Profile '{normalized}' already exists") from None
-        (profile_dir / "logs").mkdir()
-        (profile_dir / "temp").mkdir()
-        generate_profile_config(profile_dir, normalized)
         try:
+            (profile_dir / "logs").mkdir()
+            (profile_dir / "temp").mkdir()
+            generate_profile_config(profile_dir, normalized)
             self._init_database(profile_dir)
         except Exception:
             # Roll back the partially created profile so the user can retry

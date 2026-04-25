@@ -304,32 +304,8 @@ def ensure_default_profile() -> str:
     typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
     typer.echo(f"    Data will be stored in: {profile_dir}")
 
-    # Auto-initialize the encrypted database so the user doesn't need
-    # a separate `moneybin db init` step.
-    try:
-        import secrets as secrets_mod
-
-        from moneybin.config import set_current_profile
-        from moneybin.database import Database
-        from moneybin.secrets import SecretStore
-
-        set_current_profile(profile_name)
-        from moneybin.config import get_settings
-
-        settings = get_settings()
-        db_path = settings.database.path
-
-        store = SecretStore()
-        encryption_key = secrets_mod.token_hex(32)
-        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
-
-        with Database(db_path, secret_store=store):
-            pass
-
-        typer.echo(f"    Encrypted database initialized: {db_path}\n")
-    except Exception:  # noqa: BLE001 — best-effort; don't block first-run if keychain or disk fails
-        logger.debug("Auto database init failed", exc_info=True)
-        typer.echo("    💡 Run 'moneybin db init' to set up the database\n")
+    # ProfileService.create() already initializes the encrypted database,
+    # so no separate init step is needed here.
 
     return profile_name
 

@@ -119,7 +119,16 @@ def init_db(
             logger.error("❌ Passphrases do not match")
             raise typer.Exit(1)
 
-    do_init_db(db_path, passphrase=pp, secret_store=SecretStore())
+    db_cfg = settings.database
+    do_init_db(
+        db_path,
+        passphrase=pp,
+        secret_store=SecretStore(),
+        argon2_time_cost=db_cfg.argon2_time_cost,
+        argon2_memory_cost=db_cfg.argon2_memory_cost,
+        argon2_parallelism=db_cfg.argon2_parallelism,
+        argon2_hash_len=db_cfg.argon2_hash_len,
+    )
     logger.info(f"✅ Encrypted database created: {db_path}")
 
 

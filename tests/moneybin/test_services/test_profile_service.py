@@ -55,6 +55,22 @@ class TestProfileCreate:
         svc.create("Alice Work")
         assert (tmp_path / "profiles" / "alice-work").exists()
 
+    def test_create_rolls_back_on_db_init_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Profile directory is cleaned up when _init_database fails."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+
+        with patch.object(
+            ProfileService, "_init_database", side_effect=RuntimeError("keychain fail")
+        ):
+            svc = ProfileService()
+            with pytest.raises(RuntimeError, match="keychain fail"):
+                svc.create("rollback-test")
+
+        # Directory must not exist after rollback
+        assert not (tmp_path / "profiles" / "rollback-test").exists()
+
 
 class TestProfileList:
     """Test profile listing."""

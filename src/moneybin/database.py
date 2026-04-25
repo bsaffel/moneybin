@@ -664,6 +664,10 @@ def init_db(
     *,
     passphrase: str | None = None,
     secret_store: SecretStore | None = None,
+    argon2_time_cost: int = 3,
+    argon2_memory_cost: int = 65536,
+    argon2_parallelism: int = 4,
+    argon2_hash_len: int = 32,
 ) -> None:
     """Create a new encrypted database with all schemas initialized.
 
@@ -680,6 +684,10 @@ def init_db(
             instead of auto-generated key.
         secret_store: SecretStore instance for key storage. If None,
             creates a new one (uses OS keychain by default).
+        argon2_time_cost: Argon2id time cost (only used with passphrase).
+        argon2_memory_cost: Argon2id memory cost in KiB (only used with passphrase).
+        argon2_parallelism: Argon2id parallelism (only used with passphrase).
+        argon2_hash_len: Argon2id hash length in bytes (only used with passphrase).
     """
     import secrets as secrets_mod
 
@@ -688,17 +696,14 @@ def init_db(
     if passphrase is not None:
         import base64
 
-        from moneybin.config import get_settings
-
-        db_cfg = get_settings().database
         salt = secrets_mod.token_bytes(16)
         encryption_key = derive_key_from_passphrase(
             passphrase,
             salt,
-            time_cost=db_cfg.argon2_time_cost,
-            memory_cost=db_cfg.argon2_memory_cost,
-            parallelism=db_cfg.argon2_parallelism,
-            hash_len=db_cfg.argon2_hash_len,
+            time_cost=argon2_time_cost,
+            memory_cost=argon2_memory_cost,
+            parallelism=argon2_parallelism,
+            hash_len=argon2_hash_len,
         )
         store.set_key(_KEY_NAME, encryption_key)
         store.set_key(SALT_NAME, base64.b64encode(salt).decode())
