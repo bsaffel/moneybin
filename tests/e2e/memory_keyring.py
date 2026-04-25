@@ -18,7 +18,7 @@ class MemoryKeyring(KeyringBackend):
 
     _store: dict[tuple[str, str], str] = {}
 
-    def set_password(self, service: str, username: str, password: str) -> None:  # noqa: ARG002 — implements KeyringBackend interface
+    def set_password(self, service: str, username: str, password: str) -> None:
         MemoryKeyring._store[(service, username)] = password
 
     def get_password(self, service: str, username: str) -> str | None:

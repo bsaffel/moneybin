@@ -31,6 +31,10 @@ def profile_create(
     except ProfileExistsError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
+    except Exception as e:
+        logger.error(f"❌ Profile created but database initialization failed: {e}")
+        logger.info("💡 Run 'moneybin db init' to initialize the database")
+        raise typer.Exit(1) from e
 
 
 @app.command("list")

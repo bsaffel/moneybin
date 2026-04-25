@@ -16,6 +16,7 @@ from tests.e2e.conftest import (
     FIXTURES_DIR,
     TEST_ENCRYPTION_KEY,
     TEST_PASSPHRASE,
+    base_env,
     make_workflow_env,
     run_cli,
 )
@@ -31,10 +32,7 @@ class TestProfileLifecycle:
         tmp_path: Path,
     ) -> None:
         """Profile create must produce a usable encrypted database."""
-        env = {
-            "MONEYBIN_HOME": str(tmp_path),
-            "MONEYBIN_PROFILE": "dbcheck",
-        }
+        env = base_env(tmp_path, "dbcheck")
         result = run_cli("profile", "create", "dbcheck", env=env)
         result.assert_success()
 
@@ -56,10 +54,7 @@ class TestProfileLifecycle:
         NOT re-run migrations — verified by checking that the migration
         summary line does not appear in db info output.
         """
-        env = {
-            "MONEYBIN_HOME": str(tmp_path),
-            "MONEYBIN_PROFILE": "migcheck",
-        }
+        env = base_env(tmp_path, "migcheck")
 
         # Step 1: profile create should run migrations
         result = run_cli("profile", "create", "migcheck", env=env)
@@ -79,23 +74,23 @@ class TestProfileLifecycle:
         self,
         tmp_path: Path,
     ) -> None:
-        base_env = {"MONEYBIN_HOME": str(tmp_path)}
+        env = {"MONEYBIN_HOME": str(tmp_path)}
 
         # Create two profiles so we can switch away before deleting
-        run_cli("profile", "create", "keeper", env=base_env)
-        result = run_cli("profile", "create", "doomed", env=base_env)
+        run_cli("profile", "create", "keeper", env=env)
+        result = run_cli("profile", "create", "doomed", env=env)
         result.assert_success()
 
         # Switch to doomed
-        result = run_cli("profile", "switch", "doomed", env=base_env)
+        result = run_cli("profile", "switch", "doomed", env=env)
         result.assert_success()
 
         # Switch back so doomed is not active
-        result = run_cli("profile", "switch", "keeper", env=base_env)
+        result = run_cli("profile", "switch", "keeper", env=env)
         result.assert_success()
 
         # Delete doomed (--yes to skip confirmation)
-        result = run_cli("profile", "delete", "doomed", "--yes", env=base_env)
+        result = run_cli("profile", "delete", "doomed", "--yes", env=env)
         result.assert_success()
 
     def test_profile_set(self, tmp_path: Path) -> None:

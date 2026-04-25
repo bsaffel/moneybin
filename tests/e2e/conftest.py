@@ -74,7 +74,7 @@ _FALLBACK_PROFILE = "e2e-fallback"
 _fallback_profile_created = False
 
 
-def _base_env(home: Path, profile: str) -> dict[str, str]:
+def base_env(home: Path, profile: str) -> dict[str, str]:
     """Base environment dict for E2E tests with encryption key."""
     return {
         "MONEYBIN_HOME": str(home),
@@ -158,7 +158,7 @@ def e2e_env(e2e_home: Path) -> dict[str, str]:
     key so commands that touch the DB can create/open it.
     """
     profile_name = "e2e-test"
-    env = _base_env(e2e_home, profile_name)
+    env = base_env(e2e_home, profile_name)
 
     # Create profile — accept "already exists" as success since
     # set_current_profile() may create the directory as a side effect
@@ -196,7 +196,7 @@ def make_workflow_env(
     Returns the env dict.  Idempotent — accepts "already exists" for
     profile create.
     """
-    env = _base_env(e2e_home, profile_name)
+    env = base_env(e2e_home, profile_name)
 
     result = run_cli("profile", "create", profile_name, env=env)
     if result.exit_code != 0 and "already exists" not in result.stderr:

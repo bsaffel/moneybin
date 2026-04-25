@@ -32,6 +32,7 @@ from moneybin.secrets import SecretNotFoundError, SecretStore
 logger = logging.getLogger(__name__)
 
 _KEY_NAME = "DATABASE__ENCRYPTION_KEY"
+SALT_NAME = "DATABASE__PASSPHRASE_SALT"
 _DATABASE_ALIAS = "moneybin"
 
 
@@ -617,30 +618,42 @@ def sqlmesh_context(
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
 
-def derive_key_from_passphrase(passphrase: str, salt: bytes) -> str:
+def derive_key_from_passphrase(
+    passphrase: str,
+    salt: bytes,
+    *,
+    time_cost: int = 3,
+    memory_cost: int = 65536,
+    parallelism: int = 4,
+    hash_len: int = 32,
+) -> str:
     """Derive a hex encryption key from a passphrase using Argon2id.
 
     Used by both init_db (at creation) and db_unlock (at re-derivation).
-    Both callers must use the same DatabaseConfig parameters — this helper
-    ensures they can never diverge and silently lock users out.
+    Both callers must pass the same parameters — defaults match
+    ``DatabaseConfig`` so callers with access to settings can forward
+    them explicitly.
 
     Args:
         passphrase: User-supplied passphrase string.
         salt: Random 16-byte salt (stored at init, retrieved at unlock).
+        time_cost: Argon2id time cost (iterations).
+        memory_cost: Argon2id memory cost in KiB.
+        parallelism: Argon2id degree of parallelism.
+        hash_len: Argon2id output hash length in bytes.
 
     Returns:
         64-character hex string (256-bit key).
     """
     import argon2.low_level
 
-    db_cfg = get_settings().database
     raw_key = argon2.low_level.hash_secret_raw(
         secret=passphrase.encode(),
         salt=salt,
-        time_cost=db_cfg.argon2_time_cost,
-        memory_cost=db_cfg.argon2_memory_cost,
-        parallelism=db_cfg.argon2_parallelism,
-        hash_len=db_cfg.argon2_hash_len,
+        time_cost=time_cost,
+        memory_cost=memory_cost,
+        parallelism=parallelism,
+        hash_len=hash_len,
         type=argon2.low_level.Type.ID,
     )
     return raw_key.hex()
@@ -675,18 +688,28 @@ def init_db(
     if passphrase is not None:
         import base64
 
+        from moneybin.config import get_settings
+
+        db_cfg = get_settings().database
         salt = secrets_mod.token_bytes(16)
-        encryption_key = derive_key_from_passphrase(passphrase, salt)
-        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
-        store.set_key("DATABASE__PASSPHRASE_SALT", base64.b64encode(salt).decode())
+        encryption_key = derive_key_from_passphrase(
+            passphrase,
+            salt,
+            time_cost=db_cfg.argon2_time_cost,
+            memory_cost=db_cfg.argon2_memory_cost,
+            parallelism=db_cfg.argon2_parallelism,
+            hash_len=db_cfg.argon2_hash_len,
+        )
+        store.set_key(_KEY_NAME, encryption_key)
+        store.set_key(SALT_NAME, base64.b64encode(salt).decode())
         logger.debug("Passphrase-derived key stored in OS keychain")
     else:
         try:
-            store.get_key("DATABASE__ENCRYPTION_KEY")
+            store.get_key(_KEY_NAME)
             logger.debug("Using existing encryption key")
         except SecretNotFoundError:
             encryption_key = secrets_mod.token_hex(32)
-            store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
+            store.set_key(_KEY_NAME, encryption_key)
             logger.debug("Auto-generated encryption key stored in OS keychain")
 
     with Database(db_path, secret_store=store, no_auto_upgrade=False):

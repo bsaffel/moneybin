@@ -30,6 +30,7 @@ class _SuppressFilter(logging.Filter):
 # SQLMesh loggers whose INFO output is too noisy for the console but
 # should still reach log files for debugging.
 _CONSOLE_SUPPRESSED_LOGGERS = frozenset({
+    "sqlmesh.core.analytics.dispatcher",
     "sqlmesh.core.state_sync.db.migrator",
     "sqlmesh.core.config.connection",
 })
@@ -113,17 +114,18 @@ def _setup_sqlmesh_file_handler(
         formatter: Formatter to apply to the file handler.
     """
     sqlmesh_log = session_log_path(log_file_path, prefix="sqlmesh")
-    handler = _make_file_handler(sqlmesh_log, formatter)
+    resolved_path = str(sqlmesh_log.resolve())
 
     for logger_name in _CONSOLE_SUPPRESSED_LOGGERS:
         sqlmesh_logger = logging.getLogger(logger_name)
         # Avoid duplicate handlers on reconfiguration
         if not any(
             isinstance(h, logging.FileHandler)
-            and getattr(h, "baseFilename", None) == str(sqlmesh_log.resolve())
+            and getattr(h, "baseFilename", None) == resolved_path
             for h in sqlmesh_logger.handlers
         ):
-            sqlmesh_logger.addHandler(handler)
+            # Each logger gets its own handler to avoid shared file-handle state
+            sqlmesh_logger.addHandler(_make_file_handler(sqlmesh_log, formatter))
 
 
 def setup_logging(
@@ -159,7 +161,7 @@ def setup_logging(
     else:
         resolved_level = getattr(logging, level)
 
-    # Build inner formatter based on config
+    # Build formatter based on config
     if log_format == "json":
         inner_formatter: logging.Formatter = JSONFormatter()
     elif stream == "cli":
@@ -167,11 +169,13 @@ def setup_logging(
     else:
         inner_formatter = HumanFormatter(variant="full")
 
-    # Console formatter: CLI gets message-only, others get full
+    # Console always uses human-readable format (JSON is for file output only)
     if stream == "cli":
-        console_formatter: logging.Formatter = HumanFormatter(variant="cli")
+        console_formatter: logging.Formatter = inner_formatter
     else:
-        console_formatter = HumanFormatter(variant="full")
+        console_formatter = (
+            inner_formatter if log_format != "json" else HumanFormatter(variant="full")
+        )
 
     # Prepare handlers
     handlers: list[logging.Handler] = []
@@ -213,7 +217,9 @@ def setup_logging(
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("plaid").setLevel(logging.INFO)
-    logging.getLogger("sqlmesh.core.analytics.dispatcher").setLevel(logging.WARNING)
+    # Suppress SQLMesh analytics dispatcher via the same filter as other
+    # noisy SQLMesh loggers — setLevel would hide file output too.
+    # The _SuppressFilter below handles the specific shutdown message string.
 
     # Suppress SQLMesh analytics shutdown message (guard against duplicates)
     if not any(isinstance(f, _SuppressFilter) for f in logging.root.filters):
