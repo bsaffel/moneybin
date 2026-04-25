@@ -468,8 +468,12 @@ class TestDbInitCommand:
 
     def _mock_deps(self, mocker: Any, tmp_path: Path) -> tuple[MagicMock, MagicMock]:
         """Return (mock_store, mock_db_class) with settings patched."""
+        from moneybin.secrets import SecretNotFoundError
+
         _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
         mock_store = MagicMock()
+        # Default: no existing key, so auto-key mode generates one
+        mock_store.get_key.side_effect = SecretNotFoundError("no key")
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         mock_db = MagicMock()
         mocker.patch("moneybin.database.Database", return_value=mock_db)

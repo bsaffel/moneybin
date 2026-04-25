@@ -49,10 +49,8 @@ class TestSetupLogging:
         root.level = original_level
 
     @pytest.mark.unit
-    def test_console_handler_uses_stderr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_console_handler_uses_stderr(self) -> None:
         """Console handler must write to stderr, not stdout."""
-        monkeypatch.setenv("MONEYBIN_LOGGING__LOG_TO_FILE", "false")
-        monkeypatch.setattr("moneybin.config._current_settings", None)
         setup_logging(stream="cli")
         root = logging.getLogger()
 
@@ -68,12 +66,8 @@ class TestSetupLogging:
             assert stream is sys.stderr
 
     @pytest.mark.unit
-    def test_console_handler_uses_stderr_for_mcp(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_console_handler_uses_stderr_for_mcp(self) -> None:
         """MCP stream should also log to stderr."""
-        monkeypatch.setenv("MONEYBIN_LOGGING__LOG_TO_FILE", "false")
-        monkeypatch.setattr("moneybin.config._current_settings", None)
         setup_logging(stream="mcp")
         root = logging.getLogger()
 
@@ -89,17 +83,17 @@ class TestSetupLogging:
             assert stream is sys.stderr
 
     @pytest.mark.unit
-    def test_verbose_sets_debug_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_verbose_sets_debug_level(self) -> None:
         """Verbose flag should set root logger to DEBUG."""
-        monkeypatch.setenv("MONEYBIN_LOGGING__LOG_TO_FILE", "false")
-        monkeypatch.setattr("moneybin.config._current_settings", None)
         setup_logging(stream="cli", verbose=True)
         assert logging.getLogger().level == logging.DEBUG
 
     @pytest.mark.unit
     def test_file_handler_created_when_enabled(self, tmp_path: Path) -> None:
         """File handler should be created when log_to_file is enabled."""
-        setup_logging(stream="cli", log_file_path=tmp_path / "moneybin.log")
+        setup_logging(
+            stream="cli", log_to_file=True, log_file_path=tmp_path / "moneybin.log"
+        )
         root = logging.getLogger()
         fhs = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
         assert fhs, "Expected at least one FileHandler"
@@ -109,7 +103,9 @@ class TestSetupLogging:
         """File handler must use SanitizedLogFormatter."""
         from moneybin.log_sanitizer import SanitizedLogFormatter
 
-        setup_logging(stream="cli", log_file_path=tmp_path / "moneybin.log")
+        setup_logging(
+            stream="cli", log_to_file=True, log_file_path=tmp_path / "moneybin.log"
+        )
         root = logging.getLogger()
         fhs = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
         assert fhs
@@ -134,7 +130,9 @@ class TestSetupLogging:
     @pytest.mark.unit
     def test_file_handler_is_catch_all(self, tmp_path: Path) -> None:
         """File handler should accept records from any logger."""
-        setup_logging(stream="cli", log_file_path=tmp_path / "moneybin.log")
+        setup_logging(
+            stream="cli", log_to_file=True, log_file_path=tmp_path / "moneybin.log"
+        )
         root = logging.getLogger()
         fhs = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
         assert fhs

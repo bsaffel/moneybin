@@ -373,7 +373,7 @@ class MigrationRunner:
             )
             return
 
-        logger.info(f"Applying migration {migration.filename}")
+        logger.debug(f"Applying migration {migration.filename}")
         start = time.monotonic()
 
         try:
@@ -390,7 +390,7 @@ class MigrationRunner:
             # are committed atomically — prevents orphaned DDL on crash.
             self._record_migration(migration, success=True, elapsed_ms=elapsed_ms)
             self._db.execute("COMMIT")
-            logger.info(f"Applied {migration.filename} in {elapsed_ms}ms")
+            logger.debug(f"Applied {migration.filename} in {elapsed_ms}ms")
 
         except Exception as exc:  # noqa: BLE001 — must catch all to record failure and re-raise as MigrationError
             elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -494,11 +494,11 @@ def record_version(db: Database, component: str, version: str) -> None:
             "INSERT INTO app.versions (component, version) VALUES (?, ?)",
             [component, version],
         )
-        logger.info(f"Recorded {component} version {version} (first install)")
+        logger.debug(f"Recorded {component} version {version} (first install)")
     elif existing[0] != version:
         db.execute(
             "UPDATE app.versions SET previous_version = version, "
             "version = ?, updated_at = CURRENT_TIMESTAMP WHERE component = ?",
             [version, component],
         )
-        logger.info(f"Updated {component} version {existing[0]} -> {version}")
+        logger.debug(f"Updated {component} version {existing[0]} -> {version}")

@@ -23,12 +23,11 @@ app = typer.Typer(
 def profile_create(
     name: Annotated[str, typer.Argument(help="Profile name (will be normalized)")],
 ) -> None:
-    """Create a new profile with directory structure and config."""
+    """Create a new profile with directory structure, config, and encrypted database."""
     svc = ProfileService()
     try:
         profile_dir = svc.create(name)
-        logger.info(f"✅ Created profile at {profile_dir}")
-        logger.info("💡 Run 'moneybin db init' to create the encrypted database")
+        logger.info(f"✅ Created profile {name} at {profile_dir}")
     except ProfileExistsError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e

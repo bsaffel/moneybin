@@ -56,12 +56,29 @@ def setup_observability(
     Args:
         stream: Log stream name ("cli", "mcp", "sqlmesh").
         verbose: Enable DEBUG level logging.
-        profile: Profile name (unused — set via set_current_profile before).
+        profile: Profile name. When set, logging config is resolved from
+            ``get_settings()``. When None (e.g. profile commands),
+            console-only logging with defaults is used.
     """
     global _initialized
 
     # Step 1: Configure logging (always — allows reconfiguration)
-    setup_logging(stream=stream, verbose=verbose, profile=profile)
+    # Resolve log config from settings when a profile is available.
+    # Without a profile (e.g. profile commands), use defaults (console only).
+    if profile is not None:
+        from moneybin.config import get_settings
+
+        log_config = get_settings().logging
+        setup_logging(
+            stream=stream,
+            verbose=verbose,
+            level=log_config.level,
+            log_format=log_config.format,
+            log_to_file=log_config.log_to_file,
+            log_file_path=log_config.log_file_path,
+        )
+    else:
+        setup_logging(stream=stream, verbose=verbose)
 
     if not _initialized:
         # Step 2: Register atexit handler for metrics flush (once only)
@@ -86,12 +103,18 @@ def _flush_metrics_on_exit() -> None:
 
     This is best-effort — if the database is unavailable, metrics are lost
     for this session (they'll be re-accumulated on next run).
+
+    Only flushes if a database connection already exists — never creates one.
+    Creating a connection on exit would recreate directories for a deleted
+    profile and run migrations unexpectedly.
     """
     try:
-        from moneybin.database import get_database
+        from moneybin.database import get_database_if_initialized
         from moneybin.metrics.persistence import flush_to_duckdb
 
-        db = get_database()
+        db = get_database_if_initialized()
+        if db is None:
+            return
         flush_to_duckdb(db)
     except Exception:  # noqa: BLE001  # best-effort shutdown flush; DB may be unavailable
         logger.debug("Metrics flush on exit failed", exc_info=True)

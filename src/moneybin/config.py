@@ -78,9 +78,6 @@ class DatabaseConfig(BaseModel):
     backup_path: Path | None = Field(
         default=None, description="Path to database backup directory"
     )
-    create_dirs: bool = Field(
-        default=True, description="Automatically create database directories"
-    )
     encryption_key_mode: Literal["auto", "passphrase"] = Field(
         default="auto",
         description="How the encryption key is managed: auto-generated or user passphrase",
@@ -514,36 +511,6 @@ class MoneyBinSettings(BaseSettings):
             raise ValueError("DEBUG mode cannot be enabled in production")
         return v
 
-    def create_directories(self) -> None:
-        """Create necessary directories for the application."""
-        import stat
-        import sys
-
-        directories = [
-            self.database.path.parent,
-            self.data.raw_data_path,
-            self.data.temp_data_path,
-            self.logging.log_file_path.parent,
-        ]
-
-        if self.database.backup_path:
-            directories.append(self.database.backup_path)
-        if self.database.temp_directory:
-            directories.append(self.database.temp_directory)
-
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-
-            # Set restrictive permissions on data directories (macOS/Linux)
-            if (
-                sys.platform != "win32"
-                and directory != self.logging.log_file_path.parent
-            ):
-                try:
-                    directory.chmod(stat.S_IRWXU)  # 0700
-                except OSError:
-                    pass  # Best-effort on platforms that don't support chmod
-
     def validate_required_credentials(self) -> None:
         """Validate that required credentials are present.
 
@@ -558,23 +525,7 @@ class MoneyBinSettings(BaseSettings):
 _current_settings: MoneyBinSettings | None = None
 
 
-def _get_initial_profile() -> str:
-    """Get the initial profile from user config or default to 'default'.
-
-    Returns:
-        str: The profile name to use (from user config or 'default')
-    """
-    try:
-        from moneybin.utils.user_config import get_default_profile
-
-        profile = get_default_profile()
-        return profile if profile else "default"
-    except Exception:
-        # If we can't load user config, default to 'default'
-        return "default"
-
-
-_current_profile: str = _get_initial_profile()
+_current_profile: str | None = None
 
 
 def get_settings() -> MoneyBinSettings:
@@ -600,14 +551,15 @@ def get_settings() -> MoneyBinSettings:
     if _current_settings is not None:
         return _current_settings
 
+    if _current_profile is None:
+        raise RuntimeError(
+            "No profile set. Call set_current_profile() before get_settings()."
+        )
+
     # Load and cache new settings for current profile
     try:
         settings = MoneyBinSettings(profile=_current_profile)
         settings.validate_required_credentials()
-
-        # Create directories if configured to do so
-        if settings.database.create_dirs:
-            settings.create_directories()
 
         _current_settings = settings
         return settings
@@ -643,7 +595,7 @@ def set_current_profile(profile: str) -> None:
         normalized = normalize_profile_name(profile)
 
         # Only invalidate cache if profile actually changed
-        if normalized != _current_profile:
+        if _current_profile is None or normalized != _current_profile:
             _current_profile = normalized
             _current_settings = None  # Invalidate cache
     except ValueError as e:
@@ -655,7 +607,14 @@ def get_current_profile() -> str:
 
     Returns:
         str: The current profile name (e.g., 'alice', 'bob', 'default')
+
+    Raises:
+        RuntimeError: If no profile has been set via set_current_profile().
     """
+    if _current_profile is None:
+        raise RuntimeError(
+            "No profile set. Call set_current_profile() before get_current_profile()."
+        )
     return _current_profile
 
 
@@ -707,7 +666,9 @@ def reload_settings(profile: str | None = None) -> MoneyBinSettings:
     global _current_settings, _current_profile
 
     # If profile specified, switch to it (which invalidates cache)
-    if profile is not None and profile != _current_profile:
+    if profile is not None and (
+        _current_profile is None or profile != _current_profile
+    ):
         set_current_profile(profile)
     else:
         # Just invalidate current cache to force reload
@@ -717,15 +678,15 @@ def reload_settings(profile: str | None = None) -> MoneyBinSettings:
 
 
 def clear_settings_cache() -> None:
-    """Clear cached settings and reset to test profile.
+    """Clear cached settings and reset profile to None.
 
     This function is primarily for testing to ensure clean state between tests.
-    It clears the cached settings and resets the current profile to 'test'.
+    It clears the cached settings and resets the current profile.
     """
     global _current_settings, _current_profile
 
     _current_settings = None
-    _current_profile = "test"
+    _current_profile = None
 
 
 # Convenience functions for common configuration access
@@ -754,12 +715,3 @@ def get_sync_config() -> SyncConfig:
         SyncConfig: The sync service configuration
     """
     return get_settings().sync
-
-
-def get_logging_config() -> LoggingConfig:
-    """Get the logging configuration for the current profile.
-
-    Returns:
-        LoggingConfig: The logging configuration
-    """
-    return get_settings().logging

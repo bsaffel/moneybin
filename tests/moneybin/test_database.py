@@ -16,7 +16,9 @@ from moneybin.database import Database, DatabaseKeyError, get_database
 @pytest.fixture()
 def db_dir(tmp_path: Path) -> Path:
     """Provide a temporary directory for test databases."""
-    return tmp_path / "data" / "test"
+    d = tmp_path / "data" / "test"
+    d.mkdir(parents=True)
+    return d
 
 
 @pytest.fixture()
@@ -365,7 +367,6 @@ class TestGetDatabase:
         mock_settings = MagicMock()
         mock_settings.database.path = db_path
         mock_settings.database.temp_directory = db_dir / "temp"
-        mock_settings.database.create_dirs = True
         monkeypatch.setattr(db_module, "_database_instance", None)
         monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)

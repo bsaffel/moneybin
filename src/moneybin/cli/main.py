@@ -65,36 +65,38 @@ def main_callback(
     ] = False,
 ) -> None:
     """Global options for MoneyBin CLI."""
-    if profile_name is None and ctx.invoked_subcommand not in ("profile",):
-        try:
-            profile_name = ensure_default_profile()
-        except KeyboardInterrupt:
-            raise typer.Abort() from None
+    # Commands that manage profiles don't operate within a profile context
+    needs_profile = ctx.invoked_subcommand not in ("profile",)
 
-    if profile_name is not None:
+    if needs_profile:
+        if profile_name is None:
+            try:
+                profile_name = ensure_default_profile()
+            except KeyboardInterrupt:
+                raise typer.Abort() from None
+
         try:
             set_current_profile(profile_name)
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-        # Validate profile directory exists (skip for `profile` commands
-        # which handle their own validation via ProfileNotFoundError)
-        if ctx.invoked_subcommand not in ("profile",):
-            from ..config import get_base_dir
-            from ..utils.user_config import normalize_profile_name
+        from ..config import get_base_dir
+        from ..utils.user_config import normalize_profile_name
 
-            normalized = normalize_profile_name(profile_name)
-            profile_dir = get_base_dir() / "profiles" / normalized
-            if not profile_dir.exists():
-                logger.error(f"❌ Profile '{normalized}' does not exist")
-                logger.info("💡 Run 'moneybin profile list' to see available profiles")
-                logger.info(
-                    f"💡 Run 'moneybin profile create {normalized}' to create it"
-                )
-                raise typer.Exit(1)
+        normalized = normalize_profile_name(profile_name)
+        profile_dir = get_base_dir() / "profiles" / normalized
+        if not profile_dir.exists():
+            logger.error(f"❌ Profile '{normalized}' does not exist")
+            logger.info("💡 Run 'moneybin profile list' to see available profiles")
+            logger.info(f"💡 Run 'moneybin profile create {normalized}' to create it")
+            raise typer.Exit(1)
 
-    setup_observability(stream="cli", verbose=verbose, profile=profile_name)
-    if profile_name is not None:
+    setup_observability(
+        stream="cli",
+        verbose=verbose,
+        profile=profile_name if needs_profile else None,
+    )
+    if needs_profile and profile_name is not None:
         logger.info(f"Using profile: {profile_name}")
 
 

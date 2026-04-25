@@ -1,6 +1,7 @@
 """Tests for profile lifecycle service."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -10,6 +11,13 @@ from moneybin.services.profile_service import (
     ProfileNotFoundError,
     ProfileService,
 )
+
+
+@pytest.fixture(autouse=True)
+def _skip_db_init():  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Prevent profile creation from hitting the real keychain."""
+    with patch.object(ProfileService, "_init_database"):
+        yield
 
 
 class TestProfileCreate:

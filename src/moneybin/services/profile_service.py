@@ -108,8 +108,32 @@ class ProfileService:
         (profile_dir / "logs").mkdir()
         (profile_dir / "temp").mkdir()
         generate_profile_config(profile_dir, normalized)
-        logger.info(f"Created profile: {normalized}")
+        self._init_database(profile_dir)
+        logger.debug(f"Created profile: {normalized}")
         return profile_dir
+
+    def _init_database(self, profile_dir: Path) -> None:
+        """Initialize an encrypted database for the profile.
+
+        Reconfigures logging before DB init so that migration output
+        (MoneyBin schema + SQLMesh internal) is captured in the new
+        profile's log files. Without this, profile commands run with
+        console-only logging and migration detail would be lost.
+
+        Args:
+            profile_dir: Path to the profile directory.
+        """
+        from moneybin.database import init_db
+        from moneybin.logging.config import setup_logging
+
+        log_file_path = profile_dir / "logs" / "moneybin.log"
+        setup_logging(
+            stream="cli",
+            log_to_file=True,
+            log_file_path=log_file_path,
+        )
+
+        init_db(profile_dir / "moneybin.duckdb")
 
     def list(self) -> list[dict[str, str | bool]]:
         """List all profiles with their active status.
@@ -149,7 +173,7 @@ class ProfileService:
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
         set_default_profile(normalized)
-        logger.info(f"Switched to profile: {normalized}")
+        logger.debug(f"Switched active profile: {normalized}")
 
     def delete(self, name: str) -> None:
         """Delete a profile and all its data.
@@ -175,7 +199,7 @@ class ProfileService:
                 "Switch to another profile first: moneybin profile switch <name>"
             )
         shutil.rmtree(profile_dir)
-        logger.info(f"Deleted profile: {normalized}")
+        logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(
         self, name: str | None = None

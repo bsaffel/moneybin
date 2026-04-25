@@ -2,11 +2,25 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.config import get_base_dir
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _clear_profile_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Remove MONEYBIN_PROFILE so Typer doesn't bypass ensure_default_profile mock.
+
+    Also creates a 'test' profile directory so the callback's directory
+    validation passes when ensure_default_profile is mocked to return 'test'.
+    """
+    monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
+    profile_dir = get_base_dir() / "profiles" / "test"
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
 
 class TestRemovedCommands:

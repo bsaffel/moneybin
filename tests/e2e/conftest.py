@@ -53,10 +53,11 @@ FAST_ARGON2_ENV = {
     "MONEYBIN_DATABASE__ARGON2_TIME_COST": "1",
     "MONEYBIN_DATABASE__ARGON2_MEMORY_COST": "8192",
     "MONEYBIN_DATABASE__ARGON2_PARALLELISM": "1",
-    # Use null keyring backend so E2E subprocess tests don't read/write the
-    # real system keychain. The encryption key is provided via
-    # MONEYBIN_DATABASE__ENCRYPTION_KEY env var instead.
-    "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
+    # Use in-memory keyring backend so E2E subprocess tests don't touch the
+    # real system keychain but set_key/get_key round-trips still work.
+    # PYTHONPATH ensures the subprocess can import tests.e2e.memory_keyring.
+    "PYTHON_KEYRING_BACKEND": "tests.e2e.memory_keyring.MemoryKeyring",
+    "PYTHONPATH": str(Path(__file__).resolve().parent.parent.parent),
 }
 
 TEST_ENCRYPTION_KEY = (
@@ -124,6 +125,11 @@ def run_cli(
         stdin=subprocess.DEVNULL if input_text is None else None,
         timeout=timeout,
         env=full_env,
+        # Detach from controlling terminal so getpass (used by
+        # hide_input=True prompts) falls back to reading stdin
+        # instead of /dev/tty. Without this, piped input_text is
+        # ignored and the subprocess hangs waiting for terminal input.
+        start_new_session=True,
     )
     return CLIResult(
         exit_code=result.returncode,
@@ -181,29 +187,20 @@ def make_workflow_env(
 ) -> dict[str, str]:
     """Create a fresh profile with an initialized database for a workflow test.
 
-    Uses a fixed encryption key via env var (MONEYBIN_DATABASE__ENCRYPTION_KEY)
-    instead of ``db init`` to avoid system keychain interference.  The Database
-    class creates and encrypts the file on first access, so no explicit init
-    step is needed — the first command that calls ``get_database()`` will
-    create the DB.
+    ``profile create`` generates an encryption key, stores it in the
+    in-memory keyring, and initializes the encrypted database — one command,
+    fully ready.  The env dict includes the test encryption key as a
+    fallback for subsequent subprocess invocations (each subprocess gets
+    a fresh in-memory keyring).
 
-    Returns the env dict.  Call this at the start of each workflow test for
-    isolation.  Idempotent — accepts "already exists" for profile create.
+    Returns the env dict.  Idempotent — accepts "already exists" for
+    profile create.
     """
     env = _base_env(e2e_home, profile_name)
 
-    # Create profile — accept "already exists" as success since
-    # set_current_profile() may create the directory as a side effect
     result = run_cli("profile", "create", profile_name, env=env)
     if result.exit_code != 0 and "already exists" not in result.stderr:
         msg = f"Failed to create profile '{profile_name}': {result.stderr}"
-        raise AssertionError(msg)
-
-    # Ensure DB exists — ``db migrate status`` calls get_database() which
-    # creates and encrypts the file on first access. Idempotent.
-    result = run_cli("db", "migrate", "status", env=env)
-    if result.exit_code != 0:
-        msg = f"Failed to create DB for '{profile_name}': {result.stderr}"
         raise AssertionError(msg)
 
     return env

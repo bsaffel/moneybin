@@ -19,37 +19,6 @@ app = typer.Typer(help="Database management commands", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 
-def _derive_key_from_passphrase(passphrase: str, salt: bytes) -> str:
-    """Derive a hex encryption key from a passphrase using Argon2id.
-
-    Used by both init_db (at creation) and db_unlock (at re-derivation).
-    Both callers must use the same DatabaseConfig parameters — this helper
-    ensures they can never diverge and silently lock users out.
-
-    Args:
-        passphrase: User-supplied passphrase string.
-        salt: Random 16-byte salt (stored at init, retrieved at unlock).
-
-    Returns:
-        64-character hex string (256-bit key).
-    """
-    import argon2.low_level
-
-    from moneybin.config import get_settings
-
-    db_cfg = get_settings().database
-    raw_key = argon2.low_level.hash_secret_raw(
-        secret=passphrase.encode(),
-        salt=salt,
-        time_cost=db_cfg.argon2_time_cost,
-        memory_cost=db_cfg.argon2_memory_cost,
-        parallelism=db_cfg.argon2_parallelism,
-        hash_len=db_cfg.argon2_hash_len,
-        type=argon2.low_level.Type.ID,
-    )
-    return raw_key.hex()
-
-
 def _check_duckdb_cli() -> str | None:
     """Check if DuckDB CLI is available and return its path.
 
@@ -119,9 +88,8 @@ def init_db(
     in the OS keychain (auto-key mode). Use --passphrase for passphrase-
     based key derivation via Argon2id.
     """
-    import secrets as secrets_mod
-
     from moneybin.config import get_settings
+    from moneybin.database import init_db as do_init_db
     from moneybin.secrets import SecretStore
 
     settings = get_settings()
@@ -134,41 +102,15 @@ def init_db(
         if not overwrite:
             raise typer.Exit(0)
 
-    store = SecretStore()
-
+    pp: str | None = None
     if passphrase:
-        # Passphrase mode: prompt, derive key via Argon2id, store derived key + salt
-        import base64
-
         pp = typer.prompt("Enter passphrase", hide_input=True)
         pp_confirm = typer.prompt("Confirm passphrase", hide_input=True)
         if pp != pp_confirm:
             logger.error("❌ Passphrases do not match")
             raise typer.Exit(1)
 
-        # Generate a fixed salt to allow re-derivation during unlock
-        salt = secrets_mod.token_bytes(16)
-        # Derive deterministic key from passphrase + salt via shared helper.
-        # _derive_key_from_passphrase must be used here and in db_unlock so
-        # the Argon2id parameters can never diverge.
-        encryption_key = _derive_key_from_passphrase(pp, salt)
-
-        # Store key and salt so unlock can re-derive
-        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
-        store.set_key("DATABASE__PASSPHRASE_SALT", base64.b64encode(salt).decode())
-        logger.info("Passphrase-derived key stored in OS keychain")
-    else:
-        # Auto-key mode: generate random 256-bit key
-        encryption_key = secrets_mod.token_hex(32)
-        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
-        logger.info("Auto-generated encryption key stored in OS keychain")
-
-    # Create the database using the Database class
-    from moneybin.database import Database
-
-    with Database(db_path, secret_store=store):
-        pass
-
+    do_init_db(db_path, passphrase=pp, secret_store=SecretStore())
     logger.info(f"✅ Encrypted database created: {db_path}")
 
 
@@ -584,9 +526,11 @@ def db_unlock() -> None:
     pp = typer.prompt("Enter passphrase", hide_input=True)
 
     # Re-derive key using same params and stored salt via shared helper.
-    # _derive_key_from_passphrase must be used here and in init_db so
+    # derive_key_from_passphrase must be used here and in init_db so
     # the Argon2id parameters can never diverge.
-    encryption_key = _derive_key_from_passphrase(pp, salt)
+    from moneybin.database import derive_key_from_passphrase
+
+    encryption_key = derive_key_from_passphrase(pp, salt)
 
     store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
 

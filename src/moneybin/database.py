@@ -126,8 +126,10 @@ class Database:
                 f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
             ) from e
 
-        # Ensure parent directory exists
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists — parents=False so we don't
+        # recreate a deleted profile's directory tree. The profile root
+        # must already exist (created by ProfileService.create).
+        db_path.parent.mkdir(parents=False, exist_ok=True)
 
         is_new = not db_path.exists()
 
@@ -205,7 +207,7 @@ class Database:
             except importlib.metadata.PackageNotFoundError:
                 pass  # SQLMesh not installed — skip
 
-        logger.info(f"Database connection established: {db_path}")
+        logger.debug(f"Database connection established: {db_path}")
 
     def _check_permissions(self, db_path: Path) -> None:
         """Warn if database file has overly permissive permissions.
@@ -503,6 +505,16 @@ def get_database() -> Database:
     return db
 
 
+def get_database_if_initialized() -> Database | None:
+    """Return the singleton Database if it exists, otherwise None.
+
+    Unlike ``get_database()``, this never creates a new connection.
+    Used by the atexit handler to flush metrics only when a database
+    was actually used during the session.
+    """
+    return _database_instance
+
+
 def close_database() -> None:
     """Close and clear the singleton Database instance."""
     global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
@@ -603,3 +615,80 @@ def sqlmesh_context(
         yield ctx
     finally:
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
+
+
+def derive_key_from_passphrase(passphrase: str, salt: bytes) -> str:
+    """Derive a hex encryption key from a passphrase using Argon2id.
+
+    Used by both init_db (at creation) and db_unlock (at re-derivation).
+    Both callers must use the same DatabaseConfig parameters — this helper
+    ensures they can never diverge and silently lock users out.
+
+    Args:
+        passphrase: User-supplied passphrase string.
+        salt: Random 16-byte salt (stored at init, retrieved at unlock).
+
+    Returns:
+        64-character hex string (256-bit key).
+    """
+    import argon2.low_level
+
+    db_cfg = get_settings().database
+    raw_key = argon2.low_level.hash_secret_raw(
+        secret=passphrase.encode(),
+        salt=salt,
+        time_cost=db_cfg.argon2_time_cost,
+        memory_cost=db_cfg.argon2_memory_cost,
+        parallelism=db_cfg.argon2_parallelism,
+        hash_len=db_cfg.argon2_hash_len,
+        type=argon2.low_level.Type.ID,
+    )
+    return raw_key.hex()
+
+
+def init_db(
+    db_path: Path,
+    *,
+    passphrase: str | None = None,
+    secret_store: SecretStore | None = None,
+) -> None:
+    """Create a new encrypted database with all schemas initialized.
+
+    Two modes:
+    - **Auto-key** (default): uses an existing encryption key if available
+      (e.g., from env var), otherwise generates a random 256-bit key and
+      stores it in the OS keychain.
+    - **Passphrase**: derives a key via Argon2id from the supplied
+      passphrase, stores the derived key and salt in the keychain.
+
+    Args:
+        db_path: Path to the DuckDB database file to create.
+        passphrase: If provided, use passphrase-based key derivation
+            instead of auto-generated key.
+        secret_store: SecretStore instance for key storage. If None,
+            creates a new one (uses OS keychain by default).
+    """
+    import secrets as secrets_mod
+
+    store = secret_store or SecretStore()
+
+    if passphrase is not None:
+        import base64
+
+        salt = secrets_mod.token_bytes(16)
+        encryption_key = derive_key_from_passphrase(passphrase, salt)
+        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
+        store.set_key("DATABASE__PASSPHRASE_SALT", base64.b64encode(salt).decode())
+        logger.debug("Passphrase-derived key stored in OS keychain")
+    else:
+        try:
+            store.get_key("DATABASE__ENCRYPTION_KEY")
+            logger.debug("Using existing encryption key")
+        except SecretNotFoundError:
+            encryption_key = secrets_mod.token_hex(32)
+            store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
+            logger.debug("Auto-generated encryption key stored in OS keychain")
+
+    with Database(db_path, secret_store=store, no_auto_upgrade=False):
+        pass
+    logger.debug(f"Initialized encrypted database: {db_path}")
