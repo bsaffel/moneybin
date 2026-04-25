@@ -101,6 +101,13 @@ def profile_show(
 ) -> None:
     """Show resolved settings for a profile."""
     svc = ProfileService()
+    if name is None:
+        from moneybin.config import get_current_profile
+
+        try:
+            name = get_current_profile()
+        except RuntimeError:
+            name = None
     try:
         info = svc.show(name)
         marker = " (active)" if info["active"] else ""
@@ -135,9 +142,14 @@ def profile_set(
     if name:
         target = name
     else:
-        profiles = svc.list()
-        active = next((p["name"] for p in profiles if p["active"]), None)
-        target = str(active) if active else "default"
+        from moneybin.config import get_current_profile
+
+        try:
+            target = get_current_profile()
+        except RuntimeError:
+            profiles = svc.list()
+            active = next((p["name"] for p in profiles if p["active"]), None)
+            target = str(active) if active else "default"
     try:
         svc.set(target, key, value)
         logger.info(f"✅ Set {key}={value}")

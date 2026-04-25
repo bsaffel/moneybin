@@ -19,6 +19,8 @@ from typing import Literal
 from moneybin.log_sanitizer import SanitizedLogFormatter
 from moneybin.logging.formatters import HumanFormatter, JSONFormatter
 
+logger = logging.getLogger(__name__)
+
 
 class _SuppressFilter(logging.Filter):
     """Filter out noisy SQLMesh analytics shutdown messages."""
@@ -194,7 +196,7 @@ def setup_logging(
         try:
             log_file.parent.mkdir(parents=False, exist_ok=True)
         except FileNotFoundError:
-            logging.warning("Log directory not found; writing logs to console only")
+            logger.warning("Log directory not found; writing logs to console only")
             log_file = None
 
         if log_file is not None:

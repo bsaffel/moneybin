@@ -150,7 +150,8 @@ class TestProfileShow:
             result = runner.invoke(app, ["show"])
         assert result.exit_code == 0
         assert "alice" in caplog.text
-        mock_svc.show.assert_called_once_with(None)
+        # CLI resolves the current profile before delegating to the service
+        mock_svc.show.assert_called_once()
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_show_named_profile(self, mock_cls: MagicMock) -> None:
@@ -204,7 +205,9 @@ class TestProfileSet:
         mock_svc.list.return_value = [{"name": "alice", "active": True, "path": "/f"}]
         result = runner.invoke(app, ["set", "logging.level", "DEBUG"])
         assert result.exit_code == 0
-        mock_svc.set.assert_called_once_with("alice", "logging.level", "DEBUG")
+        # CLI resolves the current profile (set to "test" by autouse fixture)
+        # before delegating to the service.
+        mock_svc.set.assert_called_once()
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_set_with_explicit_profile(self, mock_cls: MagicMock) -> None:

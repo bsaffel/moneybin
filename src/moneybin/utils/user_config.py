@@ -39,9 +39,13 @@ def get_user_config_path() -> Path:
     """Get path to user config file.
 
     Returns:
-        Path: ~/.moneybin/config.yaml
+        Path: <base>/config.yaml, where <base> honors MONEYBIN_HOME.
+        Test isolation depends on this — without it, e2e tests would
+        write to the user's real ~/.moneybin/config.yaml.
     """
-    return Path.home() / ".moneybin" / "config.yaml"
+    from moneybin.config import get_base_dir
+
+    return get_base_dir() / "config.yaml"
 
 
 def normalize_profile_name(name: str) -> str:

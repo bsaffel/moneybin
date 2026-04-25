@@ -6,6 +6,7 @@ db, mcp.
 """
 
 import logging
+import sys
 from typing import Annotated
 
 import typer
@@ -64,47 +65,84 @@ def main_callback(
         ),
     ] = False,
 ) -> None:
-    """Global options for MoneyBin CLI."""
-    # Commands that manage profiles don't operate within a profile context
-    needs_profile = ctx.invoked_subcommand not in ("profile",)
+    """Global options for MoneyBin CLI.
 
-    profile_source = None
-    if needs_profile:
-        import os
+    Profile resolution chain (uniform across all commands):
+        1. ``--profile`` flag
+        2. ``MONEYBIN_PROFILE`` env var
+        3. ``active_profile`` in ``<base>/config.yaml``
+        4. First-run wizard (``ensure_default_profile``) — only when the
+           command needs an existing profile to operate.
 
-        if os.environ.get("MONEYBIN_PROFILE"):
+    Profile commands (``profile *``) skip the existence check, since
+    ``profile create`` legitimately operates on a name that doesn't yet
+    exist. They still benefit from the same resolution chain so
+    ``profile show`` / ``profile set`` honor ``--profile`` / env var.
+    """
+    import os
+
+    from ..utils.user_config import get_default_profile
+
+    # Commands that manage profiles don't require the resolved profile
+    # to point at an existing directory (e.g. `profile create alice`).
+    is_profile_cmd = ctx.invoked_subcommand == "profile"
+
+    profile_source: str | None = None
+    if profile_name is not None:
+        # Typer reads MONEYBIN_PROFILE into profile_name automatically;
+        # distinguish env vs flag by checking the env var directly.
+        if (
+            os.environ.get("MONEYBIN_PROFILE") == profile_name
+            and "--profile" not in sys.argv
+            and "-p" not in sys.argv
+        ):
             profile_source = "MONEYBIN_PROFILE env var"
-        elif profile_name is not None:
+        else:
             profile_source = "--profile flag"
 
-        if profile_name is None:
+    if profile_name is None:
+        if is_profile_cmd:
+            # Profile commands tolerate an unset profile (e.g. `profile create`).
+            # Just consult config.yaml — no first-run wizard.
+            config_profile = get_default_profile()
+            if config_profile is not None:
+                profile_name = config_profile
+                profile_source = "config.yaml"
+        else:
+            # Non-profile commands need a profile. ensure_default_profile()
+            # consults config.yaml first and prompts only on true first run.
             try:
                 profile_name = ensure_default_profile()
+                profile_source = "config.yaml or first-run wizard"
             except KeyboardInterrupt:
                 raise typer.Abort() from None
 
+    if profile_name is not None:
         try:
             set_current_profile(profile_name)
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-        from ..config import get_base_dir
-        from ..utils.user_config import normalize_profile_name
+        if not is_profile_cmd:
+            from ..config import get_base_dir
+            from ..utils.user_config import normalize_profile_name
 
-        normalized = normalize_profile_name(profile_name)
-        profile_dir = get_base_dir() / "profiles" / normalized
-        if not profile_dir.exists():
-            logger.error(f"❌ Profile '{normalized}' does not exist")
-            logger.info("💡 Run 'moneybin profile list' to see available profiles")
-            logger.info(f"💡 Run 'moneybin profile create {normalized}' to create it")
-            raise typer.Exit(1)
+            normalized = normalize_profile_name(profile_name)
+            profile_dir = get_base_dir() / "profiles" / normalized
+            if not profile_dir.exists():
+                logger.error(f"❌ Profile '{normalized}' does not exist")
+                logger.info("💡 Run 'moneybin profile list' to see available profiles")
+                logger.info(
+                    f"💡 Run 'moneybin profile create {normalized}' to create it"
+                )
+                raise typer.Exit(1)
 
     setup_observability(
         stream="cli",
         verbose=verbose,
-        profile=profile_name if needs_profile else None,
+        profile=profile_name,
     )
-    if needs_profile and profile_name is not None:
+    if profile_name is not None and not is_profile_cmd:
         if profile_source:
             logger.info(f"Using profile: {profile_name} (from {profile_source})")
         else:

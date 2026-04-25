@@ -108,10 +108,10 @@ class TestUserConfig:
 class TestUserConfigFileOperations:
     """Test suite for user config file operations."""
 
-    def test_get_user_config_path(self):
-        """Test getting user config path."""
-        config_path = get_user_config_path()
-        assert config_path == Path.home() / ".moneybin" / "config.yaml"
+    def test_get_user_config_path(self, tmp_path: Path, monkeypatch):
+        """User config path lives under MONEYBIN_HOME, not real $HOME."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        assert get_user_config_path() == tmp_path / "config.yaml"
 
     def test_load_user_config_no_file(self, mocker: MockerFixture):
         """Test loading config when file doesn't exist."""

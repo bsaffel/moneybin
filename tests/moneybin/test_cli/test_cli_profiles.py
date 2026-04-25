@@ -159,11 +159,11 @@ class TestCLIProfileHandling:
             assert get_current_profile() == "alice-work"
 
 
-class TestProfileCommandsSkipProfileResolution:
-    """Verify that profile subcommands don't resolve/set a global profile."""
+class TestProfileCommandsResolveProfileButSkipWizard:
+    """Profile subcommands honor --profile/env but never trigger first-run wizard."""
 
     def test_profile_list_skips_ensure_default(self, mocker: MockerFixture) -> None:
-        """Profile list should not call ensure_default_profile."""
+        """Profile commands must never trigger the first-run wizard."""
         mocker.patch.dict(os.environ, {})
         os.environ.pop("MONEYBIN_PROFILE", None)
 
@@ -174,20 +174,20 @@ class TestProfileCommandsSkipProfileResolution:
         assert result.exit_code == 0
         mock_ensure.assert_not_called()
 
-    def test_profile_list_ignores_profile_flag(self) -> None:
-        """--profile flag should be ignored for profile commands."""
+    def test_profile_list_honors_profile_flag(self) -> None:
+        """--profile flag should resolve current profile for profile commands too."""
         with _create_profile("alice"):
             result = runner.invoke(app, ["--profile=alice", "profile", "list"])
 
             assert result.exit_code == 0
-            assert get_current_profile() != "alice"
+            assert get_current_profile() == "alice"
 
-    def test_profile_list_ignores_env_var(self, mocker: MockerFixture) -> None:
-        """MONEYBIN_PROFILE env var should be ignored for profile commands."""
+    def test_profile_list_honors_env_var(self, mocker: MockerFixture) -> None:
+        """MONEYBIN_PROFILE env var should resolve for profile commands too."""
         mocker.patch.dict(os.environ, {"MONEYBIN_PROFILE": "alice"})
 
         with _create_profile("alice"):
             result = runner.invoke(app, ["profile", "list"])
 
             assert result.exit_code == 0
-            assert get_current_profile() != "alice"
+            assert get_current_profile() == "alice"

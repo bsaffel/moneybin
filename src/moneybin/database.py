@@ -691,6 +691,13 @@ def init_db(
     """
     import secrets as secrets_mod
 
+    # init_db is the explicit "create a database" entry point, so it's safe
+    # to create parent directories. This supports custom --database paths
+    # (e.g., /tmp/new/path/moneybin.duckdb) where ancestors may not exist.
+    # The Database constructor itself uses parents=False to avoid silently
+    # recreating deleted profile trees during normal operation.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
     store = secret_store or SecretStore()
 
     if passphrase is not None:
@@ -705,8 +712,42 @@ def init_db(
             parallelism=argon2_parallelism,
             hash_len=argon2_hash_len,
         )
+        # Save previous keys so we can roll back if DB open fails
+        # (e.g., db_path already encrypted with a different key).
+        prev_key: str | None = None
+        prev_salt: str | None = None
+        try:
+            prev_key = store.get_key(_KEY_NAME)
+        except SecretNotFoundError:
+            pass
+        try:
+            prev_salt = store.get_key(SALT_NAME)
+        except SecretNotFoundError:
+            pass
+
         store.set_key(_KEY_NAME, encryption_key)
         store.set_key(SALT_NAME, base64.b64encode(salt).decode())
+        try:
+            with Database(db_path, secret_store=store, no_auto_upgrade=False):
+                pass
+        except Exception:
+            # Roll back keychain to previous state so the existing DB
+            # remains accessible with its original key.
+            if prev_key is not None:
+                store.set_key(_KEY_NAME, prev_key)
+            else:
+                try:
+                    store.delete_key(_KEY_NAME)
+                except Exception:  # noqa: BLE001, S110 — best-effort rollback
+                    pass  # noqa: S110
+            if prev_salt is not None:
+                store.set_key(SALT_NAME, prev_salt)
+            else:
+                try:
+                    store.delete_key(SALT_NAME)
+                except Exception:  # noqa: BLE001, S110 — best-effort rollback
+                    pass  # noqa: S110
+            raise
         logger.debug("Passphrase-derived key stored in OS keychain")
     else:
         try:
@@ -717,6 +758,6 @@ def init_db(
             store.set_key(_KEY_NAME, encryption_key)
             logger.debug("Auto-generated encryption key stored in OS keychain")
 
-    with Database(db_path, secret_store=store, no_auto_upgrade=False):
-        pass
+        with Database(db_path, secret_store=store, no_auto_upgrade=False):
+            pass
     logger.debug(f"Initialized encrypted database: {db_path}")
