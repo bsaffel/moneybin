@@ -120,15 +120,24 @@ def init_db(
             raise typer.Exit(1)
 
     db_cfg = settings.database
-    do_init_db(
-        db_path,
-        passphrase=pp,
-        secret_store=SecretStore(),
-        argon2_time_cost=db_cfg.argon2_time_cost,
-        argon2_memory_cost=db_cfg.argon2_memory_cost,
-        argon2_parallelism=db_cfg.argon2_parallelism,
-        argon2_hash_len=db_cfg.argon2_hash_len,
-    )
+    try:
+        do_init_db(
+            db_path,
+            passphrase=pp,
+            secret_store=SecretStore(),
+            argon2_time_cost=db_cfg.argon2_time_cost,
+            argon2_memory_cost=db_cfg.argon2_memory_cost,
+            argon2_parallelism=db_cfg.argon2_parallelism,
+            argon2_hash_len=db_cfg.argon2_hash_len,
+        )
+    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on key/file issues
+        logger.error(f"❌ Failed to initialize database: {e}")
+        if db_path.exists():
+            logger.info(
+                "💡 An existing database may be encrypted with a different key. "
+                "Delete the file or restore the original key, then retry."
+            )
+        raise typer.Exit(1) from e
     logger.info(f"✅ Encrypted database created: {db_path}")
 
 

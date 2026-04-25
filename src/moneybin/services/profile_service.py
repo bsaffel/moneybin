@@ -196,14 +196,17 @@ class ProfileService:
         shutil.rmtree(profile_dir)
         # Clear the profile's keychain entries — each profile has its own
         # service ("moneybin-<profile>"), so this never touches sibling profiles.
-        from moneybin.secrets import SecretNotFoundError, SecretStore
+        from moneybin.secrets import SecretStore
 
         store = SecretStore(profile=normalized)
         for key_name in ("DATABASE__ENCRYPTION_KEY", "DATABASE__PASSPHRASE_SALT"):
             try:
                 store.delete_key(key_name)
-            except SecretNotFoundError:
-                pass
+            except Exception as e:  # noqa: BLE001 — best-effort cleanup; data dir is already gone
+                # Don't turn a successful directory removal into a hard failure
+                # if keyring cleanup fails (e.g. NoKeyringError on headless
+                # systems, locked keychain, network keyring unreachable).
+                logger.debug(f"Keychain cleanup for {key_name} failed: {e}")
         logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(
