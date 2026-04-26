@@ -65,3 +65,23 @@ class TestMatchAccount:
         result = match_account("Chase Checking", existing_accounts=existing)
         assert result.matched is True
         assert result.account_id == "chase-checking"
+
+
+def test_match_account_respects_custom_threshold() -> None:
+    """A high threshold rejects fuzzy candidates that the default would accept."""
+    existing = [{"account_id": "acct1", "account_name": "Chase Checking"}]
+    result = match_account(
+        "Chase Chk",
+        existing_accounts=existing,
+        threshold=0.95,
+    )
+    assert result.matched is False
+    assert result.candidates == []
+
+
+def test_match_account_default_threshold_returns_candidates() -> None:
+    """The default 0.6 threshold surfaces near-misses as candidates."""
+    existing = [{"account_id": "acct1", "account_name": "Chase Checking"}]
+    result = match_account("Chase Chk", existing_accounts=existing)
+    assert result.matched is False
+    assert any(c["account_id"] == "acct1" for c in result.candidates)
