@@ -150,6 +150,12 @@ def import_file(
         "--save-format/--no-save-format",
         help="Auto-save detected format for future imports (default: save)",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Auto-accept the top fuzzy account match without prompting",
+    ),
 ) -> None:
     """Import a financial data file — auto-detects type, loads into DuckDB, and rebuilds core tables.
 
@@ -214,6 +220,7 @@ def import_file(
                 encoding=encoding,
                 no_row_limit=no_row_limit,
                 no_size_limit=no_size_limit,
+                auto_accept=yes,
             )
             logger.info(f"✅ {result.summary()}")
     except ValueError as e:

@@ -85,6 +85,7 @@ class TestImportFileAccountName:
             encoding=None,
             no_row_limit=False,
             no_size_limit=False,
+            auto_accept=False,
         )
 
 
