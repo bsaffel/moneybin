@@ -26,8 +26,8 @@ venv/
 .DS_Store
 ._*
 
-# Profiles info
-profiles/
+# MoneyBin runtime state (profiles, config, data, logs) when running in-repo
+/.moneybin/
 
 # Data files (exclude sensitive financial data)
 data/
@@ -85,9 +85,6 @@ pyrightconfig.json
 # Claude Code local settings (personal, not shared)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
-
-# Stray local config (real config lives under <base>/config.yaml)
-/config.yaml
 
 # MCP config (contains local paths and credentials)
 .mcp.json
