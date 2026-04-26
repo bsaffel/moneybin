@@ -201,8 +201,8 @@ def _resolve_account_via_matcher(
         rows = db.execute(
             """
             SELECT account_id,
-                   LAST(account_name) AS account_name,
-                   LAST(account_number) AS account_number
+                   LAST(account_name ORDER BY import_id) AS account_name,
+                   LAST(account_number ORDER BY import_id) AS account_number
             FROM raw.tabular_accounts
             GROUP BY account_id
             """
