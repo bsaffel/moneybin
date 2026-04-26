@@ -34,7 +34,7 @@ class TestTyperSingleCommandCollapse:
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, [])
 
         assert result.exit_code == 0
@@ -47,7 +47,7 @@ class TestTyperSingleCommandCollapse:
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, ["show"])
 
         assert result.exit_code == 2
@@ -63,7 +63,7 @@ class TestStatsShow:
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, [])
 
         assert result.exit_code == 0
@@ -84,7 +84,7 @@ class TestStatsShow:
             ),
         ]
 
-        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, [])
 
         assert result.exit_code == 0
@@ -96,7 +96,7 @@ class TestStatsShow:
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, ["--output", "json"])
 
         assert result.exit_code == 0
@@ -109,7 +109,7 @@ class TestStatsShow:
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
+        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, ["--since", "7d"])
 
         assert result.exit_code == 0
@@ -120,7 +120,7 @@ class TestStatsShow:
         from moneybin.database import DatabaseKeyError
 
         with patch(
-            "moneybin.cli.commands.stats.get_database",
+            "moneybin.cli.utils.get_database",
             side_effect=DatabaseKeyError("locked"),
         ):
             result = runner.invoke(stats_app, [])

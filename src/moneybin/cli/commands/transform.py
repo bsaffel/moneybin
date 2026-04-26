@@ -9,12 +9,8 @@ from datetime import UTC, datetime
 
 import typer
 
-from moneybin.database import (
-    DatabaseKeyError,
-    database_key_error_hint,
-    get_database,
-    sqlmesh_context,
-)
+from moneybin.cli.utils import handle_database_errors
+from moneybin.database import sqlmesh_context
 
 app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -34,14 +30,12 @@ def plan_transforms(
     logger.info("⚙️  Running SQLMesh plan...")
 
     try:
-        get_database()
-        with sqlmesh_context() as ctx:
-            ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
+        with handle_database_errors():
+            with sqlmesh_context() as ctx:
+                ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh plan failed: {e}")
         raise typer.Exit(1) from e
@@ -57,14 +51,12 @@ def apply_transforms() -> None:
     logger.info("⚙️  Applying SQLMesh transforms...")
 
     try:
-        get_database()
-        with sqlmesh_context() as ctx:
-            ctx.plan(auto_apply=True, no_prompts=True)
+        with handle_database_errors():
+            with sqlmesh_context() as ctx:
+                ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("✅ SQLMesh transforms applied")
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh apply failed: {e}")
         raise typer.Exit(1) from e
@@ -75,25 +67,23 @@ def transform_status() -> None:
     """Show current model state and environment."""
     logger.info("⚙️  Checking SQLMesh status...")
     try:
-        get_database()
-        with sqlmesh_context() as ctx:
-            env = ctx.state_reader.get_environment("prod")
-            if env:
-                logger.info("Environment: prod")
-                if env.finalized_ts is not None:
-                    finalized = datetime.fromtimestamp(
-                        env.finalized_ts / 1000, tz=UTC
-                    ).astimezone()
-                    logger.info(f"  Last updated: {finalized:%Y-%m-%d %H:%M:%S %Z}")
+        with handle_database_errors():
+            with sqlmesh_context() as ctx:
+                env = ctx.state_reader.get_environment("prod")
+                if env:
+                    logger.info("Environment: prod")
+                    if env.finalized_ts is not None:
+                        finalized = datetime.fromtimestamp(
+                            env.finalized_ts / 1000, tz=UTC
+                        ).astimezone()
+                        logger.info(f"  Last updated: {finalized:%Y-%m-%d %H:%M:%S %Z}")
+                    else:
+                        logger.info("  Last updated: never finalized")
                 else:
-                    logger.info("  Last updated: never finalized")
-            else:
-                logger.info("No SQLMesh environment initialized yet")
-                logger.info("💡 Run 'moneybin transform apply' to initialize")
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+                    logger.info("No SQLMesh environment initialized yet")
+                    logger.info("💡 Run 'moneybin transform apply' to initialize")
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh status failed: {e}")
         raise typer.Exit(1) from e
@@ -104,14 +94,12 @@ def transform_validate() -> None:
     """Check that model SQL parses and resolves without errors."""
     logger.info("⚙️  Validating SQLMesh models...")
     try:
-        get_database()
-        with sqlmesh_context() as ctx:
-            ctx.plan(no_prompts=True, auto_apply=False)
+        with handle_database_errors():
+            with sqlmesh_context() as ctx:
+                ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Validation failed: {e}")
         raise typer.Exit(1) from e
@@ -129,14 +117,12 @@ def transform_audit(
     """Run data quality assertions defined in SQLMesh models."""
     logger.info("⚙️  Running SQLMesh audits...")
     try:
-        get_database()
-        with sqlmesh_context() as ctx:
-            ctx.audit(start=start, end=end)
+        with handle_database_errors():
+            with sqlmesh_context() as ctx:
+                ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Audit failed: {e}")
         raise typer.Exit(1) from e
@@ -162,20 +148,18 @@ def transform_restate(
             return
     logger.info(f"⚙️  Restating {model} from {start}...")
     try:
-        get_database()
-        with sqlmesh_context() as ctx:
-            ctx.plan(
-                restate_models=[model],
-                start=start,
-                end=end,
-                auto_apply=True,
-                no_prompts=True,
-            )
+        with handle_database_errors():
+            with sqlmesh_context() as ctx:
+                ctx.plan(
+                    restate_models=[model],
+                    start=start,
+                    end=end,
+                    auto_apply=True,
+                    no_prompts=True,
+                )
         logger.info(f"✅ Restated {model}")
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Restatement failed: {e}")
         raise typer.Exit(1) from e

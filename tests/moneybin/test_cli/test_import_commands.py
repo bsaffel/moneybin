@@ -43,7 +43,7 @@ class TestImportFileCommand:
     def mock_get_database(self, mocker: Any) -> MagicMock:
         """Mock get_database to avoid requiring a real encrypted database."""
         return mocker.patch(
-            "moneybin.database.get_database",
+            "moneybin.cli.utils.get_database",
             return_value=MagicMock(),
         )
 
@@ -215,7 +215,7 @@ class TestImportStatusCommand:
 
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
-        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch("moneybin.cli.utils.get_database", return_value=mock_db)
 
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
@@ -244,7 +244,7 @@ class TestImportStatusCommand:
         real_conn = duckdb.connect(str(db_path), read_only=True)
         mock_db = MagicMock()
         mock_db.execute.side_effect = real_conn.execute
-        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch("moneybin.cli.utils.get_database", return_value=mock_db)
 
         result = runner.invoke(app, ["status"])
         real_conn.close()

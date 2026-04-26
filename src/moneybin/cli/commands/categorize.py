@@ -8,6 +8,8 @@ import logging
 
 import typer
 
+from moneybin.cli.utils import handle_database_errors
+
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
@@ -19,31 +21,24 @@ app = typer.Typer(
 @app.command("apply-rules")
 def apply_rules_cmd() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import (
         apply_deterministic_categorization,
     )
 
     try:
-        db = get_database()
-        stats = apply_deterministic_categorization(db)
-        if stats["total"] > 0:
-            logger.info(
-                f"\u2705 Categorized {stats['total']} transactions "
-                f"({stats['merchant']} merchant, {stats['rule']} rule)"
-            )
-        else:
-            logger.info(
-                "\u2705 No uncategorized transactions matched rules or merchants"
-            )
+        with handle_database_errors() as db:
+            stats = apply_deterministic_categorization(db)
+            if stats["total"] > 0:
+                logger.info(
+                    f"\u2705 Categorized {stats['total']} transactions "
+                    f"({stats['merchant']} merchant, {stats['rule']} rule)"
+                )
+            else:
+                logger.info(
+                    "\u2705 No uncategorized transactions matched rules or merchants"
+                )
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
@@ -54,41 +49,27 @@ def seed_cmd() -> None:
     Requires SQLMesh transforms to have been run at least once.
     Safe to run multiple times — existing categories are not overwritten.
     """
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import seed_categories
 
     try:
-        db = get_database()
-        count = seed_categories(db)
-        logger.info(f"\u2705 Seeded {count} new categories")
+        with handle_database_errors() as db:
+            count = seed_categories(db)
+            logger.info(f"\u2705 Seeded {count} new categories")
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
 @app.command("stats")
 def stats_cmd() -> None:
     """Show categorization coverage statistics."""
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import get_categorization_stats
 
     try:
-        db = get_database()
-        stats = get_categorization_stats(db)
+        with handle_database_errors() as db:
+            stats = get_categorization_stats(db)
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     total = stats["total"]
@@ -111,28 +92,21 @@ def stats_cmd() -> None:
 @app.command("list-rules")
 def list_rules_cmd() -> None:
     """Display all active categorization rules."""
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.tables import CATEGORIZATION_RULES
 
     try:
-        db = get_database()
-        rows = db.execute(
-            f"""
-            SELECT rule_id, name, merchant_pattern, match_type,
-                   category, subcategory, priority
-            FROM {CATEGORIZATION_RULES.full_name}
-            WHERE is_active = true
-            ORDER BY priority ASC, name
-            """
-        ).fetchall()
+        with handle_database_errors() as db:
+            rows = db.execute(
+                f"""
+                SELECT rule_id, name, merchant_pattern, match_type,
+                       category, subcategory, priority
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE is_active = true
+                ORDER BY priority ASC, name
+                """
+            ).fetchall()
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     if not rows:

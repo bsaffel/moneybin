@@ -51,8 +51,9 @@ def _run_generate(
         seed: Deterministic seed (None for random).
         skip_transform: If True, skip running SQLMesh after generation.
     """
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.config import get_current_profile, set_current_profile
-    from moneybin.database import DatabaseKeyError, close_database, get_database
+    from moneybin.database import close_database
     from moneybin.services.import_service import run_transforms
     from moneybin.testing.synthetic.engine import GeneratorEngine
     from moneybin.testing.synthetic.writer import SyntheticWriter
@@ -69,78 +70,74 @@ def _run_generate(
     set_current_profile(profile)
 
     try:
-        try:
-            db = get_database()
-        except DatabaseKeyError as e:
-            from moneybin.database import database_key_error_hint
+        with handle_database_errors() as db:
+            # Check if profile already has data
+            try:
+                row = db.execute(
+                    """SELECT (SELECT COUNT(*) FROM raw.ofx_transactions)
+                            + (SELECT COUNT(*) FROM raw.tabular_transactions)"""
+                ).fetchone()
+                existing_count = row[0] if row else 0
+            except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
+                existing_count = 0
 
-            logger.error(f"❌ {e}")
-            logger.info(database_key_error_hint())
-            raise typer.Exit(1) from e
+            if existing_count > 0:
+                logger.error(
+                    f"❌ Profile {profile!r} already has data ({existing_count} transactions)"
+                )
+                logger.info(
+                    f"💡 Use 'moneybin synthetic reset --persona={persona}' "
+                    f"to wipe and regenerate"
+                )
+                raise typer.Exit(1) from None
 
-        # Check if profile already has data
-        try:
-            row = db.execute(
-                """SELECT (SELECT COUNT(*) FROM raw.ofx_transactions)
-                        + (SELECT COUNT(*) FROM raw.tabular_transactions)"""
-            ).fetchone()
-            existing_count = row[0] if row else 0
-        except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
-            existing_count = 0
+            # Generate
+            try:
+                engine = GeneratorEngine(persona, seed=actual_seed, years=years)
+                result = engine.generate()
+            except FileNotFoundError as e:
+                logger.error(f"❌ {e}")
+                raise typer.Exit(1) from None
 
-        if existing_count > 0:
-            logger.error(
-                f"❌ Profile {profile!r} already has data ({existing_count} transactions)"
+            # Write to database
+            writer = SyntheticWriter(db)
+            counts = writer.write(result)
+
+            acct_count = counts.get("ofx_accounts", 0) + counts.get(
+                "tabular_accounts", 0
+            )
+            txn_count = counts.get("ofx_transactions", 0) + counts.get(
+                "tabular_transactions", 0
+            )
+            gt_count = counts.get("ground_truth", 0)
+            transfer_count = (
+                sum(1 for t in result.transactions if t.transfer_pair_id) // 2
+            )
+
+            logger.info(f"  Created {acct_count} accounts")
+            logger.info(
+                f"  Generated {txn_count} transactions "
+                f"({result.start_date} to {result.end_date})"
             )
             logger.info(
-                f"💡 Use 'moneybin synthetic reset --persona={persona}' "
-                f"to wipe and regenerate"
+                f"  Wrote ground truth: {gt_count} labels, {transfer_count} transfer pairs"
             )
-            raise typer.Exit(1) from None
 
-        # Generate
-        try:
-            engine = GeneratorEngine(persona, seed=actual_seed, years=years)
-            result = engine.generate()
-        except FileNotFoundError as e:
-            logger.error(f"❌ {e}")
-            raise typer.Exit(1) from None
+            # Run SQLMesh transforms
+            if not skip_transform:
+                logger.info("⚙️  Running SQLMesh to materialize pipeline...")
+                try:
+                    run_transforms()
+                except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
+                    logger.warning(
+                        "⚠️  SQLMesh transforms failed — raw data is intact, "
+                        "run 'moneybin transform apply' manually"
+                    )
 
-        # Write to database
-        writer = SyntheticWriter(db)
-        counts = writer.write(result)
-
-        acct_count = counts.get("ofx_accounts", 0) + counts.get("tabular_accounts", 0)
-        txn_count = counts.get("ofx_transactions", 0) + counts.get(
-            "tabular_transactions", 0
-        )
-        gt_count = counts.get("ground_truth", 0)
-        transfer_count = sum(1 for t in result.transactions if t.transfer_pair_id) // 2
-
-        logger.info(f"  Created {acct_count} accounts")
-        logger.info(
-            f"  Generated {txn_count} transactions "
-            f"({result.start_date} to {result.end_date})"
-        )
-        logger.info(
-            f"  Wrote ground truth: {gt_count} labels, {transfer_count} transfer pairs"
-        )
-
-        # Run SQLMesh transforms
-        if not skip_transform:
-            logger.info("⚙️  Running SQLMesh to materialize pipeline...")
-            try:
-                run_transforms()
-            except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
-                logger.warning(
-                    "⚠️  SQLMesh transforms failed — raw data is intact, "
-                    "run 'moneybin transform apply' manually"
-                )
-
-        logger.info(
-            f"✅ Profile {profile!r} ready (seed={actual_seed}). "
-            f"Use --profile={profile} with any moneybin command."
-        )
+            logger.info(
+                f"✅ Profile {profile!r} ready (seed={actual_seed}). "
+                f"Use --profile={profile} with any moneybin command."
+            )
     finally:
         close_database()
         # When called from reset(), original_profile == profile (reset already
@@ -192,8 +189,9 @@ def reset(
     ),
 ) -> None:
     """Wipe a generated profile and regenerate from scratch."""
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.config import get_current_profile, set_current_profile
-    from moneybin.database import DatabaseKeyError, close_database, get_database
+    from moneybin.database import close_database
 
     target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
 
@@ -202,57 +200,49 @@ def reset(
     set_current_profile(target_profile)
 
     try:
-        try:
-            db = get_database()
-        except DatabaseKeyError as e:
-            from moneybin.database import database_key_error_hint
-
-            logger.error(f"❌ {e}")
-            logger.info(database_key_error_hint())
-            raise typer.Exit(1) from e
-
-        # Safety check: only reset profiles created by the generator
-        try:
-            gt_row = db.execute(
-                """SELECT COUNT(*) FROM information_schema.tables
-                WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"""
-            ).fetchone()
-            gt_exists = gt_row[0] if gt_row else 0
-        except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
-            gt_exists = 0
-
-        if not gt_exists:
-            logger.error(
-                f"❌ Profile {target_profile!r} was not created by the "
-                f"generator. Refusing to reset."
-            )
-            logger.info(
-                f"💡 To destroy a non-generated profile, use "
-                f"'moneybin db destroy --profile={target_profile}'"
-            )
-            raise typer.Exit(1) from None
-
-        if not yes:
-            confirmed = typer.confirm(
-                f"This will destroy all data in profile {target_profile!r} "
-                f"and regenerate. Continue?"
-            )
-            if not confirmed:
-                raise typer.Abort()
-
-        from moneybin.metrics.registry import SYNTHETIC_RESET_TOTAL
-
-        SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
-        logger.info(f"⚙️  Resetting profile {target_profile!r}...")
-        for table, where in _RESET_DELETIONS.items():
+        with handle_database_errors() as db:
+            # Safety check: only reset profiles created by the generator
             try:
-                db.execute(f"DELETE FROM {table} {where}")  # noqa: S608 — allowlisted table names + literal WHERE clauses
-            except Exception:  # noqa: BLE001,S110 — table may not exist
-                pass
+                gt_row = db.execute(
+                    """SELECT COUNT(*) FROM information_schema.tables
+                    WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"""
+                ).fetchone()
+                gt_exists = gt_row[0] if gt_row else 0
+            except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
+                gt_exists = 0
 
-        db.close()
-        # Close the singleton so _run_generate gets a fresh connection
-        close_database()
+            if not gt_exists:
+                logger.error(
+                    f"❌ Profile {target_profile!r} was not created by the "
+                    f"generator. Refusing to reset."
+                )
+                logger.info(
+                    f"💡 To destroy a non-generated profile, use "
+                    f"'moneybin db destroy --profile={target_profile}'"
+                )
+                raise typer.Exit(1) from None
+
+            if not yes:
+                confirmed = typer.confirm(
+                    f"This will destroy all data in profile {target_profile!r} "
+                    f"and regenerate. Continue?"
+                )
+                if not confirmed:
+                    raise typer.Abort()
+
+            from moneybin.metrics.registry import SYNTHETIC_RESET_TOTAL
+
+            SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
+            logger.info(f"⚙️  Resetting profile {target_profile!r}...")
+            for table, where in _RESET_DELETIONS.items():
+                try:
+                    db.execute(f"DELETE FROM {table} {where}")  # noqa: S608 — allowlisted table names + literal WHERE clauses
+                except Exception:  # noqa: BLE001,S110 — table may not exist
+                    pass
+
+            db.close()
+            # Close the singleton so _run_generate gets a fresh connection
+            close_database()
 
         # Regenerate
         _run_generate(

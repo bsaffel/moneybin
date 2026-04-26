@@ -12,7 +12,7 @@ runner = CliRunner()
 class TestMatchesRun:
     """Tests for the matches run command."""
 
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.matches.TransactionMatcher")
     @patch("moneybin.matching.priority.seed_source_priority")
     @patch("moneybin.config.get_settings")
@@ -42,7 +42,7 @@ class TestMatchesReview:
     """Tests for the matches review command."""
 
     @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_accept_single_runs_transform(
         self,
@@ -64,7 +64,7 @@ class TestMatchesReview:
         mock_run_transforms.assert_called_once_with()
 
     @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_reject_single_does_not_run_transform(
         self,
@@ -86,7 +86,7 @@ class TestMatchesReview:
         mock_run_transforms.assert_not_called()
 
     @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.get_pending_matches")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_accept_all_runs_transform_once(
@@ -109,7 +109,7 @@ class TestMatchesReview:
         mock_run_transforms.assert_called_once_with()
 
     @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_accept_single_can_skip_transform(
         self,
@@ -136,7 +136,7 @@ class TestMatchesReview:
         mock_run_transforms.assert_not_called()
 
     @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.get_pending_matches")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_interactive_accept_runs_transform(
@@ -170,7 +170,7 @@ class TestMatchesReview:
 class TestMatchesHistory:
     """Tests for the matches history command."""
 
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.matches.get_match_log")
     def test_history_empty(self, mock_log: MagicMock, mock_get_db: MagicMock) -> None:
         mock_get_db.return_value = MagicMock()
@@ -182,7 +182,7 @@ class TestMatchesHistory:
 class TestMatchesUndo:
     """Tests for the matches undo command."""
 
-    @patch("moneybin.cli.commands.matches.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.matches.undo_match")
     def test_undo_calls_persistence(
         self, mock_undo: MagicMock, mock_get_db: MagicMock

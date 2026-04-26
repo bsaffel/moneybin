@@ -33,7 +33,7 @@ class TestGenerateCommand:
         # Make the "already has data" check return 0 rows
         mock_db.execute.return_value.fetchone.return_value = (0,)
         return mocker.patch(
-            "moneybin.database.get_database",
+            "moneybin.cli.utils.get_database",
             return_value=mock_db,
         )
 
@@ -112,7 +112,7 @@ class TestGenerateCommand:
         from moneybin.database import DatabaseKeyError
 
         mocker.patch(
-            "moneybin.database.get_database",
+            "moneybin.cli.utils.get_database",
             side_effect=DatabaseKeyError("no key"),
         )
         result = runner.invoke(app, ["generate", "--persona", "basic"])
@@ -148,7 +148,7 @@ class TestResetCommand:
         # ground_truth table exists
         mock_db.execute.return_value.fetchone.return_value = (1,)
         mock_db.path = Path("/tmp/test.duckdb")
-        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch("moneybin.cli.utils.get_database", return_value=mock_db)
 
         # Mock _run_generate to avoid the full pipeline
         mock_run = mocker.patch(
@@ -172,7 +172,7 @@ class TestResetCommand:
     def test_reset_requires_yes_or_prompt(self, runner: CliRunner) -> None:
         """Without --yes, reset should prompt for confirmation."""
         # CliRunner sends EOF on stdin by default, so prompt is declined
-        with patch("moneybin.database.get_database") as mock_get_db:
+        with patch("moneybin.cli.utils.get_database") as mock_get_db:
             mock_db = MagicMock()
             # ground_truth table exists check returns 1
             mock_db.execute.return_value.fetchone.return_value = (1,)
