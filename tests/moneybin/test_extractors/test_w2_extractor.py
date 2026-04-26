@@ -424,3 +424,26 @@ def test_extract_without_year_parameter(
     # Verify all other fields extracted correctly
     assert w2["employee_first_name"] == "Howard"
     # Note: Google Cloud sample doesn't have extractable employer name
+
+
+@pytest.mark.unit
+def test_extracted_w2_wages_are_decimal(cached_w2_extraction: pl.DataFrame) -> None:
+    """W-2 extractor returns Decimal — never float — for monetary fields."""
+    w2 = cached_w2_extraction.row(0, named=True)
+
+    for field in (
+        "wages",
+        "federal_income_tax",
+        "social_security_wages",
+        "social_security_tax",
+        "social_security_tips",
+        "medicare_wages",
+        "medicare_tax",
+        "allocated_tips",
+        "dependent_care_benefits",
+        "nonqualified_plans",
+    ):
+        if w2.get(field) is not None:
+            assert isinstance(w2[field], Decimal), (
+                f"{field} should be Decimal, got {type(w2[field]).__name__}"
+            )

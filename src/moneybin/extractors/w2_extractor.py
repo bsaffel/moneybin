@@ -31,6 +31,20 @@ from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
+_DECIMAL_AMOUNT = pl.Decimal(precision=18, scale=2)
+_W2_MONETARY_OVERRIDES = {
+    "wages": _DECIMAL_AMOUNT,
+    "federal_income_tax": _DECIMAL_AMOUNT,
+    "social_security_wages": _DECIMAL_AMOUNT,
+    "social_security_tax": _DECIMAL_AMOUNT,
+    "medicare_wages": _DECIMAL_AMOUNT,
+    "medicare_tax": _DECIMAL_AMOUNT,
+    "social_security_tips": _DECIMAL_AMOUNT,
+    "allocated_tips": _DECIMAL_AMOUNT,
+    "dependent_care_benefits": _DECIMAL_AMOUNT,
+    "nonqualified_plans": _DECIMAL_AMOUNT,
+}
+
 
 class W2StateLocalInfo(BaseModel):
     """State and local tax information from W2 (boxes 15-20).
@@ -315,7 +329,7 @@ class W2Extractor:
             df_data = self._schema_to_dataframe_dict(
                 w2_schema, source_file, extraction_timestamp
             )
-            df = pl.DataFrame([df_data])
+            df = pl.DataFrame([df_data], schema_overrides=_W2_MONETARY_OVERRIDES)
 
             logger.info(f"✅ Extracted W2 for tax year {w2_schema.tax_year}")
 
@@ -994,30 +1008,28 @@ class W2Extractor:
             "employer_name": w2_schema.employer_name,
             "employer_address": w2_schema.employer_address,
             "control_number": w2_schema.control_number,
-            "wages": float(w2_schema.wages),
-            "federal_income_tax": float(w2_schema.federal_income_tax),
-            "social_security_wages": float(w2_schema.social_security_wages)
+            "wages": w2_schema.wages,
+            "federal_income_tax": w2_schema.federal_income_tax,
+            "social_security_wages": w2_schema.social_security_wages
             if w2_schema.social_security_wages
             else None,
-            "social_security_tax": float(w2_schema.social_security_tax)
+            "social_security_tax": w2_schema.social_security_tax
             if w2_schema.social_security_tax
             else None,
-            "medicare_wages": float(w2_schema.medicare_wages)
+            "medicare_wages": w2_schema.medicare_wages
             if w2_schema.medicare_wages
             else None,
-            "medicare_tax": float(w2_schema.medicare_tax)
-            if w2_schema.medicare_tax
-            else None,
-            "social_security_tips": float(w2_schema.social_security_tips)
+            "medicare_tax": w2_schema.medicare_tax if w2_schema.medicare_tax else None,
+            "social_security_tips": w2_schema.social_security_tips
             if w2_schema.social_security_tips
             else None,
-            "allocated_tips": float(w2_schema.allocated_tips)
+            "allocated_tips": w2_schema.allocated_tips
             if w2_schema.allocated_tips
             else None,
-            "dependent_care_benefits": float(w2_schema.dependent_care_benefits)
+            "dependent_care_benefits": w2_schema.dependent_care_benefits
             if w2_schema.dependent_care_benefits
             else None,
-            "nonqualified_plans": float(w2_schema.nonqualified_plans)
+            "nonqualified_plans": w2_schema.nonqualified_plans
             if w2_schema.nonqualified_plans
             else None,
             "is_statutory_employee": w2_schema.is_statutory_employee,
