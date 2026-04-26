@@ -601,10 +601,10 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
     real_execute = db.execute
     select_calls: list[str] = []
 
-    def counting_execute(query: str, *args: object, **kwargs: object) -> object:
+    def counting_execute(query: str, params: list[object] | None = None) -> object:
         if query.strip().upper().startswith("SELECT"):
             select_calls.append(query)
-        return real_execute(query, *args, **kwargs)
+        return real_execute(query, params)  # type: ignore[arg-type]
 
     monkeypatch.setattr(db, "execute", counting_execute)
 
