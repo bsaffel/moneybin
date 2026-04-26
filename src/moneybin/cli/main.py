@@ -6,7 +6,6 @@ db, mcp.
 """
 
 import logging
-import sys
 from typing import Annotated
 
 import typer
@@ -52,8 +51,8 @@ def main_callback(
         typer.Option(
             "--profile",
             "-p",
-            help="User profile to use. Uses saved default if not specified.",
-            envvar="MONEYBIN_PROFILE",
+            help="User profile to use. Uses MONEYBIN_PROFILE env var or "
+            "saved default if not specified.",
         ),
     ] = None,
     verbose: Annotated[
@@ -85,20 +84,15 @@ def main_callback(
     # to point at an existing directory (e.g. `profile create alice`).
     is_profile_cmd = ctx.invoked_subcommand == "profile"
 
+    # Resolve env var manually (instead of via Typer's envvar=) so we can
+    # cleanly distinguish flag-provided vs env-provided values without
+    # inspecting raw argv.
     profile_source: str | None = None
     if profile_name is not None:
-        # Typer reads MONEYBIN_PROFILE into profile_name automatically;
-        # distinguish env vs flag by checking whether a profile flag
-        # was actually present in argv. Match exact tokens (-p, --profile)
-        # or the --profile=value form.
-        flag_present = any(
-            arg in ("-p", "--profile") or arg.startswith("--profile=")
-            for arg in sys.argv
-        )
-        if not flag_present and os.environ.get("MONEYBIN_PROFILE") == profile_name:
-            profile_source = "MONEYBIN_PROFILE env var"
-        else:
-            profile_source = "--profile flag"
+        profile_source = "--profile flag"
+    elif env_profile := os.environ.get("MONEYBIN_PROFILE"):
+        profile_name = env_profile
+        profile_source = "MONEYBIN_PROFILE env var"
 
     if profile_name is None and not is_profile_cmd:
         # Non-profile commands need a profile. ensure_default_profile()
