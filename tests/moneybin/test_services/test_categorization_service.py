@@ -12,7 +12,9 @@ import pytest
 from pytest_mock import MockerFixture
 
 from moneybin.database import Database
+from moneybin.services import auto_rule_service
 from moneybin.services.categorization_service import (
+    CategorizationService,
     apply_deterministic_categorization,
     apply_merchant_categories,
     apply_rules,
@@ -554,3 +556,72 @@ class TestSeedCategories:
         categories = get_active_categories(db)
         assert len(categories) == 2
         assert all(c["category"] == "Food & Drink" for c in categories)
+
+
+# ---------------------------------------------------------------------------
+# CategorizationService facade
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def real_db(tmp_path: Path) -> Database:
+    """Real DB with core + app schema, used by service-facade tests."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-key"
+    db = Database(
+        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+    )
+    create_core_tables(db)
+    return db
+
+
+def test_service_facade_exposes_required_methods() -> None:
+    """CategorizationService exposes the documented method surface."""
+    expected = {
+        "bulk_categorize",
+        "apply_rules",
+        "apply_deterministic",
+        "seed",
+        "stats",
+        "auto_review",
+        "auto_confirm",
+        "auto_stats",
+    }
+    missing = expected - set(dir(CategorizationService))
+    assert not missing, f"CategorizationService missing methods: {missing}"
+
+
+def test_service_bulk_categorize_delegates_to_module_function(
+    real_db: Database,
+) -> None:
+    """Service.bulk_categorize routes through the module-level function."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('ts1', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.bulk_categorize([
+        {"transaction_id": "ts1", "category": "Food & Drink"}
+    ])
+    assert result.applied == 1
+
+
+def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
+    """auto_review returns pending proposals seeded via auto_rule_service."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('ts2', 'a1', DATE '2026-03-02', -3.00, 'AMAZON', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_at, categorized_by) "
+        "VALUES ('ts2', 'Shopping', CURRENT_TIMESTAMP, 'user')"
+    )
+    auto_rule_service.record_categorization(real_db, "ts2", "Shopping")
+
+    svc = CategorizationService(real_db)
+    proposals = svc.auto_review()
+    patterns = {p["merchant_pattern"] for p in proposals}
+    assert "AMAZON" in patterns

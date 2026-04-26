@@ -784,3 +784,111 @@ def get_stats(db: Database) -> CategorizationStats:
         percent_categorized=float(raw["pct_categorized"]),
         by_source=by_source,
     )
+
+
+class CategorizationService:
+    """Facade matching AccountService/SpendingService/TransactionService.
+
+    Delegates to existing module-level functions in this file and to
+    auto_rule_service. Provides a uniform Service(db).method() surface for
+    the MCP layer, CLI commands, and the testing scenario runner.
+    """
+
+    def __init__(self, db: Database) -> None:
+        """Bind the service to a database connection."""
+        self._db = db
+
+    # -- Categorization core --
+
+    def bulk_categorize(self, items: list[dict[str, str]]) -> BulkCategorizationResult:
+        """Apply categories to multiple transactions; see ``bulk_categorize``."""
+        return bulk_categorize(self._db, items)
+
+    def apply_rules(self) -> int:
+        """Apply active categorization rules; see ``apply_rules``."""
+        return apply_rules(self._db)
+
+    def apply_deterministic(self) -> dict[str, int]:
+        """Run rules then merchant matching; see ``apply_deterministic_categorization``."""
+        return apply_deterministic_categorization(self._db)
+
+    def seed(self) -> int:
+        """Populate ``app.categories`` from the seed table; see ``seed_categories``."""
+        return seed_categories(self._db)
+
+    def stats(self) -> CategorizationStats:
+        """Return categorization coverage stats; see ``get_stats``."""
+        return get_stats(self._db)
+
+    # -- Auto-rule lifecycle --
+
+    def auto_review(self) -> list[dict[str, object]]:
+        """Return all pending auto-rule proposals for human review."""
+        from moneybin.tables import PROPOSED_RULES
+
+        rows = self._db.execute(
+            f"""
+            SELECT proposed_rule_id, merchant_pattern, match_type, category, subcategory,
+                   trigger_count, sample_txn_ids
+            FROM {PROPOSED_RULES.full_name}
+            WHERE status = 'pending'
+            ORDER BY trigger_count DESC, proposed_at ASC
+            """
+        ).fetchall()
+        return [
+            {
+                "proposed_rule_id": r[0],
+                "merchant_pattern": r[1],
+                "match_type": r[2],
+                "category": r[3],
+                "subcategory": r[4],
+                "trigger_count": r[5],
+                "sample_txn_ids": list(r[6] or []),
+            }
+            for r in rows
+        ]
+
+    def auto_confirm(
+        self,
+        approve: list[str] | None = None,
+        reject: list[str] | None = None,
+    ) -> dict[str, object]:
+        """Approve and/or reject pending proposals; returns aggregate counts."""
+        # Local import avoids circular dependency: auto_rule_service imports
+        # normalize_description from this module.
+        from moneybin.services import auto_rule_service
+
+        a = auto_rule_service.approve(self._db, approve or [])
+        r = auto_rule_service.reject(self._db, reject or [])
+        return {
+            "approved": a.approved,
+            "newly_categorized": a.newly_categorized,
+            "rule_ids": a.rule_ids,
+            "rejected": r.rejected,
+            "skipped": a.skipped + r.skipped,
+        }
+
+    def auto_stats(self) -> dict[str, int]:
+        """Return counts of active auto-rules, pending proposals, and applied transactions."""
+        from moneybin.tables import PROPOSED_RULES
+
+        def _scalar(sql: str) -> int:
+            row = self._db.execute(sql).fetchone()
+            return int(row[0]) if row else 0
+
+        active = _scalar(
+            f"SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name} "
+            "WHERE created_by = 'auto_rule' AND is_active = true"
+        )
+        pending = _scalar(
+            f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
+        )
+        applied = _scalar(
+            f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "
+            "WHERE categorized_by = 'auto_rule'"
+        )
+        return {
+            "active_auto_rules": active,
+            "pending_proposals": pending,
+            "transactions_categorized": applied,
+        }
