@@ -34,6 +34,8 @@ def plan_transforms(
             with sqlmesh_context() as ctx:
                 ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh plan failed: {e}")
         raise typer.Exit(1) from e
@@ -53,6 +55,8 @@ def apply_transforms() -> None:
             with sqlmesh_context() as ctx:
                 ctx.plan(auto_apply=True, no_prompts=True)
         logger.info("✅ SQLMesh transforms applied")
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh apply failed: {e}")
         raise typer.Exit(1) from e
@@ -78,6 +82,8 @@ def transform_status() -> None:
                 else:
                     logger.info("No SQLMesh environment initialized yet")
                     logger.info("💡 Run 'moneybin transform apply' to initialize")
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ SQLMesh status failed: {e}")
         raise typer.Exit(1) from e
@@ -92,6 +98,8 @@ def transform_validate() -> None:
             with sqlmesh_context() as ctx:
                 ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Validation failed: {e}")
         raise typer.Exit(1) from e
@@ -113,6 +121,8 @@ def transform_audit(
             with sqlmesh_context() as ctx:
                 ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Audit failed: {e}")
         raise typer.Exit(1) from e
@@ -148,6 +158,8 @@ def transform_restate(
                     no_prompts=True,
                 )
         logger.info(f"✅ Restated {model}")
+    except typer.Exit:
+        raise
     except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
         logger.error(f"❌ Restatement failed: {e}")
         raise typer.Exit(1) from e
