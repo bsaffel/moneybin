@@ -32,6 +32,7 @@ from moneybin.secrets import SecretNotFoundError, SecretStore
 logger = logging.getLogger(__name__)
 
 _KEY_NAME = "DATABASE__ENCRYPTION_KEY"
+SALT_NAME = "DATABASE__PASSPHRASE_SALT"
 _DATABASE_ALIAS = "moneybin"
 
 
@@ -126,8 +127,10 @@ class Database:
                 f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
             ) from e
 
-        # Ensure parent directory exists
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists — parents=False so we don't
+        # recreate a deleted profile's directory tree. The profile root
+        # must already exist (created by ProfileService.create).
+        db_path.parent.mkdir(parents=False, exist_ok=True)
 
         is_new = not db_path.exists()
 
@@ -205,7 +208,7 @@ class Database:
             except importlib.metadata.PackageNotFoundError:
                 pass  # SQLMesh not installed — skip
 
-        logger.info(f"Database connection established: {db_path}")
+        logger.debug(f"Database connection established: {db_path}")
 
     def _check_permissions(self, db_path: Path) -> None:
         """Warn if database file has overly permissive permissions.
@@ -246,12 +249,17 @@ class Database:
                 BaseDuckDBConnectionConfig,
                 DuckDBConnectionConfig,
             )
+            from sqlmesh.core.console import NoopConsole, set_console
             from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 
             from sqlmesh import Context  # type: ignore[import-untyped]
         except ImportError:
             logger.debug("sqlmesh not installed, skipping migrate")
             return True
+
+        # See sqlmesh_context() — silence SQLMesh's rich console; logs still
+        # flow to the sqlmesh log file.
+        set_console(NoopConsole())
 
         # Adapter construction and cache injection are inside the try block
         # so that failures degrade gracefully instead of breaking DB init.
@@ -503,6 +511,16 @@ def get_database() -> Database:
     return db
 
 
+def get_database_if_initialized() -> Database | None:
+    """Return the singleton Database if it exists, otherwise None.
+
+    Unlike ``get_database()``, this never creates a new connection.
+    Used by the atexit handler to flush metrics only when a database
+    was actually used during the session.
+    """
+    return _database_instance
+
+
 def close_database() -> None:
     """Close and clear the singleton Database instance."""
     global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
@@ -556,11 +574,18 @@ def sqlmesh_context(
         BaseDuckDBConnectionConfig,
         DuckDBConnectionConfig,
     )
+    from sqlmesh.core.console import NoopConsole, set_console
     from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 
     from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
         Context,
     )
+
+    # SQLMesh's rich-based TerminalConsole writes plan/progress directly to
+    # stdout, bypassing stdlib logging. Swap in NoopConsole so import/transform
+    # commands don't drown the user in SQLMesh chatter — diagnostic output
+    # still reaches the sqlmesh_*.log file via the stdlib loggers.
+    set_console(NoopConsole())
 
     root = sqlmesh_root or _SQLMESH_ROOT
     db_path = get_settings().database.path
@@ -603,3 +628,187 @@ def sqlmesh_context(
         yield ctx
     finally:
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
+
+
+def derive_key_from_passphrase(
+    passphrase: str,
+    salt: bytes,
+    *,
+    time_cost: int = 3,
+    memory_cost: int = 65536,
+    parallelism: int = 4,
+    hash_len: int = 32,
+) -> str:
+    """Derive a hex encryption key from a passphrase using Argon2id.
+
+    Used by both init_db (at creation) and db_unlock (at re-derivation).
+    Both callers must pass the same parameters — defaults match
+    ``DatabaseConfig`` so callers with access to settings can forward
+    them explicitly.
+
+    Args:
+        passphrase: User-supplied passphrase string.
+        salt: Random 16-byte salt (stored at init, retrieved at unlock).
+        time_cost: Argon2id time cost (iterations).
+        memory_cost: Argon2id memory cost in KiB.
+        parallelism: Argon2id degree of parallelism.
+        hash_len: Argon2id output hash length in bytes.
+
+    Returns:
+        64-character hex string (256-bit key).
+    """
+    import argon2.low_level
+
+    raw_key = argon2.low_level.hash_secret_raw(
+        secret=passphrase.encode(),
+        salt=salt,
+        time_cost=time_cost,
+        memory_cost=memory_cost,
+        parallelism=parallelism,
+        hash_len=hash_len,
+        type=argon2.low_level.Type.ID,
+    )
+    return raw_key.hex()
+
+
+def init_db(
+    db_path: Path,
+    *,
+    passphrase: str | None = None,
+    secret_store: SecretStore | None = None,
+    profile: str | None = None,
+    argon2_time_cost: int = 3,
+    argon2_memory_cost: int = 65536,
+    argon2_parallelism: int = 4,
+    argon2_hash_len: int = 32,
+) -> None:
+    """Create a new encrypted database with all schemas initialized.
+
+    Two modes:
+    - **Auto-key** (default): uses an existing encryption key if available
+      (e.g., from env var), otherwise generates a random 256-bit key and
+      stores it in the OS keychain.
+    - **Passphrase**: derives a key via Argon2id from the supplied
+      passphrase, stores the derived key and salt in the keychain.
+
+    Args:
+        db_path: Path to the DuckDB database file to create.
+        passphrase: If provided, use passphrase-based key derivation
+            instead of auto-generated key.
+        secret_store: SecretStore instance for key storage. If None,
+            creates a new one (uses OS keychain by default).
+        profile: Profile name used to scope the keychain service when
+            ``secret_store`` is None. Ignored if ``secret_store`` is provided.
+        argon2_time_cost: Argon2id time cost (only used with passphrase).
+        argon2_memory_cost: Argon2id memory cost in KiB (only used with passphrase).
+        argon2_parallelism: Argon2id parallelism (only used with passphrase).
+        argon2_hash_len: Argon2id hash length in bytes (only used with passphrase).
+    """
+    import secrets as secrets_mod
+
+    # init_db is the explicit "create a database" entry point, so it's safe
+    # to create parent directories. This supports custom --database paths
+    # (e.g., /tmp/new/path/moneybin.duckdb) where ancestors may not exist.
+    # The Database constructor itself uses parents=False to avoid silently
+    # recreating deleted profile trees during normal operation.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    store = secret_store or SecretStore(profile=profile)
+
+    if passphrase is not None:
+        import base64
+
+        salt = secrets_mod.token_bytes(16)
+        encryption_key = derive_key_from_passphrase(
+            passphrase,
+            salt,
+            time_cost=argon2_time_cost,
+            memory_cost=argon2_memory_cost,
+            parallelism=argon2_parallelism,
+            hash_len=argon2_hash_len,
+        )
+        # Save previous keys so we can roll back if DB open fails
+        # (e.g., db_path already encrypted with a different key).
+        prev_key: str | None = None
+        prev_salt: str | None = None
+        try:
+            prev_key = store.get_key(_KEY_NAME)
+        except SecretNotFoundError:
+            pass
+        try:
+            prev_salt = store.get_key(SALT_NAME)
+        except SecretNotFoundError:
+            pass
+
+        db_existed = db_path.exists()
+        try:
+            # set_key calls inside the try block so a failure on SALT_NAME
+            # after _KEY_NAME succeeded still triggers the rollback below.
+            store.set_key(_KEY_NAME, encryption_key)
+            store.set_key(SALT_NAME, base64.b64encode(salt).decode())
+            with Database(db_path, secret_store=store, no_auto_upgrade=False):
+                pass
+        except Exception:
+            # Roll back keychain to previous state so the existing DB
+            # remains accessible with its original key.
+            if prev_key is not None:
+                store.set_key(_KEY_NAME, prev_key)
+            else:
+                try:
+                    store.delete_key(_KEY_NAME)
+                except Exception:  # noqa: BLE001, S110 — best-effort rollback
+                    pass  # noqa: S110
+            if prev_salt is not None:
+                store.set_key(SALT_NAME, prev_salt)
+            else:
+                try:
+                    store.delete_key(SALT_NAME)
+                except Exception:  # noqa: BLE001, S110 — best-effort rollback
+                    pass  # noqa: S110
+            # If we just created an encrypted DB file but Database() then
+            # raised (e.g., during schema/migration), remove the orphan so
+            # retries aren't locked out by a file with no matching key.
+            if not db_existed and db_path.exists():
+                try:
+                    db_path.unlink()
+                except OSError:
+                    pass
+            raise
+        logger.debug("Passphrase-derived key stored in OS keychain")
+    else:
+        # Auto-key mode: prefer existing keychain entry; if absent, persist
+        # an env-provided key (so the DB stays openable after the env var
+        # is unset) or generate a fresh one.
+        db_existed = db_path.exists()
+        key_was_persisted_now = False
+        if store.has_keychain_entry(_KEY_NAME):
+            logger.debug("Using existing encryption key")
+        else:
+            try:
+                encryption_key = store.get_key(_KEY_NAME)
+                logger.debug("Persisting env-provided encryption key to keychain")
+            except SecretNotFoundError:
+                encryption_key = secrets_mod.token_hex(32)
+                logger.debug("Auto-generated encryption key stored in OS keychain")
+            store.set_key(_KEY_NAME, encryption_key)
+            key_was_persisted_now = True
+
+        try:
+            with Database(db_path, secret_store=store, no_auto_upgrade=False):
+                pass
+        except Exception:
+            # Roll back the freshly persisted key and any orphan DB file.
+            # We only undo persistence we just performed — a pre-existing
+            # keychain entry belongs to the user and stays put.
+            if key_was_persisted_now:
+                try:
+                    store.delete_key(_KEY_NAME)
+                except Exception:  # noqa: BLE001, S110 — best-effort rollback
+                    pass  # noqa: S110
+                if not db_existed and db_path.exists():
+                    try:
+                        db_path.unlink()
+                    except OSError:
+                        pass
+            raise
+    logger.debug(f"Initialized encrypted database: {db_path}")

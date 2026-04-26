@@ -320,9 +320,10 @@ def serve(
 
     db_path = get_database_path()
 
+    from moneybin.config import get_current_profile
     from moneybin.observability import setup_observability
 
-    setup_observability(stream="mcp")
+    setup_observability(stream="mcp", profile=get_current_profile())
 
     logger.info(f"Starting MCP server with database: {db_path}")
 
@@ -351,4 +352,9 @@ def serve(
     except KeyboardInterrupt:
         logger.info("MCP server stopped by user")
     finally:
+        # Flush metrics before closing — close_db() clears the singleton,
+        # so the atexit handler would find no DB to flush to.
+        from moneybin.observability import flush_metrics
+
+        flush_metrics()
         close_db()

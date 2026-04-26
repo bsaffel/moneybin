@@ -100,7 +100,11 @@ class SanitizedLogFormatter(logging.Formatter):
         # is passed back through this formatter (e.g. via the root logger's file
         # handler), don't emit another warning — that would be infinite recursion.
         if masked and record.name != __name__:
-            _sanitizer_logger.warning(
+            # Debug, not warning: this fires routinely on sqlmesh internal
+            # logs that incidentally contain dollar-amount-shaped strings.
+            # The masking already happened; the audit trail belongs in file
+            # logs at DEBUG level, not on the user's console.
+            _sanitizer_logger.debug(
                 f"PII pattern detected and masked in log output (source: {record.pathname}:{record.lineno})"
             )
 

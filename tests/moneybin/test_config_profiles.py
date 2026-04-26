@@ -308,10 +308,12 @@ class TestProfileConfiguration:
             # Clear the cache
             clear_settings_cache()
 
-            # Current profile should be reset to 'test'
-            assert get_current_profile() == "test"
+            # Current profile should be reset to None
+            with pytest.raises(RuntimeError, match="No profile set"):
+                get_current_profile()
 
-            # Get settings again for test profile - should be new instance
+            # Set profile to test, get new settings
+            set_current_profile("test")
             test_settings = get_settings()
             assert test_settings is not alice_settings_1
             assert test_settings.profile == "test"

@@ -16,6 +16,7 @@ from tests.e2e.conftest import (
     FIXTURES_DIR,
     TEST_ENCRYPTION_KEY,
     TEST_PASSPHRASE,
+    base_env,
     make_workflow_env,
     run_cli,
 )
@@ -26,27 +27,70 @@ pytestmark = pytest.mark.e2e
 class TestProfileLifecycle:
     """Profile create, switch, set, and delete."""
 
+    def test_profile_create_initializes_database(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Profile create must produce a usable encrypted database."""
+        env = base_env(tmp_path, "dbcheck")
+        result = run_cli("profile", "create", "dbcheck", env=env)
+        result.assert_success()
+
+        # Database file must exist after create
+        db_path = tmp_path / "profiles" / "dbcheck" / "moneybin.duckdb"
+        assert db_path.exists(), "profile create did not create database file"
+
+        # Database must be usable — db info should succeed without db init
+        result = run_cli("db", "info", env=env)
+        result.assert_success()
+
+    def test_profile_create_runs_migrations(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Profile create runs all migrations so the DB is fully ready.
+
+        After create, the version is recorded. A subsequent command must
+        NOT re-run migrations — verified by checking that the migration
+        summary line does not appear in db info output.
+        """
+        env = base_env(tmp_path, "migcheck")
+
+        # Step 1: profile create should run migrations
+        result = run_cli("profile", "create", "migcheck", env=env)
+        result.assert_success()
+
+        # Step 2: db info must succeed — DB is fully initialized
+        result = run_cli("db", "info", env=env)
+        result.assert_success()
+
+        # Step 3: migrations must NOT re-run — version already matches
+        assert "migration(s) applied" not in result.output, (
+            "Migrations re-ran on db info — version was not recorded during "
+            f"profile create.\nOutput: {result.output}"
+        )
+
     def test_profile_create_switch_delete(
         self,
         tmp_path: Path,
     ) -> None:
-        base_env = {"MONEYBIN_HOME": str(tmp_path)}
+        env = {"MONEYBIN_HOME": str(tmp_path)}
 
         # Create two profiles so we can switch away before deleting
-        run_cli("profile", "create", "keeper", env=base_env)
-        result = run_cli("profile", "create", "doomed", env=base_env)
+        run_cli("profile", "create", "keeper", env=env)
+        result = run_cli("profile", "create", "doomed", env=env)
         result.assert_success()
 
         # Switch to doomed
-        result = run_cli("profile", "switch", "doomed", env=base_env)
+        result = run_cli("profile", "switch", "doomed", env=env)
         result.assert_success()
 
         # Switch back so doomed is not active
-        result = run_cli("profile", "switch", "keeper", env=base_env)
+        result = run_cli("profile", "switch", "keeper", env=env)
         result.assert_success()
 
         # Delete doomed (--yes to skip confirmation)
-        result = run_cli("profile", "delete", "doomed", "--yes", env=base_env)
+        result = run_cli("profile", "delete", "doomed", "--yes", env=env)
         result.assert_success()
 
     def test_profile_set(self, tmp_path: Path) -> None:
@@ -91,6 +135,10 @@ class TestDBInit:
             "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
         }
         run_cli("profile", "create", "initpp", env=env)
+        # Remove the auto-created DB so db init can create a new one
+        # with a passphrase-derived key
+        db_path = tmp_path / "profiles" / "initpp" / "moneybin.duckdb"
+        db_path.unlink(missing_ok=True)
         passphrase_input = f"{TEST_PASSPHRASE}\n{TEST_PASSPHRASE}\n"
         result = run_cli(
             "db",

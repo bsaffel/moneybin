@@ -19,35 +19,13 @@ app = typer.Typer(help="Database management commands", no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
 
-def _derive_key_from_passphrase(passphrase: str, salt: bytes) -> str:
-    """Derive a hex encryption key from a passphrase using Argon2id.
-
-    Used by both init_db (at creation) and db_unlock (at re-derivation).
-    Both callers must use the same DatabaseConfig parameters — this helper
-    ensures they can never diverge and silently lock users out.
-
-    Args:
-        passphrase: User-supplied passphrase string.
-        salt: Random 16-byte salt (stored at init, retrieved at unlock).
-
-    Returns:
-        64-character hex string (256-bit key).
-    """
-    import argon2.low_level
-
-    from moneybin.config import get_settings
-
-    db_cfg = get_settings().database
-    raw_key = argon2.low_level.hash_secret_raw(
-        secret=passphrase.encode(),
-        salt=salt,
-        time_cost=db_cfg.argon2_time_cost,
-        memory_cost=db_cfg.argon2_memory_cost,
-        parallelism=db_cfg.argon2_parallelism,
-        hash_len=db_cfg.argon2_hash_len,
-        type=argon2.low_level.Type.ID,
-    )
-    return raw_key.hex()
+def _format_bytes(num_bytes: int) -> str:
+    """Format a byte count as a human-readable string (B / KB / MB)."""
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
 
 
 def _check_duckdb_cli() -> str | None:
@@ -119,9 +97,8 @@ def init_db(
     in the OS keychain (auto-key mode). Use --passphrase for passphrase-
     based key derivation via Argon2id.
     """
-    import secrets as secrets_mod
-
     from moneybin.config import get_settings
+    from moneybin.database import init_db as do_init_db
     from moneybin.secrets import SecretStore
 
     settings = get_settings()
@@ -134,41 +111,33 @@ def init_db(
         if not overwrite:
             raise typer.Exit(0)
 
-    store = SecretStore()
-
+    pp: str | None = None
     if passphrase:
-        # Passphrase mode: prompt, derive key via Argon2id, store derived key + salt
-        import base64
-
         pp = typer.prompt("Enter passphrase", hide_input=True)
         pp_confirm = typer.prompt("Confirm passphrase", hide_input=True)
         if pp != pp_confirm:
             logger.error("❌ Passphrases do not match")
             raise typer.Exit(1)
 
-        # Generate a fixed salt to allow re-derivation during unlock
-        salt = secrets_mod.token_bytes(16)
-        # Derive deterministic key from passphrase + salt via shared helper.
-        # _derive_key_from_passphrase must be used here and in db_unlock so
-        # the Argon2id parameters can never diverge.
-        encryption_key = _derive_key_from_passphrase(pp, salt)
-
-        # Store key and salt so unlock can re-derive
-        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
-        store.set_key("DATABASE__PASSPHRASE_SALT", base64.b64encode(salt).decode())
-        logger.info("Passphrase-derived key stored in OS keychain")
-    else:
-        # Auto-key mode: generate random 256-bit key
-        encryption_key = secrets_mod.token_hex(32)
-        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
-        logger.info("Auto-generated encryption key stored in OS keychain")
-
-    # Create the database using the Database class
-    from moneybin.database import Database
-
-    with Database(db_path, secret_store=store):
-        pass
-
+    db_cfg = settings.database
+    try:
+        do_init_db(
+            db_path,
+            passphrase=pp,
+            secret_store=SecretStore(),
+            argon2_time_cost=db_cfg.argon2_time_cost,
+            argon2_memory_cost=db_cfg.argon2_memory_cost,
+            argon2_parallelism=db_cfg.argon2_parallelism,
+            argon2_hash_len=db_cfg.argon2_hash_len,
+        )
+    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on key/file issues
+        logger.error(f"❌ Failed to initialize database: {e}")
+        if db_path.exists():
+            logger.info(
+                "💡 An existing database may be encrypted with a different key. "
+                "Delete the file or restore the original key, then retry."
+            )
+        raise typer.Exit(1) from e
     logger.info(f"✅ Encrypted database created: {db_path}")
 
 
@@ -335,17 +304,8 @@ def db_info(
         logger.error(f"❌ Database file not found: {db_path}")
         raise typer.Exit(1)
 
-    # File info
-    file_size = db_path.stat().st_size
-    if file_size < 1024:
-        size_str = f"{file_size} B"
-    elif file_size < 1024 * 1024:
-        size_str = f"{file_size / 1024:.1f} KB"
-    else:
-        size_str = f"{file_size / (1024 * 1024):.1f} MB"
-
     logger.info(f"Database: {db_path}")
-    logger.info(f"  File size: {size_str}")
+    logger.info(f"  File size: {_format_bytes(db_path.stat().st_size)}")
     logger.info("  Encryption: AES-256-GCM (always on)")
     logger.info(f"  Key mode: {settings.database.encryption_key_mode}")
 
@@ -428,8 +388,9 @@ def db_backup(
         except OSError:
             pass
 
-    file_size = backup_path.stat().st_size / (1024 * 1024)
-    logger.info(f"✅ Backup created: {backup_path} ({file_size:.1f} MB)")
+    logger.info(
+        f"✅ Backup created: {backup_path} ({_format_bytes(backup_path.stat().st_size)})"
+    )
 
 
 @app.command("restore")
@@ -472,8 +433,7 @@ def db_restore(
         else:
             logger.info("Available backups:")
             for i, b in enumerate(backups, 1):
-                size = b.stat().st_size / (1024 * 1024)
-                logger.info(f"  {i}. {b.name} ({size:.1f} MB)")
+                logger.info(f"  {i}. {b.name} ({_format_bytes(b.stat().st_size)})")
 
             choice = typer.prompt("Select backup number", type=int)
             if choice < 1 or choice > len(backups):
@@ -557,7 +517,7 @@ def db_unlock() -> None:
     import binascii
 
     from moneybin.config import get_settings
-    from moneybin.database import Database
+    from moneybin.database import SALT_NAME, Database, derive_key_from_passphrase
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
     settings = get_settings()
@@ -565,7 +525,7 @@ def db_unlock() -> None:
 
     # Retrieve the stored salt
     try:
-        salt_b64 = store.get_key("DATABASE__PASSPHRASE_SALT")
+        salt_b64 = store.get_key(SALT_NAME)
     except SecretNotFoundError:
         logger.error(
             "❌ No passphrase salt found. Was this database created with --passphrase mode?"
@@ -584,9 +544,15 @@ def db_unlock() -> None:
     pp = typer.prompt("Enter passphrase", hide_input=True)
 
     # Re-derive key using same params and stored salt via shared helper.
-    # _derive_key_from_passphrase must be used here and in init_db so
-    # the Argon2id parameters can never diverge.
-    encryption_key = _derive_key_from_passphrase(pp, salt)
+    db_cfg = settings.database
+    encryption_key = derive_key_from_passphrase(
+        pp,
+        salt,
+        time_cost=db_cfg.argon2_time_cost,
+        memory_cost=db_cfg.argon2_memory_cost,
+        parallelism=db_cfg.argon2_parallelism,
+        hash_len=db_cfg.argon2_hash_len,
+    )
 
     store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
 
@@ -774,6 +740,26 @@ def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     return processes
 
 
+def _list_db_processes(db_path: Path) -> list[dict[str, str | int]]:
+    """Print the table of processes holding `db_path` open and return them.
+
+    Returns an empty list when the file is missing or no other process holds it.
+    """
+    if not db_path.exists():
+        logger.info(f"Database file does not exist yet: {db_path}")
+        return []
+    processes = _find_db_processes(db_path)
+    if not processes:
+        logger.info(f"No other processes have {db_path.name} open")
+        return []
+    typer.echo(f"Processes holding {db_path} open:\n")
+    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
+    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
+    for proc in processes:
+        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
+    return processes
+
+
 @app.command("ps")
 def db_ps(
     database: Path | None = typer.Option(
@@ -783,19 +769,7 @@ def db_ps(
     """Show processes holding the MoneyBin database file open."""
     from moneybin.config import get_settings
 
-    db_path = database or get_settings().database.path
-    if not db_path.exists():
-        logger.info(f"Database file does not exist yet: {db_path}")
-        return
-    processes = _find_db_processes(db_path)
-    if not processes:
-        logger.info(f"No other processes have {db_path.name} open")
-        return
-    typer.echo(f"Processes holding {db_path} open:\n")
-    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
-    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
-    for proc in processes:
-        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
+    _list_db_processes(database or get_settings().database.path)
 
 
 @app.command("kill")
@@ -809,18 +783,9 @@ def db_kill(
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
-    if not db_path.exists():
-        logger.info(f"Database file does not exist yet: {db_path}")
-        return
-    processes = _find_db_processes(db_path)
+    processes = _list_db_processes(db_path)
     if not processes:
-        logger.info(f"No other processes have {db_path.name} open")
         return
-    typer.echo(f"Processes holding {db_path} open:\n")
-    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
-    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
-    for proc in processes:
-        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
     typer.echo()
 
     count = len(processes)

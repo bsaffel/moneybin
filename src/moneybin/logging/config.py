@@ -1,9 +1,12 @@
 """Logging configuration for MoneyBin.
 
 This module provides ``setup_logging()`` which configures Python's logging
-system based on settings from ``get_settings().logging``. It is called
-internally by ``setup_observability()`` — application code should not call
-it directly.
+system. It is called internally by ``setup_observability()`` — application
+code should not call it directly.
+
+``setup_logging()`` does not call ``get_settings()``. All configuration
+values are passed explicitly by the caller, decoupling logging setup from
+profile resolution and settings loading.
 """
 
 import logging
@@ -16,12 +19,37 @@ from typing import Literal
 from moneybin.log_sanitizer import SanitizedLogFormatter
 from moneybin.logging.formatters import HumanFormatter, JSONFormatter
 
+logger = logging.getLogger(__name__)
+
 
 class _SuppressFilter(logging.Filter):
     """Filter out noisy SQLMesh analytics shutdown messages."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         return "Shutting down the event dispatcher" not in record.getMessage()
+
+
+# Logger-name prefixes whose INFO/DEBUG output is too noisy for the console
+# but should still reach log files for debugging. SQLMesh emits a lot of
+# operational logging (model evaluation, plan creation, state sync, analytics)
+# that drowns out user-facing CLI output — route it all to the sqlmesh log
+# file instead.
+_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = ("sqlmesh",)
+
+
+class _ConsoleNoiseFilter(logging.Filter):
+    """Suppress noisy third-party INFO messages from the console only.
+
+    Attached to the console handler so file handlers still see everything.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno < logging.WARNING and any(
+            record.name == p or record.name.startswith(f"{p}.")
+            for p in _CONSOLE_SUPPRESSED_PREFIXES
+        ):
+            return False
+        return True
 
 
 def session_log_path(
@@ -50,61 +78,132 @@ def session_log_path(
     return profile_log_dir / f"{prefix}_{now.strftime('%Y-%m-%d')}.log"
 
 
+def _make_file_handler(
+    log_file: Path, formatter: logging.Formatter
+) -> logging.FileHandler:
+    """Create a file handler with restrictive permissions.
+
+    Args:
+        log_file: Path to the log file.
+        formatter: Formatter to apply (will be wrapped in SanitizedLogFormatter).
+
+    Returns:
+        Configured FileHandler.
+    """
+    handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    if sys.platform != "win32":
+        try:
+            log_file.chmod(stat_mod.S_IRUSR | stat_mod.S_IWUSR)  # 0600
+        except OSError:
+            pass
+    handler.setFormatter(SanitizedLogFormatter(formatter))
+    return handler
+
+
+def _setup_sqlmesh_file_handler(
+    log_file_path: Path, formatter: logging.Formatter
+) -> None:
+    """Route SQLMesh logger output to a dedicated sqlmesh log file.
+
+    Per the observability spec, SQLMesh output goes to
+    ``sqlmesh_YYYY-MM-DD.log`` (file only — suppressed from console).
+    The handler is attached to the root ``sqlmesh`` logger so every
+    ``sqlmesh.*`` descendant inherits it, and propagation is disabled so
+    the same records don't also land in the CLI log file.
+
+    Args:
+        log_file_path: Base log file path (used to derive the sqlmesh log path).
+        formatter: Formatter to apply to the file handler.
+    """
+    sqlmesh_log = session_log_path(log_file_path, prefix="sqlmesh")
+    resolved_path = str(sqlmesh_log.resolve())
+
+    sqlmesh_logger = logging.getLogger("sqlmesh")
+
+    # Evict any stale FileHandlers pointing at a different path before
+    # adding the new one. Long-lived processes (MCP server) crossing
+    # midnight would otherwise accumulate one handler per day.
+    for stale in [
+        h
+        for h in sqlmesh_logger.handlers
+        if isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) != resolved_path
+    ]:
+        sqlmesh_logger.removeHandler(stale)
+        stale.close()
+
+    if not any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == resolved_path
+        for h in sqlmesh_logger.handlers
+    ):
+        sqlmesh_logger.addHandler(_make_file_handler(sqlmesh_log, formatter))
+
+    # propagate=False stops INFO/DEBUG noise from reaching the CLI/MCP
+    # log file, but it would also hide WARNING/ERROR from the root
+    # console handler. Add a dedicated WARNING-level stderr handler on
+    # the sqlmesh logger so important runtime issues are still visible.
+    if not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in sqlmesh_logger.handlers
+    ):
+        sqlmesh_console = logging.StreamHandler(sys.stderr)
+        sqlmesh_console.setLevel(logging.WARNING)
+        sqlmesh_console.setFormatter(SanitizedLogFormatter(formatter))
+        sqlmesh_logger.addHandler(sqlmesh_console)
+    sqlmesh_logger.propagate = False
+
+
 def setup_logging(
     stream: Literal["cli", "mcp", "sqlmesh"] = "cli",
     verbose: bool = False,
-    profile: str | None = None,
     *,
+    level: str = "INFO",
+    log_format: Literal["human", "json"] = "human",
+    log_to_file: bool = False,
     log_file_path: Path | None = None,
-    cli_mode: bool | None = None,
-    config: object | None = None,
 ) -> None:
     """Set up centralized logging configuration.
 
-    Reads from ``get_settings().logging`` for all configuration. The optional
-    ``log_file_path`` parameter is for testing only — production callers
-    should not pass it.
+    All parameters are passed explicitly — this function does not call
+    ``get_settings()``. The caller (``setup_observability()``) resolves
+    log settings from the profile config and passes them here.
 
     Args:
         stream: Log stream name — determines file prefix and console format.
             "cli" uses message-only console format; "mcp" and "sqlmesh" use
             full format with timestamps.
-        verbose: If True, enable DEBUG level logging (overrides config level).
-        profile: Optional profile name (unused — profile is set via
-            ``set_current_profile()`` before this runs).
-        log_file_path: Override log file path (testing only).
-        cli_mode: Deprecated — use ``stream="cli"`` instead. Accepted for
-            backward compatibility until callers are migrated.
-        config: Deprecated — ignored. Configuration is read from
-            ``get_settings().logging``.
+        verbose: If True, enable DEBUG level logging (overrides ``level``).
+        level: Log level name (e.g. "INFO", "DEBUG"). Ignored when
+            ``verbose`` is True.
+        log_format: Log output format: "human" or "json".
+        log_to_file: Whether to write logs to a file.
+        log_file_path: Path used to derive the daily log file location.
+            Required when ``log_to_file`` is True.
     """
-    # Backward compatibility: map cli_mode to stream
-    if cli_mode is not None:
-        stream = "cli" if cli_mode else "mcp"
-    from moneybin.config import get_settings
-
-    settings = get_settings()
-    log_config = settings.logging
-
     # Determine log level
     if verbose:
-        level = logging.DEBUG
+        resolved_level = logging.DEBUG
     else:
-        level = getattr(logging, log_config.level)
+        resolved_level = getattr(logging, level)
 
-    # Build inner formatter based on config
-    if log_config.format == "json":
+    # Build formatter based on config
+    if log_format == "json":
         inner_formatter: logging.Formatter = JSONFormatter()
     elif stream == "cli":
         inner_formatter = HumanFormatter(variant="cli")
     else:
         inner_formatter = HumanFormatter(variant="full")
 
-    # Console formatter: CLI gets message-only, others get full
-    if stream == "cli":
-        console_formatter: logging.Formatter = HumanFormatter(variant="cli")
+    # Console always uses human-readable format (JSON is for file output only).
+    # When log_format=="json", inner_formatter is JSONFormatter, so substitute
+    # a HumanFormatter for the console so users don't see JSON on stderr.
+    if log_format == "json":
+        console_formatter: logging.Formatter = HumanFormatter(
+            variant="cli" if stream == "cli" else "full"
+        )
     else:
-        console_formatter = HumanFormatter(variant="full")
+        console_formatter = inner_formatter
 
     # Prepare handlers
     handlers: list[logging.Handler] = []
@@ -112,29 +211,33 @@ def setup_logging(
     # Console handler (always present, writes to stderr)
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
+    console_handler.addFilter(_ConsoleNoiseFilter())
     handlers.append(console_handler)
 
-    # File handler
-    file_path = log_file_path or log_config.log_file_path
-    if log_config.log_to_file or log_file_path is not None:
-        log_file = session_log_path(file_path, prefix=stream)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
+    # File handler — only write to file if the log directory's parent exists.
+    # Profile directories are created by ProfileService.create(), not here.
+    # Using parents=True would silently recreate a deleted profile's tree.
+    if log_to_file and log_file_path is not None:
+        log_file: Path | None = session_log_path(log_file_path, prefix=stream)
+        try:
+            log_file.parent.mkdir(parents=False, exist_ok=True)
+        except FileNotFoundError:
+            logger.warning("Log directory not found; writing logs to console only")
+            log_file = None
 
-        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        if log_file is not None:
+            file_handler = _make_file_handler(log_file, inner_formatter)
+            handlers.append(file_handler)
 
-        # Set restrictive permissions on log file (macOS/Linux).
-        # Runs after FileHandler creation so new files are also covered.
-        if sys.platform != "win32":
-            try:
-                log_file.chmod(stat_mod.S_IRUSR | stat_mod.S_IWUSR)  # 0600
-            except OSError:
-                pass
-        file_handler.setFormatter(SanitizedLogFormatter(inner_formatter))
-        handlers.append(file_handler)
+            # Dedicated sqlmesh log file — SQLMesh output is noisy so it
+            # gets its own stream file per the observability spec. The
+            # console filter already suppresses these from stderr; this
+            # ensures they still reach a log file for debugging.
+            _setup_sqlmesh_file_handler(log_file_path, inner_formatter)
 
     # Configure root logger
     logging.basicConfig(
-        level=level,
+        level=resolved_level,
         handlers=handlers,
         force=True,
     )
@@ -143,7 +246,9 @@ def setup_logging(
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("plaid").setLevel(logging.INFO)
-    logging.getLogger("sqlmesh.core.analytics.dispatcher").setLevel(logging.WARNING)
+    # Suppress SQLMesh analytics dispatcher via the same filter as other
+    # noisy SQLMesh loggers — setLevel would hide file output too.
+    # The _SuppressFilter below handles the specific shutdown message string.
 
     # Suppress SQLMesh analytics shutdown message (guard against duplicates)
     if not any(isinstance(f, _SuppressFilter) for f in logging.root.filters):

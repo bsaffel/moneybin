@@ -25,7 +25,7 @@ from moneybin.metrics.instruments import track_duration, tracked
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["setup_observability", "tracked", "track_duration"]
+__all__ = ["setup_observability", "tracked", "track_duration", "flush_metrics"]
 
 _initialized = False
 
@@ -56,19 +56,36 @@ def setup_observability(
     Args:
         stream: Log stream name ("cli", "mcp", "sqlmesh").
         verbose: Enable DEBUG level logging.
-        profile: Profile name (unused — set via set_current_profile before).
+        profile: Profile name. When set, logging config is resolved from
+            ``get_settings()``. When None (e.g. profile commands),
+            console-only logging with defaults is used.
     """
     global _initialized
 
     # Step 1: Configure logging (always — allows reconfiguration)
-    setup_logging(stream=stream, verbose=verbose, profile=profile)
+    # Resolve log config from settings when a profile is available.
+    # Without a profile (e.g. profile commands), use defaults (console only).
+    if profile is not None:
+        from moneybin.config import get_settings
+
+        log_config = get_settings().logging
+        setup_logging(
+            stream=stream,
+            verbose=verbose,
+            level=log_config.level,
+            log_format=log_config.format,
+            log_to_file=log_config.log_to_file,
+            log_file_path=log_config.log_file_path,
+        )
+    else:
+        setup_logging(stream=stream, verbose=verbose)
 
     if not _initialized:
         # Step 2: Register atexit handler for metrics flush (once only)
         # TODO: Call load_from_duckdb() here to restore counter values from
         # the previous session. Deferred — requires deciding on startup cost
         # trade-offs (DB may not exist yet on first run). See persistence.py.
-        atexit.register(_flush_metrics_on_exit)
+        atexit.register(flush_metrics)
         _initialized = True
 
     # Step 3: For MCP, start periodic flush (idempotent — checks _periodic_timer)
@@ -81,17 +98,26 @@ def setup_observability(
     logger.debug(f"Observability initialized (stream={stream})")
 
 
-def _flush_metrics_on_exit() -> None:
-    """Flush all metrics to DuckDB on process exit.
+def flush_metrics() -> None:
+    """Flush all metrics to DuckDB.
 
     This is best-effort — if the database is unavailable, metrics are lost
     for this session (they'll be re-accumulated on next run).
+
+    Only flushes if a database connection already exists — never creates one.
+    Creating a connection on exit would recreate directories for a deleted
+    profile and run migrations unexpectedly.
+
+    Called by the atexit handler and explicitly by MCP serve before
+    closing the database connection.
     """
     try:
-        from moneybin.database import get_database
+        from moneybin.database import get_database_if_initialized
         from moneybin.metrics.persistence import flush_to_duckdb
 
-        db = get_database()
+        db = get_database_if_initialized()
+        if db is None:
+            return
         flush_to_duckdb(db)
     except Exception:  # noqa: BLE001  # best-effort shutdown flush; DB may be unavailable
         logger.debug("Metrics flush on exit failed", exc_info=True)
@@ -110,7 +136,7 @@ def _start_periodic_flush(interval_seconds: int = 300) -> None:
 
     def _flush_and_reschedule() -> None:
         global _periodic_timer
-        _flush_metrics_on_exit()
+        flush_metrics()
         _periodic_timer = threading.Timer(interval_seconds, _flush_and_reschedule)
         _periodic_timer.daemon = True
         _periodic_timer.start()

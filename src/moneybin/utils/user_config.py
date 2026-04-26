@@ -39,9 +39,13 @@ def get_user_config_path() -> Path:
     """Get path to user config file.
 
     Returns:
-        Path: ~/.moneybin/config.yaml
+        Path: <base>/config.yaml, where <base> honors MONEYBIN_HOME.
+        Test isolation depends on this — without it, e2e tests would
+        write to the user's real ~/.moneybin/config.yaml.
     """
-    return Path.home() / ".moneybin" / "config.yaml"
+    from moneybin.config import get_base_dir
+
+    return get_base_dir() / "config.yaml"
 
 
 def normalize_profile_name(name: str) -> str:
@@ -141,7 +145,7 @@ def save_user_config(config: UserConfig) -> None:
         with open(config_path, "w") as f:
             data = config.model_dump(exclude_none=True)
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-        logger.info(f"Saved user config to {config_path}")
+        logger.debug(f"Saved user config to {config_path}")
     except OSError as e:
         logger.error(f"Failed to save user config to {config_path}: {e}")
         raise
@@ -178,7 +182,7 @@ def set_default_profile(profile_name: str) -> None:
     # Save config
     save_user_config(config)
 
-    logger.info(f"Set active profile to: {normalized}")
+    logger.debug(f"Set active profile to: {normalized}")
 
 
 def generate_profile_config(profile_dir: Path, profile_name: str) -> Path:
@@ -282,10 +286,11 @@ def ensure_default_profile() -> str:
     # Prompt user for their name
     profile_name = prompt_for_profile_name()
 
-    # Save as default
-    set_default_profile(profile_name)
-
-    # Create the profile directory structure
+    # Create the profile directory structure first; only persist as the
+    # default after creation (and DB init) succeed. Persisting before
+    # success would leave config.yaml pointing at a profile that doesn't
+    # exist if create/init fails — every subsequent command would then
+    # error out with "profile directory not found".
     from moneybin.services.profile_service import ProfileExistsError, ProfileService
 
     try:
@@ -295,41 +300,24 @@ def ensure_default_profile() -> str:
         from moneybin.config import get_base_dir
 
         profile_dir = get_base_dir() / "profiles" / profile_name
-    except OSError as e:
-        logger.warning(f"Could not create profile directory: {e}")
-        from moneybin.config import get_base_dir
+    except Exception as e:  # noqa: BLE001 — first-run wizard must surface any setup failure as a clean message
+        # Profile directory rollback is handled by ProfileService.create();
+        # surface a clean error instead of a raw traceback so the user can retry.
+        typer.echo(f"\n❌ Failed to create profile '{profile_name}': {e}", err=True)
+        typer.echo(
+            "💡 Run 'moneybin profile create <name>' to retry, or set "
+            "MONEYBIN_PROFILE to use an existing profile.",
+            err=True,
+        )
+        raise typer.Exit(1) from e
 
-        profile_dir = get_base_dir() / "profiles" / profile_name
+    set_default_profile(profile_name)
 
     typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
     typer.echo(f"    Data will be stored in: {profile_dir}")
 
-    # Auto-initialize the encrypted database so the user doesn't need
-    # a separate `moneybin db init` step.
-    try:
-        import secrets as secrets_mod
-
-        from moneybin.config import set_current_profile
-        from moneybin.database import Database
-        from moneybin.secrets import SecretStore
-
-        set_current_profile(profile_name)
-        from moneybin.config import get_settings
-
-        settings = get_settings()
-        db_path = settings.database.path
-
-        store = SecretStore()
-        encryption_key = secrets_mod.token_hex(32)
-        store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
-
-        with Database(db_path, secret_store=store):
-            pass
-
-        typer.echo(f"    Encrypted database initialized: {db_path}\n")
-    except Exception:  # noqa: BLE001 — best-effort; don't block first-run if keychain or disk fails
-        logger.debug("Auto database init failed", exc_info=True)
-        typer.echo("    💡 Run 'moneybin db init' to set up the database\n")
+    # ProfileService.create() already initializes the encrypted database,
+    # so no separate init step is needed here.
 
     return profile_name
 

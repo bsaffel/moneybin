@@ -119,17 +119,21 @@ class TestCleanPassthrough:
         assert result == msg
 
 
-class TestWarningOnMask:
-    """Test that masking emits a warning."""
+class TestDebugOnMask:
+    """Test that masking emits a debug audit record."""
 
-    def test_emits_warning_when_masking(
+    def test_emits_debug_when_masking(
         self,
         formatter: SanitizedLogFormatter,
         make_record: Callable[[str], logging.LogRecord],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """When masking occurs, a WARNING is emitted identifying the source."""
+        """When masking occurs, a DEBUG record is emitted identifying the source.
+
+        DEBUG (not WARNING) so the audit trail stays in file logs without
+        cluttering the user's console at default verbosity.
+        """
         record = make_record("SSN: 123-45-6789")
-        with caplog.at_level(logging.WARNING, logger="moneybin.log_sanitizer"):
+        with caplog.at_level(logging.DEBUG, logger="moneybin.log_sanitizer"):
             formatter.format(record)
         assert any("PII pattern detected" in r.message for r in caplog.records)

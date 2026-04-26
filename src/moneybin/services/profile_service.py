@@ -105,11 +105,30 @@ class ProfileService:
             profile_dir.mkdir(parents=True, exist_ok=False)
         except FileExistsError:
             raise ProfileExistsError(f"Profile '{normalized}' already exists") from None
-        (profile_dir / "logs").mkdir()
-        (profile_dir / "temp").mkdir()
-        generate_profile_config(profile_dir, normalized)
-        logger.info(f"Created profile: {normalized}")
+        try:
+            (profile_dir / "logs").mkdir()
+            (profile_dir / "temp").mkdir()
+            generate_profile_config(profile_dir, normalized)
+            self._init_database(profile_dir, normalized)
+        except Exception:
+            # Roll back the partially created profile so the user can retry
+            # without hitting ProfileExistsError.
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            raise
+        logger.debug(f"Created profile: {normalized}")
         return profile_dir
+
+    def _init_database(self, profile_dir: Path, profile: str) -> None:
+        """Initialize an encrypted database for the profile.
+
+        Args:
+            profile_dir: Path to the profile directory.
+            profile: Normalized profile name. Scopes the keychain entry so
+                profiles never share encryption keys.
+        """
+        from moneybin.database import init_db
+
+        init_db(profile_dir / "moneybin.duckdb", profile=profile)
 
     def list(self) -> list[dict[str, str | bool]]:
         """List all profiles with their active status.
@@ -149,7 +168,7 @@ class ProfileService:
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
         set_default_profile(normalized)
-        logger.info(f"Switched to profile: {normalized}")
+        logger.debug(f"Switched active profile: {normalized}")
 
     def delete(self, name: str) -> None:
         """Delete a profile and all its data.
@@ -175,7 +194,20 @@ class ProfileService:
                 "Switch to another profile first: moneybin profile switch <name>"
             )
         shutil.rmtree(profile_dir)
-        logger.info(f"Deleted profile: {normalized}")
+        # Clear the profile's keychain entries — each profile has its own
+        # service ("moneybin-<profile>"), so this never touches sibling profiles.
+        from moneybin.secrets import SecretStore
+
+        store = SecretStore(profile=normalized)
+        for key_name in ("DATABASE__ENCRYPTION_KEY", "DATABASE__PASSPHRASE_SALT"):
+            try:
+                store.delete_key(key_name)
+            except Exception as e:  # noqa: BLE001 — best-effort cleanup; data dir is already gone
+                # Don't turn a successful directory removal into a hard failure
+                # if keyring cleanup fails (e.g. NoKeyringError on headless
+                # systems, locked keychain, network keyring unreachable).
+                logger.debug(f"Keychain cleanup for {key_name} failed: {e}")
+        logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(
         self, name: str | None = None

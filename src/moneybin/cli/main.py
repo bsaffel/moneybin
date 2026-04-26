@@ -51,8 +51,8 @@ def main_callback(
         typer.Option(
             "--profile",
             "-p",
-            help="User profile to use. Uses saved default if not specified.",
-            envvar="MONEYBIN_PROFILE",
+            help="User profile to use. Uses MONEYBIN_PROFILE env var or "
+            "saved default if not specified.",
         ),
     ] = None,
     verbose: Annotated[
@@ -64,10 +64,45 @@ def main_callback(
         ),
     ] = False,
 ) -> None:
-    """Global options for MoneyBin CLI."""
-    if profile_name is None and ctx.invoked_subcommand not in ("profile",):
+    """Global options for MoneyBin CLI.
+
+    Profile resolution chain (uniform across all commands):
+        1. ``--profile`` flag
+        2. ``MONEYBIN_PROFILE`` env var
+        3. ``active_profile`` in ``<base>/config.yaml``
+        4. First-run wizard (``ensure_default_profile``) — only when the
+           command needs an existing profile to operate.
+
+    Profile commands (``profile *``) skip the existence check, since
+    ``profile create`` legitimately operates on a name that doesn't yet
+    exist. They still benefit from the same resolution chain so
+    ``profile show`` / ``profile set`` honor ``--profile`` / env var.
+    """
+    import os
+
+    # Commands that manage profiles don't require the resolved profile
+    # to point at an existing directory (e.g. `profile create alice`).
+    is_profile_cmd = ctx.invoked_subcommand == "profile"
+
+    # Resolve env var manually (instead of via Typer's envvar=) so we can
+    # cleanly distinguish flag-provided vs env-provided values without
+    # inspecting raw argv.
+    profile_source: str | None = None
+    if profile_name is not None:
+        profile_source = "--profile flag"
+    elif env_profile := os.environ.get("MONEYBIN_PROFILE"):
+        profile_name = env_profile
+        profile_source = "MONEYBIN_PROFILE env var"
+
+    if profile_name is None and not is_profile_cmd:
+        # Non-profile commands need a profile. ensure_default_profile()
+        # consults config.yaml first and prompts only on true first run.
+        # Profile commands (list/show/set/create/delete) intentionally skip
+        # this fallback so they remain runnable even if the active profile's
+        # settings are invalid — users need profile commands to recover.
         try:
             profile_name = ensure_default_profile()
+            profile_source = "config.yaml or first-run wizard"
         except KeyboardInterrupt:
             raise typer.Abort() from None
 
@@ -77,9 +112,7 @@ def main_callback(
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-        # Validate profile directory exists (skip for `profile` commands
-        # which handle their own validation via ProfileNotFoundError)
-        if ctx.invoked_subcommand not in ("profile",):
+        if not is_profile_cmd:
             from ..config import get_base_dir
             from ..utils.user_config import normalize_profile_name
 
@@ -93,9 +126,19 @@ def main_callback(
                 )
                 raise typer.Exit(1)
 
-    setup_observability(stream="cli", verbose=verbose, profile=profile_name)
-    if profile_name is not None:
-        logger.info(f"Using profile: {profile_name}")
+    # Profile commands are recovery tools — they must run even when the
+    # active profile's settings are broken. Skip per-profile settings load
+    # (which would call get_settings() and could fail) by passing profile=None.
+    setup_observability(
+        stream="cli",
+        verbose=verbose,
+        profile=None if is_profile_cmd else profile_name,
+    )
+    if profile_name is not None and not is_profile_cmd:
+        if profile_source:
+            logger.info(f"Using profile: {profile_name} (from {profile_source})")
+        else:
+            logger.info(f"Using profile: {profile_name}")
 
 
 # Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops

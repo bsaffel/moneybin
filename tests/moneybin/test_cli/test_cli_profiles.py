@@ -10,15 +10,29 @@ without requiring specific data source configurations like Plaid.
 from __future__ import annotations
 
 import os
+from collections.abc import Generator
+from contextlib import contextmanager
 
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.config import get_current_profile
+from moneybin.config import get_base_dir, get_current_profile
+from moneybin.utils.user_config import normalize_profile_name
 from tests.moneybin.conftest import temp_profile
 
 runner = CliRunner()
+
+
+@contextmanager
+def _create_profile(name: str) -> Generator[str, None, None]:
+    """Create a profile directory and clean up after."""
+    normalized = normalize_profile_name(name)
+    profile_dir = get_base_dir() / "profiles" / normalized
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "config.yaml").touch()
+    with temp_profile(name):
+        yield normalized
 
 
 class TestCLIProfileHandling:
@@ -26,87 +40,69 @@ class TestCLIProfileHandling:
 
     def test_default_profile_from_config(self, mocker: MockerFixture) -> None:
         """Test that CLI uses saved default profile when no flag is provided."""
-        # Remove MONEYBIN_PROFILE env var so Typer doesn't pick it up and bypass
-        # ensure_default_profile(). mocker.patch.dict will restore the original state.
         mocker.patch.dict(os.environ, {})
         os.environ.pop("MONEYBIN_PROFILE", None)
 
-        # Mock the user config to return 'test' as the default profile
         mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="test")
 
-        # Run a command without --profile flag (profile list doesn't need external services)
-        result = runner.invoke(app, ["profile", "list"])
-
-        # Should succeed and use test profile from config
-        assert result.exit_code == 0
-        assert get_current_profile() == "test"
-
-    def test_explicit_profile_alice(self) -> None:
-        """Test explicitly setting a user profile via CLI flag."""
-        with temp_profile("alice"):
-            # Run with explicit --profile=alice
-            result = runner.invoke(app, ["--profile=alice", "profile", "list"])
+        with _create_profile("test"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
+            result = runner.invoke(app, ["logs", "path"])
 
             assert result.exit_code == 0
-            assert get_current_profile() == "alice"
+            assert get_current_profile() == "test"
 
-    def test_explicit_profile_bob(self) -> None:
+    def test_explicit_profile_bob(self, mocker: MockerFixture) -> None:
         """Test setting a different user profile."""
-        with temp_profile("bob"):
-            # Run with explicit --profile=bob
-            result = runner.invoke(app, ["--profile=bob", "profile", "list"])
+        with _create_profile("bob"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
+            result = runner.invoke(app, ["--profile=bob", "logs", "path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "bob"
 
-    def test_short_profile_flag(self) -> None:
+    def test_short_profile_flag(self, mocker: MockerFixture) -> None:
         """Test using short -p flag for profile."""
-        with temp_profile("alice"):
-            # Run with short flag -p
-            result = runner.invoke(app, ["-p", "alice", "profile", "list"])
+        with _create_profile("alice"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
+            result = runner.invoke(app, ["-p", "alice", "logs", "path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
 
-    def test_profile_name_with_slash_gets_normalized(self) -> None:
+    def test_profile_name_with_slash_gets_normalized(
+        self, mocker: MockerFixture
+    ) -> None:
         """Test that profile name with slash gets normalized (slash removed)."""
-        with temp_profile("invalid/profile"):
-            # Run with profile containing slash - slash gets removed during normalization
+        with _create_profile("invalid/profile"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
             result = runner.invoke(
                 app,
-                ["--profile=invalid/profile", "profile", "list"],
+                ["--profile=invalid/profile", "logs", "path"],
             )
 
-            # Should succeed after normalization
             assert result.exit_code == 0
-            # Slash is removed: "invalid/profile" -> "invalidprofile"
             assert get_current_profile() == "invalidprofile"
 
-    def test_profile_name_with_space_gets_normalized(self) -> None:
+    def test_profile_name_with_space_gets_normalized(
+        self, mocker: MockerFixture
+    ) -> None:
         """Test that profile name with space gets normalized (space -> hyphen)."""
-        with temp_profile("bad profile"):
-            # Run with profile containing space - space gets converted to hyphen
-            result = runner.invoke(app, ["--profile=bad profile", "profile", "list"])
+        with _create_profile("bad profile"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
+            result = runner.invoke(app, ["--profile=bad profile", "logs", "path"])
 
-            # Should succeed after normalization
             assert result.exit_code == 0
-            # Space is converted to hyphen: "bad profile" -> "bad-profile"
             assert get_current_profile() == "bad-profile"
 
     def test_profile_environment_variable(self, mocker: MockerFixture) -> None:
         """Test setting profile via MONEYBIN_PROFILE environment variable."""
-        with temp_profile("alice"):
-            mocker.patch.dict(
-                os.environ,
-                {
-                    "MONEYBIN_PROFILE": "alice",
-                },
-            )
+        with _create_profile("alice"):
+            mocker.patch.dict(os.environ, {"MONEYBIN_PROFILE": "alice"})
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
 
-            # Run without explicit flag (should use env var)
-            result = runner.invoke(app, ["profile", "list"])
+            result = runner.invoke(app, ["logs", "path"])
 
-            # Should use alice profile from environment variable
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
 
@@ -114,28 +110,22 @@ class TestCLIProfileHandling:
         self, mocker: MockerFixture
     ) -> None:
         """Test that CLI flag takes precedence over environment variable."""
-        with temp_profile("alice"), temp_profile("bob"):
-            mocker.patch.dict(
-                os.environ,
-                {
-                    "MONEYBIN_PROFILE": "alice",
-                },
-            )
+        with _create_profile("alice"), _create_profile("bob"):
+            mocker.patch.dict(os.environ, {"MONEYBIN_PROFILE": "alice"})
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
 
-            # Run with explicit --profile=bob (should override env var)
-            result = runner.invoke(app, ["--profile=bob", "profile", "list"])
+            result = runner.invoke(app, ["--profile=bob", "logs", "path"])
 
             assert result.exit_code == 0
-            # Should use bob profile from CLI flag, not alice from env var
             assert get_current_profile() == "bob"
 
-    def test_profile_propagates_correctly(self) -> None:
+    def test_profile_propagates_correctly(self, mocker: MockerFixture) -> None:
         """Test that profile is set correctly in the config system."""
-        with temp_profile("alice"):
-            result = runner.invoke(app, ["--profile=alice", "profile", "list"])
+        with _create_profile("alice"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
+            result = runner.invoke(app, ["--profile=alice", "logs", "path"])
 
             assert result.exit_code == 0
-            # Verify profile was set correctly
             assert get_current_profile() == "alice"
 
     def test_help_shows_profile_option(self) -> None:
@@ -143,25 +133,61 @@ class TestCLIProfileHandling:
         result = runner.invoke(app, ["--help"])
 
         assert result.exit_code == 0
-        # Should show profile flag in help
         assert "--profile" in result.stdout or "-p" in result.stdout
 
-    def test_valid_profile_with_dash(self) -> None:
+    def test_valid_profile_with_dash(self, mocker: MockerFixture) -> None:
         """Test that profile names with dashes are valid."""
-        with temp_profile("alice-personal"):
+        with _create_profile("alice-personal"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
             result = runner.invoke(
                 app,
-                ["--profile=alice-personal", "profile", "list"],
+                ["--profile=alice-personal", "logs", "path"],
             )
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice-personal"
 
-    def test_profile_with_underscore_gets_normalized(self) -> None:
+    def test_profile_with_underscore_gets_normalized(
+        self, mocker: MockerFixture
+    ) -> None:
         """Test that profile names with underscores get normalized to hyphens."""
-        with temp_profile("alice_work"):
-            result = runner.invoke(app, ["--profile=alice_work", "profile", "list"])
+        with _create_profile("alice_work"):
+            mocker.patch("moneybin.cli.commands.logs.get_settings")
+            result = runner.invoke(app, ["--profile=alice_work", "logs", "path"])
 
             assert result.exit_code == 0
-            # Underscore is converted to hyphen: "alice_work" -> "alice-work"
             assert get_current_profile() == "alice-work"
+
+
+class TestProfileCommandsResolveProfileButSkipWizard:
+    """Profile subcommands honor --profile/env but never trigger first-run wizard."""
+
+    def test_profile_list_skips_ensure_default(self, mocker: MockerFixture) -> None:
+        """Profile commands must never trigger the first-run wizard."""
+        mocker.patch.dict(os.environ, {})
+        os.environ.pop("MONEYBIN_PROFILE", None)
+
+        mock_ensure = mocker.patch("moneybin.cli.main.ensure_default_profile")
+
+        result = runner.invoke(app, ["profile", "list"])
+
+        assert result.exit_code == 0
+        mock_ensure.assert_not_called()
+
+    def test_profile_list_honors_profile_flag(self) -> None:
+        """--profile flag should resolve current profile for profile commands too."""
+        with _create_profile("alice"):
+            result = runner.invoke(app, ["--profile=alice", "profile", "list"])
+
+            assert result.exit_code == 0
+            assert get_current_profile() == "alice"
+
+    def test_profile_list_honors_env_var(self, mocker: MockerFixture) -> None:
+        """MONEYBIN_PROFILE env var should resolve for profile commands too."""
+        mocker.patch.dict(os.environ, {"MONEYBIN_PROFILE": "alice"})
+
+        with _create_profile("alice"):
+            result = runner.invoke(app, ["profile", "list"])
+
+            assert result.exit_code == 0
+            assert get_current_profile() == "alice"

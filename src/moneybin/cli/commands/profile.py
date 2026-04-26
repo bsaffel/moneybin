@@ -23,14 +23,17 @@ app = typer.Typer(
 def profile_create(
     name: Annotated[str, typer.Argument(help="Profile name (will be normalized)")],
 ) -> None:
-    """Create a new profile with directory structure and config."""
+    """Create a new profile with directory structure, config, and encrypted database."""
     svc = ProfileService()
     try:
         profile_dir = svc.create(name)
-        logger.info(f"✅ Created profile at {profile_dir}")
-        logger.info("💡 Run 'moneybin db init' to create the encrypted database")
+        logger.info(f"✅ Created profile {name} at {profile_dir}")
     except ProfileExistsError as e:
         logger.error(f"❌ {e}")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        logger.error(f"❌ Failed to create profile '{name}': {e}")
+        logger.info(f"💡 Run 'moneybin profile create {name}' to retry")
         raise typer.Exit(1) from e
 
 
@@ -98,6 +101,13 @@ def profile_show(
 ) -> None:
     """Show resolved settings for a profile."""
     svc = ProfileService()
+    if name is None:
+        from moneybin.config import get_current_profile
+
+        try:
+            name = get_current_profile()
+        except RuntimeError:
+            name = None
     try:
         info = svc.show(name)
         marker = " (active)" if info["active"] else ""
@@ -132,9 +142,14 @@ def profile_set(
     if name:
         target = name
     else:
-        profiles = svc.list()
-        active = next((p["name"] for p in profiles if p["active"]), None)
-        target = str(active) if active else "default"
+        from moneybin.config import get_current_profile
+
+        try:
+            target = get_current_profile()
+        except RuntimeError:
+            profiles = svc.list()
+            active = next((p["name"] for p in profiles if p["active"]), None)
+            target = str(active) if active else "default"
     try:
         svc.set(target, key, value)
         logger.info(f"✅ Set {key}={value}")

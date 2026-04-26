@@ -1,12 +1,27 @@
 """Tests for CLI restructure: removed, moved, and promoted commands."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Create a temporary 'test' profile directory and point get_base_dir at it.
+
+    Uses tmp_path so the directory is automatically cleaned up after the test
+    and doesn't interfere with the real profiles/ directory.
+    """
+    monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
+    profile_dir = tmp_path / "profiles" / "test"
+    profile_dir.mkdir(parents=True)
+    monkeypatch.setattr("moneybin.config.get_base_dir", lambda: tmp_path)
 
 
 class TestRemovedCommands:
