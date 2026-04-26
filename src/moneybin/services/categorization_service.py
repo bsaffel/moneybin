@@ -178,7 +178,9 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return False
 
 
-def _fetch_merchants(db: Database) -> list[tuple[str, ...]] | None:
+def _fetch_merchants(
+    db: Database,
+) -> list[tuple[str, str, str, str, str, str | None]] | None:
     """Fetch all merchant mappings ordered by match priority.
 
     Args:
@@ -207,7 +209,7 @@ def _fetch_merchants(db: Database) -> list[tuple[str, ...]] | None:
 
 def _match_description(
     description: str,
-    merchants: list[tuple[str, ...]],
+    merchants: list[tuple[str, str, str, str, str, str | None]],
 ) -> dict[str, str | None] | None:
     """Match a description against a pre-fetched merchant list.
 
@@ -314,6 +316,9 @@ def bulk_categorize(
     a merchant mapping, then inserts/replaces the category assignment.
     Merchant resolution is best-effort — failures do not prevent categorization.
 
+    Read-side cost is O(1) in the number of items: one batch description
+    fetch and one merchant-table fetch, regardless of input size.
+
     Args:
         db: Database instance (read-write).
         items: List of dicts with transaction_id, category, and optional subcategory.
@@ -327,6 +332,8 @@ def bulk_categorize(
     merchants_created = 0
     error_details: list[dict[str, str]] = []
 
+    # Phase 1 — validate and partition input
+    valid_items: list[tuple[str, str, str | None]] = []
     for item in items:
         txn_id = item.get("transaction_id", "").strip()
         category = item.get("category", "").strip()
@@ -337,43 +344,94 @@ def bulk_categorize(
                 "reason": "Missing transaction_id or category",
             })
             continue
-
         subcategory = item.get("subcategory", "").strip() or None
+        valid_items.append((txn_id, category, subcategory))
 
-        try:
-            # Resolve merchant_id from description (best-effort)
-            merchant_id = None
+    if not valid_items:
+        return BulkCategorizationResult(
+            applied=applied,
+            skipped=skipped,
+            errors=errors,
+            error_details=error_details,
+            merchants_created=merchants_created,
+        )
+
+    # Phase 2 — batch-fetch descriptions
+    txn_ids = [v[0] for v in valid_items]
+    placeholders = ",".join(["?"] * len(txn_ids))
+    descriptions: dict[str, str | None] = {}
+    try:
+        rows = db.execute(
+            f"""
+            SELECT transaction_id, description
+            FROM {FCT_TRANSACTIONS.full_name}
+            WHERE transaction_id IN ({placeholders})
+            """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
+            txn_ids,
+        ).fetchall()
+        descriptions = {row[0]: row[1] for row in rows}
+    except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+        logger.warning("Could not batch-fetch descriptions", exc_info=True)
+
+    # Phase 3 — fetch merchants once, then match in memory.
+    # Guard against any non-CatalogException (schema drift, binder errors, etc.)
+    # so a merchant-table failure doesn't block all category writes for the batch.
+    try:
+        cached_merchants = _fetch_merchants(db)
+    except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+        logger.warning("Could not batch-fetch merchants", exc_info=True)
+        cached_merchants = None
+
+    # Phase 4 — per-item categorization (writes only)
+    for txn_id, category, subcategory in valid_items:
+        merchant_id: str | None = None
+        description = descriptions.get(txn_id)
+        if description and cached_merchants is not None:
             try:
-                txn = db.execute(
-                    f"""
-                    SELECT description FROM {FCT_TRANSACTIONS.full_name}
-                    WHERE transaction_id = ?
-                    """,
-                    [txn_id],
-                ).fetchone()
-                if txn and txn[0]:
-                    existing = match_merchant(db, txn[0])
-                    if existing:
-                        merchant_id = existing["merchant_id"]
-                    else:
-                        normalized = normalize_description(txn[0])
-                        if normalized:
-                            merchant_id = create_merchant(
-                                db,
-                                normalized,
-                                normalized,
-                                match_type="contains",
-                                category=category,
-                                subcategory=subcategory,
-                                created_by="ai",
-                            )
-                            merchants_created += 1
+                existing = _match_description(description, cached_merchants)
+                if existing:
+                    merchant_id = existing["merchant_id"]
+                else:
+                    normalized = normalize_description(description)
+                    if normalized:
+                        merchant_id = create_merchant(
+                            db,
+                            normalized,
+                            normalized,
+                            match_type="contains",
+                            category=category,
+                            subcategory=subcategory,
+                            created_by="ai",
+                        )
+                        merchants_created += 1
+                        # Insert into cache preserving _fetch_merchants() ordering
+                        # (exact → contains → regex) so subsequent items in this
+                        # batch match the just-created contains rule before any
+                        # pre-existing regex rule.
+                        new_row = (
+                            merchant_id,
+                            normalized,
+                            "contains",
+                            normalized,
+                            category,
+                            subcategory,
+                        )
+                        insert_at = next(
+                            (
+                                i
+                                for i, m in enumerate(cached_merchants)
+                                if m[2] == "regex"
+                            ),
+                            len(cached_merchants),
+                        )
+                        cached_merchants.insert(insert_at, new_row)
             except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
                 logger.debug(
                     f"Could not resolve merchant for {txn_id}",
                     exc_info=True,
                 )
 
+        try:
             db.execute(
                 f"""
                 INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
