@@ -765,14 +765,28 @@ def init_db(
             raise
         logger.debug("Passphrase-derived key stored in OS keychain")
     else:
+        key_was_generated = False
         try:
             store.get_key(_KEY_NAME)
             logger.debug("Using existing encryption key")
         except SecretNotFoundError:
             encryption_key = secrets_mod.token_hex(32)
             store.set_key(_KEY_NAME, encryption_key)
+            key_was_generated = True
             logger.debug("Auto-generated encryption key stored in OS keychain")
 
-        with Database(db_path, secret_store=store, no_auto_upgrade=False):
-            pass
+        try:
+            with Database(db_path, secret_store=store, no_auto_upgrade=False):
+                pass
+        except Exception:
+            # Roll back the freshly written key so the keychain doesn't
+            # carry a key that doesn't match any DB on disk. We only
+            # delete keys we just generated — a pre-existing key (env or
+            # prior keychain entry) belongs to the user and stays put.
+            if key_was_generated:
+                try:
+                    store.delete_key(_KEY_NAME)
+                except Exception:  # noqa: BLE001, S110 — best-effort rollback
+                    pass  # noqa: S110
+            raise
     logger.debug(f"Initialized encrypted database: {db_path}")

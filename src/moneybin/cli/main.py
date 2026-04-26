@@ -88,12 +88,14 @@ def main_callback(
     profile_source: str | None = None
     if profile_name is not None:
         # Typer reads MONEYBIN_PROFILE into profile_name automatically;
-        # distinguish env vs flag by checking the env var directly.
-        if (
-            os.environ.get("MONEYBIN_PROFILE") == profile_name
-            and "--profile" not in sys.argv
-            and "-p" not in sys.argv
-        ):
+        # distinguish env vs flag by checking whether a profile flag
+        # was actually present in argv. Match exact tokens (-p, --profile)
+        # or the --profile=value form.
+        flag_present = any(
+            arg in ("-p", "--profile") or arg.startswith("--profile=")
+            for arg in sys.argv
+        )
+        if not flag_present and os.environ.get("MONEYBIN_PROFILE") == profile_name:
             profile_source = "MONEYBIN_PROFILE env var"
         else:
             profile_source = "--profile flag"
