@@ -353,6 +353,28 @@ class MatchingSettings(BaseModel):
         return self
 
 
+class CategorizationSettings(BaseModel):
+    """Auto-rule proposal and lifecycle configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    auto_rule_proposal_threshold: int = Field(
+        default=1,
+        ge=1,
+        description="Propose an auto-rule after N matching user categorizations",
+    )
+    auto_rule_override_threshold: int = Field(
+        default=2,
+        ge=1,
+        description="Deactivate an auto-rule after N user overrides of its assignments",
+    )
+    auto_rule_default_priority: int = Field(
+        default=200,
+        ge=1,
+        description="Priority assigned to promoted auto-rules (higher number = lower priority)",
+    )
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -376,6 +398,9 @@ class MoneyBinSettings(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
+    categorization: CategorizationSettings = Field(
+        default_factory=CategorizationSettings
+    )
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
