@@ -178,7 +178,9 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return False
 
 
-def _fetch_merchants(db: Database) -> list[tuple[str, ...]] | None:
+def _fetch_merchants(
+    db: Database,
+) -> list[tuple[str, str, str, str, str, str | None]] | None:
     """Fetch all merchant mappings ordered by match priority.
 
     Args:
@@ -207,7 +209,7 @@ def _fetch_merchants(db: Database) -> list[tuple[str, ...]] | None:
 
 def _match_description(
     description: str,
-    merchants: list[tuple[str, ...]],
+    merchants: list[tuple[str, str, str, str, str, str | None]],
 ) -> dict[str, str | None] | None:
     """Match a description against a pre-fetched merchant list.
 
@@ -364,15 +366,21 @@ def bulk_categorize(
             SELECT transaction_id, description
             FROM {FCT_TRANSACTIONS.full_name}
             WHERE transaction_id IN ({placeholders})
-            """,  # noqa: S608 — placeholders count is bounded; values are parameterized
+            """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
             txn_ids,
         ).fetchall()
         descriptions = {row[0]: row[1] for row in rows}
-    except Exception:  # noqa: BLE001 — best-effort; missing table → all merchants resolve to None
-        logger.debug("Could not batch-fetch descriptions", exc_info=True)
+    except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+        logger.warning("Could not batch-fetch descriptions", exc_info=True)
 
-    # Phase 3 — fetch merchants once, then match in memory
-    cached_merchants = _fetch_merchants(db)
+    # Phase 3 — fetch merchants once, then match in memory.
+    # Guard against any non-CatalogException (schema drift, binder errors, etc.)
+    # so a merchant-table failure doesn't block all category writes for the batch.
+    try:
+        cached_merchants = _fetch_merchants(db)
+    except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+        logger.warning("Could not batch-fetch merchants", exc_info=True)
+        cached_merchants = None
 
     # Phase 4 — per-item categorization (writes only)
     for txn_id, category, subcategory in valid_items:
@@ -398,17 +406,14 @@ def bulk_categorize(
                         merchants_created += 1
                         # Append to cache so subsequent items in this batch
                         # find the just-created merchant instead of re-creating.
-                        # Cast — DB rows can hold NULL subcategories, but the
-                        # row tuple type is declared as tuple[str, ...].
-                        new_row: tuple[str, ...] = (
+                        cached_merchants.append((
                             merchant_id,
                             normalized,
                             "contains",
                             normalized,
                             category,
-                            subcategory,  # type: ignore[arg-type]
-                        )
-                        cached_merchants.append(new_row)
+                            subcategory,
+                        ))
             except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
                 logger.debug(
                     f"Could not resolve merchant for {txn_id}",

@@ -6,6 +6,7 @@ matching, prompt construction, and response parsing.
 
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -601,10 +602,10 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
     real_execute = db.execute
     select_calls: list[str] = []
 
-    def counting_execute(query: str, params: list[object] | None = None) -> object:
+    def counting_execute(query: str, params: list[Any] | None = None) -> object:
         if query.strip().upper().startswith("SELECT"):
             select_calls.append(query)
-        return real_execute(query, params)  # type: ignore[arg-type]
+        return real_execute(query, params)
 
     monkeypatch.setattr(db, "execute", counting_execute)
 
