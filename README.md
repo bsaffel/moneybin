@@ -122,6 +122,7 @@ Then ask things like:
 - **Heuristic column detection** — 100+ header aliases, content validation, date format disambiguation, international number formats. Most bank exports just work without configuration.
 - **Built-in migration formats** — Tiller, Mint, YNAB, Maybe. Bring your history from other tools.
 - **Saved formats** — auto-detected mappings are saved so repeat imports are instant.
+- **Account matching on re-import** — re-importing the same account under a different name (e.g. "Chase Checking" vs "CHASE CHECKING ACCT") matches against the existing account ID instead of creating duplicates. Use `--yes` to auto-accept fuzzy matches non-interactively.
 - **Import management** — batch tracking, preview (dry run), and revert.
 
 ### Data Pipeline
