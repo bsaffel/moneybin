@@ -404,16 +404,27 @@ def bulk_categorize(
                             created_by="ai",
                         )
                         merchants_created += 1
-                        # Append to cache so subsequent items in this batch
-                        # find the just-created merchant instead of re-creating.
-                        cached_merchants.append((
+                        # Insert into cache preserving _fetch_merchants() ordering
+                        # (exact → contains → regex) so subsequent items in this
+                        # batch match the just-created contains rule before any
+                        # pre-existing regex rule.
+                        new_row = (
                             merchant_id,
                             normalized,
                             "contains",
                             normalized,
                             category,
                             subcategory,
-                        ))
+                        )
+                        insert_at = next(
+                            (
+                                i
+                                for i, m in enumerate(cached_merchants)
+                                if m[2] == "regex"
+                            ),
+                            len(cached_merchants),
+                        )
+                        cached_merchants.insert(insert_at, new_row)
             except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
                 logger.debug(
                     f"Could not resolve merchant for {txn_id}",
