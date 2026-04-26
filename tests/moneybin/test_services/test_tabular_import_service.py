@@ -39,3 +39,28 @@ class TestDetectFileType:
     def test_unsupported_extension_raises(self) -> None:
         with pytest.raises(ValueError, match="Unsupported file type"):
             _detect_file_type(Path("test.jpg"))
+
+
+def test_resolved_mapping_round_trip() -> None:
+    """ResolvedMapping is constructible and exposes the resolved tabular fields."""
+    from moneybin.services.import_service import ResolvedMapping
+
+    rm = ResolvedMapping(
+        field_mapping={"transaction_date": "Date", "amount": "Amt"},
+        date_format="%Y-%m-%d",
+        sign_convention="negative_is_expense",
+        number_format="us",
+        is_multi_account=False,
+        confidence="high",
+    )
+    assert rm.field_mapping["amount"] == "Amt"
+    assert rm.sign_convention == "negative_is_expense"
+    # Frozen — assignment must raise
+    import dataclasses
+
+    try:
+        rm.confidence = "low"  # type: ignore[misc]
+    except dataclasses.FrozenInstanceError:
+        pass
+    else:
+        raise AssertionError("ResolvedMapping must be frozen")
