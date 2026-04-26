@@ -7,6 +7,7 @@ proposals into active rules in app.categorization_rules with created_by='auto_ru
 
 import logging
 import uuid
+from dataclasses import dataclass, field
 from typing import Literal
 
 import duckdb
@@ -174,3 +175,131 @@ def record_categorization(
         ],
     )
     return proposed_rule_id
+
+
+@dataclass(slots=True)
+class ApproveResult:
+    """Result of an approve() call: counts of approved, skipped, and newly categorized transactions."""
+
+    approved: int = 0
+    skipped: int = 0
+    newly_categorized: int = 0
+    rule_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RejectResult:
+    """Result of a reject() call: counts of rejected and skipped proposals."""
+
+    rejected: int = 0
+    skipped: int = 0
+
+
+def _categorize_existing_with_rule(
+    db: Database, rule_id: str, pattern: str, category: str, subcategory: str | None
+) -> int:
+    """Run the new rule against currently-uncategorized matching transactions. Returns count categorized."""
+    rows = db.execute(
+        f"""
+        SELECT t.transaction_id
+        FROM {FCT_TRANSACTIONS.full_name} t
+        LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c ON t.transaction_id = c.transaction_id
+        WHERE c.transaction_id IS NULL
+          AND t.description IS NOT NULL
+          AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
+        """,
+        [pattern],
+    ).fetchall()
+    if not rows:
+        return 0
+    db.executemany(
+        f"""
+        INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
+        (transaction_id, category, subcategory, categorized_at, categorized_by, rule_id, confidence)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'auto_rule', ?, 1.0)
+        """,
+        [(r[0], category, subcategory, rule_id) for r in rows],
+    )
+    return len(rows)
+
+
+def approve(db: Database, proposed_rule_ids: list[str]) -> ApproveResult:
+    """Promote pending proposals to active rules and immediately categorize matching transactions."""
+    settings = get_settings().categorization
+    result = ApproveResult()
+
+    for pid in proposed_rule_ids:
+        row = db.execute(
+            f"""
+            SELECT merchant_pattern, match_type, category, subcategory, status
+            FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?
+            """,
+            [pid],
+        ).fetchone()
+        if not row or row[4] != "pending":
+            result.skipped += 1
+            continue
+
+        pattern, match_type, category, subcategory, _status = row
+        rule_id = uuid.uuid4().hex[:12]
+        db.execute(
+            f"""
+            INSERT INTO {CATEGORIZATION_RULES.full_name}
+            (rule_id, name, merchant_pattern, match_type, category, subcategory,
+             priority, is_active, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            [
+                rule_id,
+                f"auto: {pattern}",
+                pattern,
+                match_type,
+                category,
+                subcategory,
+                settings.auto_rule_default_priority,
+            ],
+        )
+        db.execute(
+            f"""
+            UPDATE {PROPOSED_RULES.full_name}
+            SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = 'user'
+            WHERE proposed_rule_id = ?
+            """,
+            [pid],
+        )
+        newly = _categorize_existing_with_rule(
+            db, rule_id, pattern, category, subcategory
+        )
+        result.approved += 1
+        result.rule_ids.append(rule_id)
+        result.newly_categorized += newly
+
+    if result.approved:
+        logger.info(
+            f"Approved {result.approved} auto-rule proposal(s); "
+            f"{result.newly_categorized} existing transaction(s) categorized"
+        )
+    return result
+
+
+def reject(db: Database, proposed_rule_ids: list[str]) -> RejectResult:
+    """Mark pending proposals as rejected. No rule is created."""
+    result = RejectResult()
+    for pid in proposed_rule_ids:
+        row = db.execute(
+            f"SELECT status FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?",
+            [pid],
+        ).fetchone()
+        if not row or row[0] != "pending":
+            result.skipped += 1
+            continue
+        db.execute(
+            f"""
+            UPDATE {PROPOSED_RULES.full_name}
+            SET status = 'rejected', decided_at = CURRENT_TIMESTAMP, decided_by = 'user'
+            WHERE proposed_rule_id = ?
+            """,
+            [pid],
+        )
+        result.rejected += 1
+    return result

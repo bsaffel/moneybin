@@ -157,3 +157,61 @@ def test_record_respects_proposal_threshold(real_db, monkeypatch):
         "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'pending'"
     ).fetchone()[0]
     assert pending == 1
+
+
+def test_approve_promotes_to_active_rule(real_db):
+    """Approving a pending proposal creates an active rule with the correct attributes."""
+    _seed_transaction(real_db, "t1")
+    pid = auto_rule_service.record_categorization(
+        real_db, "t1", "Food & Drink", subcategory="Coffee"
+    )
+    assert pid is not None
+
+    result = auto_rule_service.approve(real_db, [pid])
+    assert result.approved == 1
+
+    rule = real_db.execute(
+        "SELECT merchant_pattern, category, subcategory, priority, created_by, is_active "
+        "FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()
+    assert rule == ("STARBUCKS", "Food & Drink", "Coffee", 200, "auto_rule", True)
+
+    status = real_db.execute(
+        "SELECT status, decided_by FROM app.proposed_rules WHERE proposed_rule_id = ?",
+        [pid],
+    ).fetchone()
+    assert status == ("approved", "user")
+
+
+def test_approve_immediately_categorizes_existing_uncategorized(real_db):
+    """Approving a proposal back-fills matching uncategorized transactions immediately."""
+    _seed_transaction(real_db, "t1")
+    pid = auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
+    real_db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('t9', 'a1', DATE '2026-01-02', -7.00, 'STARBUCKS DOWNTOWN', 'csv')"
+    )
+    result = auto_rule_service.approve(real_db, [pid])
+    assert result.newly_categorized == 1
+
+    cat = real_db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories WHERE transaction_id = 't9'"
+    ).fetchone()
+    assert cat == ("Food & Drink", "auto_rule")
+
+
+def test_reject_marks_proposal_rejected_without_creating_rule(real_db):
+    """Rejecting a proposal marks it rejected without inserting any categorization rule."""
+    _seed_transaction(real_db, "t1")
+    pid = auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
+    auto_rule_service.reject(real_db, [pid])
+
+    status = real_db.execute(
+        "SELECT status, decided_by FROM app.proposed_rules WHERE proposed_rule_id = ?",
+        [pid],
+    ).fetchone()
+    assert status == ("rejected", "user")
+    rule_count = real_db.execute(
+        "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()[0]
+    assert rule_count == 0
