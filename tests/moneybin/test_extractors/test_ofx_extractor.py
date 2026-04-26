@@ -189,14 +189,14 @@ def test_extract_transactions_data(
     tx1 = transactions.row(0, named=True)
     assert tx1["source_transaction_id"] == "TXN001"
     assert tx1["transaction_type"].upper() == "DEBIT"
-    assert tx1["amount"] == -50.00
+    assert tx1["amount"] == Decimal("-50.00")
     assert tx1["payee"] == "Coffee Shop"
 
     # Check second transaction (credit)
     tx2 = transactions.row(1, named=True)
     assert tx2["source_transaction_id"] == "TXN002"
     assert tx2["transaction_type"].upper() == "CREDIT"
-    assert tx2["amount"] == 1000.00
+    assert tx2["amount"] == Decimal("1000.00")
     assert tx2["payee"] == "Payroll Deposit"
 
 
@@ -221,8 +221,8 @@ def test_extract_balances_data(
     # Check values
     first_row = balances.row(0, named=True)
     assert first_row["account_id"] == "9876543210"
-    assert first_row["ledger_balance"] == 5000.00
-    assert first_row["available_balance"] == 4800.00
+    assert first_row["ledger_balance"] == Decimal("5000.00")
+    assert first_row["available_balance"] == Decimal("4800.00")
 
 
 @pytest.mark.unit
@@ -301,3 +301,28 @@ def test_extract_preserves_metadata(
     extracted_at = datetime.fromisoformat(first_tx["extracted_at"])
     time_diff = datetime.now() - extracted_at
     assert time_diff.total_seconds() < 60
+
+
+@pytest.mark.unit
+def test_extracted_transaction_amount_is_decimal(
+    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+) -> None:
+    """Transaction amount column must be pl.Decimal(18,2), not Float64."""
+    extractor = OFXExtractor(extractor_config)
+    results = extractor.extract_from_file(sample_ofx_file)
+
+    transactions = results["transactions"]
+    assert transactions["amount"].dtype == pl.Decimal(precision=18, scale=2)
+
+
+@pytest.mark.unit
+def test_extracted_balance_amounts_are_decimal(
+    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+) -> None:
+    """Balance amount columns must be pl.Decimal(18,2), not Float64."""
+    extractor = OFXExtractor(extractor_config)
+    results = extractor.extract_from_file(sample_ofx_file)
+
+    balances = results["balances"]
+    assert balances["ledger_balance"].dtype == pl.Decimal(precision=18, scale=2)
+    assert balances["available_balance"].dtype == pl.Decimal(precision=18, scale=2)

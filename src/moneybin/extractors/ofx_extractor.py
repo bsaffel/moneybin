@@ -20,6 +20,13 @@ from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
+_DECIMAL_AMOUNT = pl.Decimal(precision=18, scale=2)
+_BALANCE_AMOUNT_OVERRIDES = {
+    "ledger_balance": _DECIMAL_AMOUNT,
+    "available_balance": _DECIMAL_AMOUNT,
+}
+_TRANSACTIONS_AMOUNT_OVERRIDES = {"amount": _DECIMAL_AMOUNT}
+
 
 # Pydantic schemas for OFX data validation
 class OFXInstitutionSchema(BaseModel):
@@ -58,7 +65,7 @@ class OFXTransactionSchema(BaseModel):
     @field_validator("amount", mode="before")
     @classmethod
     def validate_amount(cls, v: Any) -> Decimal:
-        """Convert amount to Decimal for precision."""
+        """Coerce numeric input to Decimal."""
         if isinstance(v, Decimal):
             return v
         if isinstance(v, (int, float, str)):
@@ -334,7 +341,7 @@ class OFXExtractor:
                     "account_id": account.account_id,
                     "transaction_type": tx_schema.type,
                     "date_posted": tx_schema.date.isoformat(),
-                    "amount": float(tx_schema.amount),
+                    "amount": tx_schema.amount,
                     "payee": tx_schema.payee,
                     "memo": tx_schema.memo,
                     "check_number": tx_schema.checknum,
@@ -344,7 +351,10 @@ class OFXExtractor:
                 transactions_data.append(tx_data)
 
         if transactions_data:
-            return pl.DataFrame(transactions_data)
+            return pl.DataFrame(
+                transactions_data,
+                schema_overrides=_TRANSACTIONS_AMOUNT_OVERRIDES,
+            )
         return self._build_empty_transactions_df()
 
     def _build_empty_transactions_df(self) -> pl.DataFrame:
@@ -355,7 +365,7 @@ class OFXExtractor:
                 "account_id": pl.String,
                 "transaction_type": pl.String,
                 "date_posted": pl.String,
-                "amount": pl.Float64,
+                "amount": _DECIMAL_AMOUNT,
                 "payee": pl.String,
                 "memo": pl.String,
                 "check_number": pl.String,
@@ -381,13 +391,13 @@ class OFXExtractor:
                     "statement_end_date": statement.end_date.isoformat()
                     if statement.end_date
                     else None,
-                    "ledger_balance": float(statement.balance)
+                    "ledger_balance": statement.balance
                     if statement.balance is not None
                     else None,
                     "ledger_balance_date": statement.balance_date.isoformat()
                     if hasattr(statement, "balance_date") and statement.balance_date
                     else None,
-                    "available_balance": float(statement.available_balance)
+                    "available_balance": statement.available_balance
                     if hasattr(statement, "available_balance")
                     and statement.available_balance is not None
                     else None,
@@ -397,15 +407,17 @@ class OFXExtractor:
                 balances_data.append(balance_info)
 
         if balances_data:
-            return pl.DataFrame(balances_data)
+            return pl.DataFrame(
+                balances_data, schema_overrides=_BALANCE_AMOUNT_OVERRIDES
+            )
         return pl.DataFrame(
             schema={
                 "account_id": pl.String,
                 "statement_start_date": pl.String,
                 "statement_end_date": pl.String,
-                "ledger_balance": pl.Float64,
+                "ledger_balance": _DECIMAL_AMOUNT,
                 "ledger_balance_date": pl.String,
-                "available_balance": pl.Float64,
+                "available_balance": _DECIMAL_AMOUNT,
                 "source_file": pl.String,
                 "extracted_at": pl.String,
             }
