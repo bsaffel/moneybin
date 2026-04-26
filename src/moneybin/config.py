@@ -43,8 +43,8 @@ def get_base_dir() -> Path:
 
     Resolution order:
         1. MONEYBIN_HOME env var (explicit override, always wins)
-        2. MONEYBIN_ENVIRONMENT=development: current working directory
-        3. Repo checkout detection (.git + pyproject.toml name=moneybin): cwd
+        2. MONEYBIN_ENVIRONMENT=development: <cwd>/.moneybin
+        3. Repo checkout detection (.git + pyproject.toml name=moneybin): <cwd>/.moneybin
         4. Default: ~/.moneybin/
 
     Returns:
@@ -58,10 +58,10 @@ def get_base_dir() -> Path:
 
     environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
-        return Path.cwd().resolve()
+        return (Path.cwd() / ".moneybin").resolve()
 
     if _is_moneybin_repo(Path.cwd()):
-        return Path.cwd().resolve()
+        return (Path.cwd() / ".moneybin").resolve()
 
     return (Path.home() / ".moneybin").resolve()
 

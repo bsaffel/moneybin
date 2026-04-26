@@ -272,8 +272,8 @@ Replaces current logic entirely. Solves the `distribution-roadmap.md` concern.
 | Priority | Source | Resolves to | Use case |
 |---|---|---|---|
 | 1 | `MONEYBIN_HOME` env var | Whatever the user sets | Explicit override (CI, custom installs) |
-| 2 | `MONEYBIN_ENVIRONMENT=development` | `cwd` | Developer working in repo checkout |
-| 3 | Repo checkout detection (`.git` + `pyproject.toml` with `name = "moneybin"`) | `cwd` | Developer who didn't set env var |
+| 2 | `MONEYBIN_ENVIRONMENT=development` | `<cwd>/.moneybin` | Developer working in repo checkout |
+| 3 | Repo checkout detection (`.git` + `pyproject.toml` with `name = "moneybin"`) | `<cwd>/.moneybin` | Developer who didn't set env var |
 | 4 | Default | `~/.moneybin/` | Installed package user (the common case) |
 
 This inverts the current default (which is `cwd`) to `~/.moneybin/`. Installed users get the right thing with zero config. Developers get the right thing automatically via repo detection.
