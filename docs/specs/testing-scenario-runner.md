@@ -561,6 +561,24 @@ Seven scenarios ship with the runner. Each maps to one or more failure modes fro
 
 Scenarios for `sqlmesh-catalog-wiring` are unnecessary as a standalone — the `assert_sqlmesh_catalog_matches` pre-flight runs in every scenario, so the original incident is caught the first time anyone runs `--all`.
 
+### Scenario coverage audit (already-implemented specs)
+
+The runner is being designed after several features have already shipped. Rather than retroactively editing each implemented spec, this table tracks scenario debt against the existing surface. As v1 scenarios land, columns flip from "gap" to the scenario name. New gaps surfaced during implementation are appended here.
+
+| Implemented spec | Coverage in v1 | Gap |
+|---|---|---|
+| [`smart-import-tabular.md`](smart-import-tabular.md) | `basic-full-pipeline`, `family-full-pipeline` exercise tabular ingest | Format-specific scenarios (Tiller, Mint, YNAB, Maybe migration formats) deferred — likely owned by `testing-csv-fixtures.md` |
+| [`privacy-data-protection.md`](privacy-data-protection.md) | `encryption-key-propagation` covers subprocess key propagation; every scenario boots an encrypted `Database` | No scenario asserts secret-store rotation; gap tracked, not blocking |
+| [`database-migration.md`](database-migration.md) | `migration-roundtrip` | Down-migration / rollback scenarios deferred until rollback is itself a feature |
+| [`observability.md`](observability.md) | None in v1 | Future: `assert_metrics_emitted(metric_name, min_count)` primitive once metric assertions are needed; defer until first observability regression |
+| [`testing-synthetic-data.md`](testing-synthetic-data.md) | Every scenario consumes the generator; `*-full-pipeline` doubles as the generator's regression test | None — generator is the runner's input, not its target |
+| [`e2e-testing.md`](e2e-testing.md) | Peer layer, not a target | None — the runner complements E2E rather than covering it |
+| [`cli-restructure.md`](cli-restructure.md) | E2E layer covers command tree | None — CLI surface wiring stays in E2E |
+| [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (in-progress) | `dedup-cross-source` | Pillar A+C scenarios complete on landing |
+| [`matching-transfer-detection.md`](matching-transfer-detection.md) (in-progress) | `transfer-detection-cross-account` | Edge cases (FX legs, three-leg sweeps) deferred |
+
+Specs in `draft` or `ready` (categorization-auto-rules, net-worth, asset-tracking, budget-tracking, sync-overview, data-reconciliation) author their own scenarios as part of implementation — those don't carry retrofit debt.
+
 ### Scenario-to-spec coverage
 
 | Spec | Scenarios that exercise it |
