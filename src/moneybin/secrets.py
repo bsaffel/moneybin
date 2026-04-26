@@ -75,8 +75,8 @@ class SecretStore:
 
         Args:
             name: Secret name (e.g. "DATABASE__ENCRYPTION_KEY").
-                  Keychain lookup uses service="moneybin", username=name.
-                  Env var lookup uses MONEYBIN_{name}.
+                  Keychain lookup uses service="moneybin-<profile>",
+                  username=name. Env var lookup uses MONEYBIN_{name}.
 
         Returns:
             The secret value.
@@ -122,6 +122,19 @@ class SecretStore:
             return value
 
         raise SecretNotFoundError(f"Secret '{name}' not found. Set env var {env_var}.")
+
+    def has_keychain_entry(self, name: str) -> bool:
+        """Check if a keychain entry exists for ``name`` (ignores env vars).
+
+        Useful when callers need to distinguish "key is stored in keychain"
+        from "key is only available via env var fallback" — e.g. ``init_db``
+        needs to persist env-provided keys so the DB stays openable after
+        the env var is unset.
+        """
+        try:
+            return keyring.get_password(self._service, name) is not None
+        except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            return False
 
     def set_key(self, name: str, value: str) -> None:
         """Store a secret in the OS keychain.

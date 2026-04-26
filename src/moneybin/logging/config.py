@@ -195,13 +195,15 @@ def setup_logging(
     else:
         inner_formatter = HumanFormatter(variant="full")
 
-    # Console always uses human-readable format (JSON is for file output only)
-    if stream == "cli":
-        console_formatter: logging.Formatter = inner_formatter
-    else:
-        console_formatter = (
-            inner_formatter if log_format != "json" else HumanFormatter(variant="full")
+    # Console always uses human-readable format (JSON is for file output only).
+    # When log_format=="json", inner_formatter is JSONFormatter, so substitute
+    # a HumanFormatter for the console so users don't see JSON on stderr.
+    if log_format == "json":
+        console_formatter: logging.Formatter = HumanFormatter(
+            variant="cli" if stream == "cli" else "full"
         )
+    else:
+        console_formatter = inner_formatter
 
     # Prepare handlers
     handlers: list[logging.Handler] = []

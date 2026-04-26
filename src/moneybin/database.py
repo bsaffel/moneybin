@@ -740,9 +740,12 @@ def init_db(
         except SecretNotFoundError:
             pass
 
-        store.set_key(_KEY_NAME, encryption_key)
-        store.set_key(SALT_NAME, base64.b64encode(salt).decode())
+        db_existed = db_path.exists()
         try:
+            # set_key calls inside the try block so a failure on SALT_NAME
+            # after _KEY_NAME succeeded still triggers the rollback below.
+            store.set_key(_KEY_NAME, encryption_key)
+            store.set_key(SALT_NAME, base64.b64encode(salt).decode())
             with Database(db_path, secret_store=store, no_auto_upgrade=False):
                 pass
         except Exception:
@@ -762,31 +765,50 @@ def init_db(
                     store.delete_key(SALT_NAME)
                 except Exception:  # noqa: BLE001, S110 — best-effort rollback
                     pass  # noqa: S110
+            # If we just created an encrypted DB file but Database() then
+            # raised (e.g., during schema/migration), remove the orphan so
+            # retries aren't locked out by a file with no matching key.
+            if not db_existed and db_path.exists():
+                try:
+                    db_path.unlink()
+                except OSError:
+                    pass
             raise
         logger.debug("Passphrase-derived key stored in OS keychain")
     else:
-        key_was_generated = False
-        try:
-            store.get_key(_KEY_NAME)
+        # Auto-key mode: prefer existing keychain entry; if absent, persist
+        # an env-provided key (so the DB stays openable after the env var
+        # is unset) or generate a fresh one.
+        db_existed = db_path.exists()
+        key_was_persisted_now = False
+        if store.has_keychain_entry(_KEY_NAME):
             logger.debug("Using existing encryption key")
-        except SecretNotFoundError:
-            encryption_key = secrets_mod.token_hex(32)
+        else:
+            try:
+                encryption_key = store.get_key(_KEY_NAME)
+                logger.debug("Persisting env-provided encryption key to keychain")
+            except SecretNotFoundError:
+                encryption_key = secrets_mod.token_hex(32)
+                logger.debug("Auto-generated encryption key stored in OS keychain")
             store.set_key(_KEY_NAME, encryption_key)
-            key_was_generated = True
-            logger.debug("Auto-generated encryption key stored in OS keychain")
+            key_was_persisted_now = True
 
         try:
             with Database(db_path, secret_store=store, no_auto_upgrade=False):
                 pass
         except Exception:
-            # Roll back the freshly written key so the keychain doesn't
-            # carry a key that doesn't match any DB on disk. We only
-            # delete keys we just generated — a pre-existing key (env or
-            # prior keychain entry) belongs to the user and stays put.
-            if key_was_generated:
+            # Roll back the freshly persisted key and any orphan DB file.
+            # We only undo persistence we just performed — a pre-existing
+            # keychain entry belongs to the user and stays put.
+            if key_was_persisted_now:
                 try:
                     store.delete_key(_KEY_NAME)
                 except Exception:  # noqa: BLE001, S110 — best-effort rollback
                     pass  # noqa: S110
+                if not db_existed and db_path.exists():
+                    try:
+                        db_path.unlink()
+                    except OSError:
+                        pass
             raise
     logger.debug(f"Initialized encrypted database: {db_path}")

@@ -126,10 +126,13 @@ def main_callback(
                 )
                 raise typer.Exit(1)
 
+    # Profile commands are recovery tools — they must run even when the
+    # active profile's settings are broken. Skip per-profile settings load
+    # (which would call get_settings() and could fail) by passing profile=None.
     setup_observability(
         stream="cli",
         verbose=verbose,
-        profile=profile_name,
+        profile=None if is_profile_cmd else profile_name,
     )
     if profile_name is not None and not is_profile_cmd:
         if profile_source:
