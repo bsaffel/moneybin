@@ -89,15 +89,6 @@ class SecretStore:
         if value is not None:
             return value
 
-        # Fall back to legacy unscoped service for upgraded users whose
-        # keys were stored before per-profile scoping was introduced.
-        # Only apply this fallback when we're using a profile-scoped
-        # service (otherwise we'd just look up the same service twice).
-        if self._service != _SERVICE_PREFIX:
-            legacy_value = keyring.get_password(_SERVICE_PREFIX, name)
-            if legacy_value is not None:
-                return legacy_value
-
         # Fall back to environment variable
         env_var = f"{_ENV_PREFIX}{name}"
         value = os.environ.get(env_var)

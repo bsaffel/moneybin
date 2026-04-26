@@ -81,8 +81,6 @@ def main_callback(
     """
     import os
 
-    from ..utils.user_config import get_default_profile
-
     # Commands that manage profiles don't require the resolved profile
     # to point at an existing directory (e.g. `profile create alice`).
     is_profile_cmd = ctx.invoked_subcommand == "profile"
@@ -100,22 +98,17 @@ def main_callback(
         else:
             profile_source = "--profile flag"
 
-    if profile_name is None:
-        if is_profile_cmd:
-            # Profile commands tolerate an unset profile (e.g. `profile create`).
-            # Just consult config.yaml — no first-run wizard.
-            config_profile = get_default_profile()
-            if config_profile is not None:
-                profile_name = config_profile
-                profile_source = "config.yaml"
-        else:
-            # Non-profile commands need a profile. ensure_default_profile()
-            # consults config.yaml first and prompts only on true first run.
-            try:
-                profile_name = ensure_default_profile()
-                profile_source = "config.yaml or first-run wizard"
-            except KeyboardInterrupt:
-                raise typer.Abort() from None
+    if profile_name is None and not is_profile_cmd:
+        # Non-profile commands need a profile. ensure_default_profile()
+        # consults config.yaml first and prompts only on true first run.
+        # Profile commands (list/show/set/create/delete) intentionally skip
+        # this fallback so they remain runnable even if the active profile's
+        # settings are invalid — users need profile commands to recover.
+        try:
+            profile_name = ensure_default_profile()
+            profile_source = "config.yaml or first-run wizard"
+        except KeyboardInterrupt:
+            raise typer.Abort() from None
 
     if profile_name is not None:
         try:

@@ -119,13 +119,38 @@ def _setup_sqlmesh_file_handler(
     resolved_path = str(sqlmesh_log.resolve())
 
     sqlmesh_logger = logging.getLogger("sqlmesh")
+
+    # Evict any stale FileHandlers pointing at a different path before
+    # adding the new one. Long-lived processes (MCP server) crossing
+    # midnight would otherwise accumulate one handler per day.
+    for stale in [
+        h
+        for h in sqlmesh_logger.handlers
+        if isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) != resolved_path
+    ]:
+        sqlmesh_logger.removeHandler(stale)
+        stale.close()
+
     if not any(
         isinstance(h, logging.FileHandler)
         and getattr(h, "baseFilename", None) == resolved_path
         for h in sqlmesh_logger.handlers
     ):
         sqlmesh_logger.addHandler(_make_file_handler(sqlmesh_log, formatter))
-    # Don't double-log to the CLI/MCP file via root propagation.
+
+    # propagate=False stops INFO/DEBUG noise from reaching the CLI/MCP
+    # log file, but it would also hide WARNING/ERROR from the root
+    # console handler. Add a dedicated WARNING-level stderr handler on
+    # the sqlmesh logger so important runtime issues are still visible.
+    if not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in sqlmesh_logger.handlers
+    ):
+        sqlmesh_console = logging.StreamHandler(sys.stderr)
+        sqlmesh_console.setLevel(logging.WARNING)
+        sqlmesh_console.setFormatter(SanitizedLogFormatter(formatter))
+        sqlmesh_logger.addHandler(sqlmesh_console)
     sqlmesh_logger.propagate = False
 
 
