@@ -1,6 +1,6 @@
 ---
 description: "CLI development: Typer patterns, error handling, command registration, non-interactive parity"
-globs: ["src/moneybin/cli/**", "src/moneybin/main.py"]
+paths: ["src/moneybin/cli/**", "src/moneybin/main.py"]
 ---
 
 # CLI Development

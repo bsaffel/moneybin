@@ -1,6 +1,6 @@
 ---
 description: "Data extraction and loading: day-boundary extraction, incremental sync, dedup strategy, parameter design"
-globs: ["src/moneybin/extractors/**", "src/moneybin/connectors/**", "src/moneybin/loaders/**"]
+paths: ["src/moneybin/extractors/**", "src/moneybin/connectors/**", "src/moneybin/loaders/**"]
 ---
 
 # Data Extraction & Loading

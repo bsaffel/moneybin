@@ -1,6 +1,6 @@
 ---
 description: "Security: SQL injection prevention, input validation, XSS, PII in logs, exception wrapping"
-globs: ["src/moneybin/**/*.py", "**/*.sql"]
+paths: ["src/moneybin/**/*.py", "**/*.sql"]
 ---
 
 # Security

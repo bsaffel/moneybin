@@ -44,8 +44,8 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](matching-overview.md) | Umbrella | ready | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
-| [Same-Record Dedup](matching-same-record-dedup.md) | Feature | in-progress | Cross-source dedup + golden-record merge rules (pillars A+C) |
-| [Transfer Detection](matching-transfer-detection.md) | Feature | in-progress | Transfer pair detection across accounts (pillar B); shared matching engine, bridge table, always-review v1 |
+| [Same-Record Dedup](matching-same-record-dedup.md) | Feature | implemented | Cross-source dedup + golden-record merge rules (pillars A+C); shared matching engine, `prep.int_transactions__matched`/`__merged`, `meta.fct_transaction_provenance`, `app.match_decisions`, `moneybin matches run/review/history/undo/backfill` CLI |
+| [Transfer Detection](matching-transfer-detection.md) | Feature | implemented | Transfer pair detection across accounts (pillar B); shared matching engine (Tier 4), `core.bridge_transfers`, always-review v1, 4-signal scoring |
 
 ## Categorization
 

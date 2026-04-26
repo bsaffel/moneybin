@@ -71,16 +71,26 @@ Security-critical parameters (crypto cost factors, key lengths, salt sizes) defi
 - **No PII or financial data in logs.** Log record counts, IDs, and status codes only.
 - **Parameterized SQL** with `?` placeholders. See `.claude/rules/security.md` for full standards.
 
-## Conditional Rules Index
+## Rules Index
 
-These `.claude/rules/` files load only when editing matching files. If you need guidance outside the current glob match, read the relevant file directly.
+Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — path-scoped rules load when Claude reads a matching file; unscoped rules load every session. The table below is for discoverability when planning work that hasn't touched matching files yet. Read a rule directly if you need it before editing.
 
-| Rule | Covers | Loads for |
-|------|--------|-----------|
-| `security.md` | SQL injection, input validation, XSS, PII, exception wrapping | `src/moneybin/**/*.py`, `**/*.sql` |
-| `database.md` | DuckDB patterns, SQL conventions, schema, column comments | `**/*.sql`, `sqlmesh/**`, `src/moneybin/sql/**`, `src/moneybin/database.py`, `src/moneybin/schema.py`, `src/moneybin/loaders/**` |
-| `mcp-server.md` | Tool taxonomy, response envelope, sensitivity tiers, services | `src/moneybin/mcp/**`, `src/moneybin/services/**` |
-| `cli.md` | Typer patterns, error handling, command registration, icons | `src/moneybin/cli/**`, `src/moneybin/main.py` |
-| `testing.md` | Pytest patterns, fixtures, mocking strategy, DB test helpers | `tests/**`, `**/conftest.py`, `src/moneybin/testing/**` |
-| `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources | `src/moneybin/extractors/**`, `src/moneybin/connectors/**`, `src/moneybin/loaders/**` |
-| `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs | `src/moneybin/**/*.py`, `sqlmesh/models/**` |
+### Path-scoped
+
+| Rule | Covers |
+|------|--------|
+| `security.md` | SQL injection, input validation, XSS, PII, exception wrapping |
+| `database.md` | DuckDB patterns, SQL conventions, schema, column comments |
+| `mcp-server.md` | Tool taxonomy, response envelope, sensitivity tiers, services |
+| `cli.md` | Typer patterns, error handling, command registration, icons |
+| `testing.md` | Pytest patterns, fixtures, mocking strategy, DB test helpers |
+| `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources |
+| `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs |
+| `documentation.md` | Diagram conventions (Mermaid over ASCII) |
+
+### Always loaded (workflow rules)
+
+| Rule | Covers |
+|------|--------|
+| `shipping.md` | Post-implementation checklist: README updates, roadmap icons, `/simplify` pre-push pass |
+| `branching.md` | Branch prefix → PR label mapping, commit message style |
