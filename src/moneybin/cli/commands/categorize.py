@@ -20,13 +20,10 @@ app = typer.Typer(
 def apply_rules_cmd() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
     from moneybin.database import DatabaseKeyError, get_database
-    from moneybin.services.categorization_service import (
-        apply_deterministic_categorization,
-    )
+    from moneybin.services.categorization_service import CategorizationService
 
     try:
-        db = get_database()
-        stats = apply_deterministic_categorization(db)
+        stats = CategorizationService(get_database()).apply_deterministic()
         if stats["total"] > 0:
             logger.info(
                 f"\u2705 Categorized {stats['total']} transactions "
@@ -55,11 +52,10 @@ def seed_cmd() -> None:
     Safe to run multiple times — existing categories are not overwritten.
     """
     from moneybin.database import DatabaseKeyError, get_database
-    from moneybin.services.categorization_service import seed_categories
+    from moneybin.services.categorization_service import CategorizationService
 
     try:
-        db = get_database()
-        count = seed_categories(db)
+        count = CategorizationService(get_database()).seed()
         logger.info(f"\u2705 Seeded {count} new categories")
     except FileNotFoundError as e:
         logger.error(f"{e}")
@@ -76,11 +72,10 @@ def seed_cmd() -> None:
 def stats_cmd() -> None:
     """Show categorization coverage statistics."""
     from moneybin.database import DatabaseKeyError, get_database
-    from moneybin.services.categorization_service import get_categorization_stats
+    from moneybin.services.categorization_service import CategorizationService
 
     try:
-        db = get_database()
-        stats = get_categorization_stats(db)
+        stats = CategorizationService(get_database()).categorization_stats()
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e

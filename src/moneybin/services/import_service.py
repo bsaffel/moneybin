@@ -690,12 +690,10 @@ def _apply_categorization(db: Database) -> None:
     Args:
         db: Database instance.
     """
-    from moneybin.services.categorization_service import (
-        apply_deterministic_categorization,
-    )
+    from moneybin.services.categorization_service import CategorizationService
 
     try:
-        stats = apply_deterministic_categorization(db)
+        stats = CategorizationService(db).apply_deterministic()
         if stats["total"] > 0:
             logger.info(
                 f"Auto-categorized {stats['total']} transactions "

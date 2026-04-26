@@ -29,16 +29,9 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.services.categorization_service import (
+    CategorizationService,
     MatchType,
-    create_merchant,
-    get_active_categories,
-    get_stats,
-)
-from moneybin.services.categorization_service import (
-    bulk_categorize as bulk_categorize_svc,
-)
-from moneybin.services.categorization_service import (
-    seed_categories as seed_categories_svc,
+    SeedResult,
 )
 from moneybin.tables import (
     CATEGORIES,
@@ -117,7 +110,7 @@ def categorize_categories(
             for r in rows
         ]
     else:
-        data = get_active_categories(db)
+        data = CategorizationService(db).get_active_categories()
 
     return build_envelope(
         data=data,
@@ -225,8 +218,7 @@ def categorize_stats() -> ResponseEnvelope:
     percentage categorized, and breakdown by categorization source
     (user, ai, rule, plaid).
     """
-    db = get_database()
-    result = get_stats(db)
+    result = CategorizationService(get_database()).stats()
     return result.to_envelope()
 
 
@@ -305,7 +297,7 @@ def categorize_bulk(
             sensitivity="medium",
         )
 
-    result = bulk_categorize_svc(get_database(), items)
+    result = CategorizationService(get_database()).bulk_categorize(items)
     return result.to_envelope(len(items))
 
 
@@ -498,8 +490,7 @@ def categorize_create_merchants(
         subcategory = str(item.get("subcategory", "")).strip() or None
 
         try:
-            create_merchant(
-                db,
+            CategorizationService(db).create_merchant(
                 raw_pattern,
                 canonical_name,
                 match_type=match_type,
@@ -636,10 +627,7 @@ def categorize_seed() -> ResponseEnvelope:
     are not overwritten.
     """
     try:
-        db = get_database()
-        count = seed_categories_svc(db)
-        from moneybin.services.categorization_service import SeedResult
-
+        count = CategorizationService(get_database()).seed()
         return SeedResult(seeded_count=count).to_envelope()
     except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("seed_categories failed")

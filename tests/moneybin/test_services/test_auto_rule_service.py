@@ -1,4 +1,4 @@
-"""Unit tests for auto_rule_service."""
+"""Unit tests for the auto-rule lifecycle (private _auto_rule module + service surface)."""
 
 from unittest.mock import MagicMock
 
@@ -6,7 +6,8 @@ import pytest
 
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
-from moneybin.services import auto_rule_service
+from moneybin.services import _auto_rule
+from moneybin.services.categorization_service import CategorizationService
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -25,7 +26,7 @@ def _mock_db_with_merchant(
 def test_extract_pattern_uses_merchant_canonical_name_when_present():
     """Extract pattern prefers merchant canonical name when present."""
     db = _mock_db_with_merchant()
-    pattern = auto_rule_service.extract_pattern(db, transaction_id="t_1")
+    pattern = _auto_rule.extract_pattern(db, transaction_id="t_1")
     assert pattern == "STARBUCKS"
 
 
@@ -36,7 +37,7 @@ def test_extract_pattern_falls_back_to_normalized_description():
         (None,),  # no merchant_id on the categorization row
         ("SQ *STARBUCKS #1234 SEATTLE WA",),  # raw description
     ]
-    pattern = auto_rule_service.extract_pattern(db, transaction_id="t_2")
+    pattern = _auto_rule.extract_pattern(db, transaction_id="t_2")
     assert pattern == "STARBUCKS"
 
 
@@ -44,7 +45,7 @@ def test_extract_pattern_returns_none_when_description_empty():
     """Extract pattern returns None when description is empty."""
     db = MagicMock()
     db.execute.return_value.fetchone.side_effect = [(None,), ("",)]
-    assert auto_rule_service.extract_pattern(db, transaction_id="t_3") is None
+    assert _auto_rule.extract_pattern(db, transaction_id="t_3") is None
 
 
 @pytest.fixture
@@ -81,8 +82,8 @@ def _seed_transaction(
 def test_record_creates_proposal_on_first_categorization(real_db):
     """Creating a proposal on the first categorization stores the expected row."""
     _seed_transaction(real_db, "t1")
-    auto_rule_service.record_categorization(
-        real_db, "t1", "Food & Drink", subcategory="Coffee"
+    CategorizationService(real_db)._record_categorization(
+        "t1", "Food & Drink", subcategory="Coffee"
     )
 
     rows = real_db.execute(
@@ -95,12 +96,9 @@ def test_record_increments_trigger_count_on_same_pattern_and_category(real_db):
     """Repeated categorizations with the same pattern and category increment trigger_count."""
     _seed_transaction(real_db, "t1")
     _seed_transaction(real_db, "t2")
-    auto_rule_service.record_categorization(
-        real_db, "t1", "Food & Drink", subcategory="Coffee"
-    )
-    auto_rule_service.record_categorization(
-        real_db, "t2", "Food & Drink", subcategory="Coffee"
-    )
+    svc = CategorizationService(real_db)
+    svc._record_categorization("t1", "Food & Drink", subcategory="Coffee")
+    svc._record_categorization("t2", "Food & Drink", subcategory="Coffee")
 
     rows = real_db.execute(
         "SELECT trigger_count, sample_txn_ids FROM app.proposed_rules"
@@ -114,8 +112,9 @@ def test_record_supersedes_when_same_pattern_different_category(real_db):
     """Categorizing a same-pattern txn with a different category supersedes the prior proposal."""
     _seed_transaction(real_db, "t1")
     _seed_transaction(real_db, "t2")
-    auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
-    auto_rule_service.record_categorization(real_db, "t2", "Groceries")
+    svc = CategorizationService(real_db)
+    svc._record_categorization("t1", "Food & Drink")
+    svc._record_categorization("t2", "Groceries")
 
     rows = real_db.execute(
         "SELECT category, status FROM app.proposed_rules ORDER BY proposed_at"
@@ -130,7 +129,7 @@ def test_record_skips_when_active_rule_already_covers_pattern(real_db):
         "INSERT INTO app.categorization_rules (rule_id, name, merchant_pattern, match_type, category, priority, is_active) "
         "VALUES ('r1', 'starbucks', 'STARBUCKS', 'contains', 'Food & Drink', 100, true)"
     )
-    auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
+    CategorizationService(real_db)._record_categorization("t1", "Food & Drink")
 
     count = real_db.execute("SELECT COUNT(*) FROM app.proposed_rules").fetchone()[0]
     assert count == 0
@@ -145,14 +144,15 @@ def test_record_respects_proposal_threshold(real_db, monkeypatch):
     _seed_transaction(real_db, "t1")
     _seed_transaction(real_db, "t2")
     _seed_transaction(real_db, "t3")
-    auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
-    auto_rule_service.record_categorization(real_db, "t2", "Food & Drink")
+    svc = CategorizationService(real_db)
+    svc._record_categorization("t1", "Food & Drink")
+    svc._record_categorization("t2", "Food & Drink")
     pending = real_db.execute(
         "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'pending'"
     ).fetchone()[0]
     assert pending == 0
 
-    auto_rule_service.record_categorization(real_db, "t3", "Food & Drink")
+    svc._record_categorization("t3", "Food & Drink")
     pending = real_db.execute(
         "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'pending'"
     ).fetchone()[0]
@@ -162,13 +162,12 @@ def test_record_respects_proposal_threshold(real_db, monkeypatch):
 def test_approve_promotes_to_active_rule(real_db):
     """Approving a pending proposal creates an active rule with the correct attributes."""
     _seed_transaction(real_db, "t1")
-    pid = auto_rule_service.record_categorization(
-        real_db, "t1", "Food & Drink", subcategory="Coffee"
-    )
+    svc = CategorizationService(real_db)
+    pid = svc._record_categorization("t1", "Food & Drink", subcategory="Coffee")
     assert pid is not None
 
-    result = auto_rule_service.approve(real_db, [pid])
-    assert result.approved == 1
+    result = svc.auto_confirm(approve=[pid])
+    assert result["approved"] == 1
 
     rule = real_db.execute(
         "SELECT merchant_pattern, category, subcategory, priority, created_by, is_active "
@@ -186,13 +185,14 @@ def test_approve_promotes_to_active_rule(real_db):
 def test_approve_immediately_categorizes_existing_uncategorized(real_db):
     """Approving a proposal back-fills matching uncategorized transactions immediately."""
     _seed_transaction(real_db, "t1")
-    pid = auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
+    svc = CategorizationService(real_db)
+    pid = svc._record_categorization("t1", "Food & Drink")
     real_db.execute(
         "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
         "VALUES ('t9', 'a1', DATE '2026-01-02', -7.00, 'STARBUCKS DOWNTOWN', 'csv')"
     )
-    result = auto_rule_service.approve(real_db, [pid])
-    assert result.newly_categorized == 1
+    result = svc.auto_confirm(approve=[pid])
+    assert result["newly_categorized"] == 1
 
     cat = real_db.execute(
         "SELECT category, categorized_by FROM app.transaction_categories WHERE transaction_id = 't9'"
@@ -210,9 +210,10 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
 
     # Approve an auto-rule for STARBUCKS -> Food & Drink
     _seed_transaction(real_db, "t1")
-    pid = auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
+    svc = CategorizationService(real_db)
+    pid = svc._record_categorization("t1", "Food & Drink")
     assert pid is not None
-    auto_rule_service.approve(real_db, [pid])
+    svc.auto_confirm(approve=[pid])
 
     # Two user overrides correcting STARBUCKS to Groceries
     for tid in ("t10", "t11"):
@@ -227,7 +228,7 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
             [tid],
         )
 
-    deactivated = auto_rule_service.check_overrides(real_db)
+    deactivated = svc.check_overrides()
     assert deactivated == 1
 
     active = real_db.execute(
@@ -244,8 +245,9 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
 def test_reject_marks_proposal_rejected_without_creating_rule(real_db):
     """Rejecting a proposal marks it rejected without inserting any categorization rule."""
     _seed_transaction(real_db, "t1")
-    pid = auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
-    auto_rule_service.reject(real_db, [pid])
+    svc = CategorizationService(real_db)
+    pid = svc._record_categorization("t1", "Food & Drink")
+    svc.auto_confirm(reject=[pid])
 
     status = real_db.execute(
         "SELECT status, decided_by FROM app.proposed_rules WHERE proposed_rule_id = ?",

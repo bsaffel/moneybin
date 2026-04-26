@@ -3,6 +3,11 @@
 Handles merchant normalization, rule-based categorization, merchant matching,
 and taxonomy management. Designed for deterministic operations — LLM-based
 auto-categorization lives in the MCP layer (auto_categorize tool).
+
+The public API is the ``CategorizationService`` class. Module-level helpers
+(``normalize_description``, ``_matches_pattern``, ``_fetch_merchants``,
+``_match_description``) remain available for the private ``_auto_rule`` module
+which imports ``normalize_description``.
 """
 
 import logging
@@ -240,585 +245,530 @@ def _match_description(
     return None
 
 
-def match_merchant(db: Database, description: str) -> dict[str, str | None] | None:
-    """Look up a merchant by raw description.
-
-    Args:
-        db: Database instance (read-only access is sufficient).
-        description: Transaction description to match.
-
-    Returns:
-        Dict with merchant_id, canonical_name, category, subcategory
-        if found, otherwise None.
-    """
-    merchants = _fetch_merchants(db)
-    if merchants is None:
-        return None
-
-    return _match_description(description, merchants)
-
-
-def create_merchant(
-    db: Database,
-    raw_pattern: str,
-    canonical_name: str,
-    *,
-    match_type: MatchType = "contains",
-    category: str | None = None,
-    subcategory: str | None = None,
-    created_by: str = "ai",
-) -> str:
-    """Create a merchant mapping.
-
-    Args:
-        db: Database instance (read-write).
-        raw_pattern: Pattern to match in transaction descriptions.
-        canonical_name: Clean merchant name for display.
-        match_type: How to match: 'exact', 'contains', or 'regex'.
-        category: Optional default category for this merchant.
-        subcategory: Optional default subcategory.
-        created_by: Who created the mapping ('user', 'ai', 'rule').
-
-    Returns:
-        The merchant_id of the created merchant.
-    """
-    merchant_id = uuid.uuid4().hex[:12]
-    db.execute(
-        f"""
-        INSERT INTO {MERCHANTS.full_name}
-        (merchant_id, raw_pattern, match_type, canonical_name,
-         category, subcategory, created_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,
-        [
-            merchant_id,
-            raw_pattern,
-            match_type,
-            canonical_name,
-            category,
-            subcategory,
-            created_by,
-        ],
-    )
-    logger.info(f"Created merchant mapping: {raw_pattern} -> {canonical_name}")
-    return merchant_id
-
-
-def bulk_categorize(
-    db: Database,
-    items: list[dict[str, str]],
-) -> BulkCategorizationResult:
-    """Assign categories to multiple transactions with merchant auto-creation.
-
-    For each item, looks up the transaction description, resolves or creates
-    a merchant mapping, then inserts/replaces the category assignment.
-    Merchant resolution is best-effort — failures do not prevent categorization.
-
-    Args:
-        db: Database instance (read-write).
-        items: List of dicts with transaction_id, category, and optional subcategory.
-
-    Returns:
-        BulkCategorizationResult with applied/skipped/error counts.
-    """
-    applied = 0
-    skipped = 0
-    errors = 0
-    merchants_created = 0
-    error_details: list[dict[str, str]] = []
-
-    for item in items:
-        txn_id = item.get("transaction_id", "").strip()
-        category = item.get("category", "").strip()
-        if not txn_id or not category:
-            skipped += 1
-            error_details.append({
-                "transaction_id": txn_id or "(missing)",
-                "reason": "Missing transaction_id or category",
-            })
-            continue
-
-        subcategory = item.get("subcategory", "").strip() or None
-
-        try:
-            # Resolve merchant_id from description (best-effort)
-            merchant_id = None
-            try:
-                txn = db.execute(
-                    f"""
-                    SELECT description FROM {FCT_TRANSACTIONS.full_name}
-                    WHERE transaction_id = ?
-                    """,
-                    [txn_id],
-                ).fetchone()
-                if txn and txn[0]:
-                    existing = match_merchant(db, txn[0])
-                    if existing:
-                        merchant_id = existing["merchant_id"]
-                    else:
-                        normalized = normalize_description(txn[0])
-                        if normalized:
-                            merchant_id = create_merchant(
-                                db,
-                                normalized,
-                                normalized,
-                                match_type="contains",
-                                category=category,
-                                subcategory=subcategory,
-                                created_by="ai",
-                            )
-                            merchants_created += 1
-            except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
-                logger.debug(
-                    f"Could not resolve merchant for {txn_id}",
-                    exc_info=True,
-                )
-
-            db.execute(
-                f"""
-                INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory,
-                 categorized_at, categorized_by, merchant_id)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
-                """,
-                [txn_id, category, subcategory, merchant_id],
-            )
-            applied += 1
-        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
-            errors += 1
-            logger.exception(f"bulk_categorize failed for transaction {txn_id!r}")
-            error_details.append({
-                "transaction_id": txn_id,
-                "reason": "Failed to apply category — check logs for details.",
-            })
-
-    return BulkCategorizationResult(
-        applied=applied,
-        skipped=skipped,
-        errors=errors,
-        error_details=error_details,
-        merchants_created=merchants_created,
-    )
-
-
-def apply_merchant_categories(
-    db: Database,
-) -> int:
-    """Apply merchant-based categories to uncategorized transactions.
-
-    Fetches all merchants once, then matches each uncategorized transaction
-    in Python — avoids a per-transaction DB query.
-
-    Args:
-        db: Database instance (read-write).
-
-    Returns:
-        Number of transactions categorized.
-    """
-    merchants = _fetch_merchants(db)
-    if not merchants:
-        return 0
-
-    try:
-        uncategorized = db.execute(
-            f"""
-            SELECT t.transaction_id, t.description
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                ON t.transaction_id = c.transaction_id
-            WHERE c.transaction_id IS NULL
-                AND t.description IS NOT NULL
-                AND t.description != ''
-            """,
-        ).fetchall()
-    except duckdb.CatalogException:
-        return 0
-
-    if not uncategorized:
-        return 0
-
-    categorized_count = 0
-    for txn_id, description in uncategorized:
-        merchant = _match_description(description, merchants)
-        if merchant and merchant.get("category"):
-            db.execute(
-                f"""
-                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, merchant_id, confidence)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
-                """,
-                [
-                    txn_id,
-                    merchant["category"],
-                    merchant["subcategory"],
-                    merchant["merchant_id"],
-                ],
-            )
-            categorized_count += 1
-
-    if categorized_count:
-        logger.info(f"Merchant matching categorized {categorized_count} transactions")
-    return categorized_count
-
-
-def apply_rules(
-    db: Database,
-) -> int:
-    """Apply active categorization rules to uncategorized transactions.
-
-    Runs before merchant mapping in apply_deterministic_categorization so that
-    explicit rules take priority. Rules are evaluated in priority order (lower
-    number = higher priority); the first matching rule wins. Rules can filter
-    by merchant pattern, amount range, and account ID.
-
-    Args:
-        db: Database instance (read-write).
-
-    Returns:
-        Number of transactions categorized.
-    """
-    try:
-        rules = db.execute(
-            f"""
-            SELECT rule_id, name, merchant_pattern, match_type,
-                   min_amount, max_amount, account_id,
-                   category, subcategory
-            FROM {CATEGORIZATION_RULES.full_name}
-            WHERE is_active = true
-            ORDER BY priority ASC, created_at ASC
-            """,
-        ).fetchall()
-    except duckdb.CatalogException:
-        return 0
-
-    if not rules:
-        return 0
-
-    try:
-        uncategorized = db.execute(
-            f"""
-            SELECT t.transaction_id, t.description, t.amount, t.account_id
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                ON t.transaction_id = c.transaction_id
-            WHERE c.transaction_id IS NULL
-                AND t.description IS NOT NULL
-                AND t.description != ''
-            """,
-        ).fetchall()
-    except duckdb.CatalogException:
-        return 0
-
-    if not uncategorized:
-        return 0
-
-    categorized_count = 0
-    for txn_id, description, amount, account_id in uncategorized:
-        normalized = normalize_description(description)
-        for rule in rules:
-            (
-                rule_id,
-                _name,
-                pattern,
-                match_type,
-                min_amount,
-                max_amount,
-                rule_account_id,
-                category,
-                subcategory,
-            ) = rule
-
-            if not (
-                _matches_pattern(description, pattern, match_type)
-                or _matches_pattern(normalized, pattern, match_type)
-            ):
-                continue
-
-            if min_amount is not None and amount < float(min_amount):
-                continue
-            if max_amount is not None and amount > float(max_amount):
-                continue
-
-            if rule_account_id is not None and account_id != rule_account_id:
-                continue
-
-            db.execute(
-                f"""
-                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, rule_id, confidence)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
-                """,
-                [txn_id, category, subcategory, rule_id],
-            )
-            categorized_count += 1
-            break  # First matching rule wins
-
-    if categorized_count:
-        logger.info(f"Rule engine categorized {categorized_count} transactions")
-    return categorized_count
-
-
-def apply_deterministic_categorization(
-    db: Database,
-) -> dict[str, int]:
-    """Run all deterministic categorization: rules first, then merchant fallback.
-
-    Rules run first in priority order so explicit user-defined rules (which can
-    filter by amount, account, and pattern) take precedence over generic merchant
-    mappings. Merchant mappings apply only to transactions not matched by any rule.
-
-    Called after import/transform to automatically categorize new transactions
-    without any LLM dependency.
-
-    Args:
-        db: Database instance (read-write).
-
-    Returns:
-        Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
-    """
-    rule_count = apply_rules(db)
-    merchant_count = apply_merchant_categories(db)
-    total = merchant_count + rule_count
-
-    if total:
-        logger.info(
-            f"Deterministic categorization: {merchant_count} merchant, {rule_count} rule, {total} total"
-        )
-
-    return {
-        "merchant": merchant_count,
-        "rule": rule_count,
-        "total": total,
-    }
-
-
-def ensure_seed_table(db: Database) -> None:
-    """Materialize the SQLMesh seed table if it doesn't exist yet.
-
-    Runs a targeted ``sqlmesh plan --auto-apply`` scoped to just the
-    ``seeds.categories`` model so the MCP server works without a
-    prior CLI invocation of ``sqlmesh apply``.
-
-    Args:
-        db: Database instance (used only to check table existence).
-    """
-    result = db.execute(
-        """
-        SELECT COUNT(*) FROM information_schema.tables
-        WHERE table_schema = ? AND table_name = ?
-        """,
-        [SEED_CATEGORIES.schema, SEED_CATEGORIES.name],
-    ).fetchone()
-    if result and result[0] > 0:
-        return  # already exists
-
-    logger.info("Seed table missing — running targeted SQLMesh apply")
-
-    with sqlmesh_context() as ctx:
-        ctx.plan(
-            auto_apply=True,
-            no_prompts=True,
-            select_models=[SEED_CATEGORIES.full_name],
-        )
-    logger.info("SQLMesh seed apply completed")
-
-
-def seed_categories(db: Database) -> int:
-    """Populate app.categories from the SQLMesh seed table.
-
-    If the seed table does not yet exist, a targeted SQLMesh apply is
-    run automatically to materialize it. Skips any categories that
-    already exist. Safe to run multiple times.
-
-    Args:
-        db: Database instance (read-write).
-
-    Returns:
-        Number of categories inserted.
-    """
-    ensure_seed_table(db)
-
-    count_before = 0
-    try:
-        result = db.execute(f"SELECT COUNT(*) FROM {CATEGORIES.full_name}").fetchone()
-        count_before = result[0] if result else 0
-    except duckdb.CatalogException:
-        pass
-
-    db.execute(
-        f"""
-        INSERT OR IGNORE INTO {CATEGORIES.full_name}
-        (category_id, category, subcategory, description, is_default,
-         is_active, plaid_detailed, created_at)
-        SELECT
-            category_id,
-            category,
-            subcategory,
-            description,
-            true AS is_default,
-            true AS is_active,
-            plaid_detailed,
-            CURRENT_TIMESTAMP
-        FROM {SEED_CATEGORIES.full_name}
-        """
-    )
-
-    result = db.execute(f"SELECT COUNT(*) FROM {CATEGORIES.full_name}").fetchone()
-    count_after = result[0] if result else 0
-
-    inserted = count_after - count_before
-    logger.info(f"Seeded {inserted} categories ({count_after} total)")
-    return inserted
-
-
-def get_active_categories(
-    db: Database,
-) -> list[dict[str, str | bool | None]]:
-    """Get all active categories.
-
-    Args:
-        db: Database instance (read-only access is sufficient).
-
-    Returns:
-        List of category dicts.
-    """
-    try:
-        rows = db.execute(
-            f"""
-            SELECT category_id, category, subcategory, description,
-                   is_default, plaid_detailed
-            FROM {CATEGORIES.full_name}
-            WHERE is_active = true
-            ORDER BY category, subcategory
-            """
-        ).fetchall()
-    except duckdb.CatalogException:
-        return []
-
-    return [
-        {
-            "category_id": r[0],
-            "category": r[1],
-            "subcategory": r[2],
-            "description": r[3],
-            "is_default": r[4],
-            "plaid_detailed": r[5],
-        }
-        for r in rows
-    ]
-
-
-def get_categorization_stats(
-    db: Database,
-) -> dict[str, int | float]:
-    """Get summary statistics about categorization coverage.
-
-    Args:
-        db: Database instance (read-only access is sufficient).
-
-    Returns:
-        Dict with total, categorized, uncategorized counts and
-        breakdown by categorized_by source.
-    """
-    try:
-        total_result = db.execute(
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"
-        ).fetchone()
-        total = total_result[0] if total_result else 0
-    except duckdb.CatalogException:
-        return {"total": 0, "categorized": 0, "uncategorized": 0, "pct_categorized": 0}
-
-    try:
-        categorized_result = db.execute(
-            f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name}"
-        ).fetchone()
-        categorized = categorized_result[0] if categorized_result else 0
-    except duckdb.CatalogException:
-        categorized = 0
-
-    uncategorized = total - categorized
-    pct = round((categorized / total * 100), 1) if total > 0 else 0.0
-
-    stats: dict[str, int | float] = {
-        "total": total,
-        "categorized": categorized,
-        "uncategorized": uncategorized,
-        "pct_categorized": pct,
-    }
-
-    # Breakdown by source
-    try:
-        source_rows = db.execute(
-            f"""
-            SELECT categorized_by, COUNT(*) AS cnt
-            FROM {TRANSACTION_CATEGORIES.full_name}
-            GROUP BY categorized_by
-            ORDER BY cnt DESC
-            """
-        ).fetchall()
-        for source, count in source_rows:
-            stats[f"by_{source}"] = count
-    except duckdb.CatalogException:
-        pass
-
-    return stats
-
-
-def get_stats(db: Database) -> CategorizationStats:
-    """Get categorization stats as a typed result.
-
-    Wrapper around get_categorization_stats() that returns a typed object.
-    """
-    raw = get_categorization_stats(db)
-    by_source = {
-        k.removeprefix("by_"): v
-        for k, v in raw.items()
-        if k.startswith("by_") and isinstance(v, int)
-    }
-    return CategorizationStats(
-        total=int(raw["total"]),
-        categorized=int(raw["categorized"]),
-        uncategorized=int(raw["uncategorized"]),
-        percent_categorized=float(raw["pct_categorized"]),
-        by_source=by_source,
-    )
-
-
 class CategorizationService:
-    """Facade matching AccountService/SpendingService/TransactionService.
+    """Canonical categorization surface — merchants, rules, taxonomy, auto-rules.
 
-    Delegates to existing module-level functions in this file and to
-    auto_rule_service. Provides a uniform Service(db).method() surface for
-    the MCP layer, CLI commands, and the testing scenario runner.
+    All categorization operations route through this class. The MCP tools, CLI
+    commands, and import service share this single entry point so caller-visible
+    behavior is consistent across surfaces.
     """
 
     def __init__(self, db: Database) -> None:
         """Bind the service to a database connection."""
         self._db = db
 
+    # -- Merchant lookup / management --
+
+    def match_merchant(self, description: str) -> dict[str, str | None] | None:
+        """Look up a merchant by raw description.
+
+        Args:
+            description: Transaction description to match.
+
+        Returns:
+            Dict with merchant_id, canonical_name, category, subcategory
+            if found, otherwise None.
+        """
+        merchants = _fetch_merchants(self._db)
+        if merchants is None:
+            return None
+        return _match_description(description, merchants)
+
+    def create_merchant(
+        self,
+        raw_pattern: str,
+        canonical_name: str,
+        *,
+        match_type: MatchType = "contains",
+        category: str | None = None,
+        subcategory: str | None = None,
+        created_by: str = "ai",
+    ) -> str:
+        """Create a merchant mapping.
+
+        Args:
+            raw_pattern: Pattern to match in transaction descriptions.
+            canonical_name: Clean merchant name for display.
+            match_type: How to match: 'exact', 'contains', or 'regex'.
+            category: Optional default category for this merchant.
+            subcategory: Optional default subcategory.
+            created_by: Who created the mapping ('user', 'ai', 'rule').
+
+        Returns:
+            The merchant_id of the created merchant.
+        """
+        merchant_id = uuid.uuid4().hex[:12]
+        self._db.execute(
+            f"""
+            INSERT INTO {MERCHANTS.full_name}
+            (merchant_id, raw_pattern, match_type, canonical_name,
+             category, subcategory, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            [
+                merchant_id,
+                raw_pattern,
+                match_type,
+                canonical_name,
+                category,
+                subcategory,
+                created_by,
+            ],
+        )
+        logger.info(f"Created merchant mapping: {raw_pattern} -> {canonical_name}")
+        return merchant_id
+
     # -- Categorization core --
 
     def bulk_categorize(self, items: list[dict[str, str]]) -> BulkCategorizationResult:
-        """Apply categories to multiple transactions; see ``bulk_categorize``."""
-        return bulk_categorize(self._db, items)
+        """Assign categories to multiple transactions with merchant auto-creation.
+
+        For each item, looks up the transaction description, resolves or creates
+        a merchant mapping, then inserts/replaces the category assignment.
+        Merchant resolution is best-effort — failures do not prevent categorization.
+
+        Args:
+            items: List of dicts with transaction_id, category, and optional subcategory.
+
+        Returns:
+            BulkCategorizationResult with applied/skipped/error counts.
+        """
+        applied = 0
+        skipped = 0
+        errors = 0
+        merchants_created = 0
+        error_details: list[dict[str, str]] = []
+
+        for item in items:
+            txn_id = item.get("transaction_id", "").strip()
+            category = item.get("category", "").strip()
+            if not txn_id or not category:
+                skipped += 1
+                error_details.append({
+                    "transaction_id": txn_id or "(missing)",
+                    "reason": "Missing transaction_id or category",
+                })
+                continue
+
+            subcategory = item.get("subcategory", "").strip() or None
+
+            try:
+                # Resolve merchant_id from description (best-effort)
+                merchant_id = None
+                try:
+                    txn = self._db.execute(
+                        f"""
+                        SELECT description FROM {FCT_TRANSACTIONS.full_name}
+                        WHERE transaction_id = ?
+                        """,
+                        [txn_id],
+                    ).fetchone()
+                    if txn and txn[0]:
+                        existing = self.match_merchant(txn[0])
+                        if existing:
+                            merchant_id = existing["merchant_id"]
+                        else:
+                            normalized = normalize_description(txn[0])
+                            if normalized:
+                                merchant_id = self.create_merchant(
+                                    normalized,
+                                    normalized,
+                                    match_type="contains",
+                                    category=category,
+                                    subcategory=subcategory,
+                                    created_by="ai",
+                                )
+                                merchants_created += 1
+                except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
+                    logger.debug(
+                        f"Could not resolve merchant for {txn_id}",
+                        exc_info=True,
+                    )
+
+                self._db.execute(
+                    f"""
+                    INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
+                    (transaction_id, category, subcategory,
+                     categorized_at, categorized_by, merchant_id)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
+                    """,
+                    [txn_id, category, subcategory, merchant_id],
+                )
+                applied += 1
+            except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+                errors += 1
+                logger.exception(f"bulk_categorize failed for transaction {txn_id!r}")
+                error_details.append({
+                    "transaction_id": txn_id,
+                    "reason": "Failed to apply category — check logs for details.",
+                })
+
+        return BulkCategorizationResult(
+            applied=applied,
+            skipped=skipped,
+            errors=errors,
+            error_details=error_details,
+            merchants_created=merchants_created,
+        )
+
+    def apply_merchant_categories(self) -> int:
+        """Apply merchant-based categories to uncategorized transactions.
+
+        Fetches all merchants once, then matches each uncategorized transaction
+        in Python — avoids a per-transaction DB query.
+
+        Returns:
+            Number of transactions categorized.
+        """
+        merchants = _fetch_merchants(self._db)
+        if not merchants:
+            return 0
+
+        try:
+            uncategorized = self._db.execute(
+                f"""
+                SELECT t.transaction_id, t.description
+                FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
+                    ON t.transaction_id = c.transaction_id
+                WHERE c.transaction_id IS NULL
+                    AND t.description IS NOT NULL
+                    AND t.description != ''
+                """,
+            ).fetchall()
+        except duckdb.CatalogException:
+            return 0
+
+        if not uncategorized:
+            return 0
+
+        categorized_count = 0
+        for txn_id, description in uncategorized:
+            merchant = _match_description(description, merchants)
+            if merchant and merchant.get("category"):
+                self._db.execute(
+                    f"""
+                    INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
+                    (transaction_id, category, subcategory, categorized_at,
+                     categorized_by, merchant_id, confidence)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
+                    """,
+                    [
+                        txn_id,
+                        merchant["category"],
+                        merchant["subcategory"],
+                        merchant["merchant_id"],
+                    ],
+                )
+                categorized_count += 1
+
+        if categorized_count:
+            logger.info(
+                f"Merchant matching categorized {categorized_count} transactions"
+            )
+        return categorized_count
 
     def apply_rules(self) -> int:
-        """Apply active categorization rules; see ``apply_rules``."""
-        return apply_rules(self._db)
+        """Apply active categorization rules to uncategorized transactions.
+
+        Runs before merchant mapping in :meth:`apply_deterministic` so that
+        explicit rules take priority. Rules are evaluated in priority order
+        (lower number = higher priority); the first matching rule wins. Rules
+        can filter by merchant pattern, amount range, and account ID.
+
+        Returns:
+            Number of transactions categorized.
+        """
+        try:
+            rules = self._db.execute(
+                f"""
+                SELECT rule_id, name, merchant_pattern, match_type,
+                       min_amount, max_amount, account_id,
+                       category, subcategory
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE is_active = true
+                ORDER BY priority ASC, created_at ASC
+                """,
+            ).fetchall()
+        except duckdb.CatalogException:
+            return 0
+
+        if not rules:
+            return 0
+
+        try:
+            uncategorized = self._db.execute(
+                f"""
+                SELECT t.transaction_id, t.description, t.amount, t.account_id
+                FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
+                    ON t.transaction_id = c.transaction_id
+                WHERE c.transaction_id IS NULL
+                    AND t.description IS NOT NULL
+                    AND t.description != ''
+                """,
+            ).fetchall()
+        except duckdb.CatalogException:
+            return 0
+
+        if not uncategorized:
+            return 0
+
+        categorized_count = 0
+        for txn_id, description, amount, account_id in uncategorized:
+            normalized = normalize_description(description)
+            for rule in rules:
+                (
+                    rule_id,
+                    _name,
+                    pattern,
+                    match_type,
+                    min_amount,
+                    max_amount,
+                    rule_account_id,
+                    category,
+                    subcategory,
+                ) = rule
+
+                if not (
+                    _matches_pattern(description, pattern, match_type)
+                    or _matches_pattern(normalized, pattern, match_type)
+                ):
+                    continue
+
+                if min_amount is not None and amount < float(min_amount):
+                    continue
+                if max_amount is not None and amount > float(max_amount):
+                    continue
+
+                if rule_account_id is not None and account_id != rule_account_id:
+                    continue
+
+                self._db.execute(
+                    f"""
+                    INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
+                    (transaction_id, category, subcategory, categorized_at,
+                     categorized_by, rule_id, confidence)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
+                    """,
+                    [txn_id, category, subcategory, rule_id],
+                )
+                categorized_count += 1
+                break  # First matching rule wins
+
+        if categorized_count:
+            logger.info(f"Rule engine categorized {categorized_count} transactions")
+        return categorized_count
 
     def apply_deterministic(self) -> dict[str, int]:
-        """Run rules then merchant matching; see ``apply_deterministic_categorization``."""
-        return apply_deterministic_categorization(self._db)
+        """Run all deterministic categorization: rules first, then merchant fallback.
+
+        Rules run first in priority order so explicit user-defined rules (which can
+        filter by amount, account, and pattern) take precedence over generic merchant
+        mappings. Merchant mappings apply only to transactions not matched by any rule.
+
+        Returns:
+            Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
+        """
+        rule_count = self.apply_rules()
+        merchant_count = self.apply_merchant_categories()
+        total = merchant_count + rule_count
+
+        if total:
+            logger.info(
+                f"Deterministic categorization: {merchant_count} merchant, "
+                f"{rule_count} rule, {total} total"
+            )
+
+        return {
+            "merchant": merchant_count,
+            "rule": rule_count,
+            "total": total,
+        }
+
+    # -- Taxonomy / seed --
+
+    def ensure_seed_table(self) -> None:
+        """Materialize the SQLMesh seed table if it doesn't exist yet.
+
+        Runs a targeted ``sqlmesh plan --auto-apply`` scoped to just the
+        ``seeds.categories`` model so the MCP server works without a
+        prior CLI invocation of ``sqlmesh apply``.
+        """
+        result = self._db.execute(
+            """
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = ? AND table_name = ?
+            """,
+            [SEED_CATEGORIES.schema, SEED_CATEGORIES.name],
+        ).fetchone()
+        if result and result[0] > 0:
+            return  # already exists
+
+        logger.info("Seed table missing — running targeted SQLMesh apply")
+
+        with sqlmesh_context() as ctx:
+            ctx.plan(
+                auto_apply=True,
+                no_prompts=True,
+                select_models=[SEED_CATEGORIES.full_name],
+            )
+        logger.info("SQLMesh seed apply completed")
 
     def seed(self) -> int:
-        """Populate ``app.categories`` from the seed table; see ``seed_categories``."""
-        return seed_categories(self._db)
+        """Populate ``app.categories`` from the SQLMesh seed table.
+
+        If the seed table does not yet exist, a targeted SQLMesh apply is
+        run automatically to materialize it. Skips any categories that
+        already exist. Safe to run multiple times.
+
+        Returns:
+            Number of categories inserted.
+        """
+        self.ensure_seed_table()
+
+        count_before = 0
+        try:
+            result = self._db.execute(
+                f"SELECT COUNT(*) FROM {CATEGORIES.full_name}"
+            ).fetchone()
+            count_before = result[0] if result else 0
+        except duckdb.CatalogException:
+            pass
+
+        self._db.execute(
+            f"""
+            INSERT OR IGNORE INTO {CATEGORIES.full_name}
+            (category_id, category, subcategory, description, is_default,
+             is_active, plaid_detailed, created_at)
+            SELECT
+                category_id,
+                category,
+                subcategory,
+                description,
+                true AS is_default,
+                true AS is_active,
+                plaid_detailed,
+                CURRENT_TIMESTAMP
+            FROM {SEED_CATEGORIES.full_name}
+            """
+        )
+
+        result = self._db.execute(
+            f"SELECT COUNT(*) FROM {CATEGORIES.full_name}"
+        ).fetchone()
+        count_after = result[0] if result else 0
+
+        inserted = count_after - count_before
+        logger.info(f"Seeded {inserted} categories ({count_after} total)")
+        return inserted
+
+    def get_active_categories(self) -> list[dict[str, str | bool | None]]:
+        """Get all active categories.
+
+        Returns:
+            List of category dicts.
+        """
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT category_id, category, subcategory, description,
+                       is_default, plaid_detailed
+                FROM {CATEGORIES.full_name}
+                WHERE is_active = true
+                ORDER BY category, subcategory
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+
+        return [
+            {
+                "category_id": r[0],
+                "category": r[1],
+                "subcategory": r[2],
+                "description": r[3],
+                "is_default": r[4],
+                "plaid_detailed": r[5],
+            }
+            for r in rows
+        ]
+
+    # -- Stats --
+
+    def categorization_stats(self) -> dict[str, int | float]:
+        """Get summary statistics about categorization coverage.
+
+        Returns:
+            Dict with total, categorized, uncategorized counts and
+            breakdown by categorized_by source.
+        """
+        try:
+            total_result = self._db.execute(
+                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"
+            ).fetchone()
+            total = total_result[0] if total_result else 0
+        except duckdb.CatalogException:
+            return {
+                "total": 0,
+                "categorized": 0,
+                "uncategorized": 0,
+                "pct_categorized": 0,
+            }
+
+        try:
+            categorized_result = self._db.execute(
+                f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name}"
+            ).fetchone()
+            categorized = categorized_result[0] if categorized_result else 0
+        except duckdb.CatalogException:
+            categorized = 0
+
+        uncategorized = total - categorized
+        pct = round((categorized / total * 100), 1) if total > 0 else 0.0
+
+        stats: dict[str, int | float] = {
+            "total": total,
+            "categorized": categorized,
+            "uncategorized": uncategorized,
+            "pct_categorized": pct,
+        }
+
+        # Breakdown by source
+        try:
+            source_rows = self._db.execute(
+                f"""
+                SELECT categorized_by, COUNT(*) AS cnt
+                FROM {TRANSACTION_CATEGORIES.full_name}
+                GROUP BY categorized_by
+                ORDER BY cnt DESC
+                """
+            ).fetchall()
+            for source, count in source_rows:
+                stats[f"by_{source}"] = count
+        except duckdb.CatalogException:
+            pass
+
+        return stats
 
     def stats(self) -> CategorizationStats:
-        """Return categorization coverage stats; see ``get_stats``."""
-        return get_stats(self._db)
+        """Get categorization stats as a typed result.
+
+        Wrapper around :meth:`categorization_stats` that returns a typed object.
+        """
+        raw = self.categorization_stats()
+        by_source = {
+            k.removeprefix("by_"): v
+            for k, v in raw.items()
+            if k.startswith("by_") and isinstance(v, int)
+        }
+        return CategorizationStats(
+            total=int(raw["total"]),
+            categorized=int(raw["categorized"]),
+            uncategorized=int(raw["uncategorized"]),
+            percent_categorized=float(raw["pct_categorized"]),
+            by_source=by_source,
+        )
 
     # -- Auto-rule lifecycle --
 
@@ -854,12 +804,12 @@ class CategorizationService:
         reject: list[str] | None = None,
     ) -> dict[str, object]:
         """Approve and/or reject pending proposals; returns aggregate counts."""
-        # Local import avoids circular dependency: auto_rule_service imports
+        # Local import avoids circular dependency: _auto_rule imports
         # normalize_description from this module.
-        from moneybin.services import auto_rule_service
+        from moneybin.services import _auto_rule
 
-        a = auto_rule_service.approve(self._db, approve or [])
-        r = auto_rule_service.reject(self._db, reject or [])
+        a = _auto_rule.approve(self._db, approve or [])
+        r = _auto_rule.reject(self._db, reject or [])
         return {
             "approved": a.approved,
             "newly_categorized": a.newly_categorized,
@@ -892,3 +842,47 @@ class CategorizationService:
             "pending_proposals": pending,
             "transactions_categorized": applied,
         }
+
+    def list_auto_rules(self) -> list[dict[str, object]]:
+        """Return active auto-rules (rows with created_by='auto_rule')."""
+        rows = self._db.execute(
+            f"""
+            SELECT rule_id, merchant_pattern, match_type, category, subcategory, priority
+            FROM {CATEGORIZATION_RULES.full_name}
+            WHERE created_by = 'auto_rule' AND is_active = true
+            ORDER BY priority ASC, rule_id
+            """
+        ).fetchall()
+        return [
+            {
+                "rule_id": r[0],
+                "merchant_pattern": r[1],
+                "match_type": r[2],
+                "category": r[3],
+                "subcategory": r[4],
+                "priority": r[5],
+            }
+            for r in rows
+        ]
+
+    def check_overrides(self) -> int:
+        """Deactivate auto-rules with override count >= configured threshold.
+
+        Returns the number of rules deactivated.
+        """
+        from moneybin.services import _auto_rule
+
+        return _auto_rule.check_overrides(self._db)
+
+    def _record_categorization(
+        self,
+        transaction_id: str,
+        category: str,
+        subcategory: str | None = None,
+    ) -> str | None:
+        """Record a categorization for auto-rule learning. Returns proposal id or None."""
+        from moneybin.services import _auto_rule
+
+        return _auto_rule.record_categorization(
+            self._db, transaction_id, category, subcategory=subcategory
+        )

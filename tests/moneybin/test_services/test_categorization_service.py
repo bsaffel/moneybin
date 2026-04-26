@@ -12,21 +12,56 @@ import pytest
 from pytest_mock import MockerFixture
 
 from moneybin.database import Database
-from moneybin.services import auto_rule_service
 from moneybin.services.categorization_service import (
     CategorizationService,
-    apply_deterministic_categorization,
-    apply_merchant_categories,
-    apply_rules,
-    create_merchant,
-    ensure_seed_table,
-    get_active_categories,
-    get_categorization_stats,
-    match_merchant,
     normalize_description,
-    seed_categories,
 )
 from tests.moneybin.db_helpers import create_core_tables
+
+
+def create_merchant(db: Database, *args: object, **kwargs: object) -> str:
+    """Test shim — delegates to CategorizationService.create_merchant."""
+    return CategorizationService(db).create_merchant(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def match_merchant(db: Database, description: str) -> dict[str, str | None] | None:
+    """Test shim — delegates to CategorizationService.match_merchant."""
+    return CategorizationService(db).match_merchant(description)
+
+
+def apply_rules(db: Database) -> int:
+    """Test shim — delegates to CategorizationService.apply_rules."""
+    return CategorizationService(db).apply_rules()
+
+
+def apply_merchant_categories(db: Database) -> int:
+    """Test shim — delegates to CategorizationService.apply_merchant_categories."""
+    return CategorizationService(db).apply_merchant_categories()
+
+
+def apply_deterministic_categorization(db: Database) -> dict[str, int]:
+    """Test shim — delegates to CategorizationService.apply_deterministic."""
+    return CategorizationService(db).apply_deterministic()
+
+
+def get_categorization_stats(db: Database) -> dict[str, int | float]:
+    """Test shim — delegates to CategorizationService.categorization_stats."""
+    return CategorizationService(db).categorization_stats()
+
+
+def get_active_categories(db: Database) -> list[dict[str, str | bool | None]]:
+    """Test shim — delegates to CategorizationService.get_active_categories."""
+    return CategorizationService(db).get_active_categories()
+
+
+def seed_categories(db: Database) -> int:
+    """Test shim — delegates to CategorizationService.seed."""
+    return CategorizationService(db).seed()
+
+
+def ensure_seed_table(db: Database) -> None:
+    """Test shim — delegates to CategorizationService.ensure_seed_table."""
+    CategorizationService(db).ensure_seed_table()
 
 
 @pytest.fixture()
@@ -575,26 +610,10 @@ def real_db(tmp_path: Path) -> Database:
     return db
 
 
-def test_service_facade_exposes_required_methods() -> None:
-    """CategorizationService exposes the documented method surface."""
-    expected = {
-        "bulk_categorize",
-        "apply_rules",
-        "apply_deterministic",
-        "seed",
-        "stats",
-        "auto_review",
-        "auto_confirm",
-        "auto_stats",
-    }
-    missing = expected - set(dir(CategorizationService))
-    assert not missing, f"CategorizationService missing methods: {missing}"
-
-
-def test_service_bulk_categorize_delegates_to_module_function(
+def test_service_bulk_categorize_applies_categorization(
     real_db: Database,
 ) -> None:
-    """Service.bulk_categorize routes through the module-level function."""
+    """Service.bulk_categorize writes a category row for the given transaction."""
     real_db.execute(
         "INSERT INTO core.fct_transactions "
         "(transaction_id, account_id, transaction_date, amount, description, source_type) "
@@ -608,7 +627,7 @@ def test_service_bulk_categorize_delegates_to_module_function(
 
 
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
-    """auto_review returns pending proposals seeded via auto_rule_service."""
+    """auto_review returns pending proposals seeded via the service."""
     real_db.execute(
         "INSERT INTO core.fct_transactions "
         "(transaction_id, account_id, transaction_date, amount, description, source_type) "
@@ -619,9 +638,81 @@ def test_service_auto_review_returns_pending_proposals(real_db: Database) -> Non
         "(transaction_id, category, categorized_at, categorized_by) "
         "VALUES ('ts2', 'Shopping', CURRENT_TIMESTAMP, 'user')"
     )
-    auto_rule_service.record_categorization(real_db, "ts2", "Shopping")
+    CategorizationService(real_db)._record_categorization("ts2", "Shopping")
 
     svc = CategorizationService(real_db)
     proposals = svc.auto_review()
     patterns = {p["merchant_pattern"] for p in proposals}
     assert "AMAZON" in patterns
+
+
+# ---------------------------------------------------------------------------
+# T7c contract tests — class-first surface
+# ---------------------------------------------------------------------------
+
+
+def test_no_public_module_level_categorization_functions() -> None:
+    """Surface contract: only CategorizationService is the public API."""
+    import moneybin.services.categorization_service as mod
+
+    forbidden = {
+        "bulk_categorize",
+        "apply_rules",
+        "seed_categories",
+        "get_stats",
+        "get_categorization_stats",
+        "match_merchant",
+        "apply_merchant_categories",
+        "ensure_seed_table",
+        "get_active_categories",
+        "create_merchant",
+        "apply_deterministic_categorization",
+    }
+    leaked = {name for name in forbidden if hasattr(mod, name)}
+    assert not leaked, f"These should be class methods only: {leaked}"
+
+
+def test_auto_rule_service_is_private() -> None:
+    """`auto_rule_service` must not be importable; use _auto_rule (private) only."""
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("moneybin.services.auto_rule_service")
+
+
+def test_service_exposes_consolidated_methods(real_db: Database) -> None:
+    """CategorizationService exposes the full consolidated method surface."""
+    expected = {
+        "bulk_categorize",
+        "apply_rules",
+        "apply_deterministic",
+        "seed",
+        "stats",
+        "match_merchant",
+        "apply_merchant_categories",
+        "ensure_seed_table",
+        "get_active_categories",
+        "categorization_stats",
+        "auto_review",
+        "auto_confirm",
+        "auto_stats",
+        "list_auto_rules",
+        "check_overrides",
+    }
+    missing = expected - set(dir(CategorizationService))
+    assert not missing, f"Missing methods: {missing}"
+
+
+def test_list_auto_rules_returns_active_auto_rules(real_db: Database) -> None:
+    """list_auto_rules returns active auto-rules after approval."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('lt1', 'a1', DATE '2026-03-01', -3.00, 'CHIPOTLE', 'csv')"
+    )
+    svc = CategorizationService(real_db)
+    pid = svc._record_categorization("lt1", "Food & Drink")
+    assert pid is not None
+    svc.auto_confirm(approve=[pid])
+
+    rules = svc.list_auto_rules()
+    assert any(r["merchant_pattern"] == "CHIPOTLE" for r in rules)
