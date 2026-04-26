@@ -9,8 +9,13 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.extractors.tabular.formats import (
+    NumberFormatType,
+    SignConventionType,
+)
 from moneybin.metrics.registry import (
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
@@ -394,11 +399,11 @@ def _import_tabular(
 
     # Apply CLI overrides (take precedence over detected/built-in values)
     if sign:
-        mapping_result_sign_convention = sign
+        mapping_result_sign_convention = cast(SignConventionType, sign)
     if date_format_override:
         mapping_result_date_format = date_format_override
     if number_format_override:
-        mapping_result_number_format = number_format_override
+        mapping_result_number_format = cast(NumberFormatType, number_format_override)
 
     # Determine account info
     source_type = format_info.file_type

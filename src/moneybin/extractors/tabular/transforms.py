@@ -19,6 +19,10 @@ from decimal import Decimal
 import polars as pl
 
 from moneybin.extractors.tabular.date_detection import parse_amount_str
+from moneybin.extractors.tabular.formats import (
+    NumberFormatType,
+    SignConventionType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +100,8 @@ def transform_dataframe(
     df: pl.DataFrame,
     field_mapping: dict[str, str],
     date_format: str,
-    sign_convention: str,
-    number_format: str,
+    sign_convention: SignConventionType,
+    number_format: NumberFormatType,
     account_id: str | list[str],
     source_file: str,
     source_type: str,
@@ -112,9 +116,8 @@ def transform_dataframe(
         df: Source DataFrame with original column names.
         field_mapping: Destination field → source column mapping from Stage 3.
         date_format: strptime format string for parsing dates.
-        sign_convention: One of: negative_is_expense, negative_is_income,
-            split_debit_credit.
-        number_format: One of: us, european, swiss_french, zero_decimal.
+        sign_convention: One of SignConventionType literal values.
+        number_format: One of NumberFormatType literal values.
         account_id: Account identifier — single string (broadcast to all rows)
             or list of per-row IDs (for multi-account files).
         source_file: Path to the source file (for provenance).
@@ -375,8 +378,8 @@ def _extract_amounts(
     *,
     df: pl.DataFrame,
     field_mapping: dict[str, str],
-    sign_convention: str,
-    number_format: str,
+    sign_convention: SignConventionType,
+    number_format: NumberFormatType,
 ) -> tuple[list[Decimal | None], dict[int, str]]:
     """Extract and normalize amounts from the DataFrame.
 
@@ -385,9 +388,8 @@ def _extract_amounts(
     Args:
         df: Source DataFrame.
         field_mapping: Destination field → source column mapping.
-        sign_convention: One of: negative_is_expense, negative_is_income,
-            split_debit_credit.
-        number_format: Number format convention.
+        sign_convention: One of SignConventionType literal values.
+        number_format: One of NumberFormatType literal values.
 
     Returns:
         Tuple of (amounts list, rejection map {idx: reason}).
@@ -475,7 +477,7 @@ def _combine_original_debit_credit(
 def _validate_running_balance(
     result: TransformResult,
     balance_strs: list[str],
-    number_format: str,
+    number_format: NumberFormatType,
     *,
     pass_threshold: float = 0.90,
     tolerance_cents: int = 1,
@@ -493,7 +495,7 @@ def _validate_running_balance(
         result: Current TransformResult with a parsed ``transactions`` DataFrame.
         balance_strs: Raw balance strings from the source file, one per source row.
             May be longer than ``result.transactions`` if rows were rejected.
-        number_format: Number format used by ``parse_amount_str`` for balances.
+        number_format: One of NumberFormatType literal values.
         pass_threshold: Fraction of balance deltas that must match for validation
             to pass (default 0.90).
         tolerance_cents: Maximum allowed delta mismatch in cents (default 1,

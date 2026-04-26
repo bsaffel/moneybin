@@ -8,6 +8,10 @@ disambiguation and convention scoring for number format detection.
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from moneybin.extractors.tabular.formats import NumberFormatType
 
 _CURRENCY_SYMBOLS = re.compile(
     r"[$€£¥₩₹₽₺₫kr\s]|CHF|R\$|kr\b|SEK|NOK|DKK", re.IGNORECASE
@@ -137,14 +141,16 @@ def _disambiguate_dd_mm(
     return "%m/%d/%Y", "medium"
 
 
-def detect_number_format(values: list[str | None]) -> str:
+def detect_number_format(
+    values: list[str | None],
+) -> "NumberFormatType":
     """Detect the number format convention from sample values.
 
     Args:
         values: Sample amount strings.
 
     Returns:
-        One of: "us", "european", "swiss_french", "zero_decimal".
+        One of NumberFormatType literal values.
     """
     clean = [v.strip() for v in values if v and v.strip()]
     if not clean:
@@ -204,14 +210,14 @@ def detect_number_format(values: list[str | None]) -> str:
     return best
 
 
-def parse_amount_str(value: str, number_format: str) -> Decimal | None:
+def parse_amount_str(value: str, number_format: "NumberFormatType") -> Decimal | None:
     """Parse an amount string using the specified number format convention.
 
     Handles currency symbols, parentheses-as-negative, DR/CR suffixes.
 
     Args:
         value: Raw amount string.
-        number_format: Convention: us, european, swiss_french, zero_decimal.
+        number_format: One of NumberFormatType literal values.
 
     Returns:
         Parsed Decimal, or None if the string is empty/unparseable.

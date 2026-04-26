@@ -18,6 +18,10 @@ from moneybin.extractors.tabular.field_aliases import (
     ACCOUNT_IDENTIFYING_FIELDS,
     match_header_to_field,
 )
+from moneybin.extractors.tabular.formats import (
+    NumberFormatType,
+    SignConventionType,
+)
 from moneybin.extractors.tabular.sign_convention import (
     infer_sign_convention,
 )
@@ -54,10 +58,10 @@ class MappingResult:
     date_format: str | None = None
     """Detected date format string."""
 
-    number_format: str = "us"
+    number_format: NumberFormatType = "us"
     """Detected number format convention."""
 
-    sign_convention: str = "negative_is_expense"
+    sign_convention: SignConventionType = "negative_is_expense"
     """Detected sign convention."""
 
     sign_needs_confirmation: bool = False

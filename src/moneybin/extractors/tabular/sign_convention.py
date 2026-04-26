@@ -8,12 +8,14 @@ Determines how the source represents expenses vs income:
 
 from dataclasses import dataclass
 
+from moneybin.extractors.tabular.formats import SignConventionType
+
 
 @dataclass(frozen=True)
 class SignConventionResult:
     """Result of sign convention inference."""
 
-    convention: str
+    convention: SignConventionType
     """One of: negative_is_expense, negative_is_income, split_debit_credit."""
 
     needs_confirmation: bool = False
