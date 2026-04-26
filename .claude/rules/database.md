@@ -1,6 +1,6 @@
 ---
 description: "Database standards: DuckDB patterns, SQL formatting, schema conventions, model naming, column comments"
-globs: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.py", "src/moneybin/schema.py", "src/moneybin/loaders/**"]
+paths: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.py", "src/moneybin/schema.py", "src/moneybin/loaders/**"]
 ---
 
 # Database Standards
