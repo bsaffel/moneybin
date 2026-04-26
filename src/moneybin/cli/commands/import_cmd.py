@@ -167,7 +167,7 @@ def import_file(
         moneybin import file statement.ofx --institution "Wells Fargo"
         moneybin import file export.csv --override date=Date --override amount=Amount
     """
-    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.services.import_service import import_file as run_import
 
     source = Path(file_path)
@@ -195,33 +195,27 @@ def import_file(
         raise typer.Exit(1)
 
     try:
-        db = get_database()
-        result = run_import(
-            db=db,
-            file_path=source,
-            apply_transforms=not skip_transform,
-            institution=institution,
-            account_id=account_id,
-            account_name=account_name,
-            format_name=format_name,
-            overrides=overrides,
-            sign=sign or None,
-            date_format=date_format or None,
-            number_format=number_format or None,
-            save_format=save_format,
-            sheet=sheet,
-            delimiter=delimiter,
-            encoding=encoding,
-            no_row_limit=no_row_limit,
-            no_size_limit=no_size_limit,
-        )
-        logger.info(f"✅ {result.summary()}")
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+        with handle_database_errors() as db:
+            result = run_import(
+                db=db,
+                file_path=source,
+                apply_transforms=not skip_transform,
+                institution=institution,
+                account_id=account_id,
+                account_name=account_name,
+                format_name=format_name,
+                overrides=overrides,
+                sign=sign or None,
+                date_format=date_format or None,
+                number_format=number_format or None,
+                save_format=save_format,
+                sheet=sheet,
+                delimiter=delimiter,
+                encoding=encoding,
+                no_row_limit=no_row_limit,
+                no_size_limit=no_size_limit,
+            )
+            logger.info(f"✅ {result.summary()}")
     except ValueError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
@@ -250,19 +244,12 @@ def import_history(
         moneybin import history --limit 50
         moneybin import history --import-id abc123
     """
-    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.loaders.tabular_loader import TabularLoader
 
-    try:
-        db = get_database()
+    with handle_database_errors() as db:
         loader = TabularLoader(db)
         records = loader.get_import_history(limit=limit, import_id=import_id)
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
 
     if not records:
         if import_id:
@@ -311,7 +298,7 @@ def import_revert(
         moneybin import revert abc123-...
         moneybin import revert abc123-... --yes
     """
-    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.loaders.tabular_loader import TabularLoader
 
     if not yes:
@@ -323,16 +310,9 @@ def import_revert(
             logger.info("Revert cancelled")
             raise typer.Exit(0)
 
-    try:
-        db = get_database()
+    with handle_database_errors() as db:
         loader = TabularLoader(db)
         result = loader.revert_import(import_id)
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
 
     status = result.get("status")
     if status == "not_found":
@@ -580,7 +560,7 @@ def delete_format(
         moneybin import delete-format my_custom_format
         moneybin import delete-format my_custom_format --yes
     """
-    from moneybin.database import DatabaseKeyError, get_database
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.extractors.tabular.formats import (
         delete_format_from_db,
         load_builtin_formats,
@@ -598,15 +578,8 @@ def delete_format(
             logger.info("Delete cancelled")
             raise typer.Exit(0)
 
-    try:
-        db = get_database()
+    with handle_database_errors() as db:
         deleted = delete_format_from_db(db, name)
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
 
     if not deleted:
         logger.error(f"❌ Format {name!r} not found")
@@ -623,8 +596,8 @@ def import_status() -> None:
     Example:
         moneybin import status
     """
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.config import get_settings
-    from moneybin.database import DatabaseKeyError, get_database
 
     db_path = get_settings().database.path
 
@@ -634,14 +607,8 @@ def import_status() -> None:
         raise typer.Exit(1)
 
     try:
-        db = get_database()
-        _print_import_status(db)
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+        with handle_database_errors() as db:
+            _print_import_status(db)
     except Exception as e:  # noqa: BLE001 — surface connection errors generically
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e

@@ -27,7 +27,7 @@ def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
 class TestTransformStatus:
     """Test transform status command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_status_succeeds(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -42,7 +42,7 @@ class TestTransformStatus:
 class TestTransformValidate:
     """Test transform validate command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_validate_succeeds(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -58,7 +58,7 @@ class TestTransformValidate:
 class TestTransformAudit:
     """Test transform audit command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_audit_succeeds(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -76,7 +76,7 @@ class TestTransformAudit:
 class TestTransformRestate:
     """Test transform restate command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_restate_requires_confirmation(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -92,7 +92,7 @@ class TestTransformRestate:
         assert result.exit_code == 0
         mock_ctx.plan.assert_not_called()
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_restate_with_yes(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock

@@ -10,7 +10,7 @@ from typing import Annotated
 
 import typer
 
-from moneybin.database import DatabaseKeyError, get_database
+from moneybin.cli.utils import handle_database_errors
 from moneybin.migrations import MigrationRunner, get_current_versions
 
 logger = logging.getLogger(__name__)
@@ -26,90 +26,76 @@ def migrate_apply(
     ] = False,
 ) -> None:
     """Apply pending database migrations."""
-    try:
-        db = get_database()
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
+    with handle_database_errors() as db:
+        runner = MigrationRunner(db)
 
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
-
-    runner = MigrationRunner(db)
-
-    if dry_run:
-        pending = runner.pending()
-        if not pending:
-            logger.info("No pending migrations")
+        if dry_run:
+            pending = runner.pending()
+            if not pending:
+                logger.info("No pending migrations")
+                raise typer.Exit(0) from None
+            logger.info(f"{len(pending)} pending migration(s):")
+            for m in pending:
+                logger.info(f"  {m.filename} ({m.file_type})")
             raise typer.Exit(0) from None
-        logger.info(f"{len(pending)} pending migration(s):")
-        for m in pending:
-            logger.info(f"  {m.filename} ({m.file_type})")
-        raise typer.Exit(0) from None
 
-    result = runner.apply_all()
+        result = runner.apply_all()
 
-    # Show drift warnings
-    for warning in runner.check_drift():
-        logger.warning(f"⚠️  {warning.reason}")
+        # Show drift warnings
+        for warning in runner.check_drift():
+            logger.warning(f"⚠️  {warning.reason}")
 
-    if result.failed:
-        result.log_failure()
-        raise typer.Exit(1) from None
+        if result.failed:
+            result.log_failure()
+            raise typer.Exit(1) from None
 
-    if result.applied_count > 0:
-        logger.info(f"✅ {result.applied_count} migration(s) applied")
-    else:
-        logger.info("No pending migrations")
+        if result.applied_count > 0:
+            logger.info(f"✅ {result.applied_count} migration(s) applied")
+        else:
+            logger.info("No pending migrations")
 
 
 @app.command("status")
 def migrate_status() -> None:
     """Show migration state — applied, pending, and drift warnings."""
-    try:
-        db = get_database()
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
+    with handle_database_errors() as db:
+        runner = MigrationRunner(db)
 
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+        # Applied migrations
+        applied = runner.applied_details()
 
-    runner = MigrationRunner(db)
+        if applied:
+            logger.info("Applied migrations:")
+            for m in applied:
+                status = "✅" if m.success else "❌"
+                time_str = (
+                    f" ({m.execution_ms}ms)" if m.execution_ms is not None else ""
+                )
+                logger.info(
+                    f"  {status} V{m.version:03d} {m.filename}{time_str} — {m.applied_at}"
+                )
+        else:
+            logger.info("No applied migrations")
 
-    # Applied migrations
-    applied = runner.applied_details()
+        # Pending
+        pending = runner.pending()
+        if pending:
+            logger.info(f"\nPending migrations ({len(pending)}):")
+            for m in pending:
+                logger.info(f"  ⚙️  {m.filename}")
+        else:
+            logger.info("\nNo pending migrations")
 
-    if applied:
-        logger.info("Applied migrations:")
-        for m in applied:
-            status = "✅" if m.success else "❌"
-            time_str = f" ({m.execution_ms}ms)" if m.execution_ms is not None else ""
-            logger.info(
-                f"  {status} V{m.version:03d} {m.filename}{time_str} — {m.applied_at}"
-            )
-    else:
-        logger.info("No applied migrations")
+        # Drift warnings
+        drift = runner.check_drift()
+        if drift:
+            logger.info("\nDrift warnings:")
+            for w in drift:
+                logger.warning(f"  ⚠️  {w.reason}")
 
-    # Pending
-    pending = runner.pending()
-    if pending:
-        logger.info(f"\nPending migrations ({len(pending)}):")
-        for m in pending:
-            logger.info(f"  ⚙️  {m.filename}")
-    else:
-        logger.info("\nNo pending migrations")
-
-    # Drift warnings
-    drift = runner.check_drift()
-    if drift:
-        logger.info("\nDrift warnings:")
-        for w in drift:
-            logger.warning(f"  ⚠️  {w.reason}")
-
-    # Version state
-    versions = get_current_versions(db)
-    if versions:
-        logger.info("\nComponent versions:")
-        for component, version in sorted(versions.items()):
-            logger.info(f"  {component}: {version}")
+        # Version state
+        versions = get_current_versions(db)
+        if versions:
+            logger.info("\nComponent versions:")
+            for component, version in sorted(versions.items()):
+                logger.info(f"  {component}: {version}")
