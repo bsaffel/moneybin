@@ -80,7 +80,7 @@ def transform_status() -> None:
             env = ctx.state_reader.get_environment("prod")
             if env:
                 logger.info("Environment: prod")
-                if env.finalized_ts:
+                if env.finalized_ts is not None:
                     finalized = datetime.fromtimestamp(
                         env.finalized_ts / 1000, tz=UTC
                     ).astimezone()

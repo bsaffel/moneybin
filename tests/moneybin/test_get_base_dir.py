@@ -24,7 +24,9 @@ class TestGetBaseDir:
         monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
         assert get_base_dir() == (Path.home() / "custom-moneybin").resolve()
 
-    def test_development_env_uses_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_development_env_uses_dot_moneybin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Priority 2: MONEYBIN_ENVIRONMENT=development uses <cwd>/.moneybin."""
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
         monkeypatch.setenv("MONEYBIN_ENVIRONMENT", "development")
