@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+import duckdb
+
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
@@ -201,13 +203,13 @@ def _resolve_account_via_matcher(
         rows = db.execute(
             """
             SELECT account_id,
-                   LAST(account_name ORDER BY import_id) AS account_name,
-                   LAST(account_number ORDER BY import_id) AS account_number
+                   LAST(account_name ORDER BY loaded_at) AS account_name,
+                   LAST(account_number ORDER BY loaded_at) AS account_number
             FROM raw.tabular_accounts
             GROUP BY account_id
             """
         ).fetchall()
-    except Exception:  # noqa: BLE001 — table missing on first import; fall back cleanly
+    except duckdb.CatalogException:  # raw.tabular_accounts absent on first import
         logger.debug("raw.tabular_accounts unavailable; skipping account match")
         return slugify(account_name)
 
@@ -233,7 +235,9 @@ def _resolve_account_via_matcher(
                 logger.info(f"⚙️  Auto-accepting fuzzy match → {top['account_id']!r}")
                 return top["account_id"]
         else:
-            candidate_ids = ", ".join(c["account_id"] for c in result.candidates)
+            candidate_ids = ", ".join(
+                filter(None, (c["account_id"] for c in result.candidates))
+            )
             logger.warning(
                 f"⚠️  Account did not match exactly. Fuzzy candidate ids: "
                 f"{candidate_ids}. "
