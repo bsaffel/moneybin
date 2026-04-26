@@ -119,6 +119,10 @@ def test_resolve_account_via_matcher_creates_new_when_no_candidates(
         no_auto_upgrade=True,
     )
     try:
+        # Confirm the table exists so this exercises the empty-table path,
+        # not the except-Exception fallback.
+        row = db.execute("SELECT COUNT(*) FROM raw.tabular_accounts").fetchone()
+        assert row is not None and row[0] == 0
         aid = _resolve_account_via_matcher(
             db,
             account_name="Brand New Account",

@@ -195,10 +195,16 @@ def _resolve_account_via_matcher(
     from moneybin.utils import slugify
 
     try:
+        # GROUP BY account_id collapses duplicates from the same account being
+        # imported with slightly different names (e.g. "Chase Checking" vs
+        # "CHASE CHECKING"); take the most-recently-seen name.
         rows = db.execute(
             """
-            SELECT DISTINCT account_id, account_name, account_number
+            SELECT account_id,
+                   LAST(account_name) AS account_name,
+                   LAST(account_number) AS account_number
             FROM raw.tabular_accounts
+            GROUP BY account_id
             """
         ).fetchall()
     except Exception:  # noqa: BLE001 — table missing on first import; fall back cleanly
@@ -217,27 +223,23 @@ def _resolve_account_via_matcher(
     )
 
     if result.matched and result.account_id:
-        logger.info(
-            f"Matched account {account_name!r} → existing id {result.account_id!r}"
-        )
+        logger.info(f"Matched account to existing id {result.account_id!r}")
         return result.account_id
 
     if result.candidates:
         if auto_accept:
             top = result.candidates[0]
-            logger.info(
-                f"⚙️  Auto-accepting fuzzy match for {account_name!r}: "
-                f"{top['account_name']!r} → {top['account_id']!r}"
+            if top["account_id"]:
+                logger.info(f"⚙️  Auto-accepting fuzzy match → {top['account_id']!r}")
+                return top["account_id"]
+        else:
+            candidate_ids = ", ".join(c["account_id"] for c in result.candidates)
+            logger.warning(
+                f"⚠️  Account did not match exactly. Fuzzy candidate ids: "
+                f"{candidate_ids}. "
+                "Use --yes to auto-accept the top candidate, "
+                "or --account-id to pick explicitly."
             )
-            return top["account_id"]
-        logger.warning(
-            f"⚠️  Account {account_name!r} did not match exactly. Fuzzy candidates: "
-            + ", ".join(
-                f"{c['account_name']!r} ({c['account_id']})" for c in result.candidates
-            )
-            + ". Use --yes to auto-accept the top candidate, "
-            "or --account-id to pick explicitly."
-        )
 
     return slugify(account_name)
 
@@ -531,7 +533,7 @@ def _import_tabular(
         aid = _resolve_account_via_matcher(
             db,
             account_name=account_name,
-            account_number=None,
+            account_number=None,  # no --account-number CLI flag yet
             threshold=threshold,
             auto_accept=auto_accept,
         )
