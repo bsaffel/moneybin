@@ -616,3 +616,50 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
     assert len(select_calls) <= 5, (
         f"Expected <=5 SELECTs, got {len(select_calls)}:\n" + "\n".join(select_calls)
     )
+
+
+def test_bulk_categorize_dedupes_merchant_creation_within_batch(
+    mock_secret_store: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Two items with the same description create exactly one merchant."""
+    from moneybin.services.categorization_service import bulk_categorize
+    from moneybin.tables import FCT_TRANSACTIONS, MERCHANTS
+
+    db = Database(
+        tmp_path / "dedup.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    db.execute(
+        f"""
+        CREATE OR REPLACE TABLE {FCT_TRANSACTIONS.full_name} AS
+        SELECT
+            'txn_' || i AS transaction_id,
+            CAST('2025-01-01' AS DATE) AS transaction_date,
+            CAST(-10.00 AS DECIMAL(18,2)) AS amount,
+            'IDENTICAL VENDOR' AS description,
+            CAST(NULL AS VARCHAR) AS memo,
+            'acct1' AS account_id
+        FROM range(3) t(i)
+        """  # noqa: S608  # building test input string, not executing SQL
+    )
+
+    items = [
+        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        for i in range(3)
+    ]
+
+    result = bulk_categorize(db, items)
+
+    assert result.applied == 3
+    assert result.merchants_created == 1, (
+        f"Expected 1 merchant created across 3 identical-description items, "
+        f"got {result.merchants_created}"
+    )
+
+    merchant_count = db.execute(
+        f"SELECT COUNT(*) FROM {MERCHANTS.full_name}"  # noqa: S608  # building test input string, not executing SQL
+    ).fetchone()
+    assert merchant_count is not None
+    assert merchant_count[0] == 1
