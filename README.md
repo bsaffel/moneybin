@@ -144,6 +144,19 @@ from extractors      type casting (views)     multi-source (tables)
 - **Merchant normalization** — map messy bank descriptions (`STARBUCKS #12345 SEATTLE WA`) to clean merchant names.
 - **Bulk operations** — categorize, create rules, and create merchants in batches.
 
+### Data Quality & Matching
+
+- **Cross-source dedup** — same transaction imported from multiple sources (e.g., CSV and OFX of the same account) collapses to one canonical row via a tiered matching engine.
+- **Transfer detection** — pairs the two sides of an account-to-account transfer (Tier 4 matching, 4-signal scoring) into `core.bridge_transfers`.
+- **Golden-record merge** — provenance tracked in `meta.fct_transaction_provenance`; user decisions persisted in `app.match_decisions`.
+- **Review workflow** — `moneybin matches run`, `review`, `history`, `undo`, `backfill` for inspecting and correcting matches.
+
+```bash
+moneybin matches run               # Re-run the matching engine
+moneybin matches review            # Walk through proposed matches
+moneybin matches undo <id>         # Revert a match decision
+```
+
 ### Database & Security
 
 - **AES-256-GCM encryption at rest** — every database, from creation. Zero-friction auto-key for single-user machines; passphrase mode for shared environments.
@@ -231,9 +244,9 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | Feature | Status |
 |---------|--------|
 | Within-source dedup | ✅ |
-| Cross-source dedup (same transaction from different imports) | 📐 |
-| Transfer detection across accounts | 📐 |
-| Golden-record merge rules | 📐 |
+| Cross-source dedup (same transaction from different imports) | ✅ |
+| Transfer detection across accounts | ✅ |
+| Golden-record merge rules | ✅ |
 
 ### Categorization
 
