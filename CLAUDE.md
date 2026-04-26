@@ -1,1 +1,1 @@
-# Read AGENTS.md for project conventions
+# @AGENTS.md

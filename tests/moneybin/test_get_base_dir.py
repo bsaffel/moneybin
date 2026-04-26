@@ -24,22 +24,24 @@ class TestGetBaseDir:
         monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
         assert get_base_dir() == (Path.home() / "custom-moneybin").resolve()
 
-    def test_development_env_uses_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Priority 2: MONEYBIN_ENVIRONMENT=development uses cwd."""
+    def test_development_env_uses_dot_moneybin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Priority 2: MONEYBIN_ENVIRONMENT=development uses <cwd>/.moneybin."""
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
         monkeypatch.setenv("MONEYBIN_ENVIRONMENT", "development")
-        assert get_base_dir() == Path.cwd().resolve()
+        assert get_base_dir() == (Path.cwd() / ".moneybin").resolve()
 
     def test_repo_checkout_detected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Priority 3: .git + pyproject.toml with name='moneybin' uses cwd."""
+        """Priority 3: .git + pyproject.toml with name='moneybin' uses <cwd>/.moneybin."""
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
         monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
         (tmp_path / ".git").mkdir()
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
         monkeypatch.chdir(tmp_path)
-        assert get_base_dir() == tmp_path.resolve()
+        assert get_base_dir() == (tmp_path / ".moneybin").resolve()
 
     def test_repo_checkout_wrong_project_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

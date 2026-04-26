@@ -209,6 +209,22 @@ class TestTransformMutating:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
+    def test_transform_state_persists_across_processes(self, tmp_path: Path) -> None:
+        """SQLMesh state must land in the encrypted moneybin catalog, not memory.
+
+        Regression: DuckDB cursors default to the `memory` catalog regardless
+        of the parent connection's USE. Without cursor_init pinning the cursor
+        to `moneybin`, SQLMesh writes _environments/_snapshots/_versions into
+        memory.sqlmesh.* and they evaporate on process exit — leaving `status`
+        to report "No SQLMesh environment initialized" right after `apply`.
+        """
+        env = make_workflow_env(tmp_path, "xformstate")
+        run_cli("transform", "apply", env=env, timeout=180).assert_success()
+        result = run_cli("transform", "status", env=env, timeout=60)
+        result.assert_success()
+        assert "Environment: prod" in result.output
+        assert "No SQLMesh environment initialized" not in result.output
+
     def test_transform_audit(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "xformaudit")
         result = run_cli(

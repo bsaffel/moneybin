@@ -5,6 +5,7 @@ loaded DuckDB data.
 """
 
 import logging
+from datetime import UTC, datetime
 
 import typer
 
@@ -67,7 +68,13 @@ def transform_status() -> None:
                 env = ctx.state_reader.get_environment("prod")
                 if env:
                     logger.info("Environment: prod")
-                    logger.info(f"  Last updated: {env.expiration_ts}")
+                    if env.finalized_ts is not None:
+                        finalized = datetime.fromtimestamp(
+                            env.finalized_ts / 1000, tz=UTC
+                        ).astimezone()
+                        logger.info(f"  Last updated: {finalized:%Y-%m-%d %H:%M:%S %Z}")
+                    else:
+                        logger.info("  Last updated: never finalized")
                 else:
                     logger.info("No SQLMesh environment initialized yet")
                     logger.info("💡 Run 'moneybin transform apply' to initialize")
