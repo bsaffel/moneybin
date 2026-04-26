@@ -197,3 +197,85 @@ class TestSyntheticWriter:
         row = db.execute("SELECT source_file FROM raw.ofx_transactions").fetchone()
         assert row is not None
         assert row[0].startswith("synthetic://")
+
+    def test_writer_emits_decimal_amounts(self, db: Database) -> None:
+        """Writer must build DataFrames with Decimal values, not float, for monetary fields.
+
+        The schema has DECIMAL(18,2) columns so DuckDB will coerce float→decimal on
+        insert, but float in the row dict can silently corrupt values with more than
+        2 significant decimal digits (e.g. 1.005 → 1.00 or 1.01). This test
+        intercepts the DataFrames passed to ingest_dataframe to verify dtypes.
+        """
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        import polars as pl
+
+        from moneybin.testing.synthetic.writer import SyntheticWriter
+
+        ofx_acct = GeneratedAccount(
+            name="OFX Checking",
+            account_id="SYN00420001",
+            account_type="checking",
+            source_type="ofx",
+            institution="Test Bank",
+            opening_balance=Decimal("1234.56"),
+        )
+        csv_acct = GeneratedAccount(
+            name="CSV Card",
+            account_id="SYN00420002",
+            account_type="credit_card",
+            source_type="csv",
+            institution="Test CC",
+            opening_balance=Decimal("0.00"),
+        )
+        txns = [
+            GeneratedTransaction(
+                date=date(2024, 1, 15),
+                amount=Decimal("-42.50"),
+                description="STORE A",
+                account_name="OFX Checking",
+                category="grocery",
+                transaction_type="DEBIT",
+                transaction_id="SYN0000000001",
+            ),
+            GeneratedTransaction(
+                date=date(2024, 1, 16),
+                amount=Decimal("-25.99"),
+                description="STORE B",
+                account_name="CSV Card",
+                category="shopping",
+                transaction_type="DEBIT",
+                transaction_id="SYN0000000002",
+            ),
+        ]
+        result = _make_result(accounts=[ofx_acct, csv_acct], transactions=txns)
+        writer = SyntheticWriter(db)
+
+        # Intercept ingest_dataframe to capture the DataFrames before they hit DuckDB
+        captured: list[tuple[str, pl.DataFrame]] = []
+        original_ingest = db.ingest_dataframe
+
+        def capturing_ingest(table: str, df: pl.DataFrame, **kwargs: str) -> None:
+            captured.append((table, df))
+            return original_ingest(table, df, **kwargs)
+
+        with patch.object(db, "ingest_dataframe", side_effect=capturing_ingest):
+            writer.write(result)
+
+        # For each monetary column, assert dtype is Decimal (not Float64)
+        monetary_columns = {"amount", "ledger_balance", "balance"}
+        float_violations: list[str] = []
+        for table, df in captured:
+            for col in df.columns:
+                if col in monetary_columns:
+                    dtype = df[col].dtype
+                    if dtype == pl.Float64 or dtype == pl.Float32:
+                        float_violations.append(
+                            f"{table}.{col}: dtype is {dtype} (should be Decimal)"
+                        )
+
+        assert not float_violations, (
+            "Writer produced Float columns for monetary fields; "
+            f"expected pl.Decimal: {float_violations}"
+        )
