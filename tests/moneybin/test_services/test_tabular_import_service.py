@@ -1,8 +1,10 @@
 """Tests for the tabular import service layer."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from _pytest.logging import LogCaptureFixture
 
 from moneybin.services.import_service import (
     _detect_file_type,  # type: ignore[reportPrivateUsage]  # testing private function
@@ -64,3 +66,147 @@ def test_resolved_mapping_round_trip() -> None:
         pass
     else:
         raise AssertionError("ResolvedMapping must be frozen")
+
+
+def test_resolve_account_via_matcher_uses_existing_id_on_match(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Matched account name → reuses the existing account_id."""
+    from moneybin.database import Database
+    from moneybin.services.import_service import (
+        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
+    )
+
+    db = Database(
+        tmp_path / "match.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        db.execute("""
+            INSERT INTO raw.tabular_accounts
+            (account_id, account_name, account_number, account_number_masked,
+             account_type, institution_name, currency, source_file, source_type,
+             source_origin, import_id)
+            VALUES
+            ('chase-checking', 'Chase Checking', NULL, NULL, NULL, NULL, NULL,
+             'old.csv', 'csv', 'chase', 'imp1')
+        """)
+        aid = _resolve_account_via_matcher(
+            db,
+            account_name="Chase Checking",
+            account_number=None,
+            threshold=0.6,
+            auto_accept=False,
+        )
+        assert aid == "chase-checking"
+    finally:
+        db.close()
+
+
+def test_resolve_account_via_matcher_creates_new_when_no_candidates(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """No fuzzy candidates → fall back to slugify (creates a new account)."""
+    from moneybin.database import Database
+    from moneybin.services.import_service import (
+        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
+    )
+
+    db = Database(
+        tmp_path / "new.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        # Confirm the table exists so this exercises the empty-table path,
+        # not the except-Exception fallback.
+        row = db.execute("SELECT COUNT(*) FROM raw.tabular_accounts").fetchone()
+        assert row is not None and row[0] == 0
+        aid = _resolve_account_via_matcher(
+            db,
+            account_name="Brand New Account",
+            account_number=None,
+            threshold=0.6,
+            auto_accept=False,
+        )
+        assert aid == "brand-new-account"
+    finally:
+        db.close()
+
+
+def test_resolve_account_via_matcher_auto_accepts_top_candidate(
+    mock_secret_store: MagicMock, tmp_path: Path, caplog: LogCaptureFixture
+) -> None:
+    """With auto_accept=True, a fuzzy candidate is taken without prompting."""
+    from moneybin.database import Database
+    from moneybin.services.import_service import (
+        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
+    )
+
+    db = Database(
+        tmp_path / "fuzzy.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        db.execute("""
+            INSERT INTO raw.tabular_accounts
+            (account_id, account_name, account_number, account_number_masked,
+             account_type, institution_name, currency, source_file, source_type,
+             source_origin, import_id)
+            VALUES
+            ('chase-chk', 'Chase Chk', NULL, NULL, NULL, NULL, NULL,
+             'old.csv', 'csv', 'chase', 'imp1')
+        """)
+        with caplog.at_level("INFO"):
+            aid = _resolve_account_via_matcher(
+                db,
+                account_name="Chase Checking",
+                account_number=None,
+                threshold=0.6,
+                auto_accept=True,
+            )
+        assert aid == "chase-chk"
+        assert "auto-accepting" in caplog.text.lower()
+    finally:
+        db.close()
+
+
+def test_resolve_account_via_matcher_warns_and_falls_back_when_not_auto(
+    mock_secret_store: MagicMock, tmp_path: Path, caplog: LogCaptureFixture
+) -> None:
+    """Without auto_accept, fuzzy candidates trigger a warning + slugify fallback."""
+    from moneybin.database import Database
+    from moneybin.services.import_service import (
+        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
+    )
+
+    db = Database(
+        tmp_path / "fuzzy2.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        db.execute("""
+            INSERT INTO raw.tabular_accounts
+            (account_id, account_name, account_number, account_number_masked,
+             account_type, institution_name, currency, source_file, source_type,
+             source_origin, import_id)
+            VALUES
+            ('chase-chk', 'Chase Chk', NULL, NULL, NULL, NULL, NULL,
+             'old.csv', 'csv', 'chase', 'imp1')
+        """)
+        with caplog.at_level("WARNING"):
+            aid = _resolve_account_via_matcher(
+                db,
+                account_name="Chase Checking",
+                account_number=None,
+                threshold=0.6,
+                auto_accept=False,
+            )
+        # slugify("Chase Checking") = "chase-checking" (new account created)
+        assert aid == "chase-checking"
+        assert "fuzzy" in caplog.text.lower() or "candidate" in caplog.text.lower()
+    finally:
+        db.close()

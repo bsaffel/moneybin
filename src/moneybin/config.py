@@ -151,6 +151,16 @@ class TabularConfig(BaseModel):
         ge=0,
         description="Per-delta tolerance in cents for balance validation",
     )
+    account_match_threshold: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fuzzy-match similarity threshold (difflib.SequenceMatcher.ratio) "
+            "for account-name matching. Below this threshold, candidates are "
+            "treated as 'no match'."
+        ),
+    )
 
 
 class DataConfig(BaseModel):

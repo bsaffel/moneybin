@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+import duckdb
+
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
@@ -164,6 +166,88 @@ def _detect_file_type(file_path: Path) -> str:
     )
 
 
+def _resolve_account_via_matcher(
+    db: Database,
+    *,
+    account_name: str,
+    account_number: str | None,
+    threshold: float,
+    auto_accept: bool,
+) -> str:
+    """Resolve an account name to an account_id using match_account().
+
+    Outcomes:
+      1. Matched (number or exact slug) → return the existing account_id.
+      2. Fuzzy candidates and auto_accept=True → take the top candidate, log it.
+      3. Fuzzy candidates and auto_accept=False → log a warning listing
+         candidates, fall back to slugify(account_name).
+      4. No candidates → fall back to slugify(account_name) (creates new).
+
+    Args:
+        db: Database instance.
+        account_name: Account name from CLI/file.
+        account_number: Account number if available, for strongest match.
+        threshold: Minimum SequenceMatcher.ratio for a fuzzy candidate.
+        auto_accept: True if the user passed --yes (or stdin is non-interactive).
+
+    Returns:
+        The resolved account_id (existing or freshly slugified).
+    """
+    from moneybin.extractors.tabular.account_matching import match_account
+    from moneybin.utils import slugify
+
+    try:
+        # GROUP BY account_id collapses duplicates from the same account being
+        # imported with slightly different names (e.g. "Chase Checking" vs
+        # "CHASE CHECKING"); take the most-recently-seen name.
+        rows = db.execute(
+            """
+            SELECT account_id,
+                   LAST(account_name ORDER BY loaded_at) AS account_name,
+                   LAST(account_number ORDER BY loaded_at) AS account_number
+            FROM raw.tabular_accounts
+            GROUP BY account_id
+            """
+        ).fetchall()
+    except duckdb.CatalogException:  # raw.tabular_accounts absent on first import
+        logger.debug("raw.tabular_accounts unavailable; skipping account match")
+        return slugify(account_name)
+
+    existing = [
+        {"account_id": r[0], "account_name": r[1], "account_number": r[2]} for r in rows
+    ]
+
+    result = match_account(
+        account_name,
+        account_number=account_number,
+        existing_accounts=existing,
+        threshold=threshold,
+    )
+
+    if result.matched and result.account_id:
+        logger.info(f"Matched account to existing id {result.account_id!r}")
+        return result.account_id
+
+    if result.candidates:
+        if auto_accept:
+            top = result.candidates[0]
+            if top["account_id"]:
+                logger.info(f"⚙️  Auto-accepting fuzzy match → {top['account_id']!r}")
+                return top["account_id"]
+        else:
+            candidate_ids = ", ".join(
+                filter(None, (c["account_id"] for c in result.candidates))
+            )
+            logger.warning(
+                f"⚠️  Account did not match exactly. Fuzzy candidate ids: "
+                f"{candidate_ids}. "
+                "Use --yes to auto-accept the top candidate, "
+                "or --account-id to pick explicitly."
+            )
+
+    return slugify(account_name)
+
+
 def run_transforms() -> bool:
     """Run SQLMesh transforms to rebuild core tables.
 
@@ -276,6 +360,7 @@ def _import_tabular(
     encoding: str | None = None,
     no_row_limit: bool = False,
     no_size_limit: bool = False,
+    auto_accept: bool = False,
 ) -> ImportResult:
     """Import a tabular file through the five-stage pipeline.
 
@@ -295,6 +380,7 @@ def _import_tabular(
         encoding: Explicit encoding.
         no_row_limit: Override row count limit.
         no_size_limit: Override file size limit.
+        auto_accept: Auto-accept the top fuzzy account match without prompting.
 
     Returns:
         ImportResult with summary.
@@ -445,7 +531,16 @@ def _import_tabular(
         account_ids: str | list[str] = account_id
         acct_id_to_name[account_id] = account_name or account_id
     elif account_name:
-        aid = slugify(account_name)
+        from moneybin.config import get_settings
+
+        threshold = get_settings().data.tabular.account_match_threshold
+        aid = _resolve_account_via_matcher(
+            db,
+            account_name=account_name,
+            account_number=None,  # no --account-number CLI flag yet
+            threshold=threshold,
+            auto_accept=auto_accept,
+        )
         account_ids = aid
         acct_id_to_name[aid] = account_name
     elif resolved.is_multi_account and acct_name_col and acct_name_col in df.columns:
@@ -609,6 +704,7 @@ def import_file(
     encoding: str | None = None,
     no_row_limit: bool = False,
     no_size_limit: bool = False,
+    auto_accept: bool = False,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -637,6 +733,8 @@ def import_file(
         encoding: Explicit encoding for tabular imports.
         no_row_limit: Override row count limit for tabular imports.
         no_size_limit: Override file size limit for tabular imports.
+        auto_accept: Auto-accept the top fuzzy account match without prompting
+            (CLI: --yes / -y). Defaults to False.
 
     Returns:
         ImportResult with summary of what was imported.
@@ -674,6 +772,7 @@ def import_file(
             encoding=encoding,
             no_row_limit=no_row_limit,
             no_size_limit=no_size_limit,
+            auto_accept=auto_accept,
         )
     else:
         raise ValueError(f"Unsupported file type: {file_type}")

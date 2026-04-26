@@ -1,6 +1,6 @@
 # Tabular Import Cleanup
 
-**Status**: draft
+**Status**: implemented
 **Type**: Feature (refactor)
 **Parent**: [Tabular Import](smart-import-tabular.md)
 

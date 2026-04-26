@@ -78,6 +78,7 @@ class TestImportFileCommand:
             encoding=None,
             no_row_limit=False,
             no_size_limit=False,
+            auto_accept=False,
         )
 
     def test_import_file_skip_transform(
@@ -111,6 +112,7 @@ class TestImportFileCommand:
             encoding=None,
             no_row_limit=False,
             no_size_limit=False,
+            auto_accept=False,
         )
 
     def test_import_file_with_institution(
@@ -146,6 +148,7 @@ class TestImportFileCommand:
             encoding=None,
             no_row_limit=False,
             no_size_limit=False,
+            auto_accept=False,
         )
 
     def test_import_file_not_found(
