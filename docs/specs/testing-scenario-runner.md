@@ -353,12 +353,16 @@ from dataclasses import dataclass
 from typing import Any
 from duckdb import DuckDBPyConnection
 
+
 @dataclass(frozen=True, slots=True)
 class AssertionResult:
     name: str
     passed: bool
     details: dict[str, Any]
-    error: str | None = None  # populated when the assertion couldn't run, distinct from passed=False
+    error: str | None = (
+        None  # populated when the assertion couldn't run, distinct from passed=False
+    )
+
 
 def assert_valid_foreign_keys(
     conn: DuckDBPyConnection,
