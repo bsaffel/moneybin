@@ -5,6 +5,10 @@ from typing import TypedDict
 
 import polars as pl
 
+from moneybin.extractors.tabular.formats import (
+    NumberFormatType,
+    SignConventionType,
+)
 from moneybin.extractors.tabular.transforms import (
     transform_dataframe,
 )
@@ -19,8 +23,8 @@ def _make_df(**columns: list[str]) -> pl.DataFrame:
 class _BaseKwargs(TypedDict):
     field_mapping: dict[str, str]
     date_format: str
-    sign_convention: str
-    number_format: str
+    sign_convention: SignConventionType
+    number_format: NumberFormatType
     account_id: str | list[str]
     source_file: str
     source_type: str

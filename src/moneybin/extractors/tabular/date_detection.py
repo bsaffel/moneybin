@@ -8,7 +8,7 @@ disambiguation and convention scoring for number format detection.
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from moneybin.extractors.tabular.formats import NumberFormatType
@@ -207,7 +207,7 @@ def detect_number_format(
     best = max(convention_scores, key=lambda k: convention_scores[k])
     if convention_scores[best] == 0:
         return "us"
-    return best
+    return cast("NumberFormatType", best)
 
 
 def parse_amount_str(value: str, number_format: "NumberFormatType") -> Decimal | None:

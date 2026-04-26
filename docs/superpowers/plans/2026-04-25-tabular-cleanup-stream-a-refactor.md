@@ -265,10 +265,8 @@ Inside the function body, replace:
 with:
 
 ```python
-    _balance_tolerance = (Decimal(tolerance_cents) / Decimal(100)).quantize(
-        Decimal("0.01")
-    )
-    _pass_threshold = pass_threshold
+_balance_tolerance = (Decimal(tolerance_cents) / Decimal(100)).quantize(Decimal("0.01"))
+_pass_threshold = pass_threshold
 ```
 
 Leave the rest of the function unchanged — `_balance_tolerance` and `_pass_threshold` are still referenced below.
@@ -527,42 +525,40 @@ class ResolvedMapping:
 In `_import_tabular`, replace the block at lines 355-386 (matched-format vs auto-detect) with:
 
 ```python
-    if matched_format:
-        resolved = ResolvedMapping(
-            field_mapping=matched_format.field_mapping,
-            date_format=matched_format.date_format,
-            sign_convention=matched_format.sign_convention,
-            number_format=matched_format.number_format,
-            is_multi_account=matched_format.multi_account,
-            confidence="high",
-        )
-        format_source = (
-            "built-in" if matched_format.name in builtin_formats else "saved"
-        )
-    else:
-        mapping_result = map_columns(df, overrides=overrides)
-        resolved = ResolvedMapping(
-            field_mapping=mapping_result.field_mapping,
-            date_format=mapping_result.date_format or "%Y-%m-%d",
-            sign_convention=mapping_result.sign_convention,
-            number_format=mapping_result.number_format,
-            is_multi_account=mapping_result.is_multi_account,
-            confidence=mapping_result.confidence,
-        )
-        format_source = "detected"
+if matched_format:
+    resolved = ResolvedMapping(
+        field_mapping=matched_format.field_mapping,
+        date_format=matched_format.date_format,
+        sign_convention=matched_format.sign_convention,
+        number_format=matched_format.number_format,
+        is_multi_account=matched_format.multi_account,
+        confidence="high",
+    )
+    format_source = "built-in" if matched_format.name in builtin_formats else "saved"
+else:
+    mapping_result = map_columns(df, overrides=overrides)
+    resolved = ResolvedMapping(
+        field_mapping=mapping_result.field_mapping,
+        date_format=mapping_result.date_format or "%Y-%m-%d",
+        sign_convention=mapping_result.sign_convention,
+        number_format=mapping_result.number_format,
+        is_multi_account=mapping_result.is_multi_account,
+        confidence=mapping_result.confidence,
+    )
+    format_source = "detected"
 
-        if mapping_result.sign_needs_confirmation and not sign:
-            logger.warning(
-                "⚠️  Sign convention is ambiguous (all amounts appear positive). "
-                f"Proceeding with '{resolved.sign_convention}' — "
-                "use --sign to override if expense amounts look wrong."
-            )
+    if mapping_result.sign_needs_confirmation and not sign:
+        logger.warning(
+            "⚠️  Sign convention is ambiguous (all amounts appear positive). "
+            f"Proceeding with '{resolved.sign_convention}' — "
+            "use --sign to override if expense amounts look wrong."
+        )
 
-        if mapping_result.confidence == "low":
-            raise ValueError(
-                f"Could not reliably detect column mapping for "
-                f"{file_path.name}. Use --override to specify columns manually."
-            )
+    if mapping_result.confidence == "low":
+        raise ValueError(
+            f"Could not reliably detect column mapping for "
+            f"{file_path.name}. Use --override to specify columns manually."
+        )
 ```
 
 The CLI overrides block (currently around lines 395-401) becomes:

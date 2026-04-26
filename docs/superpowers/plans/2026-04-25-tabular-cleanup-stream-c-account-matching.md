@@ -217,17 +217,17 @@ git commit -m "Make account_matching threshold configurable"
 This is the behavior change. The current single-account path (around lines 412-433) does:
 
 ```python
-    if account_id:
-        account_ids: str | list[str] = account_id
-        ...
-    elif account_name:
-        aid = slugify(account_name)
-        account_ids = aid
-        ...
-    elif (mapping_result_is_multi_account and ...):
-        ...
-    else:
-        raise ValueError(...)
+if account_id:
+    account_ids: str | list[str] = account_id
+    ...
+elif account_name:
+    aid = slugify(account_name)
+    account_ids = aid
+    ...
+elif mapping_result_is_multi_account and ...:
+    ...
+else:
+    raise ValueError(...)
 ```
 
 After this task, the `elif account_name:` branch routes through `match_account()`. The multi-account branch (per-row) and the explicit `account_id` branch are unchanged — both already bypass the matcher correctly.
@@ -412,8 +412,7 @@ def _resolve_account_via_matcher(
         return slugify(account_name)
 
     existing = [
-        {"account_id": r[0], "account_name": r[1], "account_number": r[2]}
-        for r in rows
+        {"account_id": r[0], "account_name": r[1], "account_number": r[2]} for r in rows
     ]
 
     result = match_account(
@@ -440,8 +439,7 @@ def _resolve_account_via_matcher(
         logger.warning(
             f"⚠️  Account {account_name!r} did not match exactly. Fuzzy candidates: "
             + ", ".join(
-                f"{c['account_name']!r} ({c['account_id']})"
-                for c in result.candidates
+                f"{c['account_name']!r} ({c['account_id']})" for c in result.candidates
             )
             + ". Use --yes to auto-accept the top candidate, "
             "or --account-id to pick explicitly."
@@ -614,6 +612,7 @@ def test_import_file_passes_yes_flag_through(monkeypatch, tmp_path) -> None:
     def fake_import_file(*, db, file_path, **kwargs):
         captured.update(kwargs)
         from moneybin.services.import_service import ImportResult
+
         return ImportResult(file_path=str(file_path), file_type="tabular")
 
     monkeypatch.setattr(
@@ -649,18 +648,20 @@ Expected: FAIL — either CLI rejects `--yes` (no such option) or `captured["aut
 Edit `src/moneybin/cli/commands/import_cmd.py`. In the `import_file` function signature (after line 152, before the closing `)`):
 
 ```python
-    yes: bool = typer.Option(
+yes: bool = (
+    typer.Option(
         False,
         "--yes",
         "-y",
         help="Auto-accept the top fuzzy account match without prompting",
     ),
+)
 ```
 
 In the call to `run_import(...)` (around line 199), append:
 
 ```python
-            auto_accept=yes,
+auto_accept = (yes,)
 ```
 
 - [ ] **Step 4.5: Run the test to verify it passes**

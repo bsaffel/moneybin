@@ -158,6 +158,7 @@ Re-read `tests/moneybin/test_extractors/test_ofx_extractor.py`. For any assertio
 
 ```python
 from decimal import Decimal
+
 assert df["amount"][0] == Decimal("12.34")
 ```
 

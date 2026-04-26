@@ -95,8 +95,7 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
     # Expected reads: 1 batch description fetch + 1 merchant fetch +
     # any small bookkeeping. Generous upper bound = 5; previous impl was 50+.
     assert len(select_calls) <= 5, (
-        f"Expected ≤5 SELECTs, got {len(select_calls)}:\n"
-        + "\n".join(select_calls)
+        f"Expected ≤5 SELECTs, got {len(select_calls)}:\n" + "\n".join(select_calls)
     )
 ```
 

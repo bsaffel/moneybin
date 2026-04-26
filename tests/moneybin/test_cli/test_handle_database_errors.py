@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
+from _pytest.logging import LogCaptureFixture
 
 from moneybin.database import DatabaseKeyError
 
@@ -18,7 +19,9 @@ def test_handle_database_errors_yields_database() -> None:
             assert db is fake_db
 
 
-def test_handle_database_errors_translates_key_error_to_exit(caplog) -> None:
+def test_handle_database_errors_translates_key_error_to_exit(
+    caplog: LogCaptureFixture,
+) -> None:
     """DatabaseKeyError is caught, logged, and converted to typer.Exit(1)."""
     from moneybin.cli.utils import handle_database_errors
 
