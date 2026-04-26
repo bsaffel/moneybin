@@ -314,6 +314,9 @@ def bulk_categorize(
     a merchant mapping, then inserts/replaces the category assignment.
     Merchant resolution is best-effort — failures do not prevent categorization.
 
+    Read-side cost is O(1) in the number of items: one batch description
+    fetch and one merchant-table fetch, regardless of input size.
+
     Args:
         db: Database instance (read-write).
         items: List of dicts with transaction_id, category, and optional subcategory.
@@ -327,6 +330,8 @@ def bulk_categorize(
     merchants_created = 0
     error_details: list[dict[str, str]] = []
 
+    # Phase 1 — validate and partition input
+    valid_items: list[tuple[str, str, str | None]] = []
     for item in items:
         txn_id = item.get("transaction_id", "").strip()
         category = item.get("category", "").strip()
@@ -337,43 +342,80 @@ def bulk_categorize(
                 "reason": "Missing transaction_id or category",
             })
             continue
-
         subcategory = item.get("subcategory", "").strip() or None
+        valid_items.append((txn_id, category, subcategory))
 
-        try:
-            # Resolve merchant_id from description (best-effort)
-            merchant_id = None
+    if not valid_items:
+        return BulkCategorizationResult(
+            applied=applied,
+            skipped=skipped,
+            errors=errors,
+            error_details=error_details,
+            merchants_created=merchants_created,
+        )
+
+    # Phase 2 — batch-fetch descriptions
+    txn_ids = [v[0] for v in valid_items]
+    placeholders = ",".join(["?"] * len(txn_ids))
+    descriptions: dict[str, str | None] = {}
+    try:
+        rows = db.execute(
+            f"""
+            SELECT transaction_id, description
+            FROM {FCT_TRANSACTIONS.full_name}
+            WHERE transaction_id IN ({placeholders})
+            """,  # noqa: S608 — placeholders count is bounded; values are parameterized
+            txn_ids,
+        ).fetchall()
+        descriptions = {row[0]: row[1] for row in rows}
+    except Exception:  # noqa: BLE001 — best-effort; missing table → all merchants resolve to None
+        logger.debug("Could not batch-fetch descriptions", exc_info=True)
+
+    # Phase 3 — fetch merchants once, then match in memory
+    cached_merchants = _fetch_merchants(db)
+
+    # Phase 4 — per-item categorization (writes only)
+    for txn_id, category, subcategory in valid_items:
+        merchant_id: str | None = None
+        description = descriptions.get(txn_id)
+        if description and cached_merchants is not None:
             try:
-                txn = db.execute(
-                    f"""
-                    SELECT description FROM {FCT_TRANSACTIONS.full_name}
-                    WHERE transaction_id = ?
-                    """,
-                    [txn_id],
-                ).fetchone()
-                if txn and txn[0]:
-                    existing = match_merchant(db, txn[0])
-                    if existing:
-                        merchant_id = existing["merchant_id"]
-                    else:
-                        normalized = normalize_description(txn[0])
-                        if normalized:
-                            merchant_id = create_merchant(
-                                db,
-                                normalized,
-                                normalized,
-                                match_type="contains",
-                                category=category,
-                                subcategory=subcategory,
-                                created_by="ai",
-                            )
-                            merchants_created += 1
+                existing = _match_description(description, cached_merchants)
+                if existing:
+                    merchant_id = existing["merchant_id"]
+                else:
+                    normalized = normalize_description(description)
+                    if normalized:
+                        merchant_id = create_merchant(
+                            db,
+                            normalized,
+                            normalized,
+                            match_type="contains",
+                            category=category,
+                            subcategory=subcategory,
+                            created_by="ai",
+                        )
+                        merchants_created += 1
+                        # Append to cache so subsequent items in this batch
+                        # find the just-created merchant instead of re-creating.
+                        # Cast — DB rows can hold NULL subcategories, but the
+                        # row tuple type is declared as tuple[str, ...].
+                        new_row: tuple[str, ...] = (
+                            merchant_id,
+                            normalized,
+                            "contains",
+                            normalized,
+                            category,
+                            subcategory,  # type: ignore[arg-type]
+                        )
+                        cached_merchants.append(new_row)
             except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
                 logger.debug(
                     f"Could not resolve merchant for {txn_id}",
                     exc_info=True,
                 )
 
+        try:
             db.execute(
                 f"""
                 INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}

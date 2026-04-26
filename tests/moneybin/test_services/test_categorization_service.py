@@ -554,3 +554,65 @@ class TestSeedCategories:
         categories = get_active_categories(db)
         assert len(categories) == 2
         assert all(c["category"] == "Food & Drink" for c in categories)
+
+
+# ---------------------------------------------------------------------------
+# bulk_categorize — perf shape and in-batch dedup
+# ---------------------------------------------------------------------------
+
+
+def test_bulk_categorize_uses_constant_number_of_db_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_secret_store: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """bulk_categorize should not scale DB round-trips with item count.
+
+    With N items, the number of read queries (description fetch + merchant
+    fetch) must be O(1), not O(N).
+    """
+    from moneybin.services.categorization_service import bulk_categorize
+    from moneybin.tables import FCT_TRANSACTIONS
+
+    db = Database(
+        tmp_path / "perf.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    # Seed 25 transactions and 25 corresponding category items.
+    db.execute(
+        f"""
+        CREATE OR REPLACE TABLE {FCT_TRANSACTIONS.full_name} AS
+        SELECT
+            'txn_' || i AS transaction_id,
+            CAST('2025-01-01' AS DATE) AS transaction_date,
+            CAST(-10.00 AS DECIMAL(18,2)) AS amount,
+            'Coffee shop ' || i AS description,
+            CAST(NULL AS VARCHAR) AS memo,
+            'acct1' AS account_id
+        FROM range(25) t(i)
+        """  # noqa: S608  # building test input string, not executing SQL
+    )
+    items = [
+        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        for i in range(25)
+    ]
+
+    real_execute = db.execute
+    select_calls: list[str] = []
+
+    def counting_execute(query: str, *args: object, **kwargs: object) -> object:
+        if query.strip().upper().startswith("SELECT"):
+            select_calls.append(query)
+        return real_execute(query, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", counting_execute)
+
+    result = bulk_categorize(db, items)
+
+    assert result.applied == 25
+    # Expected reads: 1 batch description fetch + 1 merchant fetch +
+    # any small bookkeeping. Generous upper bound = 5; previous impl was 50+.
+    assert len(select_calls) <= 5, (
+        f"Expected <=5 SELECTs, got {len(select_calls)}:\n" + "\n".join(select_calls)
+    )
