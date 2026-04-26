@@ -137,6 +137,20 @@ class TabularConfig(BaseModel):
         default=50_000,
         description="Row count above which import is refused (use --no-row-limit to override)",
     )
+    balance_pass_threshold: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum fraction of balance deltas that must match "
+            "for balance validation to pass"
+        ),
+    )
+    balance_tolerance_cents: int = Field(
+        default=1,
+        ge=0,
+        description="Per-delta tolerance in cents for balance validation",
+    )
 
 
 class DataConfig(BaseModel):
