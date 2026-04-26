@@ -103,6 +103,8 @@ def transform_dataframe(
     source_type: str,
     source_origin: str,
     import_id: str,
+    balance_pass_threshold: float = 0.90,
+    balance_tolerance_cents: int = 1,
 ) -> TransformResult:
     """Transform a mapped DataFrame into the raw.tabular_transactions shape.
 
@@ -119,6 +121,10 @@ def transform_dataframe(
         source_type: File format type (csv, tsv, excel, parquet, etc.).
         source_origin: Institution or source name (e.g. "chase_credit").
         import_id: Unique ID for this import run.
+        balance_pass_threshold: Fraction of balance deltas that must match for
+            validation to pass (default 0.90).
+        balance_tolerance_cents: Maximum allowed delta mismatch in cents
+            (default 1, i.e. ±$0.01).
 
     Returns:
         TransformResult with validated transactions DataFrame and rejection stats.
@@ -321,7 +327,13 @@ def transform_dataframe(
                 str(v) if v is not None else ""
                 for v in df[balance_col].cast(pl.Utf8).to_list()
             ]
-            result = _validate_running_balance(result, balance_strs, number_format)
+            result = _validate_running_balance(
+                result,
+                balance_strs,
+                number_format,
+                pass_threshold=balance_pass_threshold,
+                tolerance_cents=balance_tolerance_cents,
+            )
 
     return result
 
@@ -464,6 +476,9 @@ def _validate_running_balance(
     result: TransformResult,
     balance_strs: list[str],
     number_format: str,
+    *,
+    pass_threshold: float = 0.90,
+    tolerance_cents: int = 1,
 ) -> TransformResult:
     """Validate running balance consistency against transaction amounts.
 
@@ -479,13 +494,19 @@ def _validate_running_balance(
         balance_strs: Raw balance strings from the source file, one per source row.
             May be longer than ``result.transactions`` if rows were rejected.
         number_format: Number format used by ``parse_amount_str`` for balances.
+        pass_threshold: Fraction of balance deltas that must match for validation
+            to pass (default 0.90).
+        tolerance_cents: Maximum allowed delta mismatch in cents (default 1,
+            i.e. ±$0.01).
 
     Returns:
         Updated TransformResult with ``balance_validated`` set and, when
         auto-correction fires, negated amounts in ``transactions``.
     """
-    _balance_tolerance = Decimal("0.01")
-    _pass_threshold = 0.90
+    _balance_tolerance = (Decimal(tolerance_cents) / Decimal(100)).quantize(
+        Decimal("0.01")
+    )
+    _pass_threshold = pass_threshold
 
     amounts: list[Decimal] = result.transactions["amount"].to_list()
     row_numbers: list[int] = result.transactions["row_number"].to_list()

@@ -448,6 +448,9 @@ def _import_tabular(
     )
 
     # Stage 4: Transform
+    from moneybin.config import get_settings
+
+    tabular_cfg = get_settings().data.tabular
     try:
         transform_result = transform_dataframe(
             df=df,
@@ -460,6 +463,8 @@ def _import_tabular(
             source_type=source_type,
             source_origin=source_origin,
             import_id=import_id,
+            balance_pass_threshold=tabular_cfg.balance_pass_threshold,
+            balance_tolerance_cents=tabular_cfg.balance_tolerance_cents,
         )
     except Exception as e:  # noqa: BLE001  # re-raised as ValueError after recording rejection in DB
         loader.finalize_import_batch(
