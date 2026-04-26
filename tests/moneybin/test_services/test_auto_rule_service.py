@@ -200,6 +200,47 @@ def test_approve_immediately_categorizes_existing_uncategorized(real_db):
     assert cat == ("Food & Drink", "auto_rule")
 
 
+def test_override_threshold_deactivates_rule_and_creates_new_proposal(
+    real_db, monkeypatch
+):
+    """When user overrides reach the threshold, deactivate the rule and propose the new category."""
+    monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+    clear_settings_cache()
+    set_current_profile("test")
+
+    # Approve an auto-rule for STARBUCKS -> Food & Drink
+    _seed_transaction(real_db, "t1")
+    pid = auto_rule_service.record_categorization(real_db, "t1", "Food & Drink")
+    assert pid is not None
+    auto_rule_service.approve(real_db, [pid])
+
+    # Two user overrides correcting STARBUCKS to Groceries
+    for tid in ("t10", "t11"):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
+            [tid],
+        )
+        real_db.execute(
+            "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
+            "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+            [tid],
+        )
+
+    deactivated = auto_rule_service.check_overrides(real_db)
+    assert deactivated == 1
+
+    active = real_db.execute(
+        "SELECT is_active FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()
+    assert active == (False,)
+
+    new_proposal = real_db.execute(
+        "SELECT category, status FROM app.proposed_rules WHERE status = 'pending'"
+    ).fetchone()
+    assert new_proposal == ("Groceries", "pending")
+
+
 def test_reject_marks_proposal_rejected_without_creating_rule(real_db):
     """Rejecting a proposal marks it rejected without inserting any categorization rule."""
     _seed_transaction(real_db, "t1")

@@ -282,6 +282,74 @@ def approve(db: Database, proposed_rule_ids: list[str]) -> ApproveResult:
     return result
 
 
+def check_overrides(db: Database) -> int:
+    """Deactivate auto-rules with override count >= configured threshold; return number deactivated.
+
+    An override = a transaction whose description matches the auto-rule's pattern
+    but is currently categorized by 'user' with a different category. When the
+    threshold is reached we deactivate the rule, mark its source proposal superseded,
+    and create a new pending proposal with the most common override category.
+    """
+    settings = get_settings().categorization
+    threshold = settings.auto_rule_override_threshold
+
+    rules = db.execute(
+        f"""
+        SELECT rule_id, merchant_pattern, category
+        FROM {CATEGORIZATION_RULES.full_name}
+        WHERE is_active = true AND created_by = 'auto_rule'
+        """
+    ).fetchall()
+    deactivated = 0
+
+    for rule_id, pattern, rule_category in rules:
+        rows = db.execute(
+            f"""
+            SELECT c.category, COUNT(*) AS n
+            FROM {TRANSACTION_CATEGORIES.full_name} c
+            JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
+            WHERE c.categorized_by = 'user'
+              AND c.category != ?
+              AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
+            GROUP BY c.category
+            ORDER BY n DESC
+            """,
+            [rule_category, pattern],
+        ).fetchall()
+        total_overrides = sum(r[1] for r in rows)
+        if total_overrides < threshold:
+            continue
+
+        db.execute(
+            f"UPDATE {CATEGORIZATION_RULES.full_name} SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE rule_id = ?",
+            [rule_id],
+        )
+        db.execute(
+            f"""
+            UPDATE {PROPOSED_RULES.full_name}
+            SET status = 'superseded'
+            WHERE LOWER(merchant_pattern) = LOWER(?) AND status = 'approved'
+            """,
+            [pattern],
+        )
+        new_category = rows[0][0]
+        new_pid = uuid.uuid4().hex[:12]
+        db.execute(
+            f"""
+            INSERT INTO {PROPOSED_RULES.full_name}
+            (proposed_rule_id, merchant_pattern, match_type, category, status,
+             trigger_count, source, sample_txn_ids)
+            VALUES (?, ?, 'contains', ?, 'pending', ?, 'pattern_detection', ?)
+            """,
+            [new_pid, pattern, new_category, total_overrides, []],
+        )
+        deactivated += 1
+
+    if deactivated:
+        logger.info(f"Deactivated {deactivated} auto-rule(s) due to user overrides")
+    return deactivated
+
+
 def reject(db: Database, proposed_rule_ids: list[str]) -> RejectResult:
     """Mark pending proposals as rejected. No rule is created."""
     result = RejectResult()
