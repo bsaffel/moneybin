@@ -373,6 +373,11 @@ class CategorizationSettings(BaseModel):
         ge=1,
         description="Priority assigned to promoted auto-rules (higher number = lower priority)",
     )
+    auto_rule_sample_txn_cap: int = Field(
+        default=5,
+        ge=1,
+        description="Maximum number of sample transaction IDs retained per proposal",
+    )
 
 
 class MoneyBinSettings(BaseSettings):

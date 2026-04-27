@@ -210,6 +210,10 @@ def auto_confirm_cmd(
     )
     from moneybin.services.categorization_service import CategorizationService
 
+    if approve_all and reject_all:
+        logger.error("❌ --approve-all and --reject-all are mutually exclusive")
+        raise typer.Exit(2)
+
     try:
         svc = CategorizationService(get_database())
         if approve_all or reject_all:

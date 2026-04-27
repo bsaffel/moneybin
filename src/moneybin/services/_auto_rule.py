@@ -26,7 +26,6 @@ from moneybin.tables import (
 logger = logging.getLogger(__name__)
 
 ProposalStatus = Literal["pending", "approved", "rejected", "superseded", "tracking"]
-SAMPLE_TXN_CAP = 5
 
 
 def extract_pattern(db: Database, transaction_id: str) -> str | None:
@@ -127,7 +126,9 @@ def record_categorization(
     if _merchant_mapping_covers(db, pattern, category):
         return None
 
-    threshold = get_settings().categorization.auto_rule_proposal_threshold
+    settings = get_settings().categorization
+    threshold = settings.auto_rule_proposal_threshold
+    sample_cap = settings.auto_rule_sample_txn_cap
     existing = _find_pending_proposal(db, pattern)
 
     if existing is not None:
@@ -138,7 +139,7 @@ def record_categorization(
             new_samples = (
                 samples + [transaction_id] if transaction_id not in samples else samples
             )
-            new_samples = new_samples[:SAMPLE_TXN_CAP]
+            new_samples = new_samples[:sample_cap]
             new_count = count + 1
             new_status = "pending" if new_count >= threshold else "tracking"
             db.execute(

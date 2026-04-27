@@ -700,7 +700,12 @@ def _apply_categorization(db: Database) -> None:
                 f"Auto-categorized {stats['total']} transactions "
                 f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
-        pending = service.auto_stats()["pending_proposals"]
+        from moneybin.tables import PROPOSED_RULES
+
+        pending_row = db.execute(
+            f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
+        ).fetchone()
+        pending = int(pending_row[0]) if pending_row else 0
         if pending:
             logger.info(f"  {pending} new auto-rule proposals")
             logger.info(
