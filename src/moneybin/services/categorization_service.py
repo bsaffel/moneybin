@@ -353,6 +353,20 @@ class CategorizationService:
             subcategory = item.get("subcategory", "").strip() or None
 
             try:
+                # Record for auto-rule learning BEFORE merchant resolution.
+                # bulk_categorize creates a merchant mapping for unmatched descriptions
+                # using the user's chosen category — recording after that would cause
+                # _merchant_mapping_covers() to short-circuit every proposal. The hook
+                # captures the user's intent (txn → category) independent of the merchant
+                # bookkeeping that happens later in this iteration.
+                # Best-effort: failures must not break categorization.
+                try:
+                    self._record_categorization(
+                        txn_id, category, subcategory=subcategory
+                    )
+                except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
+                    logger.debug("auto-rule recording failed", exc_info=True)
+
                 # Resolve merchant_id from description (best-effort)
                 merchant_id = None
                 try:

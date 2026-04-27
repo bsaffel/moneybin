@@ -716,3 +716,28 @@ def test_list_auto_rules_returns_active_auto_rules(real_db: Database) -> None:
 
     rules = svc.list_auto_rules()
     assert any(r["merchant_pattern"] == "CHIPOTLE" for r in rules)
+
+
+def test_bulk_categorize_creates_auto_rule_proposal(real_db: Database) -> None:
+    """bulk_categorize records a pending proposal for novel txn → category mappings."""
+    from moneybin.services.categorization_service import CategorizationService
+
+    real_db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('tb1', 'a1', DATE '2026-02-01', -4.50, 'STARBUCKS RESERVE', 'csv')"
+    )
+    svc = CategorizationService(real_db)
+    svc.bulk_categorize(
+        [
+            {
+                "transaction_id": "tb1",
+                "category": "Food & Drink",
+                "subcategory": "Coffee",
+            }
+        ],
+    )
+
+    rows = real_db.execute(
+        "SELECT merchant_pattern, category, status FROM app.proposed_rules"
+    ).fetchall()
+    assert ("STARBUCKS RESERVE", "Food & Drink", "pending") in rows
