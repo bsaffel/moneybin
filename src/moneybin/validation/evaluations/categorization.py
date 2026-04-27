@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 
 from moneybin.database import Database
-from moneybin.validation.evaluations import GroundTruthMissingError
+from moneybin.validation.evaluations._common import (
+    GroundTruthMissingError,
+    has_ground_truth,
+)
 from moneybin.validation.result import EvaluationResult
 
 
@@ -16,7 +19,7 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
     synthetic `source_transaction_id` to the gold `transaction_id` produced
     by the dedup/matching pipeline.
     """
-    if not _has_ground_truth(db):
+    if not has_ground_truth(db):
         raise GroundTruthMissingError("synthetic.ground_truth not present")
 
     rows = db.execute(
@@ -55,6 +58,8 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
             per_cat[expected]["fn"] += 1
             per_cat[predicted]["fp"] += 1
 
+    # Skip phantom categories: predicted-only labels that never appear as
+    # ground truth (support == 0) inflate the breakdown without adding signal.
     breakdown = {
         "per_category": {
             cat: {
@@ -63,6 +68,7 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
                 "support": s["support"],
             }
             for cat, s in per_cat.items()
+            if s["support"] > 0
         },
         "total_labeled": len(rows),
     }
@@ -79,13 +85,3 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
 
 def _safe_div(num: int, denom: int) -> float:
     return round(num / denom, 4) if denom else 0.0
-
-
-def _has_ground_truth(db: Database) -> bool:
-    rows = db.execute(
-        """
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'
-        """
-    ).fetchall()
-    return bool(rows)

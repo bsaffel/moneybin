@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.validation.evaluations import GroundTruthMissingError
+from moneybin.validation.evaluations._common import (
+    GroundTruthMissingError,
+    has_ground_truth,
+)
 from moneybin.validation.result import EvaluationResult
 
 
@@ -14,8 +17,15 @@ def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationRes
     `source_transaction_id` (sorted MIN/MAX) so they share an identifier
     space. Predicted pairs are mapped from gold `transaction_id` to
     `source_transaction_id` via `prep.int_transactions__matched`.
+
+    Note: the `HAVING COUNT(*) = 2` filter on both sides intentionally
+    excludes 3+-leg transfer chains (e.g., A → B → C funneled through a
+    shared `transfer_pair_id`) from both true and predicted sets. This is
+    acceptable for v1 since the synthetic dataset only models 2-leg
+    transfers; a future enhancement could lift this constraint and score
+    higher-arity chains via set-of-sets matching.
     """
-    if not _has_ground_truth(db):
+    if not has_ground_truth(db):
         raise GroundTruthMissingError("synthetic.ground_truth required")
 
     true_pairs = _pair_set(
@@ -85,7 +95,7 @@ def score_dedup(
     f1 = max(0.0, 1.0 - delta / max(expected_collapsed_count, 1))
     return EvaluationResult(
         name="dedup_quality",
-        metric="f1",
+        metric="dedup_score",
         value=round(f1, 4),
         threshold=threshold,
         passed=f1 >= threshold,
@@ -98,13 +108,3 @@ def score_dedup(
 
 def _pair_set(db: Database, sql: str) -> set[tuple[str, str]]:
     return {(a, b) for a, b in db.execute(sql).fetchall()}
-
-
-def _has_ground_truth(db: Database) -> bool:
-    rows = db.execute(
-        """
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'
-        """
-    ).fetchall()
-    return bool(rows)

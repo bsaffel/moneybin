@@ -226,6 +226,7 @@ class TestDedupScoring:
             )
         r = score_dedup(db, threshold=0.9, expected_collapsed_count=10)
         assert r.passed
+        assert r.metric == "dedup_score"
         assert r.value == 1.0
         assert r.breakdown["actual_gold_records"] == 10
         assert r.breakdown["expected_collapsed_count"] == 10
