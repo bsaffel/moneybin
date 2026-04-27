@@ -143,6 +143,7 @@ from extractors      type casting (views)     multi-source (tables)
 - **Rule engine** — exact match, substring, and regex rules with a priority hierarchy.
 - **Merchant normalization** — map messy bank descriptions (`STARBUCKS #12345 SEATTLE WA`) to clean merchant names.
 - **Bulk operations** — categorize, create rules, and create merchants in batches.
+- **Auto-rule generation** — when you categorize a transaction, MoneyBin proposes a reusable rule using merchant-first pattern extraction. Review pending proposals with `moneybin categorize auto-review`, batch-approve with `moneybin categorize auto-confirm --approve-all`, and future imports auto-categorize matching transactions. Approved rules are stored alongside user-defined rules with `created_by='auto_rule'`. After repeated user overrides of an auto-rule, it deactivates itself and proposes the corrected category.
 
 ### Database & Security
 
@@ -242,7 +243,7 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | Rule engine (exact, substring, regex) | ✅ |
 | Merchant normalization | ✅ |
 | Bulk categorization | ✅ |
-| Auto-rule generation from user edits | 📐 |
+| Auto-rule generation from user edits | ✅ |
 | ML-powered categorization | 🗓️ |
 | Merchant entity resolution | 🗓️ |
 
