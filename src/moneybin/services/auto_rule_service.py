@@ -496,9 +496,21 @@ class AutoRuleService:
         pending = _scalar(
             f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
         )
+        # Count transactions categorized by any rule whose source is an auto-rule.
+        # apply_rules writes categorized_by='rule' even for auto-promoted rules,
+        # so a label-only filter would miss most auto-rule impact.
         applied = _scalar(
-            f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "
-            "WHERE categorized_by = 'auto_rule'"
+            f"""
+            SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} c
+            WHERE c.categorized_by = 'auto_rule'
+               OR (
+                   c.rule_id IS NOT NULL
+                   AND c.rule_id IN (
+                       SELECT rule_id FROM {CATEGORIZATION_RULES.full_name}
+                       WHERE created_by = 'auto_rule'
+                   )
+               )
+            """
         )
         return {
             "active_auto_rules": active,
