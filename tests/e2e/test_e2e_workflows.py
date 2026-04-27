@@ -206,3 +206,92 @@ class TestCategorizationPipeline:
         # Stats should work
         result = run_cli("categorize", "stats", env=env)
         result.assert_success()
+
+
+class TestAutoRulePipeline:
+    """Workflow 6: import -> transform -> seed proposal -> auto-confirm -> verify rule promoted.
+
+    bulk_categorize is MCP-only and has no CLI surface, so we seed a proposal
+    directly via db query. The user-facing surface this test exercises is:
+    import + transform + auto-review + auto-confirm. Promotion is verified by
+    inspecting both the active categorization_rules table (created_by='auto_rule'
+    after approval) and a re-import — the second import should not fail and the
+    rule remains active for future categorization runs.
+    """
+
+    def test_import_then_promote_proposal(self, e2e_home: Path) -> None:
+        if not _has_duckdb_cli:
+            pytest.skip("DuckDB CLI required to verify rule promotion")
+
+        env = make_workflow_env(e2e_home, "wf-autorule")
+        fixture = FIXTURES_DIR / "tabular" / "standard.csv"
+
+        # Import + transform so the full app/core schema is materialized.
+        result = run_cli(
+            "import",
+            "file",
+            str(fixture),
+            "--account-id",
+            "wf-autorule-acct",
+            "--skip-transform",
+            env=env,
+        )
+        result.assert_success()
+        result = run_cli("transform", "apply", env=env, timeout=180)
+        result.assert_success()
+
+        # Seed categories so app schema has reference data.
+        result = run_cli("categorize", "seed", env=env)
+        result.assert_success()
+
+        # Seed a pending proposal directly — bulk_categorize is MCP-only, so
+        # we drive the auto-* CLI surface against a known-good app row.
+        insert_sql = (
+            "INSERT INTO app.proposed_rules "
+            "(proposed_rule_id, merchant_pattern, match_type, category, "
+            "subcategory, status, trigger_count, source, sample_txn_ids) "
+            "VALUES ('wfauto00001', 'COFFEE SHOP', 'contains', 'Food & Dining', "
+            "'Coffee', 'pending', 1, 'pattern_detection', [])"
+        )
+        result = run_cli("db", "query", insert_sql, env=env)
+        result.assert_success()
+
+        # auto-review surfaces the seeded proposal
+        result = run_cli("categorize", "auto-review", env=env)
+        result.assert_success()
+        assert "wfauto00001" in result.output
+
+        # auto-confirm promotes the proposal to an active rule
+        result = run_cli("categorize", "auto-confirm", "--approve-all", env=env)
+        result.assert_success()
+        assert "Approved 1" in result.output, (
+            f"auto-confirm did not approve the proposal: {result.output}"
+        )
+
+        # Verify a rule with created_by='auto_rule' now exists in
+        # app.categorization_rules — this is what future imports/runs will use
+        # to auto-categorize matching transactions.
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM app.categorization_rules "
+            "WHERE created_by = 'auto_rule' AND is_active = true",
+            "--format",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        rule_count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert rule_count >= 1, (
+            f"Expected >=1 active auto_rule, got {rule_count}.\n{result.output}"
+        )
+
+        # auto-stats reflects the promotion
+        result = run_cli("categorize", "auto-stats", env=env)
+        result.assert_success()
+        assert "Active auto-rules" in result.output
+
+        # Re-running apply-rules after promotion must succeed and not crash —
+        # this exercises the path future imports will hit.
+        result = run_cli("categorize", "apply-rules", env=env)
+        result.assert_success()

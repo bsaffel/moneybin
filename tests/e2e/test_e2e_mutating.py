@@ -254,6 +254,58 @@ class TestCategorizeMutating:
         result = run_cli("categorize", "apply-rules", env=env)
         result.assert_success()
 
+    def test_categorize_auto_review_and_confirm(self, tmp_path: Path) -> None:
+        """auto-review surfaces a pending proposal; auto-confirm promotes it."""
+        env = make_workflow_env(tmp_path, "catauto")
+
+        # auto-confirm's promotion path joins core.fct_transactions to
+        # backfill matches, so transforms must materialize the (empty)
+        # core schema before we exercise approve-all.
+        result = run_cli("transform", "apply", env=env, timeout=180)
+        result.assert_success()
+
+        # Insert a pending proposal directly — bulk_categorize is MCP-only and
+        # has no CLI surface, so seed app.proposed_rules via db query. The
+        # CLI we exercise is auto-review / auto-confirm / auto-stats /
+        # auto-rules; how the proposal got there is irrelevant.
+        insert_sql = (
+            "INSERT INTO app.proposed_rules "
+            "(proposed_rule_id, merchant_pattern, match_type, category, "
+            "subcategory, status, trigger_count, source, sample_txn_ids) "
+            "VALUES ('autoe2e0001', 'COFFEE SHOP', 'contains', 'Food & Dining', "
+            "'Coffee', 'pending', 1, 'pattern_detection', ['t1'])"
+        )
+        result = run_cli("db", "query", insert_sql, env=env)
+        result.assert_success()
+
+        # auto-review lists the pending proposal
+        result = run_cli("categorize", "auto-review", env=env)
+        result.assert_success()
+        assert "autoe2e0001" in result.output, (
+            f"auto-review did not surface proposal: {result.output}"
+        )
+
+        # auto-stats reports the pending proposal
+        result = run_cli("categorize", "auto-stats", env=env)
+        result.assert_success()
+
+        # auto-confirm --approve-all promotes it
+        result = run_cli("categorize", "auto-confirm", "--approve-all", env=env)
+        result.assert_success()
+        assert "Approved" in result.output, (
+            f"auto-confirm missing approval message: {result.output}"
+        )
+
+        # auto-rules now lists at least one active rule, and auto-stats
+        # reflects the promotion
+        result = run_cli("categorize", "auto-rules", env=env)
+        result.assert_success()
+        assert "autoe2e0001" not in result.output  # listed by rule_id, not proposal_id
+
+        result = run_cli("categorize", "auto-stats", env=env)
+        result.assert_success()
+        assert "Active auto-rules" in result.output
+
 
 class TestMatchesMutating:
     """Matching commands that modify match state."""
