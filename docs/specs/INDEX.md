@@ -87,7 +87,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Overview](testing-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
 | [Synthetic Data Generator](testing-synthetic-data.md) | Feature | implemented | Persona-based synthetic financial data: YAML-driven personas/merchants, deterministic seeding, ground-truth labels, Level 2 realism |
 | [E2E Testing](e2e-testing.md) | Feature | implemented | Subprocess-based E2E tests: smoke tests (help, no-DB, DB commands), golden-path workflow tests (synthetic, CSV, OFX, lock/unlock, categorization) |
-| [Scenario Runner](testing-scenario-runner.md) | Feature | ready | Whole-pipeline correctness: empty DB → pipeline → assertions/expectations/evaluations against synthetic ground truth and hand-labeled fixtures; `moneybin synthetic verify` CLI; validation primitives reusable for live-data checks |
+| [Scenario Runner](testing-scenario-runner.md) | Feature | in-progress | Whole-pipeline correctness: empty DB → pipeline → assertions/expectations/evaluations against synthetic ground truth and hand-labeled fixtures; `moneybin synthetic verify` CLI; validation primitives reusable for live-data checks |
 | `testing-csv-fixtures.md` | Feature | planned | Curated bank export samples with expected-result YAML for format detection testing |
 | `testing-anonymized-data.md` | Feature | planned | Structure-preserving anonymization of real databases with statistical similarity guarantees |
 | `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |
