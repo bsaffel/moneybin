@@ -35,7 +35,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 |---|---|---|---|
 | [Overview](smart-import-overview.md) | Umbrella | ready | Six-pillar initiative: smart tabular detection, PDF, ML categorization, auto-rules, AI-assisted parsing |
 | [Tabular Import](smart-import-tabular.md) | Feature | implemented | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB, Maybe). Supersedes archived `csv-import` spec. |
-| [Tabular Cleanup](tabular-import-cleanup.md) | Feature | draft | Post-ship cleanup: ResolvedMapping dataclass, Literal types, config params, DatabaseKeyError handler, Decimal correctness, N+1 merchant batch optimization, account matching wiring |
+| [Tabular Cleanup](tabular-import-cleanup.md) | Feature | implemented | Post-ship cleanup: ResolvedMapping dataclass, Literal types, config params, DatabaseKeyError handler, Decimal correctness, N+1 merchant batch optimization, account matching wiring |
 | `smart-import-pdf.md` | Feature | planned | Pillar C: native-text PDF import |
 | `smart-import-ai-parsing.md` | Feature | planned | Pillar F: LLM fallback for file parsing |
 
@@ -44,8 +44,8 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](matching-overview.md) | Umbrella | ready | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer |
-| [Same-Record Dedup](matching-same-record-dedup.md) | Feature | in-progress | Cross-source dedup + golden-record merge rules (pillars A+C) |
-| [Transfer Detection](matching-transfer-detection.md) | Feature | in-progress | Transfer pair detection across accounts (pillar B); shared matching engine, bridge table, always-review v1 |
+| [Same-Record Dedup](matching-same-record-dedup.md) | Feature | implemented | Cross-source dedup + golden-record merge rules (pillars A+C); shared matching engine, `prep.int_transactions__matched`/`__merged`, `meta.fct_transaction_provenance`, `app.match_decisions`, `moneybin matches run/review/history/undo/backfill` CLI |
+| [Transfer Detection](matching-transfer-detection.md) | Feature | implemented | Transfer pair detection across accounts (pillar B); shared matching engine (Tier 4), `core.bridge_transfers`, always-review v1, 4-signal scoring |
 
 ## Categorization
 
@@ -87,6 +87,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Overview](testing-overview.md) | Umbrella | ready | Verification infrastructure: synthetic data, assertions, scenarios, format/migration testing |
 | [Synthetic Data Generator](testing-synthetic-data.md) | Feature | implemented | Persona-based synthetic financial data: YAML-driven personas/merchants, deterministic seeding, ground-truth labels, Level 2 realism |
 | [E2E Testing](e2e-testing.md) | Feature | implemented | Subprocess-based E2E tests: smoke tests (help, no-DB, DB commands), golden-path workflow tests (synthetic, CSV, OFX, lock/unlock, categorization) |
+| [Scenario Runner](testing-scenario-runner.md) | Feature | draft | Whole-pipeline correctness: empty DB → pipeline → assertions/expectations/evaluations against synthetic ground truth and hand-labeled fixtures; `moneybin synthetic verify` CLI; validation primitives reusable for live-data checks |
 | `testing-anonymized-data.md` | Feature | planned | Structure-preserving anonymization of real databases with statistical similarity guarantees |
 | `testing-csv-fixtures.md` | Feature | planned | Curated bank export samples with expected-result JSON for format detection testing |
 | `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |

@@ -7,7 +7,7 @@ from typing import Any
 import duckdb as duckdb_mod
 import typer
 
-from moneybin.database import DatabaseKeyError, get_database
+from moneybin.cli.utils import handle_database_errors
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import VALID_MATCH_TYPES, get_match_log, undo_match
 
@@ -33,28 +33,22 @@ def matches_run(
     from moneybin.matching.priority import seed_source_priority
 
     try:
-        db = get_database()
-        settings = get_settings().matching
-        seed_source_priority(db, settings)
-        matcher = TransactionMatcher(db, settings)
-        result = matcher.run()
-        if result.has_matches:
-            logger.info(f"Matching: {result.summary()}")
-            if result.has_pending:
-                logger.info("Run 'moneybin matches review' when ready")
-        else:
-            logger.info("No new matches found")
+        with handle_database_errors() as db:
+            settings = get_settings().matching
+            seed_source_priority(db, settings)
+            matcher = TransactionMatcher(db, settings)
+            result = matcher.run()
+            if result.has_matches:
+                logger.info(f"Matching: {result.summary()}")
+                if result.has_pending:
+                    logger.info("Run 'moneybin matches review' when ready")
+            else:
+                logger.info("No new matches found")
 
-        if not skip_transform and result.auto_merged:
-            from moneybin.services.import_service import run_transforms
+            if not skip_transform and result.auto_merged:
+                from moneybin.services.import_service import run_transforms
 
-            run_transforms()
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+                run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None
@@ -134,8 +128,7 @@ def matches_review(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    try:
-        db = get_database()
+    with handle_database_errors() as db:
         accepted_any = False
 
         # Non-interactive: single match decision
@@ -211,13 +204,6 @@ def matches_review(
 
             run_transforms()
 
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
-
 
 @app.command("history")
 def matches_history_cmd(
@@ -231,8 +217,7 @@ def matches_history_cmd(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    try:
-        db = get_database()
+    with handle_database_errors() as db:
         entries = get_match_log(db, limit=limit, match_type=match_type)
 
         if not entries:
@@ -257,13 +242,6 @@ def matches_history_cmd(
             )
         typer.echo()
 
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
-
 
 @app.command("undo")
 def matches_undo_cmd(
@@ -278,17 +256,11 @@ def matches_undo_cmd(
             raise typer.Exit(0)
 
     try:
-        db = get_database()
-        undo_match(db, match_id, reversed_by="user")
-        logger.info(f"Reversed match {match_id[:8]}...")
+        with handle_database_errors() as db:
+            undo_match(db, match_id, reversed_by="user")
+            logger.info(f"Reversed match {match_id[:8]}...")
     except ValueError as e:
         logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
@@ -303,36 +275,29 @@ def matches_backfill(
     from moneybin.matching.priority import seed_source_priority
 
     try:
-        db = get_database()
-        settings = get_settings().matching
+        with handle_database_errors() as db:
+            settings = get_settings().matching
 
-        count = db.execute(
-            "SELECT COUNT(*) FROM prep.int_transactions__unioned"
-        ).fetchone()
-        total = count[0] if count else 0
-        logger.info(
-            f"Scanning {total:,} existing transactions for duplicates and transfers..."
-        )
+            count = db.execute(
+                "SELECT COUNT(*) FROM prep.int_transactions__unioned"
+            ).fetchone()
+            total = count[0] if count else 0
+            logger.info(
+                f"Scanning {total:,} existing transactions for duplicates and transfers..."
+            )
 
-        seed_source_priority(db, settings)
-        matcher = TransactionMatcher(db, settings)
-        result = matcher.run()
+            seed_source_priority(db, settings)
+            matcher = TransactionMatcher(db, settings)
+            result = matcher.run()
 
-        logger.info(f"Backfill complete: {result.summary()}")
-        if result.has_pending:
-            logger.info("Run 'moneybin matches review' when ready")
+            logger.info(f"Backfill complete: {result.summary()}")
+            if result.has_pending:
+                logger.info("Run 'moneybin matches review' when ready")
 
-        if not skip_transform and result.auto_merged:
-            from moneybin.services.import_service import run_transforms
+            if not skip_transform and result.auto_merged:
+                from moneybin.services.import_service import run_transforms
 
-            run_transforms()
-
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
+                run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None

@@ -306,8 +306,8 @@ def serve(
 
         # Typically invoked by AI clients, not run manually
     """
+    from moneybin.cli.utils import handle_database_errors
     from moneybin.config import get_database_path
-    from moneybin.database import DatabaseKeyError
     from moneybin.mcp.server import close_db, init_db, mcp
 
     # Import resources/prompts to register their decorators with the server.
@@ -337,15 +337,10 @@ def serve(
     validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
 
     try:
-        init_db()
+        with handle_database_errors():
+            init_db()
         logger.info(f"MCP server starting (transport={transport}, db={db_path})")
         mcp.run(transport=validated_transport)
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
     except FileNotFoundError as e:
         logger.error(f"Database not found: {e}")
         raise typer.Exit(1) from e

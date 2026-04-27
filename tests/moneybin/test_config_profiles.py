@@ -377,3 +377,37 @@ class TestProfileDirectoryLayout:
         assert (
             settings.database.backup_path == tmp_path / "profiles" / "alice" / "backups"
         )
+
+
+def test_tabular_config_balance_validation_defaults() -> None:
+    """TabularConfig exposes balance validation tunables with safe defaults."""
+    from moneybin.config import TabularConfig
+
+    cfg = TabularConfig()
+    assert cfg.balance_pass_threshold == 0.90
+    assert cfg.balance_tolerance_cents == 1
+
+
+def test_tabular_config_balance_validation_overrides() -> None:
+    """Caller can override balance validation tunables."""
+    from moneybin.config import TabularConfig
+
+    cfg = TabularConfig(balance_pass_threshold=0.95, balance_tolerance_cents=5)
+    assert cfg.balance_pass_threshold == 0.95
+    assert cfg.balance_tolerance_cents == 5
+
+
+def test_tabular_config_account_match_threshold_default() -> None:
+    """TabularConfig exposes the fuzzy account-match threshold with default 0.6."""
+    from moneybin.config import TabularConfig
+
+    cfg = TabularConfig()
+    assert cfg.account_match_threshold == 0.6
+
+
+def test_tabular_config_account_match_threshold_override() -> None:
+    """Caller can tighten or loosen the fuzzy match threshold."""
+    from moneybin.config import TabularConfig
+
+    cfg = TabularConfig(account_match_threshold=0.85)
+    assert cfg.account_match_threshold == 0.85

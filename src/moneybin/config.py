@@ -43,8 +43,8 @@ def get_base_dir() -> Path:
 
     Resolution order:
         1. MONEYBIN_HOME env var (explicit override, always wins)
-        2. MONEYBIN_ENVIRONMENT=development: current working directory
-        3. Repo checkout detection (.git + pyproject.toml name=moneybin): cwd
+        2. MONEYBIN_ENVIRONMENT=development: <cwd>/.moneybin
+        3. Repo checkout detection (.git + pyproject.toml name=moneybin): <cwd>/.moneybin
         4. Default: ~/.moneybin/
 
     Returns:
@@ -58,10 +58,10 @@ def get_base_dir() -> Path:
 
     environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
-        return Path.cwd().resolve()
+        return (Path.cwd() / ".moneybin").resolve()
 
     if _is_moneybin_repo(Path.cwd()):
-        return Path.cwd().resolve()
+        return (Path.cwd() / ".moneybin").resolve()
 
     return (Path.home() / ".moneybin").resolve()
 
@@ -136,6 +136,30 @@ class TabularConfig(BaseModel):
     row_refuse_threshold: int = Field(
         default=50_000,
         description="Row count above which import is refused (use --no-row-limit to override)",
+    )
+    balance_pass_threshold: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum fraction of balance deltas that must match "
+            "for balance validation to pass"
+        ),
+    )
+    balance_tolerance_cents: int = Field(
+        default=1,
+        ge=0,
+        description="Per-delta tolerance in cents for balance validation",
+    )
+    account_match_threshold: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fuzzy-match similarity threshold (difflib.SequenceMatcher.ratio) "
+            "for account-name matching. Below this threshold, candidates are "
+            "treated as 'no match'."
+        ),
     )
 
 

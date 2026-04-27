@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -152,7 +153,7 @@ class SyntheticWriter:
                 "account_id": acct.account_id,
                 "statement_start_date": start_dt,
                 "statement_end_date": start_dt,
-                "ledger_balance": float(acct.opening_balance),
+                "ledger_balance": Decimal(str(round(acct.opening_balance, 2))),
                 "ledger_balance_date": start_dt,
                 "available_balance": None,
                 "source_file": f"synthetic://{result.persona}/{result.seed}/{slug}",
@@ -177,7 +178,7 @@ class SyntheticWriter:
                 "account_id": acct.account_id,
                 "transaction_type": txn.transaction_type,
                 "date_posted": datetime.combine(txn.date, time()),
-                "amount": float(txn.amount),
+                "amount": Decimal(str(round(txn.amount, 2))),
                 "payee": txn.description,
                 "memo": None,
                 "check_number": None,
@@ -235,10 +236,10 @@ class SyntheticWriter:
                     "transaction_id": txn.transaction_id,
                     "account_id": acct.account_id,
                     "transaction_date": txn.date,
-                    "amount": float(txn.amount),
+                    "amount": Decimal(str(round(txn.amount, 2))),
                     "description": txn.description,
                     "status": "Posted",
-                    "balance": float(balance),
+                    "balance": Decimal(str(round(balance, 2))),
                     "source_file": f"synthetic://{result.persona}/{result.seed}/{txn.date.year}",
                     "source_type": "csv",
                     "source_origin": f"synthetic_{result.persona}",

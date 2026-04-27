@@ -28,16 +28,13 @@ class AccountMatch:
     """Fuzzy match candidates for "did you mean?" prompt."""
 
 
-# TODO: wire into import pipeline (_import_tabular in import_service.py)
-# Currently the pipeline uses slugify(account_name) directly. This function
-# should replace that to enable matching against existing accounts by number,
-# slug, or fuzzy name — preventing duplicate account records on re-import.
 def match_account(
     account_name: str,
     *,
     account_number: str | None = None,
     explicit_account_id: str | None = None,
     existing_accounts: Sequence[Mapping[str, str | None]] | None = None,
+    threshold: float = 0.6,
 ) -> AccountMatch:
     """Match an account against the existing account registry.
 
@@ -47,6 +44,8 @@ def match_account(
         explicit_account_id: Explicit ID (bypasses matching).
         existing_accounts: List of existing account dicts with
             account_id, account_name, and optionally account_number.
+        threshold: Minimum SequenceMatcher.ratio for a name to count as a
+            fuzzy candidate. Defaults to 0.6.
 
     Returns:
         AccountMatch with match result and candidates.
@@ -78,7 +77,7 @@ def match_account(
     for acct in existing:
         name = acct.get("account_name") or ""
         ratio = SequenceMatcher(None, account_name.lower(), name.lower()).ratio()
-        if ratio >= 0.6:
+        if ratio >= threshold:
             candidates.append((
                 ratio,
                 {

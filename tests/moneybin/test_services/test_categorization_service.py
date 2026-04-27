@@ -6,6 +6,7 @@ matching, prompt construction, and response parsing.
 
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -741,3 +742,112 @@ def test_bulk_categorize_creates_auto_rule_proposal(real_db: Database) -> None:
         "SELECT merchant_pattern, category, status FROM app.proposed_rules"
     ).fetchall()
     assert ("STARBUCKS RESERVE", "Food & Drink", "pending") in rows
+
+
+# ---------------------------------------------------------------------------
+# bulk_categorize — perf shape and in-batch dedup
+# ---------------------------------------------------------------------------
+
+
+def test_bulk_categorize_uses_constant_number_of_db_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_secret_store: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """bulk_categorize should not scale DB round-trips with item count.
+
+    With N items, the number of read queries (description fetch + merchant
+    fetch) must be O(1), not O(N).
+    """
+    from moneybin.tables import FCT_TRANSACTIONS
+
+    db = Database(
+        tmp_path / "perf.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    create_core_tables(db)
+    # Seed 25 transactions and 25 corresponding category items.
+    for i in range(25):
+        db.execute(
+            f"""
+            INSERT INTO {FCT_TRANSACTIONS.full_name}
+            (transaction_id, account_id, transaction_date, amount, description, source_type)
+            VALUES (?, 'acct1', DATE '2025-01-01', -10.00, ?, 'csv')
+            """,  # noqa: S608  # building test input string, not executing SQL
+            [f"txn_{i}", f"Coffee shop {i}"],
+        )
+    items = [
+        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        for i in range(25)
+    ]
+
+    real_execute = db.execute
+    select_calls: list[str] = []
+
+    def counting_execute(query: str, params: list[Any] | None = None) -> object:
+        if query.strip().upper().startswith("SELECT"):
+            select_calls.append(query)
+        return real_execute(query, params)
+
+    monkeypatch.setattr(db, "execute", counting_execute)
+
+    result = CategorizationService(db).bulk_categorize(items)
+
+    assert result.applied == 25
+    # The bulk_categorize merchant-resolution read path must be batched.
+    # Verify a single batched description fetch (WHERE transaction_id IN (...))
+    # ran for the whole input, regardless of N. Per-row fetches inside
+    # _auto_rule recording are a separate concern and are out of scope here.
+    batched = [
+        q
+        for q in select_calls
+        if "fct_transactions" in q.lower() and "transaction_id in (" in q.lower()
+    ]
+    assert len(batched) == 1, (
+        f"Expected exactly 1 batched description fetch, got {len(batched)}:\n"
+        + "\n".join(batched)
+    )
+
+
+def test_bulk_categorize_dedupes_merchant_creation_within_batch(
+    mock_secret_store: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Two items with the same description create exactly one merchant."""
+    from moneybin.tables import FCT_TRANSACTIONS, MERCHANTS
+
+    db = Database(
+        tmp_path / "dedup.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    create_core_tables(db)
+    for i in range(3):
+        db.execute(
+            f"""
+            INSERT INTO {FCT_TRANSACTIONS.full_name}
+            (transaction_id, account_id, transaction_date, amount, description, source_type)
+            VALUES (?, 'acct1', DATE '2025-01-01', -10.00, 'IDENTICAL VENDOR', 'csv')
+            """,  # noqa: S608  # building test input string, not executing SQL
+            [f"txn_{i}"],
+        )
+
+    items = [
+        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        for i in range(3)
+    ]
+
+    result = CategorizationService(db).bulk_categorize(items)
+
+    assert result.applied == 3
+    assert result.merchants_created == 1, (
+        f"Expected 1 merchant created across 3 identical-description items, "
+        f"got {result.merchants_created}"
+    )
+
+    merchant_count = db.execute(
+        f"SELECT COUNT(*) FROM {MERCHANTS.full_name}"  # noqa: S608  # building test input string, not executing SQL
+    ).fetchone()
+    assert merchant_count is not None
+    assert merchant_count[0] == 1

@@ -122,6 +122,7 @@ Then ask things like:
 - **Heuristic column detection** — 100+ header aliases, content validation, date format disambiguation, international number formats. Most bank exports just work without configuration.
 - **Built-in migration formats** — Tiller, Mint, YNAB, Maybe. Bring your history from other tools.
 - **Saved formats** — auto-detected mappings are saved so repeat imports are instant.
+- **Account matching on re-import** — re-importing the same account under a different name (e.g. "Chase Checking" vs "CHASE CHECKING ACCT") matches against the existing account ID instead of creating duplicates. Use `--yes` to auto-accept fuzzy matches non-interactively.
 - **Import management** — batch tracking, preview (dry run), and revert.
 
 ### Data Pipeline
@@ -144,6 +145,19 @@ from extractors      type casting (views)     multi-source (tables)
 - **Merchant normalization** — map messy bank descriptions (`STARBUCKS #12345 SEATTLE WA`) to clean merchant names.
 - **Bulk operations** — categorize, create rules, and create merchants in batches.
 - **Auto-rule generation** — when you categorize a transaction, MoneyBin proposes a reusable rule using merchant-first pattern extraction. Review pending proposals with `moneybin categorize auto-review`, batch-approve with `moneybin categorize auto-confirm --approve-all`, and future imports auto-categorize matching transactions. Approved rules are stored alongside user-defined rules with `created_by='auto_rule'`. After repeated user overrides of an auto-rule, it deactivates itself and proposes the corrected category.
+
+### Data Quality & Matching
+
+- **Cross-source dedup** — same transaction imported from multiple sources (e.g., CSV and OFX of the same account) collapses to one canonical row via a tiered matching engine.
+- **Transfer detection** — pairs the two sides of an account-to-account transfer (Tier 4 matching, 4-signal scoring) into `core.bridge_transfers`.
+- **Golden-record merge** — provenance tracked in `meta.fct_transaction_provenance`; user decisions persisted in `app.match_decisions`.
+- **Review workflow** — `moneybin matches run`, `review`, `history`, `undo`, `backfill` for inspecting and correcting matches.
+
+```bash
+moneybin matches run               # Re-run the matching engine
+moneybin matches review            # Walk through proposed matches
+moneybin matches undo <id>         # Revert a match decision
+```
 
 ### Database & Security
 
@@ -232,9 +246,9 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | Feature | Status |
 |---------|--------|
 | Within-source dedup | ✅ |
-| Cross-source dedup (same transaction from different imports) | 📐 |
-| Transfer detection across accounts | 📐 |
-| Golden-record merge rules | 📐 |
+| Cross-source dedup (same transaction from different imports) | ✅ |
+| Transfer detection across accounts | ✅ |
+| Golden-record merge rules | ✅ |
 
 ### Categorization
 

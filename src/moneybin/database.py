@@ -605,10 +605,18 @@ def sqlmesh_context(
 
     cache_key = str(db_path)
     try:
+        # Each new DuckDB cursor defaults to the `memory` catalog regardless of
+        # the parent connection's USE — without this, SQLMesh writes its state
+        # tables (_environments, _snapshots, _versions) into memory.sqlmesh.*
+        # and they evaporate at process exit.
+        def _pin_cursor_to_moneybin(cur: Any) -> None:
+            cur.execute(f"USE {_DATABASE_ALIAS}")
+
         adapter = DuckDBEngineAdapter(
             lambda: conn,
             default_catalog=_DATABASE_ALIAS,
             register_comments=True,
+            cursor_init=_pin_cursor_to_moneybin,
         )
         BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
 

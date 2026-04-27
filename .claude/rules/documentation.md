@@ -1,3 +1,8 @@
+---
+description: "Documentation: diagram conventions when authoring Markdown"
+paths: ["**/*.md"]
+---
+
 # Documentation
 
 ## Diagrams

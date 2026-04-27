@@ -9,6 +9,8 @@ from typing import cast
 
 import typer
 
+from moneybin.cli.utils import handle_database_errors
+
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
@@ -20,28 +22,22 @@ app = typer.Typer(
 @app.command("apply-rules")
 def apply_rules_cmd() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import CategorizationService
 
     try:
-        stats = CategorizationService(get_database()).apply_deterministic()
-        if stats["total"] > 0:
-            logger.info(
-                f"\u2705 Categorized {stats['total']} transactions "
-                f"({stats['merchant']} merchant, {stats['rule']} rule)"
-            )
-        else:
-            logger.info(
-                "\u2705 No uncategorized transactions matched rules or merchants"
-            )
+        with handle_database_errors() as db:
+            stats = CategorizationService(db).apply_deterministic()
+            if stats["total"] > 0:
+                logger.info(
+                    f"\u2705 Categorized {stats['total']} transactions "
+                    f"({stats['merchant']} merchant, {stats['rule']} rule)"
+                )
+            else:
+                logger.info(
+                    "\u2705 No uncategorized transactions matched rules or merchants"
+                )
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
@@ -52,39 +48,27 @@ def seed_cmd() -> None:
     Requires SQLMesh transforms to have been run at least once.
     Safe to run multiple times — existing categories are not overwritten.
     """
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import CategorizationService
 
     try:
-        count = CategorizationService(get_database()).seed()
-        logger.info(f"\u2705 Seeded {count} new categories")
+        with handle_database_errors() as db:
+            count = CategorizationService(db).seed()
+            logger.info(f"\u2705 Seeded {count} new categories")
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
 
 @app.command("stats")
 def stats_cmd() -> None:
     """Show categorization coverage statistics."""
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.services.categorization_service import CategorizationService
 
     try:
-        stats = CategorizationService(get_database()).categorization_stats()
+        with handle_database_errors() as db:
+            stats = CategorizationService(db).categorization_stats()
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     total = stats["total"]
@@ -107,28 +91,21 @@ def stats_cmd() -> None:
 @app.command("list-rules")
 def list_rules_cmd() -> None:
     """Display all active categorization rules."""
-    from moneybin.database import DatabaseKeyError, get_database
     from moneybin.tables import CATEGORIZATION_RULES
 
     try:
-        db = get_database()
-        rows = db.execute(
-            f"""
-            SELECT rule_id, name, merchant_pattern, match_type,
-                   category, subcategory, priority
-            FROM {CATEGORIZATION_RULES.full_name}
-            WHERE is_active = true
-            ORDER BY priority ASC, name
-            """
-        ).fetchall()
+        with handle_database_errors() as db:
+            rows = db.execute(
+                f"""
+                SELECT rule_id, name, merchant_pattern, match_type,
+                       category, subcategory, priority
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE is_active = true
+                ORDER BY priority ASC, name
+                """
+            ).fetchall()
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        from moneybin.database import database_key_error_hint
-
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     if not rows:
@@ -152,21 +129,13 @@ def auto_review_cmd(
     """List pending auto-rule proposals with sample transactions and trigger counts."""
     import json
 
-    from moneybin.database import (
-        DatabaseKeyError,
-        database_key_error_hint,
-        get_database,
-    )
     from moneybin.services.categorization_service import CategorizationService
 
     try:
-        proposals = CategorizationService(get_database()).auto_review()
+        with handle_database_errors() as db:
+            proposals = CategorizationService(db).auto_review()
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     if output == "json":
@@ -203,11 +172,6 @@ def auto_confirm_cmd(
     ),
 ) -> None:
     """Batch approve/reject auto-rule proposals."""
-    from moneybin.database import (
-        DatabaseKeyError,
-        database_key_error_hint,
-        get_database,
-    )
     from moneybin.services.categorization_service import CategorizationService
 
     if approve_all and reject_all:
@@ -215,21 +179,20 @@ def auto_confirm_cmd(
         raise typer.Exit(2)
 
     try:
-        svc = CategorizationService(get_database())
-        if approve_all or reject_all:
-            pending_ids = [cast(str, p["proposed_rule_id"]) for p in svc.auto_review()]
-            if approve_all:
-                approve = (approve or []) + pending_ids
-            if reject_all:
-                reject = (reject or []) + pending_ids
+        with handle_database_errors() as db:
+            svc = CategorizationService(db)
+            if approve_all or reject_all:
+                pending_ids = [
+                    cast(str, p["proposed_rule_id"]) for p in svc.auto_review()
+                ]
+                if approve_all:
+                    approve = (approve or []) + pending_ids
+                if reject_all:
+                    reject = (reject or []) + pending_ids
 
-        result = svc.auto_confirm(approve=approve or [], reject=reject or [])
+            result = svc.auto_confirm(approve=approve or [], reject=reject or [])
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     logger.info(
@@ -242,21 +205,13 @@ def auto_confirm_cmd(
 @app.command("auto-stats")
 def auto_stats_cmd() -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
-    from moneybin.database import (
-        DatabaseKeyError,
-        database_key_error_hint,
-        get_database,
-    )
     from moneybin.services.categorization_service import CategorizationService
 
     try:
-        stats = CategorizationService(get_database()).auto_stats()
+        with handle_database_errors() as db:
+            stats = CategorizationService(db).auto_stats()
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     logger.info("Auto-rule health:")
@@ -268,21 +223,13 @@ def auto_stats_cmd() -> None:
 @app.command("auto-rules")
 def auto_rules_cmd() -> None:
     """List active auto-rules (rules with created_by='auto_rule')."""
-    from moneybin.database import (
-        DatabaseKeyError,
-        database_key_error_hint,
-        get_database,
-    )
     from moneybin.services.categorization_service import CategorizationService
 
     try:
-        rules = CategorizationService(get_database()).list_auto_rules()
+        with handle_database_errors() as db:
+            rules = CategorizationService(db).list_auto_rules()
     except FileNotFoundError as e:
         logger.error(f"{e}")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
     if not rules:

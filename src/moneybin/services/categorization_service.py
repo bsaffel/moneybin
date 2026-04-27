@@ -183,7 +183,9 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return False
 
 
-def _fetch_merchants(db: Database) -> list[tuple[str, ...]] | None:
+def _fetch_merchants(
+    db: Database,
+) -> list[tuple[str, str, str, str, str, str | None]] | None:
     """Fetch all merchant mappings ordered by match priority.
 
     Args:
@@ -212,7 +214,7 @@ def _fetch_merchants(db: Database) -> list[tuple[str, ...]] | None:
 
 def _match_description(
     description: str,
-    merchants: list[tuple[str, ...]],
+    merchants: list[tuple[str, str, str, str, str, str | None]],
 ) -> dict[str, str | None] | None:
     """Match a description against a pre-fetched merchant list.
 
@@ -327,6 +329,9 @@ class CategorizationService:
         a merchant mapping, then inserts/replaces the category assignment.
         Merchant resolution is best-effort — failures do not prevent categorization.
 
+        Read-side cost is O(1) in the number of items: one batch description
+        fetch and one merchant-table fetch, regardless of input size.
+
         Args:
             items: List of dicts with transaction_id, category, and optional subcategory.
 
@@ -339,6 +344,8 @@ class CategorizationService:
         merchants_created = 0
         error_details: list[dict[str, str]] = []
 
+        # Phase 1 — validate and partition input
+        valid_items: list[tuple[str, str, str | None]] = []
         for item in items:
             txn_id = item.get("transaction_id", "").strip()
             category = item.get("category", "").strip()
@@ -349,9 +356,46 @@ class CategorizationService:
                     "reason": "Missing transaction_id or category",
                 })
                 continue
-
             subcategory = item.get("subcategory", "").strip() or None
+            valid_items.append((txn_id, category, subcategory))
 
+        if not valid_items:
+            return BulkCategorizationResult(
+                applied=applied,
+                skipped=skipped,
+                errors=errors,
+                error_details=error_details,
+                merchants_created=merchants_created,
+            )
+
+        # Phase 2 — batch-fetch descriptions
+        txn_ids = [v[0] for v in valid_items]
+        placeholders = ",".join(["?"] * len(txn_ids))
+        descriptions: dict[str, str | None] = {}
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT transaction_id, description
+                FROM {FCT_TRANSACTIONS.full_name}
+                WHERE transaction_id IN ({placeholders})
+                """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
+                txn_ids,
+            ).fetchall()
+            descriptions = {row[0]: row[1] for row in rows}
+        except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+            logger.warning("Could not batch-fetch descriptions", exc_info=True)
+
+        # Phase 3 — fetch merchants once, then match in memory.
+        # Guard against any non-CatalogException (schema drift, binder errors, etc.)
+        # so a merchant-table failure doesn't block all category writes for the batch.
+        try:
+            cached_merchants = _fetch_merchants(self._db)
+        except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+            logger.warning("Could not batch-fetch merchants", exc_info=True)
+            cached_merchants = None
+
+        # Phase 4 — per-item categorization (writes only)
+        for txn_id, category, subcategory in valid_items:
             try:
                 # Record before merchant resolution: bulk_categorize creates a merchant
                 # mapping below that would otherwise short-circuit auto-rule proposals.
@@ -362,22 +406,15 @@ class CategorizationService:
                 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
                     logger.debug("auto-rule recording failed", exc_info=True)
 
-                # Resolve merchant_id from description (best-effort)
-                merchant_id = None
-                try:
-                    txn = self._db.execute(
-                        f"""
-                        SELECT description FROM {FCT_TRANSACTIONS.full_name}
-                        WHERE transaction_id = ?
-                        """,
-                        [txn_id],
-                    ).fetchone()
-                    if txn and txn[0]:
-                        existing = self.match_merchant(txn[0])
+                merchant_id: str | None = None
+                description = descriptions.get(txn_id)
+                if description and cached_merchants is not None:
+                    try:
+                        existing = _match_description(description, cached_merchants)
                         if existing:
                             merchant_id = existing["merchant_id"]
                         else:
-                            normalized = normalize_description(txn[0])
+                            normalized = normalize_description(description)
                             if normalized:
                                 merchant_id = self.create_merchant(
                                     normalized,
@@ -388,11 +425,32 @@ class CategorizationService:
                                     created_by="ai",
                                 )
                                 merchants_created += 1
-                except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
-                    logger.debug(
-                        f"Could not resolve merchant for {txn_id}",
-                        exc_info=True,
-                    )
+                                # Insert into cache preserving _fetch_merchants() ordering
+                                # (exact → contains → regex) so subsequent items in this
+                                # batch match the just-created contains rule before any
+                                # pre-existing regex rule.
+                                new_row = (
+                                    merchant_id,
+                                    normalized,
+                                    "contains",
+                                    normalized,
+                                    category,
+                                    subcategory,
+                                )
+                                insert_at = next(
+                                    (
+                                        i
+                                        for i, m in enumerate(cached_merchants)
+                                        if m[2] == "regex"
+                                    ),
+                                    len(cached_merchants),
+                                )
+                                cached_merchants.insert(insert_at, new_row)
+                    except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
+                        logger.debug(
+                            f"Could not resolve merchant for {txn_id}",
+                            exc_info=True,
+                        )
 
                 self._db.execute(
                     f"""

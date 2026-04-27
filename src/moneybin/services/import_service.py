@@ -5,12 +5,20 @@ data, load to raw tables, and run SQLMesh transforms. Both CLI commands and
 MCP tools call this same service — no duplication.
 """
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
+
+import duckdb
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.extractors.tabular.formats import (
+    NumberFormatType,
+    SignConventionType,
+)
 from moneybin.metrics.registry import (
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
@@ -58,6 +66,23 @@ class ImportResult:
             lines.append("  Core tables rebuilt (dim_accounts, fct_transactions)")
 
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class ResolvedMapping:
+    """Final per-import mapping from the matched format or auto-detection.
+
+    Both the matched-format branch and the auto-detect branch in
+    ``_import_tabular`` produce one of these. Downstream code reads from
+    the instance instead of six unpacked local variables.
+    """
+
+    field_mapping: dict[str, str]
+    date_format: str
+    sign_convention: SignConventionType
+    number_format: NumberFormatType
+    is_multi_account: bool
+    confidence: str
 
 
 def _query_date_range(
@@ -139,6 +164,88 @@ def _detect_file_type(file_path: Path) -> str:
         f"Unsupported file type: {suffix}. "
         f"Supported: .ofx, .qfx, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
     )
+
+
+def _resolve_account_via_matcher(
+    db: Database,
+    *,
+    account_name: str,
+    account_number: str | None,
+    threshold: float,
+    auto_accept: bool,
+) -> str:
+    """Resolve an account name to an account_id using match_account().
+
+    Outcomes:
+      1. Matched (number or exact slug) → return the existing account_id.
+      2. Fuzzy candidates and auto_accept=True → take the top candidate, log it.
+      3. Fuzzy candidates and auto_accept=False → log a warning listing
+         candidates, fall back to slugify(account_name).
+      4. No candidates → fall back to slugify(account_name) (creates new).
+
+    Args:
+        db: Database instance.
+        account_name: Account name from CLI/file.
+        account_number: Account number if available, for strongest match.
+        threshold: Minimum SequenceMatcher.ratio for a fuzzy candidate.
+        auto_accept: True if the user passed --yes (or stdin is non-interactive).
+
+    Returns:
+        The resolved account_id (existing or freshly slugified).
+    """
+    from moneybin.extractors.tabular.account_matching import match_account
+    from moneybin.utils import slugify
+
+    try:
+        # GROUP BY account_id collapses duplicates from the same account being
+        # imported with slightly different names (e.g. "Chase Checking" vs
+        # "CHASE CHECKING"); take the most-recently-seen name.
+        rows = db.execute(
+            """
+            SELECT account_id,
+                   LAST(account_name ORDER BY loaded_at) AS account_name,
+                   LAST(account_number ORDER BY loaded_at) AS account_number
+            FROM raw.tabular_accounts
+            GROUP BY account_id
+            """
+        ).fetchall()
+    except duckdb.CatalogException:  # raw.tabular_accounts absent on first import
+        logger.debug("raw.tabular_accounts unavailable; skipping account match")
+        return slugify(account_name)
+
+    existing = [
+        {"account_id": r[0], "account_name": r[1], "account_number": r[2]} for r in rows
+    ]
+
+    result = match_account(
+        account_name,
+        account_number=account_number,
+        existing_accounts=existing,
+        threshold=threshold,
+    )
+
+    if result.matched and result.account_id:
+        logger.info(f"Matched account to existing id {result.account_id!r}")
+        return result.account_id
+
+    if result.candidates:
+        if auto_accept:
+            top = result.candidates[0]
+            if top["account_id"]:
+                logger.info(f"⚙️  Auto-accepting fuzzy match → {top['account_id']!r}")
+                return top["account_id"]
+        else:
+            candidate_ids = ", ".join(
+                filter(None, (c["account_id"] for c in result.candidates))
+            )
+            logger.warning(
+                f"⚠️  Account did not match exactly. Fuzzy candidate ids: "
+                f"{candidate_ids}. "
+                "Use --yes to auto-accept the top candidate, "
+                "or --account-id to pick explicitly."
+            )
+
+    return slugify(account_name)
 
 
 def run_transforms() -> bool:
@@ -253,6 +360,7 @@ def _import_tabular(
     encoding: str | None = None,
     no_row_limit: bool = False,
     no_size_limit: bool = False,
+    auto_accept: bool = False,
 ) -> ImportResult:
     """Import a tabular file through the five-stage pipeline.
 
@@ -272,6 +380,7 @@ def _import_tabular(
         encoding: Explicit encoding.
         no_row_limit: Override row count limit.
         no_size_limit: Override file size limit.
+        auto_accept: Auto-accept the top fuzzy account match without prompting.
 
     Returns:
         ImportResult with summary.
@@ -353,29 +462,33 @@ def _import_tabular(
                 break
 
     if matched_format:
-        mapping_result_mapping = matched_format.field_mapping
-        mapping_result_date_format = matched_format.date_format
-        mapping_result_sign_convention = matched_format.sign_convention
-        mapping_result_number_format = matched_format.number_format
-        mapping_result_is_multi_account = matched_format.multi_account
-        mapping_result_confidence = "high"
+        resolved = ResolvedMapping(
+            field_mapping=matched_format.field_mapping,
+            date_format=matched_format.date_format,
+            sign_convention=matched_format.sign_convention,
+            number_format=matched_format.number_format,
+            is_multi_account=matched_format.multi_account,
+            confidence="high",
+        )
         format_source = (
             "built-in" if matched_format.name in builtin_formats else "saved"
         )
     else:
         mapping_result = map_columns(df, overrides=overrides)
-        mapping_result_mapping = mapping_result.field_mapping
-        mapping_result_date_format = mapping_result.date_format or "%Y-%m-%d"
-        mapping_result_sign_convention = mapping_result.sign_convention
-        mapping_result_number_format = mapping_result.number_format
-        mapping_result_is_multi_account = mapping_result.is_multi_account
-        mapping_result_confidence = mapping_result.confidence
+        resolved = ResolvedMapping(
+            field_mapping=mapping_result.field_mapping,
+            date_format=mapping_result.date_format or "%Y-%m-%d",
+            sign_convention=mapping_result.sign_convention,
+            number_format=mapping_result.number_format,
+            is_multi_account=mapping_result.is_multi_account,
+            confidence=mapping_result.confidence,
+        )
         format_source = "detected"
 
         if mapping_result.sign_needs_confirmation and not sign:
             logger.warning(
                 "⚠️  Sign convention is ambiguous (all amounts appear positive). "
-                f"Proceeding with '{mapping_result_sign_convention}' — "
+                f"Proceeding with '{resolved.sign_convention}' — "
                 "use --sign to override if expense amounts look wrong."
             )
 
@@ -390,15 +503,20 @@ def _import_tabular(
         TABULAR_FORMAT_MATCHES.labels(
             format_name=matched_format.name, format_source=format_source
         ).inc()
-    TABULAR_DETECTION_CONFIDENCE.labels(confidence=mapping_result_confidence).inc()
+    TABULAR_DETECTION_CONFIDENCE.labels(confidence=resolved.confidence).inc()
 
-    # Apply CLI overrides (take precedence over detected/built-in values)
-    if sign:
-        mapping_result_sign_convention = sign
-    if date_format_override:
-        mapping_result_date_format = date_format_override
-    if number_format_override:
-        mapping_result_number_format = number_format_override
+    # Apply CLI overrides — rebuild a new ResolvedMapping (frozen)
+    if sign or date_format_override or number_format_override:
+        resolved = dataclasses.replace(
+            resolved,
+            sign_convention=cast(SignConventionType, sign)
+            if sign
+            else resolved.sign_convention,
+            date_format=date_format_override or resolved.date_format,
+            number_format=cast(NumberFormatType, number_format_override)
+            if number_format_override
+            else resolved.number_format,
+        )
 
     # Determine account info
     source_type = format_info.file_type
@@ -406,21 +524,26 @@ def _import_tabular(
         source_type = "csv"
 
     # Build per-row account_ids and a name→id mapping for the accounts table
-    acct_name_col = mapping_result_mapping.get("account_name")
+    acct_name_col = resolved.field_mapping.get("account_name")
     acct_id_to_name: dict[str, str] = {}
 
     if account_id:
         account_ids: str | list[str] = account_id
         acct_id_to_name[account_id] = account_name or account_id
     elif account_name:
-        aid = slugify(account_name)
+        from moneybin.config import get_settings
+
+        threshold = get_settings().data.tabular.account_match_threshold
+        aid = _resolve_account_via_matcher(
+            db,
+            account_name=account_name,
+            account_number=None,  # no --account-number CLI flag yet
+            threshold=threshold,
+            auto_accept=auto_accept,
+        )
         account_ids = aid
         acct_id_to_name[aid] = account_name
-    elif (
-        mapping_result_is_multi_account
-        and acct_name_col
-        and acct_name_col in df.columns
-    ):
+    elif resolved.is_multi_account and acct_name_col and acct_name_col in df.columns:
         # Per-row account assignment from the DataFrame column
         raw_names = [
             str(v) if v is not None else "unknown" for v in df[acct_name_col].to_list()
@@ -448,18 +571,23 @@ def _import_tabular(
     )
 
     # Stage 4: Transform
+    from moneybin.config import get_settings
+
+    tabular_cfg = get_settings().data.tabular
     try:
         transform_result = transform_dataframe(
             df=df,
-            field_mapping=mapping_result_mapping,
-            date_format=mapping_result_date_format,
-            sign_convention=mapping_result_sign_convention,
-            number_format=mapping_result_number_format,
+            field_mapping=resolved.field_mapping,
+            date_format=resolved.date_format,
+            sign_convention=resolved.sign_convention,
+            number_format=resolved.number_format,
             account_id=account_ids,
             source_file=str(file_path),
             source_type=source_type,
             source_origin=source_origin,
             import_id=import_id,
+            balance_pass_threshold=tabular_cfg.balance_pass_threshold,
+            balance_tolerance_cents=tabular_cfg.balance_tolerance_cents,
         )
     except Exception as e:  # noqa: BLE001  # re-raised as ValueError after recording rejection in DB
         loader.finalize_import_batch(
@@ -504,10 +632,10 @@ def _import_tabular(
             for r in transform_result.rejection_details
         ]
         or None,
-        detection_confidence=mapping_result_confidence,
-        number_format=mapping_result_number_format,
-        date_format=mapping_result_date_format,
-        sign_convention=mapping_result_sign_convention,
+        detection_confidence=resolved.confidence,
+        number_format=resolved.number_format,
+        date_format=resolved.date_format,
+        sign_convention=resolved.sign_convention,
         balance_validated=transform_result.balance_validated,
     )
 
@@ -530,7 +658,7 @@ def _import_tabular(
     if (
         save_format
         and not matched_format
-        and mapping_result_confidence in ("high", "medium")
+        and resolved.confidence in ("high", "medium")
         and rows_imported > 0
     ):
         try:
@@ -541,11 +669,11 @@ def _import_tabular(
                 delimiter=format_info.delimiter,
                 encoding=format_info.encoding,
                 header_signature=list(df.columns),
-                field_mapping=mapping_result_mapping,
-                sign_convention=mapping_result_sign_convention,  # type: ignore[reportArgumentType]  # validated by CLI and Pydantic validator
-                date_format=mapping_result_date_format,
-                number_format=mapping_result_number_format,  # type: ignore[reportArgumentType]  # validated by CLI and Pydantic validator
-                multi_account=mapping_result_is_multi_account,
+                field_mapping=resolved.field_mapping,
+                sign_convention=resolved.sign_convention,
+                date_format=resolved.date_format,
+                number_format=resolved.number_format,
+                multi_account=resolved.is_multi_account,
                 source="detected",
                 times_used=1,
             )
@@ -576,6 +704,7 @@ def import_file(
     encoding: str | None = None,
     no_row_limit: bool = False,
     no_size_limit: bool = False,
+    auto_accept: bool = False,
 ) -> ImportResult:
     """Import a financial data file into DuckDB.
 
@@ -604,6 +733,8 @@ def import_file(
         encoding: Explicit encoding for tabular imports.
         no_row_limit: Override row count limit for tabular imports.
         no_size_limit: Override file size limit for tabular imports.
+        auto_accept: Auto-accept the top fuzzy account match without prompting
+            (CLI: --yes / -y). Defaults to False.
 
     Returns:
         ImportResult with summary of what was imported.
@@ -641,6 +772,7 @@ def import_file(
             encoding=encoding,
             no_row_limit=no_row_limit,
             no_size_limit=no_size_limit,
+            auto_accept=auto_accept,
         )
     else:
         raise ValueError(f"Unsupported file type: {file_type}")

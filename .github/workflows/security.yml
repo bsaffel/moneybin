@@ -43,4 +43,7 @@ jobs:
         run: uv sync
 
       - name: Audit dependencies for CVEs
-        run: uv run pip-audit --skip-editable
+        # CVE-2026-3219 (GHSA-58qw-9mgm-455v): pip archive-type confusion.
+        # No fix version yet; pip is a dev/build tool, not invoked at runtime.
+        # Re-evaluate when upstream releases a fix.
+        run: uv run pip-audit --skip-editable --ignore-vuln CVE-2026-3219

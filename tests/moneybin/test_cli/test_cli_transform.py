@@ -1,10 +1,13 @@
 """Tests for transform CLI commands."""
 
+import logging
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transform import app
@@ -27,7 +30,7 @@ def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
 class TestTransformStatus:
     """Test transform status command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_status_succeeds(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -38,11 +41,61 @@ class TestTransformStatus:
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
 
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.transform.sqlmesh_context")
+    def test_status_formats_finalized_timestamp(
+        self,
+        mock_ctx_factory: MagicMock,
+        _mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """finalized_ts (epoch ms) is rendered as a local-time string."""
+        ctx_fn, mock_ctx = _mock_sqlmesh_context()
+        env = MagicMock()
+        # 2026-01-15 12:34:56 UTC in epoch milliseconds.
+        env.finalized_ts = int(
+            datetime(2026, 1, 15, 12, 34, 56, tzinfo=UTC).timestamp() * 1000
+        )
+        mock_ctx.state_reader.get_environment.return_value = env
+        mock_ctx_factory.side_effect = ctx_fn
+
+        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0
+        expected = (
+            datetime(2026, 1, 15, 12, 34, 56, tzinfo=UTC)
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M:%S %Z")
+        )
+        assert f"Last updated: {expected}" in caplog.text
+
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.transform.sqlmesh_context")
+    def test_status_reports_never_finalized_when_null(
+        self,
+        mock_ctx_factory: MagicMock,
+        _mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Missing finalized_ts is reported as 'never finalized'."""
+        ctx_fn, mock_ctx = _mock_sqlmesh_context()
+        env = MagicMock()
+        env.finalized_ts = None
+        mock_ctx.state_reader.get_environment.return_value = env
+        mock_ctx_factory.side_effect = ctx_fn
+
+        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0
+        assert "Last updated: never finalized" in caplog.text
+
 
 class TestTransformValidate:
     """Test transform validate command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_validate_succeeds(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -58,7 +111,7 @@ class TestTransformValidate:
 class TestTransformAudit:
     """Test transform audit command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_audit_succeeds(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -76,7 +129,7 @@ class TestTransformAudit:
 class TestTransformRestate:
     """Test transform restate command."""
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_restate_requires_confirmation(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
@@ -92,7 +145,7 @@ class TestTransformRestate:
         assert result.exit_code == 0
         mock_ctx.plan.assert_not_called()
 
-    @patch("moneybin.cli.commands.transform.get_database")
+    @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_restate_with_yes(
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock

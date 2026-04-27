@@ -5,6 +5,10 @@ from typing import TypedDict
 
 import polars as pl
 
+from moneybin.extractors.tabular.formats import (
+    NumberFormatType,
+    SignConventionType,
+)
 from moneybin.extractors.tabular.transforms import (
     transform_dataframe,
 )
@@ -19,8 +23,8 @@ def _make_df(**columns: list[str]) -> pl.DataFrame:
 class _BaseKwargs(TypedDict):
     field_mapping: dict[str, str]
     date_format: str
-    sign_convention: str
-    number_format: str
+    sign_convention: SignConventionType
+    number_format: NumberFormatType
     account_id: str | list[str]
     source_file: str
     source_type: str
@@ -376,4 +380,64 @@ class TestRunningBalanceValidation:
             source_origin="test",
             import_id="test-123",
         )
+        assert result.balance_validated is False
+
+    def test_transform_uses_custom_balance_tolerance_cents(self) -> None:
+        """A high tolerance accepts deltas that the default would reject."""
+        df = pl.DataFrame({
+            "Date": ["2025-01-01", "2025-01-02"],
+            "Description": ["a", "b"],
+            # Amount is off by 10 cents from the balance delta
+            "Amount": ["-10.00", "-19.90"],
+            "Balance": ["100.00", "80.00"],
+        })
+        field_mapping = {
+            "transaction_date": "Date",
+            "description": "Description",
+            "amount": "Amount",
+            "balance": "Balance",
+        }
+        result = transform_dataframe(
+            df=df,
+            field_mapping=field_mapping,
+            date_format="%Y-%m-%d",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            account_id="acct1",
+            source_file="t.csv",
+            source_type="csv",
+            source_origin="t",
+            import_id="imp1",
+            balance_pass_threshold=0.90,
+            balance_tolerance_cents=20,  # 0.20 — accepts the 0.10 mismatch
+        )
+        assert result.balance_validated is True
+
+    def test_transform_default_tolerance_rejects_off_by_ten_cents(self) -> None:
+        """Default 1-cent tolerance rejects a 10-cent delta mismatch."""
+        df = pl.DataFrame({
+            "Date": ["2025-01-01", "2025-01-02"],
+            "Description": ["a", "b"],
+            "Amount": ["-10.00", "-19.90"],
+            "Balance": ["100.00", "80.00"],
+        })
+        field_mapping = {
+            "transaction_date": "Date",
+            "description": "Description",
+            "amount": "Amount",
+            "balance": "Balance",
+        }
+        result = transform_dataframe(
+            df=df,
+            field_mapping=field_mapping,
+            date_format="%Y-%m-%d",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            account_id="acct1",
+            source_file="t.csv",
+            source_type="csv",
+            source_origin="t",
+            import_id="imp1",
+        )
+        # forward 0/1, inverted 0/1 — neither passes
         assert result.balance_validated is False

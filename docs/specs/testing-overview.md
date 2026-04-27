@@ -1,6 +1,6 @@
 # Testing & Validation — Overview
 
-> Last updated: 2026-04-18
+> Last updated: 2026-04-26
 > Status: Ready — umbrella doc for the testing & validation initiative. Child specs listed in [Child Specs](#child-specs) are written separately.
 > Companions: `private/specs/core-concerns.md` §10 (original requirements, not checked in), `CLAUDE.md` "Architecture: Data Layers", [`sync-overview.md`](sync-overview.md) (owns Plaid Sandbox testing)
 
@@ -127,69 +127,11 @@ Each persona uses a named profile to keep its data isolated. The existing profil
 
 Generate synthetic data that preserves the statistical properties and structure of the user's real database — transaction distributions, account relationships, spending patterns — while applying industry-standard anonymization (merchant name substitution, amount perturbation, date shifting, account ID replacement). This is a **peer child spec** (`testing-anonymized-data.md`), not part of the persona-based generator. Different problem (data masking pipeline vs. financial life simulator), same output layer (`synthetic` schema, raw table writes). The anonymized dataset preserves existing categorizations as ground truth.
 
-## Scenario Format
+## Scenario Runner
 
-Scenarios are pinned, fully self-contained, reproducible test plans. Each scenario declares a persona + seed, generates its own data, and runs assertions and evaluations against it. There are no "portable" scenarios — the `data verify` command handles ad-hoc health checks against any database.
+Scenarios are pinned, reproducible test plans that go from an empty encrypted DuckDB through the full pipeline (`generate → transform → match → categorize`) and run assertions, expectations, and evaluations against the resulting data. The scenario file format, orchestration model, assertion/evaluation libraries, fixture-expectation contract, CLI surface (`moneybin synthetic verify`), and v1 scenario catalog are owned by [`testing-scenario-runner.md`](testing-scenario-runner.md).
 
-```yaml
-scenario: family-full-pipeline
-requires:
-  persona: family
-  seed: 42
-  years: 3
-
-# Tier 1 — Golden snapshots
-snapshots:
-  - query: "SELECT count(*) FROM core.fct_transactions"
-    expect: 4532
-  - query: "SELECT DISTINCT source_type FROM core.fct_transactions ORDER BY 1"
-    expect: ["csv", "ofx"]
-
-# Tier 2 — Property assertions
-assertions:
-  - assert_valid_foreign_keys:
-      child: core.fct_transactions
-      column: account_id
-      parent: core.dim_accounts
-      parent_column: account_id
-  - assert_sign_convention
-  - assert_date_continuity:
-      table: core.fct_transactions
-      date_col: transaction_date
-      account_col: account_id
-  - assert_row_count_delta:
-      table: core.fct_transactions
-      expected: 4500
-      tolerance_pct: 10
-
-# Tier 3 — Scored evaluation
-evaluations:
-  - type: categorization
-    metric: accuracy
-    threshold: 0.0
-    ground_truth_column: expected_category
-  - type: transfer_detection
-    metric: f1
-    threshold: 0.0
-    ground_truth: 47 transfer pairs
-```
-
-The scenario runner orchestrates: generate data → load to raw → `sqlmesh run` (audits fire automatically) → run assertion checks → run evaluations → return structured results.
-
-### Representative Scenarios
-
-| # | Scenario | Persona | What it validates |
-|---|---|---|---|
-| 1 | `basic-full-pipeline` | `basic` | End-to-end: generate → load → transform → all assertions pass |
-| 2 | `family-full-pipeline` | `family` | Multi-account, transfers, shared expenses |
-| 3 | `freelancer-full-pipeline` | `freelancer` | Irregular income, business vs personal categorization |
-| 4 | `categorization-accuracy` | `family` | Generate labeled data, run categorizer, score precision/recall |
-| 5 | `matching-transfer-detection` | `family` | Generate known transfer pairs, run detector, score F1 |
-| 6 | `csv-format-compatibility` | N/A (fixtures) | Parse each CSV fixture, compare to `.expected.json` |
-| 7 | `migration-safety` | `basic` | Populate DB, migrate schema, assert data integrity preserved |
-| 8 | `idempotent-loading` | `basic` | Load same files twice, assert zero duplicate rows |
-| 9 | `anonymized-roundtrip` | from-db | Anonymize real data, assert statistical similarity + zero PII leakage |
-| 10 | `resilience-bad-input` | `basic` | Feed corrupt/malformed files, assert graceful errors + zero data corruption |
+The runner is the missing test layer above unit, integration, and E2E: those check their own slice in isolation; the runner asserts that whole-pipeline output is correct.
 
 ## Child Specs
 
@@ -198,6 +140,7 @@ Four child specs under this umbrella. Each is independently useful, designed kno
 | Child spec | Purpose | V1 scope | Key design concerns |
 |---|---|---|---|
 | `testing-synthetic-data.md` | Produce life-like financial histories | Three fictional personas (`basic`, `family`, `freelancer`); deterministic seeding; ground-truth labels; YAML-driven personas and merchant catalogs; Level 2 realism | Declarative YAML architecture, merchant catalogs with real brand names, spending distributions, temporal realism, income patterns. Anonymized mode is a separate child spec (`testing-anonymized-data.md`). |
+| `testing-scenario-runner.md` | Whole-pipeline correctness with structured assertions, expectations, and evaluations | YAML scenario format, orchestrator with fresh encrypted DB per run, validation/evaluation primitive libraries, `moneybin synthetic verify` CLI, seven shipped scenarios | Database isolation via `MONEYBIN_HOME` override; in-process service-layer execution; `ResponseEnvelope` reuse; fixture expectations as first-class signal |
 | `testing-csv-fixtures.md` | Curated bank export samples for format compatibility testing | Directory convention (`tests/fixtures/csv_formats/`), naming schema (`<institution>_<account_type>_<year>.csv` + `.expected.json`), initial fixtures from anonymized real exports | Anonymization checklist, contribution path, expected-result format for scoring smart detection |
 | `testing-format-compat.md` | Verify parsers handle all known file formats correctly | Test harness that runs each extractor against its fixtures, compares to expected output | Assertion integration, how to add a new format test, failure reporting |
 | `testing-migration-safety.md` | Verify schema migrations preserve data integrity | Pre/post migration assertions (row counts, checksums, no orphaned FKs, no NULLed fields) | Requires synthetic data to populate a DB before migration; depends on generator |

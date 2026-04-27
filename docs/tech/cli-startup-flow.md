@@ -243,13 +243,13 @@ flowchart TD
     A[get_base_dir] --> B{MONEYBIN_HOME<br/>env var set?}
     B -->|yes| C["Use $MONEYBIN_HOME"]
     B -->|no| D{MONEYBIN_ENVIRONMENT<br/>== 'development'?}
-    D -->|yes| E[Use cwd]
+    D -->|yes| E["Use cwd/.moneybin"]
     D -->|no| F{cwd is moneybin<br/>repo checkout?}
-    F -->|yes| G[Use cwd]
+    F -->|yes| G["Use cwd/.moneybin"]
     F -->|no| H["Use ~/.moneybin/"]
 ```
 
-In development (running from the repo), the base dir is the repo root, so profiles live at `<repo>/profiles/<name>/`. In production, they live at `~/.moneybin/profiles/<name>/`.
+In development (running from the repo), the base dir is `<repo>/.moneybin/`, so profiles live at `<repo>/.moneybin/profiles/<name>/`. In production, they live at `~/.moneybin/profiles/<name>/`.
 
 ## Invariants
 
