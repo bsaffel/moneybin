@@ -9,6 +9,12 @@ from moneybin.validation.assertions.distributional import (
     assert_distribution_within_bounds,
     assert_unique_value_count,
 )
+from moneybin.validation.assertions.infrastructure import (
+    assert_encryption_key_propagated_to_subprocess,
+    assert_migrations_at_head,
+    assert_no_unencrypted_db_files,
+    assert_sqlmesh_catalog_matches,
+)
 from moneybin.validation.assertions.relational import (
     assert_no_duplicates,
     assert_no_nulls,
@@ -24,16 +30,20 @@ from moneybin.validation.assertions.schema import (
 
 __all__ = [
     "assert_balanced_transfers",
+    "assert_column_types",
+    "assert_columns_exist",
     "assert_date_continuity",
-    "assert_sign_convention",
     "assert_distribution_within_bounds",
-    "assert_unique_value_count",
+    "assert_encryption_key_propagated_to_subprocess",
+    "assert_migrations_at_head",
     "assert_no_duplicates",
     "assert_no_nulls",
     "assert_no_orphans",
-    "assert_valid_foreign_keys",
-    "assert_columns_exist",
-    "assert_column_types",
+    "assert_no_unencrypted_db_files",
     "assert_row_count_delta",
     "assert_row_count_exact",
+    "assert_sign_convention",
+    "assert_sqlmesh_catalog_matches",
+    "assert_unique_value_count",
+    "assert_valid_foreign_keys",
 ]
