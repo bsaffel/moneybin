@@ -97,7 +97,20 @@ invoke `AutoRuleService.confirm()` directly.
    `monkeypatch.setattr(config_module, "_current_profile", None)` (and
    `_current_settings`) so teardown restores module-level state.
 
-6. **`pytestmark = pytest.mark.unit` missing**
+6. **claude[bot] cannot dismiss its own CHANGES_REQUESTED reviews.**
+   The GitHub Action running claude[bot] is sandboxed and blocks
+   `gh pr review` / `gh api` write calls without explicit permission. As a
+   result, the bot can flag CHANGES_REQUESTED but cannot clear it after a
+   re-review confirms fixes — the author has to dismiss it manually
+   (`gh api -X PUT /repos/{owner}/{repo}/pulls/{n}/reviews/{id}/dismissals`).
+   Fix: grant the workflow permission to call `gh pr review` by adding to
+   `.claude/settings.json` (or the workflow's allowlist):
+   ```json
+   { "permissions": { "allow": ["Bash(gh pr review:*)", "Bash(gh api:*)"] } }
+   ```
+   See PR #58 conversation for the exchange where this came up.
+
+7. **`pytestmark = pytest.mark.unit` missing**
    (`tests/moneybin/test_services/test_auto_rule_service.py`). `uv run pytest -m
    unit` silently skips this file. `test_categorization_service.py` uses
    `@pytest.mark.unit` per test; mirror that or add `pytestmark` at module
