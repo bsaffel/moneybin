@@ -88,6 +88,38 @@ def categorization_organize() -> str:
 
 
 @mcp.prompt()
+def review_auto_rules() -> str:
+    """Review proposed auto-categorization rules and approve or reject them."""
+    return _dedent("""
+        Help me review proposed auto-categorization rules. Show pending
+        proposals with sample transactions, explain the pattern, and let
+        me approve or reject them.
+
+        **Goal:** Walk the user through pending auto-rule proposals so
+        they can promote useful rules to active and reject noisy ones.
+
+        **Relevant tools:**
+        - categorize.auto_stats — pending proposal count and rule health
+        - categorize.auto_review — list pending proposals with samples
+        - categorize.auto_confirm — batch approve/reject proposals by ID
+        - categorize.rules — review currently active rules
+
+        **Workflow:**
+        1. Check categorize.auto_stats for pending proposal count
+        2. Fetch proposals with categorize.auto_review
+        3. For each proposal, show the merchant pattern, suggested
+           category, sample matching transactions, and trigger count
+        4. Group user decisions and submit them with categorize.auto_confirm
+
+        **Guardrails:**
+        - Always show sample transactions before asking for approval
+        - Flag proposals that seem overly broad or ambiguous
+        - Confirm batches with the user before submitting auto_confirm
+        - Approved rules categorize matching transactions immediately
+    """)
+
+
+@mcp.prompt()
 def onboarding() -> str:
     """First-time setup — import data and establish baseline."""
     return _dedent("""

@@ -14,6 +14,9 @@ Tools:
     - categorize.create_category — Create a custom category (low)
     - categorize.toggle_category — Enable/disable a category (low)
     - categorize.seed — Seed default categories from taxonomy (low)
+    - categorize.auto_review — List pending auto-rule proposals (medium)
+    - categorize.auto_confirm — Approve/reject auto-rule proposals (medium)
+    - categorize.auto_stats — Auto-rule health metrics (low)
 """
 
 from __future__ import annotations
@@ -637,6 +640,58 @@ def categorize_seed() -> ResponseEnvelope:
         )
 
 
+@mcp_tool(sensitivity="medium")
+def categorize_auto_review() -> ResponseEnvelope:
+    """List pending auto-rule proposals.
+
+    Returns proposed categorization rules awaiting review, including
+    sample matching transactions and trigger counts.
+    """
+    data = CategorizationService(get_database()).auto_review()
+    return build_envelope(
+        data=data,
+        sensitivity="medium",
+        total_count=len(data),
+        actions=[
+            "Use categorize.auto_confirm to approve or reject proposals",
+        ],
+    )
+
+
+@mcp_tool(sensitivity="medium")
+def categorize_auto_confirm(
+    approve: list[str] | None = None,
+    reject: list[str] | None = None,
+) -> ResponseEnvelope:
+    """Approve or reject auto-rule proposals by ID.
+
+    Approved proposals become active rules and immediately categorize
+    matching transactions.
+
+    Args:
+        approve: Proposal IDs to approve and promote to active rules.
+        reject: Proposal IDs to reject and dismiss.
+    """
+    result = CategorizationService(get_database()).auto_confirm(
+        approve=approve or [],
+        reject=reject or [],
+    )
+    return build_envelope(data=result, sensitivity="medium")
+
+
+@mcp_tool(sensitivity="low")
+def categorize_auto_stats() -> ResponseEnvelope:
+    """Auto-rule health metrics.
+
+    Returns counts of active auto-rules, pending proposals, and
+    transactions categorized by auto-rules.
+    """
+    return build_envelope(
+        data=CategorizationService(get_database()).auto_stats(),
+        sensitivity="low",
+    )
+
+
 def register_categorize_tools(
     registry: NamespaceRegistry,
 ) -> list[ToolDefinition]:
@@ -715,6 +770,31 @@ def register_categorize_tools(
                 "Initialize default categories from the Plaid PFCv2 taxonomy."
             ),
             fn=categorize_seed,
+        ),
+        ToolDefinition(
+            name="categorize.auto_review",
+            description=(
+                "List pending auto-rule proposals with sample transactions "
+                "and trigger counts."
+            ),
+            fn=categorize_auto_review,
+        ),
+        ToolDefinition(
+            name="categorize.auto_confirm",
+            description=(
+                "Batch approve/reject auto-rule proposals. Approved "
+                "proposals become active rules and immediately categorize "
+                "matching transactions."
+            ),
+            fn=categorize_auto_confirm,
+        ),
+        ToolDefinition(
+            name="categorize.auto_stats",
+            description=(
+                "Auto-rule health: active count, pending proposals, "
+                "transactions categorized."
+            ),
+            fn=categorize_auto_stats,
         ),
     ]
     for tool in tools:
