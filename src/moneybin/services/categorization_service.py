@@ -405,7 +405,7 @@ class CategorizationService:
                         txn_id, category, subcategory=subcategory
                     )
                 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
-                    logger.debug("auto-rule recording failed", exc_info=True)
+                    logger.warning("auto-rule recording failed", exc_info=True)
 
                 merchant_id: str | None = None
                 description = descriptions.get(txn_id)

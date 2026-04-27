@@ -403,6 +403,23 @@ class CategorizationSettings(BaseModel):
         description="Maximum number of sample transaction IDs retained per proposal",
     )
 
+    @model_validator(mode="after")
+    def proposal_threshold_lte_override_threshold(self) -> "CategorizationSettings":
+        """Ensure proposal_threshold <= override_threshold.
+
+        If proposal > override, ``check_overrides`` deactivates a rule once
+        override count reaches override_threshold but the re-proposal lands
+        in ``tracking`` (count < proposal_threshold), hiding the corrected
+        category from ``auto-review`` until further user categorizations.
+        """
+        if self.auto_rule_proposal_threshold > self.auto_rule_override_threshold:
+            raise ValueError(
+                f"auto_rule_proposal_threshold ({self.auto_rule_proposal_threshold}) "
+                f"must be <= auto_rule_override_threshold "
+                f"({self.auto_rule_override_threshold})"
+            )
+        return self
+
 
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.

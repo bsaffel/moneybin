@@ -157,6 +157,7 @@ def test_record_respects_proposal_threshold(
 ) -> None:
     """Proposals stay in 'tracking' status until trigger_count reaches the configured threshold."""
     monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_PROPOSAL_THRESHOLD", "3")
+    monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "3")
     clear_settings_cache()
     set_current_profile("test")
 

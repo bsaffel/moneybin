@@ -217,17 +217,35 @@ class RejectResult:
     skipped: int = 0
 
 
+def _description_match_sql(match_type: str) -> str:
+    """SQL fragment matching ``?`` against ``t.description`` per match_type.
+
+    The pattern is supplied as a ``?`` placeholder; the caller binds it.
+    'exact' compares case-insensitively; 'regex' uses DuckDB ``regexp_matches``;
+    anything else falls back to case-insensitive substring (``contains``).
+    """
+    if match_type == "exact":
+        return "LOWER(t.description) = LOWER(?)"
+    if match_type == "regex":
+        return "regexp_matches(t.description, ?)"
+    return "POSITION(LOWER(?) IN LOWER(t.description)) > 0"
+
+
 def _categorize_existing_with_rule(
-    db: Database, rule_id: str, pattern: str, category: str, subcategory: str | None
+    db: Database,
+    rule_id: str,
+    pattern: str,
+    match_type: str,
+    category: str,
+    subcategory: str | None,
 ) -> int:
     """Run the new rule against currently-uncategorized matching transactions. Returns count categorized.
 
-    Note: uses ``contains`` matching (POSITION) regardless of the rule's
-    declared match_type. Auto-rules are always created with ``match_type='contains'``
-    (see ``approve()`` and ``record_categorization()``), so this is correct
-    today. If exact/regex auto-rules are introduced, this back-fill must
-    branch on match_type to avoid silent over-categorization.
+    Dispatches the description match on the rule's declared ``match_type``
+    (contains/exact/regex) so back-fill semantics match how the rule engine
+    will subsequently apply the rule.
     """
+    match_sql = _description_match_sql(match_type)
     rows = db.execute(
         f"""
         SELECT t.transaction_id
@@ -235,7 +253,7 @@ def _categorize_existing_with_rule(
         LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c ON t.transaction_id = c.transaction_id
         WHERE c.transaction_id IS NULL
           AND t.description IS NOT NULL
-          AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
+          AND {match_sql}
         """,
         [pattern],
     ).fetchall()
@@ -303,7 +321,7 @@ def approve(db: Database, proposed_rule_ids: list[str]) -> ApproveResult:
                 [pid],
             )
             newly = _categorize_existing_with_rule(
-                db, rule_id, pattern, category, subcategory
+                db, rule_id, pattern, match_type, category, subcategory
             )
             db.commit()
         except Exception:
@@ -347,19 +365,29 @@ def check_overrides(db: Database) -> int:
 
     rules = db.execute(
         f"""
-        SELECT rule_id, merchant_pattern, category, subcategory, created_at
+        SELECT rule_id, merchant_pattern, match_type, category, subcategory, created_at
         FROM {CATEGORIZATION_RULES.full_name}
         WHERE is_active = true AND created_by = 'auto_rule'
         """
     ).fetchall()
     deactivated = 0
 
-    for rule_id, pattern, rule_category, rule_subcategory, rule_created_at in rules:
+    for (
+        rule_id,
+        pattern,
+        rule_match_type,
+        rule_category,
+        rule_subcategory,
+        rule_created_at,
+    ) in rules:
         # An override is any human-driven correction recorded after the rule
         # was created whose (category, subcategory) disagrees with the rule.
         # Excludes 'rule' and 'auto_rule' (machine-applied; counting them
         # would deactivate auto-rules due to overlapping rule engine output)
         # and predates legacy categorizations via the created_at filter.
+        # Description match honors the rule's own match_type so override
+        # counting matches how the rule engine actually selects rows.
+        match_sql = _description_match_sql(rule_match_type)
         rows = db.execute(
             f"""
             SELECT c.category, c.subcategory, COUNT(*) AS n
@@ -371,7 +399,7 @@ def check_overrides(db: Database) -> int:
                 c.category != ?
                 OR COALESCE(c.subcategory, '') != COALESCE(?, '')
               )
-              AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
+              AND {match_sql}
             GROUP BY c.category, c.subcategory
             ORDER BY n DESC
             """,
@@ -381,18 +409,6 @@ def check_overrides(db: Database) -> int:
         if total_overrides < threshold:
             continue
 
-        db.execute(
-            f"UPDATE {CATEGORIZATION_RULES.full_name} SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE rule_id = ?",
-            [rule_id],
-        )
-        db.execute(
-            f"""
-            UPDATE {PROPOSED_RULES.full_name}
-            SET status = 'superseded'
-            WHERE LOWER(merchant_pattern) = LOWER(?) AND status = 'approved'
-            """,
-            [pattern],
-        )
         new_category = rows[0][0]
         new_subcategory = rows[0][1]
         # Capture up to sample_cap transaction IDs that drove the most
@@ -407,7 +423,7 @@ def check_overrides(db: Database) -> int:
               AND c.categorized_at > ?
               AND c.category = ?
               AND COALESCE(c.subcategory, '') = COALESCE(?, '')
-              AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
+              AND {match_sql}
             ORDER BY c.categorized_at DESC
             LIMIT ?
             """,
@@ -422,23 +438,45 @@ def check_overrides(db: Database) -> int:
         sample_ids = [r[0] for r in sample_rows]
         new_status = "pending" if total_overrides >= proposal_threshold else "tracking"
         new_pid = uuid.uuid4().hex[:12]
-        db.execute(
-            f"""
-            INSERT INTO {PROPOSED_RULES.full_name}
-            (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-             status, trigger_count, source, sample_txn_ids)
-            VALUES (?, ?, 'contains', ?, ?, ?, ?, 'pattern_detection', ?)
-            """,
-            [
-                new_pid,
-                pattern,
-                new_category,
-                new_subcategory,
-                new_status,
-                total_overrides,
-                sample_ids,
-            ],
-        )
+        # Wrap deactivate + supersede + re-propose in a single transaction so
+        # a failure between steps cannot leave the rule deactivated with no
+        # replacement proposal — an unrecoverable state for the override loop.
+        db.begin()
+        try:
+            db.execute(
+                f"UPDATE {CATEGORIZATION_RULES.full_name} SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE rule_id = ?",
+                [rule_id],
+            )
+            db.execute(
+                f"""
+                UPDATE {PROPOSED_RULES.full_name}
+                SET status = 'superseded'
+                WHERE LOWER(merchant_pattern) = LOWER(?) AND status = 'approved'
+                """,
+                [pattern],
+            )
+            db.execute(
+                f"""
+                INSERT INTO {PROPOSED_RULES.full_name}
+                (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
+                 status, trigger_count, source, sample_txn_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pattern_detection', ?)
+                """,
+                [
+                    new_pid,
+                    pattern,
+                    rule_match_type,
+                    new_category,
+                    new_subcategory,
+                    new_status,
+                    total_overrides,
+                    sample_ids,
+                ],
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         deactivated += 1
 
     if deactivated:
