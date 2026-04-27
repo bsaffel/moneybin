@@ -3,31 +3,40 @@
 Business logic is tested via auto_rule_service tests.
 """
 
+import re
+
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.categorize import app
 
-# Wide terminal prevents Rich from wrapping flag names mid-token (e.g.,
-# `--approve-all` → `--approve\n-all`), which would break substring asserts
-# on CI runners that default to a narrow $COLUMNS.
-runner = CliRunner(env={"COLUMNS": "200"})
+runner = CliRunner()
+
+# Rich's help output styles flags with ANSI escapes that can split tokens
+# (e.g., `--approve-all` rendered as `--approve` + reset + `-all`), which
+# breaks substring asserts. Strip ANSI before matching.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(s: str) -> str:
+    return _ANSI_RE.sub("", s)
 
 
 def test_auto_review_help():
     """auto-review --help mentions pending proposals."""
     result = runner.invoke(app, ["auto-review", "--help"])
     assert result.exit_code == 0
-    assert "pending" in result.stdout.lower()
+    assert "pending" in _plain(result.stdout).lower()
 
 
 def test_auto_confirm_help_lists_approve_and_reject_flags():
     """auto-confirm --help exposes batch approve/reject flags."""
     result = runner.invoke(app, ["auto-confirm", "--help"])
     assert result.exit_code == 0
-    assert "--approve" in result.stdout
-    assert "--reject" in result.stdout
-    assert "--approve-all" in result.stdout
-    assert "--reject-all" in result.stdout
+    out = _plain(result.stdout)
+    assert "--approve" in out
+    assert "--reject" in out
+    assert "--approve-all" in out
+    assert "--reject-all" in out
 
 
 def test_auto_stats_help():
