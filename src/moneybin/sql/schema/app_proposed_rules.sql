@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS app.proposed_rules (
     match_type VARCHAR DEFAULT 'contains', -- How merchant_pattern is matched: contains, exact, or regex
     category VARCHAR NOT NULL, -- Proposed category to assign on approval
     subcategory VARCHAR, -- Proposed subcategory; NULL when no subcategory applies
-    status VARCHAR DEFAULT 'pending', -- Lifecycle state: tracking (sub-threshold), pending (awaiting decision), approved, rejected, or superseded
+    status VARCHAR DEFAULT 'pending', -- Lifecycle state: tracking (sub-threshold accumulation), pending (awaiting decision), approved, rejected, or superseded
     trigger_count INTEGER DEFAULT 1, -- Number of categorizations that triggered or reinforced this proposal
     source VARCHAR DEFAULT 'pattern_detection', -- How proposal was generated: pattern_detection or ml
     sample_txn_ids VARCHAR[], -- Up to 5 transaction_ids that triggered this proposal

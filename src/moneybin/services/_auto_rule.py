@@ -8,7 +8,6 @@ proposals into active rules in app.categorization_rules with created_by='auto_ru
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal
 
 import duckdb
 
@@ -24,8 +23,6 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
-
-ProposalStatus = Literal["pending", "approved", "rejected", "superseded", "tracking"]
 
 
 def extract_pattern(db: Database, transaction_id: str) -> str | None:
@@ -218,7 +215,14 @@ class RejectResult:
 def _categorize_existing_with_rule(
     db: Database, rule_id: str, pattern: str, category: str, subcategory: str | None
 ) -> int:
-    """Run the new rule against currently-uncategorized matching transactions. Returns count categorized."""
+    """Run the new rule against currently-uncategorized matching transactions. Returns count categorized.
+
+    Note: uses ``contains`` matching (POSITION) regardless of the rule's
+    declared match_type. Auto-rules are always created with ``match_type='contains'``
+    (see ``approve()`` and ``record_categorization()``), so this is correct
+    today. If exact/regex auto-rules are introduced, this back-fill must
+    branch on match_type to avoid silent over-categorization.
+    """
     rows = db.execute(
         f"""
         SELECT t.transaction_id
@@ -326,32 +330,35 @@ def check_overrides(db: Database) -> int:
 
     rules = db.execute(
         f"""
-        SELECT rule_id, merchant_pattern, category, created_at
+        SELECT rule_id, merchant_pattern, category, subcategory, created_at
         FROM {CATEGORIZATION_RULES.full_name}
         WHERE is_active = true AND created_by = 'auto_rule'
         """
     ).fetchall()
     deactivated = 0
 
-    for rule_id, pattern, rule_category, rule_created_at in rules:
-        # An override is any non-auto_rule categorization recorded after the
-        # rule was created whose category disagrees with the rule. This
-        # captures both direct user edits ('user') and AI-applied corrections
-        # via bulk_categorize ('ai'), and excludes legacy categorizations
-        # that predate the rule entirely.
+    for rule_id, pattern, rule_category, rule_subcategory, rule_created_at in rules:
+        # An override is any human-driven correction recorded after the rule
+        # was created whose (category, subcategory) disagrees with the rule.
+        # Excludes 'rule' and 'auto_rule' (machine-applied; counting them
+        # would deactivate auto-rules due to overlapping rule engine output)
+        # and predates legacy categorizations via the created_at filter.
         rows = db.execute(
             f"""
             SELECT c.category, c.subcategory, COUNT(*) AS n
             FROM {TRANSACTION_CATEGORIES.full_name} c
             JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
-            WHERE c.categorized_by != 'auto_rule'
+            WHERE c.categorized_by IN ('user', 'ai')
               AND c.categorized_at > ?
-              AND c.category != ?
+              AND (
+                c.category != ?
+                OR COALESCE(c.subcategory, '') != COALESCE(?, '')
+              )
               AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
             GROUP BY c.category, c.subcategory
             ORDER BY n DESC
             """,
-            [rule_created_at, rule_category, pattern],
+            [rule_created_at, rule_category, rule_subcategory, pattern],
         ).fetchall()
         total_overrides = sum(r[2] for r in rows)
         if total_overrides < threshold:

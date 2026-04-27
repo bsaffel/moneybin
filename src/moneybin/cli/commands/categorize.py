@@ -190,7 +190,14 @@ def auto_confirm_cmd(
                 if reject_all:
                     reject = (reject or []) + pending_ids
 
-            result = svc.auto_confirm(approve=approve or [], reject=reject or [])
+            # Explicit reject wins over --approve-all: a user passing
+            # --approve-all --reject <id> means "approve all except <id>".
+            approve_set = set(approve or [])
+            reject_set = set(reject or [])
+            approve_set -= reject_set
+            result = svc.auto_confirm(
+                approve=sorted(approve_set), reject=sorted(reject_set)
+            )
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
