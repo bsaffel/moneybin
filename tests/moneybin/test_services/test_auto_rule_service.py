@@ -1,5 +1,14 @@
-"""Unit tests for the auto-rule lifecycle (private _auto_rule module + service surface)."""
+"""Unit tests for the auto-rule lifecycle (private _auto_rule module + service surface).
 
+Tests intentionally exercise the private ``_auto_rule`` module and
+``CategorizationService._record_categorization`` to assert internal
+invariants — silencing ``reportPrivateUsage`` for this file is deliberate.
+"""
+
+# pyright: reportPrivateUsage=false
+
+from collections.abc import Generator
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,25 +21,25 @@ from tests.moneybin.db_helpers import create_core_tables
 
 
 def _mock_db_with_merchant(
-    merchant_id: str = "m_abc", canonical_name: str = "STARBUCKS"
-):
+    merchant_id: str = "m_abc", raw_pattern: str = "STARBUCKS"
+) -> MagicMock:
     db = MagicMock()
     # transaction_categories row -> merchant_id
     db.execute.return_value.fetchone.side_effect = [
         (merchant_id,),  # SELECT merchant_id FROM transaction_categories
-        (canonical_name,),  # SELECT canonical_name FROM merchants
+        (raw_pattern,),  # SELECT raw_pattern FROM merchants
     ]
     return db
 
 
-def test_extract_pattern_uses_merchant_canonical_name_when_present():
-    """Extract pattern prefers merchant canonical name when present."""
+def test_extract_pattern_uses_merchant_raw_pattern_when_present() -> None:
+    """Extract pattern prefers merchant raw_pattern (matchable substring) when present."""
     db = _mock_db_with_merchant()
     pattern = _auto_rule.extract_pattern(db, transaction_id="t_1")
     assert pattern == "STARBUCKS"
 
 
-def test_extract_pattern_falls_back_to_normalized_description():
+def test_extract_pattern_falls_back_to_normalized_description() -> None:
     """Extract pattern falls back to normalized description when no merchant_id."""
     db = MagicMock()
     db.execute.return_value.fetchone.side_effect = [
@@ -41,7 +50,7 @@ def test_extract_pattern_falls_back_to_normalized_description():
     assert pattern == "STARBUCKS"
 
 
-def test_extract_pattern_returns_none_when_description_empty():
+def test_extract_pattern_returns_none_when_description_empty() -> None:
     """Extract pattern returns None when description is empty."""
     db = MagicMock()
     db.execute.return_value.fetchone.side_effect = [(None,), ("",)]
@@ -49,7 +58,7 @@ def test_extract_pattern_returns_none_when_description_empty():
 
 
 @pytest.fixture
-def real_db(tmp_path):
+def real_db(tmp_path: Path) -> Generator[Database, None, None]:
     """A real DB with schema initialized."""
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-key"
@@ -79,7 +88,7 @@ def _seed_transaction(
     )
 
 
-def test_record_creates_proposal_on_first_categorization(real_db):
+def test_record_creates_proposal_on_first_categorization(real_db: Database) -> None:
     """Creating a proposal on the first categorization stores the expected row."""
     _seed_transaction(real_db, "t1")
     CategorizationService(real_db)._record_categorization(
@@ -92,7 +101,9 @@ def test_record_creates_proposal_on_first_categorization(real_db):
     assert rows == [("STARBUCKS", "Food & Drink", "Coffee", 1, "pending")]
 
 
-def test_record_increments_trigger_count_on_same_pattern_and_category(real_db):
+def test_record_increments_trigger_count_on_same_pattern_and_category(
+    real_db: Database,
+) -> None:
     """Repeated categorizations with the same pattern and category increment trigger_count."""
     _seed_transaction(real_db, "t1")
     _seed_transaction(real_db, "t2")
@@ -108,7 +119,9 @@ def test_record_increments_trigger_count_on_same_pattern_and_category(real_db):
     assert sorted(rows[0][1]) == ["t1", "t2"]
 
 
-def test_record_supersedes_when_same_pattern_different_category(real_db):
+def test_record_supersedes_when_same_pattern_different_category(
+    real_db: Database,
+) -> None:
     """Categorizing a same-pattern txn with a different category supersedes the prior proposal."""
     _seed_transaction(real_db, "t1")
     _seed_transaction(real_db, "t2")
@@ -122,7 +135,9 @@ def test_record_supersedes_when_same_pattern_different_category(real_db):
     assert rows == [("Food & Drink", "superseded"), ("Groceries", "pending")]
 
 
-def test_record_skips_when_active_rule_already_covers_pattern(real_db):
+def test_record_skips_when_active_rule_already_covers_pattern(
+    real_db: Database,
+) -> None:
     """No proposal is created when an active rule already covers the merchant pattern."""
     _seed_transaction(real_db, "t1")
     real_db.execute(
@@ -131,11 +146,13 @@ def test_record_skips_when_active_rule_already_covers_pattern(real_db):
     )
     CategorizationService(real_db)._record_categorization("t1", "Food & Drink")
 
-    count = real_db.execute("SELECT COUNT(*) FROM app.proposed_rules").fetchone()[0]
-    assert count == 0
+    count_row = real_db.execute("SELECT COUNT(*) FROM app.proposed_rules").fetchone()
+    assert count_row is not None and count_row[0] == 0
 
 
-def test_record_respects_proposal_threshold(real_db, monkeypatch):
+def test_record_respects_proposal_threshold(
+    real_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Proposals stay in 'tracking' status until trigger_count reaches the configured threshold."""
     monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_PROPOSAL_THRESHOLD", "3")
     clear_settings_cache()
@@ -147,19 +164,19 @@ def test_record_respects_proposal_threshold(real_db, monkeypatch):
     svc = CategorizationService(real_db)
     svc._record_categorization("t1", "Food & Drink")
     svc._record_categorization("t2", "Food & Drink")
-    pending = real_db.execute(
+    pending_row = real_db.execute(
         "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'pending'"
-    ).fetchone()[0]
-    assert pending == 0
+    ).fetchone()
+    assert pending_row is not None and pending_row[0] == 0
 
     svc._record_categorization("t3", "Food & Drink")
-    pending = real_db.execute(
+    pending_row = real_db.execute(
         "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'pending'"
-    ).fetchone()[0]
-    assert pending == 1
+    ).fetchone()
+    assert pending_row is not None and pending_row[0] == 1
 
 
-def test_approve_promotes_to_active_rule(real_db):
+def test_approve_promotes_to_active_rule(real_db: Database) -> None:
     """Approving a pending proposal creates an active rule with the correct attributes."""
     _seed_transaction(real_db, "t1")
     svc = CategorizationService(real_db)
@@ -182,11 +199,14 @@ def test_approve_promotes_to_active_rule(real_db):
     assert status == ("approved", "user")
 
 
-def test_approve_immediately_categorizes_existing_uncategorized(real_db):
+def test_approve_immediately_categorizes_existing_uncategorized(
+    real_db: Database,
+) -> None:
     """Approving a proposal back-fills matching uncategorized transactions immediately."""
     _seed_transaction(real_db, "t1")
     svc = CategorizationService(real_db)
     pid = svc._record_categorization("t1", "Food & Drink")
+    assert pid is not None
     real_db.execute(
         "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
         "VALUES ('t9', 'a1', DATE '2026-01-02', -7.00, 'STARBUCKS DOWNTOWN', 'csv')"
@@ -201,8 +221,8 @@ def test_approve_immediately_categorizes_existing_uncategorized(real_db):
 
 
 def test_override_threshold_deactivates_rule_and_creates_new_proposal(
-    real_db, monkeypatch
-):
+    real_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When user overrides reach the threshold, deactivate the rule and propose the new category."""
     monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
     clear_settings_cache()
@@ -242,11 +262,14 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
     assert new_proposal == ("Groceries", "pending")
 
 
-def test_reject_marks_proposal_rejected_without_creating_rule(real_db):
+def test_reject_marks_proposal_rejected_without_creating_rule(
+    real_db: Database,
+) -> None:
     """Rejecting a proposal marks it rejected without inserting any categorization rule."""
     _seed_transaction(real_db, "t1")
     svc = CategorizationService(real_db)
     pid = svc._record_categorization("t1", "Food & Drink")
+    assert pid is not None
     svc.auto_confirm(reject=[pid])
 
     status = real_db.execute(
@@ -254,7 +277,7 @@ def test_reject_marks_proposal_rejected_without_creating_rule(real_db):
         [pid],
     ).fetchone()
     assert status == ("rejected", "user")
-    rule_count = real_db.execute(
+    rule_count_row = real_db.execute(
         "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
-    ).fetchone()[0]
-    assert rule_count == 0
+    ).fetchone()
+    assert rule_count_row is not None and rule_count_row[0] == 0

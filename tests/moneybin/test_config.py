@@ -1,7 +1,9 @@
 """Tests for MoneyBin configuration system."""
 
+import pytest
 
-def test_categorization_settings_defaults():
+
+def test_categorization_settings_defaults() -> None:
     """Test CategorizationSettings default values."""
     from moneybin.config import CategorizationSettings
 
@@ -11,7 +13,9 @@ def test_categorization_settings_defaults():
     assert s.auto_rule_default_priority == 200
 
 
-def test_categorization_settings_env_override(monkeypatch):
+def test_categorization_settings_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test CategorizationSettings respects environment variable overrides."""
     from moneybin.config import MoneyBinSettings, clear_settings_cache
 

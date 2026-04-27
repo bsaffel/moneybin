@@ -2,7 +2,13 @@
 
 Covers merchant normalization, pattern matching, rule engine, merchant
 matching, prompt construction, and response parsing.
+
+A handful of tests exercise ``CategorizationService._record_categorization``
+to set up auto-rule proposals — silencing ``reportPrivateUsage`` for this
+file is deliberate.
 """
+
+# pyright: reportPrivateUsage=false
 
 from collections.abc import Generator
 from pathlib import Path

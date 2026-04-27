@@ -198,7 +198,8 @@ def auto_confirm_cmd(
     logger.info(
         f"✅ Approved {result['approved']} "
         f"(categorized {result['newly_categorized']} existing); "
-        f"rejected {result['rejected']}"
+        f"rejected {result['rejected']}; "
+        f"skipped {result['skipped']}"
     )
 
 

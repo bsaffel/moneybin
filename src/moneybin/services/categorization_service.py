@@ -470,6 +470,15 @@ class CategorizationService:
                     "reason": "Failed to apply category — check logs for details.",
                 })
 
+        # Best-effort override check: deactivates auto-rules whose categories
+        # have been corrected past the configured threshold. Runs once per
+        # batch so cost is independent of batch size.
+        if applied:
+            try:
+                self.check_overrides()
+            except Exception:  # noqa: BLE001 — override check is best-effort
+                logger.debug("auto-rule override check failed", exc_info=True)
+
         return BulkCategorizationResult(
             applied=applied,
             skipped=skipped,

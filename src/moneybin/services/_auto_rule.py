@@ -31,9 +31,12 @@ ProposalStatus = Literal["pending", "approved", "rejected", "superseded", "track
 def extract_pattern(db: Database, transaction_id: str) -> str | None:
     """Extract a merchant-first pattern for the given transaction.
 
-    Returns the canonical merchant name if a merchant_id is recorded on the
-    transaction_categories row; otherwise falls back to a normalized description.
-    Returns None if neither is available.
+    When the transaction has a resolved merchant_id, returns the merchant's
+    ``raw_pattern`` — the substring that actually matches statement descriptions
+    (e.g., 'AMZN'), not the canonical display name (e.g., 'Amazon'). This guarantees
+    that the resulting auto-rule's `contains` match will fire against future imports.
+    Falls back to a normalized description when no merchant is associated.
+    Returns None when neither is available.
     """
     row = db.execute(
         f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
@@ -42,7 +45,7 @@ def extract_pattern(db: Database, transaction_id: str) -> str | None:
     merchant_id = row[0] if row else None
     if merchant_id:
         m = db.execute(
-            f"SELECT canonical_name FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
+            f"SELECT raw_pattern FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
             [merchant_id],
         ).fetchone()
         if m and m[0]:
@@ -72,15 +75,26 @@ def _active_rule_covers(db: Database, pattern: str) -> bool:
 
 
 def _merchant_mapping_covers(db: Database, pattern: str, category: str) -> bool:
-    """True when a merchant mapping already produces this category for this pattern."""
+    """True when a merchant mapping already produces this category for this pattern.
+
+    Compares ``raw_pattern`` (the field actually used to match descriptions)
+    rather than ``canonical_name`` (a display label). ``extract_pattern``
+    returns ``raw_pattern`` when a merchant exists, so this comparison is
+    direct; for description-derived patterns we additionally check whether
+    the pattern contains the merchant's raw_pattern as a substring.
+    """
     try:
         row = db.execute(
             f"""
             SELECT 1 FROM {MERCHANTS.full_name}
-            WHERE LOWER(canonical_name) = LOWER(?) AND category = ?
+            WHERE category = ?
+              AND (
+                LOWER(raw_pattern) = LOWER(?)
+                OR POSITION(LOWER(raw_pattern) IN LOWER(?)) > 0
+              )
             LIMIT 1
             """,
-            [pattern, category],
+            [category, pattern, pattern],
         ).fetchone()
     except duckdb.CatalogException:
         return False
@@ -123,13 +137,18 @@ def record_categorization(
 
     if _active_rule_covers(db, pattern):
         return None
-    if _merchant_mapping_covers(db, pattern, category):
-        return None
 
     settings = get_settings().categorization
     threshold = settings.auto_rule_proposal_threshold
     sample_cap = settings.auto_rule_sample_txn_cap
     existing = _find_pending_proposal(db, pattern)
+
+    # Merchant coverage is only a reason to skip when there is no
+    # in-progress proposal for this pattern. Otherwise tracking proposals
+    # could be permanently stuck below threshold once bulk_categorize
+    # creates the merchant mapping during the first categorization.
+    if existing is None and _merchant_mapping_covers(db, pattern, category):
+        return None
 
     if existing is not None:
         proposed_rule_id, existing_category, existing_subcategory, count, samples = (
@@ -296,28 +315,34 @@ def check_overrides(db: Database) -> int:
 
     rules = db.execute(
         f"""
-        SELECT rule_id, merchant_pattern, category
+        SELECT rule_id, merchant_pattern, category, created_at
         FROM {CATEGORIZATION_RULES.full_name}
         WHERE is_active = true AND created_by = 'auto_rule'
         """
     ).fetchall()
     deactivated = 0
 
-    for rule_id, pattern, rule_category in rules:
+    for rule_id, pattern, rule_category, rule_created_at in rules:
+        # An override is any non-auto_rule categorization recorded after the
+        # rule was created whose category disagrees with the rule. This
+        # captures both direct user edits ('user') and AI-applied corrections
+        # via bulk_categorize ('ai'), and excludes legacy categorizations
+        # that predate the rule entirely.
         rows = db.execute(
             f"""
-            SELECT c.category, COUNT(*) AS n
+            SELECT c.category, c.subcategory, COUNT(*) AS n
             FROM {TRANSACTION_CATEGORIES.full_name} c
             JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
-            WHERE c.categorized_by = 'user'
+            WHERE c.categorized_by != 'auto_rule'
+              AND c.categorized_at > ?
               AND c.category != ?
               AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
-            GROUP BY c.category
+            GROUP BY c.category, c.subcategory
             ORDER BY n DESC
             """,
-            [rule_category, pattern],
+            [rule_created_at, rule_category, pattern],
         ).fetchall()
-        total_overrides = sum(r[1] for r in rows)
+        total_overrides = sum(r[2] for r in rows)
         if total_overrides < threshold:
             continue
 
@@ -334,15 +359,16 @@ def check_overrides(db: Database) -> int:
             [pattern],
         )
         new_category = rows[0][0]
+        new_subcategory = rows[0][1]
         new_pid = uuid.uuid4().hex[:12]
         db.execute(
             f"""
             INSERT INTO {PROPOSED_RULES.full_name}
-            (proposed_rule_id, merchant_pattern, match_type, category, status,
-             trigger_count, source, sample_txn_ids)
-            VALUES (?, ?, 'contains', ?, 'pending', ?, 'pattern_detection', ?)
+            (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
+             status, trigger_count, source, sample_txn_ids)
+            VALUES (?, ?, 'contains', ?, ?, 'pending', ?, 'pattern_detection', ?)
             """,
-            [new_pid, pattern, new_category, total_overrides, []],
+            [new_pid, pattern, new_category, new_subcategory, total_overrides, []],
         )
         deactivated += 1
 
