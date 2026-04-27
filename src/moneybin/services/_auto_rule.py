@@ -25,15 +25,16 @@ from moneybin.tables import (
 logger = logging.getLogger(__name__)
 
 
-def extract_pattern(db: Database, transaction_id: str) -> str | None:
-    """Extract a merchant-first pattern for the given transaction.
+def extract_pattern(db: Database, transaction_id: str) -> tuple[str, str] | None:
+    """Extract a (pattern, match_type) tuple for the given transaction.
 
     When the transaction has a resolved merchant_id, returns the merchant's
-    ``raw_pattern`` — the substring that actually matches statement descriptions
-    (e.g., 'AMZN'), not the canonical display name (e.g., 'Amazon'). This guarantees
-    that the resulting auto-rule's `contains` match will fire against future imports.
-    Falls back to a normalized description when no merchant is associated.
-    Returns None when neither is available.
+    ``(raw_pattern, match_type)`` — the substring that actually matches statement
+    descriptions (e.g., 'AMZN'), not the canonical display name (e.g., 'Amazon'),
+    paired with the merchant's declared match_type so non-``contains`` merchants
+    (e.g., regex) propagate into proposed rules with correct semantics.
+    Falls back to a normalized description with ``match_type='contains'`` when no
+    merchant is associated. Returns None when neither is available.
     """
     row = db.execute(
         f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
@@ -42,11 +43,11 @@ def extract_pattern(db: Database, transaction_id: str) -> str | None:
     merchant_id = row[0] if row else None
     if merchant_id:
         m = db.execute(
-            f"SELECT raw_pattern FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
+            f"SELECT raw_pattern, match_type FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
             [merchant_id],
         ).fetchone()
         if m and m[0]:
-            return str(m[0])
+            return str(m[0]), str(m[1] or "contains")
 
     desc_row = db.execute(
         f"SELECT description FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
@@ -55,7 +56,9 @@ def extract_pattern(db: Database, transaction_id: str) -> str | None:
     if not desc_row or not desc_row[0]:
         return None
     cleaned = normalize_description(str(desc_row[0]))
-    return cleaned or None
+    if not cleaned:
+        return None
+    return cleaned, "contains"
 
 
 def _active_rule_covers(db: Database, pattern: str) -> bool:
@@ -128,9 +131,10 @@ def record_categorization(
     None if the categorization was filtered out (covered by existing rule/merchant
     or pattern unavailable).
     """
-    pattern = extract_pattern(db, transaction_id)
-    if not pattern:
+    extracted = extract_pattern(db, transaction_id)
+    if not extracted:
         return None
+    pattern, match_type = extracted
 
     if _active_rule_covers(db, pattern):
         return None
@@ -180,11 +184,12 @@ def record_categorization(
         INSERT INTO {PROPOSED_RULES.full_name}
         (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
          status, trigger_count, source, sample_txn_ids)
-        VALUES (?, ?, 'contains', ?, ?, ?, 1, 'pattern_detection', ?)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 'pattern_detection', ?)
         """,
         [
             proposed_rule_id,
             pattern,
+            match_type,
             category,
             subcategory,
             initial_status,
@@ -266,34 +271,44 @@ def approve(db: Database, proposed_rule_ids: list[str]) -> ApproveResult:
 
         pattern, match_type, category, subcategory, _status = row
         rule_id = uuid.uuid4().hex[:12]
-        db.execute(
-            f"""
-            INSERT INTO {CATEGORIZATION_RULES.full_name}
-            (rule_id, name, merchant_pattern, match_type, category, subcategory,
-             priority, is_active, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,
-            [
-                rule_id,
-                f"auto: {pattern}",
-                pattern,
-                match_type,
-                category,
-                subcategory,
-                settings.auto_rule_default_priority,
-            ],
-        )
-        db.execute(
-            f"""
-            UPDATE {PROPOSED_RULES.full_name}
-            SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = 'user'
-            WHERE proposed_rule_id = ?
-            """,
-            [pid],
-        )
-        newly = _categorize_existing_with_rule(
-            db, rule_id, pattern, category, subcategory
-        )
+        # Wrap rule INSERT, proposal UPDATE, and back-fill INSERT in a single
+        # transaction so a partial failure (e.g., interrupt between steps)
+        # cannot leave an active rule whose source proposal is still 'pending'
+        # — which would let approve() create a duplicate rule on retry.
+        db.begin()
+        try:
+            db.execute(
+                f"""
+                INSERT INTO {CATEGORIZATION_RULES.full_name}
+                (rule_id, name, merchant_pattern, match_type, category, subcategory,
+                 priority, is_active, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                [
+                    rule_id,
+                    f"auto: {pattern}",
+                    pattern,
+                    match_type,
+                    category,
+                    subcategory,
+                    settings.auto_rule_default_priority,
+                ],
+            )
+            db.execute(
+                f"""
+                UPDATE {PROPOSED_RULES.full_name}
+                SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = 'user'
+                WHERE proposed_rule_id = ?
+                """,
+                [pid],
+            )
+            newly = _categorize_existing_with_rule(
+                db, rule_id, pattern, category, subcategory
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         result.approved += 1
         result.rule_ids.append(rule_id)
         result.newly_categorized += newly
@@ -316,6 +331,8 @@ def check_overrides(db: Database) -> int:
     """
     settings = get_settings().categorization
     threshold = settings.auto_rule_override_threshold
+    proposal_threshold = settings.auto_rule_proposal_threshold
+    sample_cap = settings.auto_rule_sample_txn_cap
 
     # Fast-path: skip the override scan entirely when no auto-rules exist.
     # bulk_categorize calls this on every batch, so a one-row probe avoids
@@ -378,15 +395,49 @@ def check_overrides(db: Database) -> int:
         )
         new_category = rows[0][0]
         new_subcategory = rows[0][1]
+        # Capture up to sample_cap transaction IDs that drove the most
+        # common override category, so the re-proposal surfaces concrete
+        # examples in auto-review instead of an empty list.
+        sample_rows = db.execute(
+            f"""
+            SELECT c.transaction_id
+            FROM {TRANSACTION_CATEGORIES.full_name} c
+            JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
+            WHERE c.categorized_by IN ('user', 'ai')
+              AND c.categorized_at > ?
+              AND c.category = ?
+              AND COALESCE(c.subcategory, '') = COALESCE(?, '')
+              AND POSITION(LOWER(?) IN LOWER(t.description)) > 0
+            ORDER BY c.categorized_at DESC
+            LIMIT ?
+            """,
+            [
+                rule_created_at,
+                new_category,
+                new_subcategory,
+                pattern,
+                sample_cap,
+            ],
+        ).fetchall()
+        sample_ids = [r[0] for r in sample_rows]
+        new_status = "pending" if total_overrides >= proposal_threshold else "tracking"
         new_pid = uuid.uuid4().hex[:12]
         db.execute(
             f"""
             INSERT INTO {PROPOSED_RULES.full_name}
             (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
              status, trigger_count, source, sample_txn_ids)
-            VALUES (?, ?, 'contains', ?, ?, 'pending', ?, 'pattern_detection', ?)
+            VALUES (?, ?, 'contains', ?, ?, ?, ?, 'pattern_detection', ?)
             """,
-            [new_pid, pattern, new_category, new_subcategory, total_overrides, []],
+            [
+                new_pid,
+                pattern,
+                new_category,
+                new_subcategory,
+                new_status,
+                total_overrides,
+                sample_ids,
+            ],
         )
         deactivated += 1
 

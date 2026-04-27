@@ -21,13 +21,15 @@ from tests.moneybin.db_helpers import create_core_tables
 
 
 def _mock_db_with_merchant(
-    merchant_id: str = "m_abc", raw_pattern: str = "STARBUCKS"
+    merchant_id: str = "m_abc",
+    raw_pattern: str = "STARBUCKS",
+    match_type: str = "contains",
 ) -> MagicMock:
     db = MagicMock()
     # transaction_categories row -> merchant_id
     db.execute.return_value.fetchone.side_effect = [
         (merchant_id,),  # SELECT merchant_id FROM transaction_categories
-        (raw_pattern,),  # SELECT raw_pattern FROM merchants
+        (raw_pattern, match_type),  # SELECT raw_pattern, match_type FROM merchants
     ]
     return db
 
@@ -35,8 +37,8 @@ def _mock_db_with_merchant(
 def test_extract_pattern_uses_merchant_raw_pattern_when_present() -> None:
     """Extract pattern prefers merchant raw_pattern (matchable substring) when present."""
     db = _mock_db_with_merchant()
-    pattern = _auto_rule.extract_pattern(db, transaction_id="t_1")
-    assert pattern == "STARBUCKS"
+    extracted = _auto_rule.extract_pattern(db, transaction_id="t_1")
+    assert extracted == ("STARBUCKS", "contains")
 
 
 def test_extract_pattern_falls_back_to_normalized_description() -> None:
@@ -46,8 +48,8 @@ def test_extract_pattern_falls_back_to_normalized_description() -> None:
         (None,),  # no merchant_id on the categorization row
         ("SQ *STARBUCKS #1234 SEATTLE WA",),  # raw description
     ]
-    pattern = _auto_rule.extract_pattern(db, transaction_id="t_2")
-    assert pattern == "STARBUCKS"
+    extracted = _auto_rule.extract_pattern(db, transaction_id="t_2")
+    assert extracted == ("STARBUCKS", "contains")
 
 
 def test_extract_pattern_returns_none_when_description_empty() -> None:
