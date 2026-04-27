@@ -25,6 +25,7 @@ from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
     MERCHANTS,
+    PROPOSED_RULES,
     SEED_CATEGORIES,
     TRANSACTION_CATEGORIES,
 )
@@ -850,17 +851,18 @@ class CategorizationService:
 
     def auto_review(self) -> list[dict[str, object]]:
         """Return all pending auto-rule proposals for human review."""
-        from moneybin.tables import PROPOSED_RULES
-
-        rows = self._db.execute(
-            f"""
-            SELECT proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-                   trigger_count, sample_txn_ids
-            FROM {PROPOSED_RULES.full_name}
-            WHERE status = 'pending'
-            ORDER BY trigger_count DESC, proposed_at ASC
-            """
-        ).fetchall()
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT proposed_rule_id, merchant_pattern, match_type, category, subcategory,
+                       trigger_count, sample_txn_ids
+                FROM {PROPOSED_RULES.full_name}
+                WHERE status = 'pending'
+                ORDER BY trigger_count DESC, proposed_at ASC
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
         return [
             {
                 "proposed_rule_id": r[0],
@@ -896,10 +898,12 @@ class CategorizationService:
 
     def auto_stats(self) -> dict[str, int]:
         """Return counts of active auto-rules, pending proposals, and applied transactions."""
-        from moneybin.tables import PROPOSED_RULES
 
         def _scalar(sql: str) -> int:
-            row = self._db.execute(sql).fetchone()
+            try:
+                row = self._db.execute(sql).fetchone()
+            except duckdb.CatalogException:
+                return 0
             return int(row[0]) if row else 0
 
         active = _scalar(
@@ -910,8 +914,12 @@ class CategorizationService:
             f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
         )
         applied = _scalar(
-            f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "
-            "WHERE categorized_by = 'auto_rule'"
+            f"""
+            SELECT COUNT(*)
+            FROM {TRANSACTION_CATEGORIES.full_name} tc
+            JOIN {CATEGORIZATION_RULES.full_name} r ON tc.rule_id = r.rule_id
+            WHERE r.created_by = 'auto_rule'
+            """
         )
         return {
             "active_auto_rules": active,
@@ -921,14 +929,17 @@ class CategorizationService:
 
     def list_auto_rules(self) -> list[dict[str, object]]:
         """Return active auto-rules (rows with created_by='auto_rule')."""
-        rows = self._db.execute(
-            f"""
-            SELECT rule_id, merchant_pattern, match_type, category, subcategory, priority
-            FROM {CATEGORIZATION_RULES.full_name}
-            WHERE created_by = 'auto_rule' AND is_active = true
-            ORDER BY priority ASC, rule_id
-            """
-        ).fetchall()
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT rule_id, merchant_pattern, match_type, category, subcategory, priority
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE created_by = 'auto_rule' AND is_active = true
+                ORDER BY priority ASC, rule_id
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
         return [
             {
                 "rule_id": r[0],

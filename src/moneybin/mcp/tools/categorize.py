@@ -647,7 +647,14 @@ def categorize_auto_review() -> ResponseEnvelope:
     Returns proposed categorization rules awaiting review, including
     sample matching transactions and trigger counts.
     """
-    data = CategorizationService(get_database()).auto_review()
+    try:
+        data = CategorizationService(get_database()).auto_review()
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
+        logger.exception("categorize.auto_review failed")
+        return build_envelope(
+            data={"error": "Failed to load proposals — check logs for details."},
+            sensitivity="medium",
+        )
     return build_envelope(
         data=data,
         sensitivity="medium",
@@ -672,10 +679,17 @@ def categorize_auto_confirm(
         approve: Proposal IDs to approve and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
     """
-    result = CategorizationService(get_database()).auto_confirm(
-        approve=approve or [],
-        reject=reject or [],
-    )
+    try:
+        result = CategorizationService(get_database()).auto_confirm(
+            approve=approve or [],
+            reject=reject or [],
+        )
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
+        logger.exception("categorize.auto_confirm failed")
+        return build_envelope(
+            data={"error": "Failed to confirm proposals — check logs for details."},
+            sensitivity="medium",
+        )
     return build_envelope(data=result, sensitivity="medium")
 
 
@@ -686,10 +700,15 @@ def categorize_auto_stats() -> ResponseEnvelope:
     Returns counts of active auto-rules, pending proposals, and
     transactions categorized by auto-rules.
     """
-    return build_envelope(
-        data=CategorizationService(get_database()).auto_stats(),
-        sensitivity="low",
-    )
+    try:
+        data = CategorizationService(get_database()).auto_stats()
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
+        logger.exception("categorize.auto_stats failed")
+        return build_envelope(
+            data={"error": "Failed to load auto-rule stats — check logs for details."},
+            sensitivity="low",
+        )
+    return build_envelope(data=data, sensitivity="low")
 
 
 def register_categorize_tools(

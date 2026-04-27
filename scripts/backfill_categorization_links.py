@@ -13,9 +13,9 @@ import re
 
 import duckdb
 
-from moneybin.config import get_database_path
+from moneybin.database import Database, get_database
 from moneybin.services.categorization_service import (
-    match_merchant,
+    CategorizationService,
     normalize_description,
 )
 from moneybin.tables import (
@@ -45,14 +45,15 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
     return False
 
 
-def backfill(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
+def backfill(db: Database) -> dict[str, int]:
     """Backfill missing merchant_id and rule_id."""
+    service = CategorizationService(db)
     merchant_ids_set = 0
     rule_ids_set = 0
 
     # --- Backfill merchant_id ---
     try:
-        rows = conn.execute(
+        rows = db.execute(
             f"""
             SELECT c.transaction_id, t.description
             FROM {TRANSACTION_CATEGORIES.full_name} c
@@ -67,9 +68,9 @@ def backfill(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
         rows = []
 
     for txn_id, description in rows:
-        merchant = match_merchant(conn, description)
+        merchant = service.match_merchant(description)
         if merchant:
-            conn.execute(
+            db.execute(
                 f"""
                 UPDATE {TRANSACTION_CATEGORIES.full_name}
                 SET merchant_id = ?
@@ -81,7 +82,7 @@ def backfill(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
 
     # --- Backfill rule_id ---
     try:
-        rules = conn.execute(
+        rules = db.execute(
             f"""
             SELECT rule_id, merchant_pattern, match_type,
                    min_amount, max_amount, account_id,
@@ -96,7 +97,7 @@ def backfill(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
 
     if rules:
         try:
-            categorized_no_rule = conn.execute(
+            categorized_no_rule = db.execute(
                 f"""
                 SELECT c.transaction_id, t.description, t.amount,
                        t.account_id, c.category, c.subcategory
@@ -148,7 +149,7 @@ def backfill(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
                 if rule_account_id is not None and account_id != rule_account_id:
                     continue
 
-                conn.execute(
+                db.execute(
                     f"""
                     UPDATE {TRANSACTION_CATEGORIES.full_name}
                     SET rule_id = ?
@@ -163,15 +164,12 @@ def backfill(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    db_path = get_database_path()
-    logger.info("Backfilling categorization links in %s", db_path)
+    db = get_database()
+    logger.info("Backfilling categorization links")
 
-    conn = duckdb.connect(str(db_path))
-    result = backfill(conn)
-    conn.close()
+    result = backfill(db)
 
     logger.info(
-        "Done: set %d merchant_ids, %d rule_ids",
-        result["merchant_ids"],
-        result["rule_ids"],
+        f"Done: set {result['merchant_ids']} merchant_ids, "
+        f"{result['rule_ids']} rule_ids"
     )
