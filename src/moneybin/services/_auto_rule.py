@@ -218,7 +218,7 @@ def _categorize_existing_with_rule(
         (transaction_id, category, subcategory, categorized_at, categorized_by, rule_id, confidence)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'auto_rule', ?, 1.0)
         """,
-        [(r[0], category, subcategory, rule_id) for r in rows],
+        [[r[0], category, subcategory, rule_id] for r in rows],
     )
     return len(rows)
 
