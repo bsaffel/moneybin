@@ -13,3 +13,6 @@ CREATE TABLE IF NOT EXISTS app.proposed_rules (
     decided_at TIMESTAMP, -- When the user approved or rejected; NULL while pending
     decided_by VARCHAR -- Who decided: 'user' or NULL while pending
 );
+
+CREATE INDEX IF NOT EXISTS idx_proposed_rules_pattern_status
+    ON app.proposed_rules (merchant_pattern, status);

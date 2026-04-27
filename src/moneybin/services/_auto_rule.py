@@ -313,6 +313,17 @@ def check_overrides(db: Database) -> int:
     settings = get_settings().categorization
     threshold = settings.auto_rule_override_threshold
 
+    # Fast-path: skip the override scan entirely when no auto-rules exist.
+    # bulk_categorize calls this on every batch, so a one-row probe avoids
+    # an unnecessary aggregate scan in the common pre-promotion case.
+    if not db.execute(
+        f"""
+        SELECT 1 FROM {CATEGORIZATION_RULES.full_name}
+        WHERE created_by = 'auto_rule' AND is_active = true LIMIT 1
+        """
+    ).fetchone():
+        return 0
+
     rules = db.execute(
         f"""
         SELECT rule_id, merchant_pattern, category, created_at
