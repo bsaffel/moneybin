@@ -22,6 +22,8 @@ import subprocess  # noqa: S404  — explicit command lists, never shell=True
 from pathlib import Path
 from typing import Any
 
+from sqlglot import exp
+
 from moneybin.database import Database, sqlmesh_context
 from moneybin.migrations import MigrationRunner
 from moneybin.validation.result import AssertionResult
@@ -141,7 +143,9 @@ def _count(db: Database, table: str) -> int:
     valid = {row[0] for row in catalog_rows}
     if table not in valid:
         raise ValueError(f"unknown table: {table!r}")
-    safe = ".".join(f'"{seg}"' for seg in table.split("."))
+    safe = ".".join(
+        exp.to_identifier(seg, quoted=True).sql("duckdb") for seg in table.split(".")
+    )
     row = db.execute(f"SELECT COUNT(*) FROM {safe}").fetchone()  # noqa: S608  — identifier validated against catalog above
     return int(row[0]) if row else 0
 
