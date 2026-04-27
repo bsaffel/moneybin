@@ -693,11 +693,18 @@ def _apply_categorization(db: Database) -> None:
     from moneybin.services.categorization_service import CategorizationService
 
     try:
-        stats = CategorizationService(db).apply_deterministic()
+        service = CategorizationService(db)
+        stats = service.apply_deterministic()
         if stats["total"] > 0:
             logger.info(
                 f"Auto-categorized {stats['total']} transactions "
                 f"({stats['merchant']} merchant, {stats['rule']} rule)"
+            )
+        pending = service.auto_stats()["pending_proposals"]
+        if pending:
+            logger.info(f"  {pending} new auto-rule proposals")
+            logger.info(
+                "  💡 Run 'moneybin categorize auto-review' to review proposed rules"
             )
     except Exception:  # noqa: BLE001 — categorization is best-effort; failure skips without aborting import
         logger.debug(
