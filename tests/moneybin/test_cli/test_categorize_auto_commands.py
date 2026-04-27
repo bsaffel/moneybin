@@ -7,7 +7,10 @@ from typer.testing import CliRunner
 
 from moneybin.cli.commands.categorize import app
 
-runner = CliRunner()
+# Wide terminal prevents Rich from wrapping flag names mid-token (e.g.,
+# `--approve-all` → `--approve\n-all`), which would break substring asserts
+# on CI runners that default to a narrow $COLUMNS.
+runner = CliRunner(env={"COLUMNS": "200"})
 
 
 def test_auto_review_help():
