@@ -105,10 +105,12 @@ class TestImportMatchingIntegration:
 class TestApplyCategorizationProposalSummary:
     """Tests that pending auto-rule proposals appear in the import summary."""
 
+    @patch("moneybin.services.auto_rule_service.AutoRuleService")
     @patch("moneybin.services.categorization_service.CategorizationService")
     def test_logs_proposal_count_when_pending(
         self,
-        mock_service_cls: MagicMock,
+        mock_cat_cls: MagicMock,
+        mock_auto_cls: MagicMock,
         caplog: object,
     ) -> None:
         """Pending proposals trigger a hint line referencing auto-review."""
@@ -118,13 +120,13 @@ class TestApplyCategorizationProposalSummary:
             _apply_categorization,  # pyright: ignore[reportPrivateUsage]
         )
 
-        service = mock_service_cls.return_value
-        service.apply_deterministic.return_value = {
+        cat = mock_cat_cls.return_value
+        cat.apply_deterministic.return_value = {
             "total": 5,
             "merchant": 3,
             "rule": 2,
         }
-        service.auto_stats.return_value = {"pending_proposals": 4}
+        mock_auto_cls.return_value.stats.return_value = {"pending_proposals": 4}
 
         with caplog.at_level(logging.INFO, logger="moneybin.services.import_service"):  # type: ignore[attr-defined]
             _apply_categorization(MagicMock())
@@ -133,10 +135,12 @@ class TestApplyCategorizationProposalSummary:
         assert "4 new auto-rule proposals" in text
         assert "auto-review" in text
 
+    @patch("moneybin.services.auto_rule_service.AutoRuleService")
     @patch("moneybin.services.categorization_service.CategorizationService")
     def test_no_proposal_line_when_zero(
         self,
-        mock_service_cls: MagicMock,
+        mock_cat_cls: MagicMock,
+        mock_auto_cls: MagicMock,
         caplog: object,
     ) -> None:
         """No pending proposals → no hint line."""
@@ -146,13 +150,13 @@ class TestApplyCategorizationProposalSummary:
             _apply_categorization,  # pyright: ignore[reportPrivateUsage]
         )
 
-        service = mock_service_cls.return_value
-        service.apply_deterministic.return_value = {
+        cat = mock_cat_cls.return_value
+        cat.apply_deterministic.return_value = {
             "total": 1,
             "merchant": 1,
             "rule": 0,
         }
-        service.auto_stats.return_value = {"pending_proposals": 0}
+        mock_auto_cls.return_value.stats.return_value = {"pending_proposals": 0}
 
         with caplog.at_level(logging.INFO, logger="moneybin.services.import_service"):  # type: ignore[attr-defined]
             _apply_categorization(MagicMock())

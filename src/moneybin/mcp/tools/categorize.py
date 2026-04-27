@@ -31,6 +31,7 @@ from moneybin.database import get_database
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
     CategorizationService,
     MatchType,
@@ -648,7 +649,7 @@ def categorize_auto_review() -> ResponseEnvelope:
     sample matching transactions and trigger counts.
     """
     try:
-        data = CategorizationService(get_database()).auto_review()
+        data = AutoRuleService(get_database()).list_pending_proposals()
     except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("categorize.auto_review failed")
         return build_envelope(
@@ -680,7 +681,7 @@ def categorize_auto_confirm(
         reject: Proposal IDs to reject and dismiss.
     """
     try:
-        result = CategorizationService(get_database()).auto_confirm(
+        result = AutoRuleService(get_database()).confirm(
             approve=approve or [],
             reject=reject or [],
         )
@@ -701,7 +702,7 @@ def categorize_auto_stats() -> ResponseEnvelope:
     transactions categorized by auto-rules.
     """
     try:
-        data = CategorizationService(get_database()).auto_stats()
+        data = AutoRuleService(get_database()).stats()
     except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("categorize.auto_stats failed")
         return build_envelope(

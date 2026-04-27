@@ -129,11 +129,11 @@ def auto_review_cmd(
     """List pending auto-rule proposals with sample transactions and trigger counts."""
     import json
 
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.auto_rule_service import AutoRuleService
 
     try:
         with handle_database_errors() as db:
-            proposals = CategorizationService(db).auto_review()
+            proposals = AutoRuleService(db).list_pending_proposals()
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
@@ -172,7 +172,7 @@ def auto_confirm_cmd(
     ),
 ) -> None:
     """Batch approve/reject auto-rule proposals."""
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.auto_rule_service import AutoRuleService
 
     if approve_all and reject_all:
         logger.error("❌ --approve-all and --reject-all are mutually exclusive")
@@ -180,10 +180,11 @@ def auto_confirm_cmd(
 
     try:
         with handle_database_errors() as db:
-            svc = CategorizationService(db)
+            svc = AutoRuleService(db)
             if approve_all or reject_all:
                 pending_ids = [
-                    cast(str, p["proposed_rule_id"]) for p in svc.auto_review()
+                    cast(str, p["proposed_rule_id"])
+                    for p in svc.list_pending_proposals()
                 ]
                 if approve_all:
                     approve = (approve or []) + pending_ids
@@ -195,9 +196,7 @@ def auto_confirm_cmd(
             approve_set = set(approve or [])
             reject_set = set(reject or [])
             approve_set -= reject_set
-            result = svc.auto_confirm(
-                approve=sorted(approve_set), reject=sorted(reject_set)
-            )
+            result = svc.confirm(approve=sorted(approve_set), reject=sorted(reject_set))
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
@@ -213,11 +212,11 @@ def auto_confirm_cmd(
 @app.command("auto-stats")
 def auto_stats_cmd() -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.auto_rule_service import AutoRuleService
 
     try:
         with handle_database_errors() as db:
-            stats = CategorizationService(db).auto_stats()
+            stats = AutoRuleService(db).stats()
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
@@ -231,11 +230,11 @@ def auto_stats_cmd() -> None:
 @app.command("auto-rules")
 def auto_rules_cmd() -> None:
     """List active auto-rules (rules with created_by='auto_rule')."""
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.auto_rule_service import AutoRuleService
 
     try:
         with handle_database_errors() as db:
-            rules = CategorizationService(db).list_auto_rules()
+            rules = AutoRuleService(db).list_active_rules()
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e

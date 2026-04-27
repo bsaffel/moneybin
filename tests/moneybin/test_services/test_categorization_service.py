@@ -2,13 +2,7 @@
 
 Covers merchant normalization, pattern matching, rule engine, merchant
 matching, prompt construction, and response parsing.
-
-A handful of tests exercise ``CategorizationService._record_categorization``
-to set up auto-rule proposals — silencing ``reportPrivateUsage`` for this
-file is deliberate.
 """
-
-# pyright: reportPrivateUsage=false
 
 from collections.abc import Generator
 from pathlib import Path
@@ -634,7 +628,9 @@ def test_service_bulk_categorize_applies_categorization(
 
 
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
-    """auto_review returns pending proposals seeded via the service."""
+    """list_pending_proposals returns proposals recorded via AutoRuleService."""
+    from moneybin.services.auto_rule_service import AutoRuleService
+
     real_db.execute(
         "INSERT INTO core.fct_transactions "
         "(transaction_id, account_id, transaction_date, amount, description, source_type) "
@@ -645,10 +641,9 @@ def test_service_auto_review_returns_pending_proposals(real_db: Database) -> Non
         "(transaction_id, category, categorized_at, categorized_by) "
         "VALUES ('ts2', 'Shopping', CURRENT_TIMESTAMP, 'user')"
     )
-    CategorizationService(real_db)._record_categorization("ts2", "Shopping")
-
-    svc = CategorizationService(real_db)
-    proposals = svc.auto_review()
+    auto = AutoRuleService(real_db)
+    auto.record_categorization("ts2", "Shopping")
+    proposals = auto.list_pending_proposals()
     patterns = {p["merchant_pattern"] for p in proposals}
     assert "AMAZON" in patterns
 
@@ -679,16 +674,12 @@ def test_no_public_module_level_categorization_functions() -> None:
     assert not leaked, f"These should be class methods only: {leaked}"
 
 
-def test_auto_rule_service_is_private() -> None:
-    """`auto_rule_service` must not be importable; use _auto_rule (private) only."""
-    import importlib
-
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("moneybin.services.auto_rule_service")
-
-
 def test_service_exposes_consolidated_methods(real_db: Database) -> None:
-    """CategorizationService exposes the full consolidated method surface."""
+    """CategorizationService exposes its core categorization surface.
+
+    Auto-rule lifecycle methods now live on ``AutoRuleService`` and are
+    asserted in ``test_auto_rule_service.py``.
+    """
     expected = {
         "bulk_categorize",
         "apply_rules",
@@ -700,28 +691,96 @@ def test_service_exposes_consolidated_methods(real_db: Database) -> None:
         "ensure_seed_table",
         "get_active_categories",
         "categorization_stats",
-        "auto_review",
-        "auto_confirm",
-        "auto_stats",
-        "list_auto_rules",
-        "check_overrides",
+        "find_matching_rule",
     }
     missing = expected - set(dir(CategorizationService))
     assert not missing, f"Missing methods: {missing}"
 
 
+def test_find_matching_rule_returns_first_match(real_db: Database) -> None:
+    """find_matching_rule returns (rule_id, category, subcategory, created_by) for the highest-priority match."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('fm1', 'a1', DATE '2026-03-01', -10.00, 'STARBUCKS DOWNTOWN', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.categorization_rules (rule_id, name, merchant_pattern, match_type, category, priority, is_active, created_by) "
+        "VALUES ('r1', 'sb', 'STARBUCKS', 'contains', 'Food & Drink', 100, true, 'user')"
+    )
+
+    match = CategorizationService(real_db).find_matching_rule("fm1")
+    assert match is not None
+    rule_id, category, _sub, created_by = match
+    assert (rule_id, category, created_by) == ("r1", "Food & Drink", "user")
+
+
+def test_find_matching_rule_returns_none_when_no_rule_matches(
+    real_db: Database,
+) -> None:
+    """find_matching_rule returns None when no active rule matches the transaction."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('fm2', 'a1', DATE '2026-03-01', -10.00, 'NOTHING MATCHES', 'csv')"
+    )
+    assert CategorizationService(real_db).find_matching_rule("fm2") is None
+
+
+def test_apply_rules_writes_auto_rule_provenance_for_auto_rules(
+    real_db: Database,
+) -> None:
+    """apply_rules writes categorized_by='auto_rule' when the matching rule is auto-created."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('ar1', 'a1', DATE '2026-03-01', -5.00, 'CHIPOTLE MEXICAN', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.categorization_rules (rule_id, name, merchant_pattern, match_type, category, priority, is_active, created_by) "
+        "VALUES ('rauto', 'auto: chipotle', 'CHIPOTLE', 'contains', 'Food & Drink', 200, true, 'auto_rule')"
+    )
+
+    CategorizationService(real_db).apply_rules()
+
+    row = real_db.execute(
+        "SELECT categorized_by FROM app.transaction_categories WHERE transaction_id = 'ar1'"
+    ).fetchone()
+    assert row == ("auto_rule",)
+
+
+def test_apply_rules_writes_rule_provenance_for_user_rules(
+    real_db: Database,
+) -> None:
+    """apply_rules writes categorized_by='rule' for non-auto-rule matches."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('ar2', 'a1', DATE '2026-03-01', -5.00, 'WHOLE FOODS', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.categorization_rules (rule_id, name, merchant_pattern, match_type, category, priority, is_active, created_by) "
+        "VALUES ('ruser', 'wf', 'WHOLE FOODS', 'contains', 'Groceries', 100, true, 'user')"
+    )
+
+    CategorizationService(real_db).apply_rules()
+
+    row = real_db.execute(
+        "SELECT categorized_by FROM app.transaction_categories WHERE transaction_id = 'ar2'"
+    ).fetchone()
+    assert row == ("rule",)
+
+
 def test_list_auto_rules_returns_active_auto_rules(real_db: Database) -> None:
-    """list_auto_rules returns active auto-rules after approval."""
+    """AutoRuleService.list_active_rules returns active auto-rules after approval."""
+    from moneybin.services.auto_rule_service import AutoRuleService
+
     real_db.execute(
         "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
         "VALUES ('lt1', 'a1', DATE '2026-03-01', -3.00, 'CHIPOTLE', 'csv')"
     )
-    svc = CategorizationService(real_db)
-    pid = svc._record_categorization("lt1", "Food & Drink")
+    auto = AutoRuleService(real_db)
+    pid = auto.record_categorization("lt1", "Food & Drink")
     assert pid is not None
-    svc.auto_confirm(approve=[pid])
+    auto.confirm(approve=[pid])
 
-    rules = svc.list_auto_rules()
+    rules = auto.list_active_rules()
     assert any(r["merchant_pattern"] == "CHIPOTLE" for r in rules)
 
 

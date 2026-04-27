@@ -822,6 +822,7 @@ def _apply_categorization(db: Database) -> None:
     Args:
         db: Database instance.
     """
+    from moneybin.services.auto_rule_service import AutoRuleService
     from moneybin.services.categorization_service import CategorizationService
 
     try:
@@ -832,7 +833,7 @@ def _apply_categorization(db: Database) -> None:
                 f"Auto-categorized {stats['total']} transactions "
                 f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
-        pending = int(service.auto_stats().get("pending_proposals", 0))
+        pending = int(AutoRuleService(db).stats().get("pending_proposals", 0))
         if pending:
             logger.info(f"  {pending} new auto-rule proposals")
             logger.info(

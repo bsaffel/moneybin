@@ -4,10 +4,10 @@ Handles merchant normalization, rule-based categorization, merchant matching,
 and taxonomy management. Designed for deterministic operations — LLM-based
 auto-categorization lives in the MCP layer (auto_categorize tool).
 
-The public API is the ``CategorizationService`` class. Module-level helpers
-(``normalize_description``, ``_matches_pattern``, ``_fetch_merchants``,
-``_match_description``) remain available for the private ``_auto_rule`` module
-which imports ``normalize_description``.
+The public API is the ``CategorizationService`` class. The companion
+``AutoRuleService`` (``auto_rule_service.py``) handles the auto-rule
+proposal/approval/deactivation lifecycle and depends on this module's
+``find_matching_rule`` and ``normalize_description``.
 """
 
 import logging
@@ -25,7 +25,6 @@ from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
     MERCHANTS,
-    PROPOSED_RULES,
     SEED_CATEGORIES,
     TRANSACTION_CATEGORIES,
 )
@@ -177,7 +176,7 @@ def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         try:
             return bool(re.search(pattern, text, re.IGNORECASE))
         except re.error:
-            logger.warning(f"Invalid regex pattern: {pattern}")
+            logger.warning("Invalid regex pattern in merchant rule")
             return False
     else:
         logger.warning(f"Unknown match_type: {match_type}")
@@ -318,7 +317,7 @@ class CategorizationService:
                 created_by,
             ],
         )
-        logger.info(f"Created merchant mapping: {raw_pattern} -> {canonical_name}")
+        logger.info(f"Created merchant mapping {merchant_id}")
         return merchant_id
 
     # -- Categorization core --
@@ -400,8 +399,12 @@ class CategorizationService:
             try:
                 # Record before merchant resolution: bulk_categorize creates a merchant
                 # mapping below that would otherwise short-circuit auto-rule proposals.
+                # Lazy import keeps the module-level dependency one-way
+                # (auto_rule_service → categorization_service).
                 try:
-                    self._record_categorization(
+                    from moneybin.services.auto_rule_service import AutoRuleService
+
+                    AutoRuleService(self._db).record_categorization(
                         txn_id, category, subcategory=subcategory
                     )
                 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
@@ -476,7 +479,9 @@ class CategorizationService:
         # batch so cost is independent of batch size.
         if applied:
             try:
-                self.check_overrides()
+                from moneybin.services.auto_rule_service import AutoRuleService
+
+                AutoRuleService(self._db).check_overrides()
             except Exception:  # noqa: BLE001 — override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
 
@@ -545,6 +550,103 @@ class CategorizationService:
             )
         return categorized_count
 
+    def _fetch_active_rules(self) -> list[tuple[Any, ...]]:
+        """Return all active rules in priority order (priority ASC, created_at ASC)."""
+        try:
+            return self._db.execute(
+                f"""
+                SELECT rule_id, merchant_pattern, match_type,
+                       min_amount, max_amount, account_id,
+                       category, subcategory, created_by
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE is_active = true
+                ORDER BY priority ASC, created_at ASC
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+
+    @staticmethod
+    def _match_first_rule(
+        rules: list[tuple[Any, ...]],
+        description: str,
+        amount: float | None,
+        account_id: str | None,
+    ) -> tuple[str, str, str | None, str] | None:
+        """Return ``(rule_id, category, subcategory, created_by)`` for the first rule that matches.
+
+        Evaluates pattern (against both raw and normalized description),
+        amount bounds, and account filter. Mirrors the rule engine semantics
+        so callers can ask "would any rule match this transaction?" without
+        duplicating logic. Returns ``None`` when no rule matches.
+        """
+        normalized = normalize_description(description)
+        for rule in rules:
+            (
+                rule_id,
+                pattern,
+                match_type,
+                min_amount,
+                max_amount,
+                rule_account_id,
+                category,
+                subcategory,
+                created_by,
+            ) = rule
+            if not (
+                _matches_pattern(description, pattern, match_type)
+                or _matches_pattern(normalized, pattern, match_type)
+            ):
+                continue
+            if (
+                min_amount is not None
+                and amount is not None
+                and amount < float(min_amount)
+            ):
+                continue
+            if (
+                max_amount is not None
+                and amount is not None
+                and amount > float(max_amount)
+            ):
+                continue
+            if rule_account_id is not None and account_id != rule_account_id:
+                continue
+            return rule_id, category, subcategory, created_by
+        return None
+
+    def find_matching_rule(
+        self, transaction_id: str
+    ) -> tuple[str, str, str | None, str] | None:
+        """Return the first active rule matching this transaction, or ``None``.
+
+        Result tuple is ``(rule_id, category, subcategory, created_by)``.
+        Single-transaction variant of :meth:`apply_rules`; lets callers (e.g.,
+        the auto-rule proposal pipeline) ask "is this transaction already
+        covered by an existing rule?" using the canonical match semantics
+        instead of re-implementing them.
+        """
+        try:
+            txn_row = self._db.execute(
+                f"SELECT description, amount, account_id "
+                f"FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return None
+        if not txn_row or not txn_row[0]:
+            return None
+        description, amount, account_id = txn_row
+        rules = self._fetch_active_rules()
+        if not rules:
+            return None
+        return self._match_first_rule(
+            rules,
+            str(description),
+            float(amount) if amount is not None else None,
+            str(account_id) if account_id is not None else None,
+        )
+
     def apply_rules(self) -> int:
         """Apply active categorization rules to uncategorized transactions.
 
@@ -553,23 +655,16 @@ class CategorizationService:
         (lower number = higher priority); the first matching rule wins. Rules
         can filter by merchant pattern, amount range, and account ID.
 
+        Provenance: when the matched rule was created by the auto-rule
+        pipeline (``created_by='auto_rule'``), the resulting categorization
+        is written with ``categorized_by='auto_rule'`` so downstream stats
+        can identify auto-rule-driven assignments without joining through
+        ``rule_id``. All other rules write ``categorized_by='rule'``.
+
         Returns:
             Number of transactions categorized.
         """
-        try:
-            rules = self._db.execute(
-                f"""
-                SELECT rule_id, name, merchant_pattern, match_type,
-                       min_amount, max_amount, account_id,
-                       category, subcategory
-                FROM {CATEGORIZATION_RULES.full_name}
-                WHERE is_active = true
-                ORDER BY priority ASC, created_at ASC
-                """,
-            ).fetchall()
-        except duckdb.CatalogException:
-            return 0
-
+        rules = self._fetch_active_rules()
         if not rules:
             return 0
 
@@ -593,45 +688,26 @@ class CategorizationService:
 
         categorized_count = 0
         for txn_id, description, amount, account_id in uncategorized:
-            normalized = normalize_description(description)
-            for rule in rules:
-                (
-                    rule_id,
-                    _name,
-                    pattern,
-                    match_type,
-                    min_amount,
-                    max_amount,
-                    rule_account_id,
-                    category,
-                    subcategory,
-                ) = rule
-
-                if not (
-                    _matches_pattern(description, pattern, match_type)
-                    or _matches_pattern(normalized, pattern, match_type)
-                ):
-                    continue
-
-                if min_amount is not None and amount < float(min_amount):
-                    continue
-                if max_amount is not None and amount > float(max_amount):
-                    continue
-
-                if rule_account_id is not None and account_id != rule_account_id:
-                    continue
-
-                self._db.execute(
-                    f"""
-                    INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                    (transaction_id, category, subcategory, categorized_at,
-                     categorized_by, rule_id, confidence)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
-                    """,
-                    [txn_id, category, subcategory, rule_id],
-                )
-                categorized_count += 1
-                break  # First matching rule wins
+            match = self._match_first_rule(
+                rules,
+                str(description),
+                float(amount) if amount is not None else None,
+                str(account_id) if account_id is not None else None,
+            )
+            if match is None:
+                continue
+            rule_id, category, subcategory, created_by = match
+            categorized_by = "auto_rule" if created_by == "auto_rule" else "rule"
+            self._db.execute(
+                f"""
+                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
+                (transaction_id, category, subcategory, categorized_at,
+                 categorized_by, rule_id, confidence)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, 1.0)
+                """,
+                [txn_id, category, subcategory, categorized_by, rule_id],
+            )
+            categorized_count += 1
 
         if categorized_count:
             logger.info(f"Rule engine categorized {categorized_count} transactions")
@@ -845,131 +921,4 @@ class CategorizationService:
             uncategorized=int(raw["uncategorized"]),
             percent_categorized=float(raw["pct_categorized"]),
             by_source=by_source,
-        )
-
-    # -- Auto-rule lifecycle --
-
-    def auto_review(self) -> list[dict[str, object]]:
-        """Return all pending auto-rule proposals for human review."""
-        try:
-            rows = self._db.execute(
-                f"""
-                SELECT proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-                       trigger_count, sample_txn_ids
-                FROM {PROPOSED_RULES.full_name}
-                WHERE status = 'pending'
-                ORDER BY trigger_count DESC, proposed_at ASC
-                """
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [
-            {
-                "proposed_rule_id": r[0],
-                "merchant_pattern": r[1],
-                "match_type": r[2],
-                "category": r[3],
-                "subcategory": r[4],
-                "trigger_count": r[5],
-                "sample_txn_ids": list(r[6] or []),
-            }
-            for r in rows
-        ]
-
-    def auto_confirm(
-        self,
-        approve: list[str] | None = None,
-        reject: list[str] | None = None,
-    ) -> dict[str, object]:
-        """Approve and/or reject pending proposals; returns aggregate counts."""
-        # Local import avoids circular dependency: _auto_rule imports
-        # normalize_description from this module.
-        from moneybin.services import _auto_rule
-
-        a = _auto_rule.approve(self._db, approve or [])
-        r = _auto_rule.reject(self._db, reject or [])
-        return {
-            "approved": a.approved,
-            "newly_categorized": a.newly_categorized,
-            "rule_ids": a.rule_ids,
-            "rejected": r.rejected,
-            "skipped": a.skipped + r.skipped,
-        }
-
-    def auto_stats(self) -> dict[str, int]:
-        """Return counts of active auto-rules, pending proposals, and applied transactions."""
-
-        def _scalar(sql: str) -> int:
-            try:
-                row = self._db.execute(sql).fetchone()
-            except duckdb.CatalogException:
-                return 0
-            return int(row[0]) if row else 0
-
-        active = _scalar(
-            f"SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name} "
-            "WHERE created_by = 'auto_rule' AND is_active = true"
-        )
-        pending = _scalar(
-            f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
-        )
-        applied = _scalar(
-            f"""
-            SELECT COUNT(*)
-            FROM {TRANSACTION_CATEGORIES.full_name} tc
-            JOIN {CATEGORIZATION_RULES.full_name} r ON tc.rule_id = r.rule_id
-            WHERE r.created_by = 'auto_rule'
-            """
-        )
-        return {
-            "active_auto_rules": active,
-            "pending_proposals": pending,
-            "transactions_categorized": applied,
-        }
-
-    def list_auto_rules(self) -> list[dict[str, object]]:
-        """Return active auto-rules (rows with created_by='auto_rule')."""
-        try:
-            rows = self._db.execute(
-                f"""
-                SELECT rule_id, merchant_pattern, match_type, category, subcategory, priority
-                FROM {CATEGORIZATION_RULES.full_name}
-                WHERE created_by = 'auto_rule' AND is_active = true
-                ORDER BY priority ASC, rule_id
-                """
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [
-            {
-                "rule_id": r[0],
-                "merchant_pattern": r[1],
-                "match_type": r[2],
-                "category": r[3],
-                "subcategory": r[4],
-                "priority": r[5],
-            }
-            for r in rows
-        ]
-
-    def check_overrides(self) -> int:
-        """Deactivate auto-rules with override count >= configured threshold.
-
-        Returns the number of rules deactivated.
-        """
-        from moneybin.services import _auto_rule
-
-        return _auto_rule.check_overrides(self._db)
-
-    def _record_categorization(
-        self,
-        transaction_id: str,
-        category: str,
-        subcategory: str | None = None,
-    ) -> str | None:
-        """Record a categorization for auto-rule learning. Returns proposal id or None."""
-        from moneybin.services import _auto_rule
-
-        return _auto_rule.record_categorization(
-            self._db, transaction_id, category, subcategory=subcategory
         )
