@@ -237,7 +237,7 @@ class AutoRuleService:
                     [pid],
                 )
                 newly = self._categorize_existing_with_rule(
-                    rule_id, pattern, match_type, category, subcategory
+                    rule_id, category, subcategory
                 )
                 self._db.commit()
             except Exception:
@@ -506,21 +506,9 @@ class AutoRuleService:
         pending = _scalar(
             f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
         )
-        # Count transactions categorized by any rule whose source is an auto-rule.
-        # apply_rules writes categorized_by='rule' even for auto-promoted rules,
-        # so a label-only filter would miss most auto-rule impact.
         applied = _scalar(
-            f"""
-            SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} c
-            WHERE c.categorized_by = 'auto_rule'
-               OR (
-                   c.rule_id IS NOT NULL
-                   AND c.rule_id IN (
-                       SELECT rule_id FROM {CATEGORIZATION_RULES.full_name}
-                       WHERE created_by = 'auto_rule'
-                   )
-               )
-            """
+            f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "
+            "WHERE categorized_by = 'auto_rule'"
         )
         return {
             "active_auto_rules": active,
@@ -631,36 +619,41 @@ class AutoRuleService:
     def _categorize_existing_with_rule(
         self,
         rule_id: str,
-        pattern: str,
-        match_type: str,
         category: str,
         subcategory: str | None,
     ) -> int:
         """Run the new rule against currently-uncategorized matching transactions. Returns count categorized.
 
-        Pattern matching is performed in Python via ``matches_pattern`` against
-        both raw and ``normalize_description``-cleaned descriptions, mirroring
-        ``apply_rules`` semantics. SQL-only matching would miss rules whose
-        pattern equals a normalized form (e.g., 'STARBUCKS' against
-        'SQ *STARBUCKS PORTLAND OR') and would not honor regex case-insensitivity.
+        Defers per-transaction matching to ``CategorizationService.match_first_rule``
+        against the full active-rule set so that a higher-priority user rule wins
+        if both would match — without this, the auto-rule could permanently claim
+        a transaction that should have been caught by the higher-priority rule
+        (subsequent ``apply_rules`` runs use ``INSERT OR IGNORE`` and won't
+        override). Only assigns when the priority winner is this rule.
         """
+        cat_service = CategorizationService(self._db)
+        active_rules = cat_service.fetch_active_rules()
         rows = self._db.execute(
             f"""
-            SELECT t.transaction_id, t.description
+            SELECT t.transaction_id, t.description, t.amount, t.account_id
             FROM {FCT_TRANSACTIONS.full_name} t
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
               AND t.description IS NOT NULL
             """
         ).fetchall()
-        matched_ids = [
-            str(txn_id)
-            for txn_id, description in rows
-            if matches_pattern(str(description), pattern, match_type)
-            or matches_pattern(
-                normalize_description(str(description)), pattern, match_type
+        matched_ids: list[str] = []
+        for txn_id, description, amount, account_id in rows:
+            winner = CategorizationService.match_first_rule(
+                active_rules,
+                str(description),
+                float(amount) if amount is not None else None,
+                str(account_id) if account_id is not None else None,
             )
-        ]
+            if winner is None:
+                continue
+            if winner[0] == rule_id:
+                matched_ids.append(str(txn_id))
         if not matched_ids:
             return 0
         self._db.executemany(

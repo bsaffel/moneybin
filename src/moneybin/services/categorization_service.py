@@ -550,7 +550,7 @@ class CategorizationService:
             )
         return categorized_count
 
-    def _fetch_active_rules(self) -> list[tuple[Any, ...]]:
+    def fetch_active_rules(self) -> list[tuple[Any, ...]]:
         """Return all active rules in priority order (priority ASC, created_at ASC)."""
         try:
             return self._db.execute(
@@ -567,7 +567,7 @@ class CategorizationService:
             return []
 
     @staticmethod
-    def _match_first_rule(
+    def match_first_rule(
         rules: list[tuple[Any, ...]],
         description: str,
         amount: float | None,
@@ -637,10 +637,10 @@ class CategorizationService:
         if not txn_row or not txn_row[0]:
             return None
         description, amount, account_id = txn_row
-        rules = self._fetch_active_rules()
+        rules = self.fetch_active_rules()
         if not rules:
             return None
-        return self._match_first_rule(
+        return self.match_first_rule(
             rules,
             str(description),
             float(amount) if amount is not None else None,
@@ -664,7 +664,7 @@ class CategorizationService:
         Returns:
             Number of transactions categorized.
         """
-        rules = self._fetch_active_rules()
+        rules = self.fetch_active_rules()
         if not rules:
             return 0
 
@@ -688,7 +688,7 @@ class CategorizationService:
 
         categorized_count = 0
         for txn_id, description, amount, account_id in uncategorized:
-            match = self._match_first_rule(
+            match = self.match_first_rule(
                 rules,
                 str(description),
                 float(amount) if amount is not None else None,
