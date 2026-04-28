@@ -34,6 +34,7 @@ from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
+    BulkCategorizationResult,
     CategorizationService,
     MatchType,
     SeedResult,
@@ -297,16 +298,9 @@ def categorize_bulk(
         items: List of dicts with transaction_id, category, subcategory.
     """
     if not items:
-        return build_envelope(
-            data={
-                "applied": 0,
-                "skipped": 0,
-                "errors": 0,
-                "error_details": [],
-                "merchants_created": 0,
-            },
-            sensitivity="medium",
-        )
+        return BulkCategorizationResult(
+            applied=0, skipped=0, errors=0, error_details=[]
+        ).to_envelope(0)
 
     result = CategorizationService(get_database()).bulk_categorize(items)
     return result.to_envelope(len(items))
