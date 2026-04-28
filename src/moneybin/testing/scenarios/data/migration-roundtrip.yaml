@@ -1,0 +1,35 @@
+scenario: migration-roundtrip
+description: "Migrations apply to the right schema; populated columns survive the upgrade"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+pipeline:
+  - generate
+  - transform
+  - migrate
+  - match
+
+assertions:
+  - name: catalog_wired_correctly
+    fn: assert_sqlmesh_catalog_matches
+  - name: migrations_at_head
+    fn: assert_migrations_at_head
+  - name: no_orphaned_provenance
+    fn: assert_no_orphans
+    args:
+      parent: core.fct_transactions
+      parent_column: transaction_id
+      child: meta.fct_transaction_provenance
+      child_column: transaction_id
+  - name: amount_not_nulled
+    fn: assert_no_nulls
+    args:
+      table: core.fct_transactions
+      columns: [amount, account_id, transaction_date]
+
+gates:
+  required_assertions: all

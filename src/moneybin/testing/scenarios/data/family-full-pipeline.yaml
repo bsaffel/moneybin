@@ -1,0 +1,56 @@
+scenario: family-full-pipeline
+description: "End-to-end correctness for the family persona"
+
+setup:
+  persona: family
+  seed: 42
+  years: 3
+  fixtures: []
+
+pipeline:
+  - generate
+  - transform
+  - match
+  - categorize
+
+assertions:
+  - name: catalog_wired_correctly
+    fn: assert_sqlmesh_catalog_matches
+  - name: fk_account_id
+    fn: assert_valid_foreign_keys
+    args:
+      child: core.fct_transactions
+      column: account_id
+      parent: core.dim_accounts
+      parent_column: account_id
+  - name: sign_convention
+    fn: assert_sign_convention
+  - name: no_duplicate_gold_records
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  - name: row_count_within_tolerance
+    fn: assert_row_count_delta
+    args:
+      table: core.fct_transactions
+      expected: 4500
+      tolerance_pct: 10
+  - name: transfers_balance_to_zero
+    fn: assert_balanced_transfers
+
+evaluations:
+  - name: categorization_accuracy
+    fn: score_categorization
+    threshold:
+      metric: accuracy
+      min: 0.80
+  - name: transfer_f1
+    fn: score_transfer_detection
+    threshold:
+      metric: f1
+      min: 0.85
+
+gates:
+  required_assertions: all
+  required_evaluations: all

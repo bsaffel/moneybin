@@ -1,0 +1,43 @@
+scenario: basic-full-pipeline
+description: "End-to-end correctness for the basic persona; smoke for full pipeline"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+pipeline:
+  - generate
+  - transform
+  - match
+  - categorize
+
+assertions:
+  - name: catalog_wired_correctly
+    fn: assert_sqlmesh_catalog_matches
+  - name: fk_account_id
+    fn: assert_valid_foreign_keys
+    args:
+      child: core.fct_transactions
+      column: account_id
+      parent: core.dim_accounts
+      parent_column: account_id
+  - name: sign_convention
+    fn: assert_sign_convention
+  - name: no_duplicate_gold_records
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+
+evaluations:
+  - name: categorization_accuracy
+    fn: score_categorization
+    threshold:
+      metric: accuracy
+      min: 0.70
+
+gates:
+  required_assertions: all
+  required_evaluations: all

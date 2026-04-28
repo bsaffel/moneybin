@@ -1,0 +1,32 @@
+scenario: transfer-detection-cross-account
+description: "Confirm transfer pairs across accounts; F1 vs ground truth + balanced legs"
+
+setup:
+  persona: family
+  seed: 42
+  years: 2
+  fixtures: []
+
+pipeline:
+  - generate
+  - transform
+  - match
+
+assertions:
+  - name: catalog_wired_correctly
+    fn: assert_sqlmesh_catalog_matches
+  - name: balanced_transfers
+    fn: assert_balanced_transfers
+  - name: sign_convention
+    fn: assert_sign_convention
+
+evaluations:
+  - name: transfer_f1
+    fn: score_transfer_detection
+    threshold:
+      metric: f1
+      min: 0.85
+
+gates:
+  required_assertions: all
+  required_evaluations: all

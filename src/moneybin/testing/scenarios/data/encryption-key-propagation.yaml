@@ -1,0 +1,30 @@
+scenario: encryption-key-propagation
+description: "Subprocess transforms must propagate encryption key and write to the same DB"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+pipeline:
+  - generate
+  - transform_via_subprocess
+
+assertions:
+  - name: catalog_wired_correctly
+    fn: assert_sqlmesh_catalog_matches
+  - name: subprocess_wrote_to_encrypted_db
+    fn: assert_encryption_key_propagated_to_subprocess
+    args:
+      command: ["uv", "run", "moneybin", "data", "transform", "apply"]
+      expected_min_rows:
+        core.fct_transactions: 100
+        core.dim_accounts: 2
+  - name: no_unencrypted_artifacts
+    fn: assert_no_unencrypted_db_files
+    args:
+      tmpdir: from_runtime
+
+gates:
+  required_assertions: all
