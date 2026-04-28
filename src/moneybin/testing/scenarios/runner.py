@@ -1,0 +1,239 @@
+"""Scenario orchestrator.
+
+Boots a fresh encrypted Database in a tempdir, dispatches the YAML pipeline
+through the step registry, runs assertions/expectations/evaluations, and
+returns a ``ResponseEnvelope`` describing the outcome.
+"""
+
+from __future__ import annotations
+
+import importlib
+import logging
+import os
+import shutil
+import tempfile
+import time
+from contextlib import contextmanager
+from dataclasses import asdict
+from typing import Any
+
+from moneybin.database import Database, close_database, get_database
+from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.testing.scenarios.expectations import (
+    ExpectationResult,
+    verify_expectations,
+)
+from moneybin.testing.scenarios.loader import (
+    AssertionSpec,
+    EvaluationSpec,
+    Scenario,
+)
+from moneybin.testing.scenarios.steps import run_step
+from moneybin.validation.assertions import assert_sqlmesh_catalog_matches
+from moneybin.validation.result import AssertionResult, EvaluationResult
+
+logger = logging.getLogger(__name__)
+
+
+# Assertion functions whose first argument is a ``Database`` rather than a
+# DuckDB connection. Everything else takes a connection.
+_DATABASE_ASSERTION_FNS = frozenset({
+    "assert_sqlmesh_catalog_matches",
+    "assert_encryption_key_propagated_to_subprocess",
+    "assert_migrations_at_head",
+    "assert_no_unencrypted_db_files",
+})
+
+
+@contextmanager
+def _patched_env(env: dict[str, str]):
+    """Temporarily set env vars, restoring originals on exit."""
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEnvelope:
+    """Run ``scenario`` end-to-end and return a ``ResponseEnvelope``.
+
+    The runner provisions a profile under a fresh tempdir, opens an
+    encrypted ``Database``, dispatches the configured pipeline steps, and
+    then evaluates assertions, expectations, and evaluations against the
+    resulting state.
+
+    Args:
+        scenario: A validated scenario specification.
+        keep_tmpdir: If True, leave the tempdir in place after the run for
+            post-mortem inspection. Otherwise the tempdir is removed.
+
+    Returns:
+        A ``ResponseEnvelope`` whose ``data`` payload describes scenario
+        results, gates, and structured failure details.
+    """
+    started = time.perf_counter()
+    tmp = tempfile.mkdtemp(prefix=f"scenario-{scenario.name}-")
+    env = {"MONEYBIN_HOME": tmp, "MONEYBIN_PROFILE": "scenario"}
+    cleanup = not keep_tmpdir
+
+    db: Database | None = None
+    try:
+        with _patched_env(env):
+            db = _bootstrap_database()
+
+            preflight = assert_sqlmesh_catalog_matches(db)
+            if not preflight.passed:
+                return _build_envelope(
+                    scenario=scenario,
+                    started=started,
+                    tmpdir=tmp,
+                    assertions=[preflight],
+                    expectations=[],
+                    evaluations=[],
+                    halted="catalog wiring failed pre-flight",
+                )
+
+            for step in scenario.pipeline:
+                run_step(step, scenario.setup, db, env=env)
+
+            assertions = [_run_assertion(a, db) for a in scenario.assertions]
+            expectations = verify_expectations(db, scenario.expectations)
+            evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
+
+            return _build_envelope(
+                scenario=scenario,
+                started=started,
+                tmpdir=tmp,
+                assertions=[preflight, *assertions],
+                expectations=expectations,
+                evaluations=evaluations,
+            )
+    finally:
+        # Close the singleton Database before tempdir removal so DuckDB's
+        # file handles are released cleanly on every platform.
+        if db is not None:
+            close_database()
+        if cleanup:
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            logger.info(f"scenario.tmpdir_kept path={tmp}")
+
+
+def _bootstrap_database() -> Database:
+    """Create the scenario profile and return the singleton ``Database``.
+
+    Assumes ``MONEYBIN_HOME`` and ``MONEYBIN_PROFILE`` are already set in
+    the environment. Invalidates any previously cached settings so the new
+    profile's encrypted DB path is used.
+    """
+    from moneybin.config import clear_settings_cache, set_current_profile
+    from moneybin.services.profile_service import ProfileService
+
+    # Reset any previously cached settings/profile so subsequent calls pick
+    # up the patched env vars.
+    clear_settings_cache()
+    set_current_profile("scenario")
+
+    ProfileService().create("scenario")
+
+    # Re-clear so the profile-create's side effects (which may have populated
+    # the cache via init_db helpers) don't survive into the runner's own
+    # Database singleton.
+    clear_settings_cache()
+    set_current_profile("scenario")
+
+    return get_database()
+
+
+def _run_assertion(spec: AssertionSpec, db: Database) -> AssertionResult:
+    fn = _resolve_assertion(spec.fn)
+    args = dict(spec.args)
+    try:
+        if spec.fn in _DATABASE_ASSERTION_FNS:
+            return fn(db, **args)
+        return fn(db.conn, **args)
+    except Exception as exc:  # noqa: BLE001 — surface as structured failure
+        logger.exception(f"assertion {spec.name} crashed")
+        return AssertionResult(
+            name=spec.name,
+            passed=False,
+            details={"args": args},
+            error=str(exc),
+        )
+
+
+def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
+    fn = _resolve_evaluation(spec.fn)
+    try:
+        return fn(db, threshold=spec.threshold.min, **spec.args)
+    except Exception as exc:  # noqa: BLE001 — surface as structured failure
+        logger.exception(f"evaluation {spec.name} crashed")
+        return EvaluationResult(
+            name=spec.name,
+            metric=spec.threshold.metric,
+            value=0.0,
+            threshold=spec.threshold.min,
+            passed=False,
+            breakdown={"error": str(exc)},
+        )
+
+
+def _resolve_assertion(fn_name: str):
+    mod = importlib.import_module("moneybin.validation.assertions")
+    if not hasattr(mod, fn_name):
+        raise ValueError(f"unknown assertion fn: {fn_name}")
+    return getattr(mod, fn_name)
+
+
+def _resolve_evaluation(fn_name: str):
+    mod = importlib.import_module("moneybin.validation.evaluations")
+    if not hasattr(mod, fn_name):
+        raise ValueError(f"unknown evaluation fn: {fn_name}")
+    return getattr(mod, fn_name)
+
+
+def _build_envelope(
+    *,
+    scenario: Scenario,
+    started: float,
+    tmpdir: str,
+    assertions: list[AssertionResult],
+    expectations: list[ExpectationResult],
+    evaluations: list[EvaluationResult],
+    halted: str | None = None,
+) -> ResponseEnvelope:
+    duration = round(time.perf_counter() - started, 2)
+    all_a = all(a.passed for a in assertions)
+    all_e = all(e.passed for e in expectations) if expectations else True
+    all_v = all(e.passed for e in evaluations) if evaluations else True
+    passed = all_a and all_e and all_v and halted is None
+
+    actions: list[str] = []
+    for a in assertions:
+        if not a.passed:
+            actions.append(f"Inspect failing assertion: {a.name} (details={a.details})")
+    if halted:
+        actions.append(f"Run halted: {halted}")
+
+    data: dict[str, Any] = {
+        "scenario": scenario.name,
+        "passed": passed,
+        "duration_seconds": duration,
+        "tmpdir": tmpdir,
+        "halted": halted,
+        "assertions": [asdict(a) for a in assertions],
+        "expectations": [asdict(e) for e in expectations],
+        "evaluations": [asdict(e) for e in evaluations],
+        "gates": {
+            "all_assertions_passed": all_a,
+            "all_expectations_passed": all_e,
+            "all_evaluations_passed": all_v,
+        },
+    }
+    return build_envelope(data=data, sensitivity="low", actions=actions)

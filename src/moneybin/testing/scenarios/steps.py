@@ -41,7 +41,7 @@ def _step_load_fixtures(setup: SetupSpec, db: Database, env: dict[str, str]) -> 
 
 def _step_transform(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
     with sqlmesh_context() as ctx:
-        ctx.run()
+        ctx.plan(auto_apply=True, no_prompts=True)
 
 
 def _step_match(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
