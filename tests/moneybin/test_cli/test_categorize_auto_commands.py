@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.categorize import app
+from moneybin.services.auto_rule_service import AutoConfirmResult
 
 runner = CliRunner()
 
@@ -54,14 +55,14 @@ def test_auto_rules_help():
 
 def _confirm_result(
     approved: int = 0, rejected: int = 0, skipped: int = 0
-) -> dict[str, object]:
-    return {
-        "approved": approved,
-        "newly_categorized": 0,
-        "rule_ids": [],
-        "rejected": rejected,
-        "skipped": skipped,
-    }
+) -> AutoConfirmResult:
+    return AutoConfirmResult(
+        approved=approved,
+        rejected=rejected,
+        skipped=skipped,
+        newly_categorized=0,
+        rule_ids=[],
+    )
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")

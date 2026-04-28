@@ -195,7 +195,7 @@ def test_approve_promotes_to_active_rule(real_db: Database) -> None:
     assert pid is not None
 
     result = svc.confirm(approve=[pid])
-    assert result["approved"] == 1
+    assert result.approved == 1
 
     rule = real_db.execute(
         "SELECT merchant_pattern, category, subcategory, priority, created_by, is_active "
@@ -223,7 +223,7 @@ def test_approve_immediately_categorizes_existing_uncategorized(
         "VALUES ('t9', 'a1', DATE '2026-01-02', -7.00, 'STARBUCKS DOWNTOWN', 'csv')"
     )
     result = svc.confirm(approve=[pid])
-    assert result["newly_categorized"] == 1
+    assert result.newly_categorized == 1
 
     cat = real_db.execute(
         "SELECT category, categorized_by FROM app.transaction_categories WHERE transaction_id = 't9'"

@@ -202,10 +202,10 @@ def auto_confirm_cmd(
         raise typer.Exit(1) from e
 
     logger.info(
-        f"✅ Approved {result['approved']} "
-        f"(categorized {result['newly_categorized']} existing); "
-        f"rejected {result['rejected']}; "
-        f"skipped {result['skipped']}"
+        f"✅ Approved {result.approved} "
+        f"(categorized {result.newly_categorized} existing); "
+        f"rejected {result.rejected}; "
+        f"skipped {result.skipped}"
     )
 
 
@@ -222,9 +222,9 @@ def auto_stats_cmd() -> None:
         raise typer.Exit(1) from e
 
     logger.info("Auto-rule health:")
-    logger.info(f"  Active auto-rules:        {stats['active_auto_rules']}")
-    logger.info(f"  Pending proposals:        {stats['pending_proposals']}")
-    logger.info(f"  Transactions auto-ruled:  {stats['transactions_categorized']}")
+    logger.info(f"  Active auto-rules:        {stats.active_auto_rules}")
+    logger.info(f"  Pending proposals:        {stats.pending_proposals}")
+    logger.info(f"  Transactions auto-ruled:  {stats.transactions_categorized}")
 
 
 @app.command("auto-rules")

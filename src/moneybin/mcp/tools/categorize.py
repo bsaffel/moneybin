@@ -650,21 +650,14 @@ def categorize_auto_review() -> ResponseEnvelope:
     sample matching transactions and trigger counts.
     """
     try:
-        data = AutoRuleService(get_database()).list_pending_proposals()
+        result = AutoRuleService(get_database()).review()
     except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("categorize.auto_review failed")
         return build_envelope(
             data={"error": "Failed to load proposals — check logs for details."},
             sensitivity="medium",
         )
-    return build_envelope(
-        data=data,
-        sensitivity="medium",
-        total_count=len(data),
-        actions=[
-            "Use categorize.auto_confirm to approve or reject proposals",
-        ],
-    )
+    return result.to_envelope()
 
 
 @mcp_tool(sensitivity="medium")
@@ -692,7 +685,7 @@ def categorize_auto_confirm(
             data={"error": "Failed to confirm proposals — check logs for details."},
             sensitivity="medium",
         )
-    return build_envelope(data=result, sensitivity="medium")
+    return result.to_envelope()
 
 
 @mcp_tool(sensitivity="low")
@@ -710,7 +703,7 @@ def categorize_auto_stats() -> ResponseEnvelope:
             data={"error": "Failed to load auto-rule stats — check logs for details."},
             sensitivity="low",
         )
-    return build_envelope(data=data, sensitivity="low")
+    return data.to_envelope()
 
 
 def register_categorize_tools(
