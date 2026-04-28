@@ -245,7 +245,7 @@ def _resolve_account_via_matcher(
                 "⚠️  Auto-accept requested but top fuzzy candidate has no "
                 "account_id; falling back to slugify(account_name)."
             )
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_warned").inc()
+            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_no_id").inc()
         else:
             candidate_ids = ", ".join(
                 filter(None, (c["account_id"] for c in result.candidates))
@@ -256,7 +256,7 @@ def _resolve_account_via_matcher(
                 "Use --yes to auto-accept the top candidate, "
                 "or --account-id to pick explicitly."
             )
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_warned").inc()
+            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_ambiguous").inc()
     else:
         ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="slugify_new").inc()
 
@@ -863,7 +863,7 @@ def _apply_categorization(db: Database) -> None:
                 f"Auto-categorized {stats['total']} transactions "
                 f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
-        pending = int(AutoRuleService(db).stats().get("pending_proposals", 0))
+        pending = AutoRuleService(db).stats().pending_proposals
         if pending:
             logger.info(f"  {pending} new auto-rule proposals")
             logger.info(

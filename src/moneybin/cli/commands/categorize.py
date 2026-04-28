@@ -247,17 +247,11 @@ def auto_rules_cmd(
     ),
 ) -> None:
     """List active auto-rules (rules with created_by='auto_rule')."""
-    from moneybin.config import get_settings
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    effective = (
-        limit
-        if limit is not None
-        else get_settings().categorization.auto_rule_list_default_limit
-    )
     try:
         with handle_database_errors() as db:
-            rules = AutoRuleService(db).list_active_rules(limit=effective)
+            rules = AutoRuleService(db).list_active_rules(limit=limit)
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
@@ -273,8 +267,4 @@ def auto_rules_cmd(
             f"  [{r['rule_id']}] '{r['merchant_pattern']}' "
             f"({r['match_type']}) -> {r['category']}{sub} "
             f"(priority: {r['priority']})"
-        )
-    if len(rules) >= effective:
-        logger.info(
-            f"💡 Showing {len(rules)} rule(s) — use --limit to expand if more exist"
         )

@@ -242,14 +242,24 @@ class AutoRuleService:
         when ``None``. ``total_count`` reflects the unbounded queue size so
         callers see ``has_more`` when truncation occurs.
         """
-        effective_limit = (
-            limit
-            if limit is not None
-            else get_settings().categorization.auto_rule_list_default_limit
-        )
+        effective_limit = self._resolve_list_limit(limit)
         proposals = self.list_pending_proposals(limit=effective_limit)
-        total = self._count_pending_proposals()
+        # When the queue fits under the cap, the total is just len(proposals).
+        # Skip the COUNT(*) roundtrip in the common case (typical pending queues
+        # are well under 100).
+        total = (
+            len(proposals)
+            if len(proposals) < effective_limit
+            else self._count_pending_proposals()
+        )
         return AutoReviewResult(proposals=proposals, total_count=total)
+
+    @staticmethod
+    def _resolve_list_limit(limit: int | None) -> int:
+        """Return ``limit`` or the configured default."""
+        if limit is not None:
+            return limit
+        return get_settings().categorization.auto_rule_list_default_limit
 
     def confirm(
         self,
@@ -535,29 +545,20 @@ class AutoRuleService:
         pending rows (legacy behavior used by callers that need the full
         set, e.g. ``--approve-all`` expansion).
         """
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        params = [limit] if limit is not None else []
         try:
-            if limit is not None:
-                rows = self._db.execute(
-                    f"""
-                    SELECT proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-                           trigger_count, sample_txn_ids
-                    FROM {PROPOSED_RULES.full_name}
-                    WHERE status = 'pending'
-                    ORDER BY trigger_count DESC, proposed_at ASC
-                    LIMIT ?
-                    """,
-                    [limit],
-                ).fetchall()
-            else:
-                rows = self._db.execute(
-                    f"""
-                    SELECT proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-                           trigger_count, sample_txn_ids
-                    FROM {PROPOSED_RULES.full_name}
-                    WHERE status = 'pending'
-                    ORDER BY trigger_count DESC, proposed_at ASC
-                    """
-                ).fetchall()
+            rows = self._db.execute(
+                f"""
+                SELECT proposed_rule_id, merchant_pattern, match_type, category, subcategory,
+                       trigger_count, sample_txn_ids
+                FROM {PROPOSED_RULES.full_name}
+                WHERE status = 'pending'
+                ORDER BY trigger_count DESC, proposed_at ASC
+                {limit_clause}
+                """,
+                params,
+            ).fetchall()
         except duckdb.CatalogException:
             return []
         return [
@@ -576,30 +577,22 @@ class AutoRuleService:
     def list_active_rules(self, *, limit: int | None = None) -> list[dict[str, object]]:
         """Return active auto-rules (rows with created_by='auto_rule').
 
-        ``limit`` caps the number of rows returned. ``None`` returns all
-        active auto-rules (legacy behavior).
+        ``limit`` defaults to ``categorization.auto_rule_list_default_limit``
+        when ``None`` so callers (CLI, MCP) get a bounded result by default
+        without each having to resolve the setting themselves.
         """
+        effective_limit = self._resolve_list_limit(limit)
         try:
-            if limit is not None:
-                rows = self._db.execute(
-                    f"""
-                    SELECT rule_id, merchant_pattern, match_type, category, subcategory, priority
-                    FROM {CATEGORIZATION_RULES.full_name}
-                    WHERE created_by = 'auto_rule' AND is_active = true
-                    ORDER BY priority ASC, rule_id
-                    LIMIT ?
-                    """,
-                    [limit],
-                ).fetchall()
-            else:
-                rows = self._db.execute(
-                    f"""
-                    SELECT rule_id, merchant_pattern, match_type, category, subcategory, priority
-                    FROM {CATEGORIZATION_RULES.full_name}
-                    WHERE created_by = 'auto_rule' AND is_active = true
-                    ORDER BY priority ASC, rule_id
-                    """
-                ).fetchall()
+            rows = self._db.execute(
+                f"""
+                SELECT rule_id, merchant_pattern, match_type, category, subcategory, priority
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE created_by = 'auto_rule' AND is_active = true
+                ORDER BY priority ASC, rule_id
+                LIMIT ?
+                """,
+                [effective_limit],
+            ).fetchall()
         except duckdb.CatalogException:
             return []
         return [
