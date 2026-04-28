@@ -271,10 +271,25 @@ def run_transforms() -> bool:
     (via ``get_database()``) — ``sqlmesh_context()`` reuses its
     connection.
 
+    Seeds ``app.seed_source_priority`` from config before running so
+    ``int_transactions__merged`` can resolve per-field winners. Without
+    this, the LEFT JOIN onto ``seed_source_priority`` produces NULL
+    priorities for every row, causing ARG_MIN(value, NULL_key) to drop
+    non-NULL values for fields that key on a CASE-with-NULL-fallthrough
+    pattern (description, memo, etc.). Callers that go straight to
+    transforms (``transform apply``, synthetic generation) would
+    otherwise materialize NULL descriptions in core.fct_transactions.
+
     Returns:
         True if transforms ran successfully.
     """
+    from moneybin.config import get_settings
+    from moneybin.database import get_database
+    from moneybin.matching.priority import seed_source_priority
+
     logger.info("Running SQLMesh transforms")
+
+    seed_source_priority(get_database(), get_settings().matching)
 
     with sqlmesh_context() as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)

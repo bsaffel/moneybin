@@ -48,12 +48,13 @@ def apply_transforms() -> None:
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
     models since the last run.
     """
+    from moneybin.services.import_service import run_transforms
+
     logger.info("⚙️  Applying SQLMesh transforms...")
 
     try:
         with handle_database_errors():
-            with sqlmesh_context() as ctx:
-                ctx.plan(auto_apply=True, no_prompts=True)
+            run_transforms()
         logger.info("✅ SQLMesh transforms applied")
     except typer.Exit:
         raise
