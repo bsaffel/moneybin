@@ -643,14 +643,20 @@ def categorize_seed() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium")
-def categorize_auto_review() -> ResponseEnvelope:
+def categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
     """List pending auto-rule proposals.
 
     Returns proposed categorization rules awaiting review, including
     sample matching transactions and trigger counts.
+
+    Args:
+        limit: Maximum number of proposals to return. Defaults to the
+            configured ``auto_rule_list_default_limit`` (100). The envelope
+            ``summary.has_more`` flag indicates whether more proposals exist
+            beyond the returned page.
     """
     try:
-        result = AutoRuleService(get_database()).review()
+        result = AutoRuleService(get_database()).review(limit=limit)
     except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("categorize.auto_review failed")
         return build_envelope(

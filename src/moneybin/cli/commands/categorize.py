@@ -125,6 +125,11 @@ def auto_review_cmd(
     output: str = typer.Option(
         "table", "--output", help="Output format: table or json"
     ),
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        help="Maximum number of proposals to display (defaults to configured limit)",
+    ),
 ) -> None:
     """List pending auto-rule proposals with sample transactions and trigger counts."""
     import json
@@ -133,13 +138,14 @@ def auto_review_cmd(
 
     try:
         with handle_database_errors() as db:
-            proposals = AutoRuleService(db).list_pending_proposals()
+            result = AutoRuleService(db).review(limit=limit)
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
 
+    proposals = result.proposals
     if output == "json":
-        typer.echo(json.dumps(proposals))
+        typer.echo(json.dumps(result.to_envelope().to_dict()))
         return
 
     if not proposals:
@@ -155,6 +161,11 @@ def auto_review_cmd(
             f"  [{p['proposed_rule_id']}] '{p['merchant_pattern']}' "
             f"({p['match_type']}) -> {p['category']}{sub} "
             f"(×{p['trigger_count']}){sample_str}"
+        )
+    if result.total_count > len(proposals):
+        logger.info(
+            f"💡 Showing {len(proposals)} of {result.total_count} pending proposals "
+            f"— use --limit to see more"
         )
 
 
@@ -228,13 +239,25 @@ def auto_stats_cmd() -> None:
 
 
 @app.command("auto-rules")
-def auto_rules_cmd() -> None:
+def auto_rules_cmd(
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        help="Maximum number of auto-rules to display (defaults to configured limit)",
+    ),
+) -> None:
     """List active auto-rules (rules with created_by='auto_rule')."""
+    from moneybin.config import get_settings
     from moneybin.services.auto_rule_service import AutoRuleService
 
+    effective = (
+        limit
+        if limit is not None
+        else get_settings().categorization.auto_rule_list_default_limit
+    )
     try:
         with handle_database_errors() as db:
-            rules = AutoRuleService(db).list_active_rules()
+            rules = AutoRuleService(db).list_active_rules(limit=effective)
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
@@ -250,4 +273,8 @@ def auto_rules_cmd() -> None:
             f"  [{r['rule_id']}] '{r['merchant_pattern']}' "
             f"({r['match_type']}) -> {r['category']}{sub} "
             f"(priority: {r['priority']})"
+        )
+    if len(rules) >= effective:
+        logger.info(
+            f"💡 Showing {len(rules)} rule(s) — use --limit to expand if more exist"
         )
