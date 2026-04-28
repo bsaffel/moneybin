@@ -13,10 +13,8 @@ import pytest
 from pytest_mock import MockerFixture
 
 from moneybin.database import Database
-from moneybin.services.categorization_service import (
-    CategorizationService,
-    normalize_description,
-)
+from moneybin.services._text import normalize_description
+from moneybin.services.categorization_service import CategorizationService
 from tests.moneybin.db_helpers import create_core_tables
 
 

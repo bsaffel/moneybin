@@ -19,10 +19,10 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
+from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
     CategorizationService,
     matches_pattern,
-    normalize_description,
 )
 from moneybin.tables import (
     CATEGORIZATION_RULES,

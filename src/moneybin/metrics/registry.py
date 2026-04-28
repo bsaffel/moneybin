@@ -110,6 +110,14 @@ CATEGORIZATION_RULES_FIRED_TOTAL = Counter(
     ["rule_id"],
 )
 
+# ── Account matching ─────────────────────────────────────────────────────────
+
+ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(
+    "moneybin_account_match_outcomes_total",
+    "Outcomes of account-name resolution during tabular import",
+    ["result"],
+)
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 MCP_TOOL_CALLS_TOTAL = Counter(
