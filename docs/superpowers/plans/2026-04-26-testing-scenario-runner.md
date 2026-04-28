@@ -345,8 +345,15 @@ def assert_valid_foreign_keys(
     parent: str,
     parent_column: str,
 ) -> AssertionResult:
-    c, col, p, pc = _quote_ident(child), _quote_ident(column), _quote_ident(parent), _quote_ident(parent_column)
-    total = conn.execute(f"SELECT COUNT(*) FROM {c} WHERE {col} IS NOT NULL").fetchone()[0]
+    c, col, p, pc = (
+        _quote_ident(child),
+        _quote_ident(column),
+        _quote_ident(parent),
+        _quote_ident(parent_column),
+    )
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM {c} WHERE {col} IS NOT NULL"
+    ).fetchone()[0]
     violations = conn.execute(
         f"SELECT COUNT(*) FROM {c} ch WHERE ch.{col} IS NOT NULL "
         f"AND NOT EXISTS (SELECT 1 FROM {p} pa WHERE pa.{pc} = ch.{col})"
@@ -366,7 +373,12 @@ def assert_no_orphans(
     child: str,
     child_column: str,
 ) -> AssertionResult:
-    p, pc, c, cc = _quote_ident(parent), _quote_ident(parent_column), _quote_ident(child), _quote_ident(child_column)
+    p, pc, c, cc = (
+        _quote_ident(parent),
+        _quote_ident(parent_column),
+        _quote_ident(child),
+        _quote_ident(child_column),
+    )
     orphans = conn.execute(
         f"SELECT COUNT(*) FROM {p} pa WHERE NOT EXISTS "
         f"(SELECT 1 FROM {c} ch WHERE ch.{cc} = pa.{pc})"
@@ -454,7 +466,9 @@ def test_columns_exist_fails_when_missing() -> None:
 
 
 def test_column_types_match() -> None:
-    r = assert_column_types(_conn(), table="t", types={"id": "INTEGER", "name": "VARCHAR"})
+    r = assert_column_types(
+        _conn(), table="t", types={"id": "INTEGER", "name": "VARCHAR"}
+    )
     assert r.passed
 
 
@@ -638,8 +652,7 @@ def test_sign_convention_passes_when_categories_match_signs() -> None:
 def test_sign_convention_flags_positive_expense() -> None:
     c = _txn_conn()
     c.execute(
-        "INSERT INTO core.fct_transactions VALUES "
-        "('t1', 50.00, 'Groceries', NULL)"
+        "INSERT INTO core.fct_transactions VALUES ('t1', 50.00, 'Groceries', NULL)"
     )
     r = assert_sign_convention(c)
     assert not r.passed
@@ -713,7 +726,10 @@ def assert_balanced_transfers(conn: DuckDBPyConnection) -> AssertionResult:
     return AssertionResult(
         name="balanced_transfers",
         passed=not unbalanced,
-        details={"unbalanced_pairs": unbalanced[:20], "unbalanced_count": len(unbalanced)},
+        details={
+            "unbalanced_pairs": unbalanced[:20],
+            "unbalanced_count": len(unbalanced),
+        },
     )
 
 
@@ -767,16 +783,24 @@ def _conn() -> duckdb.DuckDBPyConnection:
 
 def test_distribution_within_bounds_passes() -> None:
     r = assert_distribution_within_bounds(
-        _conn(), table="t", col="amount",
-        min_value=10, max_value=50, mean_range=(25, 35),
+        _conn(),
+        table="t",
+        col="amount",
+        min_value=10,
+        max_value=50,
+        mean_range=(25, 35),
     )
     assert r.passed
 
 
 def test_distribution_out_of_range_fails() -> None:
     r = assert_distribution_within_bounds(
-        _conn(), table="t", col="amount",
-        min_value=10, max_value=49, mean_range=(25, 35),
+        _conn(),
+        table="t",
+        col="amount",
+        min_value=10,
+        max_value=49,
+        mean_range=(25, 35),
     )
     assert not r.passed
     assert r.details["max_observed"] == 50
@@ -819,9 +843,7 @@ def assert_distribution_within_bounds(
     mean_range: tuple[float, float],
 ) -> AssertionResult:
     t, c = _quote_ident(table), _quote_ident(col)
-    row = conn.execute(
-        f"SELECT MIN({c}), MAX({c}), AVG({c}) FROM {t}"
-    ).fetchone()
+    row = conn.execute(f"SELECT MIN({c}), MAX({c}), AVG({c}) FROM {t}").fetchone()
     mn, mx, avg = (float(row[0]), float(row[1]), float(row[2]))
     failures: list[str] = []
     if mn < min_value:
@@ -834,7 +856,9 @@ def assert_distribution_within_bounds(
         name="distribution_within_bounds",
         passed=not failures,
         details={
-            "min_observed": mn, "max_observed": mx, "mean_observed": round(avg, 4),
+            "min_observed": mn,
+            "max_observed": mx,
+            "mean_observed": round(avg, 4),
             "failures": failures,
         },
     )
@@ -854,7 +878,11 @@ def assert_unique_value_count(
     return AssertionResult(
         name="unique_value_count",
         passed=delta_pct <= tolerance_pct,
-        details={"expected": expected, "actual": actual, "delta_pct": round(delta_pct, 2)},
+        details={
+            "expected": expected,
+            "actual": actual,
+            "delta_pct": round(delta_pct, 2),
+        },
     )
 ```
 
@@ -978,10 +1006,20 @@ def _resolve_adapter_path(ctx: object) -> str:
     SQLMesh stores the engine adapter under ``ctx._engine_adapter`` historically;
     this helper degrades gracefully if the internal API changes.
     """
-    adapter = getattr(ctx, "_engine_adapter", None) or getattr(ctx, "engine_adapter", None)
-    conn = getattr(adapter, "_connection_pool", None) or getattr(adapter, "connection", None)
+    adapter = getattr(ctx, "_engine_adapter", None) or getattr(
+        ctx, "engine_adapter", None
+    )
+    conn = getattr(adapter, "_connection_pool", None) or getattr(
+        adapter, "connection", None
+    )
     raw = getattr(conn, "get_connection", lambda: conn)() if conn else None
-    db_files = raw.execute("SELECT file FROM duckdb_databases() WHERE database_name = current_database()").fetchall() if raw else []
+    db_files = (
+        raw.execute(
+            "SELECT file FROM duckdb_databases() WHERE database_name = current_database()"
+        ).fetchall()
+        if raw
+        else []
+    )
     if db_files:
         return str(Path(db_files[0][0]).resolve())
     return "<unknown>"
@@ -1038,7 +1076,9 @@ def assert_no_unencrypted_db_files(*, tmpdir: Path) -> AssertionResult:
 
 def assert_migrations_at_head(db: Database) -> AssertionResult:
     """``app.versions`` head must equal the latest migration on disk."""
-    from moneybin.migrations import head_version_on_disk  # adjust to actual location during impl
+    from moneybin.migrations import (
+        head_version_on_disk,
+    )  # adjust to actual location during impl
 
     with db.connect() as conn:
         applied = conn.execute("SELECT MAX(version) FROM app.versions").fetchone()[0]
@@ -1115,6 +1155,7 @@ class TestCategorizationScoring:
     def test_missing_ground_truth_raises_typed_error(self) -> None:
         from moneybin.validation.evaluations import GroundTruthMissingError
         from tests.helpers.database import temp_database  # no synthetic.ground_truth
+
         with temp_database() as db, pytest.raises(GroundTruthMissingError):
             score_categorization(db, threshold=0.80)
 
@@ -1154,7 +1195,10 @@ class GroundTruthMissingError(RuntimeError):
 
 
 from moneybin.validation.evaluations.categorization import score_categorization
-from moneybin.validation.evaluations.matching import score_dedup, score_transfer_detection
+from moneybin.validation.evaluations.matching import (
+    score_dedup,
+    score_transfer_detection,
+)
 
 __all__ = [
     "GroundTruthMissingError",
@@ -1292,15 +1336,21 @@ def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationRes
             "recall": round(recall, 4),
             "true_pairs": len(true_pairs),
             "predicted_pairs": len(predicted_pairs),
-            "tp": tp, "fp": fp, "fn": fn,
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
         },
     )
 
 
-def score_dedup(db: Database, *, threshold: float, expected_collapsed_count: int) -> EvaluationResult:
+def score_dedup(
+    db: Database, *, threshold: float, expected_collapsed_count: int
+) -> EvaluationResult:
     """Compares actual collapsed gold-record count to expected from labeled-overlap fixture metadata."""
     with db.connect() as conn:
-        actual = conn.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()[0]
+        actual = conn.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()[
+            0
+        ]
     delta = abs(actual - expected_collapsed_count)
     f1 = max(0.0, 1.0 - delta / max(expected_collapsed_count, 1))
     return EvaluationResult(
@@ -1309,7 +1359,10 @@ def score_dedup(db: Database, *, threshold: float, expected_collapsed_count: int
         value=round(f1, 4),
         threshold=threshold,
         passed=f1 >= threshold,
-        breakdown={"actual_gold_records": actual, "expected_collapsed_count": expected_collapsed_count},
+        breakdown={
+            "actual_gold_records": actual,
+            "expected_collapsed_count": expected_collapsed_count,
+        },
     )
 
 
@@ -1362,9 +1415,7 @@ from moneybin.services.matching_service import MatchingService
 def test_run_delegates_to_transaction_matcher() -> None:
     db = MagicMock()
     fake_result = MagicMock()
-    with patch(
-        "moneybin.services.matching_service.TransactionMatcher"
-    ) as matcher_cls:
+    with patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls:
         matcher_cls.return_value.run.return_value = fake_result
         svc = MatchingService(db)
         result = svc.run()
@@ -1375,8 +1426,10 @@ def test_run_delegates_to_transaction_matcher() -> None:
 
 def test_uses_default_settings_when_omitted() -> None:
     db = MagicMock()
-    with patch("moneybin.services.matching_service.TransactionMatcher") as cls, \
-         patch("moneybin.services.matching_service.get_settings") as gs:
+    with (
+        patch("moneybin.services.matching_service.TransactionMatcher") as cls,
+        patch("moneybin.services.matching_service.get_settings") as gs,
+    ):
         gs.return_value.matching = "MATCHING_SETTINGS"
         MatchingService(db).run()
     args, kwargs = cls.call_args
@@ -1731,8 +1784,13 @@ from moneybin.testing.scenarios.loader import SetupSpec, FixtureSpec  # noqa: F4
 
 def test_every_known_step_has_a_callable() -> None:
     for name in {
-        "generate", "load_fixtures", "transform", "match",
-        "categorize", "migrate", "transform_via_subprocess",
+        "generate",
+        "load_fixtures",
+        "transform",
+        "match",
+        "categorize",
+        "migrate",
+        "transform_via_subprocess",
     }:
         assert callable(STEP_REGISTRY[name]), name
 
@@ -1783,7 +1841,9 @@ StepCallable = Callable[[SetupSpec, Database, dict[str, str]], None]
 
 
 def _step_generate(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
-    GeneratorEngine(persona=setup.persona, seed=setup.seed, years=setup.years).run(db=db)
+    GeneratorEngine(persona=setup.persona, seed=setup.seed, years=setup.years).run(
+        db=db
+    )
 
 
 def _step_load_fixtures(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
@@ -1812,7 +1872,9 @@ def _step_categorize(setup: SetupSpec, db: Database, env: dict[str, str]) -> Non
             "WHERE category IS NULL"
         ).fetchall()
     if items:
-        svc.bulk_categorize([{"transaction_id": tid, "description": d} for tid, d in items])
+        svc.bulk_categorize([
+            {"transaction_id": tid, "description": d} for tid, d in items
+        ])
 
 
 def _step_migrate(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
@@ -1849,9 +1911,7 @@ STEP_REGISTRY: dict[str, StepCallable] = {
 }
 
 
-def run_step(
-    name: str, setup: SetupSpec, db: Database, *, env: dict[str, str]
-) -> None:
+def run_step(name: str, setup: SetupSpec, db: Database, *, env: dict[str, str]) -> None:
     if name not in STEP_REGISTRY:
         raise KeyError(f"unknown step: {name!r}")
     logger.info(f"scenario_step.start name={name}")
@@ -1904,14 +1964,18 @@ from moneybin.testing.scenarios.loader import ExpectationSpec
 def test_match_decision_passes_when_pair_matched() -> None:
     db = MagicMock()
     db.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = (
-        "gold-1", 0.95,
+        "gold-1",
+        0.95,
     )
     spec = ExpectationSpec.model_validate({
         "kind": "match_decision",
         "description": "Chase OFX == Amazon CSV",
         "transactions": [
             {"source_transaction_id": "SYN20240315001", "source_type": "ofx"},
-            {"source_transaction_id": "TBL_2024-03-15_AMZN_47.99", "source_type": "csv"},
+            {
+                "source_transaction_id": "TBL_2024-03-15_AMZN_47.99",
+                "source_type": "csv",
+            },
         ],
         "expected": "matched",
         "expected_match_type": "same_record",
@@ -1924,7 +1988,9 @@ def test_match_decision_passes_when_pair_matched() -> None:
 
 def test_gold_record_count_fails_when_actual_differs() -> None:
     db = MagicMock()
-    db.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = (5,)
+    db.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = (
+        5,
+    )
     spec = ExpectationSpec.model_validate({
         "kind": "gold_record_count",
         "description": "should collapse to 3",
@@ -2009,7 +2075,9 @@ def _verify_gold_record_count(db: Database, spec: ExpectationSpec) -> Expectatio
     body = spec.model_dump()
     expected = int(body["expected_collapsed_count"])
     with db.connect() as conn:
-        actual = conn.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()[0]
+        actual = conn.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()[
+            0
+        ]
     return ExpectationResult(
         name=spec.description or "gold_record_count",
         kind="gold_record_count",
@@ -2018,11 +2086,15 @@ def _verify_gold_record_count(db: Database, spec: ExpectationSpec) -> Expectatio
     )
 
 
-def _verify_category_for_transaction(db: Database, spec: ExpectationSpec) -> ExpectationResult:
+def _verify_category_for_transaction(
+    db: Database, spec: ExpectationSpec
+) -> ExpectationResult:
     body = spec.model_dump()
     txn_id = body["transaction_id"]
     expected_category = body["expected_category"]
-    expected_source = body.get("expected_categorized_by")  # 'rule' | 'auto_rule' | 'ml' | 'user'
+    expected_source = body.get(
+        "expected_categorized_by"
+    )  # 'rule' | 'auto_rule' | 'ml' | 'user'
     with db.connect() as conn:
         row = conn.execute(
             "SELECT category, categorized_by FROM core.fct_transactions WHERE transaction_id = ?",
@@ -2044,24 +2116,30 @@ def _verify_category_for_transaction(db: Database, spec: ExpectationSpec) -> Exp
         kind="category_for_transaction",
         passed=passed,
         details={
-            "expected": expected_category, "actual": actual_cat,
-            "expected_source": expected_source, "actual_source": actual_src,
+            "expected": expected_category,
+            "actual": actual_cat,
+            "expected_source": expected_source,
+            "actual_source": actual_src,
         },
     )
 
 
-def _verify_provenance_for_transaction(db: Database, spec: ExpectationSpec) -> ExpectationResult:
+def _verify_provenance_for_transaction(
+    db: Database, spec: ExpectationSpec
+) -> ExpectationResult:
     body = spec.model_dump()
     txn_id = body["transaction_id"]
     expected_sources = sorted(
         (s["source_transaction_id"], s["source_type"]) for s in body["expected_sources"]
     )
     with db.connect() as conn:
-        rows = sorted(conn.execute(
-            "SELECT source_transaction_id, source_type "
-            "FROM meta.fct_transaction_provenance WHERE transaction_id = ?",
-            [txn_id],
-        ).fetchall())
+        rows = sorted(
+            conn.execute(
+                "SELECT source_transaction_id, source_type "
+                "FROM meta.fct_transaction_provenance WHERE transaction_id = ?",
+                [txn_id],
+            ).fetchall()
+        )
     return ExpectationResult(
         name=spec.description or "provenance_for_transaction",
         kind="provenance_for_transaction",
@@ -2234,8 +2312,12 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
             preflight = assert_sqlmesh_catalog_matches(db)
             if not preflight.passed:
                 return _build_envelope(
-                    scenario=scenario, started=started, tmpdir=tmp,
-                    assertions=[preflight], expectations=[], evaluations=[],
+                    scenario=scenario,
+                    started=started,
+                    tmpdir=tmp,
+                    assertions=[preflight],
+                    expectations=[],
+                    evaluations=[],
                     halted="catalog wiring failed pre-flight",
                 )
 
@@ -2247,9 +2329,12 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
             evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
 
             return _build_envelope(
-                scenario=scenario, started=started, tmpdir=tmp,
+                scenario=scenario,
+                started=started,
+                tmpdir=tmp,
                 assertions=[preflight, *assertions],
-                expectations=expectations, evaluations=evaluations,
+                expectations=expectations,
+                evaluations=evaluations,
             )
     finally:
         if cleanup:
@@ -2267,7 +2352,9 @@ def _bootstrap_database(tmp: str) -> Database:
     from moneybin.config import get_settings
 
     settings = get_settings()
-    return Database(path=settings.database.path, secret_store=settings.database.secret_store)
+    return Database(
+        path=settings.database.path, secret_store=settings.database.secret_store
+    )
 
 
 def _run_assertion(spec: AssertionSpec, db: Database) -> AssertionResult:
@@ -2282,7 +2369,10 @@ def _run_assertion(spec: AssertionSpec, db: Database) -> AssertionResult:
     except Exception as exc:  # noqa: BLE001  # surface as structured failure
         logger.exception(f"assertion {spec.name} crashed")
         return AssertionResult(
-            name=spec.name, passed=False, details={"args": args}, error=str(exc),
+            name=spec.name,
+            passed=False,
+            details={"args": args},
+            error=str(exc),
         )
 
 
@@ -2293,8 +2383,11 @@ def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
     except Exception as exc:  # noqa: BLE001
         logger.exception(f"evaluation {spec.name} crashed")
         return EvaluationResult(
-            name=spec.name, metric=spec.threshold.metric, value=0.0,
-            threshold=spec.threshold.min, passed=False,
+            name=spec.name,
+            metric=spec.threshold.metric,
+            value=0.0,
+            threshold=spec.threshold.min,
+            passed=False,
             breakdown={"error": str(exc)},
         )
 
@@ -2724,7 +2817,10 @@ import subprocess
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["uv", "run", "moneybin", "synthetic", "verify", *args],
-        capture_output=True, text=True, check=False, timeout=600,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
     )
 
 
@@ -2760,9 +2856,13 @@ Append to `src/moneybin/cli/commands/synthetic.py`:
 @app.command("verify")
 def verify_cmd(
     list_scenarios: bool = typer.Option(False, "--list", help="List shipped scenarios"),
-    scenario: str | None = typer.Option(None, "--scenario", help="Run a single scenario"),
+    scenario: str | None = typer.Option(
+        None, "--scenario", help="Run a single scenario"
+    ),
     run_all: bool = typer.Option(False, "--all", help="Run every shipped scenario"),
-    fail_fast: bool = typer.Option(False, "--fail-fast", help="Stop on first failure with --all"),
+    fail_fast: bool = typer.Option(
+        False, "--fail-fast", help="Stop on first failure with --all"
+    ),
     keep_tmpdir: bool = typer.Option(False, "--keep-tmpdir", help="Preserve temp DB"),
     output: str = typer.Option("text", "--output", help="text|json"),
 ) -> None:
@@ -2778,7 +2878,11 @@ def verify_cmd(
 
     if list_scenarios:
         if output == "json":
-            print(json.dumps([{"name": s.name, "description": s.description} for s in scenarios]))
+            print(
+                json.dumps([
+                    {"name": s.name, "description": s.description} for s in scenarios
+                ])
+            )
         else:
             for s in scenarios:
                 print(f"{s.name:40} {s.description}")
@@ -2800,7 +2904,12 @@ def verify_cmd(
     for s in targets:
         env = run_scenario(s, keep_tmpdir=keep_tmpdir)
         if output == "json":
-            print(json.dumps(env.to_dict() if hasattr(env, "to_dict") else env.__dict__, default=str))
+            print(
+                json.dumps(
+                    env.to_dict() if hasattr(env, "to_dict") else env.__dict__,
+                    default=str,
+                )
+            )
         else:
             status = "✅" if env.data["passed"] else "❌"
             print(f"{status} {s.name} ({env.data['duration_seconds']}s)")
