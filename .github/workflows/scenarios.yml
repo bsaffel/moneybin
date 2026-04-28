@@ -1,0 +1,55 @@
+name: scenarios
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+concurrency:
+  group: scenarios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run scenario suite
+        run: |
+          start=$(date +%s)
+          uv run moneybin synthetic verify --all --output=json | tee scenarios.jsonl
+          end=$(date +%s)
+          echo "Total scenarios duration: $((end - start))s"
+
+      - name: Per-scenario summary
+        if: always()
+        run: |
+          echo "## Scenario results" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.data | "- \(.scenario): \(if .passed then "PASS" else "FAIL" end) (\(.duration_seconds)s)"' \
+            scenarios.jsonl >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenarios-results
+          path: scenarios.jsonl
