@@ -1,10 +1,13 @@
 """CLI commands for synthetic data generation and management."""
 
+import json
 import logging
 import random
+from typing import Any, cast
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option
 from moneybin.tables import (
     GROUND_TRUTH,
     OFX_ACCOUNTS,
@@ -270,20 +273,18 @@ def verify_cmd(
     keep_tmpdir: bool = typer.Option(
         False, "--keep-tmpdir", help="Preserve scenario temp directory"
     ),
-    output: str = typer.Option("text", "--output", help="text|json"),
+    output: OutputFormat = output_option,
 ) -> None:
     """Run scenario verification suites."""
-    import json
-    from typing import Any, cast
-
-    from moneybin.testing.scenarios.loader import list_shipped_scenarios
+    from moneybin.testing.scenarios.loader import (
+        list_shipped_scenarios,
+        load_shipped_scenario,
+    )
     from moneybin.testing.scenarios.runner import run_scenario
 
-    scenarios = list_shipped_scenarios()
-    by_name = {s.name: s for s in scenarios}
-
     if list_scenarios:
-        if output == "json":
+        scenarios = list_shipped_scenarios()
+        if output == OutputFormat.JSON:
             typer.echo(
                 json.dumps([
                     {"name": s.name, "description": s.description} for s in scenarios
@@ -295,12 +296,13 @@ def verify_cmd(
         return
 
     if scenario:
-        if scenario not in by_name:
+        single = load_shipped_scenario(scenario)
+        if single is None:
             logger.error(f"❌ unknown scenario: {scenario}")
             raise typer.Exit(2)
-        targets = [by_name[scenario]]
+        targets = [single]
     elif run_all:
-        targets = scenarios
+        targets = list_shipped_scenarios()
     else:
         logger.error("❌ specify --list, --scenario=NAME, or --all")
         raise typer.Exit(2)
@@ -309,15 +311,16 @@ def verify_cmd(
     for s in targets:
         env = run_scenario(s, keep_tmpdir=keep_tmpdir)
         data = cast("dict[str, Any]", env.data)
-        if output == "json":
+        passed = data["passed"]
+        if output == OutputFormat.JSON:
             typer.echo(env.to_json())
         else:
-            status = "✅" if data["passed"] else "❌"
+            status = "✅" if passed else "❌"
             typer.echo(f"{status} {s.name} ({data['duration_seconds']}s)")
             for a in data["assertions"]:
                 if not a["passed"]:
                     typer.echo(f"   ✗ {a['name']}: {a['details']}")
-        if not data["passed"]:
+        if not passed:
             failures += 1
             if fail_fast:
                 break

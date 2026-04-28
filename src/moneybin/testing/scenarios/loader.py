@@ -145,7 +145,17 @@ def load_scenario(path: Path) -> Scenario:
     return load_scenario_from_string(path.read_text())
 
 
+SHIPPED_SCENARIOS_DIR = Path(__file__).parent / "data"
+
+
 def list_shipped_scenarios() -> list[Scenario]:
     """Load all shipped scenario YAMLs bundled with the package."""
-    here = Path(__file__).parent / "data"
-    return [load_scenario(p) for p in sorted(here.glob("*.yaml"))]
+    return [load_scenario(p) for p in sorted(SHIPPED_SCENARIOS_DIR.glob("*.yaml"))]
+
+
+def load_shipped_scenario(name: str) -> Scenario | None:
+    """Load a single shipped scenario by name, or return None if missing."""
+    path = SHIPPED_SCENARIOS_DIR / f"{name}.yaml"
+    if not path.is_file():
+        return None
+    return load_scenario(path)

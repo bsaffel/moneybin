@@ -1,10 +1,4 @@
-"""Loads CSV fixtures into the temp Database for scenarios.
-
-Minimal viable loader: maps the 4-column dedup fixture schema
-(``date,description,amount,source_transaction_id``) into ``raw.tabular_transactions``.
-The canonical tabular extractor pipeline is out of scope here — fixtures are small,
-hand-authored, and only need enough columns populated to reach matching.
-"""
+"""Loads hand-authored CSV fixtures into ``raw.tabular_transactions`` for scenarios."""
 
 from __future__ import annotations
 
@@ -33,7 +27,6 @@ def _enrich_for_tabular_raw(
     df: pl.DataFrame, *, account: str, source_file: str
 ) -> pl.DataFrame:
     import_id = uuid.uuid4().hex[:12]
-    n = df.height
     return df.select(
         pl.col("source_transaction_id").alias("transaction_id"),
         pl.lit(account).alias("account_id"),
@@ -45,5 +38,5 @@ def _enrich_for_tabular_raw(
         pl.lit("csv").alias("source_type"),
         pl.lit("fixture").alias("source_origin"),
         pl.lit(import_id).alias("import_id"),
-        pl.int_range(1, n + 1, eager=True).alias("row_number"),
+        pl.int_range(1, df.height + 1, eager=True).alias("row_number"),
     )
