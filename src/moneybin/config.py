@@ -377,6 +377,60 @@ class MatchingSettings(BaseModel):
         return self
 
 
+class CategorizationSettings(BaseModel):
+    """Auto-rule proposal and lifecycle configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    auto_rule_proposal_threshold: int = Field(
+        default=1,
+        ge=1,
+        description="Propose an auto-rule after N matching user categorizations",
+    )
+    auto_rule_override_threshold: int = Field(
+        default=2,
+        ge=1,
+        description="Deactivate an auto-rule after N user overrides of its assignments",
+    )
+    auto_rule_default_priority: int = Field(
+        default=200,
+        ge=1,
+        description="Priority assigned to promoted auto-rules (higher number = lower priority)",
+    )
+    auto_rule_sample_txn_cap: int = Field(
+        default=5,
+        ge=1,
+        description="Maximum number of sample transaction IDs retained per proposal",
+    )
+    auto_rule_backfill_scan_cap: int = Field(
+        default=50_000,
+        ge=1,
+        description=(
+            "Maximum number of uncategorized transactions scanned when "
+            "backfilling a newly-approved auto-rule. Caps memory of the "
+            "in-Python match loop; transactions beyond the cap remain "
+            "uncategorized until the next apply_rules run picks them up."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def proposal_threshold_lte_override_threshold(self) -> "CategorizationSettings":
+        """Ensure proposal_threshold <= override_threshold.
+
+        If proposal > override, ``check_overrides`` deactivates a rule once
+        override count reaches override_threshold but the re-proposal lands
+        in ``tracking`` (count < proposal_threshold), hiding the corrected
+        category from ``auto-review`` until further user categorizations.
+        """
+        if self.auto_rule_proposal_threshold > self.auto_rule_override_threshold:
+            raise ValueError(
+                f"auto_rule_proposal_threshold ({self.auto_rule_proposal_threshold}) "
+                f"must be <= auto_rule_override_threshold "
+                f"({self.auto_rule_override_threshold})"
+            )
+        return self
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -400,6 +454,9 @@ class MoneyBinSettings(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
+    categorization: CategorizationSettings = Field(
+        default_factory=CategorizationSettings
+    )
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")

@@ -14,6 +14,9 @@ Tools:
     - categorize.create_category — Create a custom category (low)
     - categorize.toggle_category — Enable/disable a category (low)
     - categorize.seed — Seed default categories from taxonomy (low)
+    - categorize.auto_review — List pending auto-rule proposals (medium)
+    - categorize.auto_confirm — Approve/reject auto-rule proposals (medium)
+    - categorize.auto_stats — Auto-rule health metrics (low)
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from __future__ import annotations
 import logging
 import typing
 import uuid
+from collections.abc import Mapping, Sequence
 
 import duckdb
 
@@ -28,17 +32,12 @@ from moneybin.database import get_database
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
+    BulkCategorizationResult,
+    CategorizationService,
     MatchType,
-    create_merchant,
-    get_active_categories,
-    get_stats,
-)
-from moneybin.services.categorization_service import (
-    bulk_categorize as bulk_categorize_svc,
-)
-from moneybin.services.categorization_service import (
-    seed_categories as seed_categories_svc,
+    SeedResult,
 )
 from moneybin.tables import (
     CATEGORIES,
@@ -117,7 +116,7 @@ def categorize_categories(
             for r in rows
         ]
     else:
-        data = get_active_categories(db)
+        data = CategorizationService(db).get_active_categories()
 
     return build_envelope(
         data=data,
@@ -225,8 +224,7 @@ def categorize_stats() -> ResponseEnvelope:
     percentage categorized, and breakdown by categorization source
     (user, ai, rule, plaid).
     """
-    db = get_database()
-    result = get_stats(db)
+    result = CategorizationService(get_database()).stats()
     return result.to_envelope()
 
 
@@ -285,7 +283,7 @@ def categorize_uncategorized(
 
 @mcp_tool(sensitivity="medium")
 def categorize_bulk(
-    items: list[dict[str, str]],
+    items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
     """Assign categories to multiple transactions in one call.
 
@@ -300,12 +298,11 @@ def categorize_bulk(
         items: List of dicts with transaction_id, category, subcategory.
     """
     if not items:
-        return build_envelope(
-            data={"applied": 0, "skipped": 0, "errors": 0, "error_details": []},
-            sensitivity="medium",
-        )
+        return BulkCategorizationResult(
+            applied=0, skipped=0, errors=0, error_details=[]
+        ).to_envelope(0)
 
-    result = bulk_categorize_svc(get_database(), items)
+    result = CategorizationService(get_database()).bulk_categorize(items)
     return result.to_envelope(len(items))
 
 
@@ -498,8 +495,7 @@ def categorize_create_merchants(
         subcategory = str(item.get("subcategory", "")).strip() or None
 
         try:
-            create_merchant(
-                db,
+            CategorizationService(db).create_merchant(
                 raw_pattern,
                 canonical_name,
                 match_type=match_type,
@@ -636,10 +632,7 @@ def categorize_seed() -> ResponseEnvelope:
     are not overwritten.
     """
     try:
-        db = get_database()
-        count = seed_categories_svc(db)
-        from moneybin.services.categorization_service import SeedResult
-
+        count = CategorizationService(get_database()).seed()
         return SeedResult(seeded_count=count).to_envelope()
     except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
         logger.exception("seed_categories failed")
@@ -647,6 +640,77 @@ def categorize_seed() -> ResponseEnvelope:
             data={"error": "Failed to seed categories — check logs for details."},
             sensitivity="low",
         )
+
+
+@mcp_tool(sensitivity="medium")
+def categorize_auto_review() -> ResponseEnvelope:
+    """List pending auto-rule proposals.
+
+    Returns proposed categorization rules awaiting review, including
+    sample matching transactions and trigger counts.
+    """
+    try:
+        data = AutoRuleService(get_database()).list_pending_proposals()
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
+        logger.exception("categorize.auto_review failed")
+        return build_envelope(
+            data={"error": "Failed to load proposals — check logs for details."},
+            sensitivity="medium",
+        )
+    return build_envelope(
+        data=data,
+        sensitivity="medium",
+        total_count=len(data),
+        actions=[
+            "Use categorize.auto_confirm to approve or reject proposals",
+        ],
+    )
+
+
+@mcp_tool(sensitivity="medium")
+def categorize_auto_confirm(
+    approve: list[str] | None = None,
+    reject: list[str] | None = None,
+) -> ResponseEnvelope:
+    """Approve or reject auto-rule proposals by ID.
+
+    Approved proposals become active rules and immediately categorize
+    matching transactions.
+
+    Args:
+        approve: Proposal IDs to approve and promote to active rules.
+        reject: Proposal IDs to reject and dismiss.
+    """
+    try:
+        result = AutoRuleService(get_database()).confirm(
+            approve=approve or [],
+            reject=reject or [],
+        )
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
+        logger.exception("categorize.auto_confirm failed")
+        return build_envelope(
+            data={"error": "Failed to confirm proposals — check logs for details."},
+            sensitivity="medium",
+        )
+    return build_envelope(data=result, sensitivity="medium")
+
+
+@mcp_tool(sensitivity="low")
+def categorize_auto_stats() -> ResponseEnvelope:
+    """Auto-rule health metrics.
+
+    Returns counts of active auto-rules, pending proposals, and
+    transactions categorized by auto-rules.
+    """
+    try:
+        data = AutoRuleService(get_database()).stats()
+    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
+        logger.exception("categorize.auto_stats failed")
+        return build_envelope(
+            data={"error": "Failed to load auto-rule stats — check logs for details."},
+            sensitivity="low",
+        )
+    return build_envelope(data=data, sensitivity="low")
 
 
 def register_categorize_tools(
@@ -727,6 +791,31 @@ def register_categorize_tools(
                 "Initialize default categories from the Plaid PFCv2 taxonomy."
             ),
             fn=categorize_seed,
+        ),
+        ToolDefinition(
+            name="categorize.auto_review",
+            description=(
+                "List pending auto-rule proposals with sample transactions "
+                "and trigger counts."
+            ),
+            fn=categorize_auto_review,
+        ),
+        ToolDefinition(
+            name="categorize.auto_confirm",
+            description=(
+                "Batch approve/reject auto-rule proposals. Approved "
+                "proposals become active rules and immediately categorize "
+                "matching transactions."
+            ),
+            fn=categorize_auto_confirm,
+        ),
+        ToolDefinition(
+            name="categorize.auto_stats",
+            description=(
+                "Auto-rule health: active count, pending proposals, "
+                "transactions categorized."
+            ),
+            fn=categorize_auto_stats,
         ),
     ]
     for tool in tools:

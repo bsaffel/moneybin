@@ -5,6 +5,7 @@ LLM-based auto-categorization is available through the MCP server.
 """
 
 import logging
+from typing import cast
 
 import typer
 
@@ -21,13 +22,11 @@ app = typer.Typer(
 @app.command("apply-rules")
 def apply_rules_cmd() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
-    from moneybin.services.categorization_service import (
-        apply_deterministic_categorization,
-    )
+    from moneybin.services.categorization_service import CategorizationService
 
     try:
         with handle_database_errors() as db:
-            stats = apply_deterministic_categorization(db)
+            stats = CategorizationService(db).apply_deterministic()
             if stats["total"] > 0:
                 logger.info(
                     f"\u2705 Categorized {stats['total']} transactions "
@@ -49,11 +48,11 @@ def seed_cmd() -> None:
     Requires SQLMesh transforms to have been run at least once.
     Safe to run multiple times — existing categories are not overwritten.
     """
-    from moneybin.services.categorization_service import seed_categories
+    from moneybin.services.categorization_service import CategorizationService
 
     try:
         with handle_database_errors() as db:
-            count = seed_categories(db)
+            count = CategorizationService(db).seed()
             logger.info(f"\u2705 Seeded {count} new categories")
     except FileNotFoundError as e:
         logger.error(f"{e}")
@@ -63,11 +62,11 @@ def seed_cmd() -> None:
 @app.command("stats")
 def stats_cmd() -> None:
     """Show categorization coverage statistics."""
-    from moneybin.services.categorization_service import get_categorization_stats
+    from moneybin.services.categorization_service import CategorizationService
 
     try:
         with handle_database_errors() as db:
-            stats = get_categorization_stats(db)
+            stats = CategorizationService(db).categorization_stats()
     except FileNotFoundError as e:
         logger.error(f"{e}")
         raise typer.Exit(1) from e
@@ -118,4 +117,137 @@ def list_rules_cmd() -> None:
         sub = f" / {subcat}" if subcat else ""
         logger.info(
             f"  [{rule_id}] {name}: '{pattern}' ({match_type}) -> {cat}{sub} (priority: {priority})"
+        )
+
+
+@app.command("auto-review")
+def auto_review_cmd(
+    output: str = typer.Option(
+        "table", "--output", help="Output format: table or json"
+    ),
+) -> None:
+    """List pending auto-rule proposals with sample transactions and trigger counts."""
+    import json
+
+    from moneybin.services.auto_rule_service import AutoRuleService
+
+    try:
+        with handle_database_errors() as db:
+            proposals = AutoRuleService(db).list_pending_proposals()
+    except FileNotFoundError as e:
+        logger.error(f"{e}")
+        raise typer.Exit(1) from e
+
+    if output == "json":
+        typer.echo(json.dumps(proposals))
+        return
+
+    if not proposals:
+        logger.info("No pending auto-rule proposals.")
+        return
+
+    logger.info("👀 Pending auto-rule proposals:")
+    for p in proposals:
+        sub = f" / {p['subcategory']}" if p["subcategory"] else ""
+        samples = cast(list[str], p["sample_txn_ids"])
+        sample_str = f" samples: {','.join(samples)}" if samples else ""
+        logger.info(
+            f"  [{p['proposed_rule_id']}] '{p['merchant_pattern']}' "
+            f"({p['match_type']}) -> {p['category']}{sub} "
+            f"(×{p['trigger_count']}){sample_str}"
+        )
+
+
+@app.command("auto-confirm")
+def auto_confirm_cmd(
+    approve: list[str] = typer.Option(
+        None, "--approve", help="Proposal IDs to approve"
+    ),
+    reject: list[str] = typer.Option(None, "--reject", help="Proposal IDs to reject"),
+    approve_all: bool = typer.Option(
+        False, "--approve-all", help="Approve all pending proposals"
+    ),
+    reject_all: bool = typer.Option(
+        False, "--reject-all", help="Reject all pending proposals"
+    ),
+) -> None:
+    """Batch approve/reject auto-rule proposals."""
+    from moneybin.services.auto_rule_service import AutoRuleService
+
+    if approve_all and reject_all:
+        logger.error("❌ --approve-all and --reject-all are mutually exclusive")
+        raise typer.Exit(2)
+
+    try:
+        with handle_database_errors() as db:
+            svc = AutoRuleService(db)
+            if approve_all or reject_all:
+                pending_ids = [
+                    cast(str, p["proposed_rule_id"])
+                    for p in svc.list_pending_proposals()
+                ]
+                if approve_all:
+                    approve = (approve or []) + pending_ids
+                if reject_all:
+                    reject = (reject or []) + pending_ids
+
+            # Explicit reject wins over --approve-all: a user passing
+            # --approve-all --reject <id> means "approve all except <id>".
+            approve_set = set(approve or [])
+            reject_set = set(reject or [])
+            approve_set -= reject_set
+            result = svc.confirm(approve=sorted(approve_set), reject=sorted(reject_set))
+    except FileNotFoundError as e:
+        logger.error(f"{e}")
+        raise typer.Exit(1) from e
+
+    logger.info(
+        f"✅ Approved {result['approved']} "
+        f"(categorized {result['newly_categorized']} existing); "
+        f"rejected {result['rejected']}; "
+        f"skipped {result['skipped']}"
+    )
+
+
+@app.command("auto-stats")
+def auto_stats_cmd() -> None:
+    """Show auto-rule health: active rules, pending proposals, transactions categorized."""
+    from moneybin.services.auto_rule_service import AutoRuleService
+
+    try:
+        with handle_database_errors() as db:
+            stats = AutoRuleService(db).stats()
+    except FileNotFoundError as e:
+        logger.error(f"{e}")
+        raise typer.Exit(1) from e
+
+    logger.info("Auto-rule health:")
+    logger.info(f"  Active auto-rules:        {stats['active_auto_rules']}")
+    logger.info(f"  Pending proposals:        {stats['pending_proposals']}")
+    logger.info(f"  Transactions auto-ruled:  {stats['transactions_categorized']}")
+
+
+@app.command("auto-rules")
+def auto_rules_cmd() -> None:
+    """List active auto-rules (rules with created_by='auto_rule')."""
+    from moneybin.services.auto_rule_service import AutoRuleService
+
+    try:
+        with handle_database_errors() as db:
+            rules = AutoRuleService(db).list_active_rules()
+    except FileNotFoundError as e:
+        logger.error(f"{e}")
+        raise typer.Exit(1) from e
+
+    if not rules:
+        logger.info("No active auto-rules.")
+        return
+
+    logger.info("Active auto-rules:")
+    for r in rules:
+        sub = f" / {r['subcategory']}" if r["subcategory"] else ""
+        logger.info(
+            f"  [{r['rule_id']}] '{r['merchant_pattern']}' "
+            f"({r['match_type']}) -> {r['category']}{sub} "
+            f"(priority: {r['priority']})"
         )

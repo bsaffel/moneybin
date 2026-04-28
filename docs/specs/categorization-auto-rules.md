@@ -1,7 +1,7 @@
 # Auto-Rule Generation
 
-> Last updated: 2026-04-19
-> Status: Ready
+> Last updated: 2026-04-26
+> Status: Implemented
 > Parent: [`categorization-overview.md`](categorization-overview.md) (pillar E)
 > Companions: [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 

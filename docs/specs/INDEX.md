@@ -52,7 +52,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](categorization-overview.md) | Umbrella | ready | Auto-rule generation, ML categorization, priority hierarchy, bootstrap strategies. Supersedes archived `transaction-categorization` spec. |
-| [Auto-Rule Generation](categorization-auto-rules.md) | Feature | ready | Auto-generate categorization rules from user edits (pillar E); merchant-first pattern extraction, proposal review queue |
+| [Auto-Rule Generation](categorization-auto-rules.md) | Feature | implemented | Auto-generate categorization rules from user edits (pillar E); merchant-first pattern extraction, proposal review queue |
 | `categorization-ml.md` | Feature | planned | Pillar D: local ML-powered categorization |
 | `merchant-entity-resolution.md` | Feature | planned | Evolve merchants from pattern-to-category cache to first-class entities; multi-pattern matching, automated discovery, query-time resolution |
 

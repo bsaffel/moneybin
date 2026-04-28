@@ -74,3 +74,14 @@ class TestCategorizeToolRegistration:
         assert "summary" in cat_result
         assert "data" in cat_result
         assert isinstance(cat_result["data"], list)
+
+    @pytest.mark.unit
+    def test_register_includes_auto_rule_tools(self) -> None:
+        registry = NamespaceRegistry()
+        tools = register_categorize_tools(registry)
+        names = {t.name for t in tools}
+        assert {
+            "categorize.auto_review",
+            "categorize.auto_confirm",
+            "categorize.auto_stats",
+        } <= names

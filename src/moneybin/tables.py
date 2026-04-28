@@ -42,6 +42,8 @@ TRANSACTION_NOTES = TableRef("app", "transaction_notes")
 CATEGORIES = TableRef("app", "categories")
 MERCHANTS = TableRef("app", "merchants")
 CATEGORIZATION_RULES = TableRef("app", "categorization_rules")
+PROPOSED_RULES = TableRef("app", "proposed_rules")
+RULE_DEACTIVATIONS = TableRef("app", "rule_deactivations")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
 
