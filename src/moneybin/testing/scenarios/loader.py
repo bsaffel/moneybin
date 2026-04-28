@@ -9,7 +9,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 # Lazy import to avoid circular dependency with steps.py.
-_VALID_STEP_NAMES = {
+# Kept in sync with ``STEP_REGISTRY`` via ``test_step_names_match_registry``.
+VALID_STEP_NAMES = {
     "generate",
     "load_fixtures",
     "transform",
@@ -125,7 +126,7 @@ class Scenario(BaseModel):
 
     @model_validator(mode="after")
     def _validate_steps(self) -> Scenario:
-        unknown = [s for s in self.pipeline if s not in _VALID_STEP_NAMES]
+        unknown = [s for s in self.pipeline if s not in VALID_STEP_NAMES]
         if unknown:
             raise ValueError(f"unknown pipeline steps: {unknown}")
         return self

@@ -6,14 +6,30 @@ tempdir, real SQLMesh transform, real assertions. They are slow.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, cast
 
+import keyring
 import pytest
 
 from moneybin.testing.scenarios.loader import load_scenario_from_string
 from moneybin.testing.scenarios.runner import run_scenario
+from tests.e2e.memory_keyring import MemoryKeyring
+
+
+@pytest.fixture(autouse=True)
+def _in_memory_keyring() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Swap in the dict-backed keyring so CI without a system backend works."""
+    previous = keyring.get_keyring()
+    keyring.set_keyring(MemoryKeyring())
+    try:
+        yield
+    finally:
+        MemoryKeyring.clear()
+        keyring.set_keyring(previous)
+
 
 TINY = dedent("""
     scenario: tiny

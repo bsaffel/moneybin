@@ -1,4 +1,4 @@
-name: scenarios
+name: Scenarios
 
 on:
   pull_request:
@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   run-scenarios:
+    name: Run Scenarios
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -37,6 +38,7 @@ jobs:
 
       - name: Run scenario suite
         run: |
+          set -o pipefail
           start=$(date +%s)
           uv run moneybin synthetic verify --all --output=json | tee scenarios.jsonl
           end=$(date +%s)

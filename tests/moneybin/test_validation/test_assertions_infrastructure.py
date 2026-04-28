@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,10 +19,14 @@ from moneybin.validation.assertions.infrastructure import (
 if TYPE_CHECKING:
     from moneybin.database import Database
 
+# `assert_no_unencrypted_db_files` ignores its db argument — it only inspects the
+# tmpdir for leaked files — so a mock suffices in unit tests.
+_DUMMY_DB = cast("Database", MagicMock())
+
 
 def test_no_unencrypted_db_files_passes_for_empty_dir(tmp_path: Path) -> None:
     """An empty directory contains no leaked unencrypted DuckDB files."""
-    result = assert_no_unencrypted_db_files(tmpdir=tmp_path)
+    result = assert_no_unencrypted_db_files(_DUMMY_DB, tmpdir=tmp_path)
     assert result.passed
     assert result.details["files"] == []
 
@@ -29,7 +34,7 @@ def test_no_unencrypted_db_files_passes_for_empty_dir(tmp_path: Path) -> None:
 def test_no_unencrypted_db_files_flags_bare_duckdb(tmp_path: Path) -> None:
     """A bare .duckdb file in the directory must be flagged."""
     (tmp_path / "leak.duckdb").write_bytes(b"\x00" * 16)
-    result = assert_no_unencrypted_db_files(tmpdir=tmp_path)
+    result = assert_no_unencrypted_db_files(_DUMMY_DB, tmpdir=tmp_path)
     assert not result.passed
     assert "leak.duckdb" in str(result.details["files"])
 
@@ -39,7 +44,7 @@ def test_no_unencrypted_db_files_finds_nested(tmp_path: Path) -> None:
     nested = tmp_path / "sub" / "deeper"
     nested.mkdir(parents=True)
     (nested / "buried.duckdb").write_bytes(b"\x00")
-    result = assert_no_unencrypted_db_files(tmpdir=tmp_path)
+    result = assert_no_unencrypted_db_files(_DUMMY_DB, tmpdir=tmp_path)
     assert not result.passed
     assert "buried.duckdb" in str(result.details["files"])
 

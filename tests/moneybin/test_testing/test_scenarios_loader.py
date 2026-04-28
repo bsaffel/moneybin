@@ -1,12 +1,11 @@
 """Tests for the scenario YAML loader."""
 
-from pathlib import Path
-
 import pytest
 
 from moneybin.testing.scenarios.loader import (
     Scenario,
     ScenarioValidationError,
+    list_shipped_scenarios,
     load_scenario_from_string,
 )
 
@@ -72,7 +71,8 @@ def test_threshold_min_required_for_evaluations() -> None:
         load_scenario_from_string(bad)
 
 
-def test_loads_shipped_scenarios(tmp_path: Path) -> None:
-    """Placeholder for Task 11; the import-or-skip guards future scenarios."""
-    # Will be populated in Task 11; skip until scenarios exist.
-    pytest.importorskip("moneybin.testing.scenarios")
+def test_loads_shipped_scenarios() -> None:
+    """All bundled scenario YAMLs parse and the canonical names are present."""
+    scenarios = list_shipped_scenarios()
+    names = {s.name for s in scenarios}
+    assert names >= {"basic-full-pipeline", "family-full-pipeline"}

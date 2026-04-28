@@ -4,8 +4,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from moneybin.testing.scenarios.loader import SetupSpec
+from moneybin.testing.scenarios.loader import VALID_STEP_NAMES, SetupSpec
 from moneybin.testing.scenarios.steps import STEP_REGISTRY, run_step
+
+
+def test_step_names_match_registry() -> None:
+    """`VALID_STEP_NAMES` and `STEP_REGISTRY` keys must stay in lockstep."""
+    assert set(STEP_REGISTRY) == VALID_STEP_NAMES
 
 
 def test_every_known_step_has_a_callable() -> None:

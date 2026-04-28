@@ -150,7 +150,11 @@ def _count(db: Database, table: str) -> int:
     return int(row[0]) if row else 0
 
 
-def assert_no_unencrypted_db_files(*, tmpdir: Path) -> AssertionResult:
+def assert_no_unencrypted_db_files(
+    db: Database,  # noqa: ARG001 — conforms to _DATABASE_ASSERTION_FNS contract
+    *,
+    tmpdir: Path,
+) -> AssertionResult:
     """Assert no bare ``*.duckdb`` files exist anywhere under ``tmpdir``.
 
     Unencrypted DuckDB files in a profile's data directory mean a code

@@ -58,6 +58,28 @@ the first active rule that would match a transaction. Splitting requires asking
 mining — `find_matching_rule` is the single SQL surface that answers it, so the
 splitter can be built on top without re-implementing match semantics.
 
+## Restore `categorization-priority-hierarchy` scenario
+
+Removed during PR #59 review: the scenario referenced
+`tests/fixtures/categorization/user_overrides.csv` which was never committed, so
+`load_fixtures` raised `FileNotFoundError` whenever `moneybin synthetic verify --all`
+ran. To restore:
+
+1. Author the CSV with rows whose `source_transaction_id` is `USER_OVERRIDE_2024_03_01`
+   plus enough surrounding context for matching.
+2. Wire a way to mark the loaded row as `categorized_by='user'` before the auto-rule
+   step runs — the current `fixture_loader.py` doesn't carry a category column, and
+   the `categorize` step will overwrite anything it considers uncategorized. Likely
+   needs either an `expectations`-style pre-load hook or a small extension to
+   `FixtureSpec` so the YAML can declare per-row category overrides.
+3. Re-add `src/moneybin/testing/scenarios/data/categorization-priority-hierarchy.yaml`
+   with the `category_for_transaction` expectation that `categorized_by` stays
+   `"user"` after auto-rule promotion.
+
+The expectation matters for correctness — auto-rule promotion must never overwrite a
+human-set category — but it can't be checked end-to-end until the fixture format
+supports user categorization.
+
 ## Scenario runner: skipped /simplify items (post testing-scenario-runner)
 
 Surfaced during the `/simplify` pre-push pass on `feat/testing-scenario-runner` and

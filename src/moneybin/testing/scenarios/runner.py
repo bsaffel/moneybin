@@ -15,6 +15,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from moneybin.database import Database, close_database, get_database
@@ -102,7 +103,9 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
             for step in scenario.pipeline:
                 run_step(step, scenario.setup, db, env=env)
 
-            assertions = [_run_assertion(a, db) for a in scenario.assertions]
+            assertions = [
+                _run_assertion(a, db, tmpdir=tmp) for a in scenario.assertions
+            ]
             expectations = verify_expectations(db, scenario.expectations)
             evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
 
@@ -151,9 +154,16 @@ def _bootstrap_database() -> Database:
     return get_database()
 
 
-def _run_assertion(spec: AssertionSpec, db: Database) -> AssertionResult:
+def _resolve_runtime_args(args: dict[str, Any], *, tmpdir: str) -> dict[str, Any]:
+    """Substitute well-known runtime sentinels in YAML-supplied assertion args."""
+    return {k: (Path(tmpdir) if v == "from_runtime" else v) for k, v in args.items()}
+
+
+def _run_assertion(
+    spec: AssertionSpec, db: Database, *, tmpdir: str
+) -> AssertionResult:
     fn = _resolve_assertion(spec.fn)
-    args = dict(spec.args)
+    args = _resolve_runtime_args(spec.args, tmpdir=tmpdir)
     try:
         if spec.fn in _DATABASE_ASSERTION_FNS:
             return fn(db, **args)

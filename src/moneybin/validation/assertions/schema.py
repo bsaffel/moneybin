@@ -89,7 +89,10 @@ def assert_row_count_delta(
 ) -> AssertionResult:
     """Assert the row count is within tolerance_pct percent of expected."""
     actual = _row_count(conn, table)
-    delta_pct = ((actual - expected) / expected) * 100 if expected else 0.0
+    if expected == 0:
+        delta_pct = 0.0 if actual == 0 else float("inf")
+    else:
+        delta_pct = ((actual - expected) / expected) * 100
     passed = abs(delta_pct) <= tolerance_pct
     return AssertionResult(
         name="row_count_delta",
