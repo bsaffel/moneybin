@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from moneybin.testing.scenarios.loader import FixtureSpec, SetupSpec  # noqa: F401
+from moneybin.testing.scenarios.loader import SetupSpec
 from moneybin.testing.scenarios.steps import STEP_REGISTRY, run_step
 
 

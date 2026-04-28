@@ -1,14 +1,14 @@
 # Feature: Testing Scenario Runner
 
 > Last updated: 2026-04-26
-> Status: in-progress
+> Status: implemented
 > Type: Feature
 > Parent: [`testing-overview.md`](testing-overview.md)
 > Companions: [`testing-synthetic-data.md`](testing-synthetic-data.md) (consumed for personas + ground truth), [`e2e-testing.md`](e2e-testing.md) (peer test layer), [`mcp-architecture.md`](mcp-architecture.md) §4 (`ResponseEnvelope` shape), [`database-migration.md`](database-migration.md), [`privacy-data-protection.md`](privacy-data-protection.md), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Status
 
-in-progress (started 2026-04-26)
+implemented (shipped 2026-04-26)
 
 ## Goal
 

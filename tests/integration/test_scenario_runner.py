@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from textwrap import dedent
+from typing import Any, cast
 
 import pytest
 
@@ -45,9 +46,10 @@ def test_runner_returns_envelope_for_passing_scenario() -> None:
     """Runner builds a passing envelope when assertions hold."""
     s = load_scenario_from_string(TINY)
     env = run_scenario(s)
-    assert env.data["scenario"] == "tiny"
-    assert env.data["passed"] is True
-    assert any(a["name"] == "sqlmesh_catalog_matches" for a in env.data["assertions"])
+    data = cast("dict[str, Any]", env.data)
+    assert data["scenario"] == "tiny"
+    assert data["passed"] is True
+    assert any(a["name"] == "sqlmesh_catalog_matches" for a in data["assertions"])
 
 
 @pytest.mark.integration
@@ -59,8 +61,9 @@ def test_runner_reports_failure_without_crashing() -> None:
     )
     s = load_scenario_from_string(bad)
     env = run_scenario(s)
-    assert env.data["passed"] is False
-    assert any(not a["passed"] for a in env.data["assertions"])
+    data = cast("dict[str, Any]", env.data)
+    assert data["passed"] is False
+    assert any(not a["passed"] for a in data["assertions"])
 
 
 @pytest.mark.integration
@@ -69,7 +72,8 @@ def test_keep_tmpdir_preserves_directory() -> None:
     """``keep_tmpdir=True`` leaves the scenario tempdir on disk."""
     s = load_scenario_from_string(TINY)
     env = run_scenario(s, keep_tmpdir=True)
-    tmpdir = Path(env.data["tmpdir"])
+    data = cast("dict[str, Any]", env.data)
+    tmpdir = Path(data["tmpdir"])
     try:
         assert tmpdir.exists()
     finally:
