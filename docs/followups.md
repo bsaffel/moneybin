@@ -58,46 +58,19 @@ the first active rule that would match a transaction. Splitting requires asking
 mining — `find_matching_rule` is the single SQL surface that answers it, so the
 splitter can be built on top without re-implementing match semantics.
 
-## Auto-rule items deferred from PR #58 review
+## claude[bot] cannot dismiss its own CHANGES_REQUESTED reviews
 
-Items 1–5 and 7 from this list were addressed in commits after the original
-review; they're left here as historical notes. Item 6 remains open.
+The GitHub Action running claude[bot] is sandboxed and blocks
+`gh pr review` / `gh api` write calls without explicit permission. As a
+result, the bot can flag CHANGES_REQUESTED but cannot clear it after a
+re-review confirms fixes — the author has to dismiss it manually
+(`gh api -X PUT /repos/{owner}/{repo}/pulls/{n}/reviews/{id}/dismissals`).
 
-1. **`AutoRuleService.confirm()` does not deduplicate approve/reject overlap.**
-   ✅ Fixed: `confirm()` now does `approve_set -= reject_set` before delegating.
+Fix: grant the workflow permission to call `gh pr review` by adding to
+`.claude/settings.json` (or the workflow's allowlist):
 
-2. **`_merchant_mapping_covers` ignores merchant `match_type` and subcategory.**
-   ✅ Fixed: rewritten in Python using `matches_pattern` against
-   `(raw_pattern, match_type)`; subcategory is now part of the equality check.
+```json
+{ "permissions": { "allow": ["Bash(gh pr review:*)", "Bash(gh api:*)"] } }
+```
 
-3. **`_find_pending_proposal` not keyed on `match_type`.**
-   ✅ Fixed: query now joins on `(merchant_pattern, match_type)`.
-
-4. **Auto-rule SQL didn't honor `normalize_description` (P1).**
-   ✅ Fixed: `_categorize_existing_with_rule` and `check_overrides` now match in
-   Python against both raw and `normalize_description`-cleaned descriptions,
-   mirroring `apply_rules` semantics. The `_description_match_sql` helper is
-   removed; the regex case-sensitivity gap went with it.
-
-5. **`set_current_profile("test")` state leak in two tests.**
-   ✅ Fixed: tests now `monkeypatch.setattr(config_module, "_current_profile",
-   None)` and `_current_settings = None` so teardown restores module-level state.
-
-6. **claude[bot] cannot dismiss its own CHANGES_REQUESTED reviews.**
-   The GitHub Action running claude[bot] is sandboxed and blocks
-   `gh pr review` / `gh api` write calls without explicit permission. As a
-   result, the bot can flag CHANGES_REQUESTED but cannot clear it after a
-   re-review confirms fixes — the author has to dismiss it manually
-   (`gh api -X PUT /repos/{owner}/{repo}/pulls/{n}/reviews/{id}/dismissals`).
-   Fix: grant the workflow permission to call `gh pr review` by adding to
-   `.claude/settings.json` (or the workflow's allowlist):
-   ```json
-   { "permissions": { "allow": ["Bash(gh pr review:*)", "Bash(gh api:*)"] } }
-   ```
-   See PR #58 conversation for the exchange where this came up.
-
-7. **`pytestmark = pytest.mark.unit` missing**
-   (`tests/moneybin/test_services/test_auto_rule_service.py`). `uv run pytest -m
-   unit` silently skips this file. `test_categorization_service.py` uses
-   `@pytest.mark.unit` per test; mirror that or add `pytestmark` at module
-   scope.
+See PR #58 conversation for the exchange where this came up.
