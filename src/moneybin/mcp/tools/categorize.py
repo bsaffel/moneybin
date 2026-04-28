@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import typing
 import uuid
+from collections.abc import Mapping, Sequence
 
 import duckdb
 
@@ -281,7 +282,7 @@ def categorize_uncategorized(
 
 @mcp_tool(sensitivity="medium")
 def categorize_bulk(
-    items: list[dict[str, str]],
+    items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
     """Assign categories to multiple transactions in one call.
 
@@ -297,7 +298,13 @@ def categorize_bulk(
     """
     if not items:
         return build_envelope(
-            data={"applied": 0, "skipped": 0, "errors": 0, "error_details": []},
+            data={
+                "applied": 0,
+                "skipped": 0,
+                "errors": 0,
+                "error_details": [],
+                "merchants_created": 0,
+            },
             sensitivity="medium",
         )
 

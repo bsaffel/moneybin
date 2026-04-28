@@ -16,6 +16,7 @@ from moneybin import config as config_module
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.services.auto_rule_service import AutoRuleService
+from moneybin.tables import PROPOSED_RULES
 from tests.moneybin.db_helpers import create_core_tables
 
 pytestmark = pytest.mark.unit
@@ -98,7 +99,7 @@ def test_record_creates_proposal_on_first_categorization(real_db: Database) -> N
     )
 
     rows = real_db.execute(
-        "SELECT merchant_pattern, category, subcategory, trigger_count, status FROM app.proposed_rules"
+        f"SELECT merchant_pattern, category, subcategory, trigger_count, status FROM {PROPOSED_RULES.full_name}"  # noqa: S608  # building test input string, not executing SQL
     ).fetchall()
     assert rows == [("STARBUCKS", "Food & Drink", "Coffee", 1, "pending")]
 
@@ -114,7 +115,7 @@ def test_record_increments_trigger_count_on_same_pattern_and_category(
     svc.record_categorization("t2", "Food & Drink", subcategory="Coffee")
 
     rows = real_db.execute(
-        "SELECT trigger_count, sample_txn_ids FROM app.proposed_rules"
+        f"SELECT trigger_count, sample_txn_ids FROM {PROPOSED_RULES.full_name}"  # noqa: S608  # building test input string, not executing SQL
     ).fetchall()
     assert len(rows) == 1
     assert rows[0][0] == 2
@@ -132,7 +133,7 @@ def test_record_supersedes_when_same_pattern_different_category(
     svc.record_categorization("t2", "Groceries")
 
     rows = real_db.execute(
-        "SELECT category, status FROM app.proposed_rules ORDER BY proposed_at"
+        f"SELECT category, status FROM {PROPOSED_RULES.full_name} ORDER BY proposed_at"  # noqa: S608  # building test input string, not executing SQL
     ).fetchall()
     assert rows == [("Food & Drink", "superseded"), ("Groceries", "pending")]
 
@@ -148,7 +149,9 @@ def test_record_skips_when_active_rule_already_covers_pattern(
     )
     AutoRuleService(real_db).record_categorization("t1", "Food & Drink")
 
-    count_row = real_db.execute("SELECT COUNT(*) FROM app.proposed_rules").fetchone()
+    count_row = real_db.execute(
+        f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name}"  # noqa: S608  # building test input string, not executing SQL
+    ).fetchone()
     assert count_row is not None and count_row[0] == 0
 
 
@@ -173,13 +176,13 @@ def test_record_respects_proposal_threshold(
     svc.record_categorization("t1", "Food & Drink")
     svc.record_categorization("t2", "Food & Drink")
     pending_row = real_db.execute(
-        "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'pending'"
+        f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"  # noqa: S608  # building test input string, not executing SQL
     ).fetchone()
     assert pending_row is not None and pending_row[0] == 0
 
     svc.record_categorization("t3", "Food & Drink")
     pending_row = real_db.execute(
-        "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'pending'"
+        f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"  # noqa: S608  # building test input string, not executing SQL
     ).fetchone()
     assert pending_row is not None and pending_row[0] == 1
 
@@ -201,7 +204,7 @@ def test_approve_promotes_to_active_rule(real_db: Database) -> None:
     assert rule == ("STARBUCKS", "Food & Drink", "Coffee", 200, "auto_rule", True)
 
     status = real_db.execute(
-        "SELECT status, decided_by FROM app.proposed_rules WHERE proposed_rule_id = ?",
+        f"SELECT status, decided_by FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?",  # noqa: S608  # building test input string, not executing SQL
         [pid],
     ).fetchone()
     assert status == ("approved", "user")
@@ -270,7 +273,7 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
     assert active == (False,)
 
     new_proposal = real_db.execute(
-        "SELECT category, status FROM app.proposed_rules WHERE status = 'pending'"
+        f"SELECT category, status FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"  # noqa: S608  # building test input string, not executing SQL
     ).fetchone()
     assert new_proposal == ("Groceries", "pending")
 
@@ -292,7 +295,7 @@ def test_reject_marks_proposal_rejected_without_creating_rule(
     svc.confirm(reject=[pid])
 
     status = real_db.execute(
-        "SELECT status, decided_by FROM app.proposed_rules WHERE proposed_rule_id = ?",
+        f"SELECT status, decided_by FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?",  # noqa: S608  # building test input string, not executing SQL
         [pid],
     ).fetchone()
     assert status == ("rejected", "user")

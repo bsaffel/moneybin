@@ -82,12 +82,89 @@ You can also:
 - **Create custom categories** via the `create_category` MCP tool
 - **Toggle categories on/off** — disabled categories are hidden from the taxonomy but existing categorizations are preserved
 
+## Auto-Rules
+
+MoneyBin learns categorization patterns from how you (or your AI assistant) categorize transactions and proposes rules you can approve. Once approved, those rules categorize future transactions automatically — and roll themselves back if you start correcting their output.
+
+### How learning works
+
+Every time `bulk_categorize` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
+
+| Term | Meaning |
+|---|---|
+| Proposal | A `(pattern, category)` pair MoneyBin is considering. Lives in `app.proposed_rules`. |
+| `tracking` | Below proposal threshold. Not shown in `auto-review`. |
+| `pending` | Reached threshold; waiting for your approve/reject. |
+| `approved` | Promoted to an active rule (`categorization_rules.created_by='auto_rule'`). |
+| Override | A user/AI categorization that disagrees with what the auto-rule would assign. |
+
+### CLI Commands
+
+```bash
+# List pending auto-rule proposals (table or JSON)
+moneybin categorize auto-review
+moneybin categorize auto-review --output json
+
+# Approve / reject specific proposals
+moneybin categorize auto-confirm --approve abc123 --approve def456
+moneybin categorize auto-confirm --reject abc123
+
+# Approve all pending — except the ones you reject explicitly
+moneybin categorize auto-confirm --approve-all --reject abc123
+
+# Reject everything pending
+moneybin categorize auto-confirm --reject-all
+
+# List active auto-rules
+moneybin categorize auto-rules
+
+# Show health: active auto-rules, pending proposals, transactions auto-ruled
+moneybin categorize auto-stats
+```
+
+### Tunables
+
+These live under `categorization.*` in your profile config (see [profiles guide](profiles.md)):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `auto_rule_proposal_threshold` | 3 | Distinct transactions needed before a proposal becomes `pending` |
+| `auto_rule_override_threshold` | 3 | User corrections needed before an active rule is deactivated |
+| `auto_rule_default_priority` | 200 | Priority of new auto-rules (lower number wins; user rules typically use 50–100) |
+| `auto_rule_sample_txn_cap` | 5 | Sample transaction IDs shown in `auto-review` per proposal |
+| `auto_rule_backfill_scan_cap` | 50,000 | Max uncategorized transactions scanned when an approval back-fills history |
+
+The constraint `proposal_threshold <= override_threshold` is enforced at config load — if proposal were higher, an override-driven re-proposal could land in `tracking` and never resurface.
+
+### Self-healing: override-driven deactivation
+
+If you approve an auto-rule and then start correcting its output (assigning a different category to transactions it would have caught), MoneyBin counts those as overrides. Once override count reaches `auto_rule_override_threshold`:
+
+1. The rule is deactivated (`is_active=false`).
+2. Its source proposal is marked `superseded`.
+3. A new proposal is created with the **most common** category among your corrections — already promoted to `pending` if you've corrected at least `auto_rule_proposal_threshold` transactions to that category.
+4. An audit row is written to `app.rule_deactivations` with the override count and the new category.
+
+You'll see the new proposal in `auto-review`. Approve it to install the corrected rule. There's no manual cleanup step.
+
+### What patterns get proposed
+
+The proposal pattern comes from the merchant resolution that already happens during `bulk_categorize`:
+
+- **If the transaction matched an existing merchant** — the merchant's `raw_pattern` and `match_type` are used (e.g., `AMZN` / `exact`). This is the precise substring that matches statement descriptions, not the canonical display name.
+- **If no merchant matched** — the cleaned-up description with `match_type='contains'` is used as a fallback.
+
+A proposal is suppressed when an active rule or merchant mapping already produces the same category for the transaction, so you don't see redundant proposals for patterns already covered.
+
 ## Typical Workflow
 
 1. **Import data** — `moneybin import file transactions.csv`
 2. **Seed categories** — `moneybin categorize seed` (first time only)
 3. **Apply existing rules** — `moneybin categorize apply-rules`
 4. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions"*
-5. **Rules build up** — each categorization creates merchant mappings, so the next import has fewer uncategorized transactions
+5. **Review auto-rule proposals** — `moneybin categorize auto-review`, then approve the ones that look right
+6. **Rules build up** — each categorization creates merchant mappings and feeds auto-rule learning, so the next import has fewer uncategorized transactions
 
-Over time, the rule engine and merchant mappings handle most categorization automatically. Each import requires less manual work.
+Over time, the rule engine, merchant mappings, and auto-rules handle most categorization automatically. Each import requires less manual work.
+
+For the architecture and lifecycle internals (state diagrams, sequence diagrams, atomicity guarantees), see [auto-rule pipeline tech brief](../tech/auto-rule-pipeline.md).

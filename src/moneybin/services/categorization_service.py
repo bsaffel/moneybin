@@ -13,6 +13,7 @@ proposal/approval/deactivation lifecycle and depends on this module's
 import logging
 import re
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -322,7 +323,9 @@ class CategorizationService:
 
     # -- Categorization core --
 
-    def bulk_categorize(self, items: list[dict[str, str]]) -> BulkCategorizationResult:
+    def bulk_categorize(
+        self, items: Sequence[Mapping[str, str | None]]
+    ) -> BulkCategorizationResult:
         """Assign categories to multiple transactions with merchant auto-creation.
 
         For each item, looks up the transaction description, resolves or creates
@@ -347,8 +350,8 @@ class CategorizationService:
         # Phase 1 — validate and partition input
         valid_items: list[tuple[str, str, str | None]] = []
         for item in items:
-            txn_id = item.get("transaction_id", "").strip()
-            category = item.get("category", "").strip()
+            txn_id = (item.get("transaction_id") or "").strip()
+            category = (item.get("category") or "").strip()
             if not txn_id or not category:
                 skipped += 1
                 error_details.append({
@@ -356,7 +359,7 @@ class CategorizationService:
                     "reason": "Missing transaction_id or category",
                 })
                 continue
-            subcategory = item.get("subcategory", "").strip() or None
+            subcategory = (item.get("subcategory") or "").strip() or None
             valid_items.append((txn_id, category, subcategory))
 
         if not valid_items:
