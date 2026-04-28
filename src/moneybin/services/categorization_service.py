@@ -397,62 +397,77 @@ class CategorizationService:
         # Phase 4 — per-item categorization (writes only)
         for txn_id, category, subcategory in valid_items:
             try:
-                # Record before merchant resolution: bulk_categorize creates a merchant
-                # mapping below that would otherwise short-circuit auto-rule proposals.
-                # Lazy import keeps the module-level dependency one-way
-                # (auto_rule_service → categorization_service).
-                try:
-                    from moneybin.services.auto_rule_service import AutoRuleService
-
-                    AutoRuleService(self._db).record_categorization(
-                        txn_id, category, subcategory=subcategory
-                    )
-                except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
-                    logger.warning("auto-rule recording failed", exc_info=True)
-
+                # Resolve pre-existing merchant first so auto-rule learning can
+                # use the merchant's raw_pattern (e.g., "AMZN") instead of
+                # falling back to the raw description. New merchants are
+                # deferred until after record_categorization — creating one
+                # first would let _merchant_mapping_covers short-circuit the
+                # proposal before it can be tracked.
                 merchant_id: str | None = None
+                existing: dict[str, Any] | None = None
                 description = descriptions.get(txn_id)
                 if description and cached_merchants is not None:
                     try:
                         existing = _match_description(description, cached_merchants)
                         if existing:
                             merchant_id = existing["merchant_id"]
-                        else:
-                            normalized = normalize_description(description)
-                            if normalized:
-                                merchant_id = self.create_merchant(
-                                    normalized,
-                                    normalized,
-                                    match_type="contains",
-                                    category=category,
-                                    subcategory=subcategory,
-                                    created_by="ai",
-                                )
-                                merchants_created += 1
-                                # Insert into cache preserving _fetch_merchants() ordering
-                                # (exact → contains → regex) so subsequent items in this
-                                # batch match the just-created contains rule before any
-                                # pre-existing regex rule.
-                                new_row = (
-                                    merchant_id,
-                                    normalized,
-                                    "contains",
-                                    normalized,
-                                    category,
-                                    subcategory,
-                                )
-                                insert_at = next(
-                                    (
-                                        i
-                                        for i, m in enumerate(cached_merchants)
-                                        if m[2] == "regex"
-                                    ),
-                                    len(cached_merchants),
-                                )
-                                cached_merchants.insert(insert_at, new_row)
-                    except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
+                    except Exception:  # noqa: BLE001 — merchant lookup is best-effort
                         logger.debug(
                             f"Could not resolve merchant for {txn_id}",
+                            exc_info=True,
+                        )
+
+                # Lazy import keeps the module-level dependency one-way
+                # (auto_rule_service → categorization_service).
+                try:
+                    from moneybin.services.auto_rule_service import AutoRuleService
+
+                    AutoRuleService(self._db).record_categorization(
+                        txn_id,
+                        category,
+                        subcategory=subcategory,
+                        merchant_id=merchant_id,
+                    )
+                except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
+                    logger.warning("auto-rule recording failed", exc_info=True)
+
+                if merchant_id is None and description and cached_merchants is not None:
+                    try:
+                        normalized = normalize_description(description)
+                        if normalized:
+                            merchant_id = self.create_merchant(
+                                normalized,
+                                normalized,
+                                match_type="contains",
+                                category=category,
+                                subcategory=subcategory,
+                                created_by="ai",
+                            )
+                            merchants_created += 1
+                            # Insert into cache preserving _fetch_merchants() ordering
+                            # (exact → contains → regex) so subsequent items in this
+                            # batch match the just-created contains rule before any
+                            # pre-existing regex rule.
+                            new_row = (
+                                merchant_id,
+                                normalized,
+                                "contains",
+                                normalized,
+                                category,
+                                subcategory,
+                            )
+                            insert_at = next(
+                                (
+                                    i
+                                    for i, m in enumerate(cached_merchants)
+                                    if m[2] == "regex"
+                                ),
+                                len(cached_merchants),
+                            )
+                            cached_merchants.insert(insert_at, new_row)
+                    except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
+                        logger.debug(
+                            f"Could not create merchant for {txn_id}",
                             exc_info=True,
                         )
 

@@ -75,6 +75,7 @@ class AutoRuleService:
         category: str,
         *,
         subcategory: str | None = None,
+        merchant_id: str | None = None,
     ) -> str | None:
         """Record a categorization event for auto-rule learning.
 
@@ -82,8 +83,15 @@ class AutoRuleService:
         ``None`` if the categorization was filtered out (already covered by
         an active rule, by a merchant mapping with no in-progress proposal,
         or no extractable pattern).
+
+        ``merchant_id`` lets callers pass an already-resolved merchant so the
+        merchant's ``(raw_pattern, match_type)`` is used as the proposal
+        pattern. Without it, ``_extract_pattern`` looks up the merchant from
+        ``transaction_categories``, but ``bulk_categorize`` calls this hook
+        before that row exists — so omitting the parameter forces the
+        description fallback for every fresh categorization.
         """
-        extracted = self._extract_pattern(transaction_id)
+        extracted = self._extract_pattern(transaction_id, merchant_id=merchant_id)
         if not extracted:
             return None
         pattern, match_type = extracted
@@ -114,15 +122,15 @@ class AutoRuleService:
                 samples,
             ) = existing
             if existing_category == category and existing_subcategory == subcategory:
-                new_samples = (
-                    samples + [transaction_id]
-                    if transaction_id not in samples
-                    else samples
-                )
+                already_counted = transaction_id in samples
+                new_samples = samples if already_counted else samples + [transaction_id]
                 # Keep the most recent samples when over capacity — appended IDs
                 # are newest, so a head-slice would silently drop the new txn.
                 new_samples = new_samples[-sample_cap:]
-                new_count = count + 1
+                # Only increment trigger_count for distinct transactions so
+                # replays (MCP retry, re-import) cannot promote a proposal to
+                # ``pending`` without genuinely new evidence.
+                new_count = count if already_counted else count + 1
                 new_status = "pending" if new_count >= threshold else "tracking"
                 self._db.execute(
                     f"""
@@ -518,20 +526,24 @@ class AutoRuleService:
 
     # -- Internals --
 
-    def _extract_pattern(self, transaction_id: str) -> tuple[str, str] | None:
+    def _extract_pattern(
+        self, transaction_id: str, *, merchant_id: str | None = None
+    ) -> tuple[str, str] | None:
         """Extract a (pattern, match_type) tuple for the given transaction.
 
-        When the transaction has a resolved merchant_id, returns the merchant's
-        ``(raw_pattern, match_type)`` — the substring that actually matches statement
-        descriptions (e.g., 'AMZN'), not the canonical display name (e.g., 'Amazon').
-        Falls back to a normalized description with ``match_type='contains'`` when
-        no merchant is associated.
+        When a merchant is provided (or already linked via
+        ``transaction_categories``), returns the merchant's
+        ``(raw_pattern, match_type)`` — the substring that actually matches
+        statement descriptions (e.g., 'AMZN'), not the canonical display name
+        (e.g., 'Amazon'). Falls back to a normalized description with
+        ``match_type='contains'`` when no merchant is associated.
         """
-        row = self._db.execute(
-            f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
-            [transaction_id],
-        ).fetchone()
-        merchant_id = row[0] if row else None
+        if merchant_id is None:
+            row = self._db.execute(
+                f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+            merchant_id = str(row[0]) if row and row[0] else None
         if merchant_id:
             m = self._db.execute(
                 f"SELECT raw_pattern, match_type FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
@@ -633,6 +645,7 @@ class AutoRuleService:
         """
         cat_service = CategorizationService(self._db)
         active_rules = cat_service.fetch_active_rules()
+        scan_cap = get_settings().categorization.auto_rule_backfill_scan_cap
         rows = self._db.execute(
             f"""
             SELECT t.transaction_id, t.description, t.amount, t.account_id
@@ -640,7 +653,10 @@ class AutoRuleService:
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
               AND t.description IS NOT NULL
-            """
+            ORDER BY t.transaction_id
+            LIMIT ?
+            """,
+            [scan_cap],
         ).fetchall()
         matched_ids: list[str] = []
         for txn_id, description, amount, account_id in rows:

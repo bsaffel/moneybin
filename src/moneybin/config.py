@@ -402,6 +402,16 @@ class CategorizationSettings(BaseModel):
         ge=1,
         description="Maximum number of sample transaction IDs retained per proposal",
     )
+    auto_rule_backfill_scan_cap: int = Field(
+        default=50_000,
+        ge=1,
+        description=(
+            "Maximum number of uncategorized transactions scanned when "
+            "backfilling a newly-approved auto-rule. Caps memory of the "
+            "in-Python match loop; transactions beyond the cap remain "
+            "uncategorized until the next apply_rules run picks them up."
+        ),
+    )
 
     @model_validator(mode="after")
     def proposal_threshold_lte_override_threshold(self) -> "CategorizationSettings":
