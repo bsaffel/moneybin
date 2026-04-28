@@ -154,7 +154,7 @@ def normalize_description(description: str) -> str:
     return result
 
 
-def _matches_pattern(text: str, pattern: str, match_type: str) -> bool:
+def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
     """Check if text matches a pattern using the specified match type.
 
     Args:
@@ -234,7 +234,7 @@ def _match_description(
         merchant_id, raw_pattern, match_type, canonical_name, category, subcategory = (
             row
         )
-        if _matches_pattern(description, raw_pattern, match_type) or _matches_pattern(
+        if matches_pattern(description, raw_pattern, match_type) or matches_pattern(
             normalized, raw_pattern, match_type
         ):
             return {
@@ -594,8 +594,8 @@ class CategorizationService:
                 created_by,
             ) = rule
             if not (
-                _matches_pattern(description, pattern, match_type)
-                or _matches_pattern(normalized, pattern, match_type)
+                matches_pattern(description, pattern, match_type)
+                or matches_pattern(normalized, pattern, match_type)
             ):
                 continue
             if (

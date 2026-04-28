@@ -21,6 +21,7 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.services.categorization_service import (
     CategorizationService,
+    matches_pattern,
     normalize_description,
 )
 from moneybin.tables import (
@@ -93,13 +94,15 @@ class AutoRuleService:
         settings = get_settings().categorization
         threshold = settings.auto_rule_proposal_threshold
         sample_cap = settings.auto_rule_sample_txn_cap
-        existing = self._find_pending_proposal(pattern)
+        existing = self._find_pending_proposal(pattern, match_type)
 
         # Merchant coverage is only a reason to skip when there is no
         # in-progress proposal for this pattern. Otherwise tracking proposals
         # could be permanently stuck below threshold once bulk_categorize
         # creates the merchant mapping during the first categorization.
-        if existing is None and self._merchant_mapping_covers(pattern, category):
+        if existing is None and self._merchant_mapping_covers(
+            pattern, category, subcategory
+        ):
             return None
 
         if existing is not None:
@@ -164,9 +167,17 @@ class AutoRuleService:
         approve: list[str] | None = None,
         reject: list[str] | None = None,
     ) -> dict[str, object]:
-        """Approve and/or reject pending proposals; returns aggregate counts."""
-        a = self.approve(approve or [])
-        r = self.reject(reject or [])
+        """Approve and/or reject pending proposals; returns aggregate counts.
+
+        IDs appearing in both lists are dropped from ``approve`` so an explicit
+        reject always wins. The CLI does the same dedup before calling, but
+        applying it here keeps direct service callers (MCP, scripts) safe.
+        """
+        approve_set = set(approve or [])
+        reject_set = set(reject or [])
+        approve_set -= reject_set
+        a = self.approve(sorted(approve_set))
+        r = self.reject(sorted(reject_set))
         return {
             "approved": a.approved,
             "newly_categorized": a.newly_categorized,
@@ -314,56 +325,55 @@ class AutoRuleService:
             # Excludes 'rule' and 'auto_rule' (machine-applied; counting them
             # would deactivate auto-rules due to overlapping rule engine output)
             # and predates legacy categorizations via the created_at filter.
-            # Description match honors the rule's own match_type so override
-            # counting matches how the rule engine actually selects rows.
-            match_sql = self._description_match_sql(rule_match_type)
-            rows = self._db.execute(
+            # Pattern matching is done in Python via ``matches_pattern`` against
+            # both the raw and normalized description, mirroring how the rule
+            # engine itself selects rows. SQL-only matching cannot reproduce
+            # ``normalize_description`` (Python regex) and got case-sensitivity
+            # wrong on the regex branch.
+            candidate_rows = self._db.execute(
                 f"""
-                SELECT c.category, c.subcategory, COUNT(*) AS n
+                SELECT c.transaction_id, t.description, c.category, c.subcategory,
+                       c.categorized_at
                 FROM {TRANSACTION_CATEGORIES.full_name} c
                 JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
                 WHERE c.categorized_by IN ('user', 'ai')
                   AND c.categorized_at > ?
+                  AND t.description IS NOT NULL
                   AND (
                     c.category != ?
                     OR COALESCE(c.subcategory, '') != COALESCE(?, '')
                   )
-                  AND {match_sql}
-                GROUP BY c.category, c.subcategory
-                ORDER BY n DESC
+                ORDER BY c.categorized_at DESC
                 """,
-                [rule_created_at, rule_category, rule_subcategory, pattern],
+                [rule_created_at, rule_category, rule_subcategory],
             ).fetchall()
-            total_overrides = sum(r[2] for r in rows)
+            buckets: dict[tuple[str, str | None], list[str]] = {}
+            for txn_id, description, c_cat, c_subcat, _at in candidate_rows:
+                desc = str(description)
+                if not (
+                    matches_pattern(desc, pattern, rule_match_type)
+                    or matches_pattern(
+                        normalize_description(desc), pattern, rule_match_type
+                    )
+                ):
+                    continue
+                key = (str(c_cat), c_subcat if c_subcat is None else str(c_subcat))
+                buckets.setdefault(key, []).append(str(txn_id))
+            total_overrides = sum(len(v) for v in buckets.values())
             if total_overrides < threshold:
                 continue
 
-            new_category = rows[0][0]
-            new_subcategory = rows[0][1]
-            sample_rows = self._db.execute(
-                f"""
-                SELECT c.transaction_id
-                FROM {TRANSACTION_CATEGORIES.full_name} c
-                JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
-                WHERE c.categorized_by IN ('user', 'ai')
-                  AND c.categorized_at > ?
-                  AND c.category = ?
-                  AND COALESCE(c.subcategory, '') = COALESCE(?, '')
-                  AND {match_sql}
-                ORDER BY c.categorized_at DESC
-                LIMIT ?
-                """,
-                [
-                    rule_created_at,
-                    new_category,
-                    new_subcategory,
-                    pattern,
-                    sample_cap,
-                ],
-            ).fetchall()
-            sample_ids = [r[0] for r in sample_rows]
+            # Pick the largest bucket as the corrected category.
+            (new_category, new_subcategory), winning_ids = max(
+                buckets.items(), key=lambda kv: len(kv[1])
+            )
+            winning_count = len(winning_ids)
+            sample_ids = winning_ids[:sample_cap]
+            # Re-proposal trigger_count reflects the winning bucket — total
+            # overrides may include unrelated minority buckets that should not
+            # inflate the new proposal's count.
             new_status = (
-                "pending" if total_overrides >= proposal_threshold else "tracking"
+                "pending" if winning_count >= proposal_threshold else "tracking"
             )
             new_pid = uuid.uuid4().hex[:12]
             # Wrap deactivate + supersede + re-propose + audit in a single
@@ -397,7 +407,7 @@ class AutoRuleService:
                         new_category,
                         new_subcategory,
                         new_status,
-                        total_overrides,
+                        winning_count,
                         sample_ids,
                     ],
                 )
@@ -571,55 +581,52 @@ class AutoRuleService:
         _rule_id, matched_category, matched_subcategory, _created_by = match
         return matched_category == category and matched_subcategory == subcategory
 
-    def _merchant_mapping_covers(self, pattern: str, category: str) -> bool:
-        """True when a merchant mapping already produces this category for this pattern.
+    def _merchant_mapping_covers(
+        self, pattern: str, category: str, subcategory: str | None
+    ) -> bool:
+        """True when a merchant mapping already produces this (category, subcategory) for this pattern.
 
-        Compares ``raw_pattern`` (the field actually used to match descriptions)
-        rather than ``canonical_name`` (a display label). For description-derived
-        patterns we additionally check whether the pattern contains the merchant's
-        raw_pattern as a substring.
+        Evaluates each merchant's ``raw_pattern`` + ``match_type`` against the
+        candidate pattern in Python, mirroring how the merchant matcher itself
+        resolves descriptions. SQL substring comparison would miss ``exact``
+        and ``regex`` merchants and ignored ``subcategory`` differences.
         """
         try:
-            row = self._db.execute(
+            rows = self._db.execute(
                 f"""
-                SELECT 1 FROM {MERCHANTS.full_name}
-                WHERE category = ?
-                  AND (
-                    LOWER(raw_pattern) = LOWER(?)
-                    OR POSITION(LOWER(raw_pattern) IN LOWER(?)) > 0
-                  )
-                LIMIT 1
-                """,
-                [category, pattern, pattern],
-            ).fetchone()
+                SELECT raw_pattern, match_type, category, subcategory
+                FROM {MERCHANTS.full_name}
+                """
+            ).fetchall()
         except duckdb.CatalogException:
             return False
-        return row is not None
+        for raw_pattern, m_type, m_cat, m_subcat in rows:
+            if str(m_cat) != category:
+                continue
+            if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
+                continue
+            if matches_pattern(pattern, str(raw_pattern), str(m_type or "contains")):
+                return True
+        return False
 
     def _find_pending_proposal(
-        self, pattern: str
+        self, pattern: str, match_type: str
     ) -> tuple[str, str, str | None, int, list[str]] | None:
+        """Find a pending or tracking proposal with the same (pattern, match_type)."""
         row = self._db.execute(
             f"""
             SELECT proposed_rule_id, category, subcategory, trigger_count, sample_txn_ids
             FROM {PROPOSED_RULES.full_name}
-            WHERE LOWER(merchant_pattern) = LOWER(?) AND status IN ('pending', 'tracking')
+            WHERE LOWER(merchant_pattern) = LOWER(?)
+              AND match_type = ?
+              AND status IN ('pending', 'tracking')
             ORDER BY proposed_at DESC LIMIT 1
             """,
-            [pattern],
+            [pattern, match_type],
         ).fetchone()
         if not row:
             return None
         return row[0], row[1], row[2], int(row[3]), list(row[4] or [])
-
-    @staticmethod
-    def _description_match_sql(match_type: str) -> str:
-        """SQL fragment matching ``?`` against ``t.description`` per match_type."""
-        if match_type == "exact":
-            return "LOWER(t.description) = LOWER(?)"
-        if match_type == "regex":
-            return "regexp_matches(t.description, ?)"
-        return "POSITION(LOWER(?) IN LOWER(t.description)) > 0"
 
     def _categorize_existing_with_rule(
         self,
@@ -629,20 +636,32 @@ class AutoRuleService:
         category: str,
         subcategory: str | None,
     ) -> int:
-        """Run the new rule against currently-uncategorized matching transactions. Returns count categorized."""
-        match_sql = self._description_match_sql(match_type)
+        """Run the new rule against currently-uncategorized matching transactions. Returns count categorized.
+
+        Pattern matching is performed in Python via ``matches_pattern`` against
+        both raw and ``normalize_description``-cleaned descriptions, mirroring
+        ``apply_rules`` semantics. SQL-only matching would miss rules whose
+        pattern equals a normalized form (e.g., 'STARBUCKS' against
+        'SQ *STARBUCKS PORTLAND OR') and would not honor regex case-insensitivity.
+        """
         rows = self._db.execute(
             f"""
-            SELECT t.transaction_id
+            SELECT t.transaction_id, t.description
             FROM {FCT_TRANSACTIONS.full_name} t
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
               AND t.description IS NOT NULL
-              AND {match_sql}
-            """,
-            [pattern],
+            """
         ).fetchall()
-        if not rows:
+        matched_ids = [
+            str(txn_id)
+            for txn_id, description in rows
+            if matches_pattern(str(description), pattern, match_type)
+            or matches_pattern(
+                normalize_description(str(description)), pattern, match_type
+            )
+        ]
+        if not matched_ids:
             return 0
         self._db.executemany(
             f"""
@@ -650,6 +669,6 @@ class AutoRuleService:
             (transaction_id, category, subcategory, categorized_at, categorized_by, rule_id, confidence)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'auto_rule', ?, 1.0)
             """,
-            [[r[0], category, subcategory, rule_id] for r in rows],
+            [[mid, category, subcategory, rule_id] for mid in matched_ids],
         )
-        return len(rows)
+        return len(matched_ids)

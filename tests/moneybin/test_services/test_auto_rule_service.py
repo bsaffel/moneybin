@@ -12,10 +12,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from moneybin import config as config_module
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.services.auto_rule_service import AutoRuleService
 from tests.moneybin.db_helpers import create_core_tables
+
+pytestmark = pytest.mark.unit
 
 
 def _mock_db_with_merchant(
@@ -156,6 +159,11 @@ def test_record_respects_proposal_threshold(
     monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_PROPOSAL_THRESHOLD", "3")
     monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "3")
     clear_settings_cache()
+    # set_current_profile mutates module-level globals that monkeypatch.setenv
+    # cannot revert. Snapshot and restore via setattr so tests after this one
+    # don't pick up the "test" profile.
+    monkeypatch.setattr(config_module, "_current_profile", None)
+    monkeypatch.setattr(config_module, "_current_settings", None)
     set_current_profile("test")
 
     _seed_transaction(real_db, "t1")
@@ -226,6 +234,11 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
     """When user overrides reach the threshold, deactivate the rule and propose the new category."""
     monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
     clear_settings_cache()
+    # set_current_profile mutates module-level globals that monkeypatch.setenv
+    # cannot revert. Snapshot and restore via setattr so tests after this one
+    # don't pick up the "test" profile.
+    monkeypatch.setattr(config_module, "_current_profile", None)
+    monkeypatch.setattr(config_module, "_current_settings", None)
     set_current_profile("test")
 
     # Approve an auto-rule for STARBUCKS -> Food & Drink

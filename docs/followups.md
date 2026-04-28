@@ -58,44 +58,30 @@ the first active rule that would match a transaction. Splitting requires asking
 mining — `find_matching_rule` is the single SQL surface that answers it, so the
 splitter can be built on top without re-implementing match semantics.
 
-## Auto-rule P2 items deferred from PR #58 review
+## Auto-rule items deferred from PR #58 review
 
-P2-level edge cases flagged by claude[bot] re-review of PR #58. None are blocking
-under current usage (auto-rules start as `contains` patterns) but they will matter
-once `exact`/`regex` proposals enter the pipeline (pillar D) or once MCP callers
-invoke `AutoRuleService.confirm()` directly.
+Items 1–5 and 7 from this list were addressed in commits after the original
+review; they're left here as historical notes. Item 6 remains open.
 
-1. **`AutoRuleService.confirm()` does not deduplicate approve/reject overlap**
-   (`auto_rule_service.py:162`). The CLI strips overlap before calling, so today's
-   path is safe; MCP callers passing overlapping lists would silently approve a
-   "rejected" ID. Fix: add `approve_set -= reject_set` at the top of `confirm()`
-   so the service is safe regardless of caller.
+1. **`AutoRuleService.confirm()` does not deduplicate approve/reject overlap.**
+   ✅ Fixed: `confirm()` now does `approve_set -= reject_set` before delegating.
 
-2. **`_merchant_mapping_covers` ignores merchant `match_type`**
-   (`auto_rule_service.py:587–596`). Always uses substring matching regardless of
-   the merchant's match_type. An `exact` merchant for `STARBUCKS` would
-   incorrectly suppress a valid proposal for pattern `STARBUCKS RESERVE`. Low risk
-   today; produces false negatives once `exact` merchants are common.
+2. **`_merchant_mapping_covers` ignores merchant `match_type` and subcategory.**
+   ✅ Fixed: rewritten in Python using `matches_pattern` against
+   `(raw_pattern, match_type)`; subcategory is now part of the equality check.
 
-3. **`_find_pending_proposal` not keyed on `match_type`**
-   (`auto_rule_service.py:602–613`). Two proposals with the same
-   `merchant_pattern` text but different `match_type` would collide. Low
-   probability today since description-derived patterns always produce
-   `contains`.
+3. **`_find_pending_proposal` not keyed on `match_type`.**
+   ✅ Fixed: query now joins on `(merchant_pattern, match_type)`.
 
-4. **`_description_match_sql` doesn't check normalized descriptions**
-   (`auto_rule_service.py:616–622`). The rule engine matches against both
-   `description` and `normalize_description(description)` for `exact`/`regex`;
-   the SQL fragment only checks raw `t.description`. Affects back-fill accuracy
-   for rules derived from normalized merchant names. Harmless for `contains`.
+4. **Auto-rule SQL didn't honor `normalize_description` (P1).**
+   ✅ Fixed: `_categorize_existing_with_rule` and `check_overrides` now match in
+   Python against both raw and `normalize_description`-cleaned descriptions,
+   mirroring `apply_rules` semantics. The `_description_match_sql` helper is
+   removed; the regex case-sensitivity gap went with it.
 
-5. **`set_current_profile("test")` state leak in two tests**
-   (`tests/moneybin/test_services/test_auto_rule_service.py:159, 229`).
-   `monkeypatch.setenv` reverts env vars, but `set_current_profile("test")`
-   mutates a module-level global that isn't restored. Tests running after these
-   may pick up the "test" profile. Fix: also
-   `monkeypatch.setattr(config_module, "_current_profile", None)` (and
-   `_current_settings`) so teardown restores module-level state.
+5. **`set_current_profile("test")` state leak in two tests.**
+   ✅ Fixed: tests now `monkeypatch.setattr(config_module, "_current_profile",
+   None)` and `_current_settings = None` so teardown restores module-level state.
 
 6. **claude[bot] cannot dismiss its own CHANGES_REQUESTED reviews.**
    The GitHub Action running claude[bot] is sandboxed and blocks
