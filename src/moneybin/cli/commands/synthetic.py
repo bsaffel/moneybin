@@ -255,3 +255,71 @@ def reset(
     finally:
         close_database()
         set_current_profile(original_profile)
+
+
+@app.command("verify")
+def verify_cmd(
+    list_scenarios: bool = typer.Option(False, "--list", help="List shipped scenarios"),
+    scenario: str | None = typer.Option(
+        None, "--scenario", help="Run a single scenario by name"
+    ),
+    run_all: bool = typer.Option(False, "--all", help="Run every shipped scenario"),
+    fail_fast: bool = typer.Option(
+        False, "--fail-fast", help="Stop on first failure with --all"
+    ),
+    keep_tmpdir: bool = typer.Option(
+        False, "--keep-tmpdir", help="Preserve scenario temp directory"
+    ),
+    output: str = typer.Option("text", "--output", help="text|json"),
+) -> None:
+    """Run scenario verification suites."""
+    import json
+    from typing import Any, cast
+
+    from moneybin.testing.scenarios.loader import list_shipped_scenarios
+    from moneybin.testing.scenarios.runner import run_scenario
+
+    scenarios = list_shipped_scenarios()
+    by_name = {s.name: s for s in scenarios}
+
+    if list_scenarios:
+        if output == "json":
+            typer.echo(
+                json.dumps([
+                    {"name": s.name, "description": s.description} for s in scenarios
+                ])
+            )
+        else:
+            for s in scenarios:
+                typer.echo(f"{s.name:40} {s.description}")
+        return
+
+    if scenario:
+        if scenario not in by_name:
+            logger.error(f"❌ unknown scenario: {scenario}")
+            raise typer.Exit(2)
+        targets = [by_name[scenario]]
+    elif run_all:
+        targets = scenarios
+    else:
+        logger.error("❌ specify --list, --scenario=NAME, or --all")
+        raise typer.Exit(2)
+
+    failures = 0
+    for s in targets:
+        env = run_scenario(s, keep_tmpdir=keep_tmpdir)
+        data = cast("dict[str, Any]", env.data)
+        if output == "json":
+            typer.echo(env.to_json())
+        else:
+            status = "✅" if data["passed"] else "❌"
+            typer.echo(f"{status} {s.name} ({data['duration_seconds']}s)")
+            for a in data["assertions"]:
+                if not a["passed"]:
+                    typer.echo(f"   ✗ {a['name']}: {a['details']}")
+        if not data["passed"]:
+            failures += 1
+            if fail_fast:
+                break
+
+    raise typer.Exit(1 if failures else 0)
