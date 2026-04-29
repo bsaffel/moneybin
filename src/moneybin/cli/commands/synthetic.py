@@ -68,7 +68,12 @@ def _run_generate(
         f"(seed={actual_seed}{f', {years} years' if years else ''})"
     )
 
-    original_profile = get_current_profile()
+    try:
+        original_profile: str | None = get_current_profile()
+    except RuntimeError:
+        # Synthetic commands skip main.py's set_current_profile (see
+        # cli/main.py is_synthetic_cmd), so there may be nothing to restore.
+        original_profile = None
     close_database()
     set_current_profile(profile)
 
@@ -146,7 +151,8 @@ def _run_generate(
         # When called from reset(), original_profile == profile (reset already
         # switched), so set_current_profile is a no-op; reset()'s own finally
         # does the real restore.
-        set_current_profile(original_profile)
+        if original_profile is not None:
+            set_current_profile(original_profile)
 
 
 @app.command("generate")
@@ -198,7 +204,10 @@ def reset(
 
     target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
 
-    original_profile = get_current_profile()
+    try:
+        original_profile: str | None = get_current_profile()
+    except RuntimeError:
+        original_profile = None
     close_database()
     set_current_profile(target_profile)
 
@@ -257,7 +266,8 @@ def reset(
         )
     finally:
         close_database()
-        set_current_profile(original_profile)
+        if original_profile is not None:
+            set_current_profile(original_profile)
 
 
 @app.command("verify")
