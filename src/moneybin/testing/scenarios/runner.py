@@ -100,8 +100,24 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                     halted="catalog wiring failed pre-flight",
                 )
 
-            for step in scenario.pipeline:
-                run_step(step, scenario.setup, db, env=env)
+            try:
+                for step in scenario.pipeline:
+                    run_step(step, scenario.setup, db, env=env)
+                    # Steps may close the singleton (e.g., to release the
+                    # DuckDB file lock for a subprocess). Re-fetch so the
+                    # next step / assertion phase has a live connection.
+                    db = get_database()
+            except Exception as exc:  # noqa: BLE001 — surface as halted envelope
+                logger.exception(f"scenario {scenario.name} pipeline crashed")
+                return _build_envelope(
+                    scenario=scenario,
+                    started=started,
+                    tmpdir=tmp,
+                    assertions=[preflight],
+                    expectations=[],
+                    evaluations=[],
+                    halted=f"pipeline step crashed: {exc}",
+                )
 
             assertions = [
                 _run_assertion(a, db, tmpdir=tmp) for a in scenario.assertions

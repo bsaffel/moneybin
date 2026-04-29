@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv test-e2e
+.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv test-e2e test-scenarios
 
 # Default target
 .DEFAULT_GOAL := help
@@ -152,6 +152,10 @@ test-integration: venv ## Development: Run integration tests only
 test-e2e: venv ## Development: Run end-to-end subprocess tests
 	@echo "$(BLUE)🧪 Running end-to-end tests...$(RESET)"
 	@uv run pytest tests/e2e/ -m "e2e" -v
+
+test-scenarios: venv ## Development: Run all synthetic scenarios via the scenario runner
+	@echo "$(BLUE)🧪 Running all scenarios...$(RESET)"
+	@uv run moneybin synthetic verify --all
 
 format: venv ## Development: Format code with ruff
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"

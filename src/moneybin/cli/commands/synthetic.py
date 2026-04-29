@@ -308,6 +308,7 @@ def verify_cmd(
         raise typer.Exit(2)
 
     failures = 0
+    total = len(targets)
     for s in targets:
         env = run_scenario(s, keep_tmpdir=keep_tmpdir)
         data = cast("dict[str, Any]", env.data)
@@ -317,12 +318,28 @@ def verify_cmd(
         else:
             status = "✅" if passed else "❌"
             typer.echo(f"{status} {s.name} ({data['duration_seconds']}s)")
+            if data.get("halted"):
+                typer.echo(f"   ✗ halted: {data['halted']}")
             for a in data["assertions"]:
                 if not a["passed"]:
-                    typer.echo(f"   ✗ {a['name']}: {a['details']}")
+                    detail = a["error"] or a["details"]
+                    typer.echo(f"   ✗ assertion {a['name']}: {detail}")
+            for e in data["expectations"]:
+                if not e["passed"]:
+                    typer.echo(f"   ✗ expectation {e['name']}")
+            for v in data["evaluations"]:
+                if not v["passed"]:
+                    typer.echo(
+                        f"   ✗ evaluation {v['name']}: "
+                        f"{v['metric']}={v['value']} < threshold={v['threshold']}"
+                    )
         if not passed:
             failures += 1
             if fail_fast:
                 break
+
+    if output != OutputFormat.JSON:
+        passed_count = total - failures
+        typer.echo(f"\n{passed_count}/{total} scenarios passed")
 
     raise typer.Exit(1 if failures else 0)

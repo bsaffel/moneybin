@@ -11,7 +11,9 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.services.categorization_service import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.testing.scenarios.loader import SetupSpec
+from moneybin.testing.scenarios.seed_merchants import seed_merchants_from_persona
 from moneybin.testing.synthetic.engine import GeneratorEngine
+from moneybin.testing.synthetic.models import load_persona
 from moneybin.testing.synthetic.writer import SyntheticWriter
 
 logger = logging.getLogger(__name__)
@@ -45,24 +47,26 @@ def _step_transform(setup: SetupSpec, db: Database, env: dict[str, str]) -> None
 
 
 def _step_match(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
-    MatchingService(db).run()
+    # Scenarios simulate human review: transfer matches are auto-accepted so
+    # core.bridge_transfers and fct_transactions.transfer_pair_id populate
+    # without an interactive review step. Real product flow leaves them pending.
+    MatchingService(db).run(auto_accept_transfers=True)
+
+
+def _step_seed_merchants(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
+    # Materializes synthetic merchant-prefix → category mappings into
+    # app.merchants so the categorize step has rules to evaluate. Real
+    # product flow seeds via auto-rules / user actions; scenarios bypass
+    # that to keep the pipeline deterministic.
+    seed_merchants_from_persona(db, load_persona(setup.persona))
 
 
 def _step_categorize(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
-    svc = CategorizationService(db)
-    svc.apply_rules()
-    # Bulk-categorize anything still uncategorized using merchant resolution.
-    items = db.execute(
-        """
-        SELECT transaction_id, description
-        FROM core.fct_transactions
-        WHERE category IS NULL
-        """
-    ).fetchall()
-    if items:
-        svc.bulk_categorize([
-            {"transaction_id": tid, "description": d} for tid, d in items
-        ])
+    # apply_deterministic runs rules first, then merchant-mapping fallback.
+    # bulk_categorize is the wrong API here — it expects pre-decided
+    # categories per transaction (used by the agent/UI flow), not auto-
+    # classification from descriptions.
+    CategorizationService(db).apply_deterministic()
 
 
 def _step_migrate(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
@@ -74,8 +78,15 @@ def _step_migrate(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
 def _step_transform_via_subprocess(
     setup: SetupSpec, db: Database, env: dict[str, str]
 ) -> None:
+    # DuckDB enforces a single-writer file lock. The subprocess can't open
+    # the encrypted DB while we hold a connection — close the singleton
+    # before invoking. The runner re-fetches the singleton after each step
+    # so the assertion phase opens a fresh connection.
+    from moneybin.database import close_database
+
+    close_database()
     proc = subprocess.run(
-        ["uv", "run", "moneybin", "data", "transform", "apply"],  # noqa: S603, S607  # explicit command list; uv resolved via PATH
+        ["uv", "run", "moneybin", "transform", "apply"],  # noqa: S603, S607  # explicit command list; uv resolved via PATH
         env={**os.environ, **env},
         capture_output=True,
         text=True,
@@ -93,6 +104,7 @@ STEP_REGISTRY: dict[str, StepCallable] = {
     "load_fixtures": _step_load_fixtures,
     "transform": _step_transform,
     "match": _step_match,
+    "seed_merchants": _step_seed_merchants,
     "categorize": _step_categorize,
     "migrate": _step_migrate,
     "transform_via_subprocess": _step_transform_via_subprocess,

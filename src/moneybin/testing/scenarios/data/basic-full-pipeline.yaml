@@ -11,7 +11,9 @@ pipeline:
   - generate
   - transform
   - match
+  - seed_merchants
   - categorize
+  - transform
 
 assertions:
   - name: catalog_wired_correctly

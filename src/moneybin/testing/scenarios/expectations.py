@@ -77,10 +77,26 @@ def _verify_match_decision(db: Database, spec: ExpectationSpec) -> ExpectationRe
 
 
 def _verify_gold_record_count(db: Database, spec: ExpectationSpec) -> ExpectationResult:
-    """Verify the total row count in `core.fct_transactions` equals expected."""
+    """Verify gold record count, optionally scoped to fixture-derived source IDs.
+
+    When ``fixture_source_ids`` is supplied, count only the distinct gold rows
+    whose provenance includes one of those source IDs — letting dedup scenarios
+    assert collapse counts on a known input set without depending on whole-table
+    totals (which include unrelated synthetic data).
+    """
     body = spec.model_dump()
     expected = int(body["expected_collapsed_count"])
-    row = db.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()
+    fixture_ids: list[str] = list(body.get("fixture_source_ids") or [])
+    if fixture_ids:
+        placeholders = ",".join(["?"] * len(fixture_ids))
+        sql = f"""
+            SELECT COUNT(DISTINCT transaction_id)
+            FROM meta.fct_transaction_provenance
+            WHERE source_transaction_id IN ({placeholders})
+        """  # noqa: S608 — placeholders count derived from typed list; values bound
+        row = db.execute(sql, fixture_ids).fetchone()
+    else:
+        row = db.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()
     actual = int(row[0]) if row is not None else 0
     return ExpectationResult(
         name=spec.description or "gold_record_count",

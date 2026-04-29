@@ -90,8 +90,14 @@ class TransactionMatcher:
         self._settings = settings
         self._table = table
 
-    def run(self) -> MatchResult:
-        """Run Tier 2b then Tier 3 matching."""
+    def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
+        """Run Tier 2b then Tier 3 matching.
+
+        ``auto_accept_transfers`` writes transfer matches as ``accepted`` instead
+        of ``pending``, simulating automated human review. Used by the scenario
+        runner so transfer evaluations can read from ``core.bridge_transfers``
+        without an interactive review step.
+        """
         result = MatchResult()
         rejected = get_rejected_pairs(self._db)
 
@@ -140,6 +146,7 @@ class TransactionMatcher:
             excluded_ids=transfer_excluded,
             rejected_pairs=rejected_transfer,
             result=result,
+            auto_accept=auto_accept_transfers,
         )
 
         return result
@@ -297,6 +304,7 @@ class TransactionMatcher:
         excluded_ids: set[tuple[str, str, str]],
         rejected_pairs: list[dict[str, Any]],
         result: MatchResult,
+        auto_accept: bool = False,
     ) -> None:
         """Run transfer detection (Tier 4): blocking -> scoring -> assignment -> persist."""
         candidates = get_candidates_transfers(
@@ -346,7 +354,7 @@ class TransactionMatcher:
                 },
                 match_type="transfer",
                 match_tier=None,
-                match_status="pending",
+                match_status="accepted" if auto_accept else "pending",
                 decided_by="auto",
                 match_reason=(
                     f"Transfer: {pair.account_id_a[:8]} -> {pair.account_id_b[:8]}, "
@@ -354,9 +362,13 @@ class TransactionMatcher:
                 ),
             )
 
-            result.pending_transfers += 1
+            if auto_accept:
+                result.auto_merged += 1
+            else:
+                result.pending_transfers += 1
             tier_pending += 1
             TRANSFER_MATCHES_PROPOSED.inc()
 
         if tier_pending:
-            logger.info(f"Tier 4: {tier_pending} potential transfers found")
+            verb = "auto-accepted" if auto_accept else "potential"
+            logger.info(f"Tier 4: {tier_pending} {verb} transfers found")

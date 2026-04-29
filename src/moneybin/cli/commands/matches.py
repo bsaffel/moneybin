@@ -27,6 +27,11 @@ def matches_run(
     skip_transform: bool = typer.Option(
         False, "--skip-transform", help="Skip SQLMesh transforms after matching"
     ),
+    auto_accept_transfers: bool = typer.Option(
+        False,
+        "--auto-accept-transfers",
+        help="Auto-accept transfer matches (skip interactive review)",
+    ),
 ) -> None:
     """Run matcher against existing transactions."""
     from moneybin.config import get_settings
@@ -37,7 +42,7 @@ def matches_run(
             settings = get_settings().matching
             seed_source_priority(db, settings)
             matcher = TransactionMatcher(db, settings)
-            result = matcher.run()
+            result = matcher.run(auto_accept_transfers=auto_accept_transfers)
             if result.has_matches:
                 logger.info(f"Matching: {result.summary()}")
                 if result.has_pending:
@@ -269,6 +274,11 @@ def matches_backfill(
     skip_transform: bool = typer.Option(
         False, "--skip-transform", help="Skip SQLMesh transforms after matching"
     ),
+    auto_accept_transfers: bool = typer.Option(
+        False,
+        "--auto-accept-transfers",
+        help="Auto-accept transfer matches (skip interactive review)",
+    ),
 ) -> None:
     """One-time scan of all existing transactions for latent duplicates."""
     from moneybin.config import get_settings
@@ -288,7 +298,7 @@ def matches_backfill(
 
             seed_source_priority(db, settings)
             matcher = TransactionMatcher(db, settings)
-            result = matcher.run()
+            result = matcher.run(auto_accept_transfers=auto_accept_transfers)
 
             logger.info(f"Backfill complete: {result.summary()}")
             if result.has_pending:

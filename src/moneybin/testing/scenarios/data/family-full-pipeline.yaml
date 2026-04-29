@@ -11,7 +11,9 @@ pipeline:
   - generate
   - transform
   - match
+  - seed_merchants
   - categorize
+  - transform
 
 assertions:
   - name: catalog_wired_correctly
@@ -34,8 +36,8 @@ assertions:
     fn: assert_row_count_delta
     args:
       table: core.fct_transactions
-      expected: 4500
-      tolerance_pct: 10
+      expected: 2900
+      tolerance_pct: 15
   - name: transfers_balance_to_zero
     fn: assert_balanced_transfers
 

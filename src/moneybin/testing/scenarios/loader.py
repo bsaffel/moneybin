@@ -15,6 +15,7 @@ VALID_STEP_NAMES = {
     "load_fixtures",
     "transform",
     "match",
+    "seed_merchants",
     "categorize",
     "migrate",
     "transform_via_subprocess",

@@ -102,15 +102,22 @@ def assert_encryption_key_propagated_to_subprocess(
     A passing result proves both that the subprocess could open the
     encrypted database and that it wrote the expected rows.
     """
+    from moneybin.database import close_database, get_database
+
     pre_counts = {table: _count(db, table) for table in expected_min_rows}
-    proc = subprocess.run(  # noqa: S603  — explicit command list, not shell
-        command,
-        env={**os.environ, **(env or {})},
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    # Release the DuckDB file lock so the subprocess can open the same DB.
+    close_database()
+    try:
+        proc = subprocess.run(  # noqa: S603  — explicit command list, not shell
+            command,
+            env={**os.environ, **(env or {})},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    finally:
+        db = get_database()
     post_counts = {table: _count(db, table) for table in expected_min_rows}
     deltas = {
         table: post_counts[table] - pre_counts[table] for table in expected_min_rows
@@ -136,13 +143,21 @@ def _count(db: Database, table: str) -> int:
     """Return ``COUNT(*)`` for a fully-qualified table name.
 
     Identifier validated against DuckDB's catalog before interpolation.
+    A table that doesn't exist yet returns 0 — callers measuring deltas
+    around a pipeline step (e.g., subprocess transform) need pre-counts
+    even before the table has been materialized.
     """
+    # Include both tables and views — core.fct_transactions is a VIEW.
     catalog_rows = db.execute(
-        "SELECT schema_name || '.' || table_name FROM duckdb_tables()"
+        """
+        SELECT schema_name || '.' || table_name FROM duckdb_tables()
+        UNION ALL
+        SELECT schema_name || '.' || view_name FROM duckdb_views()
+        """
     ).fetchall()
     valid = {row[0] for row in catalog_rows}
     if table not in valid:
-        raise ValueError(f"unknown table: {table!r}")
+        return 0
     safe = ".".join(
         exp.to_identifier(seg, quoted=True).sql("duckdb") for seg in table.split(".")
     )
@@ -155,14 +170,27 @@ def assert_no_unencrypted_db_files(
     *,
     tmpdir: Path,
 ) -> AssertionResult:
-    """Assert no bare ``*.duckdb`` files exist anywhere under ``tmpdir``.
+    """Assert no *unencrypted* ``*.duckdb`` files exist anywhere under ``tmpdir``.
 
-    Unencrypted DuckDB files in a profile's data directory mean a code
-    path bypassed the ``Database`` abstraction (which always attaches
-    via ``ENCRYPTION_KEY``). The presence of such a file is itself the
-    failure signal — we don't open it.
+    A ``.duckdb`` file may be either encrypted or plaintext — the file
+    extension alone doesn't tell. Probe each candidate by opening without
+    an encryption key: an unencrypted file opens successfully, an
+    encrypted file raises. A plaintext file in a profile data directory
+    means a code path bypassed the ``Database`` abstraction (which always
+    attaches via ``ENCRYPTION_KEY``).
     """
-    leaks = sorted(str(p.relative_to(tmpdir)) for p in Path(tmpdir).rglob("*.duckdb"))
+    import duckdb
+
+    leaks: list[str] = []
+    for p in Path(tmpdir).rglob("*.duckdb"):
+        try:
+            with duckdb.connect(str(p), read_only=True) as conn:
+                conn.execute("SELECT 1").fetchone()
+        except Exception:  # noqa: BLE001, S112 — encrypted DBs raise untyped errors; that's the success path
+            continue
+        leaks.append(str(p.relative_to(tmpdir)))
+
+    leaks.sort()
     return AssertionResult(
         name="no_unencrypted_db_files",
         passed=not leaks,

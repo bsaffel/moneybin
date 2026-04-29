@@ -9,9 +9,11 @@ setup:
     - path: tests/fixtures/dedup/chase_amazon_overlap.csv
       account: amazon-card
       source_type: csv
+    - path: tests/fixtures/dedup/chase_amazon_overlap_ofx.csv
+      account: amazon-card
+      source_type: ofx
 
 pipeline:
-  - generate
   - load_fixtures
   - transform
   - match
@@ -45,7 +47,13 @@ expectations:
     expected_confidence_min: 0.9
   - kind: gold_record_count
     description: "Three labeled overlaps should produce three gold records, not six"
-    base_count: from_fixture_metadata
+    fixture_source_ids:
+      - SYN20240315001
+      - SYN20240322002
+      - SYN20240330003
+      - TBL_2024-03-15_AMZN_47.99
+      - TBL_2024-03-22_PRIME_14.99
+      - TBL_2024-03-30_DIGITAL_9.99
     expected_collapsed_count: 3
 
 gates:

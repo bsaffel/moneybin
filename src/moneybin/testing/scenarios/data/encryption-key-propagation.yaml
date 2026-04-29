@@ -9,7 +9,9 @@ setup:
 
 pipeline:
   - generate
-  - transform_via_subprocess
+  # Note: transform is intentionally not run here — the assertion below
+  # invokes `transform apply` as a subprocess and measures the row delta
+  # to prove the encryption key propagated.
 
 assertions:
   - name: catalog_wired_correctly
@@ -17,7 +19,7 @@ assertions:
   - name: subprocess_wrote_to_encrypted_db
     fn: assert_encryption_key_propagated_to_subprocess
     args:
-      command: ["uv", "run", "moneybin", "data", "transform", "apply"]
+      command: ["uv", "run", "moneybin", "transform", "apply"]
       expected_min_rows:
         core.fct_transactions: 100
         core.dim_accounts: 2
