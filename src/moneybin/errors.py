@@ -53,5 +53,8 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             hint=database_key_error_hint(),
         )
     if isinstance(exc, FileNotFoundError):
-        return UserError(message=str(exc), code="file_not_found")
+        # Drop the "[Errno 2]" prefix that str(FileNotFoundError) includes —
+        # end users don't need the errno number.
+        msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
+        return UserError(message=msg, code="file_not_found")
     return None
