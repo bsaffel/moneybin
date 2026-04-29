@@ -173,7 +173,7 @@ def import_file(
         moneybin import file statement.ofx --institution "Wells Fargo"
         moneybin import file export.csv --override date=Date --override amount=Amount
     """
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.services.import_service import import_file as run_import
 
     source = Path(file_path)
@@ -201,7 +201,7 @@ def import_file(
         raise typer.Exit(1)
 
     try:
-        with handle_database_errors() as db:
+        with handle_cli_errors() as db:
             result = run_import(
                 db=db,
                 file_path=source,
@@ -226,9 +226,6 @@ def import_file(
     except ValueError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
-    except FileNotFoundError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
     except PermissionError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
@@ -251,10 +248,10 @@ def import_history(
         moneybin import history --limit 50
         moneybin import history --import-id abc123
     """
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.loaders.tabular_loader import TabularLoader
 
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         loader = TabularLoader(db)
         records = loader.get_import_history(limit=limit, import_id=import_id)
 
@@ -305,7 +302,7 @@ def import_revert(
         moneybin import revert abc123-...
         moneybin import revert abc123-... --yes
     """
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.loaders.tabular_loader import TabularLoader
 
     if not yes:
@@ -317,7 +314,7 @@ def import_revert(
             logger.info("Revert cancelled")
             raise typer.Exit(0)
 
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         loader = TabularLoader(db)
         result = loader.revert_import(import_id)
 
@@ -567,7 +564,7 @@ def delete_format(
         moneybin import delete-format my_custom_format
         moneybin import delete-format my_custom_format --yes
     """
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.formats import (
         delete_format_from_db,
         load_builtin_formats,
@@ -585,7 +582,7 @@ def delete_format(
             logger.info("Delete cancelled")
             raise typer.Exit(0)
 
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         deleted = delete_format_from_db(db, name)
 
     if not deleted:
@@ -603,7 +600,7 @@ def import_status() -> None:
     Example:
         moneybin import status
     """
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_settings
 
     db_path = get_settings().database.path
@@ -614,7 +611,7 @@ def import_status() -> None:
         raise typer.Exit(1)
 
     try:
-        with handle_database_errors() as db:
+        with handle_cli_errors() as db:
             _print_import_status(db)
     except Exception as e:  # noqa: BLE001 — surface connection errors generically
         logger.error(f"❌ Could not open database: {e}")

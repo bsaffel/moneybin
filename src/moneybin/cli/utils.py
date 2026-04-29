@@ -8,30 +8,30 @@ from contextlib import contextmanager
 
 import typer
 
-from moneybin.database import (
-    Database,
-    DatabaseKeyError,
-    database_key_error_hint,
-    get_database,
-)
+from moneybin.database import Database, get_database
+from moneybin.errors import classify_user_error
 
 logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def handle_database_errors() -> Generator[Database, None, None]:
-    """Get the active database with standard CLI error handling.
+def handle_cli_errors() -> Generator[Database, None, None]:
+    """Get the active database with cross-cutting CLI error handling.
 
-    Catches ``DatabaseKeyError`` (raised when the encryption key is not
-    available — e.g. database is locked), logs a user-facing error and the
-    standard ``moneybin db unlock`` hint, and exits with code 1. All other
-    exceptions propagate unchanged so callers can handle them.
+    Yields a ``Database`` and catches user-facing exceptions raised either
+    during database open or inside the ``with`` block (e.g.,
+    ``DatabaseKeyError``, ``FileNotFoundError``). Classified errors are
+    logged with the standard ``❌`` prefix plus any recovery hint, and the
+    process exits with code 1. Unrecognized exceptions propagate unchanged.
     """
     try:
         db = get_database()
-    except DatabaseKeyError as e:
-        logger.error(f"❌ {e}")
-        logger.info(database_key_error_hint())
+        yield db
+    except Exception as e:
+        user_error = classify_user_error(e)
+        if user_error is None:
+            raise
+        logger.error(f"❌ {user_error.message}")
+        if user_error.hint:
+            logger.info(user_error.hint)
         raise typer.Exit(1) from e
-
-    yield db

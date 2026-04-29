@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import typer
 
-from moneybin.cli.utils import handle_database_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import sqlmesh_context
 
 app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
@@ -30,7 +30,7 @@ def plan_transforms(
     logger.info("⚙️  Running SQLMesh plan...")
 
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
         logger.info("✅ SQLMesh plan completed")
@@ -53,7 +53,7 @@ def apply_transforms() -> None:
     logger.info("⚙️  Applying SQLMesh transforms...")
 
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             run_transforms()
         logger.info("✅ SQLMesh transforms applied")
     except typer.Exit:
@@ -68,7 +68,7 @@ def transform_status() -> None:
     """Show current model state and environment."""
     logger.info("⚙️  Checking SQLMesh status...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 env = ctx.state_reader.get_environment("prod")
                 if env:
@@ -95,7 +95,7 @@ def transform_validate() -> None:
     """Check that model SQL parses and resolves without errors."""
     logger.info("⚙️  Validating SQLMesh models...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
@@ -118,7 +118,7 @@ def transform_audit(
     """Run data quality assertions defined in SQLMesh models."""
     logger.info("⚙️  Running SQLMesh audits...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
@@ -149,7 +149,7 @@ def transform_restate(
             return
     logger.info(f"⚙️  Restating {model} from {start}...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 ctx.plan(
                     restate_models=[model],

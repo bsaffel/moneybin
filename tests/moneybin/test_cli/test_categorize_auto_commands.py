@@ -66,7 +66,7 @@ def _confirm_result(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_database_errors")
+@patch("moneybin.cli.commands.categorize.handle_cli_errors")
 def test_auto_confirm_explicit_approve(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -81,7 +81,7 @@ def test_auto_confirm_explicit_approve(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_database_errors")
+@patch("moneybin.cli.commands.categorize.handle_cli_errors")
 def test_auto_confirm_explicit_reject(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -96,7 +96,7 @@ def test_auto_confirm_explicit_reject(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_database_errors")
+@patch("moneybin.cli.commands.categorize.handle_cli_errors")
 def test_auto_confirm_approve_all_expands_pending(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -115,7 +115,7 @@ def test_auto_confirm_approve_all_expands_pending(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_database_errors")
+@patch("moneybin.cli.commands.categorize.handle_cli_errors")
 def test_auto_confirm_reject_all_expands_pending(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -134,7 +134,7 @@ def test_auto_confirm_reject_all_expands_pending(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_database_errors")
+@patch("moneybin.cli.commands.categorize.handle_cli_errors")
 def test_auto_confirm_approve_all_with_explicit_reject_excludes_id(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
