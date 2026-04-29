@@ -44,6 +44,15 @@ class SecretNotFoundError(Exception):
     """Raised when a secret cannot be found in keychain or environment."""
 
 
+class SecretStorageUnavailableError(Exception):
+    """Raised when no OS keyring backend is available to persist a secret.
+
+    Distinct from ``SecretNotFoundError`` — read paths can fall back to env
+    vars, but writes have nowhere to go and must surface a clear error
+    rather than silently losing the value.
+    """
+
+
 class SecretStore:
     """Keychain and environment variable interface for secrets.
 
@@ -84,8 +93,13 @@ class SecretStore:
         Raises:
             SecretNotFoundError: If the secret is not in keychain or env var.
         """
-        # Try OS keychain first
-        value = keyring.get_password(self._service, name)
+        # Try OS keychain first; missing backend (headless CI, minimal
+        # containers) is treated as a keychain miss so the env-var fallback
+        # below can satisfy the read.
+        try:
+            value = keyring.get_password(self._service, name)
+        except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            value = None
         if value is not None:
             return value
 
@@ -143,7 +157,15 @@ class SecretStore:
             name: Secret name (e.g. "DATABASE__ENCRYPTION_KEY").
             value: Secret value to store.
         """
-        keyring.set_password(self._service, name, value)
+        try:
+            keyring.set_password(self._service, name, value)
+        except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            env_var = f"{_ENV_PREFIX}{name}"
+            raise SecretStorageUnavailableError(
+                f"No OS keyring backend available to store secret '{name}'. "
+                f"Install a backend (e.g. 'keyrings.alt') or supply the value "
+                f"via env var {env_var}."
+            ) from None
         logger.debug(f"Stored secret '{name}' in OS keychain")
 
     def delete_key(self, name: str) -> None:

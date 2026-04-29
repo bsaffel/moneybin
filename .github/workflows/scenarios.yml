@@ -37,6 +37,11 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run scenario suite
+        env:
+          # GitHub Actions runners have no keyring backend; SecretStore
+          # falls through to this env var for the encryption key. The
+          # value is ephemeral — the runner is destroyed after each job.
+          MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
           set -o pipefail
           start=$(date +%s)

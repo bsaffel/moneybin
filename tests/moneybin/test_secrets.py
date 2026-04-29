@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 import pytest
 
-from moneybin.secrets import SecretNotFoundError, SecretStore
+from moneybin.secrets import (
+    SecretNotFoundError,
+    SecretStorageUnavailableError,
+    SecretStore,
+)
 
 
 class TestGetKey:
@@ -88,6 +92,35 @@ class TestSetAndDeleteKey:
 
         services = {call.args[0] for call in mock_kr.set_password.call_args_list}
         assert services == {"moneybin-alice", "moneybin-bob"}
+
+    def test_get_key_falls_back_to_env_when_no_keyring_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No keyring backend + env var set — env var satisfies the read."""
+        monkeypatch.setenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", "env-key")
+        store = SecretStore()
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.get_password.side_effect = mock_kr.errors.NoKeyringError(
+                "no backend"
+            )
+            assert store.get_key("DATABASE__ENCRYPTION_KEY") == "env-key"
+
+    def test_set_key_raises_storage_unavailable_when_no_keyring_backend(
+        self,
+    ) -> None:
+        """No keyring backend on a write — surface a clear error, do not silently no-op."""
+        store = SecretStore(profile="alice")
+        with patch("moneybin.secrets.keyring") as mock_kr:
+            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
+            mock_kr.set_password.side_effect = mock_kr.errors.NoKeyringError(
+                "no backend"
+            )
+            with pytest.raises(
+                SecretStorageUnavailableError,
+                match="MONEYBIN_DATABASE__ENCRYPTION_KEY",
+            ):
+                store.set_key("DATABASE__ENCRYPTION_KEY", "any-value")
 
     def test_delete_key_raises_secret_not_found_when_absent(self) -> None:
         """PasswordDeleteError from keyring backend is wrapped as SecretNotFoundError."""

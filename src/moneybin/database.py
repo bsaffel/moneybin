@@ -27,7 +27,11 @@ from typing import Any
 import duckdb
 
 from moneybin.config import get_settings
-from moneybin.secrets import SecretNotFoundError, SecretStore
+from moneybin.secrets import (
+    SecretNotFoundError,
+    SecretStorageUnavailableError,
+    SecretStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -792,14 +796,26 @@ def init_db(
         if store.has_keychain_entry(_KEY_NAME):
             logger.debug("Using existing encryption key")
         else:
+            key_from_env = False
             try:
                 encryption_key = store.get_key(_KEY_NAME)
+                key_from_env = True
                 logger.debug("Persisting env-provided encryption key to keychain")
             except SecretNotFoundError:
                 encryption_key = secrets_mod.token_hex(32)
                 logger.debug("Auto-generated encryption key stored in OS keychain")
-            store.set_key(_KEY_NAME, encryption_key)
-            key_was_persisted_now = True
+            try:
+                store.set_key(_KEY_NAME, encryption_key)
+                key_was_persisted_now = True
+            except SecretStorageUnavailableError:
+                # Headless environment with no keyring backend. The key must
+                # be supplied via env var on every run — refuse to mint a
+                # fresh random key (it would be lost on the next process).
+                if not key_from_env:
+                    raise
+                logger.debug(
+                    "No keyring backend; relying on env var for encryption key"
+                )
 
         try:
             with Database(db_path, secret_store=store, no_auto_upgrade=False):
