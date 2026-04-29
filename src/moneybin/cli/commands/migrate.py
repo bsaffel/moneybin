@@ -10,7 +10,7 @@ from typing import Annotated
 
 import typer
 
-from moneybin.cli.utils import handle_database_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.migrations import MigrationRunner, get_current_versions
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ def migrate_apply(
     ] = False,
 ) -> None:
     """Apply pending database migrations."""
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         runner = MigrationRunner(db)
 
         if dry_run:
@@ -58,7 +58,7 @@ def migrate_apply(
 @app.command("status")
 def migrate_status() -> None:
     """Show migration state — applied, pending, and drift warnings."""
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         runner = MigrationRunner(db)
 
         # Applied migrations

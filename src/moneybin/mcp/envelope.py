@@ -17,6 +17,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
+from moneybin.errors import UserError
+
 
 class DetailLevel(StrEnum):
     """Detail level for tool responses.
@@ -80,23 +82,29 @@ class _DecimalEncoder(json.JSONEncoder):
 class ResponseEnvelope:
     """Standard response shape for all MCP tools.
 
-    Three sections:
+    Sections:
     - ``summary``: metadata for the AI (counts, truncation, sensitivity)
     - ``data``: the payload (list of objects or single result dict)
     - ``actions``: contextual next-step hints
+    - ``error``: populated when the tool failed with a classified user error;
+      ``data`` is empty in this case
     """
 
     summary: SummaryMeta
     data: list[dict[str, Any]] | dict[str, Any]
     actions: list[str] = field(default_factory=list)
+    error: UserError | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization."""
-        return {
+        d: dict[str, Any] = {
             "summary": self.summary.to_dict(),
             "data": self.data,
             "actions": self.actions,
         }
+        if self.error is not None:
+            d["error"] = self.error.to_dict()
+        return d
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
@@ -154,3 +162,23 @@ def build_envelope(
         data=data,
         actions=actions or [],
     )
+
+
+def build_error_envelope(
+    *,
+    error: UserError,
+    sensitivity: Literal["low", "medium", "high"] = "low",
+) -> ResponseEnvelope:
+    """Build a ResponseEnvelope carrying a classified user error.
+
+    ``data`` is an empty list and ``actions`` is empty — the ``error`` field
+    is the canonical signal that the tool failed. Sensitivity defaults to
+    ``low`` because error messages must not leak row-level data.
+    """
+    summary = SummaryMeta(
+        total_count=0,
+        returned_count=0,
+        has_more=False,
+        sensitivity=sensitivity,
+    )
+    return ResponseEnvelope(summary=summary, data=[], actions=[], error=error)

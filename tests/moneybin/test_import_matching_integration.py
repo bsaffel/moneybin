@@ -126,7 +126,11 @@ class TestApplyCategorizationProposalSummary:
             "merchant": 3,
             "rule": 2,
         }
-        mock_auto_cls.return_value.stats.return_value = {"pending_proposals": 4}
+        from moneybin.services.auto_rule_service import AutoStatsResult
+
+        mock_auto_cls.return_value.stats.return_value = AutoStatsResult(
+            pending_proposals=4
+        )
 
         with caplog.at_level(logging.INFO, logger="moneybin.services.import_service"):  # type: ignore[attr-defined]
             _apply_categorization(MagicMock())
@@ -156,7 +160,11 @@ class TestApplyCategorizationProposalSummary:
             "merchant": 1,
             "rule": 0,
         }
-        mock_auto_cls.return_value.stats.return_value = {"pending_proposals": 0}
+        from moneybin.services.auto_rule_service import AutoStatsResult
+
+        mock_auto_cls.return_value.stats.return_value = AutoStatsResult(
+            pending_proposals=0
+        )
 
         with caplog.at_level(logging.INFO, logger="moneybin.services.import_service"):  # type: ignore[attr-defined]
             _apply_categorization(MagicMock())

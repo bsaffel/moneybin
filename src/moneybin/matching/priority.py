@@ -20,10 +20,14 @@ def seed_source_priority(db: Database, settings: MatchingSettings) -> None:
     This is safe because the table is never user-edited — config owns it.
     """
     db.execute("DELETE FROM app.seed_source_priority")
-    for rank, source_type in enumerate(settings.source_priority, start=1):
-        db.execute(
+    rows = [
+        [source_type, rank]
+        for rank, source_type in enumerate(settings.source_priority, start=1)
+    ]
+    if rows:
+        db.executemany(
             "INSERT INTO app.seed_source_priority (source_type, priority) VALUES (?, ?)",
-            [source_type, rank],
+            rows,
         )
     logger.debug(
         f"Seeded source priority: {len(settings.source_priority)} source types"

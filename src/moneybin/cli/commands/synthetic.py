@@ -54,7 +54,7 @@ def _run_generate(
         seed: Deterministic seed (None for random).
         skip_transform: If True, skip running SQLMesh after generation.
     """
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_current_profile, set_current_profile
     from moneybin.database import close_database
     from moneybin.services.import_service import run_transforms
@@ -78,7 +78,7 @@ def _run_generate(
     set_current_profile(profile)
 
     try:
-        with handle_database_errors() as db:
+        with handle_cli_errors() as db:
             # Check if profile already has data
             try:
                 row = db.execute(
@@ -100,12 +100,8 @@ def _run_generate(
                 raise typer.Exit(1) from None
 
             # Generate
-            try:
-                engine = GeneratorEngine(persona, seed=actual_seed, years=years)
-                result = engine.generate()
-            except FileNotFoundError as e:
-                logger.error(f"❌ {e}")
-                raise typer.Exit(1) from None
+            engine = GeneratorEngine(persona, seed=actual_seed, years=years)
+            result = engine.generate()
 
             # Write to database
             writer = SyntheticWriter(db)
@@ -198,7 +194,7 @@ def reset(
     ),
 ) -> None:
     """Wipe a generated profile and regenerate from scratch."""
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_current_profile, set_current_profile
     from moneybin.database import close_database
 
@@ -212,7 +208,7 @@ def reset(
     set_current_profile(target_profile)
 
     try:
-        with handle_database_errors() as db:
+        with handle_cli_errors() as db:
             # Safety check: only reset profiles created by the generator
             try:
                 gt_row = db.execute(

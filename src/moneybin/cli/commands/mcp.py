@@ -306,7 +306,7 @@ def serve(
 
         # Typically invoked by AI clients, not run manually
     """
-    from moneybin.cli.utils import handle_database_errors
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_database_path
     from moneybin.mcp.server import close_db, init_db, mcp
 
@@ -337,7 +337,7 @@ def serve(
     validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
 
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             init_db()
         logger.info(f"MCP server starting (transport={transport}, db={db_path})")
         mcp.run(transport=validated_transport)
