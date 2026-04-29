@@ -14,15 +14,17 @@ does not import this module at module load time.
 import logging
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
+from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
     CategorizationService,
     matches_pattern,
-    normalize_description,
 )
 from moneybin.tables import (
     CATEGORIZATION_RULES,
@@ -52,6 +54,69 @@ class RejectResult:
 
     rejected: int = 0
     skipped: int = 0
+
+
+@dataclass(slots=True)
+class AutoReviewResult:
+    """Pending auto-rule proposals awaiting human review."""
+
+    proposals: list[dict[str, Any]]
+    total_count: int = 0
+
+    def to_envelope(self) -> ResponseEnvelope:
+        """Build a ResponseEnvelope for the categorize.auto_review tool."""
+        return build_envelope(
+            data=self.proposals,
+            sensitivity="medium",
+            total_count=self.total_count,
+            actions=[
+                "Use categorize.auto_confirm to approve or reject proposals",
+            ],
+        )
+
+
+@dataclass(slots=True)
+class AutoConfirmResult:
+    """Aggregate counts from a confirm() call (combined approve + reject)."""
+
+    approved: int = 0
+    rejected: int = 0
+    skipped: int = 0
+    newly_categorized: int = 0
+    rule_ids: list[str] = field(default_factory=list)
+
+    def to_envelope(self) -> ResponseEnvelope:
+        """Build a ResponseEnvelope for the categorize.auto_confirm tool."""
+        return build_envelope(
+            data={
+                "approved": self.approved,
+                "rejected": self.rejected,
+                "skipped": self.skipped,
+                "newly_categorized": self.newly_categorized,
+                "rule_ids": self.rule_ids,
+            },
+            sensitivity="medium",
+        )
+
+
+@dataclass(slots=True)
+class AutoStatsResult:
+    """Auto-rule health metrics."""
+
+    active_auto_rules: int = 0
+    pending_proposals: int = 0
+    transactions_categorized: int = 0
+
+    def to_envelope(self) -> ResponseEnvelope:
+        """Build a ResponseEnvelope for the categorize.auto_stats tool."""
+        return build_envelope(
+            data={
+                "active_auto_rules": self.active_auto_rules,
+                "pending_proposals": self.pending_proposals,
+                "transactions_categorized": self.transactions_categorized,
+            },
+            sensitivity="low",
+        )
 
 
 class AutoRuleService:
@@ -170,11 +235,37 @@ class AutoRuleService:
 
     # -- Decisions --
 
+    def review(self, *, limit: int | None = None) -> AutoReviewResult:
+        """Return pending auto-rule proposals as a typed result.
+
+        ``limit`` defaults to ``categorization.auto_rule_list_default_limit``
+        when ``None``. ``total_count`` reflects the unbounded queue size so
+        callers see ``has_more`` when truncation occurs.
+        """
+        effective_limit = self._resolve_list_limit(limit)
+        proposals = self.list_pending_proposals(limit=effective_limit)
+        # When the queue fits under the cap, the total is just len(proposals).
+        # Skip the COUNT(*) roundtrip in the common case (typical pending queues
+        # are well under 100).
+        total = (
+            len(proposals)
+            if len(proposals) < effective_limit
+            else self._count_pending_proposals()
+        )
+        return AutoReviewResult(proposals=proposals, total_count=total)
+
+    @staticmethod
+    def _resolve_list_limit(limit: int | None) -> int:
+        """Return ``limit`` or the configured default."""
+        if limit is not None:
+            return limit
+        return get_settings().categorization.auto_rule_list_default_limit
+
     def confirm(
         self,
         approve: list[str] | None = None,
         reject: list[str] | None = None,
-    ) -> dict[str, object]:
+    ) -> AutoConfirmResult:
         """Approve and/or reject pending proposals; returns aggregate counts.
 
         IDs appearing in both lists are dropped from ``approve`` so an explicit
@@ -186,13 +277,13 @@ class AutoRuleService:
         approve_set -= reject_set
         a = self.approve(sorted(approve_set))
         r = self.reject(sorted(reject_set))
-        return {
-            "approved": a.approved,
-            "newly_categorized": a.newly_categorized,
-            "rule_ids": a.rule_ids,
-            "rejected": r.rejected,
-            "skipped": a.skipped + r.skipped,
-        }
+        return AutoConfirmResult(
+            approved=a.approved,
+            rejected=r.rejected,
+            skipped=a.skipped + r.skipped,
+            newly_categorized=a.newly_categorized,
+            rule_ids=a.rule_ids,
+        )
 
     def approve(self, proposed_rule_ids: list[str]) -> ApproveResult:
         """Promote pending proposals to active rules and immediately categorize matching transactions."""
@@ -445,8 +536,17 @@ class AutoRuleService:
 
     # -- Read views --
 
-    def list_pending_proposals(self) -> list[dict[str, object]]:
-        """Return all pending auto-rule proposals for human review."""
+    def list_pending_proposals(
+        self, *, limit: int | None = None
+    ) -> list[dict[str, object]]:
+        """Return pending auto-rule proposals for human review.
+
+        ``limit`` caps the number of rows returned. ``None`` returns all
+        pending rows (legacy behavior used by callers that need the full
+        set, e.g. ``--approve-all`` expansion).
+        """
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        params = [limit] if limit is not None else []
         try:
             rows = self._db.execute(
                 f"""
@@ -455,7 +555,9 @@ class AutoRuleService:
                 FROM {PROPOSED_RULES.full_name}
                 WHERE status = 'pending'
                 ORDER BY trigger_count DESC, proposed_at ASC
-                """
+                {limit_clause}
+                """,
+                params,
             ).fetchall()
         except duckdb.CatalogException:
             return []
@@ -472,8 +574,17 @@ class AutoRuleService:
             for r in rows
         ]
 
-    def list_active_rules(self) -> list[dict[str, object]]:
-        """Return active auto-rules (rows with created_by='auto_rule')."""
+    def list_active_rules(self, *, limit: int | None = None) -> list[dict[str, object]]:
+        """Return active auto-rules (rows with created_by='auto_rule').
+
+        ``limit`` defaults to ``categorization.auto_rule_list_default_limit``
+        when ``None`` so callers (CLI, MCP) get a bounded result by default
+        without each having to resolve the setting themselves. Note this
+        diverges from ``list_pending_proposals(limit=None)`` which returns
+        the full unbounded set; pair this call with ``count_active_rules()``
+        when surfacing truncation to users.
+        """
+        effective_limit = self._resolve_list_limit(limit)
         try:
             rows = self._db.execute(
                 f"""
@@ -481,7 +592,9 @@ class AutoRuleService:
                 FROM {CATEGORIZATION_RULES.full_name}
                 WHERE created_by = 'auto_rule' AND is_active = true
                 ORDER BY priority ASC, rule_id
-                """
+                LIMIT ?
+                """,
+                [effective_limit],
             ).fetchall()
         except duckdb.CatalogException:
             return []
@@ -497,7 +610,28 @@ class AutoRuleService:
             for r in rows
         ]
 
-    def stats(self) -> dict[str, int]:
+    def _count_pending_proposals(self) -> int:
+        """Return total count of pending proposals for has_more computation."""
+        try:
+            row = self._db.execute(
+                f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0
+
+    def count_active_rules(self) -> int:
+        """Return total count of active auto-rules for has_more computation."""
+        try:
+            row = self._db.execute(
+                f"SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name} "
+                "WHERE created_by = 'auto_rule' AND is_active = true"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0
+
+    def stats(self) -> AutoStatsResult:
         """Return counts of active auto-rules, pending proposals, and applied transactions."""
 
         def _scalar(sql: str) -> int:
@@ -507,22 +641,14 @@ class AutoRuleService:
                 return 0
             return int(row[0]) if row else 0
 
-        active = _scalar(
-            f"SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name} "
-            "WHERE created_by = 'auto_rule' AND is_active = true"
+        return AutoStatsResult(
+            active_auto_rules=self.count_active_rules(),
+            pending_proposals=self._count_pending_proposals(),
+            transactions_categorized=_scalar(
+                f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "
+                "WHERE categorized_by = 'auto_rule'"
+            ),
         )
-        pending = _scalar(
-            f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
-        )
-        applied = _scalar(
-            f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "
-            "WHERE categorized_by = 'auto_rule'"
-        )
-        return {
-            "active_auto_rules": active,
-            "pending_proposals": pending,
-            "transactions_categorized": applied,
-        }
 
     # -- Internals --
 

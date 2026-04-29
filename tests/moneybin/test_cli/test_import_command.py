@@ -38,7 +38,7 @@ def test_import_file_passes_yes_flag_through(csv_path: Path) -> None:
 
     with (
         patch(
-            "moneybin.cli.utils.handle_database_errors",
+            "moneybin.cli.utils.handle_cli_errors",
             _fake_db_ctx,
         ),
         patch(
@@ -65,7 +65,7 @@ def test_import_file_default_auto_accept_false(csv_path: Path) -> None:
 
     with (
         patch(
-            "moneybin.cli.utils.handle_database_errors",
+            "moneybin.cli.utils.handle_cli_errors",
             _fake_db_ctx,
         ),
         patch(

@@ -194,6 +194,7 @@ def _resolve_account_via_matcher(
         The resolved account_id (existing or freshly slugified).
     """
     from moneybin.extractors.tabular.account_matching import match_account
+    from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
     from moneybin.utils import slugify
 
     try:
@@ -211,6 +212,7 @@ def _resolve_account_via_matcher(
         ).fetchall()
     except duckdb.CatalogException:  # raw.tabular_accounts absent on first import
         logger.debug("raw.tabular_accounts unavailable; skipping account match")
+        ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="table_missing").inc()
         return slugify(account_name)
 
     existing = [
@@ -226,6 +228,7 @@ def _resolve_account_via_matcher(
 
     if result.matched and result.account_id:
         logger.info(f"Matched account to existing id {result.account_id!r}")
+        ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="exact").inc()
         return result.account_id
 
     if result.candidates:
@@ -233,7 +236,16 @@ def _resolve_account_via_matcher(
             top = result.candidates[0]
             if top["account_id"]:
                 logger.info(f"⚙️  Auto-accepting fuzzy match → {top['account_id']!r}")
+                ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_accepted").inc()
                 return top["account_id"]
+            # Fuzzy candidates exist but none have an account_id — this should
+            # be rare (suggests stale/orphaned rows in raw.tabular_accounts),
+            # but we must surface it instead of silently slugifying.
+            logger.warning(
+                "⚠️  Auto-accept requested but top fuzzy candidate has no "
+                "account_id; falling back to slugify(account_name)."
+            )
+            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_no_id").inc()
         else:
             candidate_ids = ", ".join(
                 filter(None, (c["account_id"] for c in result.candidates))
@@ -244,6 +256,9 @@ def _resolve_account_via_matcher(
                 "Use --yes to auto-accept the top candidate, "
                 "or --account-id to pick explicitly."
             )
+            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_ambiguous").inc()
+    else:
+        ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="slugify_new").inc()
 
     return slugify(account_name)
 
@@ -256,10 +271,25 @@ def run_transforms() -> bool:
     (via ``get_database()``) — ``sqlmesh_context()`` reuses its
     connection.
 
+    Seeds ``app.seed_source_priority`` from config before running so
+    ``int_transactions__merged`` can resolve per-field winners. Without
+    this, the LEFT JOIN onto ``seed_source_priority`` produces NULL
+    priorities for every row, causing ARG_MIN(value, NULL_key) to drop
+    non-NULL values for fields that key on a CASE-with-NULL-fallthrough
+    pattern (description, memo, etc.). Callers that go straight to
+    transforms (``transform apply``, synthetic generation) would
+    otherwise materialize NULL descriptions in core.fct_transactions.
+
     Returns:
         True if transforms ran successfully.
     """
+    from moneybin.config import get_settings
+    from moneybin.database import get_database
+    from moneybin.matching.priority import seed_source_priority
+
     logger.info("Running SQLMesh transforms")
+
+    seed_source_priority(get_database(), get_settings().matching)
 
     with sqlmesh_context() as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
@@ -833,7 +863,7 @@ def _apply_categorization(db: Database) -> None:
                 f"Auto-categorized {stats['total']} transactions "
                 f"({stats['merchant']} merchant, {stats['rule']} rule)"
             )
-        pending = int(AutoRuleService(db).stats().get("pending_proposals", 0))
+        pending = AutoRuleService(db).stats().pending_proposals
         if pending:
             logger.info(f"  {pending} new auto-rule proposals")
             logger.info(

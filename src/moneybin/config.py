@@ -402,6 +402,15 @@ class CategorizationSettings(BaseModel):
         ge=1,
         description="Maximum number of sample transaction IDs retained per proposal",
     )
+    auto_rule_list_default_limit: int = Field(
+        default=100,
+        ge=1,
+        description=(
+            "Default LIMIT applied to auto-rule listing endpoints "
+            "(auto-review, auto-rules) when no explicit --limit is given. "
+            "Caps memory and response size for unbounded queues."
+        ),
+    )
     auto_rule_backfill_scan_cap: int = Field(
         default=50_000,
         ge=1,

@@ -278,11 +278,12 @@ class TransactionMatcher:
         ).fetchall()
         priority = self._settings.source_priority
         max_pri = len(priority)
+        priority_index = {src: i for i, src in enumerate(priority)}
         ids: set[tuple[str, str, str]] = set()
         for row in rows:
             stid_a, st_a, stid_b, st_b, acct = row
-            pri_a = priority.index(st_a) if st_a in priority else max_pri
-            pri_b = priority.index(st_b) if st_b in priority else max_pri
+            pri_a = priority_index.get(st_a, max_pri)
+            pri_b = priority_index.get(st_b, max_pri)
             if pri_a <= pri_b:
                 # A has higher or equal priority; exclude B
                 ids.add((stid_b, st_b, acct))

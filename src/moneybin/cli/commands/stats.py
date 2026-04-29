@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 
 import typer
 
-from moneybin.cli.utils import handle_database_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def stats_show(
     ] = "text",
 ) -> None:
     """Display lifetime metric aggregates."""
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         # Build query with optional filters
         where_clauses: list[str] = []
         params: list[str | datetime] = []

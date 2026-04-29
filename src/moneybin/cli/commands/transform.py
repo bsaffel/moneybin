@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import typer
 
-from moneybin.cli.utils import handle_database_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import sqlmesh_context
 
 app = typer.Typer(help="Run data transformations using SQLMesh", no_args_is_help=True)
@@ -27,12 +27,19 @@ def plan_transforms(
     Shows which models would be rebuilt based on changes since the last run.
     Use --apply to apply the plan immediately.
     """
+    if auto_apply:
+        # Delegate so source-priority seeding (run_transforms) happens before
+        # ctx.plan; calling ctx.plan(auto_apply=True) directly would skip
+        # seeding and risk NULL-winning merges in core fields.
+        apply_transforms()
+        return
+
     logger.info("⚙️  Running SQLMesh plan...")
 
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
-                ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
+                ctx.plan(auto_apply=False, no_prompts=False)
         logger.info("✅ SQLMesh plan completed")
     except typer.Exit:
         raise
@@ -48,12 +55,13 @@ def apply_transforms() -> None:
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
     models since the last run.
     """
+    from moneybin.services.import_service import run_transforms
+
     logger.info("⚙️  Applying SQLMesh transforms...")
 
     try:
-        with handle_database_errors():
-            with sqlmesh_context() as ctx:
-                ctx.plan(auto_apply=True, no_prompts=True)
+        with handle_cli_errors():
+            run_transforms()
         logger.info("✅ SQLMesh transforms applied")
     except typer.Exit:
         raise
@@ -67,7 +75,7 @@ def transform_status() -> None:
     """Show current model state and environment."""
     logger.info("⚙️  Checking SQLMesh status...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 env = ctx.state_reader.get_environment("prod")
                 if env:
@@ -94,7 +102,7 @@ def transform_validate() -> None:
     """Check that model SQL parses and resolves without errors."""
     logger.info("⚙️  Validating SQLMesh models...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 ctx.plan(no_prompts=True, auto_apply=False)
         logger.info("✅ All models valid")
@@ -117,7 +125,7 @@ def transform_audit(
     """Run data quality assertions defined in SQLMesh models."""
     logger.info("⚙️  Running SQLMesh audits...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 ctx.audit(start=start, end=end)
         logger.info("✅ All audits passed")
@@ -148,7 +156,7 @@ def transform_restate(
             return
     logger.info(f"⚙️  Restating {model} from {start}...")
     try:
-        with handle_database_errors():
+        with handle_cli_errors():
             with sqlmesh_context() as ctx:
                 ctx.plan(
                     restate_models=[model],

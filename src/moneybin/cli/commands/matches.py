@@ -7,7 +7,7 @@ from typing import Any
 import duckdb as duckdb_mod
 import typer
 
-from moneybin.cli.utils import handle_database_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import VALID_MATCH_TYPES, get_match_log, undo_match
 
@@ -33,7 +33,7 @@ def matches_run(
     from moneybin.matching.priority import seed_source_priority
 
     try:
-        with handle_database_errors() as db:
+        with handle_cli_errors() as db:
             settings = get_settings().matching
             seed_source_priority(db, settings)
             matcher = TransactionMatcher(db, settings)
@@ -128,7 +128,7 @@ def matches_review(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         accepted_any = False
 
         # Non-interactive: single match decision
@@ -217,7 +217,7 @@ def matches_history_cmd(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    with handle_database_errors() as db:
+    with handle_cli_errors() as db:
         entries = get_match_log(db, limit=limit, match_type=match_type)
 
         if not entries:
@@ -256,7 +256,7 @@ def matches_undo_cmd(
             raise typer.Exit(0)
 
     try:
-        with handle_database_errors() as db:
+        with handle_cli_errors() as db:
             undo_match(db, match_id, reversed_by="user")
             logger.info(f"Reversed match {match_id[:8]}...")
     except ValueError as e:
@@ -275,7 +275,7 @@ def matches_backfill(
     from moneybin.matching.priority import seed_source_priority
 
     try:
-        with handle_database_errors() as db:
+        with handle_cli_errors() as db:
             settings = get_settings().matching
 
             count = db.execute(

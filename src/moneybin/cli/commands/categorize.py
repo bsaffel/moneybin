@@ -9,7 +9,7 @@ from typing import cast
 
 import typer
 
-from moneybin.cli.utils import handle_database_errors
+from moneybin.cli.utils import handle_cli_errors
 
 logger = logging.getLogger(__name__)
 
@@ -24,21 +24,17 @@ def apply_rules_cmd() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
     from moneybin.services.categorization_service import CategorizationService
 
-    try:
-        with handle_database_errors() as db:
-            stats = CategorizationService(db).apply_deterministic()
-            if stats["total"] > 0:
-                logger.info(
-                    f"\u2705 Categorized {stats['total']} transactions "
-                    f"({stats['merchant']} merchant, {stats['rule']} rule)"
-                )
-            else:
-                logger.info(
-                    "\u2705 No uncategorized transactions matched rules or merchants"
-                )
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors() as db:
+        stats = CategorizationService(db).apply_deterministic()
+        if stats["total"] > 0:
+            logger.info(
+                f"\u2705 Categorized {stats['total']} transactions "
+                f"({stats['merchant']} merchant, {stats['rule']} rule)"
+            )
+        else:
+            logger.info(
+                "\u2705 No uncategorized transactions matched rules or merchants"
+            )
 
 
 @app.command("seed")
@@ -50,13 +46,9 @@ def seed_cmd() -> None:
     """
     from moneybin.services.categorization_service import CategorizationService
 
-    try:
-        with handle_database_errors() as db:
-            count = CategorizationService(db).seed()
-            logger.info(f"\u2705 Seeded {count} new categories")
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors() as db:
+        count = CategorizationService(db).seed()
+        logger.info(f"\u2705 Seeded {count} new categories")
 
 
 @app.command("stats")
@@ -64,12 +56,8 @@ def stats_cmd() -> None:
     """Show categorization coverage statistics."""
     from moneybin.services.categorization_service import CategorizationService
 
-    try:
-        with handle_database_errors() as db:
-            stats = CategorizationService(db).categorization_stats()
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors() as db:
+        stats = CategorizationService(db).categorization_stats()
 
     total = stats["total"]
     categorized = stats["categorized"]
@@ -93,20 +81,16 @@ def list_rules_cmd() -> None:
     """Display all active categorization rules."""
     from moneybin.tables import CATEGORIZATION_RULES
 
-    try:
-        with handle_database_errors() as db:
-            rows = db.execute(
-                f"""
-                SELECT rule_id, name, merchant_pattern, match_type,
-                       category, subcategory, priority
-                FROM {CATEGORIZATION_RULES.full_name}
-                WHERE is_active = true
-                ORDER BY priority ASC, name
-                """
-            ).fetchall()
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors() as db:
+        rows = db.execute(
+            f"""
+            SELECT rule_id, name, merchant_pattern, match_type,
+                   category, subcategory, priority
+            FROM {CATEGORIZATION_RULES.full_name}
+            WHERE is_active = true
+            ORDER BY priority ASC, name
+            """
+        ).fetchall()
 
     if not rows:
         logger.info("No active categorization rules.")
@@ -125,21 +109,24 @@ def auto_review_cmd(
     output: str = typer.Option(
         "table", "--output", help="Output format: table or json"
     ),
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help="Maximum number of proposals to display (defaults to configured limit)",
+    ),
 ) -> None:
     """List pending auto-rule proposals with sample transactions and trigger counts."""
     import json
 
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    try:
-        with handle_database_errors() as db:
-            proposals = AutoRuleService(db).list_pending_proposals()
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors() as db:
+        result = AutoRuleService(db).review(limit=limit)
 
+    proposals = result.proposals
     if output == "json":
-        typer.echo(json.dumps(proposals))
+        typer.echo(json.dumps(result.to_envelope().to_dict()))
         return
 
     if not proposals:
@@ -155,6 +142,11 @@ def auto_review_cmd(
             f"  [{p['proposed_rule_id']}] '{p['merchant_pattern']}' "
             f"({p['match_type']}) -> {p['category']}{sub} "
             f"(×{p['trigger_count']}){sample_str}"
+        )
+    if result.total_count > len(proposals):
+        logger.info(
+            f"💡 Showing {len(proposals)} of {result.total_count} pending proposals "
+            f"— increase --limit to see more"
         )
 
 
@@ -178,34 +170,29 @@ def auto_confirm_cmd(
         logger.error("❌ --approve-all and --reject-all are mutually exclusive")
         raise typer.Exit(2)
 
-    try:
-        with handle_database_errors() as db:
-            svc = AutoRuleService(db)
-            if approve_all or reject_all:
-                pending_ids = [
-                    cast(str, p["proposed_rule_id"])
-                    for p in svc.list_pending_proposals()
-                ]
-                if approve_all:
-                    approve = (approve or []) + pending_ids
-                if reject_all:
-                    reject = (reject or []) + pending_ids
+    with handle_cli_errors() as db:
+        svc = AutoRuleService(db)
+        if approve_all or reject_all:
+            pending_ids = [
+                cast(str, p["proposed_rule_id"]) for p in svc.list_pending_proposals()
+            ]
+            if approve_all:
+                approve = (approve or []) + pending_ids
+            if reject_all:
+                reject = (reject or []) + pending_ids
 
-            # Explicit reject wins over --approve-all: a user passing
-            # --approve-all --reject <id> means "approve all except <id>".
-            approve_set = set(approve or [])
-            reject_set = set(reject or [])
-            approve_set -= reject_set
-            result = svc.confirm(approve=sorted(approve_set), reject=sorted(reject_set))
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+        # Explicit reject wins over --approve-all: a user passing
+        # --approve-all --reject <id> means "approve all except <id>".
+        approve_set = set(approve or [])
+        reject_set = set(reject or [])
+        approve_set -= reject_set
+        result = svc.confirm(approve=sorted(approve_set), reject=sorted(reject_set))
 
     logger.info(
-        f"✅ Approved {result['approved']} "
-        f"(categorized {result['newly_categorized']} existing); "
-        f"rejected {result['rejected']}; "
-        f"skipped {result['skipped']}"
+        f"✅ Approved {result.approved} "
+        f"(categorized {result.newly_categorized} existing); "
+        f"rejected {result.rejected}; "
+        f"skipped {result.skipped}"
     )
 
 
@@ -214,30 +201,31 @@ def auto_stats_cmd() -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    try:
-        with handle_database_errors() as db:
-            stats = AutoRuleService(db).stats()
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors() as db:
+        stats = AutoRuleService(db).stats()
 
     logger.info("Auto-rule health:")
-    logger.info(f"  Active auto-rules:        {stats['active_auto_rules']}")
-    logger.info(f"  Pending proposals:        {stats['pending_proposals']}")
-    logger.info(f"  Transactions auto-ruled:  {stats['transactions_categorized']}")
+    logger.info(f"  Active auto-rules:        {stats.active_auto_rules}")
+    logger.info(f"  Pending proposals:        {stats.pending_proposals}")
+    logger.info(f"  Transactions auto-ruled:  {stats.transactions_categorized}")
 
 
 @app.command("auto-rules")
-def auto_rules_cmd() -> None:
+def auto_rules_cmd(
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help="Maximum number of auto-rules to display (defaults to configured limit)",
+    ),
+) -> None:
     """List active auto-rules (rules with created_by='auto_rule')."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    try:
-        with handle_database_errors() as db:
-            rules = AutoRuleService(db).list_active_rules()
-    except FileNotFoundError as e:
-        logger.error(f"{e}")
-        raise typer.Exit(1) from e
+    with handle_cli_errors() as db:
+        svc = AutoRuleService(db)
+        rules = svc.list_active_rules(limit=limit)
+        total = svc.count_active_rules()
 
     if not rules:
         logger.info("No active auto-rules.")
@@ -250,4 +238,9 @@ def auto_rules_cmd() -> None:
             f"  [{r['rule_id']}] '{r['merchant_pattern']}' "
             f"({r['match_type']}) -> {r['category']}{sub} "
             f"(priority: {r['priority']})"
+        )
+    if total > len(rules):
+        logger.info(
+            f"💡 Showing {len(rules)} of {total} active auto-rules "
+            f"— increase --limit to see more"
         )

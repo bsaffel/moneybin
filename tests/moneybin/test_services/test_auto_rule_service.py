@@ -195,7 +195,7 @@ def test_approve_promotes_to_active_rule(real_db: Database) -> None:
     assert pid is not None
 
     result = svc.confirm(approve=[pid])
-    assert result["approved"] == 1
+    assert result.approved == 1
 
     rule = real_db.execute(
         "SELECT merchant_pattern, category, subcategory, priority, created_by, is_active "
@@ -223,7 +223,7 @@ def test_approve_immediately_categorizes_existing_uncategorized(
         "VALUES ('t9', 'a1', DATE '2026-01-02', -7.00, 'STARBUCKS DOWNTOWN', 'csv')"
     )
     result = svc.confirm(approve=[pid])
-    assert result["newly_categorized"] == 1
+    assert result.newly_categorized == 1
 
     cat = real_db.execute(
         "SELECT category, categorized_by FROM app.transaction_categories WHERE transaction_id = 't9'"
@@ -303,3 +303,32 @@ def test_reject_marks_proposal_rejected_without_creating_rule(
         "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
     ).fetchone()
     assert rule_count_row is not None and rule_count_row[0] == 0
+
+
+def test_review_caps_at_limit_and_reports_total(real_db: Database) -> None:
+    """review() respects limit and surfaces total_count for has_more."""
+    svc = AutoRuleService(real_db)
+    for i in range(5):
+        _seed_transaction(real_db, f"t{i}", description=f"MERCHANT{i}")
+        svc.record_categorization(f"t{i}", "Food & Drink")
+
+    result = svc.review(limit=2)
+    assert len(result.proposals) == 2
+    assert result.total_count == 5
+    envelope = result.to_envelope()
+    assert envelope.summary.has_more is True
+    assert envelope.summary.total_count == 5
+
+
+def test_review_uses_configured_default_when_limit_omitted(real_db: Database) -> None:
+    """review() with no limit uses categorization.auto_rule_list_default_limit."""
+    svc = AutoRuleService(real_db)
+    for i in range(3):
+        _seed_transaction(real_db, f"t{i}", description=f"M{i}")
+        svc.record_categorization(f"t{i}", "Food & Drink")
+
+    # Default limit (100) is well above 3 — no truncation.
+    result = svc.review()
+    assert len(result.proposals) == 3
+    assert result.total_count == 3
+    assert result.to_envelope().summary.has_more is False

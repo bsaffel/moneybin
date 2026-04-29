@@ -291,6 +291,27 @@ class TestAutoRulePipeline:
         result.assert_success()
         assert "Active auto-rules" in result.output
 
+        # Approval back-fills the matching tabular transaction with
+        # categorized_by='auto_rule'. This guards against a regression where
+        # tabular descriptions land NULL in core.fct_transactions and the
+        # back-fill SELECT (`WHERE t.description IS NOT NULL`) silently
+        # returns zero rows.
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM app.transaction_categories "
+            "WHERE categorized_by = 'auto_rule'",
+            "--format",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        backfilled = int(result.stdout.strip().split("\n")[-1].strip())
+        assert backfilled >= 1, (
+            f"Expected >=1 transaction back-filled by auto_rule, got {backfilled}.\n"
+            f"{result.output}"
+        )
+
         # Re-running apply-rules after promotion must succeed and not crash —
         # this exercises the path future imports will hit.
         result = run_cli("categorize", "apply-rules", env=env)
