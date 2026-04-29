@@ -27,6 +27,11 @@ def handle_cli_errors() -> Generator[Database, None, None]:
     try:
         db = get_database()
         yield db
+    except typer.Exit:
+        # Commands raise typer.Exit for their own early-exit paths
+        # (mutually exclusive flags, user-cancelled prompts). Don't run
+        # those through the user-error classifier.
+        raise
     except Exception as e:
         user_error = classify_user_error(e)
         if user_error is None:

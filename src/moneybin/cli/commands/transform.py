@@ -27,12 +27,19 @@ def plan_transforms(
     Shows which models would be rebuilt based on changes since the last run.
     Use --apply to apply the plan immediately.
     """
+    if auto_apply:
+        # Delegate so source-priority seeding (run_transforms) happens before
+        # ctx.plan; calling ctx.plan(auto_apply=True) directly would skip
+        # seeding and risk NULL-winning merges in core fields.
+        apply_transforms()
+        return
+
     logger.info("⚙️  Running SQLMesh plan...")
 
     try:
         with handle_cli_errors():
             with sqlmesh_context() as ctx:
-                ctx.plan(auto_apply=auto_apply, no_prompts=auto_apply)
+                ctx.plan(auto_apply=False, no_prompts=False)
         logger.info("✅ SQLMesh plan completed")
     except typer.Exit:
         raise
