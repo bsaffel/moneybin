@@ -579,7 +579,10 @@ class AutoRuleService:
 
         ``limit`` defaults to ``categorization.auto_rule_list_default_limit``
         when ``None`` so callers (CLI, MCP) get a bounded result by default
-        without each having to resolve the setting themselves.
+        without each having to resolve the setting themselves. Note this
+        diverges from ``list_pending_proposals(limit=None)`` which returns
+        the full unbounded set; pair this call with ``count_active_rules()``
+        when surfacing truncation to users.
         """
         effective_limit = self._resolve_list_limit(limit)
         try:
@@ -639,13 +642,8 @@ class AutoRuleService:
             return int(row[0]) if row else 0
 
         return AutoStatsResult(
-            active_auto_rules=_scalar(
-                f"SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name} "
-                "WHERE created_by = 'auto_rule' AND is_active = true"
-            ),
-            pending_proposals=_scalar(
-                f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
-            ),
+            active_auto_rules=self.count_active_rules(),
+            pending_proposals=self._count_pending_proposals(),
             transactions_categorized=_scalar(
                 f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "
                 "WHERE categorized_by = 'auto_rule'"
