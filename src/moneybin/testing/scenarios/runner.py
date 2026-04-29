@@ -243,7 +243,9 @@ def _build_envelope(
     actions: list[str] = []
     for a in assertions:
         if not a.passed:
-            actions.append(f"Inspect failing assertion: {a.name} (details={a.details})")
+            # Names only — assertion details may carry account IDs or amounts
+            # (PII rule). Callers needing details read the structured field.
+            actions.append(f"Inspect failing assertion: {a.name}")
     if halted:
         actions.append(f"Run halted: {halted}")
 

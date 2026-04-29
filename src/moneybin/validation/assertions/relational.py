@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from duckdb import DuckDBPyConnection
+from sqlglot import exp
 
 from moneybin.validation.result import AssertionResult
 
 
 def _quote_ident(ident: str) -> str:
-    """Quote a dotted identifier, validating each segment contains only safe characters."""
-    if not all(ch.isalnum() or ch in "_." for ch in ident):
-        raise ValueError(f"invalid identifier: {ident!r}")
-    return ".".join(f'"{seg}"' for seg in ident.split("."))
+    """Quote a dotted identifier via sqlglot, per .claude/rules/security.md."""
+    return ".".join(
+        exp.to_identifier(seg, quoted=True).sql("duckdb") for seg in ident.split(".")
+    )
 
 
 def assert_valid_foreign_keys(

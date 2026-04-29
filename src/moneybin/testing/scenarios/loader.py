@@ -35,7 +35,9 @@ class FixtureSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     account: str
-    source_type: Literal["csv", "ofx", "pdf"]
+    # Only csv/ofx are implemented in fixture_loader; pdf will be added when
+    # a loader exists. Reject at validation rather than crashing mid-run.
+    source_type: Literal["csv", "ofx"]
 
     @model_validator(mode="after")
     def _validate_path(self) -> FixtureSpec:
@@ -116,7 +118,9 @@ class Scenario(BaseModel):
     """A complete validated scenario specification."""
 
     model_config = ConfigDict(extra="forbid")
-    name: str = Field(alias="scenario")
+    # Restrict name to path-safe chars so it can be embedded in tempdir paths
+    # (runner.py uses scenario.name as a mkdtemp prefix).
+    name: str = Field(alias="scenario", pattern=r"^[a-z0-9][a-z0-9\-]*$")
     description: str = ""
     setup: SetupSpec
     pipeline: list[str]

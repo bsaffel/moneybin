@@ -92,13 +92,13 @@ def score_dedup(
     actual_row = db.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()
     actual = actual_row[0] if actual_row is not None else 0
     delta = abs(actual - expected_collapsed_count)
-    f1 = max(0.0, 1.0 - delta / max(expected_collapsed_count, 1))
+    score = max(0.0, 1.0 - delta / max(expected_collapsed_count, 1))
     return EvaluationResult(
         name="dedup_quality",
         metric="dedup_score",
-        value=round(f1, 4),
+        value=round(score, 4),
         threshold=threshold,
-        passed=f1 >= threshold,
+        passed=score >= threshold,
         breakdown={
             "actual_gold_records": actual,
             "expected_collapsed_count": expected_collapsed_count,

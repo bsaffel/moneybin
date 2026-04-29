@@ -32,10 +32,7 @@ def _step_generate(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
 
 
 def _step_load_fixtures(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
-    # Lazy import — fixture_loader is shipped in Task 12.
-    from moneybin.testing.scenarios.fixture_loader import (  # type: ignore[import-not-found]
-        load_fixture_into_db,
-    )
+    from moneybin.testing.scenarios.fixture_loader import load_fixture_into_db
 
     for spec in setup.fixtures:
         load_fixture_into_db(db, spec)

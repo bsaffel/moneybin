@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
+import duckdb
 import pytest
 
 import moneybin.database as database_module
@@ -31,9 +32,20 @@ def test_no_unencrypted_db_files_passes_for_empty_dir(tmp_path: Path) -> None:
     assert result.details["files"] == []
 
 
+def _write_plaintext_duckdb(path: Path) -> None:
+    """Create a real (unencrypted) DuckDB file.
+
+    The assertion's probe tries to open each ``*.duckdb`` file without a
+    key — only a real plaintext file opens successfully, so test fixtures
+    must be real DBs.
+    """
+    with duckdb.connect(str(path)) as conn:
+        conn.execute("SELECT 1").fetchone()
+
+
 def test_no_unencrypted_db_files_flags_bare_duckdb(tmp_path: Path) -> None:
     """A bare .duckdb file in the directory must be flagged."""
-    (tmp_path / "leak.duckdb").write_bytes(b"\x00" * 16)
+    _write_plaintext_duckdb(tmp_path / "leak.duckdb")
     result = assert_no_unencrypted_db_files(_DUMMY_DB, tmpdir=tmp_path)
     assert not result.passed
     assert "leak.duckdb" in str(result.details["files"])
@@ -43,7 +55,7 @@ def test_no_unencrypted_db_files_finds_nested(tmp_path: Path) -> None:
     """Recursive search must catch leaked files in subdirectories."""
     nested = tmp_path / "sub" / "deeper"
     nested.mkdir(parents=True)
-    (nested / "buried.duckdb").write_bytes(b"\x00")
+    _write_plaintext_duckdb(nested / "buried.duckdb")
     result = assert_no_unencrypted_db_files(_DUMMY_DB, tmpdir=tmp_path)
     assert not result.passed
     assert "buried.duckdb" in str(result.details["files"])
