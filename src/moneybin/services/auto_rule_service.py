@@ -617,6 +617,17 @@ class AutoRuleService:
             return 0
         return int(row[0]) if row else 0
 
+    def count_active_rules(self) -> int:
+        """Return total count of active auto-rules for has_more computation."""
+        try:
+            row = self._db.execute(
+                f"SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name} "
+                "WHERE created_by = 'auto_rule' AND is_active = true"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0
+
     def stats(self) -> AutoStatsResult:
         """Return counts of active auto-rules, pending proposals, and applied transactions."""
 

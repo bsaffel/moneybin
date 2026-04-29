@@ -112,6 +112,7 @@ def auto_review_cmd(
     limit: int | None = typer.Option(
         None,
         "--limit",
+        min=1,
         help="Maximum number of proposals to display (defaults to configured limit)",
     ),
 ) -> None:
@@ -145,7 +146,7 @@ def auto_review_cmd(
     if result.total_count > len(proposals):
         logger.info(
             f"💡 Showing {len(proposals)} of {result.total_count} pending proposals "
-            f"— use --limit to see more"
+            f"— increase --limit to see more"
         )
 
 
@@ -214,6 +215,7 @@ def auto_rules_cmd(
     limit: int | None = typer.Option(
         None,
         "--limit",
+        min=1,
         help="Maximum number of auto-rules to display (defaults to configured limit)",
     ),
 ) -> None:
@@ -221,7 +223,9 @@ def auto_rules_cmd(
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors() as db:
-        rules = AutoRuleService(db).list_active_rules(limit=limit)
+        svc = AutoRuleService(db)
+        rules = svc.list_active_rules(limit=limit)
+        total = svc.count_active_rules()
 
     if not rules:
         logger.info("No active auto-rules.")
@@ -234,4 +238,9 @@ def auto_rules_cmd(
             f"  [{r['rule_id']}] '{r['merchant_pattern']}' "
             f"({r['match_type']}) -> {r['category']}{sub} "
             f"(priority: {r['priority']})"
+        )
+    if total > len(rules):
+        logger.info(
+            f"💡 Showing {len(rules)} of {total} active auto-rules "
+            f"— increase --limit to see more"
         )
