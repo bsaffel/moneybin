@@ -127,15 +127,16 @@ def _detect_file_type(file_path: Path) -> str:
 
 
 class ImportService:
-    """Service encapsulating the full import pipeline.
+    """Orchestrates the full file import pipeline.
 
-    Matches the AccountService/CategorizationService pattern: constructed
-    with a Database instance, exposes public methods, private helpers use
-    ``self._db`` instead of a ``db`` parameter.
+    Detects file type, extracts and loads to raw tables, runs SQLMesh
+    transforms, applies matching, and runs deterministic categorization.
+    Both CLI commands and MCP tools call this same service — no
+    duplication.
     """
 
     def __init__(self, db: Database) -> None:
-        """Initialize ImportService with a Database instance."""
+        """Initialize ImportService with an open Database connection."""
         self._db = db
 
     def _query_date_range(
@@ -278,9 +279,10 @@ class ImportService:
         """Run SQLMesh transforms to rebuild core tables.
 
         Uses ``sqlmesh_context()`` to handle encrypted DB injection into
-        SQLMesh's adapter cache.  Requires an active Database singleton
-        (via ``get_database()``) — ``sqlmesh_context()`` reuses its
-        connection.
+        SQLMesh's adapter cache. ``sqlmesh_context()`` reuses the active
+        ``get_database()`` singleton internally, so ``self._db`` should
+        be that same singleton (typical caller pattern is
+        ``ImportService(get_database()).run_transforms()``).
 
         Seeds ``app.seed_source_priority`` from config before running so
         ``int_transactions__merged`` can resolve per-field winners. Without
