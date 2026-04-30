@@ -229,6 +229,7 @@ moneybin import file <path>        # Import financial data files
 moneybin transform apply           # Run SQLMesh pipeline
 moneybin transform status          # Check pipeline state
 moneybin categorize apply-rules    # Apply categorization rules
+moneybin categorize bulk           # Bulk-categorize a list of transactions
 moneybin db shell                  # Interactive SQL shell
 moneybin db ps                     # Show processes holding the database
 moneybin logs tail -f              # Follow log output

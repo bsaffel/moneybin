@@ -1,7 +1,7 @@
 # Feature: `categorize bulk` CLI + bulk-loop performance
 
 ## Status
-draft
+in-progress
 
 ## Goal
 
