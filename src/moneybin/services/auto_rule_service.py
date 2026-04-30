@@ -119,6 +119,72 @@ class AutoStatsResult:
         )
 
 
+@dataclass(slots=True, frozen=True)
+class TxnRow:
+    """Pre-loaded transaction columns needed by the bulk path."""
+
+    description: str | None
+    amount: float | None
+    account_id: str | None
+
+
+@dataclass(slots=True)
+class BulkRecordingContext:
+    """In-memory caches threaded through ``record_categorization`` during a bulk loop.
+
+    Owns the data that today's per-item helpers re-fetch from the database.
+    Mutators (``register_new_merchant``) preserve the same ordering invariants
+    that ``_fetch_merchants`` produces (exact → contains → regex), so cover
+    checks see new merchants in their canonical match position.
+    """
+
+    txn_rows: dict[str, TxnRow]
+    active_rules: list[tuple[Any, ...]]
+    merchant_mappings: list[tuple[Any, ...]]
+    new_merchant_count: int = field(default=0)
+
+    def txn_row_for(self, transaction_id: str) -> TxnRow | None:
+        """Return the pre-loaded TxnRow for the given transaction_id, or None."""
+        return self.txn_rows.get(transaction_id)
+
+    def description_for(self, transaction_id: str) -> str | None:
+        """Return the description for the given transaction_id, or None if not loaded."""
+        row = self.txn_rows.get(transaction_id)
+        return row.description if row else None
+
+    def merchant_row_for(self, merchant_id: str) -> tuple[Any, ...] | None:
+        """Return the cached merchant tuple for the given merchant_id, or None."""
+        for merchant in self.merchant_mappings:
+            if str(merchant[0]) == merchant_id:
+                return merchant
+        return None
+
+    def register_new_merchant(self, merchant_row: tuple[Any, ...]) -> None:
+        """Insert at the canonical match-order position (before the first regex)."""
+        insert_at = next(
+            (i for i, m in enumerate(self.merchant_mappings) if m[2] == "regex"),
+            len(self.merchant_mappings),
+        )
+        self.merchant_mappings.insert(insert_at, merchant_row)
+        self.new_merchant_count += 1
+
+    def merchant_mapping_covers(
+        self, pattern: str, category: str, subcategory: str | None
+    ) -> bool:
+        """Mirror of ``AutoRuleService._merchant_mapping_covers`` against the cached list."""
+        for merchant in self.merchant_mappings:
+            _mid, raw_pattern, match_type, _canonical, m_cat, m_subcat = merchant
+            if str(m_cat) != category:
+                continue
+            if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
+                continue
+            if matches_pattern(
+                pattern, str(raw_pattern), str(match_type or "contains")
+            ):
+                return True
+        return False
+
+
 class AutoRuleService:
     """Auto-rule lifecycle: observe → propose → approve/reject → deactivate.
 
@@ -141,6 +207,7 @@ class AutoRuleService:
         *,
         subcategory: str | None = None,
         merchant_id: str | None = None,
+        context: BulkRecordingContext | None = None,
     ) -> str | None:
         """Record a categorization event for auto-rule learning.
 
@@ -155,13 +222,21 @@ class AutoRuleService:
         ``transaction_categories``, but ``bulk_categorize`` calls this hook
         before that row exists — so omitting the parameter forces the
         description fallback for every fresh categorization.
+
+        ``context`` supplies pre-loaded transaction rows, active rules, and
+        merchant mappings for the bulk path so no read queries are issued
+        per-transaction. When ``None``, the existing DB-backed behavior is used.
         """
-        extracted = self._extract_pattern(transaction_id, merchant_id=merchant_id)
+        extracted = self._extract_pattern(
+            transaction_id, merchant_id=merchant_id, context=context
+        )
         if not extracted:
             return None
         pattern, match_type = extracted
 
-        if self._active_rule_covers_transaction(transaction_id, category, subcategory):
+        if self._active_rule_covers_transaction(
+            transaction_id, category, subcategory, context=context
+        ):
             return None
 
         settings = get_settings().categorization
@@ -174,7 +249,7 @@ class AutoRuleService:
         # could be permanently stuck below threshold once bulk_categorize
         # creates the merchant mapping during the first categorization.
         if existing is None and self._merchant_mapping_covers(
-            pattern, category, subcategory
+            pattern, category, subcategory, context=context
         ):
             return None
 
@@ -653,7 +728,11 @@ class AutoRuleService:
     # -- Internals --
 
     def _extract_pattern(
-        self, transaction_id: str, *, merchant_id: str | None = None
+        self,
+        transaction_id: str,
+        *,
+        merchant_id: str | None = None,
+        context: BulkRecordingContext | None = None,
     ) -> tuple[str, str] | None:
         """Extract a (pattern, match_type) tuple for the given transaction.
 
@@ -663,28 +742,42 @@ class AutoRuleService:
         statement descriptions (e.g., 'AMZN'), not the canonical display name
         (e.g., 'Amazon'). Falls back to a normalized description with
         ``match_type='contains'`` when no merchant is associated.
+
+        When ``context`` is provided, the description fallback reads from the
+        pre-loaded ``TxnRow`` instead of querying ``fct_transactions``.
         """
-        if merchant_id is None:
+        if merchant_id is None and context is None:
+            # Bulk path passes merchant_id explicitly; this lookup is only needed
+            # on the single-item path where no context is provided.
             row = self._db.execute(
                 f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
                 [transaction_id],
             ).fetchone()
             merchant_id = str(row[0]) if row and row[0] else None
         if merchant_id:
-            m = self._db.execute(
-                f"SELECT raw_pattern, match_type FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
-                [merchant_id],
-            ).fetchone()
-            if m and m[0]:
-                return str(m[0]), str(m[1] or "contains")
+            if context is not None:
+                m_row = context.merchant_row_for(merchant_id)
+                if m_row and m_row[1]:
+                    return str(m_row[1]), str(m_row[2] or "contains")
+            else:
+                m = self._db.execute(
+                    f"SELECT raw_pattern, match_type FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
+                    [merchant_id],
+                ).fetchone()
+                if m and m[0]:
+                    return str(m[0]), str(m[1] or "contains")
 
-        desc_row = self._db.execute(
-            f"SELECT description FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
-            [transaction_id],
-        ).fetchone()
-        if not desc_row or not desc_row[0]:
+        if context is not None:
+            description = context.description_for(transaction_id)
+        else:
+            desc_row = self._db.execute(
+                f"SELECT description FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+            description = str(desc_row[0]) if desc_row and desc_row[0] else None
+        if not description:
             return None
-        cleaned = normalize_description(str(desc_row[0]))
+        cleaned = normalize_description(description)
         if not cleaned:
             return None
         return cleaned, "contains"
@@ -694,21 +787,42 @@ class AutoRuleService:
         transaction_id: str,
         category: str,
         subcategory: str | None,
+        *,
+        context: BulkRecordingContext | None = None,
     ) -> bool:
         """True when some active rule already matches this transaction with the same category.
 
         Delegates to ``CategorizationService.find_matching_rule`` so dedup uses
         canonical rule-engine semantics (contains/regex/exact + amount/account
         filters) instead of an exact-pattern string compare.
+
+        When ``context`` is provided, passes pre-loaded rules and transaction
+        data through the overrides so no DB reads are issued.
         """
-        match = CategorizationService(self._db).find_matching_rule(transaction_id)
+        rules_override = context.active_rules if context is not None else None
+        txn_row = context.txn_row_for(transaction_id) if context is not None else None
+        txn_row_override = (
+            (txn_row.description or "", txn_row.amount, txn_row.account_id)
+            if txn_row is not None
+            else None
+        )
+        match = CategorizationService(self._db).find_matching_rule(
+            transaction_id,
+            rules_override=rules_override,
+            txn_row_override=txn_row_override,
+        )
         if match is None:
             return False
         _rule_id, matched_category, matched_subcategory, _created_by = match
         return matched_category == category and matched_subcategory == subcategory
 
     def _merchant_mapping_covers(
-        self, pattern: str, category: str, subcategory: str | None
+        self,
+        pattern: str,
+        category: str,
+        subcategory: str | None,
+        *,
+        context: BulkRecordingContext | None = None,
     ) -> bool:
         """True when a merchant mapping already produces this (category, subcategory) for this pattern.
 
@@ -716,7 +830,13 @@ class AutoRuleService:
         candidate pattern in Python, mirroring how the merchant matcher itself
         resolves descriptions. SQL substring comparison would miss ``exact``
         and ``regex`` merchants and ignored ``subcategory`` differences.
+
+        When ``context`` is provided, delegates to
+        ``BulkRecordingContext.merchant_mapping_covers`` against the cached
+        merchant list so no DB read is issued.
         """
+        if context is not None:
+            return context.merchant_mapping_covers(pattern, category, subcategory)
         try:
             rows = self._db.execute(
                 f"""

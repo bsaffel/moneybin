@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -209,14 +210,14 @@ class TestCategorizationPipeline:
 
 
 class TestAutoRulePipeline:
-    """Workflow 6: import -> transform -> seed proposal -> auto-confirm -> verify rule promoted.
+    """Workflow 6: import → transform → categorize bulk → auto-confirm → verify rule promoted.
 
-    bulk_categorize is MCP-only and has no CLI surface, so we seed a proposal
-    directly via db query. The user-facing surface this test exercises is:
-    import + transform + auto-review + auto-confirm. Promotion is verified by
-    inspecting both the active categorization_rules table (created_by='auto_rule'
-    after approval) and a re-import — the second import should not fail and the
-    rule remains active for future categorization runs.
+    This test drives the full auto-rule pipeline through the CLI:
+    import → transform → categorize bulk → auto-review → auto-confirm → re-apply.
+
+    Promotion is verified by inspecting both the active categorization_rules table
+    (created_by='auto_rule' after approval) and re-running apply-rules — the rule
+    remains active for future categorization runs.
     """
 
     def test_import_then_promote_proposal(self, e2e_home: Path) -> None:
@@ -226,13 +227,27 @@ class TestAutoRulePipeline:
         env = make_workflow_env(e2e_home, "wf-autorule")
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
-        # Import + transform so the full app/core schema is materialized.
+        # Import the fixture twice under different account IDs so the same
+        # merchant description appears in two separate transactions. The first
+        # import's COFFEE SHOP row will be categorized via `categorize bulk`;
+        # the second import's COFFEE SHOP row will remain uncategorized and be
+        # picked up by the auto-rule back-fill on approval.
         result = run_cli(
             "import",
             "file",
             str(fixture),
             "--account-id",
-            "wf-autorule-acct",
+            "wf-autorule-acct-a",
+            "--skip-transform",
+            env=env,
+        )
+        result.assert_success()
+        result = run_cli(
+            "import",
+            "file",
+            str(fixture),
+            "--account-id",
+            "wf-autorule-acct-b",
             "--skip-transform",
             env=env,
         )
@@ -240,26 +255,55 @@ class TestAutoRulePipeline:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # Seed categories so app schema has reference data.
+        # Seed categories so the app schema has reference data.
         result = run_cli("categorize", "seed", env=env)
         result.assert_success()
 
-        # Seed a pending proposal directly — bulk_categorize is MCP-only, so
-        # we drive the auto-* CLI surface against a known-good app row.
-        insert_sql = (
-            "INSERT INTO app.proposed_rules "
-            "(proposed_rule_id, merchant_pattern, match_type, category, "
-            "subcategory, status, trigger_count, source, sample_txn_ids) "
-            "VALUES ('wfauto00001', 'COFFEE SHOP', 'contains', 'Food & Dining', "
-            "'Coffee', 'pending', 1, 'pattern_detection', [])"
+        # Find the COFFEE SHOP transaction ID for account-a only — categorizing
+        # just this one leaves account-b's COFFEE SHOP row uncategorized for
+        # the back-fill step to exercise after approval.
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT transaction_id FROM core.fct_transactions "
+            "WHERE description ILIKE '%COFFEE SHOP%' AND account_id = 'wf-autorule-acct-a' "
+            "LIMIT 1",
+            "--format",
+            "csv",
+            env=env,
         )
-        result = run_cli("db", "query", insert_sql, env=env)
+        result.assert_success()
+        lines = [ln.strip() for ln in result.stdout.strip().splitlines() if ln.strip()]
+        # lines[0] is the CSV header; lines[1] is the first data row.
+        assert len(lines) >= 2, (
+            f"Expected at least one COFFEE SHOP transaction for acct-a, got: {result.stdout!r}"
+        )
+        txn_id = lines[1]
+
+        # Write a JSON bulk-categorization payload to the workflow tmp dir.
+        json_path = e2e_home / "wf-autorule-bulk.json"
+        json_path.write_text(
+            json.dumps([
+                {
+                    "transaction_id": txn_id,
+                    "category": "Food & Dining",
+                    "subcategory": "Coffee",
+                }
+            ]),
+            encoding="utf-8",
+        )
+
+        # bulk categorize — this records a user categorization and triggers the
+        # auto-rule pipeline to create a pending proposal (threshold default = 1).
+        result = run_cli("categorize", "bulk", "--input", str(json_path), env=env)
         result.assert_success()
 
         # auto-review surfaces the seeded proposal
         result = run_cli("categorize", "auto", "review", env=env)
         result.assert_success()
-        assert "wfauto00001" in result.output
+        assert "COFFEE SHOP" in result.output, (
+            f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
+        )
 
         # auto-confirm promotes the proposal to an active rule
         result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)

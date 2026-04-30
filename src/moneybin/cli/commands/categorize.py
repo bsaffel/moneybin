@@ -10,8 +10,14 @@ from typing import cast
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.mcp.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +260,101 @@ def auto_stats_cmd(
     logger.info(f"  Active auto-rules:        {stats.active_auto_rules}")
     logger.info(f"  Pending proposals:        {stats.pending_proposals}")
     logger.info(f"  Transactions auto-ruled:  {stats.transactions_categorized}")
+
+
+@app.command("bulk")
+def bulk_cmd(
+    stdin_sentinel: str | None = typer.Argument(
+        None,
+        help="Pass '-' to read JSON from stdin.",
+    ),
+    input_path: str | None = typer.Option(
+        None, "--input", help="Path to a JSON file with categorization items."
+    ),
+    output: OutputFormat = output_option,
+) -> None:
+    """Bulk-assign categories to transactions from a JSON array.
+
+    Read from a file:
+
+      moneybin categorize bulk --input cats.json
+
+    Or from stdin:
+
+      cat cats.json | moneybin categorize bulk -
+
+    Per-item validation: failures are reported in the result without aborting
+    the batch. Exit code is 1 if any item failed.
+    """
+    import json
+    import sys
+    from pathlib import Path
+
+    from moneybin.services.categorization_service import (
+        BulkCategorizationResult,
+        CategorizationService,
+        validate_bulk_items,
+    )
+
+    use_stdin = stdin_sentinel == "-"
+
+    if input_path is not None and use_stdin:
+        typer.echo(
+            "Provide either --input <path> or '-' to read from stdin (not both).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if input_path is None and not use_stdin:
+        typer.echo(
+            "Provide either --input <path> or '-' to read JSON from stdin.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        if input_path is not None:
+            with Path(input_path).open(encoding="utf-8") as f:
+                raw = json.load(f)
+        else:
+            raw = json.load(sys.stdin)
+    except FileNotFoundError as e:
+        typer.echo(f"❌ File not found: {input_path}", err=True)
+        raise typer.Exit(2) from e
+    except json.JSONDecodeError as e:
+        typer.echo(f"❌ Invalid JSON: {e}", err=True)
+        raise typer.Exit(1) from e
+
+    try:
+        items, parse_errors = validate_bulk_items(raw)
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
+
+    if items:
+        with handle_cli_errors() as db:
+            result = CategorizationService(db).bulk_categorize(items)
+    else:
+        result = BulkCategorizationResult(
+            applied=0, skipped=0, errors=0, error_details=[]
+        )
+    result.merge_parse_errors(parse_errors)
+
+    input_count = len(items) + len(parse_errors)
+
+    def _render_table(_: ResponseEnvelope) -> None:
+        logger.info(
+            f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
+        )
+        if result.merchants_created:
+            logger.info(f"   Created {result.merchants_created} merchant mappings")
+        for err in result.error_details:
+            logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
+
+    render_or_json(result.to_envelope(input_count), output, render_fn=_render_table)
+
+    if result.errors > 0 or result.skipped > 0:
+        raise typer.Exit(1)
 
 
 @auto_app.command("rules")

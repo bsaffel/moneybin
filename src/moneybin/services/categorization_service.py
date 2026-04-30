@@ -13,14 +13,21 @@ proposal/approval/deactivation lifecycle and depends on this module's
 import logging
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Literal
 
 import duckdb
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.metrics.registry import (
+    CATEGORIZE_BULK_DURATION_SECONDS,
+    CATEGORIZE_BULK_ERRORS_TOTAL,
+    CATEGORIZE_BULK_ITEMS_TOTAL,
+)
 from moneybin.services._text import normalize_description
 from moneybin.tables import (
     CATEGORIES,
@@ -89,6 +96,67 @@ class BulkCategorizationResult:
                 "Use categorize.uncategorized to fetch the next batch",
             ],
         )
+
+    def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
+        """Prepend boundary-validation errors and reflect them in the error count."""
+        if not parse_errors:
+            return
+        self.error_details = parse_errors + self.error_details
+        self.errors += len(parse_errors)
+
+
+class BulkCategorizationItem(BaseModel):
+    """One row of input for ``CategorizationService.bulk_categorize``.
+
+    Validated at every boundary (CLI, MCP). The service refuses untyped dicts.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    transaction_id: str = Field(min_length=1, max_length=64)
+    category: str = Field(min_length=1, max_length=100)
+    subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+def validate_bulk_items(
+    raw: object,
+) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
+    """Validate a raw decoded JSON array into typed items + per-row errors.
+
+    Per-item validation: a malformed row contributes an ``error_details`` entry
+    but does not abort the batch. Callers merge ``parse_errors`` into the
+    final ``BulkCategorizationResult.error_details`` so the response envelope
+    surfaces every failure together.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("Input must be a JSON array of categorization items")
+
+    items: list[BulkCategorizationItem] = []
+    errors: list[dict[str, str]] = []
+    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]  # raw is intentionally `object`; isinstance check below narrows the type
+        if not isinstance(row, dict):
+            errors.append({
+                "transaction_id": "(missing)",
+                "reason": f"Row {index} is not an object",
+            })
+            continue
+        row_dict: dict[str, object] = {
+            str(k): v  # pyright: ignore[reportUnknownArgumentType]  # dict keys from untyped JSON input
+            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]  # dict from untyped JSON input
+        }
+        try:
+            items.append(BulkCategorizationItem.model_validate(row_dict))
+        except ValidationError as e:
+            txn_id_val = row_dict.get("transaction_id")
+            txn_id = str(txn_id_val).strip() if isinstance(txn_id_val, str) else ""
+            if not txn_id:
+                txn_id = "(missing)"
+            reason = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]  # Pydantic error loc is Sequence[int | str]
+                for err in e.errors()
+            )
+            errors.append({"transaction_id": txn_id, "reason": reason})
+    return items, errors
 
 
 @dataclass(slots=True)
@@ -274,7 +342,7 @@ class CategorizationService:
     # -- Categorization core --
 
     def bulk_categorize(
-        self, items: Sequence[Mapping[str, str | None]]
+        self, items: Sequence[BulkCategorizationItem]
     ) -> BulkCategorizationResult:
         """Assign categories to multiple transactions with merchant auto-creation.
 
@@ -286,33 +354,32 @@ class CategorizationService:
         fetch and one merchant-table fetch, regardless of input size.
 
         Args:
-            items: List of dicts with transaction_id, category, and optional subcategory.
+            items: Validated list of BulkCategorizationItem (transaction_id, category,
+                optional subcategory). Validation is the caller's responsibility —
+                use ``validate_bulk_items`` at the CLI/MCP boundary before calling this.
 
         Returns:
             BulkCategorizationResult with applied/skipped/error counts.
         """
+        _start = perf_counter()
+        try:
+            return self._bulk_categorize_inner(items)
+        except Exception:
+            CATEGORIZE_BULK_ERRORS_TOTAL.inc()
+            raise
+        finally:
+            CATEGORIZE_BULK_DURATION_SECONDS.observe(perf_counter() - _start)
+
+    def _bulk_categorize_inner(
+        self, items: Sequence[BulkCategorizationItem]
+    ) -> BulkCategorizationResult:
         applied = 0
         skipped = 0
         errors = 0
         merchants_created = 0
         error_details: list[dict[str, str]] = []
 
-        # Phase 1 — validate and partition input
-        valid_items: list[tuple[str, str, str | None]] = []
-        for item in items:
-            txn_id = (item.get("transaction_id") or "").strip()
-            category = (item.get("category") or "").strip()
-            if not txn_id or not category:
-                skipped += 1
-                error_details.append({
-                    "transaction_id": txn_id or "(missing)",
-                    "reason": "Missing transaction_id or category",
-                })
-                continue
-            subcategory = (item.get("subcategory") or "").strip() or None
-            valid_items.append((txn_id, category, subcategory))
-
-        if not valid_items:
+        if not items:
             return BulkCategorizationResult(
                 applied=applied,
                 skipped=skipped,
@@ -321,34 +388,68 @@ class CategorizationService:
                 merchants_created=merchants_created,
             )
 
-        # Phase 2 — batch-fetch descriptions
-        txn_ids = [v[0] for v in valid_items]
+        # Phase 2 — batch-fetch txn rows (description + amount + account_id)
+        txn_ids = [item.transaction_id for item in items]
         placeholders = ",".join(["?"] * len(txn_ids))
-        descriptions: dict[str, str | None] = {}
+        # Lazy import keeps the module-level dependency one-way
+        # (auto_rule_service → categorization_service).
+        from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
+            AutoRuleService,
+            BulkRecordingContext,
+            TxnRow,
+        )
+
+        txn_rows: dict[str, TxnRow] = {}
         try:
             rows = self._db.execute(
                 f"""
-                SELECT transaction_id, description
+                SELECT transaction_id, description, amount, account_id
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE transaction_id IN ({placeholders})
                 """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
                 txn_ids,
             ).fetchall()
-            descriptions = {row[0]: row[1] for row in rows}
+            txn_rows = {
+                row[0]: TxnRow(
+                    description=row[1],
+                    amount=float(row[2]) if row[2] is not None else None,
+                    account_id=str(row[3]) if row[3] is not None else None,
+                )
+                for row in rows
+            }
         except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
-            logger.warning("Could not batch-fetch descriptions", exc_info=True)
+            logger.warning("Could not batch-fetch transaction rows", exc_info=True)
 
-        # Phase 3 — fetch merchants once, then match in memory.
+        # Phase 3 — fetch merchants and active rules once for the whole batch.
         # Guard against any non-CatalogException (schema drift, binder errors, etc.)
-        # so a merchant-table failure doesn't block all category writes for the batch.
+        # so a merchant-table or rules-table failure doesn't block all category
+        # writes for the batch.
         try:
-            cached_merchants = _fetch_merchants(self._db)
+            raw_merchants = _fetch_merchants(self._db)
+            cached_merchants: list[tuple[Any, ...]] = (
+                list(raw_merchants) if raw_merchants is not None else []
+            )
         except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
             logger.warning("Could not batch-fetch merchants", exc_info=True)
-            cached_merchants = None
+            cached_merchants = []
+        try:
+            cached_rules = self.fetch_active_rules()
+        except Exception:  # noqa: BLE001 — best-effort; degrades to no rule cover checks
+            logger.warning("Could not batch-fetch active rules", exc_info=True)
+            cached_rules = []
+
+        ctx = BulkRecordingContext(
+            txn_rows=txn_rows,
+            active_rules=cached_rules,
+            merchant_mappings=cached_merchants,
+        )
+        auto_rule_svc = AutoRuleService(self._db)
 
         # Phase 4 — per-item categorization (writes only)
-        for txn_id, category, subcategory in valid_items:
+        for item in items:
+            txn_id = item.transaction_id
+            category = item.category
+            subcategory = item.subcategory
             try:
                 # Resolve pre-existing merchant first so auto-rule learning can
                 # use the merchant's raw_pattern (e.g., "AMZN") instead of
@@ -358,10 +459,12 @@ class CategorizationService:
                 # proposal before it can be tracked.
                 merchant_id: str | None = None
                 existing: dict[str, Any] | None = None
-                description = descriptions.get(txn_id)
-                if description and cached_merchants is not None:
+                description = ctx.description_for(txn_id)
+                if description and ctx.merchant_mappings:
                     try:
-                        existing = _match_description(description, cached_merchants)
+                        existing = _match_description(
+                            description, ctx.merchant_mappings
+                        )
                         if existing:
                             merchant_id = existing["merchant_id"]
                     except Exception:  # noqa: BLE001 — merchant lookup is best-effort
@@ -370,21 +473,18 @@ class CategorizationService:
                             exc_info=True,
                         )
 
-                # Lazy import keeps the module-level dependency one-way
-                # (auto_rule_service → categorization_service).
                 try:
-                    from moneybin.services.auto_rule_service import AutoRuleService
-
-                    AutoRuleService(self._db).record_categorization(
+                    auto_rule_svc.record_categorization(
                         txn_id,
                         category,
                         subcategory=subcategory,
                         merchant_id=merchant_id,
+                        context=ctx,
                     )
                 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
                     logger.warning("auto-rule recording failed", exc_info=True)
 
-                if merchant_id is None and description and cached_merchants is not None:
+                if merchant_id is None and description:
                     try:
                         normalized = normalize_description(description)
                         if normalized:
@@ -397,10 +497,10 @@ class CategorizationService:
                                 created_by="ai",
                             )
                             merchants_created += 1
-                            # Insert into cache preserving _fetch_merchants() ordering
-                            # (exact → contains → regex) so subsequent items in this
-                            # batch match the just-created contains rule before any
-                            # pre-existing regex rule.
+                            # Register into context preserving _fetch_merchants()
+                            # ordering (exact → contains → regex) so subsequent
+                            # items in this batch match the just-created contains
+                            # rule before any pre-existing regex rule.
                             new_row = (
                                 merchant_id,
                                 normalized,
@@ -409,15 +509,7 @@ class CategorizationService:
                                 category,
                                 subcategory,
                             )
-                            insert_at = next(
-                                (
-                                    i
-                                    for i, m in enumerate(cached_merchants)
-                                    if m[2] == "regex"
-                                ),
-                                len(cached_merchants),
-                            )
-                            cached_merchants.insert(insert_at, new_row)
+                            ctx.register_new_merchant(new_row)
                     except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
                         logger.debug(
                             f"Could not create merchant for {txn_id}",
@@ -447,12 +539,13 @@ class CategorizationService:
         # batch so cost is independent of batch size.
         if applied:
             try:
-                from moneybin.services.auto_rule_service import AutoRuleService
-
-                AutoRuleService(self._db).check_overrides()
+                auto_rule_svc.check_overrides()
             except Exception:  # noqa: BLE001 — override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
 
+        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
+        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="skipped").inc(skipped)
+        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
         return BulkCategorizationResult(
             applied=applied,
             skipped=skipped,
@@ -584,7 +677,11 @@ class CategorizationService:
         return None
 
     def find_matching_rule(
-        self, transaction_id: str
+        self,
+        transaction_id: str,
+        *,
+        rules_override: list[tuple[Any, ...]] | None = None,
+        txn_row_override: tuple[str, float | None, str | None] | None = None,
     ) -> tuple[str, str, str | None, str] | None:
         """Return the first active rule matching this transaction, or ``None``.
 
@@ -593,19 +690,30 @@ class CategorizationService:
         the auto-rule proposal pipeline) ask "is this transaction already
         covered by an existing rule?" using the canonical match semantics
         instead of re-implementing them.
+
+        The bulk path supplies pre-loaded rule rows and txn metadata via
+        ``rules_override`` and ``txn_row_override`` so this function issues no
+        queries during a bulk loop. Both default to ``None`` for non-bulk callers.
         """
-        try:
-            txn_row = self._db.execute(
-                f"SELECT description, amount, account_id "
-                f"FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
-                [transaction_id],
-            ).fetchone()
-        except duckdb.CatalogException:
+        if txn_row_override is not None:
+            description, amount, account_id = txn_row_override
+        else:
+            try:
+                txn_row = self._db.execute(
+                    f"SELECT description, amount, account_id "
+                    f"FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
+                    [transaction_id],
+                ).fetchone()
+            except duckdb.CatalogException:
+                return None
+            if not txn_row or not txn_row[0]:
+                return None
+            description, amount, account_id = txn_row
+        if not description:
             return None
-        if not txn_row or not txn_row[0]:
-            return None
-        description, amount, account_id = txn_row
-        rules = self.fetch_active_rules()
+        rules = (
+            rules_override if rules_override is not None else self.fetch_active_rules()
+        )
         if not rules:
             return None
         return self.match_first_rule(
