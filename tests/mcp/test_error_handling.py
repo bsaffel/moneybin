@@ -34,7 +34,7 @@ def test_mcp_tool_converts_database_key_error_to_envelope() -> None:
     result = failing_tool()
     assert isinstance(result, ResponseEnvelope)
     assert result.error is not None
-    assert result.error.code == "DATABASE_KEY_ERROR"
+    assert result.error.code == "database_locked"
 
 
 def test_mcp_tool_lets_unclassified_exceptions_propagate() -> None:

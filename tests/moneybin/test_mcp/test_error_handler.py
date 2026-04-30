@@ -20,7 +20,7 @@ from moneybin.protocol.envelope import (
 
 def test_build_error_envelope_carries_user_error() -> None:
     """build_error_envelope returns an envelope with empty data and the error set."""
-    err = UserError(message="bad", code="database_locked", hint="unlock it")
+    err = UserError("bad", code="database_locked", hint="unlock it")
     env = build_error_envelope(error=err)
     assert isinstance(env, ResponseEnvelope)
     assert env.error is err
@@ -31,7 +31,7 @@ def test_build_error_envelope_carries_user_error() -> None:
 
 def test_envelope_to_dict_includes_error_section() -> None:
     """Serialized envelope surfaces the error fields under an `error` key."""
-    err = UserError(message="bad", code="x", hint="y")
+    err = UserError("bad", code="x", hint="y")
     env = build_error_envelope(error=err)
     d = env.to_dict()
     assert d["error"] == {"message": "bad", "code": "x", "hint": "y"}
@@ -46,7 +46,7 @@ def test_envelope_to_dict_omits_error_when_none() -> None:
 
 def test_error_envelope_round_trips_through_json() -> None:
     """to_json + json.loads recovers the error section structure."""
-    err = UserError(message="m", code="c", hint="h")
+    err = UserError("m", code="c", hint="h")
     parsed = json.loads(build_error_envelope(error=err).to_json())
     assert parsed["error"] == {"message": "m", "code": "c", "hint": "h"}
     assert parsed["data"] == []

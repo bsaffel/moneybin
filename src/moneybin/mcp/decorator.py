@@ -32,8 +32,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from moneybin.database import DatabaseKeyError
-from moneybin.errors import UserError
+from moneybin.errors import classify_user_error
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
@@ -65,24 +64,14 @@ def mcp_tool(
             log_tool_call(fn.__name__, tier)
             try:
                 result = fn(*args, **kwargs)
-            except UserError as exc:
-                logger.error(f"Tool {fn.__name__} raised UserError: {exc.code}")
-                return build_error_envelope(error=exc, sensitivity="low")
-            except DatabaseKeyError as exc:
-                logger.error(f"Tool {fn.__name__} raised DatabaseKeyError")
-                return build_error_envelope(
-                    error=UserError(str(exc), code="DATABASE_KEY_ERROR"),
-                    sensitivity="low",
+            except Exception as exc:
+                classified = classify_user_error(exc)
+                if classified is None:
+                    raise
+                logger.error(
+                    f"Tool {fn.__name__} raised {type(exc).__name__}: {classified.code}"
                 )
-            except FileNotFoundError as exc:
-                logger.error(f"Tool {fn.__name__} raised FileNotFoundError")
-                msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
-                return build_error_envelope(
-                    error=UserError(msg, code="FILE_NOT_FOUND"),
-                    sensitivity="low",
-                )
-            # Unclassified exceptions propagate; fastmcp's mask_error_details
-            # wraps them into masked ToolErrors at the server boundary.
+                return build_error_envelope(error=classified, sensitivity="low")
             if not isinstance(result, ResponseEnvelope):
                 raise TypeError(
                     f"{fn.__name__} returned {type(result).__name__},"
