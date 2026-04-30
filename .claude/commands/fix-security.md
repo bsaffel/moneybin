@@ -41,5 +41,4 @@ Find and fix open security findings from CodeQL and pip-audit.
 
 9. **After confirmation**, stage only the files changed to address security findings, commit, and push:
    - Commit message: `Fix security findings: <brief description>` with a bulleted body listing each fix
-   - Include `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
    - Push to the current branch's remote tracking branch

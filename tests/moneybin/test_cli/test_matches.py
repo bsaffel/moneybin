@@ -41,7 +41,7 @@ class TestMatchesRun:
 class TestMatchesReview:
     """Tests for the matches review command."""
 
-    @patch("moneybin.services.import_service.run_transforms")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
     @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_accept_single_runs_transform(
@@ -61,9 +61,9 @@ class TestMatchesReview:
         mock_update.assert_called_once_with(
             mock_get_db.return_value, "abc123", status="accepted", decided_by="user"
         )
-        mock_run_transforms.assert_called_once_with()
+        mock_run_transforms.assert_called_once()
 
-    @patch("moneybin.services.import_service.run_transforms")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
     @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_reject_single_does_not_run_transform(
@@ -85,7 +85,7 @@ class TestMatchesReview:
         )
         mock_run_transforms.assert_not_called()
 
-    @patch("moneybin.services.import_service.run_transforms")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
     @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.get_pending_matches")
     @patch("moneybin.matching.persistence.update_match_status")
@@ -106,9 +106,9 @@ class TestMatchesReview:
 
         assert result.exit_code == 0
         assert mock_update.call_count == 2
-        mock_run_transforms.assert_called_once_with()
+        mock_run_transforms.assert_called_once()
 
-    @patch("moneybin.services.import_service.run_transforms")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
     @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.update_match_status")
     def test_accept_single_can_skip_transform(
@@ -135,7 +135,7 @@ class TestMatchesReview:
         mock_update.assert_called_once()
         mock_run_transforms.assert_not_called()
 
-    @patch("moneybin.services.import_service.run_transforms")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
     @patch("moneybin.cli.utils.get_database")
     @patch("moneybin.matching.persistence.get_pending_matches")
     @patch("moneybin.matching.persistence.update_match_status")
@@ -164,7 +164,7 @@ class TestMatchesReview:
         mock_update.assert_called_once_with(
             mock_get_db.return_value, "abc123", status="accepted", decided_by="user"
         )
-        mock_run_transforms.assert_called_once_with()
+        mock_run_transforms.assert_called_once()
 
 
 class TestMatchesHistory:
