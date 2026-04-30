@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.main import app
+from moneybin.cli.main import app  # noqa: F401  # ensures module is imported
+
+# `from moneybin.cli import main` resolves to the re-exported function rather
+# than the submodule (the CLI package re-exports `main` in its __init__).
+# Look the module up via sys.modules to monkeypatch its attributes.
+cli_main = sys.modules["moneybin.cli.main"]
 
 
 @pytest.fixture()
@@ -43,20 +49,24 @@ def test_help_does_not_trigger_first_run_wizard(
     tmp_path: Path,
     argv: list[str],
 ) -> None:
-    """`moneybin <group> --help` must not prompt for profile setup or write files."""
+    """`moneybin <group> --help` must not call the first-run profile wizard."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
-    # CliRunner replaces sys.argv with [''], so the production --help
-    # short-circuit (which inspects sys.argv) wouldn't fire under tests.
-    # Set sys.argv to mirror the real invocation.
-    monkeypatch.setattr(sys, "argv", ["moneybin", *argv, "--help"])
+
+    # Behavioral assertion: replace ensure_default_profile with a mock and
+    # verify the parent callback never reaches it on --help. This decouples
+    # the test from the wizard's prompt copy, so reword-the-prompt won't
+    # silently break the regression net.
+    wizard_mock = MagicMock(name="ensure_default_profile")
+    monkeypatch.setattr(cli_main, "ensure_default_profile", wizard_mock)
 
     result = runner.invoke(app, [*argv, "--help"])
 
     assert result.exit_code == 0, f"--help failed: {result.output}"
-    assert "First name" not in result.stdout
-    assert "First name" not in (result.stderr or "")
+    wizard_mock.assert_not_called()
+    # Defense in depth: even if some other code path tried to provision a
+    # profile, the filesystem must remain untouched on --help.
     assert not list((tmp_path / ".config").rglob("profiles")), (
         "wizard wrote profile data during --help"
     )

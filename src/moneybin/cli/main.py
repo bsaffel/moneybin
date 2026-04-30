@@ -6,10 +6,11 @@ db, mcp.
 """
 
 import logging
-import sys
 from typing import Annotated
 
+import click
 import typer
+from typer.core import TyperGroup
 
 from ..config import set_current_profile
 from ..observability import setup_observability
@@ -35,12 +36,83 @@ from .commands.stubs import (
 
 logger = logging.getLogger(__name__)
 
+
+class _HelpAwareGroup(TyperGroup):
+    """TyperGroup that flags ``ctx.meta['help_requested']`` when ``--help`` will fire.
+
+    Click handles ``--help`` lazily: a root-level ``moneybin --help`` is intercepted
+    before this group's callback runs, but ``moneybin <subcommand> --help`` and
+    deeper invocations run the parent callback first. The parent callback does
+    profile resolution (env lookup, first-run wizard, observability setup) which
+    must stay inert when help is the user's intent.
+
+    Rather than peeking at ``sys.argv`` (which doesn't reflect ``CliRunner.invoke``
+    arguments and false-positives on values like ``--description "--help me"``),
+    we walk the unparsed token chain via Click's parser and detect whether any
+    ``--help``/``-h`` token would actually parse as a help option for the
+    upcoming subcommand. The result is stored on ``ctx.meta`` (inherited by
+    child contexts) for the parent callback to consult.
+    """
+
+    def invoke(self, ctx: click.Context) -> object:
+        if _help_token_in_chain(ctx):
+            ctx.meta["help_requested"] = True
+        return super().invoke(ctx)
+
+
+def _help_token_in_chain(group_ctx: click.Context) -> bool:
+    """Return True if ``--help`` will fire as a help option for some subcommand.
+
+    Walks down the resolved subcommand chain using Click's parser in
+    ``resilient_parsing`` mode (so the help callback doesn't fire prematurely)
+    and checks whether any help-option name was consumed as an option for any
+    command in the chain. This avoids false positives where ``--help`` appears
+    as the value of another option (e.g., ``--description --help``).
+    """
+    # Click stores upcoming-but-not-yet-consumed tokens on the private
+    # ``_protected_args`` (subcommand name) and ``args`` (rest). The public
+    # ``protected_args`` property is deprecated in Click 9.0, so we read the
+    # underlying private attribute directly.
+    protected: list[str] = getattr(group_ctx, "_protected_args", [])
+    remaining: list[str] = [*protected, *group_ctx.args]
+    cmd: click.Command = group_ctx.command
+    cur_ctx: click.Context = group_ctx
+    while remaining and isinstance(cmd, click.Group):
+        sub_name = remaining[0]
+        sub_cmd = cmd.get_command(cur_ctx, sub_name)
+        if sub_cmd is None:
+            return False
+        sub_args = remaining[1:]
+        try:
+            tmp_ctx = sub_cmd.make_context(
+                sub_name,
+                list(sub_args),
+                parent=cur_ctx,
+                resilient_parsing=True,
+            )
+            parser = sub_cmd.make_parser(tmp_ctx)
+            _, params_left, _ = parser.parse_args(args=list(sub_args))
+        except Exception:  # noqa: BLE001  # any parse error -> assume not help
+            return False
+        help_names = set(tmp_ctx.help_option_names)
+        for name in help_names:
+            # Token present in input but absent from leftover args means the
+            # parser consumed it as the help option (not as a value).
+            if name in sub_args and name not in params_left:
+                return True
+        cur_ctx = tmp_ctx
+        cmd = sub_cmd
+        remaining = params_left
+    return False
+
+
 app = typer.Typer(
     name="moneybin",
     help="MoneyBin: Personal financial data aggregation and analysis tool",
     add_completion=False,
     rich_markup_mode="rich",
     no_args_is_help=True,
+    cls=_HelpAwareGroup,
 )
 
 
@@ -82,9 +154,9 @@ def main_callback(
     # --help is documentation; it must be inert. Skip profile resolution
     # entirely when help is requested so we don't trigger the first-run
     # wizard, write profile dirs, or fail when MONEYBIN_PROFILE points at
-    # a non-existent profile.
-    help_tokens = {"--help", "-h"}
-    if any(tok in sys.argv for tok in help_tokens):
+    # a non-existent profile. The flag is set by ``_HelpAwareGroup.invoke``
+    # via parse-ahead detection — see that class for the rationale.
+    if ctx.meta.get("help_requested", False):
         return
 
     import os
