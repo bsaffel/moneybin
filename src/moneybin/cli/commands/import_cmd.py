@@ -27,6 +27,11 @@ app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+formats_app = typer.Typer(
+    help="Manage tabular import format definitions",
+    no_args_is_help=True,
+)
+app.add_typer(formats_app, name="formats")
 logger = logging.getLogger(__name__)
 
 _VALID_SIGN_CONVENTIONS = frozenset(get_args(SignConventionType))
@@ -463,7 +468,7 @@ def import_preview(
         raise typer.Exit(1) from e
 
 
-@app.command("list-formats")
+@formats_app.command("list")
 def list_formats() -> None:
     """List all formats (built-in and user-saved).
 
@@ -471,7 +476,7 @@ def list_formats() -> None:
     for all available import formats.
 
     Example:
-        moneybin import list-formats
+        moneybin import formats list
     """
     from moneybin.database import get_database
 
@@ -501,7 +506,7 @@ def list_formats() -> None:
     typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
 
 
-@app.command("show-format")
+@formats_app.command("show")
 def show_format(name: str = typer.Argument(..., help="Format name to show")) -> None:
     """Show details for a specific format.
 
@@ -509,7 +514,7 @@ def show_format(name: str = typer.Argument(..., help="Format name to show")) -> 
     including column mappings, detection signature, and format options.
 
     Example:
-        moneybin import show-format chase_credit
+        moneybin import formats show chase_credit
     """
     from moneybin.database import get_database
 
@@ -550,7 +555,7 @@ def show_format(name: str = typer.Argument(..., help="Format name to show")) -> 
     typer.echo()
 
 
-@app.command("delete-format")
+@formats_app.command("delete")
 def delete_format(
     name: str = typer.Argument(..., help="Format name to delete"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
@@ -561,8 +566,8 @@ def delete_format(
     be deleted.
 
     Example:
-        moneybin import delete-format my_custom_format
-        moneybin import delete-format my_custom_format --yes
+        moneybin import formats delete my_custom_format
+        moneybin import formats delete my_custom_format --yes
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.formats import (

@@ -38,7 +38,7 @@ class TestNoDBCommands:
         assert "Traceback" not in result.stderr
 
     def test_import_list_formats(self) -> None:
-        result = run_cli("import", "list-formats")
+        result = run_cli("import", "formats", "list")
         result.assert_success()
 
     def test_import_preview(self) -> None:
@@ -166,7 +166,7 @@ class TestDBReadOnlyCommands:
         result.assert_success()
 
     def test_import_show_format(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("import", "show-format", "chase_credit", env=e2e_profile)
+        result = run_cli("import", "formats", "show", "chase_credit", env=e2e_profile)
         # May exit 1 if format not found — no crash is the bar
         assert "Traceback" not in result.stderr
 

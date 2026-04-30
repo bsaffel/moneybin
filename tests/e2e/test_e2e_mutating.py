@@ -380,7 +380,7 @@ class TestImportMutating:
     def test_import_delete_format(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "delfmt")
         result = run_cli(
-            "import", "delete-format", "nonexistent-format", "--yes", env=env
+            "import", "formats", "delete", "nonexistent-format", "--yes", env=env
         )
         assert "Traceback (most recent call last)" not in result.output
 
