@@ -1,17 +1,16 @@
 """Stats command for MoneyBin CLI.
 
 Displays lifetime metric aggregates from the app.metrics table.
-This is a leaf command (no subcommands) registered directly on the
-root app — see `moneybin.cli.main`.
 """
 
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.utils.parsing import parse_duration
 
@@ -27,14 +26,8 @@ def stats_command(
         str | None,
         typer.Option("--metric", help="Filter to a metric family (e.g., import)"),
     ] = None,
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Display lifetime metric aggregates."""
     with handle_cli_errors() as db:

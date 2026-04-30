@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict, dataclass
+from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, get_args
+from typing import TYPE_CHECKING, get_args
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 
 if TYPE_CHECKING:
@@ -243,14 +247,8 @@ def import_history(
     import_id: str | None = typer.Option(
         None, "--import-id", help="Show details for a specific import"
     ),
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """List recent imports with batch details.
 
@@ -270,7 +268,7 @@ def import_history(
         records = loader.get_import_history(limit=limit, import_id=import_id)
 
     if output == "json":
-        typer.echo(json.dumps({"imports": records}, indent=2, default=str))
+        emit_json("imports", records)
         return
 
     if not records:
@@ -484,14 +482,8 @@ def import_preview(
 
 @formats_app.command("list")
 def list_formats(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """List all formats (built-in and user-saved).
 
@@ -521,7 +513,7 @@ def list_formats(
             }
             for fmt in sorted(all_formats.values(), key=lambda f: f.name)
         ]
-        typer.echo(json.dumps({"formats": formats_payload}, indent=2, default=str))
+        emit_json("formats", formats_payload)
         return
 
     if not all_formats:
@@ -548,14 +540,8 @@ def list_formats(
 @formats_app.command("show")
 def show_format(
     name: str = typer.Argument(..., help="Format name to show"),
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — show has no info chatter; only data lines
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — show has no info chatter; only data lines
 ) -> None:
     """Show details for a specific format.
 
@@ -598,7 +584,7 @@ def show_format(
             "field_mapping": dict(fmt.field_mapping),
             "skip_trailing_patterns": fmt.skip_trailing_patterns,
         }
-        typer.echo(json.dumps({"format": payload}, indent=2, default=str))
+        emit_json("format", payload)
         return
 
     typer.echo(f"\nFormat: {fmt.name}")
@@ -667,14 +653,8 @@ def delete_format(
 
 @app.command("status")
 def import_status(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Show a summary of all imported data: row counts, date ranges, and sources.
 
@@ -713,7 +693,11 @@ def import_status(
     if output == "json":
         typer.echo(
             json.dumps(
-                {"database": str(db_path), "tables": rows, "exists": True},
+                {
+                    "database": str(db_path),
+                    "tables": [asdict(r) for r in rows],
+                    "exists": True,
+                },
                 indent=2,
                 default=str,
             )
@@ -732,15 +716,24 @@ def import_status(
 
     for row in rows:
         date_info = ""
-        if row.get("date_min") is not None:
-            date_info = f"  ({row['date_min']} to {row['date_max']})"
-        typer.echo(f"  {row['schema']}.{row['table']}: {row['rows']:,} rows{date_info}")
+        if row.date_min is not None:
+            date_info = f"  ({row.date_min} to {row.date_max})"
+        typer.echo(f"  {row.schema}.{row.table}: {row.rows:,} rows{date_info}")
 
     if not quiet:
         typer.echo()
 
 
-def _collect_import_status(db: Database) -> list[dict[str, object]]:
+@dataclass(frozen=True, slots=True)
+class _ImportStatusRow:
+    schema: str
+    table: str
+    rows: int
+    date_min: date | None
+    date_max: date | None
+
+
+def _collect_import_status(db: Database) -> list[_ImportStatusRow]:
     """Query raw tables and return per-table row counts and date ranges."""
     tables = db.execute("""
         SELECT table_schema, table_name
@@ -751,7 +744,7 @@ def _collect_import_status(db: Database) -> list[dict[str, object]]:
 
     from sqlglot import exp
 
-    results: list[dict[str, object]] = []
+    results: list[_ImportStatusRow] = []
     for schema, table in tables:
         safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
         safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
@@ -760,8 +753,8 @@ def _collect_import_status(db: Database) -> list[dict[str, object]]:
         ).fetchone()
         count = row_count[0] if row_count else 0
 
-        date_min: object = None
-        date_max: object = None
+        date_min: date | None = None
+        date_max: date | None = None
         if "transaction" in table:
             date_col = "date_posted" if "ofx" in table else "transaction_date"
             safe_date_col = exp.to_identifier(date_col, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
@@ -774,11 +767,13 @@ def _collect_import_status(db: Database) -> list[dict[str, object]]:
             except Exception:  # noqa: BLE001 — column may not exist in all tables
                 logger.debug(f"Could not get date range for {schema}.{table}")
 
-        results.append({
-            "schema": schema,
-            "table": table,
-            "rows": count,
-            "date_min": date_min,
-            "date_max": date_max,
-        })
+        results.append(
+            _ImportStatusRow(
+                schema=schema,
+                table=table,
+                rows=count,
+                date_min=date_min,
+                date_max=date_max,
+            )
+        )
     return results

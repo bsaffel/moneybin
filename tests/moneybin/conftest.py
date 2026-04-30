@@ -12,7 +12,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.config import clear_settings_cache, get_base_dir, set_current_profile
+from moneybin.config import (
+    clear_settings_cache,
+    get_base_dir,
+    register_profile_resolver,
+    set_current_profile,
+)
 from moneybin.database import Database
 
 
@@ -73,6 +78,7 @@ def clean_profile_state() -> Generator[None, None, None]:
     For profile directory cleanup, use the temp_profile() context manager.
     """
     # Setup: clean state before test
+    register_profile_resolver(None)
     clear_settings_cache()
     set_current_profile("test")
 
@@ -80,6 +86,7 @@ def clean_profile_state() -> Generator[None, None, None]:
     yield
 
     # Cleanup after test
+    register_profile_resolver(None)
     clear_settings_cache()
     set_current_profile("test")
 

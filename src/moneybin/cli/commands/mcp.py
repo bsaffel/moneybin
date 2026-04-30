@@ -13,6 +13,8 @@ from typing import Annotated, Any, Literal, get_args
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
 from moneybin.config import get_base_dir
 from moneybin.mcp.server import mcp as mcp_server
 
@@ -224,14 +226,8 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
 
 @app.command("list-tools")
 def list_tools(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — list-tools has no info chatter; only data lines
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — list-tools has no info chatter; only data lines
 ) -> None:
     """List all registered MCP tools.
 
@@ -255,7 +251,7 @@ def list_tools(
                     "name": tool.name,
                     "description": tool.description,
                 })
-        typer.echo(json.dumps({"tools": tools_payload}, indent=2, default=str))
+        emit_json("tools", tools_payload)
         return
 
     for ns in sorted(registry.all_namespaces()):
@@ -269,14 +265,8 @@ def list_tools(
 
 @app.command("list-prompts")
 def list_prompts(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """List all registered MCP prompts.
 
@@ -302,7 +292,7 @@ def list_prompts(
             }
             for name, prompt in sorted(prompts.items())
         ]
-        typer.echo(json.dumps({"prompts": prompts_payload}, indent=2, default=str))
+        emit_json("prompts", prompts_payload)
         return
 
     if not prompts:

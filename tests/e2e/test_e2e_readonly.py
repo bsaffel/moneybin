@@ -10,6 +10,7 @@ Covers three groups:
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -60,6 +61,19 @@ class TestNoDBCommands:
             "logs", "--prune", "--older-than", "30d", "--dry-run", env=e2e_env
         )
         result.assert_success()
+
+    def test_logs_bare_invocation_skips_wizard(self, tmp_path: Path) -> None:
+        """Bare ``moneybin logs`` surfaces a usage error, not the wizard.
+
+        Pointed at an empty MONEYBIN_HOME with no MONEYBIN_PROFILE: a normal
+        command would invoke ``ensure_default_profile()`` and prompt for a
+        profile name on stdin. The leaf's missing-arg check must fire first.
+        """
+        env = {"MONEYBIN_HOME": str(tmp_path)}
+        result = run_cli("logs", env=env)
+        assert result.exit_code == 2, result.output
+        assert "Missing argument" in result.stderr
+        assert "Welcome to MoneyBin" not in result.output
 
     def test_mcp_list_prompts(self) -> None:
         result = run_cli("mcp", "list-prompts")

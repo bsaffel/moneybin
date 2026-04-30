@@ -69,7 +69,7 @@ def _run_generate(
     )
 
     try:
-        original_profile: str | None = get_current_profile()
+        original_profile: str | None = get_current_profile(auto_resolve=False)
     except RuntimeError:
         # Synthetic commands skip main.py's set_current_profile (see
         # cli/main.py is_synthetic_cmd), so there may be nothing to restore.
@@ -201,7 +201,7 @@ def reset(
     target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
 
     try:
-        original_profile: str | None = get_current_profile()
+        original_profile: str | None = get_current_profile(auto_resolve=False)
     except RuntimeError:
         original_profile = None
     close_database()

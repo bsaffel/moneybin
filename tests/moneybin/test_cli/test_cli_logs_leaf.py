@@ -62,7 +62,7 @@ class TestLogsLeafShape:
         result = runner.invoke(logs_module.logs_command_app, [])
         assert result.exit_code == 2, result.output
         combined = (result.output + (result.stderr or "")).lower()
-        assert "missing argument" in combined or "usage" in combined
+        assert "missing argument" in combined
 
     @pytest.mark.unit
     def test_unknown_stream_errors(

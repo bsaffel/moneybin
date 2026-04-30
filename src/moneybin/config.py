@@ -7,6 +7,7 @@ type validation, and clear error handling.
 
 import math
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -619,6 +620,47 @@ _current_settings: MoneyBinSettings | None = None
 _current_profile: str | None = None
 
 
+# Lazy profile resolver. Registered by the CLI entry point so that profile
+# resolution (env → config.yaml → first-run wizard) happens only when a
+# command actually needs settings — not eagerly in the parent callback.
+# Without this, ``moneybin logs`` (a docker-style usage error) would fire
+# the first-run wizard before Click ever surfaces the missing-arg error.
+_profile_resolver: Callable[[], None] | None = None
+_resolver_in_progress: bool = False
+
+
+def register_profile_resolver(fn: Callable[[], None] | None) -> None:
+    """Register a callback that resolves and sets the current profile.
+
+    The callback is invoked from ``get_settings()`` / ``get_current_profile()``
+    when no profile is set yet. It must call ``set_current_profile(name)`` as
+    a side effect (and may also do CLI-level setup like observability).
+    Pass ``None`` to clear the registration (used by tests).
+    """
+    global _profile_resolver
+    _profile_resolver = fn
+
+
+def _maybe_resolve_profile() -> None:
+    """Invoke the registered resolver if no profile is set.
+
+    Guarded against re-entry so a resolver that itself reads settings
+    before calling ``set_current_profile()`` fails fast with the normal
+    "no profile set" error rather than recursing.
+    """
+    global _resolver_in_progress
+    if (
+        _current_profile is None
+        and _profile_resolver is not None
+        and not _resolver_in_progress
+    ):
+        _resolver_in_progress = True
+        try:
+            _profile_resolver()
+        finally:
+            _resolver_in_progress = False
+
+
 def get_settings() -> MoneyBinSettings:
     """Get the settings instance for the current user profile.
 
@@ -641,6 +683,8 @@ def get_settings() -> MoneyBinSettings:
     # Return cached settings if available
     if _current_settings is not None:
         return _current_settings
+
+    _maybe_resolve_profile()
 
     if _current_profile is None:
         raise RuntimeError(
@@ -693,15 +737,23 @@ def set_current_profile(profile: str) -> None:
         raise ValueError(f"Invalid profile name: {e}") from e
 
 
-def get_current_profile() -> str:
+def get_current_profile(*, auto_resolve: bool = True) -> str:
     """Get the current active user profile.
+
+    Args:
+        auto_resolve: When True (default), invoke the registered profile
+            resolver if no profile has been set yet. Profile-management
+            commands (``profile show``, ``profile set``) pass False to
+            avoid triggering the first-run wizard during recovery flows.
 
     Returns:
         str: The current profile name (e.g., 'alice', 'bob', 'default')
 
     Raises:
-        RuntimeError: If no profile has been set via set_current_profile().
+        RuntimeError: If no profile is set and the resolver could not set one.
     """
+    if auto_resolve:
+        _maybe_resolve_profile()
     if _current_profile is None:
         raise RuntimeError(
             "No profile set. Call set_current_profile() before get_current_profile()."

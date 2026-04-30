@@ -1,11 +1,12 @@
 """Profile management commands for MoneyBin CLI."""
 
-import json
 import logging
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
 from moneybin.services.profile_service import (
     ProfileExistsError,
     ProfileNotFoundError,
@@ -40,21 +41,15 @@ def profile_create(
 
 @app.command("list")
 def profile_list(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """List all profiles, marking the active one."""
     svc = ProfileService()
     profiles = svc.list()
 
     if output == "json":
-        typer.echo(json.dumps({"profiles": profiles}, indent=2, default=str))
+        emit_json("profiles", profiles)
         return
 
     if not profiles:
@@ -114,14 +109,8 @@ def profile_show(
         str | None,
         typer.Argument(help="Profile name (defaults to active profile)"),
     ] = None,
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — show has no info chatter; only data lines
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — show has no info chatter; only data lines
 ) -> None:
     """Show resolved settings for a profile."""
     svc = ProfileService()
@@ -129,13 +118,13 @@ def profile_show(
         from moneybin.config import get_current_profile
 
         try:
-            name = get_current_profile()
+            name = get_current_profile(auto_resolve=False)
         except RuntimeError:
             name = None
     try:
         info = svc.show(name)
         if output == "json":
-            typer.echo(json.dumps({"profile": info}, indent=2, default=str))
+            emit_json("profile", info)
             return
         marker = " (active)" if info["active"] else ""
         logger.info(f"Profile: {info['name']}{marker}")
@@ -172,7 +161,7 @@ def profile_set(
         from moneybin.config import get_current_profile
 
         try:
-            target = get_current_profile()
+            target = get_current_profile(auto_resolve=False)
         except RuntimeError:
             profiles = svc.list()
             active = next((p["name"] for p in profiles if p["active"]), None)

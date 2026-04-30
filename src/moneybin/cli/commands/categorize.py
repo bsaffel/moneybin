@@ -6,11 +6,12 @@ LLM-based auto-categorization is available through the MCP server.
 
 import json
 import logging
-from typing import Annotated, Literal, cast
+from typing import cast
 
 import typer
 
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json, handle_cli_errors
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +61,8 @@ def seed_cmd() -> None:
 
 @app.command("summary")
 def summary_cmd(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — summary has no informational chatter; only data
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
 ) -> None:
     """Show categorization coverage summary."""
     from moneybin.services.categorization_service import CategorizationService
@@ -76,7 +71,7 @@ def summary_cmd(
         stats = CategorizationService(db).categorization_stats()
 
     if output == "json":
-        typer.echo(json.dumps({"summary": stats}, indent=2, default=str))
+        emit_json("summary", stats)
         return
 
     total = stats["total"]
@@ -98,14 +93,8 @@ def summary_cmd(
 
 @app.command("list-rules")
 def list_rules_cmd(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Display all active categorization rules."""
     from moneybin.tables import CATEGORIZATION_RULES
@@ -134,7 +123,7 @@ def list_rules_cmd(
             }
             for r in rows
         ]
-        typer.echo(json.dumps({"rules": rules}, indent=2, default=str))
+        emit_json("rules", rules)
         return
 
     if not rows:
@@ -153,9 +142,7 @@ def list_rules_cmd(
 
 @auto_app.command("review")
 def auto_review_cmd(
-    output: str = typer.Option(
-        "table", "--output", help="Output format: table or json"
-    ),
+    output: OutputFormat = output_option,
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -164,8 +151,6 @@ def auto_review_cmd(
     ),
 ) -> None:
     """List pending auto-rule proposals with sample transactions and trigger counts."""
-    import json
-
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors() as db:
@@ -245,14 +230,8 @@ def auto_confirm_cmd(
 
 @auto_app.command("stats")
 def auto_stats_cmd(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — stats has no informational chatter; only data
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — stats has no informational chatter; only data
 ) -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
@@ -261,18 +240,13 @@ def auto_stats_cmd(
         stats = AutoRuleService(db).stats()
 
     if output == "json":
-        typer.echo(
-            json.dumps(
-                {
-                    "stats": {
-                        "active_auto_rules": stats.active_auto_rules,
-                        "pending_proposals": stats.pending_proposals,
-                        "transactions_categorized": stats.transactions_categorized,
-                    }
-                },
-                indent=2,
-                default=str,
-            )
+        emit_json(
+            "stats",
+            {
+                "active_auto_rules": stats.active_auto_rules,
+                "pending_proposals": stats.pending_proposals,
+                "transactions_categorized": stats.transactions_categorized,
+            },
         )
         return
 

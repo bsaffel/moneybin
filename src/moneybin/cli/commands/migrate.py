@@ -7,10 +7,11 @@ transparently.
 
 import json
 import logging
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.migrations import MigrationRunner, get_current_versions
 
@@ -58,14 +59,8 @@ def migrate_apply(
 
 @app.command("status")
 def migrate_status(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Show migration state — applied, pending, and drift warnings."""
     with handle_cli_errors() as db:

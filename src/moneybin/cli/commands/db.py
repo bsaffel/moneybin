@@ -13,9 +13,12 @@ import subprocess  # noqa: S404 — subprocess used with static args for DuckDB 
 import sys
 import tempfile
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import typer
+
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
 
 app = typer.Typer(help="Database management commands", no_args_is_help=True)
 key_app = typer.Typer(
@@ -291,6 +294,13 @@ def run_query(
     )
 
 
+def _render_db_info_header(payload: dict[str, object]) -> None:
+    logger.info(f"Database: {payload['database']}")
+    logger.info(f"  File size: {_format_bytes(cast(int, payload['file_size_bytes']))}")
+    logger.info("  Encryption: AES-256-GCM (always on)")
+    logger.info(f"  Key mode: {payload['key_mode']}")
+
+
 @app.command("info")
 def db_info(
     database: Path | None = typer.Option(
@@ -299,14 +309,8 @@ def db_info(
         "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — db info has no info-only chatter; only data lines
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — db info has no info-only chatter; only data lines
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
     from moneybin.config import get_settings
@@ -337,10 +341,7 @@ def db_info(
         if output == "json":
             typer.echo(json.dumps(payload, indent=2, default=str))
             return
-        logger.info(f"Database: {db_path}")
-        logger.info(f"  File size: {_format_bytes(db_path.stat().st_size)}")
-        logger.info("  Encryption: AES-256-GCM (always on)")
-        logger.info(f"  Key mode: {settings.database.encryption_key_mode}")
+        _render_db_info_header(payload)
         logger.info("  Lock state: locked (no key in keychain or env)")
         return
 
@@ -381,10 +382,7 @@ def db_info(
                 typer.echo(json.dumps(payload, indent=2, default=str))
                 return
 
-            logger.info(f"Database: {db_path}")
-            logger.info(f"  File size: {_format_bytes(db_path.stat().st_size)}")
-            logger.info("  Encryption: AES-256-GCM (always on)")
-            logger.info(f"  Key mode: {settings.database.encryption_key_mode}")
+            _render_db_info_header(payload)
             logger.info("  Lock state: unlocked")
             logger.info(f"  Tables: {len(table_rows)}")
             for row in table_rows:
@@ -625,14 +623,8 @@ def db_unlock() -> None:
 
 @key_app.command("show")
 def db_key_show(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Print the database encryption key."""
     from moneybin.secrets import SecretNotFoundError, SecretStore
@@ -648,7 +640,7 @@ def db_key_show(
         raise typer.Exit(1) from e
 
     if output == "json":
-        typer.echo(json.dumps({"encryption_key": key}, indent=2))
+        emit_json("encryption_key", key)
         return
 
     if not quiet:
@@ -750,7 +742,7 @@ def db_key_export(
     ] = None,
 ) -> None:
     """Export the encryption key to an encrypted envelope (not yet implemented)."""
-    del out  # reserved for future use
+    del out
     typer.echo(
         "db key export is not yet implemented. Tracked in docs/followups.md.",
         err=True,
@@ -766,7 +758,7 @@ def db_key_import(
     ],
 ) -> None:
     """Import an encryption key from an envelope (not yet implemented)."""
-    del envelope  # reserved for future use
+    del envelope
     typer.echo(
         "db key import is not yet implemented. Tracked in docs/followups.md.",
         err=True,
@@ -871,14 +863,8 @@ def db_ps(
     database: Path | None = typer.Option(
         None, "--database", "-d", help="Path to DuckDB database file"
     ),
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Show processes holding the MoneyBin database file open."""
     from moneybin.config import get_settings

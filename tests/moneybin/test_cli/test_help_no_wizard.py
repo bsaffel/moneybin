@@ -15,6 +15,7 @@ from moneybin.cli.main import app  # noqa: F401  # ensures module is imported
 # than the submodule (the CLI package re-exports `main` in its __init__).
 # Look the module up via sys.modules to monkeypatch its attributes.
 cli_main = sys.modules["moneybin.cli.main"]
+cli_utils = sys.modules["moneybin.cli.utils"]
 
 
 @pytest.fixture()
@@ -59,7 +60,7 @@ def test_help_does_not_trigger_first_run_wizard(
     # the test from the wizard's prompt copy, so reword-the-prompt won't
     # silently break the regression net.
     wizard_mock = MagicMock(name="ensure_default_profile")
-    monkeypatch.setattr(cli_main, "ensure_default_profile", wizard_mock)
+    monkeypatch.setattr(cli_utils, "ensure_default_profile", wizard_mock)
 
     result = runner.invoke(app, [*argv, "--help"])
 

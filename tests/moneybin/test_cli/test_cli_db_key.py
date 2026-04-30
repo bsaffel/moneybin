@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -28,15 +30,11 @@ class TestDbKeySubgroup:
     @pytest.mark.unit
     @pytest.mark.parametrize("action", ["export", "import", "verify"])
     def test_stub_actions_exit_with_not_implemented(
-        self, runner: CliRunner, action: str, tmp_path: object
+        self, runner: CliRunner, action: str, tmp_path: Path
     ) -> None:
         """Stub sub-commands exit 1 with a "not yet implemented" message."""
-        # `import` requires a positional arg; pass a dummy path under tmp_path.
         argv = ["key", action]
         if action == "import":
-            from pathlib import Path
-
-            assert isinstance(tmp_path, Path)
             argv.append(str(tmp_path / "envelope.bin"))
         result = runner.invoke(db_app, argv)
         assert result.exit_code == 1

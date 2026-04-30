@@ -2,9 +2,10 @@
 
 import json
 import logging
-from typing import Annotated, Literal
 
 import typer
+
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 
 app = typer.Typer(
     help="Sync financial data from external services",
@@ -65,14 +66,8 @@ def sync_pull(
 
 @app.command("status")
 def sync_status(
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — placeholder; nothing to suppress yet
-        bool,
-        typer.Option("-q", "--quiet", help="Suppress informational output"),
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — placeholder; nothing to suppress yet
 ) -> None:
     """Show connected institutions and sync health."""
     if output == "json":

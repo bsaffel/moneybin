@@ -43,7 +43,7 @@ class TestCLIProfileHandling:
         mocker.patch.dict(os.environ, {})
         os.environ.pop("MONEYBIN_PROFILE", None)
 
-        mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+        mocker.patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
 
         with _create_profile("test"):
             mocker.patch("moneybin.cli.commands.logs.get_settings")
@@ -171,7 +171,7 @@ class TestProfileCommandsResolveProfileButSkipWizard:
         mocker.patch.dict(os.environ, {})
         os.environ.pop("MONEYBIN_PROFILE", None)
 
-        mock_ensure = mocker.patch("moneybin.cli.main.ensure_default_profile")
+        mock_ensure = mocker.patch("moneybin.cli.utils.ensure_default_profile")
 
         result = runner.invoke(app, ["profile", "list"])
 

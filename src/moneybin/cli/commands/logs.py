@@ -1,8 +1,7 @@
 """Log management command for MoneyBin CLI.
 
 Single leaf command for viewing, pruning, and locating log files for the
-active profile. Registered directly on the root app — see
-`moneybin.cli.main`.
+active profile.
 """
 
 import json
@@ -11,10 +10,11 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.config import get_settings
 from moneybin.utils.parsing import parse_duration
 
@@ -34,7 +34,7 @@ _LEVEL_PRIORITY = {
     "CRITICAL": 4,
 }
 
-_VALID_STREAMS = {"cli", "mcp", "sqlmesh"}
+_VALID_STREAMS = ("cli", "mcp", "sqlmesh")
 
 
 class _LogEntry:
@@ -223,7 +223,7 @@ def _do_view(
     since: str | None,
     until: str | None,
     grep: str | None,
-    output: Literal["text", "json"],
+    output: OutputFormat,
     quiet: bool,
 ) -> None:
     if level and level.upper() not in _LEVEL_PRIORITY:
@@ -349,13 +349,8 @@ def logs_command(
         str | None,
         typer.Option("--grep", help="Regex pattern to filter log messages"),
     ] = None,
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
-    ] = "text",
-    quiet: Annotated[
-        bool, typer.Option("-q", "--quiet", help="Suppress informational output")
-    ] = False,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
     print_path: Annotated[
         bool,
         typer.Option(
@@ -383,6 +378,19 @@ def logs_command(
     ] = False,
 ) -> None:
     """View, prune, or locate MoneyBin log files for the active profile."""
+    # Argument validation runs before any profile-dependent work so a bare
+    # `moneybin logs` exits with a clean usage error (docker/kubectl style)
+    # instead of triggering the first-run wizard or hitting profile-load
+    # errors. Pairs with `_logs_bare_invocation` in cli/main.py, which keeps
+    # the parent callback inert in this case.
+    if stream is None and not print_path and not prune:
+        typer.echo(
+            "Error: Missing argument 'STREAM'. Pick one of: "
+            f"{', '.join(_VALID_STREAMS)}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     settings = get_settings()
     log_dir = settings.logging.log_file_path.parent
 
@@ -397,18 +405,9 @@ def logs_command(
         _do_prune(log_dir, older_than, dry_run=dry_run, quiet=quiet)
         return
 
-    if stream is None:
-        typer.echo(
-            "Error: Missing argument 'STREAM'. Pick one of: "
-            f"{', '.join(sorted(_VALID_STREAMS))}",
-            err=True,
-        )
-        raise typer.Exit(2)
-
-    if stream.lower() not in _VALID_STREAMS:
+    if stream is None or stream.lower() not in _VALID_STREAMS:
         logger.error(
-            f"❌ Unknown stream '{stream}'. "
-            f"Choose from: {', '.join(sorted(_VALID_STREAMS))}"
+            f"❌ Unknown stream '{stream}'. Choose from: {', '.join(_VALID_STREAMS)}"
         )
         raise typer.Exit(2)
 
@@ -426,7 +425,6 @@ def logs_command(
     )
 
 
-# Single-command Typer wrapper used by main.py registration and CliRunner tests.
 logs_command_app = typer.Typer(
     name="logs",
     help="View, prune, or locate MoneyBin log files for the active profile.",

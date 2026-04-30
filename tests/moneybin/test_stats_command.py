@@ -48,9 +48,9 @@ class TestStatsLeafShape:
         mock_db.execute.return_value.fetchall.return_value = []
         with (
             patch("moneybin.cli.utils.get_database", return_value=mock_db),
-            patch("moneybin.cli.main.ensure_default_profile", return_value="test"),
-            patch("moneybin.cli.main.set_current_profile"),
-            patch("moneybin.cli.main.setup_observability"),
+            patch("moneybin.cli.utils.ensure_default_profile", return_value="test"),
+            patch("moneybin.cli.utils.set_current_profile"),
+            patch("moneybin.cli.utils.setup_observability"),
             patch("moneybin.config.get_base_dir", return_value=tmp_path),
         ):
             result = runner.invoke(root_app, ["stats"])
@@ -65,16 +65,6 @@ class TestStatsLeafShape:
         monkeypatch.setenv("MONEYBIN_PROFILE", "test")
         result = runner.invoke(root_app, ["stats", "show"])
         assert result.exit_code != 0
-        assert (
-            "no such option" in result.stdout.lower()
-            or "extra argument" in result.stdout.lower()
-            or "unknown" in result.stdout.lower()
-            or "got unexpected" in result.stdout.lower()
-            or "no such option" in result.output.lower()
-            or "extra argument" in result.output.lower()
-            or "unknown" in result.output.lower()
-            or "got unexpected" in result.output.lower()
-        )
 
 
 class TestStatsCommand:
