@@ -71,6 +71,32 @@ async def test_unknown_domain_returns_error_envelope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_per_session_discover_isolated() -> None:
+    """Two clients connected to the same server have independent visibility.
+
+    One client discovering 'categorize' must not affect the other client's
+    tool list — fastmcp Client sessions are isolated by construction; this
+    test guards against regression.
+    """
+    from moneybin.mcp.server import mcp
+
+    async with Client(mcp) as client_a, Client(mcp) as client_b:
+        before_a = {t.name for t in await client_a.list_tools()}
+        assert "categorize.bulk" not in before_a
+
+        await client_a.call_tool("moneybin.discover", {"domain": "categorize"})
+
+        after_a = {t.name for t in await client_a.list_tools()}
+        visible_b = {t.name for t in await client_b.list_tools()}
+
+        assert "categorize.bulk" in after_a
+        assert "categorize.bulk" not in visible_b, (
+            "Client B's tool visibility leaked from Client A's discover call — "
+            "session isolation is broken."
+        )
+
+
+@pytest.mark.asyncio
 async def test_hidden_tool_is_uncallable_via_tools_call() -> None:
     """Hidden tools must be uncallable.
 
