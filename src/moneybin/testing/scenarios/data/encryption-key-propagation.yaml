@@ -1,0 +1,31 @@
+scenario: encryption-key-propagation
+description: "Subprocess transform must open the encrypted DB and produce expected rows"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+# The mutation lives in the pipeline; assertions stay read-only. If
+# `transform_via_subprocess` succeeds and the rows below are present, the
+# child process opened the encrypted DB with the propagated key — no
+# special encryption-propagation assertion is needed.
+pipeline:
+  - generate
+  - transform_via_subprocess
+
+assertions:
+  - name: subprocess_wrote_to_encrypted_db
+    fn: assert_min_rows
+    args:
+      table_min_rows:
+        core.fct_transactions: 100
+        core.dim_accounts: 2
+  - name: no_unencrypted_artifacts
+    fn: assert_no_unencrypted_db_files
+    args:
+      tmpdir: from_runtime
+
+gates:
+  required_assertions: all

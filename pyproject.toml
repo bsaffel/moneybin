@@ -67,8 +67,16 @@ where = ["src"]
 include = ["moneybin*"]
 
 [tool.setuptools.package-data]
-# Include SQLMesh project files in distribution
-moneybin = ["../../sqlmesh/config.yaml", "../../sqlmesh/models/**/*.sql"]
+# Include SQLMesh project files and shipped scenario assets (YAML scenarios +
+# their fixtures) so wheel installs can run `moneybin synthetic verify` without
+# a source checkout.
+moneybin = [
+    "../../sqlmesh/config.yaml",
+    "../../sqlmesh/models/**/*.sql",
+    "testing/scenarios/data/*.yaml",
+    "testing/scenarios/data/fixtures/**/*.csv",
+    "testing/scenarios/data/fixtures/**/*.yaml",
+]
 
 [project.scripts]
 # Unified CLI entry point using Typer

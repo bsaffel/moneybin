@@ -45,6 +45,8 @@ data/
 !src/moneybin/data/
 # Synthetic test data (YAML merchant catalogs + persona definitions, not financial data)
 !src/moneybin/testing/synthetic/data/
+# Scenario YAML definitions (declarative test scenarios, not financial data)
+!src/moneybin/testing/scenarios/data/
 
 # Database files
 *.duckdb

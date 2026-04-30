@@ -22,6 +22,20 @@ _TRANSFER_KEYWORDS = frozenset({
     "ACH",
     "DIRECT DEP",
     "WIRE",
+    # Credit-card auto-pay and bill-pay vocabulary — the second-most-common
+    # transfer pattern (asset → liability). Issuers (Citi, Chase, Amex,
+    # Discover) emit these descriptions on the debit side; the credit side
+    # often shows "PAYMENT THANK YOU" or the same string echoed.
+    "ONLINE PAYMENT",
+    "AUTOPAY",
+    "AUTO PAY",
+    "AUTOMATIC PAYMENT",
+    "BILL PAY",
+    "BILLPAY",
+    "CC PAYMENT",
+    "CARD PAYMENT",
+    "CREDIT CARD PAYMENT",
+    "PAYMENT THANK YOU",
     # Compound directional phrases — matched atomically (longest-first) so
     # sub-phrases like "TRANSFER" or "FROM CHK" don't double-count.
     "ONLINE TRANSFER TO SAV",

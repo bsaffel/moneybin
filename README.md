@@ -208,6 +208,18 @@ moneybin synthetic generate --persona basic --profile test-data
 - **Ground-truth labels** — every transaction has a known-correct category and transfer pair, enabling automated accuracy testing.
 - **Deterministic** — same persona + same seed = same data every time.
 
+### Scenario Verification
+
+Whole-pipeline correctness checks against synthetic personas and hand-labeled fixtures.
+
+```bash
+moneybin synthetic verify --list                       # show shipped scenarios
+moneybin synthetic verify --scenario basic-full-pipeline
+moneybin synthetic verify --all --output json          # CI mode
+```
+
+Each scenario boots an empty encrypted DuckDB, runs the configured pipeline (`generate → transform → match → categorize`), and reports three correctness signals: **assertions** (invariants like FK integrity, sign convention, balanced transfers), **expectations** (per-record claims on labeled fixtures), and **evaluations** (aggregate scores like categorization accuracy and transfer-detection F1). The `.github/workflows/scenarios.yml` job runs the full suite on every PR.
+
 ### CLI
 
 Domain commands at the top level for fast access:
@@ -288,6 +300,7 @@ Legend: ✅ shipped | 📐 designed (spec written) | 🗓️ planned
 | Database migration system | ✅ |
 | Observability (metrics, structured logging) | ✅ |
 | Synthetic test data generator | ✅ |
+| Whole-pipeline scenario runner (`synthetic verify`) | ✅ |
 | Privacy tiers & consent model | 📐 |
 | Export (CSV, Excel, Google Sheets) | 🗓️ |
 

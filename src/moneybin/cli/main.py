@@ -84,6 +84,13 @@ def main_callback(
     # to point at an existing directory (e.g. `profile create alice`).
     is_profile_cmd = ctx.invoked_subcommand == "profile"
 
+    # Synthetic commands manage their own profiles: `generate`/`reset` write
+    # to persona profiles (alice/bob/charlie) and call set_current_profile()
+    # themselves; `verify` provisions an ephemeral scenario profile in a
+    # tempdir. None of them should ever touch the user's default profile or
+    # trigger the first-run wizard.
+    is_synthetic_cmd = ctx.invoked_subcommand == "synthetic"
+
     # Resolve env var manually (instead of via Typer's envvar=) so we can
     # cleanly distinguish flag-provided vs env-provided values without
     # inspecting raw argv.
@@ -94,7 +101,7 @@ def main_callback(
         profile_name = env_profile
         profile_source = "MONEYBIN_PROFILE env var"
 
-    if profile_name is None and not is_profile_cmd:
+    if profile_name is None and not is_profile_cmd and not is_synthetic_cmd:
         # Non-profile commands need a profile. ensure_default_profile()
         # consults config.yaml first and prompts only on true first run.
         # Profile commands (list/show/set/create/delete) intentionally skip
@@ -106,7 +113,7 @@ def main_callback(
         except KeyboardInterrupt:
             raise typer.Abort() from None
 
-    if profile_name is not None:
+    if profile_name is not None and not is_synthetic_cmd:
         try:
             set_current_profile(profile_name)
         except ValueError as e:
@@ -132,9 +139,9 @@ def main_callback(
     setup_observability(
         stream="cli",
         verbose=verbose,
-        profile=None if is_profile_cmd else profile_name,
+        profile=None if is_profile_cmd or is_synthetic_cmd else profile_name,
     )
-    if profile_name is not None and not is_profile_cmd:
+    if profile_name is not None and not is_profile_cmd and not is_synthetic_cmd:
         if profile_source:
             logger.info(f"Using profile: {profile_name} (from {profile_source})")
         else:
