@@ -4,6 +4,7 @@ Covers merchant normalization, pattern matching, rule engine, merchant
 matching, prompt construction, and response parsing.
 """
 
+from collections import Counter
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -120,20 +121,26 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 def _load_normalize_cases(
     path: Path | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Load normalize_description golden cases from YAML.
 
-    Raises ValueError if any `id` is duplicated to prevent silent shadowing
-    when contributors append cases.
+    Validates that each case has string `raw` and `expected` fields, and that
+    `id` values are unique to prevent silent shadowing when contributors append
+    cases.
     """
     if path is None:
         path = _FIXTURES_DIR / "normalize_description_cases.yaml"
     raw = yaml.safe_load(path.read_text())
     cases = raw["cases"]
-    ids = [c["id"] for c in cases]
-    duplicates = {i for i in ids if ids.count(i) > 1}
+    counts = Counter(c["id"] for c in cases)
+    duplicates = sorted(i for i, n in counts.items() if n > 1)
     if duplicates:
-        raise ValueError(f"Duplicate case ids: {sorted(duplicates)}")
+        raise ValueError(f"Duplicate case ids: {duplicates}")
+    for c in cases:
+        if not isinstance(c.get("raw"), str) or not isinstance(c.get("expected"), str):
+            raise ValueError(
+                f"Case {c.get('id')!r}: 'raw' and 'expected' must be strings"
+            )
     return cases
 
 
@@ -146,7 +153,7 @@ class TestNormalizeDescriptionGoldens:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("case", _load_normalize_cases(), ids=lambda c: c["id"])
-    def test_case(self, case: dict[str, str]) -> None:
+    def test_case(self, case: dict[str, Any]) -> None:
         assert normalize_description(case["raw"]) == case["expected"]
 
     @pytest.mark.unit
