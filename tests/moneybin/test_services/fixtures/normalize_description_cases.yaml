@@ -1,0 +1,74 @@
+# Golden cases for moneybin.services._text.normalize_description.
+#
+# Add a case here when you encounter a real transaction description that
+# should normalize a specific way. Each case is run through
+# normalize_description(raw) and asserted equal to expected.
+#
+# If a new case fails, fix the regexes in src/moneybin/services/_text.py
+# until it passes. Do NOT relax `expected` to match the current output.
+#
+# Schema:
+#   id       (str, required, unique) — pytest parametrize id
+#   raw      (str, required)         — input passed verbatim
+#   expected (str, required)         — exact expected output
+#   note     (str, optional)         — reviewer-facing context
+cases:
+  - id: square-prefix-and-store-id
+    raw: "SQ *STARBUCKS #1234"
+    expected: "STARBUCKS"
+    note: "Square POS prefix + trailing store id"
+
+  - id: toast-prefix
+    raw: "TST*PIZZA PLACE"
+    expected: "PIZZA PLACE"
+
+  - id: paypal-short-prefix
+    raw: "PP*SPOTIFY"
+    expected: "SPOTIFY"
+
+  - id: paypal-long-prefix
+    raw: "PAYPAL *NETFLIX"
+    expected: "NETFLIX"
+
+  - id: venmo-prefix
+    raw: "VENMO *JOHN DOE"
+    expected: "JOHN DOE"
+
+  - id: cke-prefix-with-trailing-id
+    raw: "CKE*CHIPOTLE 02345"
+    expected: "CHIPOTLE"
+
+  - id: trailing-city-state
+    raw: "STARBUCKS SEATTLE WA"
+    expected: "STARBUCKS"
+
+  - id: trailing-store-id
+    raw: "TARGET 00012345"
+    expected: "TARGET"
+
+  - id: trailing-state-zip-leaves-city-token
+    raw: "WHOLEFDS MKT AUSTIN TX 78701"
+    expected: "WHOLEFDS MKT AUSTIN"
+    note: "Only ST+ZIP is stripped; trailing city token is preserved (safer for merchant matching than guessing which token is a city)"
+
+  - id: merchant-token-before-state-zip-not-stripped-as-city
+    raw: "SHELL GAS NY 10001"
+    expected: "SHELL GAS"
+    note: "ST+ZIP stripped; preceding merchant tokens left intact"
+
+  - id: combined-prefix-store-id-city-state
+    raw: "SQ *STARBUCKS #1234 SEATTLE WA"
+    expected: "STARBUCKS"
+    note: "Prefix, store id, and city+state all present"
+
+  - id: collapses-multiple-spaces
+    raw: "SQ  *  COFFEE   SHOP"
+    expected: "COFFEE SHOP"
+
+  - id: empty-string
+    raw: ""
+    expected: ""
+
+  - id: whitespace-only
+    raw: "   "
+    expected: ""
