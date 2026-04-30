@@ -210,6 +210,100 @@ def auto_stats_cmd() -> None:
     logger.info(f"  Transactions auto-ruled:  {stats.transactions_categorized}")
 
 
+@app.command("bulk")
+def bulk_cmd(
+    stdin_sentinel: str | None = typer.Argument(
+        None,
+        help="Pass '-' to read JSON from stdin.",
+    ),
+    input_path: str | None = typer.Option(
+        None, "--input", help="Path to a JSON file with categorization items."
+    ),
+    output: str = typer.Option(
+        "table", "--output", help="Output format: table or json"
+    ),
+) -> None:
+    """Bulk-assign categories to transactions from a JSON array.
+
+    Read from a file:
+
+      moneybin categorize bulk --input cats.json
+
+    Or from stdin:
+
+      cat cats.json | moneybin categorize bulk -
+
+    Per-item validation: failures are reported in the result without aborting
+    the batch. Exit code is 1 if any item failed.
+    """
+    import json
+    import sys
+
+    from moneybin.services.categorization_service import (
+        CategorizationService,
+        _validate_items,  # pyright: ignore[reportPrivateUsage]  # boundary helper designed for CLI/MCP import
+    )
+
+    use_stdin = stdin_sentinel == "-"
+
+    if input_path is not None and use_stdin:
+        typer.echo(
+            "Provide either --input <path> or '-' to read from stdin (not both).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if input_path is None and not use_stdin:
+        typer.echo(
+            "Provide either --input <path> or '-' to read JSON from stdin.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        if input_path is not None:
+            with open(input_path, encoding="utf-8") as f:  # noqa: PTH123
+                raw = json.load(f)
+        else:
+            raw = json.load(sys.stdin)
+    except FileNotFoundError as e:
+        typer.echo(f"❌ File not found: {input_path}", err=True)
+        raise typer.Exit(2) from e
+    except json.JSONDecodeError as e:
+        typer.echo(f"❌ Invalid JSON: {e}", err=True)
+        raise typer.Exit(1) from e
+
+    try:
+        items, parse_errors = _validate_items(raw)
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
+
+    with handle_cli_errors() as db:
+        result = CategorizationService(db).bulk_categorize(items)
+
+    # Merge parse errors into the service result so the envelope surfaces all failures.
+    result.error_details = parse_errors + result.error_details
+    result.errors += len(parse_errors)
+    result.skipped = max(0, result.skipped - len(parse_errors))
+
+    input_count = len(items) + len(parse_errors)
+
+    if output == "json":
+        typer.echo(json.dumps(result.to_envelope(input_count).to_dict()))
+    else:
+        logger.info(
+            f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
+        )
+        if result.merchants_created:
+            logger.info(f"   Created {result.merchants_created} merchant mappings")
+        for err in result.error_details:
+            logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
+
+    if result.errors > 0:
+        raise typer.Exit(1)
+
+
 @app.command("auto-rules")
 def auto_rules_cmd(
     limit: int | None = typer.Option(
