@@ -118,15 +118,17 @@ def db_with_transactions(db: Database) -> Database:
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
-def _load_normalize_cases() -> list[dict[str, str]]:
+def _load_normalize_cases(
+    path: Path | None = None,
+) -> list[dict[str, str]]:
     """Load normalize_description golden cases from YAML.
 
     Raises ValueError if any `id` is duplicated to prevent silent shadowing
     when contributors append cases.
     """
-    raw = yaml.safe_load(
-        (_FIXTURES_DIR / "normalize_description_cases.yaml").read_text()
-    )
+    if path is None:
+        path = _FIXTURES_DIR / "normalize_description_cases.yaml"
+    raw = yaml.safe_load(path.read_text())
     cases = raw["cases"]
     ids = [c["id"] for c in cases]
     duplicates = {i for i in ids if ids.count(i) > 1}
@@ -146,6 +148,19 @@ class TestNormalizeDescriptionGoldens:
     @pytest.mark.parametrize("case", _load_normalize_cases(), ids=lambda c: c["id"])
     def test_case(self, case: dict[str, str]) -> None:
         assert normalize_description(case["raw"]) == case["expected"]
+
+    @pytest.mark.unit
+    def test_loader_rejects_duplicate_ids(self, tmp_path: Path) -> None:
+        """The loader must surface duplicate ids loudly at collection time."""
+        bad_yaml = tmp_path / "dup.yaml"
+        bad_yaml.write_text(
+            "cases:\n"
+            '  - {id: a, raw: "x", expected: "x"}\n'
+            '  - {id: a, raw: "y", expected: "y"}\n'
+        )
+
+        with pytest.raises(ValueError, match="Duplicate case ids"):
+            _load_normalize_cases(bad_yaml)
 
 
 # ---------------------------------------------------------------------------
