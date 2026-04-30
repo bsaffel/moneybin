@@ -13,6 +13,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.tables import (
+    FCT_TRANSACTION_PROVENANCE,
+    FCT_TRANSACTIONS,
+    GROUND_TRUTH,
+    MATCH_DECISIONS,
+)
 from moneybin.testing.scenarios.loader import ExpectationSpec
 
 
@@ -82,8 +88,8 @@ def _verify_match_decision(db: Database, spec: ExpectationSpec) -> ExpectationRe
           p.source_type,
           p.transaction_id,
           md.match_type
-        FROM meta.fct_transaction_provenance AS p
-        LEFT JOIN app.match_decisions AS md ON md.match_id = p.match_id
+        FROM {FCT_TRANSACTION_PROVENANCE.full_name} AS p
+        LEFT JOIN {MATCH_DECISIONS.full_name} AS md ON md.match_id = p.match_id
         WHERE (p.source_transaction_id, p.source_type) IN (VALUES {placeholders})
     """  # noqa: S608 — placeholders is a typed-list count, values are bound via ?
     rows = db.execute(sql, params).fetchall()
@@ -123,7 +129,8 @@ def _verify_match_decision(db: Database, spec: ExpectationSpec) -> ExpectationRe
 
     gold_id = gold_ids[0]
     confidence_row = db.execute(
-        "SELECT match_confidence FROM core.fct_transactions WHERE transaction_id = ?",
+        f"SELECT match_confidence FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608 — TableRef constant, no user input
+        "WHERE transaction_id = ?",
         [gold_id],
     ).fetchone()
     actual_confidence = (
@@ -159,12 +166,14 @@ def _verify_gold_record_count(db: Database, spec: ExpectationSpec) -> Expectatio
         placeholders = ",".join(["?"] * len(fixture_ids))
         sql = f"""
             SELECT COUNT(DISTINCT transaction_id)
-            FROM meta.fct_transaction_provenance
+            FROM {FCT_TRANSACTION_PROVENANCE.full_name}
             WHERE source_transaction_id IN ({placeholders})
         """  # noqa: S608 — placeholders count derived from typed list; values bound
         row = db.execute(sql, fixture_ids).fetchone()
     else:
-        row = db.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()
+        row = db.execute(
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+        ).fetchone()
     actual = int(row[0]) if row is not None else 0
     return ExpectationResult(
         name=spec.description or "gold_record_count",
@@ -183,8 +192,8 @@ def _verify_category_for_transaction(
     expected_category = body["expected_category"]
     expected_source = body.get("expected_categorized_by")
     row = db.execute(
-        "SELECT category, categorized_by "
-        "FROM core.fct_transactions "
+        "SELECT category, categorized_by "  # noqa: S608 — TableRef constant
+        f"FROM {FCT_TRANSACTIONS.full_name} "
         "WHERE transaction_id = ?",
         [txn_id],
     ).fetchone()
@@ -223,8 +232,8 @@ def _verify_provenance_for_transaction(
     )
     rows = sorted(
         db.execute(
-            "SELECT source_transaction_id, source_type "
-            "FROM meta.fct_transaction_provenance "
+            "SELECT source_transaction_id, source_type "  # noqa: S608 — TableRef constant
+            f"FROM {FCT_TRANSACTION_PROVENANCE.full_name} "
             "WHERE transaction_id = ?",
             [txn_id],
         ).fetchall()
@@ -252,10 +261,10 @@ def _verify_transfers_match_ground_truth(
     all-or-nothing pass/fail signal — useful when you want a regression
     that drops even one labeled pair to fail the scenario.
     """
-    rows = db.execute("""
+    rows = db.execute(f"""
         WITH gold_pairs AS (
             SELECT transfer_pair_id, source_transaction_id
-            FROM synthetic.ground_truth
+            FROM {GROUND_TRUTH.full_name}
             WHERE transfer_pair_id IS NOT NULL
         )
         SELECT
@@ -266,9 +275,9 @@ def _verify_transfers_match_ground_truth(
         FROM gold_pairs g
         LEFT JOIN prep.int_transactions__matched m
           ON m.source_transaction_id = g.source_transaction_id
-        LEFT JOIN core.fct_transactions t
+        LEFT JOIN {FCT_TRANSACTIONS.full_name} t
           ON t.transaction_id = m.transaction_id
-    """).fetchall()
+    """).fetchall()  # noqa: S608 — TableRef constants
 
     pairs: dict[Any, list[tuple[Any, Any]]] = {}
     for gold_pair_id, source_id, _txn_id, predicted_pair in rows:

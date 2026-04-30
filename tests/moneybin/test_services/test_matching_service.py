@@ -21,6 +21,17 @@ def test_run_delegates_to_transaction_matcher() -> None:
     assert result is fake_result
 
 
+def test_auto_accept_transfers_passed_through() -> None:
+    """auto_accept_transfers=True must reach TransactionMatcher.run()."""
+    db = MagicMock()
+    with (
+        patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
+        patch("moneybin.services.matching_service.seed_source_priority"),
+    ):
+        MatchingService(db).run(auto_accept_transfers=True)
+    matcher_cls.return_value.run.assert_called_once_with(auto_accept_transfers=True)
+
+
 def test_uses_default_settings_when_omitted() -> None:
     """When settings is omitted, MatchingService should use get_settings().matching."""
     db = MagicMock()

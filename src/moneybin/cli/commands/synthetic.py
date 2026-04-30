@@ -301,6 +301,9 @@ def verify_cmd(
                 typer.echo(f"{s.name:40} {s.description}")
         return
 
+    if scenario and run_all:
+        logger.error("❌ --scenario and --all are mutually exclusive")
+        raise typer.Exit(2)
     if scenario:
         single = load_shipped_scenario(scenario)
         if single is None:
@@ -309,13 +312,18 @@ def verify_cmd(
         targets = [single]
     elif run_all:
         targets = list_shipped_scenarios()
+        if not targets:
+            logger.error("❌ no shipped scenarios found")
+            raise typer.Exit(2)
     else:
         logger.error("❌ specify --list, --scenario=NAME, or --all")
         raise typer.Exit(2)
 
     failures = 0
+    ran = 0
     total = len(targets)
     for s in targets:
+        ran += 1
         env = run_scenario(s, keep_tmpdir=keep_tmpdir)
         data = cast("dict[str, Any]", env.data)
         passed = data["passed"]
@@ -345,7 +353,7 @@ def verify_cmd(
                 break
 
     if output != OutputFormat.JSON:
-        passed_count = total - failures
+        passed_count = ran - failures
         typer.echo(f"\n{passed_count}/{total} scenarios passed")
 
     raise typer.Exit(1 if failures else 0)

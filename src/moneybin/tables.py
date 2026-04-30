@@ -57,5 +57,8 @@ SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 
+# -- Meta schema (cross-source provenance + lineage) --
+FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")
+
 # -- Synthetic tables (created on demand by the generator) --
 GROUND_TRUTH = TableRef("synthetic", "ground_truth")

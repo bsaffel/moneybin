@@ -122,7 +122,19 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
             assertions = [
                 _run_assertion(a, db, tmpdir=tmp) for a in scenario.assertions
             ]
-            expectations = verify_expectations(db, scenario.expectations)
+            try:
+                expectations = verify_expectations(db, scenario.expectations)
+            except Exception as exc:  # noqa: BLE001 — surface as halted envelope
+                logger.exception(f"scenario {scenario.name} expectations crashed")
+                return _build_envelope(
+                    scenario=scenario,
+                    started=started,
+                    tmpdir=tmp,
+                    assertions=[preflight, *assertions],
+                    expectations=[],
+                    evaluations=[],
+                    halted=f"expectations crashed: {exc}",
+                )
             evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
 
             return _build_envelope(

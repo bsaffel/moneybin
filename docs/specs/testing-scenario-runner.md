@@ -579,7 +579,7 @@ Per `.claude/rules/cli.md`, every flag is sufficient on its own. No interactive 
 
 ## Representative scenarios for v1
 
-Seven scenarios ship with the runner. Each maps to one or more failure modes from §"Concrete failure modes."
+Six scenarios ship with the runner. Each maps to one or more failure modes from §"Concrete failure modes." (`categorization-priority-hierarchy` is deferred — see `docs/followups.md`.)
 
 | # | Scenario | Persona | Seed | Catches | Mode |
 |---|---|---|---|---|---|
@@ -724,7 +724,7 @@ If the categorization plan ships first, the runner uses the class from day one. 
 | `src/moneybin/testing/scenarios/runner.py` | Orchestrator |
 | `src/moneybin/testing/scenarios/steps.py` | Pipeline step registry |
 | `src/moneybin/testing/scenarios/expectations.py` | Expectation kinds and verifiers |
-| `src/moneybin/testing/scenarios/data/*.yaml` | Seven shipped scenarios |
+| `src/moneybin/testing/scenarios/data/*.yaml` | Six shipped scenarios |
 | `tests/fixtures/dedup/chase_amazon_overlap.csv` | Hand-labeled overlap fixture |
 | `tests/fixtures/dedup/chase_amazon_overlap.expectations.yaml` | Fixture metadata (schema defined in this spec; see §"Fixture file format") |
 | `.github/workflows/scenarios.yml` | Parallel CI workflow running `moneybin synthetic verify --all` |
@@ -796,4 +796,4 @@ The five questions raised in the draft were resolved during the 2026-04-26 ready
 2. **`expectations:` block placement** — Kept as a sibling of `assertions:` and `evaluations:`. The three-way framing (aggregate invariants / aggregate quality / pinned facts) is a load-bearing conceptual model. Folding expectations into assertions would require a polymorphic `AssertionResult` and lose the distinction between "this table has no orphans" and "transaction X matched transaction Y."
 3. **Fixture expectation file format** — This spec owns the contract. Format is **YAML** (`.expectations.yaml`), with a minimum-viable schema defined in §"Fixture file format." Rationale: hand-authored, comments useful, matches existing `testing/synthetic/personas/*.yaml` convention, and these files are the planned contribution unit for community-submitted bug-report fixtures (anonymized export + expected behavior in a reviewable PR-friendly format). `testing-csv-fixtures.md` owns fixture content/curation; this spec owns the metadata schema.
 4. **CI runtime budget** — Accepted at 2–5 min for v1. Scenarios run as a separate parallel `.github/workflows/scenarios.yml` workflow alongside `ci.yml`, so total PR feedback time is `max(ci, scenarios)` rather than additive. `--all` prints per-scenario duration summary at the end so drift is visible without enforcement. Promote to a hard gate when the suite outgrows the budget. See §"CI gating."
-5. **Scenario authoring discoverability** — Deferred. `--list` is sufficient for v1's seven scenarios. Revisit past ~30 scenarios.
+5. **Scenario authoring discoverability** — Deferred. `--list` is sufficient for v1's six scenarios. Revisit past ~30 scenarios.

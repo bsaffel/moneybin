@@ -11,11 +11,17 @@ foreign-key target they need.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import polars as pl
 
 from moneybin.database import Database
+from moneybin.tables import (
+    OFX_ACCOUNTS,
+    OFX_TRANSACTIONS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
+)
 from moneybin.testing.scenarios.loader import REPO_ROOT, FixtureSpec
 
 
@@ -30,13 +36,15 @@ def load_fixture_into_db(db: Database, spec: FixtureSpec) -> None:
         enriched = _enrich_for_tabular_raw(
             df, account=spec.account, source_file=source_file
         )
-        db.ingest_dataframe("raw.tabular_transactions", enriched, on_conflict="insert")
+        db.ingest_dataframe(
+            TABULAR_TRANSACTIONS.full_name, enriched, on_conflict="insert"
+        )
     elif spec.source_type == "ofx":
         _seed_ofx_account(db, spec.account, source_file)
         enriched = _enrich_for_ofx_raw(
             df, account=spec.account, source_file=source_file
         )
-        db.ingest_dataframe("raw.ofx_transactions", enriched, on_conflict="insert")
+        db.ingest_dataframe(OFX_TRANSACTIONS.full_name, enriched, on_conflict="insert")
     else:
         raise NotImplementedError(
             f"fixture loader does not support source_type={spec.source_type!r}"
@@ -54,10 +62,10 @@ def _seed_tabular_account(db: Database, account_id: str, source_file: str) -> No
             "source_type": "csv",
             "source_origin": "fixture",
             "import_id": uuid.uuid4().hex[:12],
-            "extracted_at": datetime.now(),
+            "extracted_at": datetime.now(UTC),
         }
     ])
-    db.ingest_dataframe("raw.tabular_accounts", df, on_conflict="upsert")
+    db.ingest_dataframe(TABULAR_ACCOUNTS.full_name, df, on_conflict="upsert")
 
 
 def _seed_ofx_account(db: Database, account_id: str, source_file: str) -> None:
@@ -69,10 +77,10 @@ def _seed_ofx_account(db: Database, account_id: str, source_file: str) -> None:
             "institution_org": "fixture",
             "institution_fid": None,
             "source_file": source_file,
-            "extracted_at": datetime.now(),
+            "extracted_at": datetime.now(UTC),
         }
     ])
-    db.ingest_dataframe("raw.ofx_accounts", df, on_conflict="upsert")
+    db.ingest_dataframe(OFX_ACCOUNTS.full_name, df, on_conflict="upsert")
 
 
 def _enrich_for_tabular_raw(
@@ -111,5 +119,5 @@ def _enrich_for_ofx_raw(
         pl.lit(None, dtype=pl.Utf8).alias("memo"),
         pl.lit(None, dtype=pl.Utf8).alias("check_number"),
         pl.lit(source_file).alias("source_file"),
-        pl.lit(datetime.now()).alias("extracted_at"),
+        pl.lit(datetime.now(UTC)).alias("extracted_at"),
     )
