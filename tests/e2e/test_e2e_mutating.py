@@ -189,7 +189,7 @@ class TestDBOperations:
 
     def test_db_rotate_key(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "rotatetest")
-        result = run_cli("db", "rotate-key", "--yes", env=env)
+        result = run_cli("db", "key", "rotate", "--yes", env=env)
         result.assert_success()
 
     def test_db_migrate_apply(self, tmp_path: Path) -> None:

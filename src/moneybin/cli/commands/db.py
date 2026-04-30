@@ -12,10 +12,16 @@ import subprocess  # noqa: S404 — subprocess used with static args for DuckDB 
 import sys
 import tempfile
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
 app = typer.Typer(help="Database management commands", no_args_is_help=True)
+key_app = typer.Typer(
+    help="Manage the encryption key for the active profile's database",
+    no_args_is_help=True,
+)
+app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
 
 
@@ -483,7 +489,7 @@ def db_restore(
         )
         logger.info(
             "💡 Set the original key via MONEYBIN_DATABASE__ENCRYPTION_KEY "
-            "and run 'moneybin db rotate-key' to re-encrypt."
+            "and run 'moneybin db key rotate' to re-encrypt."
         )
         raise typer.Exit(1) from None
     except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
@@ -577,8 +583,8 @@ def db_unlock() -> None:
         raise typer.Exit(1) from None
 
 
-@app.command("key")
-def db_key() -> None:
+@key_app.command("show")
+def db_key_show() -> None:
     """Print the database encryption key."""
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
@@ -599,8 +605,8 @@ def db_key() -> None:
     typer.echo(key)
 
 
-@app.command("rotate-key")
-def db_rotate_key(
+@key_app.command("rotate")
+def db_key_rotate(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
     """Re-encrypt the database with a new key."""
@@ -676,6 +682,52 @@ def db_rotate_key(
 
     logger.info("✅ Database re-encrypted with new key")
     logger.info("💡 Existing backups are still encrypted with the old key")
+
+
+@key_app.command("export")
+def db_key_export(
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            "-o",
+            help="Path to write the exported key envelope",
+        ),
+    ] = None,
+) -> None:
+    """Export the encryption key to an encrypted envelope (not yet implemented)."""
+    del out  # reserved for future use
+    typer.echo(
+        "db key export is not yet implemented. Tracked in docs/followups.md.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+@key_app.command("import")
+def db_key_import(
+    envelope: Annotated[
+        Path,
+        typer.Argument(help="Path to the encrypted key envelope to import"),
+    ],
+) -> None:
+    """Import an encryption key from an envelope (not yet implemented)."""
+    del envelope  # reserved for future use
+    typer.echo(
+        "db key import is not yet implemented. Tracked in docs/followups.md.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+@key_app.command("verify")
+def db_key_verify() -> None:
+    """Verify the encryption key matches the database (not yet implemented)."""
+    typer.echo(
+        "db key verify is not yet implemented. Tracked in docs/followups.md.",
+        err=True,
+    )
+    raise typer.Exit(1)
 
 
 def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:

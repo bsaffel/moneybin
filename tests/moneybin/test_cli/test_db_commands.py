@@ -670,7 +670,7 @@ class TestDbRotateKeyCommand:
         mock_store = MagicMock()
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
 
-        result = runner.invoke(app, ["rotate-key", "--yes"])
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
 
         assert result.exit_code == 1
         mock_store.set_key.assert_not_called()
@@ -681,7 +681,7 @@ class TestDbRotateKeyCommand:
         """Happy path: new key generated and stored, old backup removed."""
         mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
 
-        result = runner.invoke(app, ["rotate-key", "--yes"])
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
 
         assert result.exit_code == 0
         mock_store.set_key.assert_called_once()
@@ -697,7 +697,7 @@ class TestDbRotateKeyCommand:
         mock_store, mock_conn = self._mock_rotate_deps(mocker, tmp_path)
         mock_conn.execute.side_effect = Exception("copy failed")
 
-        result = runner.invoke(app, ["rotate-key", "--yes"])
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
 
         assert result.exit_code == 1
         mock_store.set_key.assert_not_called()
@@ -712,7 +712,7 @@ class TestDbRotateKeyCommand:
         mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
         mock_store.set_key.side_effect = Exception("keychain locked")
 
-        result = runner.invoke(app, ["rotate-key", "--yes"])
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
 
         assert result.exit_code == 1
         # Recovery key is printed via typer.echo(err=True), which CliRunner
@@ -725,7 +725,7 @@ class TestDbRotateKeyCommand:
         """Declining the confirmation prompt exits 0 without rotating."""
         mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
 
-        result = runner.invoke(app, ["rotate-key"], input="n\n")
+        result = runner.invoke(app, ["key", "rotate"], input="n\n")
 
         assert result.exit_code == 0
         mock_store.set_key.assert_not_called()
@@ -772,7 +772,7 @@ class TestDbKeyCommand:
         mock_store.get_key.return_value = "abc123deadbeef"
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
 
-        result = runner.invoke(app, ["key"])
+        result = runner.invoke(app, ["key", "show"])
         assert result.exit_code == 0
         assert "abc123deadbeef" in result.output
 
@@ -784,7 +784,7 @@ class TestDbKeyCommand:
         mock_store.get_key.side_effect = SecretNotFoundError("not found")
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
 
-        result = runner.invoke(app, ["key"])
+        result = runner.invoke(app, ["key", "show"])
         assert result.exit_code == 1
 
 

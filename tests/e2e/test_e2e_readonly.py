@@ -134,7 +134,7 @@ class TestDBReadOnlyCommands:
         result.assert_success()
 
     def test_db_key(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("db", "key", env=e2e_profile)
+        result = run_cli("db", "key", "show", env=e2e_profile)
         result.assert_success()
 
     def test_db_migrate_status(self, e2e_profile: dict[str, str]) -> None:

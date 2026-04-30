@@ -29,6 +29,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["transform"],
     ["synthetic"],
     ["db"],
+    ["db", "key"],
     ["db", "migrate"],
     ["logs"],
     ["mcp"],
