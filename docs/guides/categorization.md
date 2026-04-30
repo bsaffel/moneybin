@@ -63,6 +63,15 @@ All categorization operations support batch mode for efficient processing. These
 - `categorize.create_merchants` — create one or many merchant mappings
 - `categorize.delete_rule` — remove a rule
 
+**Via CLI** — the `categorize.bulk` tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
+
+```bash
+moneybin categorize bulk --input cats.json
+cat cats.json | moneybin categorize bulk -
+```
+
+Both surfaces share the same response envelope; pass `--output json` to get the structured result.
+
 ## Category Taxonomy
 
 MoneyBin ships with the Plaid Personal Finance Category v2 (PFCv2) taxonomy — approximately 100 default categories organized into top-level categories and subcategories.

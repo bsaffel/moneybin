@@ -468,6 +468,8 @@ def spending_summary_cmd(
 | **Error handling** | Structured error in response envelope | `logger.error` + `typer.Exit(1)` |
 | **Discoverability** | Tool descriptions + `actions` array | `--help` + command group structure |
 
+The `categorize.bulk` MCP tool has CLI parity via `moneybin categorize bulk`. Both surfaces share the same `CategorizationService.bulk_categorize` implementation, validated through the same `BulkCategorizationItem` Pydantic model at every boundary.
+
 ### What symmetry does NOT mean
 
 - **Not identical UX.** The CLI uses tables, progress bars, and icons. MCP returns structured data. Same data, different presentation.

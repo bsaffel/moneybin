@@ -42,6 +42,7 @@ moneybin
 │
 ├── categorize       Categorization management
 │   ├── apply-rules  Run rules + merchants on uncategorized transactions
+│   ├── bulk         Bulk-assign categories from a JSON file or stdin
 │   ├── seed         Initialize default categories (Plaid PFCv2)
 │   ├── stats        Coverage statistics
 │   ├── list-rules   Display active manual rules
