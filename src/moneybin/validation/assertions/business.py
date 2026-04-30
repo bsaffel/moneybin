@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from duckdb import DuckDBPyConnection
 
+from moneybin.tables import FCT_TRANSACTIONS
 from moneybin.validation.assertions.relational import (
     _quote_ident,  # pyright: ignore[reportPrivateUsage]
 )
@@ -21,7 +22,7 @@ def assert_sign_convention(conn: DuckDBPyConnection) -> AssertionResult:
     """Expenses negative, income positive. Transfers exempted via ``is_transfer``."""
     violations = int(
         conn.execute(
-            "SELECT COUNT(*) FROM core.fct_transactions "  # noqa: S608  # constants are module-level strings, not user input
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant + module-level predicate strings
             f"WHERE ({_EXPENSE_SIGN_VIOLATIONS}) OR ({_INCOME_SIGN_VIOLATIONS})"
         ).fetchone()[0]  # type: ignore[index]
     )
@@ -35,7 +36,7 @@ def assert_sign_convention(conn: DuckDBPyConnection) -> AssertionResult:
 def assert_balanced_transfers(conn: DuckDBPyConnection) -> AssertionResult:
     """Confirmed transfer pairs (transfer_pair_id NOT NULL) must net to zero."""
     rows = conn.execute(
-        "SELECT transfer_pair_id, SUM(amount) FROM core.fct_transactions "
+        f"SELECT transfer_pair_id, SUM(amount) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
         "WHERE transfer_pair_id IS NOT NULL GROUP BY transfer_pair_id"
     ).fetchall()
     unbalanced = [(pair, float(total)) for pair, total in rows if total != 0]

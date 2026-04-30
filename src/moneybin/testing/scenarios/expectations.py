@@ -66,6 +66,14 @@ def _verify_match_decision(db: Database, spec: ExpectationSpec) -> ExpectationRe
     confidence_floor = float(body.get("expected_confidence_min", 0.0))
     expected = body.get("expected", "matched")
 
+    if expected not in {"matched", "not_matched"}:
+        return ExpectationResult(
+            name=spec.description or "match_decision",
+            kind="match_decision",
+            passed=False,
+            details={"reason": f"unknown expected mode: {expected!r}"},
+        )
+
     if expected_match_type is not None and expected_match_type not in {
         "dedup",
         "transfer",
