@@ -128,7 +128,11 @@ class TestValidateItems:
     def test_all_valid_returns_items_no_errors(self) -> None:
         raw = [
             {"transaction_id": "csv_abc", "category": "Food"},
-            {"transaction_id": "csv_def", "category": "Transport", "subcategory": "Gas"},
+            {
+                "transaction_id": "csv_def",
+                "category": "Transport",
+                "subcategory": "Gas",
+            },
         ]
         items, parse_errors = _validate_items(raw)
         assert len(items) == 2
@@ -507,7 +511,11 @@ def _merchant(
 class TestTxnRowLookup:
     def test_txn_row_for_returns_loaded_row(self) -> None:
         ctx = BulkRecordingContext(
-            txn_rows={"csv_a": TxnRow(description="STARBUCKS", amount=-5.0, account_id="acct_1")},
+            txn_rows={
+                "csv_a": TxnRow(
+                    description="STARBUCKS", amount=-5.0, account_id="acct_1"
+                )
+            },
             active_rules=[],
             merchant_mappings=[],
         )
@@ -517,7 +525,9 @@ class TestTxnRowLookup:
 
     def test_description_for_returns_description(self) -> None:
         ctx = BulkRecordingContext(
-            txn_rows={"csv_a": TxnRow(description="STARBUCKS", amount=-5.0, account_id=None)},
+            txn_rows={
+                "csv_a": TxnRow(description="STARBUCKS", amount=-5.0, account_id=None)
+            },
             active_rules=[],
             merchant_mappings=[],
         )
@@ -607,7 +617,9 @@ In `src/moneybin/services/auto_rule_service.py`, add near the top of the file (a
 from dataclasses import dataclass, field
 
 from moneybin.services._text import normalize_description
-from moneybin.services._matching import matches_pattern  # adjust if matches_pattern lives elsewhere — confirm path before writing
+from moneybin.services._matching import (
+    matches_pattern,
+)  # adjust if matches_pattern lives elsewhere — confirm path before writing
 ```
 
 (If `matches_pattern` is imported from a different module, use that path. Inspect with `grep -rn "def matches_pattern" src/moneybin/`.)
@@ -665,7 +677,9 @@ class BulkRecordingContext:
                 continue
             if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
                 continue
-            if matches_pattern(pattern, str(raw_pattern), str(match_type or "contains")):
+            if matches_pattern(
+                pattern, str(raw_pattern), str(match_type or "contains")
+            ):
                 return True
         return False
 ```
@@ -739,12 +753,12 @@ def _merchant(
 
 
 class TestRecordCategorizationWithContext:
-    def test_no_db_queries_when_context_provided(
-        self, db_mock: MagicMock
-    ) -> None:
+    def test_no_db_queries_when_context_provided(self, db_mock: MagicMock) -> None:
         """The bulk path issues zero pattern/coverage queries when context is set."""
         ctx = BulkRecordingContext(
-            txn_rows={"csv_a": TxnRow(description="STARBUCKS", amount=-5.0, account_id=None)},
+            txn_rows={
+                "csv_a": TxnRow(description="STARBUCKS", amount=-5.0, account_id=None)
+            },
             active_rules=[],  # no rule will cover the txn
             merchant_mappings=[],  # no merchant will cover the txn
         )
@@ -1092,8 +1106,11 @@ if description and ctx.merchant_mappings:
 
 try:
     AutoRuleService(self._db).record_categorization(
-        txn_id, category, subcategory=subcategory,
-        merchant_id=merchant_id, context=ctx,
+        txn_id,
+        category,
+        subcategory=subcategory,
+        merchant_id=merchant_id,
+        context=ctx,
     )
 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
     logger.warning("auto-rule recording failed", exc_info=True)
@@ -1106,15 +1123,21 @@ if merchant_id is None and description and ctx.merchant_mappings is not None:
         normalized = normalize_description(description)
         if normalized:
             merchant_id = self.create_merchant(
-                normalized, normalized,
+                normalized,
+                normalized,
                 match_type="contains",
-                category=category, subcategory=subcategory,
+                category=category,
+                subcategory=subcategory,
                 created_by="ai",
             )
             merchants_created += 1
             new_row = (
-                merchant_id, normalized, "contains",
-                normalized, category, subcategory,
+                merchant_id,
+                normalized,
+                "contains",
+                normalized,
+                category,
+                subcategory,
             )
             ctx.register_new_merchant(new_row)
     except Exception:  # noqa: BLE001 — merchant resolution is best-effort
@@ -1195,13 +1218,19 @@ from moneybin.metrics.registry import (
     categorize_bulk_errors_total,
 )
 
-def bulk_categorize(self, items: Sequence[BulkCategorizationItem]) -> BulkCategorizationResult:
+
+def bulk_categorize(
+    self, items: Sequence[BulkCategorizationItem]
+) -> BulkCategorizationResult:
     start = perf_counter()
     try:
         # ... existing body ...
         result = BulkCategorizationResult(
-            applied=applied, skipped=skipped, errors=errors,
-            error_details=error_details, merchants_created=merchants_created,
+            applied=applied,
+            skipped=skipped,
+            errors=errors,
+            error_details=error_details,
+            merchants_created=merchants_created,
         )
     except Exception:
         categorize_bulk_errors_total.inc()
@@ -1294,24 +1323,22 @@ class TestCategorizeBulkCLI:
         txn_id = _seed_one_transaction(db_path)
 
         cats_file = tmp_path / "cats.json"
-        cats_file.write_text(json.dumps([
-            {"transaction_id": txn_id, "category": "Food", "subcategory": "Coffee"},
-        ]))
+        cats_file.write_text(
+            json.dumps([
+                {"transaction_id": txn_id, "category": "Food", "subcategory": "Coffee"},
+            ])
+        )
 
         result = runner.invoke(app, ["categorize", "bulk", "--input", str(cats_file)])
         assert result.exit_code == 0, result.stderr
 
-    def test_stdin_input(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_stdin_input(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db_path = tmp_path / "test.duckdb"
         monkeypatch.setenv("MONEYBIN_DATABASE__PATH", str(db_path))
         txn_id = _seed_one_transaction(db_path)
 
         payload = json.dumps([{"transaction_id": txn_id, "category": "Food"}])
-        result = runner.invoke(
-            app, ["categorize", "bulk", "-"], input=payload
-        )
+        result = runner.invoke(app, ["categorize", "bulk", "-"], input=payload)
         assert result.exit_code == 0, result.stderr
 
     def test_json_output_returns_envelope(
@@ -1322,9 +1349,11 @@ class TestCategorizeBulkCLI:
         txn_id = _seed_one_transaction(db_path)
 
         cats_file = tmp_path / "cats.json"
-        cats_file.write_text(json.dumps([
-            {"transaction_id": txn_id, "category": "Food"},
-        ]))
+        cats_file.write_text(
+            json.dumps([
+                {"transaction_id": txn_id, "category": "Food"},
+            ])
+        )
 
         result = runner.invoke(
             app,
@@ -1343,10 +1372,12 @@ class TestCategorizeBulkCLI:
         txn_id = _seed_one_transaction(db_path)
 
         cats_file = tmp_path / "cats.json"
-        cats_file.write_text(json.dumps([
-            {"transaction_id": txn_id, "category": "Food"},
-            {"transaction_id": "", "category": "X"},  # invalid
-        ]))
+        cats_file.write_text(
+            json.dumps([
+                {"transaction_id": txn_id, "category": "Food"},
+                {"transaction_id": "", "category": "X"},  # invalid
+            ])
+        )
 
         result = runner.invoke(
             app, ["categorize", "bulk", "--input", str(cats_file), "--output", "json"]
@@ -1367,9 +1398,7 @@ class TestCategorizeBulkCLI:
         cats_file = tmp_path / "cats.json"
         cats_file.write_text(json.dumps({"items": []}))  # not a list
 
-        result = runner.invoke(
-            app, ["categorize", "bulk", "--input", str(cats_file)]
-        )
+        result = runner.invoke(app, ["categorize", "bulk", "--input", str(cats_file)])
         assert result.exit_code == 1
 
     def test_missing_file_exits_two(
@@ -1470,7 +1499,9 @@ def bulk_cmd(
     result.skipped += len(parse_errors)
 
     if output == "json":
-        typer.echo(json.dumps(result.to_envelope(len(items) + len(parse_errors)).to_dict()))
+        typer.echo(
+            json.dumps(result.to_envelope(len(items) + len(parse_errors)).to_dict())
+        )
     else:
         logger.info(
             f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
@@ -1633,7 +1664,9 @@ def test_import_then_promote_proposal(self, workflow_env: WorkflowEnv) -> None:
     workflow_env.run("categorize", "auto-confirm", "--approve-all")
 
     # 3. Re-import to replay the now-active auto-rule across the same data.
-    workflow_env.run("import", "synthetic", "--force")  # adjust flag to whatever forces re-categorization
+    workflow_env.run(
+        "import", "synthetic", "--force"
+    )  # adjust flag to whatever forces re-categorization
 
     # 4. Assert the auto-rule back-filled categorizations on at least the matching rows.
     auto_hits = workflow_env.db.execute(

@@ -9,7 +9,9 @@ from typing import cast
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, render_or_json
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.mcp.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +221,7 @@ def bulk_cmd(
     input_path: str | None = typer.Option(
         None, "--input", help="Path to a JSON file with categorization items."
     ),
-    output: str = typer.Option(
-        "table", "--output", help="Output format: table or json"
-    ),
+    output: OutputFormat = output_option,
 ) -> None:
     """Bulk-assign categories to transactions from a JSON array.
 
@@ -238,10 +238,12 @@ def bulk_cmd(
     """
     import json
     import sys
+    from pathlib import Path
 
     from moneybin.services.categorization_service import (
+        BulkCategorizationResult,
         CategorizationService,
-        _validate_items,  # pyright: ignore[reportPrivateUsage]  # boundary helper designed for CLI/MCP import
+        validate_bulk_items,
     )
 
     use_stdin = stdin_sentinel == "-"
@@ -262,7 +264,7 @@ def bulk_cmd(
 
     try:
         if input_path is not None:
-            with open(input_path, encoding="utf-8") as f:  # noqa: PTH123
+            with Path(input_path).open(encoding="utf-8") as f:
                 raw = json.load(f)
         else:
             raw = json.load(sys.stdin)
@@ -274,23 +276,23 @@ def bulk_cmd(
         raise typer.Exit(1) from e
 
     try:
-        items, parse_errors = _validate_items(raw)
+        items, parse_errors = validate_bulk_items(raw)
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e
 
-    with handle_cli_errors() as db:
-        result = CategorizationService(db).bulk_categorize(items)
-
-    # Merge parse errors into the service result so the envelope surfaces all failures.
-    result.error_details = parse_errors + result.error_details
-    result.errors += len(parse_errors)
+    if items:
+        with handle_cli_errors() as db:
+            result = CategorizationService(db).bulk_categorize(items)
+    else:
+        result = BulkCategorizationResult(
+            applied=0, skipped=0, errors=0, error_details=[]
+        )
+    result.merge_parse_errors(parse_errors)
 
     input_count = len(items) + len(parse_errors)
 
-    if output == "json":
-        typer.echo(json.dumps(result.to_envelope(input_count).to_dict()))
-    else:
+    def _render_table(_: ResponseEnvelope) -> None:
         logger.info(
             f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
         )
@@ -298,6 +300,8 @@ def bulk_cmd(
             logger.info(f"   Created {result.merchants_created} merchant mappings")
         for err in result.error_details:
             logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
+
+    render_or_json(result.to_envelope(input_count), output, render_fn=_render_table)
 
     if result.errors > 0 or result.skipped > 0:
         raise typer.Exit(1)

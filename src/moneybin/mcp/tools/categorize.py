@@ -38,7 +38,7 @@ from moneybin.services.categorization_service import (
     CategorizationService,
     MatchType,
     SeedResult,
-    _validate_items,  # pyright: ignore[reportPrivateUsage]  # boundary helper designed for CLI/MCP import
+    validate_bulk_items,
 )
 from moneybin.tables import (
     CATEGORIES,
@@ -304,7 +304,7 @@ def categorize_bulk(
         ).to_envelope(0)
 
     try:
-        validated, parse_errors = _validate_items(items)
+        validated, parse_errors = validate_bulk_items(items)
     except ValueError as e:
         return BulkCategorizationResult(
             applied=0,
@@ -314,11 +314,7 @@ def categorize_bulk(
         ).to_envelope(len(items))
 
     result = CategorizationService(get_database()).bulk_categorize(validated)
-
-    # Merge parse errors into the service result so the envelope surfaces all failures.
-    result.error_details = parse_errors + result.error_details
-    result.errors += len(parse_errors)
-
+    result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(items))
 
 

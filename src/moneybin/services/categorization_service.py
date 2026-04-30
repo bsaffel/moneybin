@@ -97,6 +97,13 @@ class BulkCategorizationResult:
             ],
         )
 
+    def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
+        """Prepend boundary-validation errors and reflect them in the error count."""
+        if not parse_errors:
+            return
+        self.error_details = parse_errors + self.error_details
+        self.errors += len(parse_errors)
+
 
 class BulkCategorizationItem(BaseModel):
     """One row of input for ``CategorizationService.bulk_categorize``.
@@ -111,7 +118,7 @@ class BulkCategorizationItem(BaseModel):
     subcategory: str | None = Field(default=None, min_length=1, max_length=100)
 
 
-def _validate_items(  # pyright: ignore[reportUnusedFunction]  # wired to CLI/MCP boundaries in Tasks 8 and 9
+def validate_bulk_items(
     raw: object,
 ) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
     """Validate a raw decoded JSON array into typed items + per-row errors.
@@ -349,7 +356,7 @@ class CategorizationService:
         Args:
             items: Validated list of BulkCategorizationItem (transaction_id, category,
                 optional subcategory). Validation is the caller's responsibility —
-                use ``_validate_items`` at the CLI/MCP boundary before calling this.
+                use ``validate_bulk_items`` at the CLI/MCP boundary before calling this.
 
         Returns:
             BulkCategorizationResult with applied/skipped/error counts.
@@ -366,19 +373,13 @@ class CategorizationService:
     def _bulk_categorize_inner(
         self, items: Sequence[BulkCategorizationItem]
     ) -> BulkCategorizationResult:
-        """Inner implementation of bulk_categorize without observability wrapping."""
         applied = 0
         skipped = 0
         errors = 0
         merchants_created = 0
         error_details: list[dict[str, str]] = []
 
-        # Phase 1 — items are already validated by the boundary (CLI/MCP).
-        valid_items: list[tuple[str, str, str | None]] = [
-            (i.transaction_id, i.category, i.subcategory) for i in items
-        ]
-
-        if not valid_items:
+        if not items:
             return BulkCategorizationResult(
                 applied=applied,
                 skipped=skipped,
@@ -388,7 +389,7 @@ class CategorizationService:
             )
 
         # Phase 2 — batch-fetch txn rows (description + amount + account_id)
-        txn_ids = [v[0] for v in valid_items]
+        txn_ids = [item.transaction_id for item in items]
         placeholders = ",".join(["?"] * len(txn_ids))
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization_service).
@@ -442,9 +443,13 @@ class CategorizationService:
             active_rules=cached_rules,
             merchant_mappings=cached_merchants,
         )
+        auto_rule_svc = AutoRuleService(self._db)
 
         # Phase 4 — per-item categorization (writes only)
-        for txn_id, category, subcategory in valid_items:
+        for item in items:
+            txn_id = item.transaction_id
+            category = item.category
+            subcategory = item.subcategory
             try:
                 # Resolve pre-existing merchant first so auto-rule learning can
                 # use the merchant's raw_pattern (e.g., "AMZN") instead of
@@ -469,7 +474,7 @@ class CategorizationService:
                         )
 
                 try:
-                    AutoRuleService(self._db).record_categorization(
+                    auto_rule_svc.record_categorization(
                         txn_id,
                         category,
                         subcategory=subcategory,
@@ -534,7 +539,7 @@ class CategorizationService:
         # batch so cost is independent of batch size.
         if applied:
             try:
-                AutoRuleService(self._db).check_overrides()
+                auto_rule_svc.check_overrides()
             except Exception:  # noqa: BLE001 — override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
 
