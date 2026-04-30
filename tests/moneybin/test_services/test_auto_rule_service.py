@@ -335,10 +335,15 @@ def test_review_uses_configured_default_when_limit_omitted(real_db: Database) ->
     assert auto_review_envelope(result).summary.has_more is False
 
 
-def test_auto_review_result_is_pure_data_carrier() -> None:
-    """AutoReviewResult must not depend on transport-layer types."""
-    from moneybin.services.auto_rule_service import AutoReviewResult
+@pytest.mark.parametrize(
+    "cls_name",
+    ["AutoReviewResult", "AutoConfirmResult", "AutoStatsResult"],
+)
+def test_auto_rule_results_are_pure_data_carriers(cls_name: str) -> None:
+    """Service result dataclasses must not depend on transport-layer types."""
+    import moneybin.services.auto_rule_service as service_module
 
-    assert not hasattr(AutoReviewResult, "to_envelope"), (
-        "to_envelope must live in mcp/adapters/, not on the service dataclass"
+    cls = getattr(service_module, cls_name)
+    assert not hasattr(cls, "to_envelope"), (
+        f"{cls_name}.to_envelope must live in mcp/adapters/, not on the service dataclass"
     )
