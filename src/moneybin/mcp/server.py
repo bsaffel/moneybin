@@ -13,17 +13,26 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import duckdb
 from fastmcp import FastMCP
+from fastmcp.server.transforms import Visibility
 
 from moneybin.tables import TableRef
 
-if TYPE_CHECKING:
-    from moneybin.mcp.namespaces import NamespaceRegistry
-
 logger = logging.getLogger(__name__)
+
+
+# Extended-namespace domain names. Each tool tagged with one of these starts
+# hidden by a Visibility(False, tags={domain}) transform and is re-enabled
+# per-session via moneybin.discover.
+EXTENDED_DOMAINS: frozenset[str] = frozenset({
+    "categorize",
+    "budget",
+    "tax",
+    "privacy",
+    "transactions.matches",
+})
 
 
 # Global server instance — tools/resources/prompts register against this
@@ -113,20 +122,13 @@ def close_db() -> None:
         pass  # stderr already closed during MCP stdio shutdown
 
 
-_registry: NamespaceRegistry | None = None
+def register_core_tools() -> None:
+    """Register all MCP tools and install per-domain Visibility transforms.
 
-
-def get_registry() -> NamespaceRegistry:
-    """Get the namespace registry singleton."""
-    global _registry  # noqa: PLW0603 — module-level singleton
-    if _registry is None:
-        _registry = _build_registry()
-    return _registry
-
-
-def _build_registry() -> NamespaceRegistry:
-    """Build and populate the namespace registry with all tool modules."""
-    from moneybin.mcp.namespaces import NamespaceRegistry
+    Tools tagged with an extended-namespace domain (categorize, budget, tax,
+    privacy, transactions.matches) are hidden globally by Visibility transforms
+    installed below. moneybin.discover re-enables them per-session.
+    """
     from moneybin.mcp.tools.accounts import register_accounts_tools
     from moneybin.mcp.tools.budget import register_budget_tools
     from moneybin.mcp.tools.categorize import register_categorize_tools
@@ -137,48 +139,20 @@ def _build_registry() -> NamespaceRegistry:
     from moneybin.mcp.tools.tax import register_tax_tools
     from moneybin.mcp.tools.transactions import register_transactions_tools
 
-    registry = NamespaceRegistry()
-    register_spending_tools(registry)
-    register_accounts_tools(registry)
-    register_transactions_tools(registry)
-    register_import_tools(registry)
-    register_categorize_tools(registry)
-    register_budget_tools(registry)
-    register_tax_tools(registry)
-    register_sql_tools(registry)
-    register_discover_tool(registry)
-    return registry
+    register_spending_tools(mcp)
+    register_accounts_tools(mcp)
+    register_transactions_tools(mcp)
+    register_import_tools(mcp)
+    register_categorize_tools(mcp)
+    register_budget_tools(mcp)
+    register_tax_tools(mcp)
+    register_sql_tools(mcp)
+    register_discover_tool(mcp)
 
-
-def register_core_tools() -> None:
-    """Register core namespace tools with FastMCP at startup."""
-    from moneybin.config import get_settings
-    from moneybin.mcp.namespaces import CORE_NAMESPACES_DEFAULT
-
-    registry = get_registry()
-    cfg = get_settings().mcp
-
-    # Determine core namespaces from config or defaults
-    if cfg.core_namespaces and cfg.core_namespaces == ["*"]:
-        core_ns = registry.all_namespaces()
-    elif cfg.core_namespaces:
-        core_ns = set(cfg.core_namespaces)
-    else:
-        core_ns = set(CORE_NAMESPACES_DEFAULT)
-
-    # Register core tools with FastMCP
-    for tool in registry.get_core_tools(core_ns):
-        mcp.tool(name=tool.name, description=tool.description)(tool.fn)
-        registry.mark_loaded(tool.namespace)
-
-    # moneybin.discover is always registered
-    discover_tools = registry.get_namespace_tools("moneybin")
-    for tool in discover_tools:
-        if not registry.is_loaded("moneybin"):
-            mcp.tool(name=tool.name, description=tool.description)(tool.fn)
-    registry.mark_loaded("moneybin")
+    # Hide each extended namespace globally; sessions re-enable via discover.
+    for domain in EXTENDED_DOMAINS:
+        mcp.add_transform(Visibility(False, tags={domain}))
 
     logger.info(
-        f"Registered {sum(len(registry.get_namespace_tools(ns)) for ns in core_ns)} "
-        f"core tools from {len(core_ns)} namespaces"
+        f"Registered tools; {len(EXTENDED_DOMAINS)} extended namespaces hidden by default"
     )

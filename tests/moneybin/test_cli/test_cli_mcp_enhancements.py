@@ -7,7 +7,6 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.mcp import app
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 
 runner = CliRunner()
 
@@ -17,25 +16,33 @@ class TestMCPListTools:
 
     def test_list_tools(self) -> None:
         """list-tools enumerates registered MCP tools."""
-        registry = NamespaceRegistry()
-        registry.register(ToolDefinition("test.tool", "A test tool", lambda: None))
+
+        async def fake_get_tools() -> list[MagicMock]:
+            tool = MagicMock()
+            tool.name = "test.tool"
+            tool.description = "A test tool"
+            return [tool]
+
         with (
             patch("moneybin.mcp.server.init_db"),
-            patch("moneybin.mcp.server.get_registry", return_value=registry),
+            patch("moneybin.mcp.server.mcp._list_tools", new=fake_get_tools),
         ):
             result = runner.invoke(app, ["list-tools"])
         assert result.exit_code == 0
         assert "test.tool" in result.output
 
     def test_list_tools_shows_tool_names(self) -> None:
-        """list-tools shows tool names and descriptions from v1 registry."""
-        registry = NamespaceRegistry()
-        registry.register(
-            ToolDefinition("spending.summary", "Monthly spending", lambda: None)
-        )
+        """list-tools shows tool names and descriptions."""
+
+        async def fake_get_tools() -> list[MagicMock]:
+            tool = MagicMock()
+            tool.name = "spending.summary"
+            tool.description = "Monthly spending"
+            return [tool]
+
         with (
             patch("moneybin.mcp.server.init_db"),
-            patch("moneybin.mcp.server.get_registry", return_value=registry),
+            patch("moneybin.mcp.server.mcp._list_tools", new=fake_get_tools),
         ):
             result = runner.invoke(app, ["list-tools"])
 
@@ -45,10 +52,13 @@ class TestMCPListTools:
 
     def test_list_tools_empty(self) -> None:
         """list-tools handles empty tool registry gracefully."""
-        registry = NamespaceRegistry()
+
+        async def fake_get_tools() -> list[MagicMock]:
+            return []
+
         with (
             patch("moneybin.mcp.server.init_db"),
-            patch("moneybin.mcp.server.get_registry", return_value=registry),
+            patch("moneybin.mcp.server.mcp._list_tools", new=fake_get_tools),
         ):
             result = runner.invoke(app, ["list-tools"])
 

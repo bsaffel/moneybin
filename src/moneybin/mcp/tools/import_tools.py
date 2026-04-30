@@ -13,9 +13,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from fastmcp import FastMCP
+
 from moneybin.database import get_database
+from moneybin.mcp._registration import tags_for
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 logger = logging.getLogger(__name__)
@@ -244,41 +246,36 @@ def import_list_formats() -> ResponseEnvelope:
     )
 
 
-def register_import_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:
-    """Register all import namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="import.file",
-            description=(
-                "Import a financial data file (OFX, CSV, TSV, Excel, "
-                "Parquet, PDF) into MoneyBin."
-            ),
-            fn=import_file,
+def register_import_tools(mcp: FastMCP) -> None:
+    """Register all import namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="import.file",
+        description=(
+            "Import a financial data file (OFX, CSV, TSV, Excel, "
+            "Parquet, PDF) into MoneyBin."
         ),
-        ToolDefinition(
-            name="import.csv_preview",
-            description=(
-                "Preview a tabular file's structure and detected column "
-                "mapping without importing."
-            ),
-            fn=import_csv_preview,
+        tags=tags_for(import_file),
+    )(import_file)
+    mcp.tool(
+        name="import.csv_preview",
+        description=(
+            "Preview a tabular file's structure and detected column "
+            "mapping without importing."
         ),
-        ToolDefinition(
-            name="import.status",
-            description=(
-                "List past import batches with status, row counts, "
-                "and detection confidence."
-            ),
-            fn=import_status,
+        tags=tags_for(import_csv_preview),
+    )(import_csv_preview)
+    mcp.tool(
+        name="import.status",
+        description=(
+            "List past import batches with status, row counts, "
+            "and detection confidence."
         ),
-        ToolDefinition(
-            name="import.list_formats",
-            description=(
-                "List all available tabular import formats (built-in and user-saved)."
-            ),
-            fn=import_list_formats,
+        tags=tags_for(import_status),
+    )(import_status)
+    mcp.tool(
+        name="import.list_formats",
+        description=(
+            "List all available tabular import formats (built-in and user-saved)."
         ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(import_list_formats),
+    )(import_list_formats)

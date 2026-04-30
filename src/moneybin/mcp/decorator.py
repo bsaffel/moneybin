@@ -28,6 +28,7 @@ so fastmcp's mask_error_details wraps them into masked ToolErrors.
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -65,7 +66,36 @@ def mcp_tool(
     """
     tier = Sensitivity(sensitivity)
 
+    def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
+        if not isinstance(result, ResponseEnvelope):
+            raise TypeError(
+                f"{fn_name} returned {type(result).__name__}, expected ResponseEnvelope"
+            )
+        return result
+
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
+                log_tool_call(fn.__name__, tier)
+                try:
+                    result = await fn(*args, **kwargs)
+                except Exception as exc:
+                    classified = classify_user_error(exc)
+                    if classified is None:
+                        raise
+                    logger.error(
+                        f"Tool {fn.__name__} raised "
+                        f"{type(exc).__name__}: {classified.code}"
+                    )
+                    return build_error_envelope(error=classified, sensitivity="low")
+                return _check_envelope(fn.__name__, result)
+
+            async_wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
+            async_wrapper._mcp_domain = domain  # type: ignore[attr-defined]
+            return async_wrapper
+
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
             log_tool_call(fn.__name__, tier)
@@ -79,12 +109,7 @@ def mcp_tool(
                     f"Tool {fn.__name__} raised {type(exc).__name__}: {classified.code}"
                 )
                 return build_error_envelope(error=classified, sensitivity="low")
-            if not isinstance(result, ResponseEnvelope):
-                raise TypeError(
-                    f"{fn.__name__} returned {type(result).__name__},"
-                    " expected ResponseEnvelope"
-                )
-            return result
+            return _check_envelope(fn.__name__, result)
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]

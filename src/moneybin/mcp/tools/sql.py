@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import logging
 
+from fastmcp import FastMCP
+
 from moneybin.database import get_database
+from moneybin.mcp._registration import tags_for
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -50,18 +52,13 @@ def sql_query(query: str) -> ResponseEnvelope:
     return build_envelope(data=records, sensitivity="medium")
 
 
-def register_sql_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:
-    """Register all sql namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="sql.query",
-            description=(
-                "Execute a read-only SQL query against the database. "
-                "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN."
-            ),
-            fn=sql_query,
+def register_sql_tools(mcp: FastMCP) -> None:
+    """Register all sql namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="sql.query",
+        description=(
+            "Execute a read-only SQL query against the database. "
+            "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN."
         ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(sql_query),
+    )(sql_query)

@@ -233,15 +233,16 @@ def list_tools() -> None:
     Examples:
         moneybin mcp list-tools
     """
-    from moneybin.mcp.server import get_registry, init_db
+    from moneybin.mcp.server import init_db, mcp
 
     init_db()
-    registry = get_registry()
+    # Bypass visibility filters so list-tools shows every registered tool,
+    # including extended-namespace tools that are hidden by default.
+    tools = asyncio.run(mcp._list_tools())  # noqa: SLF001 — public API filters by visibility  # pyright: ignore[reportPrivateUsage]
 
-    for ns in sorted(registry.all_namespaces()):
-        tools = registry.get_namespace_tools(ns)
-        for tool in tools:
-            typer.echo(f"  {tool.name}: {tool.description}")
+    for tool in sorted(tools, key=lambda t: t.name):
+        description = getattr(tool, "description", "") or ""
+        typer.echo(f"  {tool.name}: {description}")
 
 
 # ── list-prompts ─────────────────────────────────────────────────────────────

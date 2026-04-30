@@ -11,9 +11,11 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from fastmcp import FastMCP
+
 from moneybin.database import get_database
+from moneybin.mcp._registration import tags_for
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.transaction_service import TransactionService
 
@@ -86,28 +88,21 @@ def transactions_recurring(
     return result.to_envelope()
 
 
-def register_transactions_tools(
-    registry: NamespaceRegistry,
-) -> list[ToolDefinition]:
-    """Register all transactions namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="transactions.search",
-            description=(
-                "Search transactions with flexible filtering by date, "
-                "amount, description, account, and category."
-            ),
-            fn=transactions_search,
+def register_transactions_tools(mcp: FastMCP) -> None:
+    """Register all transactions namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="transactions.search",
+        description=(
+            "Search transactions with flexible filtering by date, "
+            "amount, description, account, and category."
         ),
-        ToolDefinition(
-            name="transactions.recurring",
-            description=(
-                "Detect recurring transaction patterns like subscriptions "
-                "and regular charges."
-            ),
-            fn=transactions_recurring,
+        tags=tags_for(transactions_search),
+    )(transactions_search)
+    mcp.tool(
+        name="transactions.recurring",
+        description=(
+            "Detect recurring transaction patterns like subscriptions "
+            "and regular charges."
         ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(transactions_recurring),
+    )(transactions_recurring)
