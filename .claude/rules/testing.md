@@ -27,7 +27,12 @@ uv run pytest tests/ -v -m "not integration and not e2e"      # Unit only
 uv run pytest tests/test_file.py -v                           # Specific file
 uv run pytest tests/e2e/ -m "e2e" -v                          # E2E only
 uv run pytest tests/ --cov=src/moneybin --cov-report=html     # Coverage
+uv run pytest tests/path/to/test.py -n0 -v                    # Disable xdist (for pdb / clean output)
 ```
+
+Tests run in parallel via `pytest-xdist` (`-n auto` in `pyproject.toml`).
+Pass `-n0` to disable parallelism when you need `pdb`, ordered output,
+or are debugging a flaky test that may have inter-test state leaks.
 
 ## Mocking Strategy
 

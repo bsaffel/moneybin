@@ -32,6 +32,12 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 - **Inline SQL**: Triple-quoted strings (`"""..."""`).
 - **Suppression comments**: Always include a reason: `# noqa: S608  # test input, not executing SQL`.
 - **Acronyms**: ALL CAPS in class names: `OFXExtractor`, `CSVReader`, `PDFExtractor`.
+- **Comments and docstrings**: Default to one short line. A longer comment or
+  multi-paragraph module docstring is warranted when it documents a
+  *non-obvious why* a future reader would otherwise undo — a workaround for an
+  upstream bug, a hidden constraint, a platform-specific quirk, or an
+  invariant the code relies on but doesn't enforce. Don't restate what the
+  code already says; do explain context that lives outside the code.
 
 ## Architecture: Data Layers
 
