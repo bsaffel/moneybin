@@ -148,3 +148,20 @@ When adding a new CLI command:
 - No shared mutable state between tests.
 - Use `monkeypatch` for env vars.
 - Descriptive test names that explain the scenario.
+
+## Scenario Expectations Must Be Independently Derived
+
+Scenario assertions, expectations, and tolerances must be derived **independently of the program's output**. A test that codifies "what the code currently produces" only proves the code is consistent with itself — it does not prove the code is correct.
+
+When authoring or modifying a scenario:
+
+1. **Allowed derivation paths.** Expected row counts, match outcomes, category labels, and tolerances must come from one of:
+   - **The input fixture** — count the rows yourself; label outcomes by hand before running the pipeline.
+   - **The persona / generator config** — derive expected values via a deterministic formula over declared parameters (e.g., `years × accounts × mean_txns_per_month × 12`).
+   - **Hand-authored ground truth** written *before* running the pipeline.
+2. **Forbidden: observe-and-paste.** Running the scenario, observing the output, and pasting the resulting number into the YAML is not acceptable, even if the output "looks right."
+3. **Tolerances require a formula.** A bare `±15%` is not acceptable. Any tolerance must accompany the formula it absorbs and a comment explaining the source of variance (e.g., "seeded RNG produces ±5% per year over 3 years → ~15%").
+4. **When code change breaks an expectation, fix the code first.** The default response to a failing scenario expectation is to investigate the code, not to update the expectation. Updating the expectation requires a written justification in the PR explaining why the new value is correct in itself — not "what the new code produces."
+5. **Negative expectations are required where applicable.** If a scenario asserts "these N records should match," it must also include cases that should *not* match. Otherwise the test only catches under-matching, not over-matching.
+
+This rule applies to YAML scenario expectations, pytest assertions in `tests/scenarios/`, and any future bug-report-driven scenario. See [`docs/specs/testing-scenario-comprehensive.md`](../../docs/specs/testing-scenario-comprehensive.md) for the full taxonomy and contributor recipe.

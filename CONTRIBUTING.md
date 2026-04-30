@@ -68,7 +68,17 @@ moneybin synthetic verify --scenario basic-full-pipeline
 moneybin synthetic verify --all --output json          # CI mode
 ```
 
-Scenarios live at `src/moneybin/testing/scenarios/data/*.yaml`. The runner is documented in [`docs/specs/testing-scenario-runner.md`](docs/specs/testing-scenario-runner.md).
+Scenarios live at `src/moneybin/testing/scenarios/data/*.yaml`. The runner is documented in [`docs/specs/testing-scenario-runner.md`](docs/specs/testing-scenario-runner.md). Per [`docs/specs/testing-scenario-comprehensive.md`](docs/specs/testing-scenario-comprehensive.md), scenarios are migrating to `tests/scenarios/` as pytest tests.
+
+### Authoring a new scenario (especially for a user bug report)
+
+The prescribed recipe is in [`docs/guides/scenario-authoring.md`](docs/guides/scenario-authoring.md). Summary:
+
+1. Get the bug report and an anonymized DB snapshot ([`testing-anonymized-data.md`](docs/specs/testing-anonymized-data.md)) — never commit raw user data.
+2. Build a fixture under `tests/scenarios/data/fixtures/<bug-id>/`.
+3. Write the expectation **independently of program output** — derive it from the fixture, the persona config, or hand-authored ground truth. Never observe-and-paste. See [`.claude/rules/testing.md`](.claude/rules/testing.md) "Scenario Expectations Must Be Independently Derived."
+4. Verify the scenario fails on the broken code, then passes on the fix.
+5. Cover Tier 1 invariants (always) plus relevant Tier 2–4 checks per [`docs/specs/testing-scenario-comprehensive.md`](docs/specs/testing-scenario-comprehensive.md).
 
 ## Working with synthetic data
 
