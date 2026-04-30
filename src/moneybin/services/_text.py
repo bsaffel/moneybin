@@ -17,7 +17,7 @@ _POS_PREFIXES = re.compile(
 # Trailing location: city/state/zip patterns
 _TRAILING_LOCATION = re.compile(
     r"\s+"
-    r"(?:(?:[A-Z][A-Za-z]+\s+)?[A-Z]{2}\s+\d{5}(?:-\d{4})?$"  # [City ]ST 12345 [-6789]
+    r"(?:(?:[A-Z][A-Za-z]{3,}\s+)?[A-Z]{2}\s+\d{5}(?:-\d{4})?$"  # [City ]ST 12345 [-6789]
     r"|[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*,?\s+[A-Z]{2}$"  # City, ST
     r"|\d{5}(?:-\d{4})?$"  # bare zip code
     r")"

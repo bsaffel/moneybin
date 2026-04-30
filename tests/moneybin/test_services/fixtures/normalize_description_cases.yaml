@@ -51,6 +51,11 @@ cases:
     expected: "WHOLEFDS MKT"
     note: "All-caps city before state+zip — exercises the city+state+zip-as-unit branch"
 
+  - id: short-token-before-state-zip-not-treated-as-city
+    raw: "SHELL GAS NY 10001"
+    expected: "SHELL GAS"
+    note: "City group requires 4+ chars so 'GAS' is not stripped as a city"
+
   - id: combined-prefix-store-id-city-state
     raw: "SQ *STARBUCKS #1234 SEATTLE WA"
     expected: "STARBUCKS"

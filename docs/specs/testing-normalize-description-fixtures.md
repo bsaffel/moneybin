@@ -1,7 +1,7 @@
 # Feature: Normalize-Description Golden Fixtures
 
 ## Status
-ready
+implemented
 
 ## Goal
 
