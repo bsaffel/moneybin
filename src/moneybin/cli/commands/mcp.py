@@ -5,6 +5,7 @@ Model Context Protocol server, exposing DuckDB financial data to AI
 assistants like Cursor, Claude Desktop, and ChatGPT Desktop.
 """
 
+import asyncio
 import importlib
 import json
 import logging
@@ -261,8 +262,6 @@ def list_prompts() -> None:
         "moneybin.mcp.resources",
     ):
         importlib.import_module(module)
-
-    import asyncio
 
     prompts = asyncio.run(mcp_server.list_prompts(run_middleware=False))
 
