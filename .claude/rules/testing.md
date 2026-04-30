@@ -27,7 +27,12 @@ uv run pytest tests/ -v -m "not integration and not e2e"      # Unit only
 uv run pytest tests/test_file.py -v                           # Specific file
 uv run pytest tests/e2e/ -m "e2e" -v                          # E2E only
 uv run pytest tests/ --cov=src/moneybin --cov-report=html     # Coverage
+uv run pytest tests/path/to/test.py -n0 -v                    # Disable xdist (for pdb / clean output)
 ```
+
+Tests run in parallel via `pytest-xdist` (`-n auto` in `pyproject.toml`).
+Pass `-n0` to disable parallelism when you need `pdb`, ordered output,
+or are debugging a flaky test that may have inter-test state leaks.
 
 ## Mocking Strategy
 
@@ -78,6 +83,25 @@ mock_runner.pending.return_value = [_make_migration(version=2, filename="V002__n
 Migration(version=2, name="new", filename="V002__new.sql", checksum="def456",
           content=b"SELECT 1;", path=Path("/tmp/V002__new.sql"), file_type="sql")
 ```
+
+## Golden-Case Fixtures
+
+For pure functions whose correctness is best expressed as input → output pairs,
+keep cases in a YAML fixture file under `tests/.../fixtures/` and write a
+parametrized test asserting exact equality.
+
+**When to add:** Real-world input that should produce a specific output, and no
+existing case covers it.
+
+**How to add:**
+
+1. Append a row to the fixture YAML with a unique, kebab-case `id` naming the
+   *behavior under test*, not the input.
+2. Run the test. Fix the function until it passes — do NOT relax `expected` to
+   match incorrect output.
+
+**Why exact equality:** Loose assertions hide subtle regressions like extra
+whitespace or partial strips. Goldens force every character intentional.
 
 ## Test Coverage by Layer
 

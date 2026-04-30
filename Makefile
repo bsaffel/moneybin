@@ -136,8 +136,8 @@ test-unit: venv ## Development: Run unit tests only (excludes integration and e2
 
 test: test-unit ## Development: Run unit tests (alias for test-unit)
 
-test-all: venv ## Development: Run all tests including integration tests with verbose output
-	@echo "$(BLUE)🧪 Running all tests (including integration tests)...$(RESET)"
+test-all: venv ## Development: Run all tests (unit, integration, e2e) with verbose output
+	@echo "$(BLUE)🧪 Running all tests (unit, integration, e2e)...$(RESET)"
 	@uv run pytest tests/ -v
 
 test-cov: venv ## Development: Run tests with coverage report

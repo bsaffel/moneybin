@@ -184,7 +184,7 @@ def import_file(
         moneybin import file export.csv --override date=Date --override amount=Amount
     """
     from moneybin.cli.utils import handle_cli_errors
-    from moneybin.services.import_service import import_file as run_import
+    from moneybin.services.import_service import ImportService
 
     source = Path(file_path)
 
@@ -212,8 +212,7 @@ def import_file(
 
     try:
         with handle_cli_errors() as db:
-            result = run_import(
-                db=db,
+            result = ImportService(db).import_file(
                 file_path=source,
                 apply_transforms=not skip_transform,
                 institution=institution,

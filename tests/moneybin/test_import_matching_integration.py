@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, patch
 class TestImportMatchingIntegration:
     """Tests that matching is hooked into the import pipeline."""
 
-    @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.services.import_service._run_matching")
-    @patch("moneybin.services.import_service._apply_categorization")
-    @patch("moneybin.services.import_service._import_ofx")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
+    @patch("moneybin.services.import_service.ImportService._run_matching")
+    @patch("moneybin.services.import_service.ImportService._apply_categorization")
+    @patch("moneybin.services.import_service.ImportService._import_ofx")
     @patch("moneybin.services.import_service._detect_file_type", return_value="ofx")
     def test_matching_runs_before_transforms(
         self,
@@ -22,7 +22,7 @@ class TestImportMatchingIntegration:
         tmp_path: Path,
     ) -> None:
         """Verify _run_matching is called before run_transforms during import."""
-        from moneybin.services.import_service import ImportResult, import_file
+        from moneybin.services.import_service import ImportResult, ImportService
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
@@ -33,15 +33,15 @@ class TestImportMatchingIntegration:
 
         db = MagicMock()
         db.path = tmp_path / "test.duckdb"
-        import_file(db, qfx, apply_transforms=True)
+        ImportService(db).import_file(qfx, apply_transforms=True)
 
-        mock_matching.assert_called_once_with(db)
+        mock_matching.assert_called_once_with()
         mock_transforms.assert_called_once()
 
-    @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.services.import_service._run_matching")
-    @patch("moneybin.services.import_service._apply_categorization")
-    @patch("moneybin.services.import_service._import_ofx")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
+    @patch("moneybin.services.import_service.ImportService._run_matching")
+    @patch("moneybin.services.import_service.ImportService._apply_categorization")
+    @patch("moneybin.services.import_service.ImportService._import_ofx")
     @patch("moneybin.services.import_service._detect_file_type", return_value="ofx")
     def test_apply_transforms_false_skips_matching(
         self,
@@ -53,7 +53,7 @@ class TestImportMatchingIntegration:
         tmp_path: Path,
     ) -> None:
         """Verify matching is skipped when apply_transforms=False."""
-        from moneybin.services.import_service import ImportResult, import_file
+        from moneybin.services.import_service import ImportResult, ImportService
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
@@ -63,15 +63,15 @@ class TestImportMatchingIntegration:
 
         db = MagicMock()
         db.path = tmp_path / "test.duckdb"
-        import_file(db, qfx, apply_transforms=False)
+        ImportService(db).import_file(qfx, apply_transforms=False)
 
         mock_matching.assert_not_called()
         mock_transforms.assert_not_called()
 
-    @patch("moneybin.services.import_service.run_transforms")
-    @patch("moneybin.services.import_service._run_matching")
-    @patch("moneybin.services.import_service._apply_categorization")
-    @patch("moneybin.services.import_service._import_ofx")
+    @patch("moneybin.services.import_service.ImportService.run_transforms")
+    @patch("moneybin.services.import_service.ImportService._run_matching")
+    @patch("moneybin.services.import_service.ImportService._apply_categorization")
+    @patch("moneybin.services.import_service.ImportService._import_ofx")
     @patch("moneybin.services.import_service._detect_file_type", return_value="ofx")
     def test_matching_failure_does_not_abort_import(
         self,
@@ -83,7 +83,7 @@ class TestImportMatchingIntegration:
         tmp_path: Path,
     ) -> None:
         """Verify matching errors are swallowed (best-effort)."""
-        from moneybin.services.import_service import ImportResult, import_file
+        from moneybin.services.import_service import ImportResult, ImportService
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
@@ -95,7 +95,7 @@ class TestImportMatchingIntegration:
 
         db = MagicMock()
         db.path = tmp_path / "test.duckdb"
-        result = import_file(db, qfx, apply_transforms=True)
+        result = ImportService(db).import_file(qfx, apply_transforms=True)
 
         # Import should succeed despite matching failure
         assert result.transactions == 3
@@ -116,9 +116,7 @@ class TestApplyCategorizationProposalSummary:
         """Pending proposals trigger a hint line referencing auto-review."""
         import logging
 
-        from moneybin.services.import_service import (
-            _apply_categorization,  # pyright: ignore[reportPrivateUsage]
-        )
+        from moneybin.services.import_service import ImportService
 
         cat = mock_cat_cls.return_value
         cat.apply_deterministic.return_value = {
@@ -133,7 +131,7 @@ class TestApplyCategorizationProposalSummary:
         )
 
         with caplog.at_level(logging.INFO, logger="moneybin.services.import_service"):  # type: ignore[attr-defined]
-            _apply_categorization(MagicMock())
+            ImportService(MagicMock())._apply_categorization()  # pyright: ignore[reportPrivateUsage]
 
         text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]
         assert "4 new auto-rule proposals" in text
@@ -150,9 +148,7 @@ class TestApplyCategorizationProposalSummary:
         """No pending proposals → no hint line."""
         import logging
 
-        from moneybin.services.import_service import (
-            _apply_categorization,  # pyright: ignore[reportPrivateUsage]
-        )
+        from moneybin.services.import_service import ImportService
 
         cat = mock_cat_cls.return_value
         cat.apply_deterministic.return_value = {
@@ -167,7 +163,7 @@ class TestApplyCategorizationProposalSummary:
         )
 
         with caplog.at_level(logging.INFO, logger="moneybin.services.import_service"):  # type: ignore[attr-defined]
-            _apply_categorization(MagicMock())
+            ImportService(MagicMock())._apply_categorization()  # pyright: ignore[reportPrivateUsage]
 
         text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]
         assert "auto-rule proposals" not in text

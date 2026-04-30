@@ -4,12 +4,14 @@ Covers merchant normalization, pattern matching, rule engine, merchant
 matching, prompt construction, and response parsing.
 """
 
+from collections import Counter
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from pytest_mock import MockerFixture
 
 from moneybin.database import Database
@@ -114,55 +116,49 @@ def db_with_transactions(db: Database) -> Database:
 # Merchant name normalization
 # ---------------------------------------------------------------------------
 
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
-class TestNormalizeDescription:
-    """Tests for normalize_description()."""
 
-    @pytest.mark.unit
-    def test_strips_square_prefix(self) -> None:
-        assert normalize_description("SQ *STARBUCKS #1234") == "STARBUCKS"
+def _load_normalize_cases(
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Load and validate normalize_description golden cases from YAML."""
+    if path is None:
+        path = _FIXTURES_DIR / "normalize_description_cases.yaml"
+    raw = yaml.safe_load(path.read_text())
+    cases = raw["cases"]
+    counts = Counter(c["id"] for c in cases)
+    duplicates = sorted(i for i, n in counts.items() if n > 1)
+    if duplicates:
+        raise ValueError(f"Duplicate case ids: {duplicates}")
+    for c in cases:
+        if not isinstance(c.get("raw"), str) or not isinstance(c.get("expected"), str):
+            raise ValueError(
+                f"Case {c.get('id')!r}: 'raw' and 'expected' must be strings"
+            )
+    return cases
 
-    @pytest.mark.unit
-    def test_strips_toast_prefix(self) -> None:
-        assert normalize_description("TST*PIZZA PLACE") == "PIZZA PLACE"
 
-    @pytest.mark.unit
-    def test_strips_paypal_prefix(self) -> None:
-        assert normalize_description("PP*SPOTIFY") == "SPOTIFY"
-
-    @pytest.mark.unit
-    def test_strips_trailing_state_zip(self) -> None:
-        result = normalize_description("WHOLEFDS MKT AUSTIN TX 78701")
-        assert "78701" not in result
-
-    @pytest.mark.unit
-    def test_strips_trailing_city_state(self) -> None:
-        result = normalize_description("STARBUCKS SEATTLE WA")
-        assert "SEATTLE" not in result
-        assert "WA" not in result
-
-    @pytest.mark.unit
-    def test_strips_trailing_store_id(self) -> None:
-        result = normalize_description("TARGET 00012345")
-        assert "00012345" not in result
+class TestNormalizeDescriptionGoldens:
+    """Parametrized golden-case tests for normalize_description()."""
 
     @pytest.mark.unit
-    def test_preserves_core_name(self) -> None:
-        assert "STARBUCKS" in normalize_description("SQ *STARBUCKS #1234 SEATTLE WA")
+    @pytest.mark.parametrize("case", _load_normalize_cases(), ids=lambda c: c["id"])
+    def test_case(self, case: dict[str, Any]) -> None:
+        assert normalize_description(case["raw"]) == case["expected"]
 
     @pytest.mark.unit
-    def test_empty_string(self) -> None:
-        assert normalize_description("") == ""
+    def test_loader_rejects_duplicate_ids(self, tmp_path: Path) -> None:
+        """The loader must surface duplicate ids loudly at collection time."""
+        bad_yaml = tmp_path / "dup.yaml"
+        bad_yaml.write_text(
+            "cases:\n"
+            '  - {id: a, raw: "x", expected: "x"}\n'
+            '  - {id: a, raw: "y", expected: "y"}\n'
+        )
 
-    @pytest.mark.unit
-    def test_none_handled(self) -> None:
-        # normalize_description expects str but should handle edge cases
-        assert normalize_description("   ") == ""
-
-    @pytest.mark.unit
-    def test_normalizes_whitespace(self) -> None:
-        result = normalize_description("SQ  *  COFFEE   SHOP")
-        assert "  " not in result
+        with pytest.raises(ValueError, match="Duplicate case ids"):
+            _load_normalize_cases(bad_yaml)
 
 
 # ---------------------------------------------------------------------------

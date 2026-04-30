@@ -192,3 +192,25 @@ Each requires a small spec covering the file format, passphrase prompt UX, and r
 ## CLI shadowing trap: `cli/__init__.py` re-exports `main`
 
 `from .main import main` in `src/moneybin/cli/__init__.py` makes `moneybin.cli.main` resolve to the function, not the module. Tests that monkeypatch attributes on the module must use `sys.modules["moneybin.cli.main"]` or import via a different path. Consider renaming the entry-point function (e.g., `cli_entry`) so the module shape is unambiguous.
+
+## City-token stripping in `normalize_description` (post-PR #66)
+
+`_TRAILING_LOCATION` in `src/moneybin/services/_text.py` strips bare
+`ST ZIP` only — it deliberately leaves trailing city tokens in place
+(e.g. `WHOLEFDS MKT AUSTIN TX 78701` → `WHOLEFDS MKT AUSTIN`). The
+optional city group was removed in PR #66 review because it produced
+false positives on merchant tokens (`TARGET STORE NY 10001` → `TARGET`,
+`SHELL MART NY 10001` → `SHELL`). At the lexical level a trailing
+all-caps token is indistinguishable from a merchant descriptor.
+
+A correct fix likely needs one of:
+- A known-cities allowlist (US Census places ≥10k population is ~5k entries)
+- Two-pass: detect city using state+zip as anchor, then validate that
+  what remains is a plausible merchant token (heuristics on token
+  length, presence of known suffixes like `MKT`, `STORE`, etc.)
+
+Add goldens for both directions when fixed:
+- `WHOLEFDS MKT AUSTIN TX 78701` → `WHOLEFDS MKT` (city stripped)
+- `TARGET STORE NY 10001` → `TARGET STORE` (merchant token preserved)
+
+Flagged by claude[bot] and chatgpt-codex-connector in PR #66 review.

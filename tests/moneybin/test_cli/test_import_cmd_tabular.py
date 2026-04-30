@@ -47,7 +47,7 @@ class TestImportFileAccountName:
     def mock_import_file(self, mocker: Any) -> MagicMock:
         """Mock the import_file service function."""
         return mocker.patch(
-            "moneybin.services.import_service.import_file",
+            "moneybin.services.import_service.ImportService.import_file",
             return_value=_make_import_result(),
         )
 
@@ -68,7 +68,6 @@ class TestImportFileAccountName:
 
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
-            db=mock_get_database.return_value,
             file_path=csv_file,
             apply_transforms=True,
             institution=None,
@@ -136,7 +135,7 @@ class TestImportFileValidation:
         # Mock service so we don't need a real DB.
         mocker.patch("moneybin.cli.utils.get_database", return_value=MagicMock())
         mocker.patch(
-            "moneybin.services.import_service.import_file",
+            "moneybin.services.import_service.ImportService.import_file",
             return_value=_make_import_result(),
         )
 
@@ -157,7 +156,7 @@ class TestImportFileValidation:
 
         mocker.patch("moneybin.cli.utils.get_database", return_value=MagicMock())
         mocker.patch(
-            "moneybin.services.import_service.import_file",
+            "moneybin.services.import_service.ImportService.import_file",
             return_value=_make_import_result(),
         )
 
