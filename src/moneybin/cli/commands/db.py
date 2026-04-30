@@ -257,8 +257,12 @@ def run_query(
         help="Path to DuckDB database file (default: profile config)",
     ),
     output: Annotated[
-        Literal["text", "json"],
-        typer.Option("-o", "--output", help="Output format: text or json"),
+        Literal["text", "json", "csv", "markdown", "box"],
+        typer.Option(
+            "-o",
+            "--output",
+            help="Output format: text, json, csv, markdown, or box",
+        ),
     ] = "text",
     quiet: Annotated[  # noqa: ARG001 — query has no informational chatter to gate
         bool,
@@ -268,7 +272,14 @@ def run_query(
     """Execute a SQL query against the encrypted DuckDB database."""
     from moneybin.config import get_settings
 
-    extra_args: list[str] = ["-json" if output == "json" else "-table", "-c", sql]
+    output_flag = {
+        "text": "-table",
+        "json": "-json",
+        "csv": "-csv",
+        "markdown": "-markdown",
+        "box": "-box",
+    }[output]
+    extra_args: list[str] = [output_flag, "-c", sql]
 
     _run_duckdb_cli(
         database or get_settings().database.path,
