@@ -125,5 +125,4 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the JSONL artifact.
     stage unrelated unstaged files), commit, and push:
     - Commit message: `Fix scenario failures: <brief description>` with a bulleted
       body listing each scenario fixed and how
-    - Include `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
     - Push to the current branch's remote tracking branch
