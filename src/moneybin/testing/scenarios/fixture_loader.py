@@ -22,12 +22,12 @@ from moneybin.tables import (
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
 )
-from moneybin.testing.scenarios.loader import REPO_ROOT, FixtureSpec
+from moneybin.testing.scenarios.loader import FIXTURES_ROOT, FixtureSpec
 
 
 def load_fixture_into_db(db: Database, spec: FixtureSpec) -> None:
     """Load a fixture file described by ``spec`` into the matching raw table."""
-    path = (REPO_ROOT / spec.path).resolve()
+    path = (FIXTURES_ROOT / spec.path).resolve()
     df = pl.read_csv(path)
     source_file = str(path)
 

@@ -7,6 +7,10 @@ setup:
   years: 3
   fixtures: []
 
+# Trailing `transform` is intentional — see basic-full-pipeline.yaml for the
+# full explanation. Categories live in `app.transaction_categories`; the
+# fct_transactions SQLMesh model LEFT JOINs that table, so a second transform
+# is required to surface assigned categories for the accuracy evaluation.
 pipeline:
   - generate
   - transform

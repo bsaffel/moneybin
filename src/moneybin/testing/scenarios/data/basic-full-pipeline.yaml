@@ -7,6 +7,11 @@ setup:
   years: 1
   fixtures: []
 
+# The trailing `transform` is intentional: `categorize` writes to
+# `app.transaction_categories`, and `core.fct_transactions` (a SQLMesh model)
+# LEFT JOINs that table for its `category` column. Re-running transform
+# rematerializes fct_transactions so the assigned categories are visible to
+# the categorization_accuracy evaluation.
 pipeline:
   - generate
   - transform

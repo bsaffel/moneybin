@@ -6,10 +6,10 @@ setup:
   seed: 42
   years: 1
   fixtures:
-    - path: tests/fixtures/dedup/chase_amazon_overlap.csv
+    - path: dedup/chase_amazon_overlap.csv
       account: amazon-card
       source_type: csv
-    - path: tests/fixtures/dedup/chase_amazon_overlap_ofx.csv
+    - path: dedup/chase_amazon_overlap_ofx.csv
       account: amazon-card
       source_type: ofx
 

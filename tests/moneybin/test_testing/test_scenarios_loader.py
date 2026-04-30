@@ -48,14 +48,14 @@ def test_unknown_step_rejected() -> None:
 
 
 def test_path_traversal_rejected() -> None:
-    """Fixture paths escaping tests/fixtures/ are rejected."""
+    """Fixture paths escaping the bundled fixtures root are rejected."""
     bad = VALID.replace(
         "fixtures: []",
         "fixtures:\n    - path: ../../../etc/passwd\n      account: x\n      source_type: csv",
     )
     with pytest.raises(ScenarioValidationError) as exc:
         load_scenario_from_string(bad)
-    assert "tests/fixtures" in str(exc.value).lower()
+    assert "data/fixtures" in str(exc.value).lower()
 
 
 def test_threshold_min_required_for_evaluations() -> None:

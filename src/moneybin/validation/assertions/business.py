@@ -9,13 +9,12 @@ from moneybin.validation.assertions.relational import (
 )
 from moneybin.validation.result import AssertionResult
 
-# Transfers are identified by ``is_transfer = TRUE`` in the data model, not by
-# a literal category string. Excluding them via that flag (rather than
+# Each predicate matches *violations*, not valid rows. Transfers are
+# identified by ``is_transfer = TRUE`` in the data model, not by a literal
+# category string — excluding them via that flag (rather than
 # ``category != 'Transfer'``) avoids a NULL-NOT-IN dead path.
-_EXPENSE_CATEGORIES_NEGATIVE = (
-    "category != 'Income' AND amount > 0 AND is_transfer = FALSE"
-)
-_INCOME_CATEGORIES_POSITIVE = "category = 'Income' AND amount < 0"
+_EXPENSE_SIGN_VIOLATIONS = "category != 'Income' AND amount > 0 AND is_transfer = FALSE"
+_INCOME_SIGN_VIOLATIONS = "category = 'Income' AND amount < 0"
 
 
 def assert_sign_convention(conn: DuckDBPyConnection) -> AssertionResult:
@@ -23,7 +22,7 @@ def assert_sign_convention(conn: DuckDBPyConnection) -> AssertionResult:
     violations = int(
         conn.execute(
             "SELECT COUNT(*) FROM core.fct_transactions "  # noqa: S608  # constants are module-level strings, not user input
-            f"WHERE ({_EXPENSE_CATEGORIES_NEGATIVE}) OR ({_INCOME_CATEGORIES_POSITIVE})"
+            f"WHERE ({_EXPENSE_SIGN_VIOLATIONS}) OR ({_INCOME_SIGN_VIOLATIONS})"
         ).fetchone()[0]  # type: ignore[index]
     )
     return AssertionResult(

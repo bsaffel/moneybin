@@ -145,7 +145,9 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                     assertions=[preflight],
                     expectations=[],
                     evaluations=[],
-                    halted=f"pipeline step crashed: {exc}",
+                    # Use type name only — full str(exc) may carry amounts /
+                    # descriptions from local variables (PII rule).
+                    halted=f"pipeline step crashed: {type(exc).__name__}",
                 )
 
             assertions = [
@@ -167,7 +169,7 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                     assertions=[preflight, *assertions],
                     expectations=[],
                     evaluations=[],
-                    halted=f"expectations crashed: {exc}",
+                    halted=f"expectations crashed: {type(exc).__name__}",
                 )
             evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
 
@@ -201,6 +203,12 @@ def _bootstrap_database() -> Database:
     from moneybin.config import clear_settings_cache, set_current_profile
     from moneybin.services.profile_service import ProfileService
 
+    # Drop any pre-existing module singleton so we don't accidentally reuse
+    # a Database opened against the caller's profile/path. Without this, a
+    # long-lived process that already called ``get_database()`` would have
+    # the scenario run silently against the caller's data.
+    close_database()
+
     # Reset any previously cached settings/profile so subsequent calls pick
     # up the patched env vars.
     clear_settings_cache()
@@ -225,9 +233,9 @@ def _resolve_runtime_args(args: dict[str, Any], *, tmpdir: str) -> dict[str, Any
 def _run_assertion(
     spec: AssertionSpec, db: Database, *, tmpdir: str
 ) -> AssertionResult:
-    fn = _resolve_assertion(spec.fn)
     args = _resolve_runtime_args(spec.args, tmpdir=tmpdir)
     try:
+        fn = _resolve_assertion(spec.fn)
         result = (
             fn(db, **args)
             if spec.fn in _DATABASE_ASSERTION_FNS

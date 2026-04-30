@@ -22,7 +22,10 @@ VALID_STEP_NAMES = {
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-FIXTURES_ROOT = (REPO_ROOT / "tests" / "fixtures").resolve()
+# Fixtures live alongside the scenario YAMLs under package data so they're
+# bundled in wheel installs (no source checkout required to run shipped
+# scenarios). Paths in scenario YAML are resolved relative to this root.
+FIXTURES_ROOT = (Path(__file__).parent / "data" / "fixtures").resolve()
 
 
 class ScenarioValidationError(ValueError):
@@ -41,12 +44,13 @@ class FixtureSpec(BaseModel):
 
     @model_validator(mode="after")
     def _validate_path(self) -> FixtureSpec:
-        resolved = (REPO_ROOT / self.path).resolve()
+        resolved = (FIXTURES_ROOT / self.path).resolve()
         try:
             resolved.relative_to(FIXTURES_ROOT)
         except ValueError as exc:
             raise ValueError(
-                f"fixture path {self.path!r} must resolve under tests/fixtures/"
+                f"fixture path {self.path!r} must resolve under "
+                f"{FIXTURES_ROOT.relative_to(REPO_ROOT)}"
             ) from exc
         return self
 
