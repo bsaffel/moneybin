@@ -1,6 +1,6 @@
 # CLI Reference
 
-MoneyBin's CLI is organized by domain with commands in workflow order. Every command supports `--help` for detailed usage.
+MoneyBin's CLI is organized by domain in workflow order. Every command supports `--help`.
 
 ## Global Options
 
@@ -8,6 +8,8 @@ MoneyBin's CLI is organized by domain with commands in workflow order. Every com
 |--------|-------|-------------|
 | `--profile` | `-p` | Use a specific profile for this command |
 | `--verbose` | `-v` | Enable debug logging |
+
+Most query/list commands also accept `--output json` for machine-readable parity with the MCP server.
 
 ## Command Tree
 
@@ -21,7 +23,7 @@ moneybin
 │   ├── show         Show resolved settings
 │   └── set          Set a config value
 │
-├── import           Data import
+├── import           File import
 │   ├── file         Import a financial file (auto-detects type)
 │   ├── status       Summary of all imported data
 │   ├── history      List recent imports with batch details
@@ -31,6 +33,30 @@ moneybin
 │   ├── show-format  Show format details
 │   └── delete-format Delete a user-saved format
 │
+├── sync             Bank sync via moneybin-server (📐 designed)
+│   ├── login / logout
+│   ├── connect / disconnect
+│   ├── pull / status
+│   ├── rotate-key
+│   └── schedule {set,show,remove}
+│
+├── categorize       Categorization management
+│   ├── apply-rules  Run rules + merchants on uncategorized transactions
+│   ├── seed         Initialize default categories (Plaid PFCv2)
+│   ├── stats        Coverage statistics
+│   ├── list-rules   Display active manual rules
+│   ├── auto-review  List pending auto-rule proposals
+│   ├── auto-confirm Approve/reject auto-rule proposals
+│   ├── auto-rules   List active auto-generated rules
+│   └── auto-stats   Auto-rule health (active, pending, categorized)
+│
+├── matches          Dedup + transfer review
+│   ├── run          Run matcher against existing transactions
+│   ├── review       Review pending match proposals (interactive or flagged)
+│   ├── history      Show recent match decisions
+│   ├── undo         Reverse a match decision
+│   └── backfill     One-time scan of existing data for latent matches
+│
 ├── transform        SQLMesh pipeline
 │   ├── apply        Apply pending changes
 │   ├── plan         Preview what will change
@@ -39,14 +65,18 @@ moneybin
 │   ├── audit        Run data quality audits
 │   └── restate      Force recompute a model for a date range
 │
-├── categorize       Categorization management
-│   ├── apply-rules  Run rules on uncategorized transactions
-│   ├── seed         Initialize default categories (Plaid PFCv2)
-│   ├── stats        Coverage statistics
-│   └── list-rules   Display active rules
+├── track            Balance, net worth, budgets, recurring (🗓️/📐)
+│   ├── balance show
+│   ├── networth show
+│   ├── budget show
+│   ├── recurring show
+│   └── investments show
 │
 ├── stats            Observability
 │   └── show         Lifetime metric aggregates
+│
+├── export           Export to CSV/Excel/Sheets (🗓️ planned)
+│   └── run
 │
 ├── mcp              MCP server
 │   ├── serve        Start the MCP server
@@ -63,25 +93,24 @@ moneybin
 │   ├── info         Database metadata (size, tables, encryption, versions)
 │   ├── backup       Create timestamped backup
 │   ├── restore      Restore from a backup file
-│   ├── lock         Clear cached encryption key
-│   ├── unlock       Derive key from passphrase and cache
+│   ├── lock / unlock
 │   ├── key          Print the encryption key
 │   ├── rotate-key   Re-encrypt with a new key
-│   ├── ps           Show processes holding the database
-│   ├── kill         Kill processes holding the database
-│   └── migrate
-│       ├── apply    Apply pending schema migrations
-│       └── status   Show migration state and drift warnings
+│   ├── ps / kill    Inspect or kill processes holding the DB
+│   └── migrate {apply,status}
 │
 ├── logs             Log management
 │   ├── tail         View recent log entries (-f to follow)
 │   ├── path         Print log directory path
 │   └── clean        Delete old log files
 │
-└── synthetic        Test data generation
+└── synthetic        Test data + scenario verification
     ├── generate     Generate synthetic data for a persona
-    └── reset        Wipe and regenerate from scratch
+    ├── reset        Wipe and regenerate from scratch
+    └── verify       Run scenario suites (--list, --scenario, --all)
 ```
+
+Commands marked 📐 (designed) or 🗓️ (planned) reserve the namespace and print a pointer to the owning spec when invoked.
 
 ## Common Workflows
 
@@ -93,18 +122,23 @@ moneybin categorize seed
 moneybin import file ~/Downloads/checking.qfx
 ```
 
-### Import and categorize
+### Import, dedup, and categorize
 
 ```bash
 moneybin import file ~/Downloads/chase_may.csv --account-name "Chase Checking"
-moneybin categorize apply-rules
+moneybin matches review                # Review any pending dedup/transfer proposals
+moneybin categorize apply-rules        # Apply rules + merchants
+moneybin categorize auto-review        # Inspect auto-rule proposals
+moneybin categorize auto-confirm --approve-all
 moneybin categorize stats
 ```
+
+`import file` runs the matcher and rule-based categorization automatically. The explicit commands above are useful when reviewing pending work or tuning behavior.
 
 ### Query your data
 
 ```bash
-moneybin db query "SELECT category, SUM(amount) FROM core.fct_transactions GROUP BY category ORDER BY SUM(amount)"
+moneybin db query "SELECT category, SUM(amount) FROM core.fct_transactions GROUP BY 1"
 moneybin db shell
 ```
 
@@ -112,6 +146,14 @@ moneybin db shell
 
 ```bash
 moneybin mcp config generate --client claude-desktop --install
+```
+
+### Verify the pipeline (developer)
+
+```bash
+moneybin synthetic verify --list
+moneybin synthetic verify --scenario basic-full-pipeline
+moneybin synthetic verify --all --output json
 ```
 
 ### Database maintenance

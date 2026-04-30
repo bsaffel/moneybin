@@ -23,7 +23,7 @@ The shell and UI connect to the encrypted database transparently — no manual k
 
 ## MCP SQL Access
 
-The `run_read_query` MCP tool lets AI assistants execute arbitrary read-only SQL:
+The `sql.query` MCP tool lets AI assistants execute arbitrary read-only SQL:
 
 ```sql
 -- Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN are allowed
@@ -57,6 +57,8 @@ df = conn.execute("SELECT * FROM core.fct_transactions").fetchdf()
 |-------|-------------|-------------|
 | `core.fct_transactions` | All transactions, all sources, deduplicated | `transaction_id`, `date`, `amount`, `description`, `category`, `subcategory`, `account_id`, `source_type` |
 | `core.dim_accounts` | All accounts, all sources, deduplicated | `account_id`, `account_name`, `account_type`, `institution_name` |
+| `core.bridge_transfers` | Linked debit/credit pairs from transfer detection | `transfer_id`, `debit_transaction_id`, `credit_transaction_id`, `date_offset_days`, `amount` |
+| `meta.fct_transaction_provenance` | Per-transaction lineage to source rows | `transaction_id`, `source_transaction_id`, `source_type`, `source_origin`, `source_file`, `match_id` |
 
 ### Raw (source data, untouched)
 
@@ -73,11 +75,17 @@ df = conn.execute("SELECT * FROM core.fct_transactions").fetchdf()
 
 | Table | Description |
 |-------|-------------|
-| `app.categorization_rules` | Active auto-categorization rules |
-| `app.merchant_mappings` | Merchant name normalization mappings |
+| `app.categorization_rules` | Active rules (manual + auto-rules; `created_by` distinguishes) |
+| `app.merchants` | Merchant name normalization mappings |
 | `app.categories` | Category taxonomy |
+| `app.transaction_categories` | Manual per-transaction category overrides |
+| `app.transaction_notes` | User-attached notes on transactions |
 | `app.budgets` | Monthly budget targets |
-| `app.import_log` | Import batch tracking |
+| `app.match_decisions` | Dedup + transfer match decisions (status, reversal, replayed each transform) |
+| `app.proposed_rules` | Auto-rule proposals (tracking → pending → approved/rejected) |
+| `app.rule_deactivations` | Audit trail when override-driven self-healing deactivates a rule |
+| `app.metrics` | Persisted prometheus_client metric snapshots |
+| `raw.import_log` | Import batch tracking (file path, row counts, format, timestamp) |
 
 ## Example Queries
 
