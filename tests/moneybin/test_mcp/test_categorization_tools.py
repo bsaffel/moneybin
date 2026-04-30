@@ -5,8 +5,6 @@ Individual categorization logic is tested in test_categorization_service.py.
 These tests verify the MCP tool wiring, envelope format, and basic end-to-end.
 """
 
-import json
-
 import pytest
 
 from moneybin.mcp.namespaces import NamespaceRegistry
@@ -42,7 +40,7 @@ class TestCategorizeToolRegistration:
         tools = register_categorize_tools(registry)
         tool = next(t for t in tools if t.name == "categorize.stats")
         result = tool.fn()
-        parsed = json.loads(result)
+        parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
@@ -59,7 +57,7 @@ class TestCategorizeToolRegistration:
         tools = register_categorize_tools(registry)
 
         seed_tool = next(t for t in tools if t.name == "categorize.seed")
-        seed_result = json.loads(seed_tool.fn())
+        seed_result = seed_tool.fn().to_dict()
         assert "summary" in seed_result
         assert "data" in seed_result
         assert "seeded_count" in seed_result["data"]
@@ -70,7 +68,7 @@ class TestCategorizeToolRegistration:
         registry = NamespaceRegistry()
         tools = register_categorize_tools(registry)
         cat_tool = next(t for t in tools if t.name == "categorize.categories")
-        cat_result = json.loads(cat_tool.fn())
+        cat_result = cat_tool.fn().to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
         assert isinstance(cat_result["data"], list)

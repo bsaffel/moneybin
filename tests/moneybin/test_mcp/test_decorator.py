@@ -1,7 +1,6 @@
 # tests/moneybin/test_mcp/test_decorator.py
 """Tests for MCP tool decorator and sensitivity middleware."""
 
-import json
 from unittest.mock import patch
 
 import pytest
@@ -69,8 +68,11 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     def test_decorator_calls_log_tool_call(self) -> None:
         @mcp_tool(sensitivity="medium")
-        def my_tool() -> str:
-            return "result"
+        def my_tool() -> ResponseEnvelope:
+            return ResponseEnvelope(
+                summary=SummaryMeta(total_count=0, returned_count=0),
+                data=[],
+            )
 
         with patch("moneybin.mcp.decorator.log_tool_call") as mock_log:
             my_tool()
@@ -80,8 +82,12 @@ class TestMCPToolDecorator:
             assert args[1] == Sensitivity.MEDIUM
 
     @pytest.mark.unit
-    def test_decorator_returns_json_when_envelope(self) -> None:
-        """When a tool returns a ResponseEnvelope, decorator serializes to JSON."""
+    def test_decorator_returns_response_envelope(self) -> None:
+        """When a tool returns a ResponseEnvelope, decorator returns it directly.
+
+        fastmcp 3.x serializes Pydantic models (and dataclasses) to both
+        content and structured_content — returning the model object is correct.
+        """
 
         @mcp_tool(sensitivity="low")
         def my_tool() -> ResponseEnvelope:
@@ -91,18 +97,22 @@ class TestMCPToolDecorator:
             )
 
         result = my_tool()
-        assert isinstance(result, str)
-        parsed = json.loads(result)
-        assert "summary" in parsed
-        assert "data" in parsed
+        assert isinstance(result, ResponseEnvelope)
+        assert result.summary.total_count == 1
+        assert result.data == [{"value": 42}]
 
     @pytest.mark.unit
-    def test_decorator_passes_through_string(self) -> None:
-        """When a tool returns a plain string, decorator passes it through."""
+    def test_decorator_raises_type_error_for_non_envelope(self) -> None:
+        """Tools that return non-ResponseEnvelope raise TypeError.
+
+        fastmcp 3.x expects structured outputs; returning a plain string would
+        bypass the envelope contract.
+        """
+        import pytest
 
         @mcp_tool(sensitivity="low")
-        def my_tool() -> str:
-            return "plain string result"
+        def my_tool() -> str:  # type: ignore[return]
+            return "plain string result"  # type: ignore[return-value]
 
-        result = my_tool()
-        assert result == "plain string result"
+        with pytest.raises(TypeError, match="expected ResponseEnvelope"):
+            my_tool()

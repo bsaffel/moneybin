@@ -39,22 +39,15 @@ def sql_query(query: str) -> ResponseEnvelope:
         )
 
     db = get_database()
-    try:
-        # Security: This tool intentionally executes user-provided SQL.
-        # Parameterized queries are not applicable here — the entire query
-        # is user input. Safety relies on validate_read_only_query() above,
-        # which blocks write operations, file-access functions, and URL schemes.
-        result = db.execute(query)
-        columns = [desc[0] for desc in result.description]
-        rows = result.fetchmany(get_max_rows())
-        records = [dict(zip(columns, row, strict=False)) for row in rows]
-        return build_envelope(data=records, sensitivity="medium")
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on query execution
-        logger.exception("sql.query failed")
-        return build_envelope(
-            data={"error": "Query execution failed — check syntax and column names."},
-            sensitivity="low",
-        )
+    # Security: This tool intentionally executes user-provided SQL.
+    # Parameterized queries are not applicable here — the entire query
+    # is user input. Safety relies on validate_read_only_query() above,
+    # which blocks write operations, file-access functions, and URL schemes.
+    result = db.execute(query)
+    columns = [desc[0] for desc in result.description]
+    rows = result.fetchmany(get_max_rows())
+    records = [dict(zip(columns, row, strict=False)) for row in rows]
+    return build_envelope(data=records, sensitivity="medium")
 
 
 def register_sql_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:

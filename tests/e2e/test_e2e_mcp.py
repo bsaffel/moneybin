@@ -64,11 +64,6 @@ class TestMCPServerBoot:
                 assert "accounts.list" in tool_names
                 assert "moneybin.discover" in tool_names
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="Pending Phase 3-5 migration: tools return JSON strings; fastmcp 3.x "
-        "expects structured outputs matching output_schema. Fixed in Tasks 4-5.",
-    )
     async def test_server_invokes_tool(self, mcp_env: dict[str, str]) -> None:
         """MCP server can invoke a tool and return a valid response envelope."""
         from mcp import ClientSession

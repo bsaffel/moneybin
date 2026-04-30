@@ -6,8 +6,6 @@ migrated to v1 namespace-based tools. Individual tool logic is tested
 in the service layer tests — these test the registration and wiring.
 """
 
-import json
-
 import pytest
 
 from moneybin.mcp.namespaces import NamespaceRegistry
@@ -60,7 +58,7 @@ class TestV1ToolRegistration:
         tools = register_accounts_tools(registry)
         tool = next(t for t in tools if t.name == "accounts.list")
         result = tool.fn()
-        parsed = json.loads(result)
+        parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
@@ -76,6 +74,6 @@ class TestV1ToolRegistration:
         tools = register_sql_tools(registry)
         tool = next(t for t in tools if t.name == "sql.query")
         result = tool.fn(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
-        parsed = json.loads(result)
+        parsed = result.to_dict()
         assert "summary" in parsed
         assert parsed["data"][0]["cnt"] == 2

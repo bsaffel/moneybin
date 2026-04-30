@@ -1,15 +1,18 @@
-"""Tests for the MCP-side error handler decorator and error envelope."""
+"""Tests for error envelope building (formerly tested handle_mcp_errors decorator).
+
+The handle_mcp_errors decorator was deleted in the fastmcp 3.x migration.
+Error handling is now folded into the mcp_tool decorator. Tests for the new
+mcp_tool error-handling behavior live in tests/mcp/test_error_handling.py.
+
+This file retains envelope construction and serialization tests that belong
+in the moneybin unit test tree.
+"""
 
 import json
 
-import pytest
-
-from moneybin.database import DatabaseKeyError
 from moneybin.errors import UserError
-from moneybin.mcp.error_handler import handle_mcp_errors
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
-    SummaryMeta,
     build_envelope,
     build_error_envelope,
 )
@@ -39,58 +42,6 @@ def test_envelope_to_dict_omits_error_when_none() -> None:
     """Successful envelopes do not carry an `error` key in their dict."""
     env = build_envelope(data=[{"x": 1}], sensitivity="low")
     assert "error" not in env.to_dict()
-
-
-def test_handle_mcp_errors_returns_envelope_on_classified_exception() -> None:
-    """A classified exception becomes an error envelope."""
-
-    @handle_mcp_errors
-    def tool() -> ResponseEnvelope:
-        raise FileNotFoundError("missing.csv")
-
-    result = tool()
-    assert isinstance(result, ResponseEnvelope)
-    assert result.error is not None
-    assert result.error.code == "file_not_found"
-    assert "missing.csv" in result.error.message
-
-
-def test_handle_mcp_errors_passes_through_success() -> None:
-    """Successful returns are not modified by the decorator."""
-    success = ResponseEnvelope(
-        summary=SummaryMeta(total_count=1, returned_count=1),
-        data=[{"k": "v"}],
-    )
-
-    @handle_mcp_errors
-    def tool() -> ResponseEnvelope:
-        return success
-
-    assert tool() is success
-
-
-def test_handle_mcp_errors_reraises_unknown_exceptions() -> None:
-    """Unclassified exceptions propagate so the framework can return 500-equivalents."""
-
-    @handle_mcp_errors
-    def tool() -> ResponseEnvelope:
-        raise RuntimeError("internal bug")
-
-    with pytest.raises(RuntimeError, match="internal bug"):
-        tool()
-
-
-def test_handle_mcp_errors_classifies_database_key_error() -> None:
-    """DatabaseKeyError produces an envelope with the database_locked code."""
-
-    @handle_mcp_errors
-    def tool() -> ResponseEnvelope:
-        raise DatabaseKeyError("locked")
-
-    result = tool()
-    assert isinstance(result, ResponseEnvelope)
-    assert result.error is not None
-    assert result.error.code == "database_locked"
 
 
 def test_error_envelope_round_trips_through_json() -> None:

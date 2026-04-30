@@ -29,6 +29,7 @@ from collections.abc import Mapping, Sequence
 import duckdb
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -418,31 +419,24 @@ def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
         rule_id: The rule ID to deactivate.
     """
     db = get_database()
-    try:
-        row = db.execute(
-            f"""
-            UPDATE {CATEGORIZATION_RULES.full_name}
-            SET is_active = false, updated_at = CURRENT_TIMESTAMP
-            WHERE rule_id = ?
-            RETURNING rule_id
-            """,
-            [rule_id],
-        ).fetchone()
-        if row:
-            return build_envelope(
-                data={"rule_id": rule_id, "action": "deactivated"},
-                sensitivity="low",
-            )
+    row = db.execute(
+        f"""
+        UPDATE {CATEGORIZATION_RULES.full_name}
+        SET is_active = false, updated_at = CURRENT_TIMESTAMP
+        WHERE rule_id = ?
+        RETURNING rule_id
+        """,
+        [rule_id],
+    ).fetchone()
+    if row:
         return build_envelope(
-            data={"error": f"Rule {rule_id} not found"},
+            data={"rule_id": rule_id, "action": "deactivated"},
             sensitivity="low",
         )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception(f"delete_rule failed for {rule_id}")
-        return build_envelope(
-            data={"error": "Failed to delete rule — check logs for details."},
-            sensitivity="low",
-        )
+    return build_envelope(
+        data={"error": f"Rule {rule_id} not found"},
+        sensitivity="low",
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -555,29 +549,25 @@ def categorize_create_category(
             """,
             [cat_id, category, subcategory, description],
         )
-        sub = f" / {subcategory}" if subcategory else ""
-        return build_envelope(
-            data={
-                "category_id": cat_id,
-                "category": category,
-                "subcategory": subcategory,
-                "action": "created",
-                "display": f"{category}{sub}",
-            },
-            sensitivity="low",
-        )
     except duckdb.ConstraintException:
         sub = f" / {subcategory}" if subcategory else ""
-        return build_envelope(
-            data={"error": f"Category already exists: {category}{sub}"},
-            sensitivity="low",
-        )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("create_category failed")
-        return build_envelope(
-            data={"error": "Failed to create category — check logs for details."},
-            sensitivity="low",
-        )
+        raise UserError(
+            f"Category already exists: {category}{sub}",
+            code="CATEGORY_ALREADY_EXISTS",
+        ) from None
+    # Other DuckDB errors propagate to fastmcp's mask_error_details.
+
+    sub = f" / {subcategory}" if subcategory else ""
+    return build_envelope(
+        data={
+            "category_id": cat_id,
+            "category": category,
+            "subcategory": subcategory,
+            "action": "created",
+            "display": f"{category}{sub}",
+        },
+        sensitivity="low",
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -595,32 +585,25 @@ def categorize_toggle_category(
         is_active: True to enable, False to disable.
     """
     db = get_database()
-    try:
-        row = db.execute(
-            f"""
-            UPDATE {CATEGORIES.full_name}
-            SET is_active = ?
-            WHERE category_id = ?
-            RETURNING category_id
-            """,
-            [is_active, category_id],
-        ).fetchone()
-        if row:
-            action = "enabled" if is_active else "disabled"
-            return build_envelope(
-                data={"category_id": category_id, "action": action},
-                sensitivity="low",
-            )
+    row = db.execute(
+        f"""
+        UPDATE {CATEGORIES.full_name}
+        SET is_active = ?
+        WHERE category_id = ?
+        RETURNING category_id
+        """,
+        [is_active, category_id],
+    ).fetchone()
+    if row:
+        action = "enabled" if is_active else "disabled"
         return build_envelope(
-            data={"error": f"Category {category_id} not found"},
+            data={"category_id": category_id, "action": action},
             sensitivity="low",
         )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("toggle_category failed")
-        return build_envelope(
-            data={"error": "Failed to toggle category — check logs for details."},
-            sensitivity="low",
-        )
+    return build_envelope(
+        data={"error": f"Category {category_id} not found"},
+        sensitivity="low",
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -631,15 +614,8 @@ def categorize_seed() -> ResponseEnvelope:
     app.categories. Safe to call multiple times -- existing categories
     are not overwritten.
     """
-    try:
-        count = CategorizationService(get_database()).seed()
-        return SeedResult(seeded_count=count).to_envelope()
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("seed_categories failed")
-        return build_envelope(
-            data={"error": "Failed to seed categories — check logs for details."},
-            sensitivity="low",
-        )
+    count = CategorizationService(get_database()).seed()
+    return SeedResult(seeded_count=count).to_envelope()
 
 
 @mcp_tool(sensitivity="medium")
@@ -655,14 +631,7 @@ def categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
             ``summary.has_more`` flag indicates whether more proposals exist
             beyond the returned page.
     """
-    try:
-        result = AutoRuleService(get_database()).review(limit=limit)
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("categorize.auto_review failed")
-        return build_envelope(
-            data={"error": "Failed to load proposals — check logs for details."},
-            sensitivity="medium",
-        )
+    result = AutoRuleService(get_database()).review(limit=limit)
     return result.to_envelope()
 
 
@@ -680,17 +649,10 @@ def categorize_auto_confirm(
         approve: Proposal IDs to approve and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
     """
-    try:
-        result = AutoRuleService(get_database()).confirm(
-            approve=approve or [],
-            reject=reject or [],
-        )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("categorize.auto_confirm failed")
-        return build_envelope(
-            data={"error": "Failed to confirm proposals — check logs for details."},
-            sensitivity="medium",
-        )
+    result = AutoRuleService(get_database()).confirm(
+        approve=approve or [],
+        reject=reject or [],
+    )
     return result.to_envelope()
 
 
@@ -701,14 +663,7 @@ def categorize_auto_stats() -> ResponseEnvelope:
     Returns counts of active auto-rules, pending proposals, and
     transactions categorized by auto-rules.
     """
-    try:
-        data = AutoRuleService(get_database()).stats()
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("categorize.auto_stats failed")
-        return build_envelope(
-            data={"error": "Failed to load auto-rule stats — check logs for details."},
-            sensitivity="low",
-        )
+    data = AutoRuleService(get_database()).stats()
     return data.to_envelope()
 
 

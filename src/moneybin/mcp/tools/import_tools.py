@@ -100,17 +100,13 @@ def import_file(
                 "Use categorize.uncategorized to categorize new transactions",
             ],
         )
-    except (FileNotFoundError, ValueError) as e:
+    except ValueError as e:
         return build_envelope(
             data={"error": str(e)},
             sensitivity="low",
         )
-    except Exception:  # noqa: BLE001 — import pipeline raises varied exception types
-        logger.exception(f"Import failed: {Path(file_path).name!r}")
-        return build_envelope(
-            data={"error": "Import failed — check logs for details."},
-            sensitivity="low",
-        )
+    # FileNotFoundError propagates — mcp_tool decorator converts it to an error envelope.
+    # Other unclassified exceptions propagate to fastmcp's mask_error_details.
 
 
 @mcp_tool(sensitivity="low")
@@ -167,14 +163,10 @@ def import_csv_preview(file_path: str) -> ResponseEnvelope:
                 "Use import.list_formats for available named formats",
             ],
         )
-    except (FileNotFoundError, ValueError) as e:
+    except ValueError as e:
         return build_envelope(data={"error": str(e)}, sensitivity="low")
-    except Exception:  # noqa: BLE001 — import pipeline raises varied exception types
-        logger.exception(f"Preview failed: {Path(file_path).name!r}")
-        return build_envelope(
-            data={"error": "Preview failed — check logs for details."},
-            sensitivity="low",
-        )
+    # FileNotFoundError propagates — mcp_tool decorator converts it to an error envelope.
+    # Other unclassified exceptions propagate to fastmcp's mask_error_details.
 
 
 @mcp_tool(sensitivity="low")
@@ -191,30 +183,21 @@ def import_status(
         limit: Maximum number of records to return (default 20).
         import_id: Filter to a specific import ID for full details.
     """
-    try:
-        from moneybin.loaders.tabular_loader import TabularLoader
+    from moneybin.loaders.tabular_loader import TabularLoader
 
-        db = get_database()
-        loader = TabularLoader(db)
-        records = loader.get_import_history(
-            limit=min(limit, 200),
-            import_id=import_id,
-        )
-        return build_envelope(
-            data=records,
-            sensitivity="low",
-            actions=[
-                "Use import.file to import a new file",
-            ],
-        )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("import_status failed")
-        return build_envelope(
-            data={
-                "error": "Failed to retrieve import status — check logs for details."
-            },
-            sensitivity="low",
-        )
+    db = get_database()
+    loader = TabularLoader(db)
+    records = loader.get_import_history(
+        limit=min(limit, 200),
+        import_id=import_id,
+    )
+    return build_envelope(
+        data=records,
+        sensitivity="low",
+        actions=[
+            "Use import.file to import a new file",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -225,47 +208,40 @@ def import_list_formats() -> ResponseEnvelope:
     header signature for each format. Use ``import.csv_preview`` to test
     a format against a specific file.
     """
+    from moneybin.extractors.tabular.formats import (
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+    )
+
+    builtin = load_builtin_formats()
     try:
-        from moneybin.extractors.tabular.formats import (
-            load_builtin_formats,
-            load_formats_from_db,
-            merge_formats,
-        )
+        db = get_database()
+        formats = merge_formats(builtin, load_formats_from_db(db))
+    except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in
+        formats = builtin
 
-        builtin = load_builtin_formats()
-        try:
-            db = get_database()
-            formats = merge_formats(builtin, load_formats_from_db(db))
-        except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in
-            formats = builtin
-
-        format_list = [
-            {
-                "name": fmt.name,
-                "institution_name": fmt.institution_name,
-                "file_type": fmt.file_type,
-                "sign_convention": fmt.sign_convention,
-                "date_format": fmt.date_format,
-                "number_format": fmt.number_format,
-                "multi_account": fmt.multi_account,
-                "header_signature": fmt.header_signature,
-            }
-            for fmt in sorted(formats.values(), key=lambda f: f.name)
-        ]
-        return build_envelope(
-            data=format_list,
-            sensitivity="low",
-            actions=[
-                "Use import.csv_preview to test a format against a file",
-                "Use import.file with format_name to import using a specific format",
-            ],
-        )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("import_list_formats failed")
-        return build_envelope(
-            data={"error": "Failed to list formats — check logs for details."},
-            sensitivity="low",
-        )
+    format_list = [
+        {
+            "name": fmt.name,
+            "institution_name": fmt.institution_name,
+            "file_type": fmt.file_type,
+            "sign_convention": fmt.sign_convention,
+            "date_format": fmt.date_format,
+            "number_format": fmt.number_format,
+            "multi_account": fmt.multi_account,
+            "header_signature": fmt.header_signature,
+        }
+        for fmt in sorted(formats.values(), key=lambda f: f.name)
+    ]
+    return build_envelope(
+        data=format_list,
+        sensitivity="low",
+        actions=[
+            "Use import.csv_preview to test a format against a file",
+            "Use import.file with format_name to import using a specific format",
+        ],
+    )
 
 
 def register_import_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:

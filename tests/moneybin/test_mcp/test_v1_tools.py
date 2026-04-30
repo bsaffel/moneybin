@@ -1,8 +1,6 @@
 # tests/moneybin/test_mcp/test_v1_tools.py
 """Tests for v1 MCP tools."""
 
-import json
-
 import pytest
 
 from moneybin.mcp.namespaces import NamespaceRegistry
@@ -40,8 +38,10 @@ class TestSpendingSummaryTool:
         # Find spending.summary
         summary_tool = next(t for t in tools if t.name == "spending.summary")
         result = summary_tool.fn(months=3)
-        assert isinstance(result, str)
-        parsed = json.loads(result)
+        from moneybin.protocol.envelope import ResponseEnvelope
+
+        assert isinstance(result, ResponseEnvelope)
+        parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert "actions" in parsed
@@ -53,7 +53,7 @@ class TestSpendingSummaryTool:
         registry = NamespaceRegistry()
         tools = register_spending_tools(registry)
         summary_tool = next(t for t in tools if t.name == "spending.summary")
-        parsed = json.loads(summary_tool.fn(months=3))
+        parsed = summary_tool.fn(months=3).to_dict()
         data = parsed["data"]
         assert len(data) >= 1
         assert "period" in data[0]
