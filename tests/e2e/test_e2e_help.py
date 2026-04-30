@@ -43,6 +43,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["track", "investments"],
     ["export"],
     ["sync", "schedule"],
+    ["sync", "key"],
 ]
 
 

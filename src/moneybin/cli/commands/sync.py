@@ -8,6 +8,11 @@ app = typer.Typer(
     help="Sync financial data from external services",
     no_args_is_help=True,
 )
+key_app = typer.Typer(
+    help="Manage the sync server's encryption key",
+    no_args_is_help=True,
+)
+app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
 
 
@@ -62,8 +67,8 @@ def sync_status() -> None:
     _not_implemented("sync-overview.md")
 
 
-@app.command("rotate-key")
-def sync_rotate_key() -> None:
+@key_app.command("rotate")
+def sync_key_rotate() -> None:
     """Rotate E2E encryption key pair."""
     _not_implemented("sync-overview.md")
 

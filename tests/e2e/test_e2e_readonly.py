@@ -95,7 +95,7 @@ class TestStubCommands:
             ["sync", "disconnect"],
             ["sync", "pull"],
             ["sync", "status"],
-            ["sync", "rotate-key"],
+            ["sync", "key", "rotate"],
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],
             ["sync", "schedule", "remove"],
