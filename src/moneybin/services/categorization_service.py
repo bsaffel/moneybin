@@ -20,7 +20,7 @@ from typing import Any, Literal
 import duckdb
 
 from moneybin.database import Database, sqlmesh_context
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import normalize_description
 from moneybin.tables import (
     CATEGORIES,

@@ -12,8 +12,8 @@ import logging
 
 from moneybin.database import get_database
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.spending_service import SpendingService
 
 logger = logging.getLogger(__name__)

@@ -89,8 +89,8 @@ mcp = FastMCP("MoneyBin", instructions=..., mask_error_details=True)
 **Public exception imports:**
 ```python
 from fastmcp.exceptions import (
-    FastMCPError,        # base
-    ToolError,           # use to raise messages that reach the LLM
+    FastMCPError,  # base
+    ToolError,  # use to raise messages that reach the LLM
     ResourceError,
     PromptError,
     ValidationError,
@@ -145,6 +145,7 @@ Stack multiple `Visibility(...)` transforms; later transforms override earlier o
 from fastmcp import Context
 from fastmcp.server.transforms.visibility import enable_components, disable_components
 
+
 @mcp.tool
 async def discover(ctx: Context, namespace: str) -> str:
     await enable_components(ctx, tags={namespace})  # this session only
@@ -172,6 +173,7 @@ Calling `enable_components` automatically sends `ToolListChangedNotification` (a
 ```python
 from fastmcp import Context
 
+
 @mcp.tool
 async def my_tool(x: int, ctx: Context) -> str:  # any param annotated Context
     ...
@@ -186,18 +188,25 @@ The framework injects `Context` automatically when it sees the type annotation. 
 ```python
 server = FastMCP("Spike")
 
+
 @server.tool
-def public_tool(x: int) -> int: return x * 2
+def public_tool(x: int) -> int:
+    return x * 2
+
 
 @server.tool(tags={"hidden"})
-def secret_tool(x: int) -> int: return x * 100
+def secret_tool(x: int) -> int:
+    return x * 100
+
 
 server.add_transform(Visibility(False, tags={"hidden"}))
 
 async with Client(server) as client:
-    print(await client.list_tools())                # -> ['public_tool']
-    await client.call_tool("secret_tool", {"x": 5}) # -> ToolError: Unknown tool: 'secret_tool'
-    await client.call_tool("public_tool", {"x": 5}) # -> 10
+    print(await client.list_tools())  # -> ['public_tool']
+    await client.call_tool(
+        "secret_tool", {"x": 5}
+    )  # -> ToolError: Unknown tool: 'secret_tool'
+    await client.call_tool("public_tool", {"x": 5})  # -> 10
 ```
 
 Output verbatim:
@@ -234,12 +243,12 @@ Concretely, the `mcp_tool` decorator at `src/moneybin/mcp/decorator.py:50` shoul
 ```python
 result = fn(*args, **kwargs)
 if isinstance(result, ResponseEnvelope):
-    return result.to_json()       # str -> wrapped as {"result": "..."}
+    return result.to_json()  # str -> wrapped as {"result": "..."}
 return result
 ```
 to (no transformation; let fastmcp serialize):
 ```python
-return fn(*args, **kwargs)        # ResponseEnvelope -> structured_content directly
+return fn(*args, **kwargs)  # ResponseEnvelope -> structured_content directly
 ```
 …provided `ResponseEnvelope` is a Pydantic model (it is). Tool function return types should be annotated `-> ResponseEnvelope` so fastmcp can derive `output_schema`.
 

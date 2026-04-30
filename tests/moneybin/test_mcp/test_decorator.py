@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope, SummaryMeta
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
+from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
 
 class TestSensitivity:

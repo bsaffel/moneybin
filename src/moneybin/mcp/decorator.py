@@ -25,8 +25,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from moneybin.mcp.envelope import ResponseEnvelope
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
+from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 

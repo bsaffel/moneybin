@@ -10,8 +10,8 @@ from __future__ import annotations
 import logging
 
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 logger = logging.getLogger(__name__)
 

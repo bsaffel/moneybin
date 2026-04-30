@@ -6,13 +6,13 @@ import pytest
 
 from moneybin.database import DatabaseKeyError
 from moneybin.errors import UserError
-from moneybin.mcp.envelope import (
+from moneybin.mcp.error_handler import handle_mcp_errors
+from moneybin.protocol.envelope import (
     ResponseEnvelope,
     SummaryMeta,
     build_envelope,
     build_error_envelope,
 )
-from moneybin.mcp.error_handler import handle_mcp_errors
 
 
 def test_build_error_envelope_carries_user_error() -> None:

@@ -239,9 +239,9 @@ mcp = FastMCP(
     "MoneyBin",
     instructions=(...),
     mask_error_details=True,  # Per ADR-008: masks unclassified exceptions to a generic
-                              # ToolError. Domain exceptions are caught by the mcp_tool
-                              # decorator (Task 4) and converted to error envelopes
-                              # before they reach the server boundary.
+    # ToolError. Domain exceptions are caught by the mcp_tool
+    # decorator (Task 4) and converted to error envelopes
+    # before they reach the server boundary.
 )
 ```
 
@@ -332,6 +332,7 @@ Create `tests/mcp/__init__.py` (empty) if missing, then `tests/mcp/test_error_ha
 
 ```python
 """Verify mcp_tool decorator converts domain exceptions to error envelopes."""
+
 from __future__ import annotations
 
 import pytest
@@ -416,7 +417,9 @@ def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             result = fn(*args, **kwargs)
         except UserError as exc:
             return build_error_envelope(
-                code=exc.code, message=str(exc), sensitivity=sensitivity,
+                code=exc.code,
+                message=str(exc),
+                sensitivity=sensitivity,
             )
         except DatabaseKeyError as exc:
             return build_error_envelope(
@@ -440,6 +443,7 @@ def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
     return wrapper
+
 
 return decorator
 ```
@@ -575,6 +579,7 @@ Wrapping them in a ResponseEnvelope happens here, at the transport boundary.
 The CLI uses the same adapters so MCP and `--output json` produce the same
 shape.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -628,6 +633,7 @@ return result.to_envelope()
 
 # NEW
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+
 result = service.auto_review(...)
 return auto_review_envelope(result)
 ```
@@ -640,6 +646,7 @@ Find every CLI command that handles auto-review/auto-confirm/auto-stats results.
 
 ```python
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+
 envelope = auto_review_envelope(result)
 if output == "json":
     typer.echo(envelope.to_json())
@@ -702,8 +709,7 @@ def test_mcp_tool_supports_domain() -> None:
     from moneybin.mcp.decorator import mcp_tool
 
     @mcp_tool(sensitivity="medium", domain="categorize")
-    def example_tool() -> None:
-        ...
+    def example_tool() -> None: ...
 
     assert getattr(example_tool, "_mcp_domain", None) == "categorize"
 
@@ -713,8 +719,7 @@ def test_mcp_tool_default_domain_is_none() -> None:
     from moneybin.mcp.decorator import mcp_tool
 
     @mcp_tool(sensitivity="low")
-    def example_tool() -> None:
-        ...
+    def example_tool() -> None: ...
 
     assert getattr(example_tool, "_mcp_domain", None) is None
 ```
@@ -847,6 +852,7 @@ Create `tests/mcp/test_visibility.py`. The fastmcp test client API per spike not
 Replaces NamespaceRegistry-based progressive disclosure with fastmcp 3.x
 tag-based visibility transforms.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -927,7 +933,9 @@ Each tool module currently has a registration function like:
 
 ```python
 def register_spending_tools(registry: NamespaceRegistry) -> None:
-    registry.register(ToolDefinition(name="spending.summary", description="...", fn=spending_summary))
+    registry.register(
+        ToolDefinition(name="spending.summary", description="...", fn=spending_summary)
+    )
     ...
 ```
 
@@ -1020,6 +1028,7 @@ Replace `src/moneybin/mcp/tools/discover.py` body with:
 
 ```python
 """moneybin.discover — per-session progressive disclosure via tag enablement."""
+
 from __future__ import annotations
 
 import logging
@@ -1173,6 +1182,7 @@ The current e2e tests likely use a custom client wrapper or a pytest fixture tha
 
 ```python
 from fastmcp import Client
+
 async with Client(mcp_server) as client:
     tools = await client.list_tools()
     result = await client.call_tool("name", {"arg": "value"})
@@ -1206,8 +1216,7 @@ async def all_namespaces_discovered(mcp_client):
 Run the failing e2e tests (from Task 7 Step 9) and add `all_namespaces_discovered` to their signatures:
 
 ```python
-async def test_categorize_bulk_workflow(all_namespaces_discovered):
-    ...
+async def test_categorize_bulk_workflow(all_namespaces_discovered): ...
 ```
 
 For tests that ALREADY exercise discovery as part of their workflow (e.g., they call `moneybin.discover` directly), don't add the fixture — they should remain explicit.

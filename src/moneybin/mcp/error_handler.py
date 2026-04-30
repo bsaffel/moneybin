@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 
 from moneybin.errors import classify_user_error
-from moneybin.mcp.envelope import ResponseEnvelope, build_error_envelope
+from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
 logger = logging.getLogger(__name__)
 
