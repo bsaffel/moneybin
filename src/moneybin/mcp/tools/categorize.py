@@ -30,6 +30,11 @@ import duckdb
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
+from moneybin.mcp.adapters.categorize_adapters import (
+    auto_confirm_envelope,
+    auto_review_envelope,
+    auto_stats_envelope,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -632,7 +637,7 @@ def categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
             beyond the returned page.
     """
     result = AutoRuleService(get_database()).review(limit=limit)
-    return result.to_envelope()
+    return auto_review_envelope(result)
 
 
 @mcp_tool(sensitivity="medium")
@@ -653,7 +658,7 @@ def categorize_auto_confirm(
         approve=approve or [],
         reject=reject or [],
     )
-    return result.to_envelope()
+    return auto_confirm_envelope(result)
 
 
 @mcp_tool(sensitivity="low")
@@ -664,7 +669,7 @@ def categorize_auto_stats() -> ResponseEnvelope:
     transactions categorized by auto-rules.
     """
     data = AutoRuleService(get_database()).stats()
-    return data.to_envelope()
+    return auto_stats_envelope(data)
 
 
 def register_categorize_tools(

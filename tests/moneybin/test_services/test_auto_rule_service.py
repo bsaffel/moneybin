@@ -15,6 +15,7 @@ import pytest
 from moneybin import config as config_module
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
+from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.tables import PROPOSED_RULES
 from tests.moneybin.db_helpers import create_core_tables
@@ -315,7 +316,7 @@ def test_review_caps_at_limit_and_reports_total(real_db: Database) -> None:
     result = svc.review(limit=2)
     assert len(result.proposals) == 2
     assert result.total_count == 5
-    envelope = result.to_envelope()
+    envelope = auto_review_envelope(result)
     assert envelope.summary.has_more is True
     assert envelope.summary.total_count == 5
 
@@ -331,4 +332,13 @@ def test_review_uses_configured_default_when_limit_omitted(real_db: Database) ->
     result = svc.review()
     assert len(result.proposals) == 3
     assert result.total_count == 3
-    assert result.to_envelope().summary.has_more is False
+    assert auto_review_envelope(result).summary.has_more is False
+
+
+def test_auto_review_result_is_pure_data_carrier() -> None:
+    """AutoReviewResult must not depend on transport-layer types."""
+    from moneybin.services.auto_rule_service import AutoReviewResult
+
+    assert not hasattr(AutoReviewResult, "to_envelope"), (
+        "to_envelope must live in mcp/adapters/, not on the service dataclass"
+    )

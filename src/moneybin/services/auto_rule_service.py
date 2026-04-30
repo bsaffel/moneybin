@@ -20,7 +20,6 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
     CategorizationService,
@@ -63,17 +62,6 @@ class AutoReviewResult:
     proposals: list[dict[str, Any]]
     total_count: int = 0
 
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for the categorize.auto_review tool."""
-        return build_envelope(
-            data=self.proposals,
-            sensitivity="medium",
-            total_count=self.total_count,
-            actions=[
-                "Use categorize.auto_confirm to approve or reject proposals",
-            ],
-        )
-
 
 @dataclass(slots=True)
 class AutoConfirmResult:
@@ -85,19 +73,6 @@ class AutoConfirmResult:
     newly_categorized: int = 0
     rule_ids: list[str] = field(default_factory=list)
 
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for the categorize.auto_confirm tool."""
-        return build_envelope(
-            data={
-                "approved": self.approved,
-                "rejected": self.rejected,
-                "skipped": self.skipped,
-                "newly_categorized": self.newly_categorized,
-                "rule_ids": self.rule_ids,
-            },
-            sensitivity="medium",
-        )
-
 
 @dataclass(slots=True)
 class AutoStatsResult:
@@ -106,17 +81,6 @@ class AutoStatsResult:
     active_auto_rules: int = 0
     pending_proposals: int = 0
     transactions_categorized: int = 0
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for the categorize.auto_stats tool."""
-        return build_envelope(
-            data={
-                "active_auto_rules": self.active_auto_rules,
-                "pending_proposals": self.pending_proposals,
-                "transactions_categorized": self.transactions_categorized,
-            },
-            sensitivity="low",
-        )
 
 
 class AutoRuleService:
