@@ -101,17 +101,25 @@ class ExpectationSpec(BaseModel):
         "gold_record_count",
         "category_for_transaction",
         "provenance_for_transaction",
+        "transfers_match_ground_truth",
     ]
     description: str = ""
 
 
 class GatesSpec(BaseModel):
-    """Selectors controlling which checks gate scenario success."""
+    """Selectors controlling which checks gate scenario success.
+
+    Currently only the ``"all"`` selector is supported — every assertion,
+    evaluation, and expectation must pass. A subset selector (``list[str]``)
+    can be added when there's a real need for partial gating; until then
+    the schema stays narrow so authors can't write something the runner
+    silently ignores.
+    """
 
     model_config = ConfigDict(extra="forbid")
-    required_assertions: Literal["all"] | list[str] = "all"
-    required_evaluations: Literal["all"] | list[str] = "all"
-    required_expectations: Literal["all"] | list[str] = "all"
+    required_assertions: Literal["all"] = "all"
+    required_evaluations: Literal["all"] = "all"
+    required_expectations: Literal["all"] = "all"
 
 
 class Scenario(BaseModel):

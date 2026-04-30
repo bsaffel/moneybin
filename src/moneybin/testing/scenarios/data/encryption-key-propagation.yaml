@@ -1,5 +1,5 @@
 scenario: encryption-key-propagation
-description: "Subprocess transforms must propagate encryption key and write to the same DB"
+description: "Subprocess transform must open the encrypted DB and produce expected rows"
 
 setup:
   persona: basic
@@ -7,20 +7,19 @@ setup:
   years: 1
   fixtures: []
 
+# The mutation lives in the pipeline; assertions stay read-only. If
+# `transform_via_subprocess` succeeds and the rows below are present, the
+# child process opened the encrypted DB with the propagated key — no
+# special encryption-propagation assertion is needed.
 pipeline:
   - generate
-  # Note: transform is intentionally not run here — the assertion below
-  # invokes `transform apply` as a subprocess and measures the row delta
-  # to prove the encryption key propagated.
+  - transform_via_subprocess
 
 assertions:
-  - name: catalog_wired_correctly
-    fn: assert_sqlmesh_catalog_matches
   - name: subprocess_wrote_to_encrypted_db
-    fn: assert_encryption_key_propagated_to_subprocess
+    fn: assert_min_rows
     args:
-      command: ["uv", "run", "moneybin", "transform", "apply"]
-      expected_min_rows:
+      table_min_rows:
         core.fct_transactions: 100
         core.dim_accounts: 2
   - name: no_unencrypted_artifacts

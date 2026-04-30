@@ -11,11 +11,39 @@ from moneybin.testing.scenarios.expectations import (
 from moneybin.testing.scenarios.loader import ExpectationSpec
 
 
-def test_match_decision_passes_when_pair_matched() -> None:
-    """match_decision passes when all source txns resolve to one gold record."""
+def _mock_db(
+    *, provenance_rows: list[tuple], confidence: float | None = None
+) -> MagicMock:
+    """Build a MagicMock Database that returns provenance rows then a confidence row.
+
+    The match_decision verifier issues two queries on the matched path:
+    a join against provenance + match_decisions, then a single
+    match_confidence lookup. ``side_effect`` returns a fresh cursor mock
+    per call so each ``db.execute(...)`` gets its own ``fetchall`` /
+    ``fetchone`` payload.
+    """
     db = MagicMock()
-    # Both source rows resolve to the same gold record id.
-    db.execute.return_value.fetchall.return_value = [("gold-1",)]
+    cursors: list[MagicMock] = []
+    join_cursor = MagicMock()
+    join_cursor.fetchall.return_value = provenance_rows
+    cursors.append(join_cursor)
+    if confidence is not None:
+        conf_cursor = MagicMock()
+        conf_cursor.fetchone.return_value = (confidence,)
+        cursors.append(conf_cursor)
+    db.execute.side_effect = cursors
+    return db
+
+
+def test_match_decision_passes_when_pair_matched() -> None:
+    """match_decision passes when sources collapse to one gold row above the floor."""
+    db = _mock_db(
+        provenance_rows=[
+            ("SYN20240315001", "ofx", "gold-1", "dedup"),
+            ("TBL_2024-03-15_AMZN_47.99", "csv", "gold-1", "dedup"),
+        ],
+        confidence=0.95,
+    )
     spec = ExpectationSpec.model_validate({
         "kind": "match_decision",
         "description": "Chase OFX == Amazon CSV",
@@ -27,13 +55,55 @@ def test_match_decision_passes_when_pair_matched() -> None:
             },
         ],
         "expected": "matched",
-        "expected_match_type": "same_record",
+        "expected_match_type": "dedup",
         "expected_confidence_min": 0.9,
     })
     results = verify_expectations(db, [spec])
-    assert results[0].passed
+    assert results[0].passed, results[0].details
     assert isinstance(results[0], ExpectationResult)
     assert results[0].kind == "match_decision"
+
+
+def test_match_decision_fails_when_confidence_below_floor() -> None:
+    """match_decision fails when collapse is correct but confidence is too low."""
+    db = _mock_db(
+        provenance_rows=[
+            ("A", "ofx", "gold-1", "dedup"),
+            ("B", "csv", "gold-1", "dedup"),
+        ],
+        confidence=0.5,
+    )
+    spec = ExpectationSpec.model_validate({
+        "kind": "match_decision",
+        "transactions": [
+            {"source_transaction_id": "A", "source_type": "ofx"},
+            {"source_transaction_id": "B", "source_type": "csv"},
+        ],
+        "expected": "matched",
+        "expected_confidence_min": 0.9,
+    })
+    [r] = verify_expectations(db, [spec])
+    assert not r.passed
+    assert r.details["actual_confidence"] == 0.5
+
+
+def test_match_decision_fails_when_source_missing_from_provenance() -> None:
+    """match_decision fails when a listed source isn't in provenance at all."""
+    db = _mock_db(
+        provenance_rows=[("A", "ofx", "gold-1", "dedup")],
+        confidence=0.95,
+    )
+    spec = ExpectationSpec.model_validate({
+        "kind": "match_decision",
+        "transactions": [
+            {"source_transaction_id": "A", "source_type": "ofx"},
+            {"source_transaction_id": "B", "source_type": "csv"},
+        ],
+        "expected": "matched",
+    })
+    [r] = verify_expectations(db, [spec])
+    assert not r.passed
+    assert ["B", "csv"] in r.details["missing_sources"]
 
 
 def test_gold_record_count_fails_when_actual_differs() -> None:
@@ -107,8 +177,12 @@ def test_provenance_for_transaction_passes_when_sources_match() -> None:
 
 def test_match_decision_fails_when_sources_resolve_to_different_records() -> None:
     """match_decision (expected=matched) fails when txns map to >1 gold record."""
-    db = MagicMock()
-    db.execute.return_value.fetchall.return_value = [("gold-1",), ("gold-2",)]
+    db = _mock_db(
+        provenance_rows=[
+            ("A", "ofx", "gold-1", "dedup"),
+            ("B", "csv", "gold-2", "dedup"),
+        ],
+    )
     spec = ExpectationSpec.model_validate({
         "kind": "match_decision",
         "description": "should not match",

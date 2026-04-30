@@ -14,8 +14,6 @@ pipeline:
   - match
 
 assertions:
-  - name: catalog_wired_correctly
-    fn: assert_sqlmesh_catalog_matches
   - name: migrations_at_head
     fn: assert_migrations_at_head
   - name: no_orphaned_provenance

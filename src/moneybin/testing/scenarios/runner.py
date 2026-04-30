@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 # DuckDB connection. Everything else takes a connection.
 _DATABASE_ASSERTION_FNS = frozenset({
     "assert_sqlmesh_catalog_matches",
-    "assert_encryption_key_propagated_to_subprocess",
     "assert_migrations_at_head",
+    "assert_min_rows",
     "assert_no_unencrypted_db_files",
 })
 
@@ -181,9 +181,11 @@ def _run_assertion(
     fn = _resolve_assertion(spec.fn)
     args = _resolve_runtime_args(spec.args, tmpdir=tmpdir)
     try:
-        if spec.fn in _DATABASE_ASSERTION_FNS:
-            return fn(db, **args)
-        return fn(db.conn, **args)
+        result = (
+            fn(db, **args)
+            if spec.fn in _DATABASE_ASSERTION_FNS
+            else fn(db.conn, **args)
+        )
     except Exception as exc:  # noqa: BLE001 — surface as structured failure
         logger.exception(f"assertion {spec.name} crashed")
         return AssertionResult(
@@ -192,6 +194,13 @@ def _run_assertion(
             details={"args": args},
             error=str(exc),
         )
+    # Preserve the scenario-author's name so envelope output matches the YAML.
+    return AssertionResult(
+        name=spec.name,
+        passed=result.passed,
+        details=result.details,
+        error=result.error,
+    )
 
 
 def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:

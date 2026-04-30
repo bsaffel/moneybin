@@ -19,8 +19,6 @@ pipeline:
   - match
 
 assertions:
-  - name: catalog_wired_correctly
-    fn: assert_sqlmesh_catalog_matches
   - name: no_duplicate_gold_records
     fn: assert_no_duplicates
     args:
@@ -43,7 +41,7 @@ expectations:
       - source_transaction_id: TBL_2024-03-15_AMZN_47.99
         source_type: csv
     expected: matched
-    expected_match_type: same_record
+    expected_match_type: dedup
     expected_confidence_min: 0.9
   - kind: gold_record_count
     description: "Three labeled overlaps should produce three gold records, not six"

@@ -10,8 +10,8 @@ from moneybin.validation.assertions.distributional import (
     assert_unique_value_count,
 )
 from moneybin.validation.assertions.infrastructure import (
-    assert_encryption_key_propagated_to_subprocess,
     assert_migrations_at_head,
+    assert_min_rows,
     assert_no_unencrypted_db_files,
     assert_sqlmesh_catalog_matches,
 )
@@ -34,8 +34,8 @@ __all__ = [
     "assert_columns_exist",
     "assert_date_continuity",
     "assert_distribution_within_bounds",
-    "assert_encryption_key_propagated_to_subprocess",
     "assert_migrations_at_head",
+    "assert_min_rows",
     "assert_no_duplicates",
     "assert_no_nulls",
     "assert_no_orphans",

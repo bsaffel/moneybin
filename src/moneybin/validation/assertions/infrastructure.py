@@ -1,24 +1,25 @@
 """Infrastructure assertions — verify wiring invariants, not data shape.
 
 These primitives bind to a ``Database`` instance (not just a raw connection)
-because they must read ``db.path``, inherit env vars into subprocess children,
-and verify SQLMesh's adapter binding.
+because they must read ``db.path`` and verify SQLMesh's adapter binding.
+
+Assertions are read-only: they observe state, never mutate it. Mutating
+work (subprocess invocations, schema changes) belongs in pipeline steps,
+which separate "what happened" from "did it land correctly".
 
 Failure modes these assertions catch:
 
 - SQLMesh writing to an unencrypted ``memory.*`` catalog instead of the
   encrypted profile DB.
-- Subprocess invocations that drop the encryption key (no rows land).
-- Stray ``.duckdb`` files left in temp dirs after a test (sign of an
+- Stray plaintext ``.duckdb`` files left in temp dirs (sign of an
   unencrypted leak).
 - A migrated DB that's behind the latest on-disk migration.
+- A populated table failing to meet an expected minimum row count.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import subprocess  # noqa: S404  — explicit command lists, never shell=True
 from pathlib import Path
 from typing import Any
 
@@ -85,57 +86,23 @@ def _resolve_adapter_path(ctx: Any) -> str:
     return str(Path(file_value).resolve())
 
 
-def assert_encryption_key_propagated_to_subprocess(
-    db: Database,
-    *,
-    command: list[str],
-    expected_min_rows: dict[str, int],
-    env: dict[str, str] | None = None,
-    timeout: int = 300,
-) -> AssertionResult:
-    """Run ``command`` as a subprocess and verify rows landed in ``db``.
+def assert_min_rows(db: Database, *, table_min_rows: dict[str, int]) -> AssertionResult:
+    """Assert each table has at least the specified number of rows.
 
-    The subprocess inherits the parent environment (so the encryption-key
-    env var or profile selection propagates), then we re-query the same
-    encrypted database and confirm row deltas meet the expected minimums.
-
-    A passing result proves both that the subprocess could open the
-    encrypted database and that it wrote the expected rows.
+    Read-only: counts rows, never mutates. A missing table contributes 0
+    rows — callers asserting against not-yet-materialized tables get a
+    deterministic failure rather than a query error.
     """
-    from moneybin.database import close_database, get_database
-
-    pre_counts = {table: _count(db, table) for table in expected_min_rows}
-    # Release the DuckDB file lock so the subprocess can open the same DB.
-    close_database()
-    try:
-        proc = subprocess.run(  # noqa: S603  — explicit command list, not shell
-            command,
-            env={**os.environ, **(env or {})},
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    finally:
-        db = get_database()
-    post_counts = {table: _count(db, table) for table in expected_min_rows}
-    deltas = {
-        table: post_counts[table] - pre_counts[table] for table in expected_min_rows
-    }
+    counts = {table: _count(db, table) for table in table_min_rows}
     failures = {
-        table: {"min_required": expected_min_rows[table], "delta": deltas[table]}
-        for table in expected_min_rows
-        if deltas[table] < expected_min_rows[table]
+        table: {"min_required": table_min_rows[table], "actual": counts[table]}
+        for table in table_min_rows
+        if counts[table] < table_min_rows[table]
     }
     return AssertionResult(
-        name="encryption_key_propagated_to_subprocess",
-        passed=proc.returncode == 0 and not failures,
-        details={
-            "returncode": proc.returncode,
-            "deltas": deltas,
-            "failures": failures,
-            "stderr_tail": proc.stderr[-500:] if proc.stderr else "",
-        },
+        name="min_rows",
+        passed=not failures,
+        details={"counts": counts, "failures": failures},
     )
 
 
@@ -143,9 +110,8 @@ def _count(db: Database, table: str) -> int:
     """Return ``COUNT(*)`` for a fully-qualified table name.
 
     Identifier validated against DuckDB's catalog before interpolation.
-    A table that doesn't exist yet returns 0 — callers measuring deltas
-    around a pipeline step (e.g., subprocess transform) need pre-counts
-    even before the table has been materialized.
+    Tables that don't yet exist return 0 so callers can assert against
+    expected post-pipeline state without query errors.
     """
     # Include both tables and views — core.fct_transactions is a VIEW.
     catalog_rows = db.execute(
@@ -178,6 +144,11 @@ def assert_no_unencrypted_db_files(
     encrypted file raises. A plaintext file in a profile data directory
     means a code path bypassed the ``Database`` abstraction (which always
     attaches via ``ENCRYPTION_KEY``).
+
+    Note: this is the rare case where the failure mode of an external
+    library *is* the success path. The scenario's own encrypted DB lives
+    under ``tmpdir`` and is correctly skipped because opening without a
+    key raises — that's exactly what "encrypted, not leaked" looks like.
     """
     import duckdb
 

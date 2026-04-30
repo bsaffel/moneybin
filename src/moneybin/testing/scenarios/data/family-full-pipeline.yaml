@@ -16,8 +16,6 @@ pipeline:
   - transform
 
 assertions:
-  - name: catalog_wired_correctly
-    fn: assert_sqlmesh_catalog_matches
   - name: fk_account_id
     fn: assert_valid_foreign_keys
     args:

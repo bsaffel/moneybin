@@ -34,45 +34,113 @@ def verify_expectations(
 
 
 def _verify_match_decision(db: Database, spec: ExpectationSpec) -> ExpectationResult:
-    """Verify that all listed source txns resolve to one (or distinct) gold rows."""
+    """Verify that all listed source txns resolve to one (or distinct) gold rows.
+
+    Strict matched-branch semantics — all four conditions are gating:
+
+    1. **Coverage**: every listed (source_transaction_id, source_type) is
+       present in ``meta.fct_transaction_provenance``.
+    2. **Collapse**: those provenance rows all point to exactly one gold
+       ``transaction_id`` in ``core.fct_transactions``.
+    3. **Confidence**: the gold row's ``match_confidence`` meets or
+       exceeds ``expected_confidence_min``.
+    4. **Match type**: when ``expected_match_type`` is set, the
+       provenance row's underlying ``app.match_decisions.match_type``
+       must equal it. Currently only ``dedup`` is reachable through this
+       path (the provenance view filters to dedup), but the validation
+       guards against future widening of that filter.
+
+    For ``expected: not_matched`` the criterion is simpler: the listed
+    sources resolve to two or more distinct gold rows.
+    """
     body = spec.model_dump()
     txns = body["transactions"]
     expected_match_type = body.get("expected_match_type")
     confidence_floor = float(body.get("expected_confidence_min", 0.0))
     expected = body.get("expected", "matched")
 
-    # Build a row-IN-(VALUES ...) clause with one (?,?) placeholder pair per txn.
-    # The placeholder count is derived from a typed list, never from user-supplied
-    # SQL — values themselves are bound via `?` parameters.
+    if expected_match_type is not None and expected_match_type not in {
+        "dedup",
+        "transfer",
+    }:
+        return ExpectationResult(
+            name=spec.description or "match_decision",
+            kind="match_decision",
+            passed=False,
+            details={"reason": f"unknown expected_match_type: {expected_match_type!r}"},
+        )
+
+    # Row-IN-(VALUES ...) clause: placeholder count derived from a typed list,
+    # values bound via `?`.
     placeholders = ",".join(["(?, ?)"] * len(txns))
     params: list[str] = []
     for t in txns:
         params.extend([t["source_transaction_id"], t["source_type"]])
     sql = f"""
-        SELECT DISTINCT transaction_id
-        FROM meta.fct_transaction_provenance
-        WHERE (source_transaction_id, source_type) IN (VALUES {placeholders})
+        SELECT
+          p.source_transaction_id,
+          p.source_type,
+          p.transaction_id,
+          md.match_type
+        FROM meta.fct_transaction_provenance AS p
+        LEFT JOIN app.match_decisions AS md ON md.match_id = p.match_id
+        WHERE (p.source_transaction_id, p.source_type) IN (VALUES {placeholders})
     """  # noqa: S608 — placeholders is a typed-list count, values are bound via ?
     rows = db.execute(sql, params).fetchall()
 
-    if expected == "matched":
-        passed = len(rows) == 1
-    else:  # expected == "not_matched"
-        passed = len(rows) >= 2
+    found_pairs = {(r[0], r[1]) for r in rows}
+    expected_pairs = {(t["source_transaction_id"], t["source_type"]) for t in txns}
+    missing = sorted(expected_pairs - found_pairs)
+    gold_ids = sorted({r[2] for r in rows})
+    match_types = {r[3] for r in rows if r[3] is not None}
 
-    # TODO: enforce expected_match_type and expected_confidence_min once we
-    # surface match_type / confidence on the provenance row. For now these are
-    # logged in details but not asserted.
+    details: dict[str, Any] = {
+        "expected": expected,
+        "gold_record_ids": gold_ids,
+        "missing_sources": [list(p) for p in missing],
+        "match_types": sorted(match_types),
+        "expected_match_type": expected_match_type,
+        "confidence_floor": confidence_floor,
+    }
+
+    if expected != "matched":
+        # not_matched: listed sources must resolve to ≥2 distinct gold rows.
+        # Coverage isn't required — a missing source is itself "not matched".
+        return ExpectationResult(
+            name=spec.description or "match_decision",
+            kind="match_decision",
+            passed=len(gold_ids) >= 2,
+            details=details,
+        )
+
+    if missing or len(gold_ids) != 1:
+        return ExpectationResult(
+            name=spec.description or "match_decision",
+            kind="match_decision",
+            passed=False,
+            details=details,
+        )
+
+    gold_id = gold_ids[0]
+    confidence_row = db.execute(
+        "SELECT match_confidence FROM core.fct_transactions WHERE transaction_id = ?",
+        [gold_id],
+    ).fetchone()
+    actual_confidence = (
+        float(confidence_row[0])
+        if confidence_row is not None and confidence_row[0] is not None
+        else 0.0
+    )
+    details["actual_confidence"] = actual_confidence
+
+    confidence_ok = actual_confidence >= confidence_floor
+    type_ok = expected_match_type is None or match_types == {expected_match_type}
+
     return ExpectationResult(
         name=spec.description or "match_decision",
         kind="match_decision",
-        passed=passed,
-        details={
-            "expected": expected,
-            "gold_record_ids": [r[0] for r in rows],
-            "expected_match_type": expected_match_type,
-            "confidence_floor": confidence_floor,
-        },
+        passed=confidence_ok and type_ok,
+        details=details,
     )
 
 
@@ -169,9 +237,69 @@ def _verify_provenance_for_transaction(
     )
 
 
+def _verify_transfers_match_ground_truth(
+    db: Database, spec: ExpectationSpec
+) -> ExpectationResult:
+    """Assert every labeled transfer pair lands as one ``transfer_pair_id``.
+
+    Reads ``synthetic.ground_truth`` for transfer pairs (two source rows
+    sharing a ``transfer_pair_id``), maps each gold ``source_transaction_id``
+    forward through ``prep.int_transactions__matched`` to its
+    ``core.fct_transactions.transaction_id``, and asserts both legs of each
+    labeled pair end up under the same non-null ``transfer_pair_id``.
+
+    Complements ``score_transfer_detection`` (graded F1) with a binary
+    all-or-nothing pass/fail signal — useful when you want a regression
+    that drops even one labeled pair to fail the scenario.
+    """
+    rows = db.execute("""
+        WITH gold_pairs AS (
+            SELECT transfer_pair_id, source_transaction_id
+            FROM synthetic.ground_truth
+            WHERE transfer_pair_id IS NOT NULL
+        )
+        SELECT
+            g.transfer_pair_id,
+            g.source_transaction_id,
+            t.transaction_id,
+            t.transfer_pair_id AS predicted_pair
+        FROM gold_pairs g
+        LEFT JOIN prep.int_transactions__matched m
+          ON m.source_transaction_id = g.source_transaction_id
+        LEFT JOIN core.fct_transactions t
+          ON t.transaction_id = m.transaction_id
+    """).fetchall()
+
+    pairs: dict[Any, list[tuple[Any, Any]]] = {}
+    for gold_pair_id, source_id, _txn_id, predicted_pair in rows:
+        pairs.setdefault(gold_pair_id, []).append((source_id, predicted_pair))
+
+    failures: list[dict[str, Any]] = []
+    for gold_pair_id, legs in pairs.items():
+        predicted_pair_ids = {p for _src, p in legs}
+        # Pass criteria: exactly one non-null predicted_pair_id, shared by both legs.
+        if None in predicted_pair_ids or len(predicted_pair_ids) != 1:
+            failures.append({
+                "gold_transfer_pair_id": gold_pair_id,
+                "legs": [{"source_id": s, "predicted_pair_id": p} for s, p in legs],
+            })
+
+    return ExpectationResult(
+        name=spec.description or "transfers_match_ground_truth",
+        kind="transfers_match_ground_truth",
+        passed=not failures,
+        details={
+            "labeled_pair_count": len(pairs),
+            "failure_count": len(failures),
+            "failures": failures[:10],  # cap output; full count in failure_count
+        },
+    )
+
+
 _VERIFIERS: dict[str, Callable[[Database, ExpectationSpec], ExpectationResult]] = {
     "match_decision": _verify_match_decision,
     "gold_record_count": _verify_gold_record_count,
     "category_for_transaction": _verify_category_for_transaction,
     "provenance_for_transaction": _verify_provenance_for_transaction,
+    "transfers_match_ground_truth": _verify_transfers_match_ground_truth,
 }
