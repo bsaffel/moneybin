@@ -21,78 +21,94 @@ After connecting, you can ask your AI assistant things like:
 - *"Import this CSV file and set up categorization rules"*
 - *"How much did I pay in taxes last year?"*
 - *"Show me my monthly income vs expenses trend"*
-- *"Look for unusual or suspicious transactions in the last month"*
 
-## Available Tools
+## Tool Catalog
 
-The MCP server exposes 30+ tools across these domains:
+Tools are organized into domain namespaces. Names are stable — AI clients call `<domain>.<action>`.
 
-### Query & Analysis
-
-| Tool | Description |
-|------|-------------|
-| `query_transactions` | Search transactions with date, amount, payee, and account filters |
-| `get_monthly_summary` | Income vs expenses summary by month |
-| `get_spending_by_category` | Spending breakdown by category for a month |
-| `get_account_balances` | Most recent balance for each account |
-| `get_budget_status` | Budget vs actual spending comparison |
-| `find_recurring_transactions` | Detect subscriptions and regular charges |
-| `get_w2_summary` | W-2 tax data (wages, withholding, employer info) |
-| `get_categorization_stats` | Categorization coverage statistics |
-| `list_accounts` | All financial accounts with type and institution |
-| `list_institutions` | Connected financial institutions |
-| `list_categories` | Active category taxonomy |
-| `list_categorization_rules` | Active auto-categorization rules |
-| `list_merchants` | Merchant name mappings |
-
-### Import
+### accounts
 
 | Tool | Description |
 |------|-------------|
-| `import_file` | Import a financial data file (OFX, CSV, Excel, etc.) |
-| `import_preview` | Preview file structure and column mapping (dry run) |
-| `import_history` | List past imports with batch details |
-| `import_revert` | Undo an import batch |
-| `list_formats` | Available tabular import formats |
+| `accounts.list` | All financial accounts with type and institution |
+| `accounts.balances` | Most recent balance for each account |
 
-### Categorization
+### transactions
 
 | Tool | Description |
 |------|-------------|
-| `get_uncategorized_transactions` | Find transactions needing categorization |
-| `categorize_transaction` | Assign a category (auto-creates merchant mapping) |
-| `bulk_categorize` | Categorize many transactions in one call |
-| `create_categorization_rule` | Create an auto-categorization rule |
-| `bulk_create_categorization_rules` | Create multiple rules at once |
-| `create_merchant_mapping` | Map raw description to clean merchant name |
-| `bulk_create_merchant_mappings` | Create multiple merchant mappings at once |
-| `create_category` | Create a custom category or subcategory |
-| `toggle_category` | Enable or disable a category |
-| `seed_categories` | Initialize default category taxonomy |
-| `delete_categorization_rule` | Remove a categorization rule |
+| `transactions.search` | Search with date, amount, payee, account, and category filters |
+| `transactions.recurring` | Detect subscriptions and regular charges |
 
-### Budget
+### spending
 
 | Tool | Description |
 |------|-------------|
-| `set_budget` | Create or update a monthly budget for a category |
+| `spending.summary` | Income vs expenses summary by month |
+| `spending.by_category` | Spending breakdown by category for a period |
 
-### Database
+### categorize
 
 | Tool | Description |
 |------|-------------|
-| `list_tables` | List all tables and views in the database |
-| `describe_table` | Show columns, types, and row count for a table |
-| `run_read_query` | Execute arbitrary read-only SQL (power user) |
+| `categorize.categories` | List active category taxonomy |
+| `categorize.rules` | List active categorization rules |
+| `categorize.merchants` | List merchant name mappings |
+| `categorize.stats` | Categorization coverage statistics |
+| `categorize.uncategorized` | Find transactions needing categorization |
+| `categorize.bulk` | Categorize many transactions in one call (auto-creates merchant mapping) |
+| `categorize.create_rules` | Create one or many categorization rules |
+| `categorize.delete_rule` | Remove a rule |
+| `categorize.create_merchants` | Create one or many merchant mappings |
+| `categorize.create_category` | Create a custom category or subcategory |
+| `categorize.toggle_category` | Enable or disable a category |
+| `categorize.seed` | Initialize default category taxonomy (Plaid PFCv2) |
+| `categorize.auto_review` | List pending auto-rule proposals |
+| `categorize.auto_confirm` | Approve or reject auto-rule proposals |
+| `categorize.auto_stats` | Auto-rule health (active, pending, transactions covered) |
+
+### import
+
+| Tool | Description |
+|------|-------------|
+| `import.file` | Import a financial data file (auto-detects format) |
+| `import.csv_preview` | Preview structure and column mapping (dry run) |
+| `import.list_formats` | Available tabular import formats and saved profiles |
+| `import.status` | Summary of all imported data |
+
+### budget
+
+| Tool | Description |
+|------|-------------|
+| `budget.set` | Create or update a monthly budget for a category |
+| `budget.status` | Budget vs actual spending comparison |
+
+### tax
+
+| Tool | Description |
+|------|-------------|
+| `tax.w2` | W-2 summary (wages, withholding, employer info) for a year |
+
+### sql
+
+| Tool | Description |
+|------|-------------|
+| `sql.query` | Execute arbitrary read-only SQL (power user) |
+
+### moneybin
+
+| Tool | Description |
+|------|-------------|
+| `moneybin.discover` | Tool catalog and capability discovery for AI clients |
 
 ```bash
-# See all registered tools with full descriptions
+# See all registered tools with full descriptions and schemas
 moneybin mcp list-tools
 ```
 
 ## Prompt Templates
 
-Prompt templates guide AI assistants through multi-step financial workflows. Each template provides structured instructions and context so the AI knows which tools to call and in what order.
+Prompt templates guide AI assistants through multi-step financial workflows. Each provides structured instructions and context so the AI knows which tools to call and in what order.
 
 | Prompt | Description |
 |--------|-------------|
@@ -107,9 +123,12 @@ Prompt templates guide AI assistants through multi-step financial workflows. Eac
 | `transaction_search` | Find transactions matching a description |
 
 ```bash
-# See all registered prompts with descriptions
 moneybin mcp list-prompts
 ```
+
+## Response Envelope
+
+Every tool returns the standard response envelope: a structured `data` payload, a `meta` block (timing, row counts, sensitivity tier), and an optional `errors` list. The `--output json` flag on equivalent CLI commands produces the same envelope, so MCP and CLI consumers can share parsing logic.
 
 ## Server Management
 
