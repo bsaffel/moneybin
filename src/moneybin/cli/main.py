@@ -262,7 +262,7 @@ app.add_typer(
     help="Generate and manage synthetic financial data for testing",
 )
 app.add_typer(track_app, name="track", help="Balance tracking and net worth")
-app.add_typer(stats.app, name="stats", help="Show lifetime metric aggregates")
+app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(
     mcp.app,

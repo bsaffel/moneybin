@@ -1,6 +1,8 @@
 """Stats command for MoneyBin CLI.
 
 Displays lifetime metric aggregates from the app.metrics table.
+This is a leaf command (no subcommands) registered directly on the
+root app — see `moneybin.cli.main`.
 """
 
 import json
@@ -15,14 +17,8 @@ from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(
-    help="Show lifetime metric aggregates",
-    no_args_is_help=True,
-)
 
-
-@app.command("show")
-def stats_show(
+def stats_command(
     since: Annotated[
         str | None,
         typer.Option("--since", help="Time window (e.g., 7d, 24h)"),
@@ -33,12 +29,15 @@ def stats_show(
     ] = None,
     output: Annotated[
         Literal["text", "json"],
-        typer.Option("--output", help="Output format: text or json"),
+        typer.Option("-o", "--output", help="Output format: text or json"),
     ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
 ) -> None:
     """Display lifetime metric aggregates."""
     with handle_cli_errors() as db:
-        # Build query with optional filters
         where_clauses: list[str] = []
         params: list[str | datetime] = []
 
@@ -53,7 +52,6 @@ def stats_show(
             params.append(cutoff)
 
         if metric:
-            # Escape LIKE metacharacters so _ and % match literally
             escaped = metric.replace("!", "!!").replace("%", "!%").replace("_", "!_")
             where_clauses.append("metric_name LIKE ? ESCAPE '!'")
             params.append(f"%{escaped}%")
@@ -63,7 +61,6 @@ def stats_show(
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
         try:
-            # Use latest snapshot per metric+labels (not SUM — values are cumulative)
             rows = db.execute(
                 f"""
                 SELECT metric_name, metric_type, labels,
@@ -87,7 +84,7 @@ def stats_show(
                 )
                 WHERE rn = 1
                 ORDER BY metric_name
-                """,  # noqa: S608 — where_sql is built from validated fragments, not user input
+                """,  # noqa: S608 — where_sql is built from validated fragments
                 params if params else None,
             ).fetchall()
         except Exception:  # noqa: BLE001 — app.metrics table may not exist yet
@@ -112,10 +109,10 @@ def stats_show(
             return
 
         if not rows:
-            typer.echo("No metrics recorded yet. Run some operations first.")
+            if not quiet:
+                typer.echo("No metrics recorded yet. Run some operations first.")
             return
 
-        # Human-readable output
         for row in rows:
             name, metric_type, _labels, value, count, _last = row
             display_name = name.replace("moneybin_", "").replace("_", " ").title()
