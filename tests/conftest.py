@@ -8,12 +8,16 @@ Linux during sqlglot GC.
 
 Setting ``MAX_FORK_WORKERS=1`` before SQLMesh imports tells it to use a
 synchronous in-process executor — model loading runs single-threaded within
-each xdist worker, but tests still parallelize across workers. Net win is
-~5x on the integration suite vs. running it serially.
+each xdist worker, but tests still parallelize across workers. Net win on
+the integration suite is ~5x vs. running it serially.
+
+Assigned unconditionally (not via ``setdefault``) so an externally exported
+``MAX_FORK_WORKERS`` can't silently re-enable the forking pool and reintroduce
+the segfault.
 """
 
 from __future__ import annotations
 
 import os
 
-os.environ.setdefault("MAX_FORK_WORKERS", "1")
+os.environ["MAX_FORK_WORKERS"] = "1"
