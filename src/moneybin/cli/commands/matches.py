@@ -51,9 +51,9 @@ def matches_run(
                 logger.info("No new matches found")
 
             if not skip_transform and result.auto_merged:
-                from moneybin.services.import_service import run_transforms
+                from moneybin.services.import_service import ImportService
 
-                run_transforms()
+                ImportService(db).run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None
@@ -205,9 +205,9 @@ def matches_review(
                     break
 
         if accepted_any and not skip_transform:
-            from moneybin.services.import_service import run_transforms
+            from moneybin.services.import_service import ImportService
 
-            run_transforms()
+            ImportService(db).run_transforms()
 
 
 @app.command("history")
@@ -305,9 +305,9 @@ def matches_backfill(
                 logger.info("Run 'moneybin matches review' when ready")
 
             if not skip_transform and result.auto_merged:
-                from moneybin.services.import_service import run_transforms
+                from moneybin.services.import_service import ImportService
 
-                run_transforms()
+                ImportService(db).run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None
