@@ -29,7 +29,7 @@ class TestImportFileCommand:
     def mock_import_file(self, mocker: Any) -> MagicMock:
         """Mock the import_file service function."""
         mock = mocker.patch(
-            "moneybin.services.import_service.import_file",
+            "moneybin.services.import_service.ImportService.import_file",
             return_value=ImportResult(
                 file_path="test.ofx",
                 file_type="ofx",
@@ -61,7 +61,6 @@ class TestImportFileCommand:
         result = runner.invoke(app, ["file", str(test_file)])
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
-            db=mock_get_database.return_value,
             file_path=test_file,
             apply_transforms=True,
             institution=None,
@@ -95,7 +94,6 @@ class TestImportFileCommand:
         result = runner.invoke(app, ["file", str(test_file), "--skip-transform"])
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
-            db=mock_get_database.return_value,
             file_path=test_file,
             apply_transforms=False,
             institution=None,
@@ -131,7 +129,6 @@ class TestImportFileCommand:
         )
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
-            db=mock_get_database.return_value,
             file_path=test_file,
             apply_transforms=True,
             institution="Wells Fargo",

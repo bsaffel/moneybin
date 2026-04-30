@@ -27,7 +27,7 @@ def test_tabular_import_preserves_description(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Importing a CSV must round-trip every description into core.fct_transactions."""
-    from moneybin.services.import_service import import_file
+    from moneybin.services.import_service import ImportService
 
     secret_store = MagicMock()
     secret_store.get_key.return_value = "integration-test-key-0123456789abcdef"
@@ -46,7 +46,9 @@ def test_tabular_import_preserves_description(
     fixture = FIXTURES_DIR / "standard.csv"
     assert fixture.exists(), f"missing fixture: {fixture}"
 
-    result = import_file(db, fixture, account_name="checking", auto_accept=True)
+    result = ImportService(db).import_file(
+        fixture, account_name="checking", auto_accept=True
+    )
     assert result.transactions > 0, "fixture should yield transactions"
     assert result.core_tables_rebuilt, "transforms should have run"
 

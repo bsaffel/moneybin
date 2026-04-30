@@ -4,11 +4,11 @@ MoneyBin uses a three-layer medallion architecture powered by [SQLMesh](https://
 
 ## Three-Layer Architecture
 
-```
-Raw (raw.*)          Staging (prep.*)         Core (core.*)
------------          ---------------          -------------
-Untouched data  -->  Light cleaning,     -->  Canonical, deduplicated,
-from extractors      type casting (views)     multi-source (tables)
+```mermaid
+graph LR
+    R["Raw (raw.*)<br/>Untouched data<br/>from extractors"] --> S["Staging (prep.*)<br/>Light cleaning,<br/>type casting (views)"]
+    S --> M["Matching<br/>(dedup + transfers)"]
+    M --> C["Core (core.*)<br/>Canonical, deduplicated,<br/>multi-source (tables)"]
 ```
 
 ### Raw Layer (`raw.*`)
@@ -24,9 +24,9 @@ Exact data from file extractors and loaders. Never modified after import.
 | `raw.tabular_accounts` | Tabular account metadata |
 | `raw.w2_forms` | W-2 PDF tax data |
 
-### Staging Layer (`prep.*`)
+### Staging Layer (`prep.stg_*`)
 
-Light cleaning and type casting. One view per raw source. These are DuckDB views, not materialized tables — they compute on the fly from raw data.
+Light cleaning and type casting. One view per raw source. DuckDB views — they recompute from raw data on each transform.
 
 | View | Purpose |
 |------|---------|
@@ -37,6 +37,16 @@ Light cleaning and type casting. One view per raw source. These are DuckDB views
 | `prep.stg_tabular__transactions` | Clean tabular transactions |
 | `prep.stg_tabular__accounts` | Clean tabular accounts |
 
+### Matching Intermediate Views (`prep.int_*`)
+
+Sit between staging and core, implementing the union → match → merge flow that produces the golden record. Also DuckDB views.
+
+| View | Purpose |
+|------|---------|
+| `prep.int_transactions__unioned` | All sources unioned with `source_type` |
+| `prep.int_transactions__matched` | Unioned rows annotated with accepted match decisions |
+| `prep.int_transactions__merged` | Golden-record merge — one winning row per matched cluster |
+
 ### Core Layer (`core.*`)
 
 Canonical, deduplicated, multi-source tables. All consumers (MCP server, CLI, direct SQL) read from core.
@@ -44,56 +54,71 @@ Canonical, deduplicated, multi-source tables. All consumers (MCP server, CLI, di
 | Table | Purpose |
 |-------|---------|
 | `core.dim_accounts` | All accounts from all sources, deduplicated |
-| `core.fct_transactions` | All transactions from all sources, deduplicated, with categorization |
+| `core.fct_transactions` | All transactions, deduplicated, with categorization |
+| `core.bridge_transfers` | Linked debit/credit pairs from transfer detection |
+| `meta.fct_transaction_provenance` | Per-transaction lineage: which source rows merged into the golden record |
+
+## Matching: Dedup and Transfers
+
+The matching engine runs after staging and before core materialization. It identifies two kinds of relationships:
+
+- **Dedup matches** — the same transaction imported from two sources (e.g., the OFX statement and a Mint CSV export). One canonical row wins; the other is suppressed in core.
+- **Transfer matches** — a debit on one account paired with the offsetting credit on another (e.g., credit-card payment from checking). Linked in `core.bridge_transfers` so spending reports don't double-count.
+
+Both go through a review/accept/reject workflow with full undo. See the [matching specs](../specs/matching-overview.md) for the four-tier scoring model.
+
+```bash
+moneybin matches run                   # Run matcher against existing data
+moneybin matches review                # Interactive review of pending proposals
+moneybin matches review --accept-all   # Non-interactive bulk accept
+moneybin matches history               # Recent decisions
+moneybin matches undo <match-id>       # Reverse a decision
+moneybin matches backfill              # One-time scan of all existing data
+```
+
+`moneybin import file` runs the matcher automatically; the standalone commands are for reviewing pending work or tuning thresholds.
 
 ## Key Design Decisions
 
 - **One canonical table per entity.** Consumers never query raw or staging directly.
-- **Multi-source union.** Core models `UNION ALL` from every staging source with a `source_type` column tracking origin (`ofx`, `csv`, `tsv`, `excel`, `parquet`, etc.).
-- **Dedup in core.** `ROW_NUMBER()` windows handle within-source duplicates.
-- **Adding a data source** means writing staging views and adding a CTE to the relevant core model. No consumer changes needed.
+- **Multi-source union, then match.** Core unions every staging source (`UNION ALL` with a `source_type` column), then applies match decisions to choose a golden record per cluster.
+- **Match decisions are persisted, not recomputed.** Accept/reject/undo state lives in `app.match_decisions` and is replayed on every transform — review work is durable.
+- **Adding a data source** means writing staging views and adding a CTE to the relevant intermediate model. No consumer changes needed.
 - **Accounting sign convention.** Negative = expense, positive = income. `DECIMAL(18,2)` for amounts, `DATE` for dates.
 
 ## SQLMesh Transforms
 
-SQLMesh manages the transformation pipeline. The pipeline runs automatically after each `moneybin import file` command unless `--skip-transform` is specified.
+SQLMesh manages the transformation pipeline. It runs automatically after each `moneybin import file` unless `--skip-transform` is specified.
 
 ```bash
-# Apply all pending changes (rebuild core tables from raw data)
-moneybin transform apply
-
-# Preview what will change before applying
-moneybin transform plan
-
-# Check current model state
-moneybin transform status
-
-# Validate model SQL without running
-moneybin transform validate
-
-# Run data quality audits
-moneybin transform audit
-
-# Force recompute a model for a date range
-moneybin transform restate
+moneybin transform apply       # Apply pending changes (rebuild from raw data)
+moneybin transform plan        # Preview changes before applying
+moneybin transform status      # Current model state
+moneybin transform validate    # Check model SQL parses correctly
+moneybin transform audit       # Run data quality audits
+moneybin transform restate     # Force recompute a model for a date range
 ```
 
 ### Model Files
 
-SQLMesh models live under `sqlmesh/models/`:
-
 ```
 sqlmesh/models/
-├── prep/           # Staging views (1:1 with raw sources)
+├── prep/                                  # Staging views (1:1 with raw + intermediate)
 │   ├── stg_ofx__transactions.sql
 │   ├── stg_ofx__accounts.sql
 │   ├── stg_ofx__balances.sql
 │   ├── stg_ofx__institutions.sql
 │   ├── stg_tabular__transactions.sql
-│   └── stg_tabular__accounts.sql
-└── core/           # Canonical tables (multi-source, deduplicated)
-    ├── dim_accounts.sql
-    └── fct_transactions.sql
+│   ├── stg_tabular__accounts.sql
+│   ├── int_transactions__unioned.sql
+│   ├── int_transactions__matched.sql
+│   └── int_transactions__merged.sql
+├── core/                                  # Canonical tables
+│   ├── dim_accounts.sql
+│   ├── fct_transactions.sql
+│   └── bridge_transfers.sql
+└── meta/                                  # Lineage and provenance
+    └── fct_transaction_provenance.sql
 ```
 
-Each model is a plain SQL file with a `MODEL()` header that declares dependencies, materialization strategy, and scheduling.
+Each model is a plain SQL file with a `MODEL()` header that declares dependencies, materialization, and scheduling.
