@@ -13,7 +13,7 @@ proposal/approval/deactivation lifecycle and depends on this module's
 import logging
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -329,7 +329,7 @@ class CategorizationService:
     # -- Categorization core --
 
     def bulk_categorize(
-        self, items: Sequence[Mapping[str, str | None]]
+        self, items: Sequence[BulkCategorizationItem]
     ) -> BulkCategorizationResult:
         """Assign categories to multiple transactions with merchant auto-creation.
 
@@ -341,7 +341,9 @@ class CategorizationService:
         fetch and one merchant-table fetch, regardless of input size.
 
         Args:
-            items: List of dicts with transaction_id, category, and optional subcategory.
+            items: Validated list of BulkCategorizationItem (transaction_id, category,
+                optional subcategory). Validation is the caller's responsibility —
+                use ``_validate_items`` at the CLI/MCP boundary before calling this.
 
         Returns:
             BulkCategorizationResult with applied/skipped/error counts.
@@ -352,20 +354,10 @@ class CategorizationService:
         merchants_created = 0
         error_details: list[dict[str, str]] = []
 
-        # Phase 1 — validate and partition input
-        valid_items: list[tuple[str, str, str | None]] = []
-        for item in items:
-            txn_id = (item.get("transaction_id") or "").strip()
-            category = (item.get("category") or "").strip()
-            if not txn_id or not category:
-                skipped += 1
-                error_details.append({
-                    "transaction_id": txn_id or "(missing)",
-                    "reason": "Missing transaction_id or category",
-                })
-                continue
-            subcategory = (item.get("subcategory") or "").strip() or None
-            valid_items.append((txn_id, category, subcategory))
+        # Phase 1 — items are already validated by the boundary (CLI/MCP).
+        valid_items: list[tuple[str, str, str | None]] = [
+            (i.transaction_id, i.category, i.subcategory) for i in items
+        ]
 
         if not valid_items:
             return BulkCategorizationResult(

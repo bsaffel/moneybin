@@ -14,7 +14,10 @@ from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.services._text import normalize_description
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization_service import (
+    BulkCategorizationItem,
+    CategorizationService,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -620,7 +623,7 @@ def test_service_bulk_categorize_applies_categorization(
     )
     svc = CategorizationService(real_db)
     result = svc.bulk_categorize([
-        {"transaction_id": "ts1", "category": "Food & Drink"}
+        BulkCategorizationItem(transaction_id="ts1", category="Food & Drink")
     ])
     assert result.applied == 1
 
@@ -793,11 +796,11 @@ def test_bulk_categorize_creates_auto_rule_proposal(real_db: Database) -> None:
     svc = CategorizationService(real_db)
     svc.bulk_categorize(
         [
-            {
-                "transaction_id": "tb1",
-                "category": "Food & Drink",
-                "subcategory": "Coffee",
-            }
+            BulkCategorizationItem(
+                transaction_id="tb1",
+                category="Food & Drink",
+                subcategory="Coffee",
+            )
         ],
     )
 
@@ -841,7 +844,9 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
             [f"txn_{i}", f"Coffee shop {i}"],
         )
     items = [
-        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        BulkCategorizationItem(
+            transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
+        )
         for i in range(25)
     ]
 
@@ -897,7 +902,9 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
         )
 
     items = [
-        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        BulkCategorizationItem(
+            transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
+        )
         for i in range(3)
     ]
 
