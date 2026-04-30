@@ -148,56 +148,6 @@ class TestNormalizeDescriptionGoldens:
         assert normalize_description(case["raw"]) == case["expected"]
 
 
-class TestNormalizeDescription:
-    """Tests for normalize_description()."""
-
-    @pytest.mark.unit
-    def test_strips_square_prefix(self) -> None:
-        assert normalize_description("SQ *STARBUCKS #1234") == "STARBUCKS"
-
-    @pytest.mark.unit
-    def test_strips_toast_prefix(self) -> None:
-        assert normalize_description("TST*PIZZA PLACE") == "PIZZA PLACE"
-
-    @pytest.mark.unit
-    def test_strips_paypal_prefix(self) -> None:
-        assert normalize_description("PP*SPOTIFY") == "SPOTIFY"
-
-    @pytest.mark.unit
-    def test_strips_trailing_state_zip(self) -> None:
-        result = normalize_description("WHOLEFDS MKT AUSTIN TX 78701")
-        assert "78701" not in result
-
-    @pytest.mark.unit
-    def test_strips_trailing_city_state(self) -> None:
-        result = normalize_description("STARBUCKS SEATTLE WA")
-        assert "SEATTLE" not in result
-        assert "WA" not in result
-
-    @pytest.mark.unit
-    def test_strips_trailing_store_id(self) -> None:
-        result = normalize_description("TARGET 00012345")
-        assert "00012345" not in result
-
-    @pytest.mark.unit
-    def test_preserves_core_name(self) -> None:
-        assert "STARBUCKS" in normalize_description("SQ *STARBUCKS #1234 SEATTLE WA")
-
-    @pytest.mark.unit
-    def test_empty_string(self) -> None:
-        assert normalize_description("") == ""
-
-    @pytest.mark.unit
-    def test_none_handled(self) -> None:
-        # normalize_description expects str but should handle edge cases
-        assert normalize_description("   ") == ""
-
-    @pytest.mark.unit
-    def test_normalizes_whitespace(self) -> None:
-        result = normalize_description("SQ  *  COFFEE   SHOP")
-        assert "  " not in result
-
-
 # ---------------------------------------------------------------------------
 # Pattern matching
 # ---------------------------------------------------------------------------
