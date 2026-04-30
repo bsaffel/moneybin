@@ -12,7 +12,9 @@ from moneybin.testing.scenarios.loader import ExpectationSpec
 
 
 def _mock_db(
-    *, provenance_rows: list[tuple], confidence: float | None = None
+    *,
+    provenance_rows: list[tuple[str, str, str, str]],
+    confidence: float | None = None,
 ) -> MagicMock:
     """Build a MagicMock Database that returns provenance rows then a confidence row.
 
