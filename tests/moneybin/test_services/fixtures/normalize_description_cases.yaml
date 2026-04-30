@@ -46,15 +46,15 @@ cases:
     raw: "TARGET 00012345"
     expected: "TARGET"
 
-  - id: whole-foods-trailing-state-zip
+  - id: trailing-state-zip-leaves-city-token
     raw: "WHOLEFDS MKT AUSTIN TX 78701"
-    expected: "WHOLEFDS MKT"
-    note: "All-caps city before state+zip — exercises the city+state+zip-as-unit branch"
+    expected: "WHOLEFDS MKT AUSTIN"
+    note: "Only ST+ZIP is stripped; trailing city token is preserved (safer for merchant matching than guessing which token is a city)"
 
-  - id: short-token-before-state-zip-not-treated-as-city
+  - id: merchant-token-before-state-zip-not-stripped-as-city
     raw: "SHELL GAS NY 10001"
     expected: "SHELL GAS"
-    note: "City group requires 4+ chars so 'GAS' is not stripped as a city"
+    note: "ST+ZIP stripped; preceding merchant tokens left intact"
 
   - id: combined-prefix-store-id-city-state
     raw: "SQ *STARBUCKS #1234 SEATTLE WA"

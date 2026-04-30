@@ -155,26 +155,24 @@ Fix: grant the workflow permission to call `gh pr review` by adding to
 
 See PR #58 conversation for the exchange where this came up.
 
-## Multi-word city stripping in `normalize_description` (post-PR #66)
+## City-token stripping in `normalize_description` (post-PR #66)
 
-`_TRAILING_LOCATION` in `src/moneybin/services/_text.py` strips a single
-optional all-caps city token before `ST ZIP` (e.g. `WHOLEFDS MKT AUSTIN
-TX 78701` → `WHOLEFDS MKT`). It does not handle multi-word cities — so
-`SAN FRANCISCO CA 94105` normalizes to `SAN` instead of the intended
-merchant prefix. Common cities affected: SAN JOSE, LOS ANGELES, NEW
-YORK, SANTA BARBARA.
-
-The naive multi-word extension (`(?:[A-Z][A-Za-z]{3,}(?:\s+[A-Z][A-Za-z]+)*\s+)?`)
-doesn't help because `re.sub` picks the leftmost match — it greedily
-consumes `FRANCISCO CA 94105` from the second word and leaves the first
-word dangling.
+`_TRAILING_LOCATION` in `src/moneybin/services/_text.py` strips bare
+`ST ZIP` only — it deliberately leaves trailing city tokens in place
+(e.g. `WHOLEFDS MKT AUSTIN TX 78701` → `WHOLEFDS MKT AUSTIN`). The
+optional city group was removed in PR #66 review because it produced
+false positives on merchant tokens (`TARGET STORE NY 10001` → `TARGET`,
+`SHELL MART NY 10001` → `SHELL`). At the lexical level a trailing
+all-caps token is indistinguishable from a merchant descriptor.
 
 A correct fix likely needs one of:
 - A known-cities allowlist (US Census places ≥10k population is ~5k entries)
-- Anchoring on the start-of-string-or-whitespace-after-known-merchant-prefix
-- Two-pass: detect city using state+zip as anchor, validate that what
-  remains is a plausible merchant token
+- Two-pass: detect city using state+zip as anchor, then validate that
+  what remains is a plausible merchant token (heuristics on token
+  length, presence of known suffixes like `MKT`, `STORE`, etc.)
 
-Add a golden case (`san-francisco-multi-word-city`) when fixed.
+Add goldens for both directions when fixed:
+- `WHOLEFDS MKT AUSTIN TX 78701` → `WHOLEFDS MKT` (city stripped)
+- `TARGET STORE NY 10001` → `TARGET STORE` (merchant token preserved)
 
-Flagged by claude[bot] (P2) in PR #66 review.
+Flagged by claude[bot] and chatgpt-codex-connector in PR #66 review.

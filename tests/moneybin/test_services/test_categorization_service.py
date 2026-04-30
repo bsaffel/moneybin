@@ -122,12 +122,7 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def _load_normalize_cases(
     path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Load normalize_description golden cases from YAML.
-
-    Validates that each case has string `raw` and `expected` fields, and that
-    `id` values are unique to prevent silent shadowing when contributors append
-    cases.
-    """
+    """Load and validate normalize_description golden cases from YAML."""
     if path is None:
         path = _FIXTURES_DIR / "normalize_description_cases.yaml"
     raw = yaml.safe_load(path.read_text())
@@ -145,11 +140,7 @@ def _load_normalize_cases(
 
 
 class TestNormalizeDescriptionGoldens:
-    """Golden cases for normalize_description loaded from YAML.
-
-    See tests/moneybin/test_services/fixtures/normalize_description_cases.yaml
-    for the fixture format and contributor instructions.
-    """
+    """Parametrized golden-case tests for normalize_description()."""
 
     @pytest.mark.unit
     @pytest.mark.parametrize("case", _load_normalize_cases(), ids=lambda c: c["id"])
