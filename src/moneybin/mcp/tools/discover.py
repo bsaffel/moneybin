@@ -7,8 +7,13 @@ import logging
 from fastmcp import Context, FastMCP
 from fastmcp.server.transforms.visibility import enable_components
 
+from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    build_envelope,
+    build_error_envelope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +44,13 @@ async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
     from moneybin.mcp.server import EXTENDED_DOMAINS
 
     if domain not in EXTENDED_DOMAINS:
-        return build_envelope(
-            data={"domain": domain, "error": f"Unknown domain: {domain}"},
+        known = ", ".join(sorted(EXTENDED_DOMAINS))
+        return build_error_envelope(
+            error=UserError(
+                f"Unknown domain: {domain}",
+                code="unknown_domain",
+                hint=f"Known extended namespaces: {known}",
+            ),
             sensitivity="low",
         )
 

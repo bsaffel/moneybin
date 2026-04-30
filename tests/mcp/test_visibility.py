@@ -58,12 +58,16 @@ async def test_discover_reveals_namespace_tools() -> None:
 @pytest.mark.asyncio
 async def test_unknown_domain_returns_error_envelope() -> None:
     """Calling discover('not-a-real-namespace') returns an error envelope."""
+    import json
+
     from moneybin.mcp.server import mcp
 
     async with Client(mcp) as client:
         result = await client.call_tool("moneybin.discover", {"domain": "nope"})
-        envelope = result.structured_content
-        assert envelope.get("error") is not None or "Unknown domain" in str(envelope)
+        envelope = json.loads(result.content[0].text)  # type: ignore[attr-defined]
+        assert envelope["data"] == []
+        assert envelope["error"] is not None
+        assert "Unknown domain" in str(envelope["error"])
 
 
 @pytest.mark.asyncio

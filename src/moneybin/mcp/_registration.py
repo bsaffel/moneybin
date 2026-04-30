@@ -1,7 +1,7 @@
 """Shared helpers for registering MCP tools with the FastMCP server.
 
 The ``mcp_tool`` decorator (see ``decorator.py``) sets a ``_mcp_domain``
-attribute on each wrapped function. ``_tags_for`` translates that attribute
+attribute on each wrapped function. ``tags_for`` translates that attribute
 into the ``tags=`` argument expected by ``mcp.tool()`` and, transitively,
 by the ``Visibility`` transforms installed at server boot.
 """
