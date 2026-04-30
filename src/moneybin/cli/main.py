@@ -6,6 +6,7 @@ db, mcp.
 """
 
 import logging
+import sys
 from typing import Annotated
 
 import typer
@@ -78,6 +79,14 @@ def main_callback(
     exist. They still benefit from the same resolution chain so
     ``profile show`` / ``profile set`` honor ``--profile`` / env var.
     """
+    # --help is documentation; it must be inert. Skip profile resolution
+    # entirely when help is requested so we don't trigger the first-run
+    # wizard, write profile dirs, or fail when MONEYBIN_PROFILE points at
+    # a non-existent profile.
+    help_tokens = {"--help", "-h"}
+    if any(tok in sys.argv for tok in help_tokens):
+        return
+
     import os
 
     # Commands that manage profiles don't require the resolved profile
