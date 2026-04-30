@@ -136,11 +136,11 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 - **Verb = action.** `categorize.bulk`, `transactions.correct`, `import.file` — mutates state.
 - **Dot separator** per MCP SEP-986. Tool names are lowercase, no underscores within segments.
 
-### Progressive disclosure via namespace registration
+### Progressive disclosure via per-session visibility
 
-The full tool surface (46+ tools across 10+ namespaces) exceeds the practical limit for AI tool selection accuracy (~20-30 tools). LLM performance degrades when tool descriptions overlap or when the schema payload consumes too much context. Rather than consolidating tools (which trades tool count for schema complexity and loses the "one tool does one thing" clarity), the server uses **namespace-based progressive disclosure**.
+The full tool surface (46+ tools across 10+ namespaces) exceeds the practical limit for AI tool selection accuracy (~20-30 tools). LLM performance degrades when tool descriptions overlap or when the schema payload consumes too much context. Rather than consolidating tools (which trades tool count for schema complexity and loses the "one tool does one thing" clarity), the server uses **per-session, tag-based visibility**.
 
-**Core namespaces** are registered at connection time. A namespace is core if the AI would need it in **nearly every session** — orientation, common queries, primary data entry. Extended namespaces serve **specific workflows** the user enters intentionally (categorization triage, tax prep, match review).
+**Core namespaces** are visible at connection time. A namespace is core if the AI would need it in **nearly every session** — orientation, common queries, primary data entry. Extended namespaces serve **specific workflows** the user enters intentionally (categorization triage, tax prep, match review) and start hidden.
 
 The default core set keeps the initial tool count under ~20:
 
@@ -154,7 +154,7 @@ The default core set keeps the initial tool count under ~20:
 | `import.*` | 2–4 | Primary data entry (core subset: `file`, `status`) |
 | `sql.*` | 1 | Power-user escape hatch |
 
-**Extended namespaces** are loaded on demand via the `moneybin.discover` meta-tool:
+**Extended namespaces** are revealed per-session via the `moneybin.discover` meta-tool:
 
 | Namespace | Tools | When needed |
 |---|---|---|
@@ -169,17 +169,20 @@ The default core set keeps the initial tool count under ~20:
 
 **How it works:**
 
-1. **At connection time:** The server registers core namespace tools only. The `moneybin://tools` resource lists all available namespaces with one-line descriptions, so the AI knows what's available without seeing every schema.
-2. **On `moneybin.discover(namespace="categorize")`:** The server registers the `categorize.*` tools dynamically and sends a `tools/list_changed` notification. The response includes tool names and descriptions so the AI can immediately use them.
-3. **Once loaded, tools stay loaded** for the session. No unloading — the AI might reference a loaded tool later.
-4. **The `actions` array** in response envelopes serves as lightweight progressive disclosure within a session — when `spending.summary` suggests "Use spending.by_category for breakdown", the AI already has that tool (core namespace). When a tool suggests a tool from an extended namespace, the AI calls `discover` first.
+1. **All tools are registered at boot**, but extended-namespace tools carry a `tags={domain}` marker (e.g. `tags={"categorize"}`). A server-level `Visibility(False, tags={domain})` transform hides each extended domain by default.
+2. **At connection time:** Each client sees only core (untagged) tools plus `moneybin.discover`. The `moneybin://tools` resource lists every available domain with one-line descriptions, so the AI knows what's available without seeing every schema.
+3. **On `moneybin.discover(domain="categorize")`:** The server calls `enable_components(ctx, tags={"categorize"})`, which flips visibility for that tag in the **calling session only**. fastmcp emits `tools/list_changed` automatically; other connected clients are unaffected.
+4. **Once revealed, tools stay revealed** for that session. No unloading — the AI might reference a revealed tool later.
+5. **Hidden tools are uncallable.** Calling a tool from a domain that has not been discovered raises `ToolError: Unknown tool`, so visibility doubles as access control.
+6. **The `actions` array** in response envelopes serves as lightweight progressive disclosure within a session — when `spending.summary` suggests "Use spending.by_category for breakdown", the AI already has that tool (core). When a tool suggests one from an extended domain, the AI calls `discover` first.
 
 **Design constraints:**
 
-- **`moneybin.discover` is always registered.** It's the only tool outside of core namespaces that's available at connection time.
-- **No tool consolidation.** Each tool does one thing with a clean schema. The progressive disclosure pattern handles scale; individual tools stay simple.
-- **Graceful fallback.** If a client doesn't support `tools/list_changed`, the server can be configured to register all tools at startup (`MONEYBIN_MCP_LOAD_ALL=true`). The progressive disclosure pattern is an optimization, not a requirement.
-- **Prompts reference tools by name.** When a prompt references a tool from an extended namespace, the prompt template includes a discover step.
+- **`moneybin.discover` is always visible.** It's the only tool outside of core that's available at connection time.
+- **No tool consolidation.** Each tool does one thing with a clean schema. The visibility pattern handles scale; individual tools stay simple.
+- **Per-session, not per-process.** Each client connection gets its own visibility state — a previous session's discovery does not bleed into a fresh one.
+- **Graceful fallback.** Clients that ignore `tools/list_changed` will not see newly-revealed tools, but core tools remain available throughout. Per-session disclosure is an optimization, not a requirement for correctness.
+- **Prompts reference tools by name.** When a prompt references a tool from an extended domain, the prompt template includes a discover step.
 
 ### Multi-currency as a crosscutting concern
 
