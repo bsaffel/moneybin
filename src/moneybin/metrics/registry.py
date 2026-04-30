@@ -110,6 +110,22 @@ CATEGORIZATION_RULES_FIRED_TOTAL = Counter(
     ["rule_id"],
 )
 
+CATEGORIZE_BULK_ITEMS_TOTAL = Counter(
+    "moneybin_categorize_bulk_items_total",
+    "Number of items processed by bulk_categorize, by outcome",
+    ["outcome"],
+)
+
+CATEGORIZE_BULK_DURATION_SECONDS = Histogram(
+    "moneybin_categorize_bulk_duration_seconds",
+    "Wall-clock duration of CategorizationService.bulk_categorize calls",
+)
+
+CATEGORIZE_BULK_ERRORS_TOTAL = Counter(
+    "moneybin_categorize_bulk_errors_total",
+    "Number of bulk_categorize calls that raised before returning a result",
+)
+
 # ── Account matching ─────────────────────────────────────────────────────────
 
 ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(

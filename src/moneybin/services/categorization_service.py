@@ -15,6 +15,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Literal
 
 import duckdb
@@ -22,6 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.metrics.registry import (
+    CATEGORIZE_BULK_DURATION_SECONDS,
+    CATEGORIZE_BULK_ERRORS_TOTAL,
+    CATEGORIZE_BULK_ITEMS_TOTAL,
+)
 from moneybin.services._text import normalize_description
 from moneybin.tables import (
     CATEGORIES,
@@ -348,6 +354,19 @@ class CategorizationService:
         Returns:
             BulkCategorizationResult with applied/skipped/error counts.
         """
+        _start = perf_counter()
+        try:
+            return self._bulk_categorize_inner(items)
+        except Exception:
+            CATEGORIZE_BULK_ERRORS_TOTAL.inc()
+            raise
+        finally:
+            CATEGORIZE_BULK_DURATION_SECONDS.observe(perf_counter() - _start)
+
+    def _bulk_categorize_inner(
+        self, items: Sequence[BulkCategorizationItem]
+    ) -> BulkCategorizationResult:
+        """Inner implementation of bulk_categorize without observability wrapping."""
         applied = 0
         skipped = 0
         errors = 0
@@ -519,6 +538,9 @@ class CategorizationService:
             except Exception:  # noqa: BLE001 — override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
 
+        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
+        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="skipped").inc(skipped)
+        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
         return BulkCategorizationResult(
             applied=applied,
             skipped=skipped,
