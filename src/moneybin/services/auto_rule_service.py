@@ -119,6 +119,65 @@ class AutoStatsResult:
         )
 
 
+@dataclass(slots=True, frozen=True)
+class TxnRow:
+    """Pre-loaded transaction columns needed by the bulk path."""
+
+    description: str | None
+    amount: float | None
+    account_id: str | None
+
+
+@dataclass(slots=True)
+class BulkRecordingContext:
+    """In-memory caches threaded through ``record_categorization`` during a bulk loop.
+
+    Owns the data that today's per-item helpers re-fetch from the database.
+    Mutators (``register_new_merchant``) preserve the same ordering invariants
+    that ``_fetch_merchants`` produces (exact → contains → regex), so cover
+    checks see new merchants in their canonical match position.
+    """
+
+    txn_rows: dict[str, TxnRow]
+    active_rules: list[tuple[Any, ...]]
+    merchant_mappings: list[tuple[Any, ...]]
+    new_merchant_count: int = field(default=0)
+
+    def txn_row_for(self, transaction_id: str) -> TxnRow | None:
+        """Return the pre-loaded TxnRow for the given transaction_id, or None."""
+        return self.txn_rows.get(transaction_id)
+
+    def description_for(self, transaction_id: str) -> str | None:
+        """Return the description for the given transaction_id, or None if not loaded."""
+        row = self.txn_rows.get(transaction_id)
+        return row.description if row else None
+
+    def register_new_merchant(self, merchant_row: tuple[Any, ...]) -> None:
+        """Insert at the canonical match-order position (before the first regex)."""
+        insert_at = next(
+            (i for i, m in enumerate(self.merchant_mappings) if m[2] == "regex"),
+            len(self.merchant_mappings),
+        )
+        self.merchant_mappings.insert(insert_at, merchant_row)
+        self.new_merchant_count += 1
+
+    def merchant_mapping_covers(
+        self, pattern: str, category: str, subcategory: str | None
+    ) -> bool:
+        """Mirror of ``AutoRuleService._merchant_mapping_covers`` against the cached list."""
+        for merchant in self.merchant_mappings:
+            _mid, raw_pattern, match_type, _canonical, m_cat, m_subcat = merchant
+            if str(m_cat) != category:
+                continue
+            if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
+                continue
+            if matches_pattern(
+                pattern, str(raw_pattern), str(match_type or "contains")
+            ):
+                return True
+        return False
+
+
 class AutoRuleService:
     """Auto-rule lifecycle: observe → propose → approve/reject → deactivate.
 
