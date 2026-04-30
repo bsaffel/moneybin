@@ -631,7 +631,11 @@ class CategorizationService:
         return None
 
     def find_matching_rule(
-        self, transaction_id: str
+        self,
+        transaction_id: str,
+        *,
+        rules_override: list[tuple[Any, ...]] | None = None,
+        txn_row_override: tuple[str, float | None, str | None] | None = None,
     ) -> tuple[str, str, str | None, str] | None:
         """Return the first active rule matching this transaction, or ``None``.
 
@@ -640,19 +644,30 @@ class CategorizationService:
         the auto-rule proposal pipeline) ask "is this transaction already
         covered by an existing rule?" using the canonical match semantics
         instead of re-implementing them.
+
+        The bulk path supplies pre-loaded rule rows and txn metadata via
+        ``rules_override`` and ``txn_row_override`` so this function issues no
+        queries during a bulk loop. Both default to ``None`` for non-bulk callers.
         """
-        try:
-            txn_row = self._db.execute(
-                f"SELECT description, amount, account_id "
-                f"FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
-                [transaction_id],
-            ).fetchone()
-        except duckdb.CatalogException:
+        if txn_row_override is not None:
+            description, amount, account_id = txn_row_override
+        else:
+            try:
+                txn_row = self._db.execute(
+                    f"SELECT description, amount, account_id "
+                    f"FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
+                    [transaction_id],
+                ).fetchone()
+            except duckdb.CatalogException:
+                return None
+            if not txn_row or not txn_row[0]:
+                return None
+            description, amount, account_id = txn_row
+        if not description:
             return None
-        if not txn_row or not txn_row[0]:
-            return None
-        description, amount, account_id = txn_row
-        rules = self.fetch_active_rules()
+        rules = (
+            rules_override if rules_override is not None else self.fetch_active_rules()
+        )
         if not rules:
             return None
         return self.match_first_rule(

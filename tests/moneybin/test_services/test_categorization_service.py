@@ -921,3 +921,43 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
     ).fetchone()
     assert merchant_count is not None
     assert merchant_count[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# find_matching_rule override tests (Task 3 — bulk path preparation)
+# ---------------------------------------------------------------------------
+
+
+def test_find_matching_rule_uses_rules_override(real_db: Database) -> None:
+    """When rules_override is provided, the rules table is not queried."""
+    svc = CategorizationService(real_db)
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('csv_test', 'acct_1', DATE '2026-01-01', -5.0, 'STARBUCKS COFFEE', 'csv')"
+    )
+    # Override rules list — nothing is in app.categorization_rules, so if the
+    # method queries the DB it would return no rules and the result would be None.
+    override_rules: list[tuple[Any, ...]] = [
+        ("rule_1", "STARBUCKS", "contains", None, None, None, "Food", "Coffee", "user")
+    ]
+    match = svc.find_matching_rule("csv_test", rules_override=override_rules)
+    assert match is not None
+    assert match[1] == "Food"
+    assert match[2] == "Coffee"
+
+
+def test_find_matching_rule_uses_txn_row_override(real_db: Database) -> None:
+    """When txn_row_override is provided, fct_transactions is not queried."""
+    svc = CategorizationService(real_db)
+    # No INSERT — fct_transactions has no row for ghost_txn.
+    override_rules: list[tuple[Any, ...]] = [
+        ("rule_1", "AMZN", "contains", None, None, None, "Shopping", None, "user")
+    ]
+    match = svc.find_matching_rule(
+        "ghost_txn",
+        rules_override=override_rules,
+        txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1"),
+    )
+    assert match is not None
+    assert match[1] == "Shopping"
