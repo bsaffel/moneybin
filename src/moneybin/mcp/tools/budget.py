@@ -20,7 +20,7 @@ from moneybin.services.budget_service import BudgetService
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="budget")
 def budget_set(
     category: str,
     monthly_amount: str,
@@ -45,7 +45,7 @@ def budget_set(
     return result.to_envelope()
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="budget")
 def budget_status(
     month: str | None = None,
 ) -> ResponseEnvelope:

@@ -18,7 +18,7 @@ from moneybin.services.tax_service import TaxService
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="high")
+@mcp_tool(sensitivity="high", domain="tax")
 def tax_w2(
     tax_year: int | None = None,
 ) -> ResponseEnvelope:

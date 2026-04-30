@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 def mcp_tool(
     *,
     sensitivity: str,
+    domain: str | None = None,
 ) -> Callable[..., Any]:
     """Decorator that marks a function as an MCP tool with a sensitivity tier.
 
@@ -51,6 +52,12 @@ def mcp_tool(
 
     Args:
         sensitivity: Data sensitivity tier (``"low"``, ``"medium"``, ``"high"``).
+        domain: Extended-namespace name (e.g. ``"categorize"``, ``"budget"``).
+            Tools with a ``domain`` start hidden and must be enabled per-session
+            via ``moneybin.discover``. Tools without a domain are core tools,
+            visible at connect. The registration layer translates this into
+            ``mcp.tool(tags={domain})``; a server-level ``Visibility`` transform
+            then hides the tagged set.
 
     Returns:
         Decorator that wraps the function with privacy logging, error
@@ -80,6 +87,7 @@ def mcp_tool(
             return result
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
+        wrapper._mcp_domain = domain  # type: ignore[attr-defined]
         return wrapper
 
     return decorator

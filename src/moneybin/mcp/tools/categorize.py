@@ -83,7 +83,7 @@ def _validate_match_type(match_type: str) -> MatchType:
 # ---------------------------------------------------------------------------
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_categories(
     include_inactive: bool = False,
 ) -> ResponseEnvelope:
@@ -134,7 +134,7 @@ def categorize_categories(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_rules() -> ResponseEnvelope:
     """List all categorization rules.
 
@@ -181,7 +181,7 @@ def categorize_rules() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_merchants() -> ResponseEnvelope:
     """List all merchant name mappings.
 
@@ -222,7 +222,7 @@ def categorize_merchants() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_stats() -> ResponseEnvelope:
     """Get categorization coverage statistics.
 
@@ -234,7 +234,7 @@ def categorize_stats() -> ResponseEnvelope:
     return result.to_envelope()
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_uncategorized(
     limit: int = 50,
 ) -> ResponseEnvelope:
@@ -287,7 +287,7 @@ def categorize_uncategorized(
 # ---------------------------------------------------------------------------
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_bulk(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
@@ -312,7 +312,7 @@ def categorize_bulk(
     return result.to_envelope(len(items))
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_create_rules(
     rules: list[dict[str, str | float | int | None]],
 ) -> ResponseEnvelope:
@@ -413,7 +413,7 @@ def categorize_create_rules(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
     """Soft-delete a categorization rule by setting it inactive.
 
@@ -444,7 +444,7 @@ def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_create_merchants(
     merchants: list[dict[str, str | None]],
 ) -> ResponseEnvelope:
@@ -525,7 +525,7 @@ def categorize_create_merchants(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_create_category(
     category: str,
     subcategory: str | None = None,
@@ -575,7 +575,7 @@ def categorize_create_category(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_toggle_category(
     category_id: str,
     is_active: bool,
@@ -611,7 +611,7 @@ def categorize_toggle_category(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_seed() -> ResponseEnvelope:
     """Initialize default categories from the Plaid PFCv2 taxonomy.
 
@@ -623,7 +623,7 @@ def categorize_seed() -> ResponseEnvelope:
     return SeedResult(seeded_count=count).to_envelope()
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
     """List pending auto-rule proposals.
 
@@ -640,7 +640,7 @@ def categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
     return auto_review_envelope(result)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_auto_confirm(
     approve: list[str] | None = None,
     reject: list[str] | None = None,
@@ -661,7 +661,7 @@ def categorize_auto_confirm(
     return auto_confirm_envelope(result)
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_auto_stats() -> ResponseEnvelope:
     """Auto-rule health metrics.
 
