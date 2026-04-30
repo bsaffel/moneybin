@@ -172,9 +172,7 @@ class TestNormalizeDescriptionGoldens:
     """
 
     @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "case", _load_normalize_cases(), ids=lambda c: c["id"]
-    )
+    @pytest.mark.parametrize("case", _load_normalize_cases(), ids=lambda c: c["id"])
     def test_case(self, case: dict[str, str]) -> None:
         assert normalize_description(case["raw"]) == case["expected"]
 ```
@@ -340,24 +338,25 @@ Requirement 4 of the spec: the loader rejects duplicate `id` values. Currently t
 Add the following test method to `TestNormalizeDescriptionGoldens` (or as a sibling top-level test if the class style does not fit):
 
 ```python
-    @pytest.mark.unit
-    def test_loader_rejects_duplicate_ids(self, tmp_path: Path) -> None:
-        """The loader must surface duplicate ids loudly at collection time."""
-        bad_yaml = tmp_path / "dup.yaml"
-        bad_yaml.write_text(
-            "cases:\n"
-            '  - {id: a, raw: "x", expected: "x"}\n'
-            '  - {id: a, raw: "y", expected: "y"}\n'
-        )
+@pytest.mark.unit
+def test_loader_rejects_duplicate_ids(self, tmp_path: Path) -> None:
+    """The loader must surface duplicate ids loudly at collection time."""
+    bad_yaml = tmp_path / "dup.yaml"
+    bad_yaml.write_text(
+        "cases:\n"
+        '  - {id: a, raw: "x", expected: "x"}\n'
+        '  - {id: a, raw: "y", expected: "y"}\n'
+    )
 
-        # Inline the loader logic against the temp file rather than
-        # monkeypatching the module-level constant.
-        import yaml as _yaml
-        raw = _yaml.safe_load(bad_yaml.read_text())
-        cases = raw["cases"]
-        ids = [c["id"] for c in cases]
-        duplicates = {i for i in ids if ids.count(i) > 1}
-        assert duplicates == {"a"}
+    # Inline the loader logic against the temp file rather than
+    # monkeypatching the module-level constant.
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(bad_yaml.read_text())
+    cases = raw["cases"]
+    ids = [c["id"] for c in cases]
+    duplicates = {i for i in ids if ids.count(i) > 1}
+    assert duplicates == {"a"}
 ```
 
 This test pins the duplicate-detection behavior. It is intentionally inline (not calling `_load_normalize_cases`) because `_load_normalize_cases` is bound to the real fixture path; refactoring it to take an injectable path is YAGNI for one test. If a future test wants to exercise more loader behavior, refactor then.
