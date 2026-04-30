@@ -24,9 +24,9 @@ Exact data from file extractors and loaders. Never modified after import.
 | `raw.tabular_accounts` | Tabular account metadata |
 | `raw.w2_forms` | W-2 PDF tax data |
 
-### Staging Layer (`prep.*`)
+### Staging Layer (`prep.stg_*`)
 
-Light cleaning, type casting, and union-then-match logic. DuckDB views — they recompute from raw data on each transform.
+Light cleaning and type casting. One view per raw source. DuckDB views — they recompute from raw data on each transform.
 
 | View | Purpose |
 |------|---------|
@@ -36,6 +36,13 @@ Light cleaning, type casting, and union-then-match logic. DuckDB views — they 
 | `prep.stg_ofx__institutions` | OFX institution metadata |
 | `prep.stg_tabular__transactions` | Clean tabular transactions |
 | `prep.stg_tabular__accounts` | Clean tabular accounts |
+
+### Matching Intermediate Views (`prep.int_*`)
+
+Sit between staging and core, implementing the union → match → merge flow that produces the golden record. Also DuckDB views.
+
+| View | Purpose |
+|------|---------|
 | `prep.int_transactions__unioned` | All sources unioned with `source_type` |
 | `prep.int_transactions__matched` | Unioned rows annotated with accepted match decisions |
 | `prep.int_transactions__merged` | Golden-record merge — one winning row per matched cluster |

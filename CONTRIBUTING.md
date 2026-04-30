@@ -54,7 +54,7 @@ moneybin/
 
 ## Pipeline verification
 
-Every PR runs the scenario suite via [`.github/workflows/scenarios.yml`](.github/workflows/scenarios.yml). Each scenario boots an empty encrypted DuckDB, runs `generate → transform → match → categorize`, and reports three correctness signals:
+PRs that touch code run the scenario suite via [`.github/workflows/scenarios.yml`](.github/workflows/scenarios.yml) — docs-only changes (`**/*.md`, `docs/**`) are skipped via `paths-ignore`. Each scenario boots an empty encrypted DuckDB, runs `generate → transform → match → categorize`, and reports three correctness signals:
 
 - **Assertions** — invariants like FK integrity, sign convention, balanced transfers.
 - **Expectations** — per-record claims on hand-labeled fixtures.

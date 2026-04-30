@@ -128,7 +128,7 @@ moneybin mcp list-prompts
 
 ## Response Envelope
 
-Every tool returns the standard response envelope: a structured `data` payload, a `meta` block (timing, row counts, sensitivity tier), and an optional `errors` list. The `--output json` flag on equivalent CLI commands produces the same envelope, so MCP and CLI consumers can share parsing logic.
+Every tool returns the standard response envelope: `summary` (row counts, truncation, sensitivity tier, currency), `data` (the payload — list of records or a single result dict), `actions` (contextual next-step hints), and an optional `error` (populated when the tool fails with a classified `UserError`; `data` is empty in that case). The `--output json` flag on equivalent CLI commands produces the same envelope, so MCP and CLI consumers can share parsing logic. See [`mcp-architecture`](../specs/mcp-architecture.md) §4 for the full schema.
 
 ## Server Management
 

@@ -86,7 +86,7 @@ Once connected, ask things like:
 | Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits | [Categorization](docs/guides/categorization.md) |
 | AES-256-GCM encryption at rest, key management, automatic schema migrations | [Database & Security](docs/guides/database-security.md) |
 | Multi-profile isolation (per-profile DB, config, logs) | [Profiles](docs/guides/profiles.md) |
-| MCP server: 8 tool domains, prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
+| MCP server: 9 tool domains, prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
 | Direct SQL: shell, DuckDB UI, key tables documented | [SQL Access](docs/guides/sql-access.md) |
 | Synthetic data generator (3 personas, ~200 merchants, ground-truth labels) | [Synthetic Data](docs/guides/synthetic-data.md) |
 | Structured logs + Prometheus-style metrics with DuckDB persistence | [Observability](docs/guides/observability.md) |
