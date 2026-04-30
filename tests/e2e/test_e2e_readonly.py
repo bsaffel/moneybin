@@ -172,8 +172,8 @@ class TestDBReadOnlyCommands:
 
     # ── categorize ──────────────────────────────────────────────────────
 
-    def test_categorize_stats(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("categorize", "stats", env=e2e_profile)
+    def test_categorize_summary(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("categorize", "summary", env=e2e_profile)
         result.assert_success()
 
     def test_categorize_list_rules(self, e2e_profile: dict[str, str]) -> None:

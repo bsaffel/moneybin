@@ -203,8 +203,8 @@ class TestCategorizationPipeline:
         result = run_cli("categorize", "apply-rules", env=env)
         result.assert_success()
 
-        # Stats should work
-        result = run_cli("categorize", "stats", env=env)
+        # Summary should work
+        result = run_cli("categorize", "summary", env=env)
         result.assert_success()
 
 

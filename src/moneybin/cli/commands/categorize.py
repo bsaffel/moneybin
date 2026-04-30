@@ -57,9 +57,9 @@ def seed_cmd() -> None:
         logger.info(f"\u2705 Seeded {count} new categories")
 
 
-@app.command("stats")
-def stats_cmd() -> None:
-    """Show categorization coverage statistics."""
+@app.command("summary")
+def summary_cmd() -> None:
+    """Show categorization coverage summary."""
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors() as db:
