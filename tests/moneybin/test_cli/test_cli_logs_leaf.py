@@ -1,4 +1,9 @@
-"""Tests for the new logs-as-leaf command shape."""
+"""Tests for the logs-as-leaf command shape.
+
+Leaf-shape contract tests (argument requirements, mode-flag exemptions, flag
+precedence) live here; behavior tests (view filtering, prune logic, tail) live
+in ``test_cli_logs.py``.
+"""
 
 from __future__ import annotations
 
@@ -117,6 +122,26 @@ class TestLogsLeafShape:
             ["--prune", "--older-than", "30d", "--dry-run"],
         )
         assert result.exit_code == 0, result.output
+
+    @pytest.mark.unit
+    def test_print_path_takes_precedence_over_prune(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`--print-path` must win over `--prune` (no prune side effects)."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        _patch_settings(monkeypatch, log_dir)
+        result = runner.invoke(
+            logs_module.logs_command_app,
+            ["--print-path", "--prune", "--older-than", "30d"],
+        )
+        assert result.exit_code == 0, result.output
+        assert str(log_dir) in result.stdout
+        assert log_dir.exists()
+        assert list(log_dir.iterdir()) == []
 
     @pytest.mark.unit
     def test_all_stream_no_longer_accepted(
