@@ -285,7 +285,6 @@ def bulk_cmd(
     # Merge parse errors into the service result so the envelope surfaces all failures.
     result.error_details = parse_errors + result.error_details
     result.errors += len(parse_errors)
-    result.skipped = max(0, result.skipped - len(parse_errors))
 
     input_count = len(items) + len(parse_errors)
 
@@ -300,7 +299,7 @@ def bulk_cmd(
         for err in result.error_details:
             logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
 
-    if result.errors > 0:
+    if result.errors > 0 or result.skipped > 0:
         raise typer.Exit(1)
 
 
