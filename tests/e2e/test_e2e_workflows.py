@@ -257,12 +257,12 @@ class TestAutoRulePipeline:
         result.assert_success()
 
         # auto-review surfaces the seeded proposal
-        result = run_cli("categorize", "auto-review", env=env)
+        result = run_cli("categorize", "auto", "review", env=env)
         result.assert_success()
         assert "wfauto00001" in result.output
 
         # auto-confirm promotes the proposal to an active rule
-        result = run_cli("categorize", "auto-confirm", "--approve-all", env=env)
+        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
         result.assert_success()
         assert "Approved 1" in result.output, (
             f"auto-confirm did not approve the proposal: {result.output}"
@@ -287,7 +287,7 @@ class TestAutoRulePipeline:
         )
 
         # auto-stats reflects the promotion
-        result = run_cli("categorize", "auto-stats", env=env)
+        result = run_cli("categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 

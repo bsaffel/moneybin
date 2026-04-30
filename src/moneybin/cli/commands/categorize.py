@@ -18,6 +18,12 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+auto_app = typer.Typer(
+    help="Auto-categorization workflows: review, confirm, stats, rules",
+    no_args_is_help=True,
+)
+app.add_typer(auto_app, name="auto")
+
 
 @app.command("apply-rules")
 def apply_rules_cmd() -> None:
@@ -104,7 +110,7 @@ def list_rules_cmd() -> None:
         )
 
 
-@app.command("auto-review")
+@auto_app.command("review")
 def auto_review_cmd(
     output: str = typer.Option(
         "table", "--output", help="Output format: table or json"
@@ -150,7 +156,7 @@ def auto_review_cmd(
         )
 
 
-@app.command("auto-confirm")
+@auto_app.command("confirm")
 def auto_confirm_cmd(
     approve: list[str] = typer.Option(
         None, "--approve", help="Proposal IDs to approve"
@@ -196,7 +202,7 @@ def auto_confirm_cmd(
     )
 
 
-@app.command("auto-stats")
+@auto_app.command("stats")
 def auto_stats_cmd() -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
@@ -210,7 +216,7 @@ def auto_stats_cmd() -> None:
     logger.info(f"  Transactions auto-ruled:  {stats.transactions_categorized}")
 
 
-@app.command("auto-rules")
+@auto_app.command("rules")
 def auto_rules_cmd(
     limit: int | None = typer.Option(
         None,

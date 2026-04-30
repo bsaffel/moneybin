@@ -137,7 +137,7 @@ class TestApplyCategorizationProposalSummary:
 
         text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]
         assert "4 new auto-rule proposals" in text
-        assert "auto-review" in text
+        assert "auto review" in text
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
     @patch("moneybin.services.categorization_service.CategorizationService")
@@ -171,4 +171,4 @@ class TestApplyCategorizationProposalSummary:
 
         text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]
         assert "auto-rule proposals" not in text
-        assert "auto-review" not in text
+        assert "auto review" not in text

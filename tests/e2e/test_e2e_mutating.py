@@ -299,18 +299,18 @@ class TestCategorizeMutating:
         result.assert_success()
 
         # auto-review lists the pending proposal
-        result = run_cli("categorize", "auto-review", env=env)
+        result = run_cli("categorize", "auto", "review", env=env)
         result.assert_success()
         assert "autoe2e0001" in result.output, (
             f"auto-review did not surface proposal: {result.output}"
         )
 
         # auto-stats reports the pending proposal
-        result = run_cli("categorize", "auto-stats", env=env)
+        result = run_cli("categorize", "auto", "stats", env=env)
         result.assert_success()
 
         # auto-confirm --approve-all promotes it
-        result = run_cli("categorize", "auto-confirm", "--approve-all", env=env)
+        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
         result.assert_success()
         assert "Approved" in result.output, (
             f"auto-confirm missing approval message: {result.output}"
@@ -318,11 +318,11 @@ class TestCategorizeMutating:
 
         # auto-rules now lists at least one active rule, and auto-stats
         # reflects the promotion
-        result = run_cli("categorize", "auto-rules", env=env)
+        result = run_cli("categorize", "auto", "rules", env=env)
         result.assert_success()
         assert "autoe2e0001" not in result.output  # listed by rule_id, not proposal_id
 
-        result = run_cli("categorize", "auto-stats", env=env)
+        result = run_cli("categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 
