@@ -6,7 +6,7 @@ import pytest
 
 from moneybin.services.categorization_service import (
     BulkCategorizationItem,
-    _validate_items,  # pyright: ignore[reportPrivateUsage]
+    _validate_items,  # pyright: ignore[reportPrivateUsage]  # testing module-private helper directly
 )
 
 

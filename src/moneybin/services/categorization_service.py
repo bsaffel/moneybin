@@ -105,7 +105,7 @@ class BulkCategorizationItem(BaseModel):
     subcategory: str | None = Field(default=None, min_length=1, max_length=100)
 
 
-def _validate_items(  # pyright: ignore[reportUnusedFunction]
+def _validate_items(  # pyright: ignore[reportUnusedFunction]  # wired to CLI/MCP boundaries in Tasks 8 and 9
     raw: object,
 ) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
     """Validate a raw decoded JSON array into typed items + per-row errors.
@@ -120,7 +120,7 @@ def _validate_items(  # pyright: ignore[reportUnusedFunction]
 
     items: list[BulkCategorizationItem] = []
     errors: list[dict[str, str]] = []
-    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]
+    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]  # raw is intentionally `object`; isinstance check below narrows the type
         if not isinstance(row, dict):
             errors.append({
                 "transaction_id": "(missing)",
@@ -128,19 +128,21 @@ def _validate_items(  # pyright: ignore[reportUnusedFunction]
             })
             continue
         row_dict: dict[str, object] = {
-            str(k): v  # pyright: ignore[reportUnknownArgumentType]
-            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]
+            str(k): v  # pyright: ignore[reportUnknownArgumentType]  # dict keys from untyped JSON input
+            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]  # dict from untyped JSON input
         }
         try:
             items.append(BulkCategorizationItem.model_validate(row_dict))
         except ValidationError as e:
             txn_id_val = row_dict.get("transaction_id")
-            txn_id = str(txn_id_val).strip() if txn_id_val else "(missing)"
+            txn_id = str(txn_id_val).strip() if isinstance(txn_id_val, str) else ""
+            if not txn_id:
+                txn_id = "(missing)"
             reason = "; ".join(
-                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]  # Pydantic error loc is Sequence[int | str]
                 for err in e.errors()
             )
-            errors.append({"transaction_id": txn_id or "(missing)", "reason": reason})
+            errors.append({"transaction_id": txn_id, "reason": reason})
     return items, errors
 
 
