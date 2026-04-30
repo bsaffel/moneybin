@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -282,8 +283,13 @@ class TestAutoRulePipeline:
         # Write a JSON bulk-categorization payload to the workflow tmp dir.
         json_path = e2e_home / "wf-autorule-bulk.json"
         json_path.write_text(
-            f'[{{"transaction_id": "{txn_id}", "category": "Food & Dining", '
-            f'"subcategory": "Coffee"}}]',
+            json.dumps([
+                {
+                    "transaction_id": txn_id,
+                    "category": "Food & Dining",
+                    "subcategory": "Coffee",
+                }
+            ]),
             encoding="utf-8",
         )
 
