@@ -79,6 +79,25 @@ Migration(version=2, name="new", filename="V002__new.sql", checksum="def456",
           content=b"SELECT 1;", path=Path("/tmp/V002__new.sql"), file_type="sql")
 ```
 
+## Golden-Case Fixtures
+
+For pure functions whose correctness is best expressed as input → output pairs,
+keep cases in a YAML fixture file under `tests/.../fixtures/` and write a
+parametrized test asserting exact equality.
+
+**When to add:** Real-world input that should produce a specific output, and no
+existing case covers it.
+
+**How to add:**
+
+1. Append a row to the fixture YAML with a unique, kebab-case `id` naming the
+   *behavior under test*, not the input.
+2. Run the test. Fix the function until it passes — do NOT relax `expected` to
+   match incorrect output.
+
+**Why exact equality:** Loose assertions hide subtle regressions like extra
+whitespace or partial strips. Goldens force every character intentional.
+
 ## Test Coverage by Layer
 
 Every shipped feature must have tests at the appropriate layers:
