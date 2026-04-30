@@ -158,12 +158,12 @@ The hook is lightweight: one SELECT each against rules, merchants, and proposals
 
 | Command | Description |
 |---|---|
-| `moneybin categorize auto-review` | Table of pending proposals with sample transactions, trigger counts, and pattern details |
-| `moneybin categorize auto-confirm --approve <id> [<id>...] --reject <id> [<id>...]` | Batch approve/reject proposals |
-| `moneybin categorize auto-confirm --approve-all` | Approve all pending proposals |
-| `moneybin categorize auto-confirm --reject-all` | Reject all pending proposals |
-| `moneybin categorize auto-stats` | Auto-rule health: active count, proposal count, override rate, top-performing rules |
-| `moneybin categorize auto-rules` | List active auto-rules (equivalent to `list-rules --created-by auto_rule`) |
+| `moneybin categorize auto review` | Table of pending proposals with sample transactions, trigger counts, and pattern details |
+| `moneybin categorize auto confirm --approve <id> [<id>...] --reject <id> [<id>...]` | Batch approve/reject proposals |
+| `moneybin categorize auto confirm --approve-all` | Approve all pending proposals |
+| `moneybin categorize auto confirm --reject-all` | Reject all pending proposals |
+| `moneybin categorize auto stats` | Auto-rule health: active count, proposal count, override rate, top-performing rules |
+| `moneybin categorize auto rules` | List active auto-rules (equivalent to `list-rules --created-by auto_rule`) |
 
 ### Import-time output
 
@@ -178,18 +178,18 @@ Imported 120 transactions from chase_checking.csv
      8 by ML (high confidence)
   35 uncategorized
   4 new rules proposed
-  Run 'moneybin categorize auto-review' to review proposed rules
+  Run 'moneybin categorize auto review' to review proposed rules
 ```
 
 ### Non-interactive parity
 
 | Interactive | Flag equivalent |
 |---|---|
-| Review table | `moneybin categorize auto-review --output json` |
-| Approve specific | `moneybin categorize auto-confirm --approve ar_001 ar_002` |
-| Reject specific | `moneybin categorize auto-confirm --reject ar_003` |
-| Approve all | `moneybin categorize auto-confirm --approve-all` |
-| Reject all | `moneybin categorize auto-confirm --reject-all` |
+| Review table | `moneybin categorize auto review --output json` |
+| Approve specific | `moneybin categorize auto confirm --approve ar_001 ar_002` |
+| Reject specific | `moneybin categorize auto confirm --reject ar_003` |
+| Approve all | `moneybin categorize auto confirm --approve-all` |
+| Reject all | `moneybin categorize auto confirm --reject-all` |
 
 ## MCP Interface
 

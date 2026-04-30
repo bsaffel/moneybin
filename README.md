@@ -144,7 +144,7 @@ from extractors      type casting (views)     multi-source (tables)
 - **Rule engine** — exact match, substring, and regex rules with a priority hierarchy.
 - **Merchant normalization** — map messy bank descriptions (`STARBUCKS #12345 SEATTLE WA`) to clean merchant names.
 - **Bulk operations** — categorize, create rules, and create merchants in batches.
-- **Auto-rule generation** — when you categorize a transaction, MoneyBin proposes a reusable rule using merchant-first pattern extraction. Review pending proposals with `moneybin categorize auto-review`, batch-approve with `moneybin categorize auto-confirm --approve-all`, and future imports auto-categorize matching transactions. Approved rules are stored alongside user-defined rules with `created_by='auto_rule'`. After repeated user overrides of an auto-rule, it deactivates itself and proposes the corrected category.
+- **Auto-rule generation** — when you categorize a transaction, MoneyBin proposes a reusable rule using merchant-first pattern extraction. Review pending proposals with `moneybin categorize auto review`, batch-approve with `moneybin categorize auto confirm --approve-all`, and future imports auto-categorize matching transactions. Approved rules are stored alongside user-defined rules with `created_by='auto_rule'`. After repeated user overrides of an auto-rule, it deactivates itself and proposes the corrected category.
 
 ### Data Quality & Matching
 
@@ -172,7 +172,7 @@ moneybin matches undo <id>         # Revert a match decision
 - **Structured logging** — stream-based routing (`cli`, `mcp`, `sqlmesh`) with daily log files, human-readable and JSON formatters, PII sanitization.
 - **Metrics** — `prometheus_client`-backed counters, gauges, and histograms with automatic DuckDB persistence across restarts.
 - **Instrumentation** — `@tracked` decorator and `track_duration` context manager for zero-boilerplate operation timing.
-- **CLI** — `moneybin stats show` for lifetime metric aggregates; `moneybin logs tail --stream mcp` for stream-filtered log viewing.
+- **CLI** — `moneybin stats` for lifetime metric aggregates; `moneybin logs mcp` for stream-filtered log viewing.
 
 ### Multi-Profile Support
 
@@ -231,7 +231,7 @@ moneybin transform status          # Check pipeline state
 moneybin categorize apply-rules    # Apply categorization rules
 moneybin db shell                  # Interactive SQL shell
 moneybin db ps                     # Show processes holding the database
-moneybin logs tail -f              # Follow log output
+moneybin logs cli -f               # Follow CLI log output
 ```
 
 > For full command documentation, see the [CLI Reference](docs/guides/cli-reference.md). For detailed feature guides, see the [Feature Guide](docs/guides/).

@@ -27,9 +27,10 @@ moneybin
 │   ├── history      List recent imports with batch details
 │   ├── preview      Preview file structure (dry run)
 │   ├── revert       Undo an import batch
-│   ├── list-formats List all available formats
-│   ├── show-format  Show format details
-│   └── delete-format Delete a user-saved format
+│   └── formats      Manage saved import formats
+│       ├── list     List all available formats
+│       ├── show     Show format details
+│       └── delete   Delete a user-saved format
 │
 ├── transform        SQLMesh pipeline
 │   ├── apply        Apply pending changes
@@ -98,7 +99,7 @@ moneybin import file ~/Downloads/checking.qfx
 ```bash
 moneybin import file ~/Downloads/chase_may.csv --account-name "Chase Checking"
 moneybin categorize apply-rules
-moneybin categorize stats
+moneybin categorize summary
 ```
 
 ### Query your data

@@ -309,7 +309,7 @@ $ moneybin import file march-statement.csv
   Categorized: 38 auto-classified, 4 need review
 ✅ Imported 44 new transactions
 👀 4 uncategorized transactions and 2 transfers need review
-💡 Run 'moneybin categorize auto-review' or 'moneybin matches review'
+💡 Run 'moneybin categorize auto review' or 'moneybin matches review'
 ```
 
 Error handling: if any pipeline stage fails, prior stages' data is preserved (raw data is already loaded). The error message identifies which stage failed and how to retry just that stage.

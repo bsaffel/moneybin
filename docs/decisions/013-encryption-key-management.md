@@ -87,7 +87,7 @@ KDF derives the AES key material.
 
 ### Key rotation
 
-`moneybin db rotate-key`:
+`moneybin db key rotate`:
 1. Attach current database with current key
 2. Prompt for new passphrase (or generate new auto-key)
 3. Create new encrypted database with new key via `COPY FROM DATABASE`

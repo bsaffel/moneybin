@@ -47,7 +47,7 @@ class TestSyntheticPipeline:
                 "db",
                 "query",
                 "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--format",
+                "--output",
                 "csv",
                 env=env,
             )
@@ -86,7 +86,7 @@ class TestCSVImportPipeline:
                 "db",
                 "query",
                 "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--format",
+                "--output",
                 "csv",
                 env=env,
             )
@@ -123,7 +123,7 @@ class TestOFXImportPipeline:
                 "db",
                 "query",
                 "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--format",
+                "--output",
                 "csv",
                 env=env,
             )
@@ -276,7 +276,7 @@ class TestAutoRulePipeline:
             "query",
             "SELECT COUNT(*) AS n FROM app.categorization_rules "
             "WHERE created_by = 'auto_rule' AND is_active = true",
-            "--format",
+            "--output",
             "csv",
             env=env,
         )
@@ -301,7 +301,7 @@ class TestAutoRulePipeline:
             "query",
             "SELECT COUNT(*) AS n FROM app.transaction_categories "
             "WHERE categorized_by = 'auto_rule'",
-            "--format",
+            "--output",
             "csv",
             env=env,
         )

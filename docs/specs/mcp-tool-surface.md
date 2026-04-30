@@ -607,7 +607,7 @@ List available tabular import formats.
 - **Unique parameters:** None.
 - **Behavior:** Returns array of `{name, institution_name, file_type, sign_convention, date_format, times_used, last_used_at, source}` for all built-in and user-saved formats.
 - **Service:** `ImportService.list_formats() -> list[FormatSummary]`
-- **CLI:** `moneybin import list-formats`
+- **CLI:** `moneybin import formats list`
 
 ### `import.ai_preview`
 
@@ -749,7 +749,7 @@ Categorization coverage statistics.
 - **Unique parameters:** None.
 - **Behavior:** Returns `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid).
 - **Service:** `CategorizationService.stats() -> CategorizationStats`
-- **CLI:** `moneybin categorize stats`
+- **CLI:** `moneybin categorize summary`
 
 ### `categorize.apply_rules`
 
@@ -770,7 +770,7 @@ List auto-generated rules pending user approval.
 - **Unique parameters:** None.
 - **Behavior:** Returns array of `{proposed_rule_id, merchant_pattern, category, subcategory, source, trigger_count, sample_transactions}` where `source` indicates how the rule was generated (ml, pattern_detection).
 - **Service:** `CategorizationService.auto_review() -> list[ProposedRule]`
-- **CLI:** `moneybin categorize auto-review`
+- **CLI:** `moneybin categorize auto review`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
 ### `categorize.auto_confirm`
@@ -781,7 +781,7 @@ Approve or reject proposed auto-generated rules.
 - **Unique parameters:** `approvals: list[object]` (required) — list of `{proposed_rule_id, action}` where action is `approve` or `reject`.
 - **Behavior:** Approved rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. Returns `{approved, rejected, errors}`.
 - **Service:** `CategorizationService.auto_confirm() -> BulkActionResult`
-- **CLI:** `moneybin categorize auto-confirm --approve <id> [<id>...] --reject <id> [<id>...]`
+- **CLI:** `moneybin categorize auto confirm --approve <id> [<id>...] --reject <id> [<id>...]`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
 ### `categorize.auto_stats`
@@ -792,7 +792,7 @@ Auto-rule health metrics.
 - **Unique parameters:** None.
 - **Behavior:** Returns `{active_rules, pending_proposals, rejected_proposals, override_rate, top_rules}` where `top_rules` is an array of the most-matched auto-rules with match counts. `override_rate` is the percentage of auto-rule categorizations that were later overridden by the user.
 - **Service:** `CategorizationService.auto_stats() -> AutoRuleStats`
-- **CLI:** `moneybin categorize auto-stats`
+- **CLI:** `moneybin categorize auto stats`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
 ### `categorize.ml_status`
