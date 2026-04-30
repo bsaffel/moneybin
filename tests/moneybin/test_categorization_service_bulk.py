@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from moneybin.services.categorization_service import (
     BulkCategorizationItem,
+    CategorizationService,
     _validate_items,  # pyright: ignore[reportPrivateUsage]  # testing module-private helper directly
 )
 
@@ -118,3 +121,50 @@ class TestValidateItems:
     def test_top_level_not_a_list_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="must be a JSON array"):
             _validate_items({"items": []})  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def db_mock_bulk_friendly() -> MagicMock:
+    """Mock Database returning plausible empty results for bulk_categorize."""
+    db = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    cursor.fetchone.return_value = None
+    db.execute.return_value = cursor
+    return db
+
+
+class TestBulkQueryCount:
+    """Bulk loop must issue O(items) queries, not O(5 * items).
+
+    See docs/specs/categorize-bulk.md Requirement 7.
+    """
+
+    def test_per_item_path_does_not_query_rules_or_merchants(
+        self, db_mock_bulk_friendly: MagicMock
+    ) -> None:
+        items = [
+            BulkCategorizationItem(transaction_id=f"csv_{i}", category="Food")
+            for i in range(5)
+        ]
+        svc = CategorizationService(db_mock_bulk_friendly)
+        result = svc.bulk_categorize(items)
+        assert result.applied + result.errors + result.skipped == len(items)
+
+        rule_queries = sum(
+            1
+            for call in db_mock_bulk_friendly.execute.call_args_list
+            if "categorization_rules" in str(call.args[0]).lower()
+            and "proposed_rules" not in str(call.args[0]).lower()
+        )
+        merchant_queries = sum(
+            1
+            for call in db_mock_bulk_friendly.execute.call_args_list
+            if "merchants" in str(call.args[0]).lower()
+            and "transaction_categories" not in str(call.args[0]).lower()
+        )
+        # At most 2 rules queries for the whole batch (1 for fetch_active_rules
+        # in Phase 3, and optionally 1 for the check_overrides fast-path probe).
+        # Neither is per-item. Merchants: exactly 1 fetch for the whole batch.
+        assert rule_queries <= 2
+        assert merchant_queries == 1

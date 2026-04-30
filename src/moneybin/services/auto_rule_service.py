@@ -739,7 +739,9 @@ class AutoRuleService:
         When ``context`` is provided, the description fallback reads from the
         pre-loaded ``TxnRow`` instead of querying ``fct_transactions``.
         """
-        if merchant_id is None:
+        if merchant_id is None and context is None:
+            # Bulk path passes merchant_id explicitly; this lookup is only needed
+            # on the single-item path where no context is provided.
             row = self._db.execute(
                 f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
                 [transaction_id],

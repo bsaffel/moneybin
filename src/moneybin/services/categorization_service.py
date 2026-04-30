@@ -368,31 +368,61 @@ class CategorizationService:
                 merchants_created=merchants_created,
             )
 
-        # Phase 2 — batch-fetch descriptions
+        # Phase 2 — batch-fetch txn rows (description + amount + account_id)
         txn_ids = [v[0] for v in valid_items]
         placeholders = ",".join(["?"] * len(txn_ids))
-        descriptions: dict[str, str | None] = {}
+        # Lazy import keeps the module-level dependency one-way
+        # (auto_rule_service → categorization_service).
+        from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
+            AutoRuleService,
+            BulkRecordingContext,
+            TxnRow,
+        )
+
+        txn_rows: dict[str, TxnRow] = {}
         try:
             rows = self._db.execute(
                 f"""
-                SELECT transaction_id, description
+                SELECT transaction_id, description, amount, account_id
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE transaction_id IN ({placeholders})
                 """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
                 txn_ids,
             ).fetchall()
-            descriptions = {row[0]: row[1] for row in rows}
+            txn_rows = {
+                row[0]: TxnRow(
+                    description=row[1],
+                    amount=float(row[2]) if row[2] is not None else None,
+                    account_id=str(row[3]) if row[3] is not None else None,
+                )
+                for row in rows
+            }
         except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
-            logger.warning("Could not batch-fetch descriptions", exc_info=True)
+            logger.warning("Could not batch-fetch transaction rows", exc_info=True)
 
-        # Phase 3 — fetch merchants once, then match in memory.
+        # Phase 3 — fetch merchants and active rules once for the whole batch.
         # Guard against any non-CatalogException (schema drift, binder errors, etc.)
-        # so a merchant-table failure doesn't block all category writes for the batch.
+        # so a merchant-table or rules-table failure doesn't block all category
+        # writes for the batch.
         try:
-            cached_merchants = _fetch_merchants(self._db)
+            raw_merchants = _fetch_merchants(self._db)
+            cached_merchants: list[tuple[Any, ...]] = (
+                list(raw_merchants) if raw_merchants is not None else []
+            )
         except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
             logger.warning("Could not batch-fetch merchants", exc_info=True)
-            cached_merchants = None
+            cached_merchants = []
+        try:
+            cached_rules = self.fetch_active_rules()
+        except Exception:  # noqa: BLE001 — best-effort; degrades to no rule cover checks
+            logger.warning("Could not batch-fetch active rules", exc_info=True)
+            cached_rules = []
+
+        ctx = BulkRecordingContext(
+            txn_rows=txn_rows,
+            active_rules=cached_rules,
+            merchant_mappings=cached_merchants,
+        )
 
         # Phase 4 — per-item categorization (writes only)
         for txn_id, category, subcategory in valid_items:
@@ -405,10 +435,12 @@ class CategorizationService:
                 # proposal before it can be tracked.
                 merchant_id: str | None = None
                 existing: dict[str, Any] | None = None
-                description = descriptions.get(txn_id)
-                if description and cached_merchants is not None:
+                description = ctx.description_for(txn_id)
+                if description and ctx.merchant_mappings:
                     try:
-                        existing = _match_description(description, cached_merchants)
+                        existing = _match_description(
+                            description, ctx.merchant_mappings
+                        )
                         if existing:
                             merchant_id = existing["merchant_id"]
                     except Exception:  # noqa: BLE001 — merchant lookup is best-effort
@@ -417,21 +449,18 @@ class CategorizationService:
                             exc_info=True,
                         )
 
-                # Lazy import keeps the module-level dependency one-way
-                # (auto_rule_service → categorization_service).
                 try:
-                    from moneybin.services.auto_rule_service import AutoRuleService
-
                     AutoRuleService(self._db).record_categorization(
                         txn_id,
                         category,
                         subcategory=subcategory,
                         merchant_id=merchant_id,
+                        context=ctx,
                     )
                 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
                     logger.warning("auto-rule recording failed", exc_info=True)
 
-                if merchant_id is None and description and cached_merchants is not None:
+                if merchant_id is None and description:
                     try:
                         normalized = normalize_description(description)
                         if normalized:
@@ -444,10 +473,10 @@ class CategorizationService:
                                 created_by="ai",
                             )
                             merchants_created += 1
-                            # Insert into cache preserving _fetch_merchants() ordering
-                            # (exact → contains → regex) so subsequent items in this
-                            # batch match the just-created contains rule before any
-                            # pre-existing regex rule.
+                            # Register into context preserving _fetch_merchants()
+                            # ordering (exact → contains → regex) so subsequent
+                            # items in this batch match the just-created contains
+                            # rule before any pre-existing regex rule.
                             new_row = (
                                 merchant_id,
                                 normalized,
@@ -456,15 +485,7 @@ class CategorizationService:
                                 category,
                                 subcategory,
                             )
-                            insert_at = next(
-                                (
-                                    i
-                                    for i, m in enumerate(cached_merchants)
-                                    if m[2] == "regex"
-                                ),
-                                len(cached_merchants),
-                            )
-                            cached_merchants.insert(insert_at, new_row)
+                            ctx.register_new_merchant(new_row)
                     except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
                         logger.debug(
                             f"Could not create merchant for {txn_id}",
@@ -494,8 +515,6 @@ class CategorizationService:
         # batch so cost is independent of batch size.
         if applied:
             try:
-                from moneybin.services.auto_rule_service import AutoRuleService
-
                 AutoRuleService(self._db).check_overrides()
             except Exception:  # noqa: BLE001 — override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
