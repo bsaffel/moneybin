@@ -74,6 +74,6 @@ def assert_unique_value_count(
         details={
             "expected": expected,
             "actual": actual,
-            "delta_pct": round(delta_pct, 2) if delta_pct != float("inf") else "inf",
+            "delta_pct": round(delta_pct, 2) if delta_pct != float("inf") else None,
         },
     )

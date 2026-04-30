@@ -20,6 +20,7 @@ def test_every_known_step_has_a_callable() -> None:
         "load_fixtures",
         "transform",
         "match",
+        "seed_merchants",
         "categorize",
         "migrate",
         "transform_via_subprocess",
