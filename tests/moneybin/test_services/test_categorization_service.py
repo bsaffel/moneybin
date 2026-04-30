@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from pytest_mock import MockerFixture
 
 from moneybin.database import Database
@@ -113,6 +114,38 @@ def db_with_transactions(db: Database) -> Database:
 # ---------------------------------------------------------------------------
 # Merchant name normalization
 # ---------------------------------------------------------------------------
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def _load_normalize_cases() -> list[dict[str, str]]:
+    """Load normalize_description golden cases from YAML.
+
+    Raises ValueError if any `id` is duplicated to prevent silent shadowing
+    when contributors append cases.
+    """
+    raw = yaml.safe_load(
+        (_FIXTURES_DIR / "normalize_description_cases.yaml").read_text()
+    )
+    cases = raw["cases"]
+    ids = [c["id"] for c in cases]
+    duplicates = {i for i in ids if ids.count(i) > 1}
+    if duplicates:
+        raise ValueError(f"Duplicate case ids: {sorted(duplicates)}")
+    return cases
+
+
+class TestNormalizeDescriptionGoldens:
+    """Golden cases for normalize_description loaded from YAML.
+
+    See tests/moneybin/test_services/fixtures/normalize_description_cases.yaml
+    for the fixture format and contributor instructions.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("case", _load_normalize_cases(), ids=lambda c: c["id"])
+    def test_case(self, case: dict[str, str]) -> None:
+        assert normalize_description(case["raw"]) == case["expected"]
 
 
 class TestNormalizeDescription:
