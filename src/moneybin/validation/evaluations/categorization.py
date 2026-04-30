@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from moneybin.database import Database
+from moneybin.tables import FCT_TRANSACTIONS, GROUND_TRUTH, INT_TRANSACTIONS_MATCHED
 from moneybin.validation.evaluations._common import (
     GroundTruthMissingError,
     has_ground_truth,
@@ -23,15 +24,15 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
         raise GroundTruthMissingError("synthetic.ground_truth not present")
 
     rows = db.execute(
-        """
+        f"""
         SELECT t.transaction_id, t.category AS predicted, gt.expected_category
-        FROM core.fct_transactions t
-        JOIN prep.int_transactions__matched m
+        FROM {FCT_TRANSACTIONS.full_name} t
+        JOIN {INT_TRANSACTIONS_MATCHED.full_name} m
           ON m.transaction_id = t.transaction_id
-        JOIN synthetic.ground_truth gt
+        JOIN {GROUND_TRUTH.full_name} gt
           ON gt.source_transaction_id = m.source_transaction_id
         WHERE gt.expected_category IS NOT NULL
-        """
+        """  # noqa: S608 — TableRef constants
     ).fetchall()
 
     if not rows:

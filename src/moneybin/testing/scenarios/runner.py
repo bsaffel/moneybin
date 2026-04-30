@@ -61,6 +61,28 @@ def _patched_env(env: dict[str, str]):
                 os.environ[k] = v
 
 
+@contextmanager
+def _restored_profile():
+    """Save the caller's current profile and restore it on exit.
+
+    The runner mutates the global profile via ``set_current_profile("scenario")``;
+    without this context manager a long-lived process (tests, programmatic use)
+    would have its profile silently switched and any cached settings invalidated.
+    """
+    from moneybin import config as _config
+    from moneybin.config import clear_settings_cache, set_current_profile
+
+    saved = _config._current_profile  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001 — internal save/restore
+    try:
+        yield
+    finally:
+        clear_settings_cache()
+        if saved is not None:
+            set_current_profile(saved)
+        else:
+            _config._current_profile = None  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001 — internal save/restore
+
+
 def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEnvelope:
     """Run ``scenario`` end-to-end and return a ``ResponseEnvelope``.
 
@@ -85,7 +107,7 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
 
     db: Database | None = None
     try:
-        with _patched_env(env):
+        with _patched_env(env), _restored_profile():
             db = _bootstrap_database()
 
             preflight = assert_sqlmesh_catalog_matches(db)
@@ -94,6 +116,7 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                     scenario=scenario,
                     started=started,
                     tmpdir=tmp,
+                    keep_tmpdir=keep_tmpdir,
                     assertions=[preflight],
                     expectations=[],
                     evaluations=[],
@@ -108,11 +131,17 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                     # next step / assertion phase has a live connection.
                     db = get_database()
             except Exception as exc:  # noqa: BLE001 — surface as halted envelope
-                logger.exception(f"scenario {scenario.name} pipeline crashed")
+                # Don't use logger.exception — tracebacks may include local
+                # variables holding amounts/descriptions (PII rule).
+                logger.error(
+                    f"scenario {scenario.name} pipeline crashed: {type(exc).__name__}"
+                )
+                logger.debug("scenario pipeline traceback", exc_info=True)
                 return _build_envelope(
                     scenario=scenario,
                     started=started,
                     tmpdir=tmp,
+                    keep_tmpdir=keep_tmpdir,
                     assertions=[preflight],
                     expectations=[],
                     evaluations=[],
@@ -125,11 +154,16 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
             try:
                 expectations = verify_expectations(db, scenario.expectations)
             except Exception as exc:  # noqa: BLE001 — surface as halted envelope
-                logger.exception(f"scenario {scenario.name} expectations crashed")
+                logger.error(
+                    f"scenario {scenario.name} expectations crashed: "
+                    f"{type(exc).__name__}"
+                )
+                logger.debug("scenario expectations traceback", exc_info=True)
                 return _build_envelope(
                     scenario=scenario,
                     started=started,
                     tmpdir=tmp,
+                    keep_tmpdir=keep_tmpdir,
                     assertions=[preflight, *assertions],
                     expectations=[],
                     evaluations=[],
@@ -141,6 +175,7 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                 scenario=scenario,
                 started=started,
                 tmpdir=tmp,
+                keep_tmpdir=keep_tmpdir,
                 assertions=[preflight, *assertions],
                 expectations=expectations,
                 evaluations=evaluations,
@@ -199,7 +234,8 @@ def _run_assertion(
             else fn(db.conn, **args)
         )
     except Exception as exc:  # noqa: BLE001 — surface as structured failure
-        logger.exception(f"assertion {spec.name} crashed")
+        logger.error(f"assertion {spec.name} crashed: {type(exc).__name__}")
+        logger.debug("assertion traceback", exc_info=True)
         return AssertionResult(
             name=spec.name,
             passed=False,
@@ -216,11 +252,12 @@ def _run_assertion(
 
 
 def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
-    fn = _resolve_evaluation(spec.fn)
     try:
+        fn = _resolve_evaluation(spec.fn)
         return fn(db, threshold=spec.threshold.min, **spec.args)
     except Exception as exc:  # noqa: BLE001 — surface as structured failure
-        logger.exception(f"evaluation {spec.name} crashed")
+        logger.error(f"evaluation {spec.name} crashed: {type(exc).__name__}")
+        logger.debug("evaluation traceback", exc_info=True)
         return EvaluationResult(
             name=spec.name,
             metric=spec.threshold.metric,
@@ -250,6 +287,7 @@ def _build_envelope(
     scenario: Scenario,
     started: float,
     tmpdir: str,
+    keep_tmpdir: bool = False,
     assertions: list[AssertionResult],
     expectations: list[ExpectationResult],
     evaluations: list[EvaluationResult],
@@ -274,7 +312,9 @@ def _build_envelope(
         "scenario": scenario.name,
         "passed": passed,
         "duration_seconds": duration,
-        "tmpdir": tmpdir,
+        # When cleanup ran, the path no longer exists — null it so JSON output
+        # doesn't advertise a stale path.
+        "tmpdir": tmpdir if keep_tmpdir else None,
         "halted": halted,
         "assertions": [asdict(a) for a in assertions],
         "expectations": [asdict(e) for e in expectations],

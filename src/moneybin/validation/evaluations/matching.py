@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.tables import FCT_TRANSACTIONS, GROUND_TRUTH, INT_TRANSACTIONS_MATCHED
 from moneybin.validation.evaluations._common import (
     GroundTruthMissingError,
     has_ground_truth,
@@ -30,21 +31,21 @@ def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationRes
 
     true_pairs = _pair_set(
         db,
-        """
+        f"""
         SELECT MIN(source_transaction_id), MAX(source_transaction_id)
-        FROM synthetic.ground_truth
+        FROM {GROUND_TRUTH.full_name}
         WHERE transfer_pair_id IS NOT NULL
         GROUP BY transfer_pair_id
         HAVING COUNT(*) = 2
-        """,
+        """,  # noqa: S608 — TableRef constant
     )
     predicted_pairs = _pair_set(
         db,
-        """
+        f"""
         WITH predicted AS (
             SELECT t.transfer_pair_id, m.source_transaction_id
-            FROM core.fct_transactions t
-            JOIN prep.int_transactions__matched m
+            FROM {FCT_TRANSACTIONS.full_name} t
+            JOIN {INT_TRANSACTIONS_MATCHED.full_name} m
               ON m.transaction_id = t.transaction_id
             WHERE t.transfer_pair_id IS NOT NULL
         )
@@ -52,7 +53,7 @@ def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationRes
         FROM predicted
         GROUP BY transfer_pair_id
         HAVING COUNT(*) = 2
-        """,
+        """,  # noqa: S608 — TableRef constants
     )
 
     tp = len(true_pairs & predicted_pairs)
@@ -89,7 +90,9 @@ def score_dedup(
     the known number of gold records that should remain after dedup collapses
     cross-source duplicates. The score is `1 - |delta|/expected`, clamped at 0.
     """
-    actual_row = db.execute("SELECT COUNT(*) FROM core.fct_transactions").fetchone()
+    actual_row = db.execute(
+        f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+    ).fetchone()
     actual = actual_row[0] if actual_row is not None else 0
     delta = abs(actual - expected_collapsed_count)
     score = max(0.0, 1.0 - delta / max(expected_collapsed_count, 1))

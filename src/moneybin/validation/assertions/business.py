@@ -9,12 +9,17 @@ from moneybin.validation.assertions.relational import (
 )
 from moneybin.validation.result import AssertionResult
 
-_EXPENSE_CATEGORIES_NEGATIVE = "category NOT IN ('Income', 'Transfer') AND amount > 0"
+# Transfers are identified by ``is_transfer = TRUE`` in the data model, not by
+# a literal category string. Excluding them via that flag (rather than
+# ``category != 'Transfer'``) avoids a NULL-NOT-IN dead path.
+_EXPENSE_CATEGORIES_NEGATIVE = (
+    "category != 'Income' AND amount > 0 AND is_transfer = FALSE"
+)
 _INCOME_CATEGORIES_POSITIVE = "category = 'Income' AND amount < 0"
 
 
 def assert_sign_convention(conn: DuckDBPyConnection) -> AssertionResult:
-    """Expenses negative, income positive. Transfers exempted (mixed signs valid per leg)."""
+    """Expenses negative, income positive. Transfers exempted via ``is_transfer``."""
     violations = int(
         conn.execute(
             "SELECT COUNT(*) FROM core.fct_transactions "  # noqa: S608  # constants are module-level strings, not user input

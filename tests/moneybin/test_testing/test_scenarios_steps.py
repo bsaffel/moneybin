@@ -34,7 +34,7 @@ def test_match_step_invokes_matching_service() -> None:
     with patch("moneybin.testing.scenarios.steps.MatchingService") as svc:
         run_step("match", setup, db, env={})
     svc.assert_called_once_with(db)
-    svc.return_value.run.assert_called_once()
+    svc.return_value.run.assert_called_once_with(auto_accept_transfers=True)
 
 
 def test_unknown_step_raises() -> None:

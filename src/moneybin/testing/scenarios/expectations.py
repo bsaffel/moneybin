@@ -17,6 +17,7 @@ from moneybin.tables import (
     FCT_TRANSACTION_PROVENANCE,
     FCT_TRANSACTIONS,
     GROUND_TRUTH,
+    INT_TRANSACTIONS_MATCHED,
     MATCH_DECISIONS,
 )
 from moneybin.testing.scenarios.loader import ExpectationSpec
@@ -273,7 +274,7 @@ def _verify_transfers_match_ground_truth(
             t.transaction_id,
             t.transfer_pair_id AS predicted_pair
         FROM gold_pairs g
-        LEFT JOIN prep.int_transactions__matched m
+        LEFT JOIN {INT_TRANSACTIONS_MATCHED.full_name} m
           ON m.source_transaction_id = g.source_transaction_id
         LEFT JOIN {FCT_TRANSACTIONS.full_name} t
           ON t.transaction_id = m.transaction_id

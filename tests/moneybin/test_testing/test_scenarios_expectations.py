@@ -177,6 +177,55 @@ def test_provenance_for_transaction_passes_when_sources_match() -> None:
     assert r.passed
 
 
+def test_transfers_match_ground_truth_passes_when_pairs_align() -> None:
+    """All labeled pairs map to a single non-null predicted_pair → passes."""
+    db = MagicMock()
+    db.execute.return_value.fetchall.return_value = [
+        ("gold-pair-1", "src-A", "txn-1", "pred-1"),
+        ("gold-pair-1", "src-B", "txn-2", "pred-1"),
+        ("gold-pair-2", "src-C", "txn-3", "pred-2"),
+        ("gold-pair-2", "src-D", "txn-4", "pred-2"),
+    ]
+    spec = ExpectationSpec.model_validate({
+        "kind": "transfers_match_ground_truth",
+        "description": "all labeled pairs detected",
+    })
+    [r] = verify_expectations(db, [spec])
+    assert r.passed
+    assert r.details["labeled_pair_count"] == 2
+    assert r.details["failure_count"] == 0
+
+
+def test_transfers_match_ground_truth_fails_when_leg_predicts_null() -> None:
+    """One leg with NULL predicted_pair fails the pair (matcher missed it)."""
+    db = MagicMock()
+    db.execute.return_value.fetchall.return_value = [
+        ("gold-pair-1", "src-A", "txn-1", "pred-1"),
+        ("gold-pair-1", "src-B", "txn-2", None),
+    ]
+    spec = ExpectationSpec.model_validate({
+        "kind": "transfers_match_ground_truth",
+    })
+    [r] = verify_expectations(db, [spec])
+    assert not r.passed
+    assert r.details["failure_count"] == 1
+
+
+def test_transfers_match_ground_truth_fails_when_legs_split_pairs() -> None:
+    """Two legs predicted into different pair_ids fails (split detection)."""
+    db = MagicMock()
+    db.execute.return_value.fetchall.return_value = [
+        ("gold-pair-1", "src-A", "txn-1", "pred-1"),
+        ("gold-pair-1", "src-B", "txn-2", "pred-2"),
+    ]
+    spec = ExpectationSpec.model_validate({
+        "kind": "transfers_match_ground_truth",
+    })
+    [r] = verify_expectations(db, [spec])
+    assert not r.passed
+    assert r.details["failure_count"] == 1
+
+
 def test_match_decision_fails_when_sources_resolve_to_different_records() -> None:
     """match_decision (expected=matched) fails when txns map to >1 gold record."""
     db = _mock_db(

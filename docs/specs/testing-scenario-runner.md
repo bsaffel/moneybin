@@ -657,7 +657,7 @@ The full scenario suite (`moneybin synthetic verify --all`) runs on PRs and main
 
 #### Runtime budget
 
-`--all` against seven scenarios on the family persona at 3 years is estimated at 2–5 min wall-clock. This is acceptable for v1 PR gating because it overlaps with `ci.yml`. The runner does not enforce a hard timeout in v1; instead, `--all` prints a per-scenario duration summary at the end of the run so drift is visible. The summary uses `data.duration_seconds` from each scenario's `ResponseEnvelope`. Promote to a hard gate (`assert_completes_within` on `--all`) when the suite grows past the budget.
+`--all` against six scenarios on the family persona at 3 years is estimated at 2–5 min wall-clock. This is acceptable for v1 PR gating because it overlaps with `ci.yml`. The runner does not enforce a hard timeout in v1; instead, `--all` prints a per-scenario duration summary at the end of the run so drift is visible. The summary uses `data.duration_seconds` from each scenario's `ResponseEnvelope`. Promote to a hard gate (`assert_completes_within` on `--all`) when the suite grows past the budget.
 
 ## Data Model
 
