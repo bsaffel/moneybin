@@ -152,6 +152,13 @@ class BulkRecordingContext:
         row = self.txn_rows.get(transaction_id)
         return row.description if row else None
 
+    def merchant_row_for(self, merchant_id: str) -> tuple[Any, ...] | None:
+        """Return the cached merchant tuple for the given merchant_id, or None."""
+        for merchant in self.merchant_mappings:
+            if str(merchant[0]) == merchant_id:
+                return merchant
+        return None
+
     def register_new_merchant(self, merchant_row: tuple[Any, ...]) -> None:
         """Insert at the canonical match-order position (before the first regex)."""
         insert_at = next(
@@ -748,12 +755,17 @@ class AutoRuleService:
             ).fetchone()
             merchant_id = str(row[0]) if row and row[0] else None
         if merchant_id:
-            m = self._db.execute(
-                f"SELECT raw_pattern, match_type FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
-                [merchant_id],
-            ).fetchone()
-            if m and m[0]:
-                return str(m[0]), str(m[1] or "contains")
+            if context is not None:
+                m_row = context.merchant_row_for(merchant_id)
+                if m_row and m_row[1]:
+                    return str(m_row[1]), str(m_row[2] or "contains")
+            else:
+                m = self._db.execute(
+                    f"SELECT raw_pattern, match_type FROM {MERCHANTS.full_name} WHERE merchant_id = ?",
+                    [merchant_id],
+                ).fetchone()
+                if m and m[0]:
+                    return str(m[0]), str(m[1] or "contains")
 
         if context is not None:
             description = context.description_for(transaction_id)
