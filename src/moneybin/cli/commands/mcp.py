@@ -262,15 +262,17 @@ def list_prompts() -> None:
     ):
         importlib.import_module(module)
 
-    prompts: dict[str, object] = mcp_server._prompt_manager._prompts  # type: ignore[reportAttributeAccessIssue] — accessing FastMCP internals
+    import asyncio
+
+    prompts = asyncio.run(mcp_server.list_prompts(run_middleware=False))
 
     if not prompts:
         typer.echo("No prompts registered.")
         return
 
-    for name, prompt in sorted(prompts.items()):
+    for prompt in sorted(prompts, key=lambda p: p.name):
         description = getattr(prompt, "description", None) or ""
-        typer.echo(f"  {name}  {description}")
+        typer.echo(f"  {prompt.name}  {description}")
 
 
 # ── serve ────────────────────────────────────────────────────────────────────

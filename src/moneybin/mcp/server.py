@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import duckdb
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from moneybin.tables import TableRef
 
@@ -41,6 +41,9 @@ mcp = FastMCP(
         "Every tool returns {summary, data, actions}. Check summary.has_more "
         "for pagination and actions[] for suggested next steps."
     ),
+    mask_error_details=True,  # Per ADR-008: masks unclassified exceptions to a generic
+    # ToolError. Domain exceptions are caught by the mcp_tool decorator (Task 4) and
+    # converted to error envelopes before they reach the server boundary.
 )
 
 

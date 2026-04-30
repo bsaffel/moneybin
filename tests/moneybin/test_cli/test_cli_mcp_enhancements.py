@@ -67,11 +67,15 @@ class TestMCPListPrompts:
     @patch("moneybin.cli.commands.mcp.importlib")
     def test_list_prompts_shows_prompt_names(self, mock_importlib: MagicMock) -> None:
         """list-prompts shows prompt names and descriptions from mcp server."""
-        mock_prompt = MagicMock()
-        mock_prompt.description = "A test prompt"
+
+        async def fake_list_prompts(*, run_middleware: bool = True) -> list[object]:
+            mock_prompt = MagicMock()
+            mock_prompt.name = "test_prompt"
+            mock_prompt.description = "A test prompt"
+            return [mock_prompt]
 
         with patch("moneybin.cli.commands.mcp.mcp_server") as mock_server:
-            mock_server._prompt_manager._prompts = {"test_prompt": mock_prompt}
+            mock_server.list_prompts = fake_list_prompts
             result = runner.invoke(app, ["list-prompts"])
 
         assert result.exit_code == 0
@@ -80,8 +84,12 @@ class TestMCPListPrompts:
     @patch("moneybin.cli.commands.mcp.importlib")
     def test_list_prompts_empty(self, mock_importlib: MagicMock) -> None:
         """list-prompts handles empty prompt registry gracefully."""
+
+        async def fake_list_prompts(*, run_middleware: bool = True) -> list[object]:
+            return []
+
         with patch("moneybin.cli.commands.mcp.mcp_server") as mock_server:
-            mock_server._prompt_manager._prompts = {}
+            mock_server.list_prompts = fake_list_prompts
             result = runner.invoke(app, ["list-prompts"])
 
         assert result.exit_code == 0

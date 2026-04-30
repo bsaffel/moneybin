@@ -267,3 +267,11 @@ return fn(*args, **kwargs)  # ResponseEnvelope -> structured_content directly
 | Per-tool error reaching LLM | `raise ToolError("user-safe message")` |
 | Run stdio | `mcp.run(transport="stdio")` |
 | Test client | `from fastmcp import Client; async with Client(server) as c: await c.call_tool(name, args)` |
+
+---
+
+## Tests xfailed during Task 3 (SDK swap)
+
+These will be un-xfailed by Tasks 4-5, which fold envelope-on-error into `mcp_tool` and switch tool returns from `to_json()` strings to direct `ResponseEnvelope` instances.
+
+- `tests/e2e/test_e2e_mcp.py::TestMCPServerBoot::test_server_invokes_tool` — fastmcp 3.x rejects string returns when an `output_schema` is declared; the failure is `"Tools should wrap non-dict values based on their output_schema"`. Fix: return Pydantic `ResponseEnvelope` directly from tool functions.
