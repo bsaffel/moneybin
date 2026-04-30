@@ -1,6 +1,8 @@
 """Data synchronization commands for MoneyBin CLI."""
 
+import json
 import logging
+from typing import Annotated, Literal
 
 import typer
 
@@ -62,8 +64,25 @@ def sync_pull(
 
 
 @app.command("status")
-def sync_status() -> None:
+def sync_status(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — placeholder; nothing to suppress yet
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """Show connected institutions and sync health."""
+    if output == "json":
+        typer.echo(
+            json.dumps(
+                {"status": "not_implemented", "spec": "docs/specs/sync-overview.md"},
+                indent=2,
+            )
+        )
+        return
     _not_implemented("sync-overview.md")
 
 

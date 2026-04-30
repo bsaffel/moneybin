@@ -223,7 +223,16 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
 
 
 @app.command("list-tools")
-def list_tools() -> None:
+def list_tools(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — list-tools has no info chatter; only data lines
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """List all registered MCP tools.
 
     Enumerates the v1 namespace registry. Useful for verifying that
@@ -237,6 +246,18 @@ def list_tools() -> None:
     init_db()
     registry = get_registry()
 
+    if output == "json":
+        tools_payload: list[dict[str, str]] = []
+        for ns in sorted(registry.all_namespaces()):
+            for tool in registry.get_namespace_tools(ns):
+                tools_payload.append({
+                    "namespace": ns,
+                    "name": tool.name,
+                    "description": tool.description,
+                })
+        typer.echo(json.dumps({"tools": tools_payload}, indent=2, default=str))
+        return
+
     for ns in sorted(registry.all_namespaces()):
         tools = registry.get_namespace_tools(ns)
         for tool in tools:
@@ -247,7 +268,16 @@ def list_tools() -> None:
 
 
 @app.command("list-prompts")
-def list_prompts() -> None:
+def list_prompts(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """List all registered MCP prompts.
 
     Imports prompt modules to trigger decorator registration, then
@@ -264,8 +294,20 @@ def list_prompts() -> None:
 
     prompts: dict[str, object] = mcp_server._prompt_manager._prompts  # type: ignore[reportAttributeAccessIssue] — accessing FastMCP internals
 
+    if output == "json":
+        prompts_payload = [
+            {
+                "name": name,
+                "description": getattr(prompt, "description", None) or "",
+            }
+            for name, prompt in sorted(prompts.items())
+        ]
+        typer.echo(json.dumps({"prompts": prompts_payload}, indent=2, default=str))
+        return
+
     if not prompts:
-        typer.echo("No prompts registered.")
+        if not quiet:
+            typer.echo("No prompts registered.")
         return
 
     for name, prompt in sorted(prompts.items()):

@@ -1,7 +1,8 @@
 """Profile management commands for MoneyBin CLI."""
 
+import json
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -38,13 +39,28 @@ def profile_create(
 
 
 @app.command("list")
-def profile_list() -> None:
+def profile_list(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """List all profiles, marking the active one."""
     svc = ProfileService()
     profiles = svc.list()
+
+    if output == "json":
+        typer.echo(json.dumps({"profiles": profiles}, indent=2, default=str))
+        return
+
     if not profiles:
-        logger.info("No profiles found")
-        logger.info("💡 Run 'moneybin profile create <name>' to create one")
+        if not quiet:
+            logger.info("No profiles found")
+            logger.info("💡 Run 'moneybin profile create <name>' to create one")
         return
     for p in profiles:
         marker = " (active)" if p["active"] else ""
@@ -98,6 +114,14 @@ def profile_show(
         str | None,
         typer.Argument(help="Profile name (defaults to active profile)"),
     ] = None,
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — show has no info chatter; only data lines
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
 ) -> None:
     """Show resolved settings for a profile."""
     svc = ProfileService()
@@ -110,6 +134,9 @@ def profile_show(
             name = None
     try:
         info = svc.show(name)
+        if output == "json":
+            typer.echo(json.dumps({"profile": info}, indent=2, default=str))
+            return
         marker = " (active)" if info["active"] else ""
         logger.info(f"Profile: {info['name']}{marker}")
         logger.info(f"  Path:     {info['path']}")

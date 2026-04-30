@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import duckdb as duckdb_mod
 import typer
@@ -216,6 +216,14 @@ def matches_history_cmd(
     match_type: str | None = typer.Option(
         None, "--type", help="Filter by match type: dedup or transfer"
     ),
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
 ) -> None:
     """Show recent match decisions."""
     if match_type and match_type not in VALID_MATCH_TYPES:
@@ -225,8 +233,13 @@ def matches_history_cmd(
     with handle_cli_errors() as db:
         entries = get_match_log(db, limit=limit, match_type=match_type)
 
+        if output == "json":
+            typer.echo(json.dumps({"matches": entries}, indent=2, default=str))
+            return
+
         if not entries:
-            logger.info("No match decisions found")
+            if not quiet:
+                logger.info("No match decisions found")
             return
 
         typer.echo(

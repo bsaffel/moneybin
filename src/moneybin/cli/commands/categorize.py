@@ -4,8 +4,9 @@ Deterministic categorization operations — no LLM dependency.
 LLM-based auto-categorization is available through the MCP server.
 """
 
+import json
 import logging
-from typing import cast
+from typing import Annotated, Literal, cast
 
 import typer
 
@@ -58,12 +59,25 @@ def seed_cmd() -> None:
 
 
 @app.command("summary")
-def summary_cmd() -> None:
+def summary_cmd(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — summary has no informational chatter; only data
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """Show categorization coverage summary."""
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors() as db:
         stats = CategorizationService(db).categorization_stats()
+
+    if output == "json":
+        typer.echo(json.dumps({"summary": stats}, indent=2, default=str))
+        return
 
     total = stats["total"]
     categorized = stats["categorized"]
@@ -83,7 +97,16 @@ def summary_cmd() -> None:
 
 
 @app.command("list-rules")
-def list_rules_cmd() -> None:
+def list_rules_cmd(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """Display all active categorization rules."""
     from moneybin.tables import CATEGORIZATION_RULES
 
@@ -98,11 +121,29 @@ def list_rules_cmd() -> None:
             """
         ).fetchall()
 
-    if not rows:
-        logger.info("No active categorization rules.")
+    if output == "json":
+        rules = [
+            {
+                "rule_id": r[0],
+                "name": r[1],
+                "merchant_pattern": r[2],
+                "match_type": r[3],
+                "category": r[4],
+                "subcategory": r[5],
+                "priority": r[6],
+            }
+            for r in rows
+        ]
+        typer.echo(json.dumps({"rules": rules}, indent=2, default=str))
         return
 
-    logger.info("Active categorization rules:")
+    if not rows:
+        if not quiet:
+            logger.info("No active categorization rules.")
+        return
+
+    if not quiet:
+        logger.info("Active categorization rules:")
     for rule_id, name, pattern, match_type, cat, subcat, priority in rows:
         sub = f" / {subcat}" if subcat else ""
         logger.info(
@@ -203,12 +244,37 @@ def auto_confirm_cmd(
 
 
 @auto_app.command("stats")
-def auto_stats_cmd() -> None:
+def auto_stats_cmd(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — stats has no informational chatter; only data
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors() as db:
         stats = AutoRuleService(db).stats()
+
+    if output == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "stats": {
+                        "active_auto_rules": stats.active_auto_rules,
+                        "pending_proposals": stats.pending_proposals,
+                        "transactions_categorized": stats.transactions_categorized,
+                    }
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
 
     logger.info("Auto-rule health:")
     logger.info(f"  Active auto-rules:        {stats.active_auto_rules}")

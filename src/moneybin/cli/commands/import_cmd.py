@@ -8,9 +8,10 @@ Also provides history, revert, preview, and format management subcommands.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING, Annotated, Literal, get_args
 
 import typer
 
@@ -242,6 +243,14 @@ def import_history(
     import_id: str | None = typer.Option(
         None, "--import-id", help="Show details for a specific import"
     ),
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
 ) -> None:
     """List recent imports with batch details.
 
@@ -260,11 +269,16 @@ def import_history(
         loader = TabularLoader(db)
         records = loader.get_import_history(limit=limit, import_id=import_id)
 
+    if output == "json":
+        typer.echo(json.dumps({"imports": records}, indent=2, default=str))
+        return
+
     if not records:
-        if import_id:
-            logger.warning(f"⚠️  No import found with ID: {import_id}")
-        else:
-            logger.warning("⚠️  No import history found")
+        if not quiet:
+            if import_id:
+                logger.warning(f"⚠️  No import found with ID: {import_id}")
+            else:
+                logger.warning("⚠️  No import history found")
         return
 
     typer.echo(
@@ -469,7 +483,16 @@ def import_preview(
 
 
 @formats_app.command("list")
-def list_formats() -> None:
+def list_formats(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """List all formats (built-in and user-saved).
 
     Displays format name, institution, sign convention, and date format
@@ -487,8 +510,23 @@ def list_formats() -> None:
 
     all_formats, builtin = _load_all_formats(db)
 
+    if output == "json":
+        formats_payload = [
+            {
+                "name": fmt.name,
+                "institution": fmt.institution_name,
+                "sign_convention": fmt.sign_convention,
+                "date_format": fmt.date_format,
+                "source": "builtin" if fmt.name in builtin else "user",
+            }
+            for fmt in sorted(all_formats.values(), key=lambda f: f.name)
+        ]
+        typer.echo(json.dumps({"formats": formats_payload}, indent=2, default=str))
+        return
+
     if not all_formats:
-        logger.warning("⚠️  No formats found")
+        if not quiet:
+            logger.warning("⚠️  No formats found")
         return
 
     typer.echo(
@@ -501,13 +539,24 @@ def list_formats() -> None:
             f"{fmt.name:<24} {fmt.institution_name:<28} "
             f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
         )
-    n_builtin = len(builtin)
-    n_user = len(all_formats) - len(builtin)
-    typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
+    if not quiet:
+        n_builtin = len(builtin)
+        n_user = len(all_formats) - len(builtin)
+        typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
 
 
 @formats_app.command("show")
-def show_format(name: str = typer.Argument(..., help="Format name to show")) -> None:
+def show_format(
+    name: str = typer.Argument(..., help="Format name to show"),
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — show has no info chatter; only data lines
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """Show details for a specific format.
 
     Displays the full configuration for a built-in or user-saved format,
@@ -531,6 +580,26 @@ def show_format(name: str = typer.Argument(..., help="Format name to show")) -> 
         available = ", ".join(sorted(all_formats.keys())) or "(none)"
         logger.info(f"💡 Available formats: {available}")
         raise typer.Exit(1)
+
+    if output == "json":
+        payload = {
+            "name": fmt.name,
+            "institution": fmt.institution_name,
+            "file_type": fmt.file_type,
+            "delimiter": fmt.delimiter,
+            "encoding": fmt.encoding,
+            "skip_rows": fmt.skip_rows,
+            "sheet": fmt.sheet,
+            "sign_convention": fmt.sign_convention,
+            "date_format": fmt.date_format,
+            "number_format": fmt.number_format,
+            "multi_account": fmt.multi_account,
+            "header_signature": fmt.header_signature,
+            "field_mapping": dict(fmt.field_mapping),
+            "skip_trailing_patterns": fmt.skip_trailing_patterns,
+        }
+        typer.echo(json.dumps({"format": payload}, indent=2, default=str))
+        return
 
     typer.echo(f"\nFormat: {fmt.name}")
     typer.echo(f"Institution: {fmt.institution_name}")
@@ -597,7 +666,16 @@ def delete_format(
 
 
 @app.command("status")
-def import_status() -> None:
+def import_status(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """Show a summary of all imported data: row counts, date ranges, and sources.
 
     Queries raw tables in DuckDB to display what has been imported so far.
@@ -611,24 +689,59 @@ def import_status() -> None:
     db_path = get_settings().database.path
 
     if not db_path.exists():
-        logger.warning(f"Database not found: {db_path}")
-        logger.info("Run 'moneybin import file <path>' to import data first.")
+        if output == "json":
+            typer.echo(
+                json.dumps(
+                    {"database": str(db_path), "tables": [], "exists": False},
+                    indent=2,
+                    default=str,
+                )
+            )
+            return
+        if not quiet:
+            logger.warning(f"Database not found: {db_path}")
+            logger.info("Run 'moneybin import file <path>' to import data first.")
         raise typer.Exit(1)
 
     try:
         with handle_cli_errors() as db:
-            _print_import_status(db)
+            rows = _collect_import_status(db)
     except Exception as e:  # noqa: BLE001 — surface connection errors generically
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
 
+    if output == "json":
+        typer.echo(
+            json.dumps(
+                {"database": str(db_path), "tables": rows, "exists": True},
+                indent=2,
+                default=str,
+            )
+        )
+        return
 
-def _print_import_status(db: Database) -> None:
-    """Query raw tables and print import summary.
+    if not rows:
+        if not quiet:
+            typer.echo("\nNo imported data found.")
+            typer.echo("   Run 'moneybin import file <path>' to get started.")
+        return
 
-    Args:
-        db: Database instance.
-    """
+    if not quiet:
+        typer.echo("\nImported Data Summary")
+        typer.echo("=" * 60)
+
+    for row in rows:
+        date_info = ""
+        if row.get("date_min") is not None:
+            date_info = f"  ({row['date_min']} to {row['date_max']})"
+        typer.echo(f"  {row['schema']}.{row['table']}: {row['rows']:,} rows{date_info}")
+
+    if not quiet:
+        typer.echo()
+
+
+def _collect_import_status(db: Database) -> list[dict[str, object]]:
+    """Query raw tables and return per-table row counts and date ranges."""
     tables = db.execute("""
         SELECT table_schema, table_name
         FROM information_schema.tables
@@ -636,16 +749,9 @@ def _print_import_status(db: Database) -> None:
         ORDER BY table_name
     """).fetchall()
 
-    if not tables:
-        typer.echo("\n📭 No imported data found.")
-        typer.echo("   Run 'moneybin import file <path>' to get started.")
-        return
-
-    typer.echo("\n📊 Imported Data Summary")
-    typer.echo("=" * 60)
-
     from sqlglot import exp
 
+    results: list[dict[str, object]] = []
     for schema, table in tables:
         safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
         safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
@@ -654,10 +760,9 @@ def _print_import_status(db: Database) -> None:
         ).fetchone()
         count = row_count[0] if row_count else 0
 
-        # Try to get date range for transaction-like tables
-        date_info = ""
+        date_min: object = None
+        date_max: object = None
         if "transaction" in table:
-            # OFX uses date_posted; tabular and future tables use transaction_date
             date_col = "date_posted" if "ofx" in table else "transaction_date"
             safe_date_col = exp.to_identifier(date_col, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
             try:
@@ -665,10 +770,15 @@ def _print_import_status(db: Database) -> None:
                     f"SELECT MIN(CAST({safe_date_col} AS DATE)), MAX(CAST({safe_date_col} AS DATE)) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers; date_col from hardcoded map
                 ).fetchone()
                 if dates and dates[0]:
-                    date_info = f"  ({dates[0]} to {dates[1]})"
+                    date_min, date_max = dates[0], dates[1]
             except Exception:  # noqa: BLE001 — column may not exist in all tables
                 logger.debug(f"Could not get date range for {schema}.{table}")
 
-        typer.echo(f"  {schema}.{table}: {count:,} rows{date_info}")
-
-    typer.echo()
+        results.append({
+            "schema": schema,
+            "table": table,
+            "rows": count,
+            "date_min": date_min,
+            "date_max": date_max,
+        })
+    return results

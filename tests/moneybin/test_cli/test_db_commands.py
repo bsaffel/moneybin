@@ -370,21 +370,19 @@ class TestQueryCommand:
         mock_create_init_script: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Query command passes correct format flags."""
+        """Query command passes correct format flags for -o text|json."""
         test_db = tmp_path / "test.duckdb"
         test_db.touch()
         _make_settings_mock(test_db, mocker)
 
         formats = {
-            "csv": "-csv",
+            "text": "-table",
             "json": "-json",
-            "markdown": "-markdown",
-            "box": "-box",
         }
 
         for format_name, format_flag in formats.items():
             mock_subprocess_run.reset_mock()
-            result = runner.invoke(app, ["query", "SELECT 1", "--format", format_name])
+            result = runner.invoke(app, ["query", "SELECT 1", "--output", format_name])
             assert result.exit_code == 0
             call_args = mock_subprocess_run.call_args[0][0]
             assert format_flag in call_args

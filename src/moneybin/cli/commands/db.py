@@ -4,6 +4,7 @@ This module provides commands for creating, exploring, backing up, and
 managing the encryption lifecycle of the MoneyBin DuckDB database.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -12,7 +13,7 @@ import subprocess  # noqa: S404 — subprocess used with static args for DuckDB 
 import sys
 import tempfile
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -255,29 +256,19 @@ def run_query(
         "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
-    output_format: str = typer.Option(
-        "table",
-        "--format",
-        "-f",
-        help="Output format: table, csv, json, markdown, box",
-    ),
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — query has no informational chatter to gate
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
 ) -> None:
     """Execute a SQL query against the encrypted DuckDB database."""
     from moneybin.config import get_settings
 
-    format_map = {
-        "table": "-table",
-        "csv": "-csv",
-        "json": "-json",
-        "markdown": "-markdown",
-        "box": "-box",
-    }
-    extra_args: list[str] = []
-    if output_format in format_map:
-        extra_args.append(format_map[output_format])
-    else:
-        logger.warning(f"⚠️  Unknown format '{output_format}', using table")
-    extra_args.extend(["-c", sql])
+    extra_args: list[str] = ["-json" if output == "json" else "-table", "-c", sql]
 
     _run_duckdb_cli(
         database or get_settings().database.path,
@@ -297,6 +288,14 @@ def db_info(
         "-d",
         help="Path to DuckDB database file (default: profile config)",
     ),
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[  # noqa: ARG001 — db info has no info-only chatter; only data lines
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
     from moneybin.config import get_settings
@@ -310,17 +309,27 @@ def db_info(
         logger.error(f"❌ Database file not found: {db_path}")
         raise typer.Exit(1)
 
-    logger.info(f"Database: {db_path}")
-    logger.info(f"  File size: {_format_bytes(db_path.stat().st_size)}")
-    logger.info("  Encryption: AES-256-GCM (always on)")
-    logger.info(f"  Key mode: {settings.database.encryption_key_mode}")
+    payload: dict[str, object] = {
+        "database": str(db_path),
+        "file_size_bytes": db_path.stat().st_size,
+        "encryption": "AES-256-GCM",
+        "key_mode": settings.database.encryption_key_mode,
+    }
 
     # Check lock state
     store = SecretStore()
     try:
         store.get_key("DATABASE__ENCRYPTION_KEY")
-        logger.info("  Lock state: unlocked")
+        payload["lock_state"] = "unlocked"
     except SecretNotFoundError:
+        payload["lock_state"] = "locked"
+        if output == "json":
+            typer.echo(json.dumps(payload, indent=2, default=str))
+            return
+        logger.info(f"Database: {db_path}")
+        logger.info(f"  File size: {_format_bytes(db_path.stat().st_size)}")
+        logger.info("  Encryption: AES-256-GCM (always on)")
+        logger.info(f"  Key mode: {settings.database.encryption_key_mode}")
         logger.info("  Lock state: locked (no key in keychain or env)")
         return
 
@@ -337,7 +346,7 @@ def db_info(
 
             from sqlglot import exp
 
-            logger.info(f"  Tables: {len(tables)}")
+            table_rows: list[dict[str, object]] = []
             for schema, table in tables:
                 safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
                 safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
@@ -345,12 +354,32 @@ def db_info(
                     f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
                 ).fetchone()
                 count = count_result[0] if count_result else 0
-                logger.info(f"    {schema}.{table}: {count} rows")
+                table_rows.append({
+                    "schema": schema,
+                    "table": table,
+                    "rows": count,
+                })
 
-            # DuckDB version
+            payload["tables"] = table_rows
+
             version = db.sql("SELECT version()").fetchone()
             if version:
-                logger.info(f"  DuckDB version: {version[0]}")
+                payload["duckdb_version"] = version[0]
+
+            if output == "json":
+                typer.echo(json.dumps(payload, indent=2, default=str))
+                return
+
+            logger.info(f"Database: {db_path}")
+            logger.info(f"  File size: {_format_bytes(db_path.stat().st_size)}")
+            logger.info("  Encryption: AES-256-GCM (always on)")
+            logger.info(f"  Key mode: {settings.database.encryption_key_mode}")
+            logger.info("  Lock state: unlocked")
+            logger.info(f"  Tables: {len(table_rows)}")
+            for row in table_rows:
+                logger.info(f"    {row['schema']}.{row['table']}: {row['rows']} rows")
+            if "duckdb_version" in payload:
+                logger.info(f"  DuckDB version: {payload['duckdb_version']}")
     except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on connection/encryption failure
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
@@ -584,7 +613,16 @@ def db_unlock() -> None:
 
 
 @key_app.command("show")
-def db_key_show() -> None:
+def db_key_show(
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
+) -> None:
     """Print the database encryption key."""
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
@@ -598,10 +636,15 @@ def db_key_show() -> None:
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
-    logger.warning(
-        "⚠️  Security warning: this key provides full access to your "
-        "database. Do not share it or store it in plain text."
-    )
+    if output == "json":
+        typer.echo(json.dumps({"encryption_key": key}, indent=2))
+        return
+
+    if not quiet:
+        logger.warning(
+            "⚠️  Security warning: this key provides full access to your "
+            "database. Do not share it or store it in plain text."
+        )
     typer.echo(key)
 
 
@@ -817,11 +860,47 @@ def db_ps(
     database: Path | None = typer.Option(
         None, "--database", "-d", help="Path to DuckDB database file"
     ),
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool,
+        typer.Option("-q", "--quiet", help="Suppress informational output"),
+    ] = False,
 ) -> None:
     """Show processes holding the MoneyBin database file open."""
     from moneybin.config import get_settings
 
-    _list_db_processes(database or get_settings().database.path)
+    db_path = database or get_settings().database.path
+
+    if output == "json":
+        processes: list[dict[str, str | int]] = (
+            _find_db_processes(db_path) if db_path.exists() else []
+        )
+        typer.echo(
+            json.dumps(
+                {"database": str(db_path), "processes": processes},
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if not db_path.exists():
+        if not quiet:
+            logger.info(f"Database file does not exist yet: {db_path}")
+        return
+    procs = _find_db_processes(db_path)
+    if not procs:
+        if not quiet:
+            logger.info(f"No other processes have {db_path.name} open")
+        return
+    typer.echo(f"Processes holding {db_path} open:\n")
+    typer.echo(f"  {'PID':<8} {'COMMAND':<16} ARGS")
+    typer.echo(f"  {'-' * 7:<8} {'-' * 15:<16} {'-' * 40}")
+    for proc in procs:
+        typer.echo(f"  {proc['pid']:<8} {proc['command']:<16} {proc['cmdline']}")
 
 
 @app.command("kill")
