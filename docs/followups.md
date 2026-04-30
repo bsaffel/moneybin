@@ -154,3 +154,27 @@ Fix: grant the workflow permission to call `gh pr review` by adding to
 ```
 
 See PR #58 conversation for the exchange where this came up.
+
+## Multi-word city stripping in `normalize_description` (post-PR #66)
+
+`_TRAILING_LOCATION` in `src/moneybin/services/_text.py` strips a single
+optional all-caps city token before `ST ZIP` (e.g. `WHOLEFDS MKT AUSTIN
+TX 78701` → `WHOLEFDS MKT`). It does not handle multi-word cities — so
+`SAN FRANCISCO CA 94105` normalizes to `SAN` instead of the intended
+merchant prefix. Common cities affected: SAN JOSE, LOS ANGELES, NEW
+YORK, SANTA BARBARA.
+
+The naive multi-word extension (`(?:[A-Z][A-Za-z]{3,}(?:\s+[A-Z][A-Za-z]+)*\s+)?`)
+doesn't help because `re.sub` picks the leftmost match — it greedily
+consumes `FRANCISCO CA 94105` from the second word and leaves the first
+word dangling.
+
+A correct fix likely needs one of:
+- A known-cities allowlist (US Census places ≥10k population is ~5k entries)
+- Anchoring on the start-of-string-or-whitespace-after-known-merchant-prefix
+- Two-pass: detect city using state+zip as anchor, validate that what
+  remains is a plausible merchant token
+
+Add a golden case (`san-francisco-multi-word-city`) when fixed.
+
+Flagged by claude[bot] (P2) in PR #66 review.
