@@ -303,16 +303,7 @@ def categorize_bulk(
             applied=0, skipped=0, errors=0, error_details=[]
         ).to_envelope(0)
 
-    try:
-        validated, parse_errors = validate_bulk_items(items)
-    except ValueError as e:
-        return BulkCategorizationResult(
-            applied=0,
-            skipped=0,
-            errors=len(items),
-            error_details=[{"transaction_id": "(unknown)", "reason": str(e)}],
-        ).to_envelope(len(items))
-
+    validated, parse_errors = validate_bulk_items(items)
     result = CategorizationService(get_database()).bulk_categorize(validated)
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(items))

@@ -40,9 +40,9 @@ class TestRecordCategorizationWithContext:
 
         for call in db_mock.execute.call_args_list:
             sql = str(call.args[0]).lower()
-            assert "from fct_transactions" not in sql
-            assert "from merchants" not in sql
-            assert "from categorization_rules" not in sql
+            assert "from core.fct_transactions" not in sql
+            assert "from app.merchants" not in sql
+            assert "from app.categorization_rules" not in sql
 
     def test_falls_back_when_context_none(self, db_mock: MagicMock) -> None:
         svc = AutoRuleService(db_mock)

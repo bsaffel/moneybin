@@ -803,7 +803,7 @@ class AutoRuleService:
         txn_row = context.txn_row_for(transaction_id) if context is not None else None
         txn_row_override = (
             (txn_row.description or "", txn_row.amount, txn_row.account_id)
-            if txn_row is not None and txn_row.description
+            if txn_row is not None
             else None
         )
         match = CategorizationService(self._db).find_matching_rule(
