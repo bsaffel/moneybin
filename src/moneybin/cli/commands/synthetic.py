@@ -54,7 +54,7 @@ def _run_generate(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_current_profile, set_current_profile
     from moneybin.database import close_database
-    from moneybin.services.import_service import run_transforms
+    from moneybin.services.import_service import ImportService
     from moneybin.testing.synthetic.engine import GeneratorEngine
     from moneybin.testing.synthetic.writer import SyntheticWriter
 
@@ -123,7 +123,7 @@ def _run_generate(
             if not skip_transform:
                 logger.info("⚙️  Running SQLMesh to materialize pipeline...")
                 try:
-                    run_transforms()
+                    ImportService(db).run_transforms()
                 except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
                     logger.warning(
                         "⚠️  SQLMesh transforms failed — raw data is intact, "
