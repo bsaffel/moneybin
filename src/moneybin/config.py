@@ -407,7 +407,8 @@ class CategorizationSettings(BaseModel):
         ge=1,
         description=(
             "Default LIMIT applied to auto-rule listing endpoints "
-            "(auto-review, auto-rules) when no explicit --limit is given. "
+            "(categorize auto review, categorize auto rules) when no explicit "
+            "--limit is given. "
             "Caps memory and response size for unbounded queues."
         ),
     )
@@ -429,7 +430,7 @@ class CategorizationSettings(BaseModel):
         If proposal > override, ``check_overrides`` deactivates a rule once
         override count reaches override_threshold but the re-proposal lands
         in ``tracking`` (count < proposal_threshold), hiding the corrected
-        category from ``auto-review`` until further user categorizations.
+        category from ``categorize auto review`` until further user categorizations.
         """
         if self.auto_rule_proposal_threshold > self.auto_rule_override_threshold:
             raise ValueError(
