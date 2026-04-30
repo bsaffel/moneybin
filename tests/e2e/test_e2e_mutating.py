@@ -431,5 +431,5 @@ class TestLogsMutating:
     def test_logs_clean(self, tmp_path: Path) -> None:
         env = {"MONEYBIN_HOME": str(tmp_path), "MONEYBIN_PROFILE": "logstest"}
         run_cli("profile", "create", "logstest", env=env)
-        result = run_cli("logs", "clean", "--older-than", "0d", env=env)
+        result = run_cli("logs", "--prune", "--older-than", "0d", env=env)
         result.assert_success()

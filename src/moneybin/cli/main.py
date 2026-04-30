@@ -274,11 +274,10 @@ app.add_typer(
     name="db",
     help="Database management and exploration",
 )
-app.add_typer(
-    logs.app,
+app.command(
     name="logs",
-    help="Manage log files",
-)
+    help="View, prune, or locate MoneyBin log files for the active profile.",
+)(logs.logs_command)
 
 # Add db migrate as a sub-typer of db
 db.app.add_typer(migrate.app, name="migrate", help="Database migration management")

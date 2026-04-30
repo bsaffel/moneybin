@@ -47,17 +47,17 @@ class TestNoDBCommands:
         result.assert_success()
 
     def test_logs_path(self, e2e_env: dict[str, str]) -> None:
-        result = run_cli("logs", "path", env=e2e_env)
+        result = run_cli("logs", "--print-path", env=e2e_env)
         result.assert_success()
 
     def test_logs_tail(self, e2e_env: dict[str, str]) -> None:
-        result = run_cli("logs", "tail", "--lines", "5", env=e2e_env)
+        result = run_cli("logs", "cli", "--lines", "5", env=e2e_env)
         # May exit 0 or 1 if no log files exist yet — no crash is the bar
         assert "Traceback" not in result.stderr
 
     def test_logs_clean_dry_run(self, e2e_env: dict[str, str]) -> None:
         result = run_cli(
-            "logs", "clean", "--older-than", "30d", "--dry-run", env=e2e_env
+            "logs", "--prune", "--older-than", "30d", "--dry-run", env=e2e_env
         )
         result.assert_success()
 

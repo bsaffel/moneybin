@@ -1,6 +1,8 @@
-"""Log management commands for MoneyBin CLI.
+"""Log management command for MoneyBin CLI.
 
-Commands for viewing, cleaning, and tailing log files.
+Single leaf command for viewing, pruning, and locating log files for the
+active profile. Registered directly on the root app — see
+`moneybin.cli.main`.
 """
 
 import json
@@ -9,7 +11,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import typer
 
@@ -17,70 +19,6 @@ from moneybin.config import get_settings
 from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
-
-app = typer.Typer(
-    help="Manage log files",
-    no_args_is_help=True,
-)
-
-
-@app.command("path")
-def logs_path() -> None:
-    """Print the log directory for the current profile."""
-    settings = get_settings()
-    log_dir = settings.logging.log_file_path.parent
-    typer.echo(str(log_dir))
-
-
-@app.command("clean")
-def logs_clean(
-    older_than: str = typer.Option(
-        ..., "--older-than", help="Delete logs older than this (e.g., 30d, 7d, 24h)"
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show what would be deleted without deleting"
-    ),
-) -> None:
-    """Delete log files older than a specified duration."""
-    try:
-        delta = parse_duration(older_than)
-    except ValueError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
-
-    settings = get_settings()
-    log_dir = settings.logging.log_file_path.parent
-    cutoff = datetime.now() - delta
-
-    if not log_dir.exists():
-        logger.info(f"Log directory does not exist: {log_dir}")
-        return
-
-    deleted = 0
-    freed_bytes = 0
-
-    for log_file in log_dir.iterdir():
-        if not log_file.is_file():
-            continue
-        mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
-        if mtime < cutoff:
-            size = log_file.stat().st_size
-            if dry_run:
-                logger.info(f"  Would delete: {log_file.name} ({size / 1024:.1f} KB)")
-            else:
-                log_file.unlink()
-                logger.info(f"  Deleted: {log_file.name}")
-            deleted += 1
-            freed_bytes += size
-
-    if deleted == 0:
-        logger.info(f"No log files older than {older_than}")
-    elif dry_run:
-        logger.info(
-            f"Would delete {deleted} file(s), freeing {freed_bytes / 1024:.1f} KB"
-        )
-    else:
-        logger.info(f"✅ Deleted {deleted} file(s), freed {freed_bytes / 1024:.1f} KB")
 
 
 # Matches HumanFormatter "full" variant: "2026-04-21 14:30:00,123 - name - LEVEL - msg"
@@ -95,6 +33,8 @@ _LEVEL_PRIORITY = {
     "ERROR": 3,
     "CRITICAL": 4,
 }
+
+_VALID_STREAMS = {"cli", "mcp", "sqlmesh"}
 
 
 class _LogEntry:
@@ -146,12 +86,6 @@ def _parse_log_lines(lines: list[str]) -> list[_LogEntry]:
 
     Lines that don't match the log format (e.g. traceback continuations)
     are attached to the preceding entry.
-
-    Args:
-        lines: Raw text lines from a log file.
-
-    Returns:
-        List of parsed log entries.
     """
     entries: list[_LogEntry] = []
     for line in lines:
@@ -168,19 +102,10 @@ def _filter_entries(
     *,
     level: str | None = None,
     since: datetime | None = None,
+    until: datetime | None = None,
     pattern: re.Pattern[str] | None = None,
 ) -> list[_LogEntry]:
-    """Filter parsed log entries by level, time, and/or pattern.
-
-    Args:
-        entries: Parsed log entries.
-        level: Minimum log level (e.g. "ERROR" includes ERROR and CRITICAL).
-        since: Only include entries at or after this time.
-        pattern: Regex pattern to match against the message.
-
-    Returns:
-        Filtered list of entries.
-    """
+    """Filter parsed log entries by level, time bounds, and/or pattern."""
     min_priority = _LEVEL_PRIORITY.get(level.upper(), 0) if level else 0
     result: list[_LogEntry] = []
     for entry in entries:
@@ -189,8 +114,9 @@ def _filter_entries(
             continue
         if since and entry.timestamp() < since:
             continue
+        if until and entry.timestamp() > until:
+            continue
         if pattern and not pattern.search(entry.message):
-            # Also search extra lines (tracebacks)
             if not any(pattern.search(line) for line in entry.extra_lines):
                 continue
         result.append(entry)
@@ -198,16 +124,7 @@ def _filter_entries(
 
 
 def _tail_file(path: Path, n: int, block_size: int = 8192) -> list[str]:
-    """Read the last n lines of a file without loading it entirely into memory.
-
-    Args:
-        path: Path to the file.
-        n: Number of lines to return.
-        block_size: Bytes to read per backward seek step.
-
-    Returns:
-        The last n lines of the file.
-    """
+    """Read the last n lines of a file without loading it entirely into memory."""
     with open(path, "rb") as f:
         f.seek(0, 2)
         size = f.tell()
@@ -226,25 +143,8 @@ def _tail_file(path: Path, n: int, block_size: int = 8192) -> list[str]:
         return lines[-n:]
 
 
-_VALID_STREAMS = {"all", "cli", "mcp", "sqlmesh"}
-
-
 def _find_log_files(log_dir: Path, stream: str) -> list[Path]:
-    """Find log files for the given stream, sorted newest first.
-
-    Args:
-        log_dir: Directory containing log files.
-        stream: Stream name ("cli", "mcp", "sqlmesh") or "all".
-
-    Returns:
-        Matching log files sorted by name descending (newest first).
-    """
-    if stream == "all":
-        # Match any known stream prefix
-        files: list[Path] = []
-        for prefix in ("cli", "mcp", "sqlmesh"):
-            files.extend(log_dir.glob(f"{prefix}_*.log"))
-        return sorted(files, key=lambda p: p.name, reverse=True)
+    """Find log files for the given stream, sorted newest first."""
     return sorted(
         log_dir.glob(f"{stream}_*.log"),
         key=lambda p: p.name,
@@ -252,142 +152,148 @@ def _find_log_files(log_dir: Path, stream: str) -> list[Path]:
     )
 
 
-@app.command("tail")
-def logs_tail(
-    stream: str | None = typer.Option(
-        None,
-        "--stream",
-        help="Log stream to view: all (default), cli, mcp, sqlmesh",
-    ),
-    follow: bool = typer.Option(False, "-f", "--follow", help="Follow log output"),
-    lines: int = typer.Option(20, "-n", "--lines", help="Number of lines to show"),
-    level: str | None = typer.Option(
-        None,
-        "--level",
-        help="Minimum log level: DEBUG, INFO, WARNING, ERROR, CRITICAL",
-    ),
-    since: str | None = typer.Option(
-        None, "--since", help="Time window (e.g., 5m, 1h, 7d)"
-    ),
-    grep: str | None = typer.Option(
-        None, "--grep", help="Regex pattern to filter log messages"
-    ),
-    output: Literal["text", "json"] = typer.Option(
-        "text", "--output", help="Output format: text or json"
-    ),
+def _parse_time_bound(value: str) -> datetime:
+    """Parse --since/--until: accepts a duration ('5m') or ISO-8601 timestamp."""
+    try:
+        delta = parse_duration(value)
+        return datetime.now() - delta
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(value.rstrip("Z"))
+    except ValueError as e:
+        raise ValueError(
+            f"--since/--until must be a duration (5m, 1h, 7d) "
+            f"or ISO-8601 timestamp; got '{value}'"
+        ) from e
+
+
+def _do_prune(log_dir: Path, older_than: str, *, dry_run: bool, quiet: bool) -> None:
+    try:
+        delta = parse_duration(older_than)
+    except ValueError as e:
+        logger.error(f"❌ {e}")
+        raise typer.Exit(2) from e
+
+    cutoff = datetime.now() - delta
+    if not log_dir.exists():
+        if not quiet:
+            logger.info(f"Log directory does not exist: {log_dir}")
+        return
+
+    deleted = 0
+    freed_bytes = 0
+    for log_file in log_dir.iterdir():
+        if not log_file.is_file():
+            continue
+        mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
+        if mtime < cutoff:
+            size = log_file.stat().st_size
+            if dry_run:
+                if not quiet:
+                    logger.info(
+                        f"  Would delete: {log_file.name} ({size / 1024:.1f} KB)"
+                    )
+            else:
+                log_file.unlink()
+                if not quiet:
+                    logger.info(f"  Deleted: {log_file.name}")
+            deleted += 1
+            freed_bytes += size
+
+    if quiet:
+        return
+    if deleted == 0:
+        logger.info(f"No log files older than {older_than}")
+    elif dry_run:
+        logger.info(
+            f"Would delete {deleted} file(s), freeing {freed_bytes / 1024:.1f} KB"
+        )
+    else:
+        logger.info(f"✅ Deleted {deleted} file(s), freed {freed_bytes / 1024:.1f} KB")
+
+
+def _do_view(
+    *,
+    log_dir: Path,
+    stream: str,
+    follow: bool,
+    lines: int,
+    level: str | None,
+    since: str | None,
+    until: str | None,
+    grep: str | None,
+    output: Literal["text", "json"],
+    quiet: bool,
 ) -> None:
-    """Show recent log entries, optionally following new output.
-
-    By default, shows logs from all streams (cli, mcp, sqlmesh) merged
-    by timestamp. Use --stream to view a single stream.
-
-    Filters (--level, --since, --grep) parse structured log lines and
-    return matching entries with their tracebacks. Use --output json for
-    machine-readable output.
-
-    Note: each invocation reads from the most recent log file per stream.
-    Entries from older daily files are not included.
-    """
-    # Validate --level
     if level and level.upper() not in _LEVEL_PRIORITY:
         logger.error(
             f"❌ Unknown level '{level}'. Choose from: {', '.join(_LEVEL_PRIORITY)}"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(2)
 
-    # Parse --since into a datetime cutoff
     since_dt: datetime | None = None
     if since:
         try:
-            delta = parse_duration(since)
+            since_dt = _parse_time_bound(since)
         except ValueError as e:
             logger.error(f"❌ {e}")
-            raise typer.Exit(1) from e
-        since_dt = datetime.now() - delta
+            raise typer.Exit(2) from e
 
-    # Compile --grep pattern
+    until_dt: datetime | None = None
+    if until:
+        try:
+            until_dt = _parse_time_bound(until)
+        except ValueError as e:
+            logger.error(f"❌ {e}")
+            raise typer.Exit(2) from e
+
     grep_pattern: re.Pattern[str] | None = None
     if grep:
         try:
             grep_pattern = re.compile(grep)
         except re.error as e:
             logger.error(f"❌ Invalid regex pattern: {e}")
-            raise typer.Exit(1) from e
-
-    stream_name = (stream or "all").lower()
-    if stream_name not in _VALID_STREAMS:
-        logger.error(
-            f"❌ Unknown stream '{stream_name}'. "
-            f"Choose from: {', '.join(sorted(_VALID_STREAMS))}"
-        )
-        raise typer.Exit(1)
-
-    # --follow requires a specific stream (can't tail multiple files)
-    if follow and stream_name == "all":
-        logger.error(
-            "❌ --follow requires a specific stream. "
-            "Use --stream cli, --stream mcp, or --stream sqlmesh."
-        )
-        raise typer.Exit(1)
-
-    has_filters = level or since_dt or grep_pattern or output == "json"
-    # "all" mode merges multiple files, so it always uses the parsed path
-    needs_merge = stream_name == "all"
-
-    settings = get_settings()
-    log_dir = settings.logging.log_file_path.parent
+            raise typer.Exit(2) from e
 
     if not log_dir.exists():
-        logger.info(f"No log directory found: {log_dir}")
+        if not quiet:
+            logger.info(f"No log directory found: {log_dir}")
         return
 
-    log_files = _find_log_files(log_dir, stream_name)
-
+    log_files = _find_log_files(log_dir, stream)
     if not log_files:
-        logger.info(f"No log files found for stream '{stream_name}' in {log_dir}")
+        if not quiet:
+            logger.info(f"No log files found for stream '{stream}' in {log_dir}")
         return
 
-    if has_filters or needs_merge:
-        # Read more lines than requested to account for filtering
+    has_filters = bool(
+        level or since_dt or until_dt or grep_pattern or output == "json"
+    )
+    if has_filters:
         read_lines = lines * 10 if (level or grep_pattern) else lines
-
-        if needs_merge:
-            # Read from the most recent file per stream prefix and merge
-            seen_prefixes: set[str] = set()
-            all_entries: list[_LogEntry] = []
-            for log_file in log_files:
-                prefix = log_file.name.split("_", 1)[0]
-                if prefix in seen_prefixes:
-                    continue
-                seen_prefixes.add(prefix)
-                raw_lines = _tail_file(log_file, read_lines)
-                all_entries.extend(_parse_log_lines(raw_lines))
-            # Sort merged entries by timestamp
-            all_entries.sort(key=lambda e: e.timestamp_str)
-            entries = all_entries
-        else:
-            raw_lines = _tail_file(log_files[0], read_lines)
-            entries = _parse_log_lines(raw_lines)
-
+        raw_lines = _tail_file(log_files[0], read_lines)
+        entries = _parse_log_lines(raw_lines)
         filtered = _filter_entries(
-            entries, level=level, since=since_dt, pattern=grep_pattern
+            entries,
+            level=level,
+            since=since_dt,
+            until=until_dt,
+            pattern=grep_pattern,
         )
-        # Take only the last N entries after filtering
         filtered = filtered[-lines:]
-
         if output == "json":
             typer.echo(json.dumps([e.to_dict() for e in filtered], indent=2))
         else:
             for entry in filtered:
                 typer.echo(entry.to_text())
     else:
-        # No filters, single stream — fast path, raw tail
-        tail_lines = _tail_file(log_files[0], lines)
-        for raw_line in tail_lines:
+        for raw_line in _tail_file(log_files[0], lines):
             typer.echo(raw_line.rstrip())
 
     if follow:
-        typer.echo("--- Following (Ctrl+C to stop) ---")
+        if not quiet:
+            typer.echo("--- Following (Ctrl+C to stop) ---")
         try:
             with open(log_files[0], encoding="utf-8") as f:
                 f.seek(0, 2)
@@ -399,3 +305,132 @@ def logs_tail(
                         time.sleep(0.5)
         except KeyboardInterrupt:
             pass
+
+
+def logs_command(
+    stream: Annotated[
+        str | None,
+        typer.Argument(
+            help="Log stream to view: cli, mcp, sqlmesh. Required unless "
+            "--print-path or --prune is used.",
+        ),
+    ] = None,
+    follow: Annotated[
+        bool, typer.Option("-f", "--follow", help="Follow log output")
+    ] = False,
+    lines: Annotated[
+        int, typer.Option("-n", "--lines", help="Number of lines to show")
+    ] = 20,
+    level: Annotated[
+        str | None,
+        typer.Option(
+            "--level",
+            help="Minimum log level: DEBUG, INFO, WARNING, ERROR, CRITICAL",
+        ),
+    ] = None,
+    since: Annotated[
+        str | None,
+        typer.Option(
+            "--since",
+            help=(
+                "Time window or absolute timestamp "
+                "(e.g., 5m, 1h, 7d, 2026-04-01T00:00:00)"
+            ),
+        ),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option(
+            "--until",
+            help="Upper time bound: duration ago or absolute timestamp",
+        ),
+    ] = None,
+    grep: Annotated[
+        str | None,
+        typer.Option("--grep", help="Regex pattern to filter log messages"),
+    ] = None,
+    output: Annotated[
+        Literal["text", "json"],
+        typer.Option("-o", "--output", help="Output format: text or json"),
+    ] = "text",
+    quiet: Annotated[
+        bool, typer.Option("-q", "--quiet", help="Suppress informational output")
+    ] = False,
+    print_path: Annotated[
+        bool,
+        typer.Option(
+            "--print-path",
+            help="Print the log directory and exit (no stream required)",
+        ),
+    ] = False,
+    prune: Annotated[
+        bool,
+        typer.Option(
+            "--prune",
+            help="Delete old log files instead of viewing (no stream required)",
+        ),
+    ] = False,
+    older_than: Annotated[
+        str | None,
+        typer.Option(
+            "--older-than",
+            help="With --prune: delete logs older than this duration (e.g., 30d)",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="With --prune: show what would be deleted"),
+    ] = False,
+) -> None:
+    """View, prune, or locate MoneyBin log files for the active profile."""
+    settings = get_settings()
+    log_dir = settings.logging.log_file_path.parent
+
+    if print_path:
+        typer.echo(str(log_dir))
+        return
+
+    if prune:
+        if not older_than:
+            logger.error("❌ --prune requires --older-than DURATION")
+            raise typer.Exit(2)
+        _do_prune(log_dir, older_than, dry_run=dry_run, quiet=quiet)
+        return
+
+    if stream is None:
+        typer.echo(
+            "Error: Missing argument 'STREAM'. Pick one of: "
+            f"{', '.join(sorted(_VALID_STREAMS))}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if stream.lower() not in _VALID_STREAMS:
+        logger.error(
+            f"❌ Unknown stream '{stream}'. "
+            f"Choose from: {', '.join(sorted(_VALID_STREAMS))}"
+        )
+        raise typer.Exit(2)
+
+    _do_view(
+        log_dir=log_dir,
+        stream=stream.lower(),
+        follow=follow,
+        lines=lines,
+        level=level,
+        since=since,
+        until=until,
+        grep=grep,
+        output=output,
+        quiet=quiet,
+    )
+
+
+# Single-command Typer wrapper used by main.py registration and CliRunner tests.
+logs_command_app = typer.Typer(
+    name="logs",
+    help="View, prune, or locate MoneyBin log files for the active profile.",
+    invoke_without_command=False,
+    add_completion=False,
+)
+logs_command_app.command()(logs_command)

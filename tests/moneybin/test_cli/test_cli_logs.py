@@ -1,4 +1,8 @@
-"""Tests for logs CLI commands."""
+"""Tests for the leaf logs CLI command.
+
+These tests cover the leaf logs command. The previous group structure
+(tail/clean/path) is gone — see test_cli_logs_leaf.py for shape tests.
+"""
 
 import json
 from datetime import datetime, timedelta
@@ -8,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.logs import app
+from moneybin.cli.commands.logs import logs_command_app
 from moneybin.utils.parsing import parse_duration
 
 runner = CliRunner()
@@ -49,46 +53,50 @@ class TestParseDuration:
             parse_duration("")
 
 
-class TestLogsPath:
-    """Tests for the logs path command."""
+class TestLogsPrintPath:
+    """Tests for the --print-path flag."""
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_path_prints_log_dir(self, mock_settings: MagicMock) -> None:
-        """Logs path prints the log directory."""
+    def test_print_path_prints_log_dir(self, mock_settings: MagicMock) -> None:
+        """`logs --print-path` prints the log directory."""
         mock_settings.return_value.logging.log_file_path = Path(
             "/fake/profiles/alice/logs/moneybin.log"
         )
-        result = runner.invoke(app, ["path"])
+        result = runner.invoke(logs_command_app, ["--print-path"])
         assert result.exit_code == 0
         assert "/fake/profiles/alice/logs" in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_path_does_not_include_filename(self, mock_settings: MagicMock) -> None:
-        """Logs path prints the directory, not the log file itself."""
+    def test_print_path_does_not_include_filename(
+        self, mock_settings: MagicMock
+    ) -> None:
+        """`logs --print-path` prints the directory, not the log file itself."""
         mock_settings.return_value.logging.log_file_path = Path(
             "/fake/profiles/alice/logs/moneybin.log"
         )
-        result = runner.invoke(app, ["path"])
+        result = runner.invoke(logs_command_app, ["--print-path"])
         assert result.exit_code == 0
         assert "moneybin.log" not in result.output
 
 
-class TestLogsClean:
-    """Tests for the logs clean command."""
+class TestLogsPrune:
+    """Tests for the --prune flag."""
 
-    def test_clean_with_dry_run(self, tmp_path: Path) -> None:
-        """Logs clean --dry-run shows what would be deleted."""
+    def test_prune_with_dry_run(self, tmp_path: Path) -> None:
+        """`logs --prune --dry-run` shows what would be deleted."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         (log_dir / "old.log").write_text("old log")
 
         with patch("moneybin.cli.commands.logs.get_settings") as mock:
             mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
-            result = runner.invoke(app, ["clean", "--older-than", "30d", "--dry-run"])
+            result = runner.invoke(
+                logs_command_app, ["--prune", "--older-than", "30d", "--dry-run"]
+            )
             assert result.exit_code == 0
 
-    def test_clean_deletes_old_files(self, tmp_path: Path) -> None:
-        """Logs clean deletes files older than the cutoff."""
+    def test_prune_deletes_old_files(self, tmp_path: Path) -> None:
+        """`logs --prune` deletes files older than the cutoff."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         old_log = log_dir / "old.log"
@@ -102,12 +110,12 @@ class TestLogsClean:
 
         with patch("moneybin.cli.commands.logs.get_settings") as mock:
             mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
-            result = runner.invoke(app, ["clean", "--older-than", "30d"])
+            result = runner.invoke(logs_command_app, ["--prune", "--older-than", "30d"])
             assert result.exit_code == 0
             assert not old_log.exists()
 
-    def test_clean_keeps_recent_files(self, tmp_path: Path) -> None:
-        """Logs clean keeps files newer than the cutoff."""
+    def test_prune_keeps_recent_files(self, tmp_path: Path) -> None:
+        """`logs --prune` keeps files newer than the cutoff."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         recent_log = log_dir / "recent.log"
@@ -115,38 +123,50 @@ class TestLogsClean:
 
         with patch("moneybin.cli.commands.logs.get_settings") as mock:
             mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
-            result = runner.invoke(app, ["clean", "--older-than", "30d"])
+            result = runner.invoke(logs_command_app, ["--prune", "--older-than", "30d"])
             assert result.exit_code == 0
             assert recent_log.exists()
 
-    def test_clean_no_log_dir(self, tmp_path: Path) -> None:
-        """Logs clean handles missing log directory gracefully."""
+    def test_prune_no_log_dir(self, tmp_path: Path) -> None:
+        """`logs --prune` handles missing log directory gracefully."""
         log_dir = tmp_path / "nonexistent_logs"
 
         with patch("moneybin.cli.commands.logs.get_settings") as mock:
             mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
-            result = runner.invoke(app, ["clean", "--older-than", "7d"])
+            result = runner.invoke(logs_command_app, ["--prune", "--older-than", "7d"])
             assert result.exit_code == 0
 
-    def test_clean_invalid_duration(self) -> None:
-        """Logs clean exits with code 1 for invalid duration."""
-        result = runner.invoke(app, ["clean", "--older-than", "invalid"])
-        assert result.exit_code == 1
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_prune_invalid_duration(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """`logs --prune` exits non-zero for invalid duration."""
+        mock_settings.return_value.logging.log_file_path = (
+            tmp_path / "logs" / "moneybin.log"
+        )
+        result = runner.invoke(logs_command_app, ["--prune", "--older-than", "invalid"])
+        assert result.exit_code != 0
 
-    def test_clean_missing_older_than(self) -> None:
-        """Logs clean requires --older-than option."""
-        result = runner.invoke(app, ["clean"])
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_prune_missing_older_than(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """`logs --prune` requires --older-than."""
+        mock_settings.return_value.logging.log_file_path = (
+            tmp_path / "logs" / "moneybin.log"
+        )
+        result = runner.invoke(logs_command_app, ["--prune"])
         assert result.exit_code != 0
 
 
-class TestLogsTail:
-    """Tests for the logs tail command."""
+class TestLogsView:
+    """Tests for `logs <stream>` viewing."""
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_shows_last_n_lines(
+    def test_view_shows_last_n_lines(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail shows the last N lines of the most recent stream file."""
+        """`logs cli --lines 5` shows the last 5 lines of the most recent file."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         log_file = log_dir / "cli_2026-04-21.log"
@@ -154,15 +174,15 @@ class TestLogsTail:
         log_file.write_text("".join(lines))
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--stream", "cli", "--lines", "5"])
+        result = runner.invoke(logs_command_app, ["cli", "--lines", "5"])
         assert result.exit_code == 0
         output_lines = [ln for ln in result.output.strip().split("\n") if ln]
         assert len(output_lines) == 5
         assert "line 49" in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_default_lines(self, mock_settings: MagicMock, tmp_path: Path) -> None:
-        """Logs tail defaults to 20 lines."""
+    def test_view_default_lines(self, mock_settings: MagicMock, tmp_path: Path) -> None:
+        """`logs cli` defaults to 20 lines."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         log_file = log_dir / "cli_2026-04-21.log"
@@ -170,16 +190,16 @@ class TestLogsTail:
         log_file.write_text("".join(lines))
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--stream", "cli"])
+        result = runner.invoke(logs_command_app, ["cli"])
         assert result.exit_code == 0
         output_lines = [ln for ln in result.output.strip().split("\n") if ln]
         assert len(output_lines) == 20
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_stream_selects_correct_files(
+    def test_view_stream_selects_correct_files(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail --stream selects files matching the stream prefix."""
+        """`logs <stream>` selects files matching the stream prefix."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         (log_dir / "mcp_2026-04-21.log").write_text(
@@ -188,95 +208,44 @@ class TestLogsTail:
         (log_dir / "cli_2026-04-21.log").write_text("INFO general info\n")
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--stream", "mcp"])
+        result = runner.invoke(logs_command_app, ["mcp"])
         assert result.exit_code == 0
         assert "mcp server started" in result.output
         assert "mcp tool called" in result.output
         assert "general info" not in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_missing_log_dir(
+    def test_view_missing_log_dir(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail handles missing log directory gracefully."""
+        """`logs <stream>` handles missing log directory gracefully."""
         mock_settings.return_value.logging.log_file_path = (
             tmp_path / "nonexistent" / "moneybin.log"
         )
-        result = runner.invoke(app, ["tail"])
+        result = runner.invoke(logs_command_app, ["cli"])
         assert result.exit_code == 0
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_tail_fewer_lines_than_requested(
+    def test_view_fewer_lines_than_requested(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """Logs tail shows all lines when file has fewer than requested."""
+        """`logs <stream>` shows all lines when file has fewer than requested."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         (log_dir / "cli_2026-04-21.log").write_text("line 1\nline 2\nline 3\n")
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--stream", "cli", "--lines", "20"])
+        result = runner.invoke(logs_command_app, ["cli", "--lines", "20"])
         assert result.exit_code == 0
         assert "line 1" in result.output
         assert "line 2" in result.output
         assert "line 3" in result.output
 
-
-class TestLogsTailAllStream:
-    """Tests for the --stream all (default) behavior."""
-
-    @patch("moneybin.cli.commands.logs.get_settings")
-    def test_all_stream_merges_by_timestamp(
-        self, mock_settings: MagicMock, tmp_path: Path
-    ) -> None:
-        """Default stream merges entries from all streams sorted by time."""
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-        (log_dir / "cli_2026-04-21.log").write_text(
-            "2026-04-21 14:00:00,000 - cli.main - INFO - CLI started\n"
-            "2026-04-21 14:00:02,000 - cli.main - INFO - CLI done\n"
-        )
-        (log_dir / "mcp_2026-04-21.log").write_text(
-            "2026-04-21 14:00:01,000 - mcp.server - INFO - MCP request\n"
-        )
-        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
-
-        result = runner.invoke(app, ["tail", "--output", "json", "-n", "50"])
-        assert result.exit_code == 0
-        entries: list[dict[str, str]] = json.loads(result.output)
-        assert len(entries) == 3
-        # Verify timestamp ordering: CLI → MCP → CLI
-        assert entries[0]["message"] == "CLI started"
-        assert entries[1]["message"] == "MCP request"
-        assert entries[2]["message"] == "CLI done"
-
-    @patch("moneybin.cli.commands.logs.get_settings")
-    def test_all_stream_is_default(
-        self, mock_settings: MagicMock, tmp_path: Path
-    ) -> None:
-        """Without --stream, all streams are shown."""
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-        (log_dir / "cli_2026-04-21.log").write_text(
-            "2026-04-21 14:00:00,000 - cli - INFO - from cli\n"
-        )
-        (log_dir / "mcp_2026-04-21.log").write_text(
-            "2026-04-21 14:00:01,000 - mcp - INFO - from mcp\n"
-        )
-        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
-
-        result = runner.invoke(app, ["tail", "--output", "json", "-n", "50"])
-        assert result.exit_code == 0
-        entries: list[dict[str, str]] = json.loads(result.output)
-        messages = [e["message"] for e in entries]
-        assert "from cli" in messages
-        assert "from mcp" in messages
-
     @patch("moneybin.cli.commands.logs.get_settings")
     def test_single_stream_excludes_others(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """--stream cli excludes mcp and sqlmesh entries."""
+        """`logs cli` excludes mcp and sqlmesh entries."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         (log_dir / "cli_2026-04-21.log").write_text(
@@ -288,7 +257,7 @@ class TestLogsTailAllStream:
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(
-            app, ["tail", "--stream", "cli", "--output", "json", "-n", "50"]
+            logs_command_app, ["cli", "--output", "json", "-n", "50"]
         )
         assert result.exit_code == 0
         entries: list[dict[str, str]] = json.loads(result.output)
@@ -316,8 +285,8 @@ def _make_structured_log(tmp_path: Path) -> Path:
     return log_dir
 
 
-class TestLogsTailFilters:
-    """Tests for logs tail filtering (--level, --since, --grep, --output)."""
+class TestLogsViewFilters:
+    """Tests for view-mode filtering (--level, --since, --grep, --output)."""
 
     @patch("moneybin.cli.commands.logs.get_settings")
     def test_level_filter_error(self, mock_settings: MagicMock, tmp_path: Path) -> None:
@@ -325,7 +294,9 @@ class TestLogsTailFilters:
         log_dir = _make_structured_log(tmp_path)
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--level", "ERROR", "-n", "50"])
+        result = runner.invoke(
+            logs_command_app, ["cli", "--level", "ERROR", "-n", "50"]
+        )
         assert result.exit_code == 0
         assert "File not found" in result.output
         assert "Database corrupted" in result.output
@@ -340,7 +311,9 @@ class TestLogsTailFilters:
         log_dir = _make_structured_log(tmp_path)
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--level", "ERROR", "-n", "50"])
+        result = runner.invoke(
+            logs_command_app, ["cli", "--level", "ERROR", "-n", "50"]
+        )
         assert result.exit_code == 0
         assert "Traceback" in result.output
         assert "FileNotFoundError" in result.output
@@ -353,7 +326,9 @@ class TestLogsTailFilters:
         log_dir = _make_structured_log(tmp_path)
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--level", "WARNING", "-n", "50"])
+        result = runner.invoke(
+            logs_command_app, ["cli", "--level", "WARNING", "-n", "50"]
+        )
         assert result.exit_code == 0
         assert "Duplicate record" in result.output
         assert "File not found" in result.output
@@ -366,7 +341,9 @@ class TestLogsTailFilters:
         log_dir = _make_structured_log(tmp_path)
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--grep", "records|Query", "-n", "50"])
+        result = runner.invoke(
+            logs_command_app, ["cli", "--grep", "records|Query", "-n", "50"]
+        )
         assert result.exit_code == 0
         assert "Loaded 50 records" in result.output
         assert "Query completed" in result.output
@@ -380,7 +357,9 @@ class TestLogsTailFilters:
         log_dir = _make_structured_log(tmp_path)
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--grep", "FileNotFoundError", "-n", "50"])
+        result = runner.invoke(
+            logs_command_app, ["cli", "--grep", "FileNotFoundError", "-n", "50"]
+        )
         assert result.exit_code == 0
         assert "File not found" in result.output
 
@@ -390,12 +369,13 @@ class TestLogsTailFilters:
         log_dir = _make_structured_log(tmp_path)
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
-        result = runner.invoke(app, ["tail", "--output", "json", "-n", "50"])
+        result = runner.invoke(
+            logs_command_app, ["cli", "--output", "json", "-n", "50"]
+        )
         assert result.exit_code == 0
         entries: list[dict[str, str]] = json.loads(result.output)
         assert isinstance(entries, list)
         assert len(entries) == 6
-        # Check structure of first entry
         assert entries[0]["level"] == "INFO"
         assert entries[0]["logger"] == "moneybin.loader"
         assert "timestamp" in entries[0]
@@ -410,7 +390,8 @@ class TestLogsTailFilters:
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(
-            app, ["tail", "--output", "json", "--level", "ERROR", "-n", "50"]
+            logs_command_app,
+            ["cli", "--output", "json", "--level", "ERROR", "-n", "50"],
         )
         assert result.exit_code == 0
         entries = json.loads(result.output)
@@ -426,47 +407,45 @@ class TestLogsTailFilters:
         mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
 
         result = runner.invoke(
-            app, ["tail", "--level", "ERROR", "--grep", "corrupted", "-n", "50"]
+            logs_command_app,
+            ["cli", "--level", "ERROR", "--grep", "corrupted", "-n", "50"],
         )
         assert result.exit_code == 0
         assert "Database corrupted" in result.output
         assert "File not found" not in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
-    def test_invalid_level_exits_1(self, _mock_settings: MagicMock) -> None:
-        """--level with an invalid value exits with code 1."""
-        result = runner.invoke(app, ["tail", "--level", "BOGUS"])
-        assert result.exit_code == 1
-
-    @patch("moneybin.cli.commands.logs.get_settings")
-    def test_invalid_grep_regex_exits_1(self, _mock_settings: MagicMock) -> None:
-        """--grep with invalid regex exits with code 1."""
-        result = runner.invoke(app, ["tail", "--grep", "[invalid"])
-        assert result.exit_code == 1
-
-    @patch("moneybin.cli.commands.logs.get_settings")
-    def test_invalid_since_exits_1(self, _mock_settings: MagicMock) -> None:
-        """--since with invalid duration exits with code 1."""
-        result = runner.invoke(app, ["tail", "--since", "bogus"])
-        assert result.exit_code == 1
-
-    @patch("moneybin.cli.commands.logs.get_settings")
-    def test_follow_without_stream_exits_1(self, _mock_settings: MagicMock) -> None:
-        """--follow without --stream exits with code 1 (can't tail all)."""
-        result = runner.invoke(app, ["tail", "-f"])
-        assert result.exit_code == 1
-
-    @patch("moneybin.cli.commands.logs.get_settings")
-    def test_follow_with_explicit_stream_not_rejected(
+    def test_invalid_level_exits_non_zero(
         self, mock_settings: MagicMock, tmp_path: Path
     ) -> None:
-        """--follow with --stream cli passes the stream validation."""
-        # Point at an empty log dir so it exits before the follow loop
+        """--level with an invalid value exits non-zero."""
         mock_settings.return_value.logging.log_file_path = (
-            tmp_path / "nonexistent" / "moneybin.log"
+            tmp_path / "logs" / "moneybin.log"
         )
-        result = runner.invoke(app, ["tail", "-f", "--stream", "cli"])
-        assert "requires a specific stream" not in (result.output or "")
+        result = runner.invoke(logs_command_app, ["cli", "--level", "BOGUS"])
+        assert result.exit_code != 0
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_grep_regex_exits_non_zero(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--grep with invalid regex exits non-zero."""
+        mock_settings.return_value.logging.log_file_path = (
+            tmp_path / "logs" / "moneybin.log"
+        )
+        result = runner.invoke(logs_command_app, ["cli", "--grep", "[invalid"])
+        assert result.exit_code != 0
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_invalid_since_exits_non_zero(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--since with invalid value exits non-zero."""
+        mock_settings.return_value.logging.log_file_path = (
+            tmp_path / "logs" / "moneybin.log"
+        )
+        result = runner.invoke(logs_command_app, ["cli", "--since", "bogus"])
+        assert result.exit_code != 0
 
 
 class TestParseLogLines:
