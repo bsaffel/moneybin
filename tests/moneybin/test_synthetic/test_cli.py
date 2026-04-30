@@ -68,7 +68,7 @@ class TestGenerateCommand:
     @pytest.fixture
     def mock_run_transforms(self, mocker: Any) -> MagicMock:
         return mocker.patch(
-            "moneybin.services.import_service.run_transforms",
+            "moneybin.services.import_service.ImportService.run_transforms",
             return_value=True,
         )
 

@@ -90,7 +90,7 @@ class TestImportPipeline:
         # SQLMesh needs the encryption key passed via adapter cache.
         # sqlmesh_context() reuses the singleton's open connection.
         db_path = encrypted_db.path
-        from moneybin.services.import_service import run_transforms
+        from moneybin.services.import_service import ImportService
 
         with pytest.MonkeyPatch.context() as mp:
             # Set the singleton so sqlmesh_context() can reuse the connection
@@ -99,7 +99,7 @@ class TestImportPipeline:
             mock_settings = MagicMock()
             mock_settings.database.path = db_path
             mp.setattr("moneybin.database.get_settings", lambda: mock_settings)
-            result = run_transforms()
+            result = ImportService(encrypted_db).run_transforms()
 
         assert result is True
 

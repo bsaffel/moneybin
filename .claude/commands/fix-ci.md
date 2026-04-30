@@ -52,5 +52,4 @@ Find and fix failures in the latest CI run for a branch.
 
 10. **After confirmation**, stage only the files changed to fix CI (do not stage unrelated unstaged files), commit, and push:
     - Commit message: `Fix CI failures: <brief description>` with a bulleted body listing each fix
-    - Include `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
     - Push to the current branch's remote tracking branch
