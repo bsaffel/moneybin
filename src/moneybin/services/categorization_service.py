@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import duckdb
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
@@ -89,6 +90,58 @@ class BulkCategorizationResult:
                 "Use categorize.uncategorized to fetch the next batch",
             ],
         )
+
+
+class BulkCategorizationItem(BaseModel):
+    """One row of input for ``CategorizationService.bulk_categorize``.
+
+    Validated at every boundary (CLI, MCP). The service refuses untyped dicts.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    transaction_id: str = Field(min_length=1, max_length=64)
+    category: str = Field(min_length=1, max_length=100)
+    subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+def _validate_items(  # pyright: ignore[reportUnusedFunction]
+    raw: object,
+) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
+    """Validate a raw decoded JSON array into typed items + per-row errors.
+
+    Per-item validation: a malformed row contributes an ``error_details`` entry
+    but does not abort the batch. Callers merge ``parse_errors`` into the
+    final ``BulkCategorizationResult.error_details`` so the response envelope
+    surfaces every failure together.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("Input must be a JSON array of categorization items")
+
+    items: list[BulkCategorizationItem] = []
+    errors: list[dict[str, str]] = []
+    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]
+        if not isinstance(row, dict):
+            errors.append({
+                "transaction_id": "(missing)",
+                "reason": f"Row {index} is not an object",
+            })
+            continue
+        row_dict: dict[str, object] = {
+            str(k): v  # pyright: ignore[reportUnknownArgumentType]
+            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]
+        }
+        try:
+            items.append(BulkCategorizationItem.model_validate(row_dict))
+        except ValidationError as e:
+            txn_id_val = row_dict.get("transaction_id")
+            txn_id = str(txn_id_val).strip() if txn_id_val else "(missing)"
+            reason = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]
+                for err in e.errors()
+            )
+            errors.append({"transaction_id": txn_id or "(missing)", "reason": reason})
+    return items, errors
 
 
 @dataclass(slots=True)
