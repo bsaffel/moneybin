@@ -14,7 +14,7 @@ from decimal import Decimal
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.budget_service import BudgetService
@@ -66,18 +66,16 @@ def budget_status(
 
 def register_budget_tools(mcp: FastMCP) -> None:
     """Register all budget namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="budget.set",
-        description=(
-            "Create or update a monthly budget target for a spending category."
-        ),
-        tags=tags_for(budget_set),
-    )(budget_set)
-    mcp.tool(
-        name="budget.status",
-        description=(
-            "Get budget vs actual spending comparison for a month. "
-            "Shows target, spent, remaining, and status for each category."
-        ),
-        tags=tags_for(budget_status),
-    )(budget_status)
+    register(
+        mcp,
+        budget_set,
+        "budget.set",
+        "Create or update a monthly budget target for a spending category.",
+    )
+    register(
+        mcp,
+        budget_status,
+        "budget.status",
+        "Get budget vs actual spending comparison for a month. "
+        "Shows target, spent, remaining, and status for each category.",
+    )

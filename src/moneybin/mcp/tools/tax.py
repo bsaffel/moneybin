@@ -12,7 +12,7 @@ import logging
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.tax_service import TaxService
@@ -40,11 +40,10 @@ def tax_w2(
 
 def register_tax_tools(mcp: FastMCP) -> None:
     """Register all tax namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="tax.w2",
-        description=(
-            "Retrieve W-2 form data (wages, taxes, deductions). "
-            "PII fields (SSN, EIN) are excluded."
-        ),
-        tags=tags_for(tax_w2),
-    )(tax_w2)
+    register(
+        mcp,
+        tax_w2,
+        "tax.w2",
+        "Retrieve W-2 form data (wages, taxes, deductions). "
+        "PII fields (SSN, EIN) are excluded.",
+    )

@@ -12,7 +12,7 @@ import logging
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -54,11 +54,10 @@ def sql_query(query: str) -> ResponseEnvelope:
 
 def register_sql_tools(mcp: FastMCP) -> None:
     """Register all sql namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="sql.query",
-        description=(
-            "Execute a read-only SQL query against the database. "
-            "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN."
-        ),
-        tags=tags_for(sql_query),
-    )(sql_query)
+    register(
+        mcp,
+        sql_query,
+        "sql.query",
+        "Execute a read-only SQL query against the database. "
+        "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN.",
+    )

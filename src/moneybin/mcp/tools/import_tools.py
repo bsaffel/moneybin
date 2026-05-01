@@ -16,33 +16,23 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.errors import UserError
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 logger = logging.getLogger(__name__)
 
 
-def _validate_file_path(file_path: str) -> Path | ResponseEnvelope:
-    """Validate and resolve a file path, returning an error envelope if invalid.
-
-    Args:
-        file_path: Raw file path string from MCP input.
-
-    Returns:
-        Resolved Path if valid, or a ResponseEnvelope with an error message.
-    """
+def _validate_file_path(file_path: str) -> Path:
+    """Validate and resolve a file path, raising UserError if invalid."""
     resolved = Path(file_path).expanduser().resolve()
     if not resolved.is_relative_to(Path.home()):
-        return build_envelope(
-            data={
-                "error": (
-                    "file_path must be within the user's home directory. "
-                    "Path traversal and symlinks that escape the home "
-                    "directory are not allowed."
-                )
-            },
-            sensitivity="low",
+        raise UserError(
+            "file_path must be within the user's home directory. "
+            "Path traversal and symlinks that escape the home directory "
+            "are not allowed.",
+            code="invalid_file_path",
         )
     return resolved
 
@@ -75,9 +65,6 @@ def import_file(
     from moneybin.services.import_service import ImportService
 
     validated = _validate_file_path(file_path)
-    if isinstance(validated, ResponseEnvelope):
-        return validated
-
     try:
         result = ImportService(get_database()).import_file(
             str(validated),
@@ -86,28 +73,23 @@ def import_file(
             institution=institution,
             format_name=format_name,
         )
-        return build_envelope(
-            data={
-                "message": result.summary(),
-                "file_type": result.file_type,
-                "transactions": result.transactions,
-                "accounts": result.accounts,
-                "date_range": result.date_range,
-                "core_tables_rebuilt": result.core_tables_rebuilt,
-            },
-            sensitivity="low",
-            actions=[
-                "Use transactions.search to view imported transactions",
-                "Use categorize.uncategorized to categorize new transactions",
-            ],
-        )
     except ValueError as e:
-        return build_envelope(
-            data={"error": str(e)},
-            sensitivity="low",
-        )
-    # FileNotFoundError propagates — mcp_tool decorator converts it to an error envelope.
-    # Other unclassified exceptions propagate to fastmcp's mask_error_details.
+        raise UserError(str(e), code="import_error") from e
+    return build_envelope(
+        data={
+            "message": result.summary(),
+            "file_type": result.file_type,
+            "transactions": result.transactions,
+            "accounts": result.accounts,
+            "date_range": result.date_range,
+            "core_tables_rebuilt": result.core_tables_rebuilt,
+        },
+        sensitivity="low",
+        actions=[
+            "Use transactions.search to view imported transactions",
+            "Use categorize.uncategorized to categorize new transactions",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -122,52 +104,47 @@ def import_csv_preview(file_path: str) -> ResponseEnvelope:
         file_path: Absolute path to the file to preview.
     """
     validated = _validate_file_path(file_path)
-    if isinstance(validated, ResponseEnvelope):
-        return validated
+    from moneybin.extractors.tabular.column_mapper import map_columns
+    from moneybin.extractors.tabular.format_detector import detect_format
+    from moneybin.extractors.tabular.readers import read_file
 
     try:
-        from moneybin.extractors.tabular.column_mapper import map_columns
-        from moneybin.extractors.tabular.format_detector import detect_format
-        from moneybin.extractors.tabular.readers import read_file
-
         format_info = detect_format(validated)
         read_result = read_file(validated, format_info)
         mapping_result = map_columns(read_result.df)
-
-        preview = {
-            "file": validated.name,
-            "format": {
-                "file_type": format_info.file_type,
-                "delimiter": format_info.delimiter,
-                "encoding": format_info.encoding,
-                "file_size_bytes": format_info.file_size,
-            },
-            "columns": {
-                "mapping": mapping_result.field_mapping,
-                "confidence": mapping_result.confidence,
-                "date_format": mapping_result.date_format,
-                "number_format": mapping_result.number_format,
-                "sign_convention": mapping_result.sign_convention,
-                "is_multi_account": mapping_result.is_multi_account,
-                "unmapped_columns": mapping_result.unmapped_columns,
-                "flagged_fields": mapping_result.flagged_fields,
-            },
-            "sample_values": mapping_result.sample_values,
-            "rows_read": len(read_result.df),
-            "rows_skipped_trailing": read_result.rows_skipped_trailing,
-        }
-        return build_envelope(
-            data=preview,
-            sensitivity="low",
-            actions=[
-                "Use import.file to import after reviewing the preview",
-                "Use import.list_formats for available named formats",
-            ],
-        )
     except ValueError as e:
-        return build_envelope(data={"error": str(e)}, sensitivity="low")
-    # FileNotFoundError propagates — mcp_tool decorator converts it to an error envelope.
-    # Other unclassified exceptions propagate to fastmcp's mask_error_details.
+        raise UserError(str(e), code="preview_error") from e
+
+    preview = {
+        "file": validated.name,
+        "format": {
+            "file_type": format_info.file_type,
+            "delimiter": format_info.delimiter,
+            "encoding": format_info.encoding,
+            "file_size_bytes": format_info.file_size,
+        },
+        "columns": {
+            "mapping": mapping_result.field_mapping,
+            "confidence": mapping_result.confidence,
+            "date_format": mapping_result.date_format,
+            "number_format": mapping_result.number_format,
+            "sign_convention": mapping_result.sign_convention,
+            "is_multi_account": mapping_result.is_multi_account,
+            "unmapped_columns": mapping_result.unmapped_columns,
+            "flagged_fields": mapping_result.flagged_fields,
+        },
+        "sample_values": mapping_result.sample_values,
+        "rows_read": len(read_result.df),
+        "rows_skipped_trailing": read_result.rows_skipped_trailing,
+    }
+    return build_envelope(
+        data=preview,
+        sensitivity="low",
+        actions=[
+            "Use import.file to import after reviewing the preview",
+            "Use import.list_formats for available named formats",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -247,34 +224,29 @@ def import_list_formats() -> ResponseEnvelope:
 
 def register_import_tools(mcp: FastMCP) -> None:
     """Register all import namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="import.file",
-        description=(
-            "Import a financial data file (OFX, CSV, TSV, Excel, "
-            "Parquet, PDF) into MoneyBin."
-        ),
-        tags=tags_for(import_file),
-    )(import_file)
-    mcp.tool(
-        name="import.csv_preview",
-        description=(
-            "Preview a tabular file's structure and detected column "
-            "mapping without importing."
-        ),
-        tags=tags_for(import_csv_preview),
-    )(import_csv_preview)
-    mcp.tool(
-        name="import.status",
-        description=(
-            "List past import batches with status, row counts, "
-            "and detection confidence."
-        ),
-        tags=tags_for(import_status),
-    )(import_status)
-    mcp.tool(
-        name="import.list_formats",
-        description=(
-            "List all available tabular import formats (built-in and user-saved)."
-        ),
-        tags=tags_for(import_list_formats),
-    )(import_list_formats)
+    register(
+        mcp,
+        import_file,
+        "import.file",
+        "Import a financial data file (OFX, CSV, TSV, Excel, "
+        "Parquet, PDF) into MoneyBin.",
+    )
+    register(
+        mcp,
+        import_csv_preview,
+        "import.csv_preview",
+        "Preview a tabular file's structure and detected column "
+        "mapping without importing.",
+    )
+    register(
+        mcp,
+        import_status,
+        "import.status",
+        "List past import batches with status, row counts, and detection confidence.",
+    )
+    register(
+        mcp,
+        import_list_formats,
+        "import.list_formats",
+        "List all available tabular import formats (built-in and user-saved).",
+    )

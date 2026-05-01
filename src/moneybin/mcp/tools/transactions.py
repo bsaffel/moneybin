@@ -14,7 +14,7 @@ from decimal import Decimal
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.transaction_service import TransactionService
@@ -90,19 +90,16 @@ def transactions_recurring(
 
 def register_transactions_tools(mcp: FastMCP) -> None:
     """Register all transactions namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="transactions.search",
-        description=(
-            "Search transactions with flexible filtering by date, "
-            "amount, description, account, and category."
-        ),
-        tags=tags_for(transactions_search),
-    )(transactions_search)
-    mcp.tool(
-        name="transactions.recurring",
-        description=(
-            "Detect recurring transaction patterns like subscriptions "
-            "and regular charges."
-        ),
-        tags=tags_for(transactions_recurring),
-    )(transactions_recurring)
+    register(
+        mcp,
+        transactions_search,
+        "transactions.search",
+        "Search transactions with flexible filtering by date, "
+        "amount, description, account, and category.",
+    )
+    register(
+        mcp,
+        transactions_recurring,
+        "transactions.recurring",
+        "Detect recurring transaction patterns like subscriptions and regular charges.",
+    )

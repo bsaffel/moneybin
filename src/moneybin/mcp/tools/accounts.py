@@ -13,7 +13,7 @@ import logging
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.account_service import AccountService
@@ -53,19 +53,16 @@ def accounts_balances(
 
 def register_accounts_tools(mcp: FastMCP) -> None:
     """Register all accounts namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="accounts.list",
-        description=(
-            "List all accounts in MoneyBin with type, institution, "
-            "and source information."
-        ),
-        tags=tags_for(accounts_list),
-    )(accounts_list)
-    mcp.tool(
-        name="accounts.balances",
-        description=(
-            "Get latest balance snapshot for each account. "
-            "Optionally filter by account ID."
-        ),
-        tags=tags_for(accounts_balances),
-    )(accounts_balances)
+    register(
+        mcp,
+        accounts_list,
+        "accounts.list",
+        "List all accounts in MoneyBin with type, institution, and source information.",
+    )
+    register(
+        mcp,
+        accounts_balances,
+        "accounts.balances",
+        "Get latest balance snapshot for each account. "
+        "Optionally filter by account ID.",
+    )
