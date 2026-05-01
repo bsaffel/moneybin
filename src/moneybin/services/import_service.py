@@ -419,9 +419,14 @@ class ImportService:
         # Parse once for institution resolution; the extractor parses again
         # internally. These files are small — the duplicate parse is fine and
         # avoids leaking a parser-internal type into the extractor signature.
-        # Wrap parse failures as ValueError so MCP's error envelope catches them.
-        with open(canonical_path, "rb") as f:
-            content = f.read().decode("utf-8", errors="ignore")
+        # Wrap read+parse failures as ValueError so MCP's error envelope catches
+        # them; otherwise PermissionError/OSError leak as internal tool errors.
+        try:
+            with open(canonical_path, "rb") as f:
+                content = f.read().decode("utf-8", errors="ignore")
+        except OSError as e:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
+            raise ValueError(f"Could not read OFX file: {e}") from e
         content = preprocess_ofx_content(content)
         try:
             parsed_ofx: Any = ofxparse.OfxParser.parse(  # type: ignore[reportUnknownMemberType]
