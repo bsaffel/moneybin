@@ -203,6 +203,7 @@ def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         except re.error:
             logger.warning("Invalid regex pattern in merchant rule")
             return False
+        # search() cannot raise re.error after successful compilation
         return bool(compiled.search(text))
     else:
         logger.warning(f"Unknown match_type: {match_type}")
