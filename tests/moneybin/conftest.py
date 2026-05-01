@@ -58,12 +58,9 @@ def temp_profile(profile: str) -> Generator[str, None, None]:
         # Don't check exists() because tests may mock it - just try to remove
         base = get_base_dir()
         profile_dir = base / "profiles" / normalized
-        # ignore_errors covers two distinct xdist races: ENOTEMPTY when
-        # workers race the shared profiles/ dir teardown, and ENOENT when
-        # tests in test_cli_profiles.py share fixed profile names ("alice",
-        # "bob") across workers. Narrowing this masks the second race as
-        # CLI FileNotFoundError instead — properly fixing it needs those
-        # tests to use isolated tmp_path, which is out of scope here.
+        # ignore_errors handles ENOTEMPTY when xdist workers race teardown
+        # of the shared profiles/ dir for tests that don't isolate
+        # MONEYBIN_HOME.
         shutil.rmtree(profile_dir, ignore_errors=True)
 
 
