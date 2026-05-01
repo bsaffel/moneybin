@@ -286,3 +286,68 @@ class TestSyncHappyPath:
         svc.sync(year_month="2026-05")
 
         assert captured_kwargs["account_name"] == "chase-checking"
+
+
+class TestSyncFailure:
+    """Failed imports get moved to failed/ with YAML sidecar."""
+
+    def test_failed_import_lands_in_failed_with_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        from moneybin.services import inbox_service as mod
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise ValueError(
+                    "Single-account files require --account-name or --account-id"
+                )
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "unknown.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert len(result.failed) == 1
+        entry = result.failed[0]
+        assert entry["filename"] == "unknown.csv"
+        assert entry["error_code"] == "needs_account_name"
+        assert str(entry["sidecar"]).endswith("unknown.csv.error.yml")
+
+        moved = svc.failed_dir / "2026-05" / "unknown.csv"
+        sidecar = moved.with_name("unknown.csv.error.yml")
+        assert moved.exists()
+        loaded = yaml.safe_load(sidecar.read_text())
+        assert loaded["error_code"] == "needs_account_name"
+        assert "stage" in loaded
+        assert "message" in loaded
+
+    def test_unknown_error_uses_generic_code(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from moneybin.services import inbox_service as mod
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise RuntimeError("disk full")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "x.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05")
+        assert result.failed[0]["error_code"] == "import_error"

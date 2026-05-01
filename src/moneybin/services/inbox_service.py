@@ -31,6 +31,23 @@ logger = logging.getLogger(__name__)
 
 _DIR_MODE = 0o700
 
+# Substring → (error_code, stage) for ValueError messages from ImportService.
+_VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    (
+        "Single-account files require",
+        "needs_account_name",
+        "resolve_account",
+    ),
+    (
+        "Could not reliably detect column mapping",
+        "low_confidence_mapping",
+        "map_columns",
+    ),
+    ("Unsupported file type", "unsupported_file_type", "detect_file_type"),
+    ("No data rows found", "empty_file", "read_file"),
+    ("Transform failed", "transform_error", "transform"),
+)
+
 
 class InboxBusyError(Exception):
     """Another sync is in progress for this profile."""
@@ -238,8 +255,56 @@ class InboxService:
         year_month: str,
         result: InboxSyncResult,
     ) -> None:
-        """Move a failed file to failed/ and record it; filled in by Task 8."""
-        raise error
+        """Move failed file to failed/ and write YAML sidecar."""
+        error_code, stage = self._classify_error(error)
+        moved = self.move_to_outcome(src, outcome="failed", year_month=year_month)
+        sidecar = self.write_error_sidecar(
+            moved,
+            error_code=error_code,
+            stage=stage,
+            message=str(error),
+            suggestion=self._suggestion_for(error_code),
+        )
+        result.failed.append({
+            "filename": rel_filename,
+            "error_code": error_code,
+            "stage": stage,
+            "moved_to": str(moved.relative_to(self.root)),
+            "sidecar": str(sidecar.relative_to(self.root)),
+        })
+        INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
+        logger.warning(f"Inbox import failed: {rel_filename} → {error_code}")
+
+    @staticmethod
+    def _classify_error(error: Exception) -> tuple[str, str]:
+        """Map an exception to (error_code, stage)."""
+        if isinstance(error, FileNotFoundError):
+            return ("file_not_found", "open_file")
+        if isinstance(error, ValueError):
+            msg = str(error)
+            for needle, code, stage in _VALUE_ERROR_PATTERNS:
+                if needle in msg:
+                    return (code, stage)
+            return ("value_error", "import")
+        return ("import_error", "import")
+
+    @staticmethod
+    def _suggestion_for(error_code: str) -> str | None:
+        """User-facing hint for known error codes."""
+        return {
+            "needs_account_name": (
+                "Move the file into inbox/<account-slug>/ "
+                "(e.g., inbox/chase-checking/) and re-run sync."
+            ),
+            "low_confidence_mapping": (
+                "Use 'moneybin import file <path> --override field=column' "
+                "to map columns explicitly, then re-drop in inbox/."
+            ),
+            "unsupported_file_type": (
+                "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF."
+            ),
+            "empty_file": "File contained no data rows; remove or replace.",
+        }.get(error_code)
 
     @staticmethod
     def write_error_sidecar(
