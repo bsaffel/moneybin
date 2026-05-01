@@ -37,7 +37,8 @@ class ScenarioResult:
             lines.append(f"  halted: {self.halted}")
         for a in self.assertions:
             if not a.passed:
-                lines.append(f"  assertion {a.name}: {a.error or 'failed'}")
+                reason = a.error or (str(a.details) if a.details else "failed")
+                lines.append(f"  assertion {a.name}: {reason}")
         for e in self.expectations:
             if not e.passed:
                 lines.append(f"  expectation {e.name}")

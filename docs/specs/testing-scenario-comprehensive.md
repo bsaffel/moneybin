@@ -207,7 +207,7 @@ The six phases ship as **three** PRs, not six — grouped by review-coherence ra
 
 | PR | Phases | Plan | Why grouped this way |
 |---|---|---|---|
-| **PR 1** | Phase 1 | [`docs/superpowers/plans/2026-04-30-scenario-relocation.md`](../superpowers/plans/2026-04-30-scenario-relocation.md) | Pure relocation — safe to plan in detail before any other PR exists. |
+| **PR 1** | Phase 1 | _shipped_ | Pure relocation — runner moved to `tests/scenarios/_runner/`, scenarios driven via pytest. |
 | **PR 2** | Phases 2 + 3 + 4 | _written after PR 1 merges_ | Validation-library extract (P2) is the input to Tier 1 backfill (P3); the four new scenarios (P4) need both to be authored cleanly. Splitting them produces churn. |
 | **PR 3** | Phases 5 + 6 | _written after PR 2 merges_ | Tier 2/4 enrichment (P5) and the contributor recipe (P6) are the documentation/quality polish layer; they don't gate each other but neither blocks anything downstream. |
 
