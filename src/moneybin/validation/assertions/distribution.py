@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from duckdb import DuckDBPyConnection
-
-from moneybin.validation.assertions.relational import quote_ident
+from moneybin.database import Database
+from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
 
 
 def assert_distribution_within_bounds(
-    conn: DuckDBPyConnection,
+    db: Database,
     *,
     table: str,
     col: str,
@@ -19,7 +18,7 @@ def assert_distribution_within_bounds(
 ) -> AssertionResult:
     """Assert column statistics fall within author-specified bounds."""
     t, c = quote_ident(table), quote_ident(col)
-    row = conn.execute(
+    row = db.execute(
         f"SELECT MIN({c}), MAX({c}), AVG({c}) FROM {t}"  # noqa: S608  # identifiers validated by quote_ident
     ).fetchone()
     if row is None or row[0] is None:
@@ -49,7 +48,7 @@ def assert_distribution_within_bounds(
 
 
 def assert_unique_value_count(
-    conn: DuckDBPyConnection,
+    db: Database,
     *,
     table: str,
     col: str,
@@ -58,7 +57,7 @@ def assert_unique_value_count(
 ) -> AssertionResult:
     """Assert the number of distinct values in a column is within tolerance of expected."""
     t, c = quote_ident(table), quote_ident(col)
-    actual = int(conn.execute(f"SELECT COUNT(DISTINCT {c}) FROM {t}").fetchone()[0])  # noqa: S608  # type: ignore[index]  # identifiers validated by quote_ident
+    actual = int(db.execute(f"SELECT COUNT(DISTINCT {c}) FROM {t}").fetchone()[0])  # noqa: S608  # type: ignore[index]  # identifiers validated by quote_ident
     if expected == 0:
         # Cannot compute a percentage delta against 0; treat any actual rows as a fail.
         passed = actual == 0

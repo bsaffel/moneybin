@@ -1,26 +1,36 @@
 """Tests for distributional and cardinality assertion primitives."""
 
-import duckdb
+from __future__ import annotations
 
-from moneybin.validation.assertions.distributional import (
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from moneybin.database import Database
+from moneybin.validation.assertions.distribution import (
     assert_distribution_within_bounds,
     assert_unique_value_count,
 )
 
 
-def _conn() -> duckdb.DuckDBPyConnection:
-    c = duckdb.connect(":memory:")
-    c.execute("CREATE TABLE t (amount DECIMAL(18,2), category VARCHAR)")
-    c.execute(
+@pytest.fixture()
+def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
+    """Provide a test Database with an amount/category table."""
+    database = Database(
+        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
+    database.execute("CREATE TABLE t (amount DECIMAL(18,2), category VARCHAR)")
+    database.execute(
         "INSERT INTO t VALUES (10, 'a'), (20, 'a'), (30, 'b'), (40, 'b'), (50, 'c')"
     )
-    return c
+    return database
 
 
-def test_distribution_within_bounds_passes() -> None:
+def test_distribution_within_bounds_passes(db: Database) -> None:
     """Stats within all specified bounds returns passed=True."""
     r = assert_distribution_within_bounds(
-        _conn(),
+        db,
         table="t",
         col="amount",
         min_value=10,
@@ -30,10 +40,10 @@ def test_distribution_within_bounds_passes() -> None:
     assert r.passed
 
 
-def test_distribution_out_of_range_fails() -> None:
+def test_distribution_out_of_range_fails(db: Database) -> None:
     """Observed max exceeding the specified ceiling returns passed=False."""
     r = assert_distribution_within_bounds(
-        _conn(),
+        db,
         table="t",
         col="amount",
         min_value=10,
@@ -44,9 +54,9 @@ def test_distribution_out_of_range_fails() -> None:
     assert r.details["max_observed"] == 50
 
 
-def test_unique_value_count_within_tolerance() -> None:
+def test_unique_value_count_within_tolerance(db: Database) -> None:
     """Exact distinct count matching expected with zero tolerance passes."""
     r = assert_unique_value_count(
-        _conn(), table="t", col="category", expected=3, tolerance_pct=0
+        db, table="t", col="category", expected=3, tolerance_pct=0
     )
     assert r.passed

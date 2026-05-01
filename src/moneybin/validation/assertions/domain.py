@@ -1,11 +1,10 @@
-"""Business-rule assertions for the canonical core schema."""
+"""Domain (business-rule) assertions for the canonical core schema."""
 
 from __future__ import annotations
 
-from duckdb import DuckDBPyConnection
-
+from moneybin.database import Database
 from moneybin.tables import FCT_TRANSACTIONS
-from moneybin.validation.assertions.relational import quote_ident
+from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
 
 # Each predicate matches *violations*, not valid rows. Transfers are
@@ -16,10 +15,10 @@ _EXPENSE_SIGN_VIOLATIONS = "category != 'Income' AND amount > 0 AND is_transfer 
 _INCOME_SIGN_VIOLATIONS = "category = 'Income' AND amount < 0"
 
 
-def assert_sign_convention(conn: DuckDBPyConnection) -> AssertionResult:
+def assert_sign_convention(db: Database) -> AssertionResult:
     """Expenses negative, income positive. Transfers exempted via ``is_transfer``."""
     violations = int(
-        conn.execute(
+        db.execute(
             f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant + module-level predicate strings
             f"WHERE ({_EXPENSE_SIGN_VIOLATIONS}) OR ({_INCOME_SIGN_VIOLATIONS})"
         ).fetchone()[0]  # type: ignore[index]
@@ -31,9 +30,9 @@ def assert_sign_convention(conn: DuckDBPyConnection) -> AssertionResult:
     )
 
 
-def assert_balanced_transfers(conn: DuckDBPyConnection) -> AssertionResult:
+def assert_balanced_transfers(db: Database) -> AssertionResult:
     """Confirmed transfer pairs (transfer_pair_id NOT NULL) must net to zero."""
-    rows = conn.execute(
+    rows = db.execute(
         f"SELECT transfer_pair_id, SUM(amount) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
         "WHERE transfer_pair_id IS NOT NULL "
         "GROUP BY transfer_pair_id HAVING SUM(amount) IS DISTINCT FROM 0"
@@ -52,11 +51,11 @@ def assert_balanced_transfers(conn: DuckDBPyConnection) -> AssertionResult:
 
 
 def assert_date_continuity(
-    conn: DuckDBPyConnection, *, table: str, date_col: str, account_col: str
+    db: Database, *, table: str, date_col: str, account_col: str
 ) -> AssertionResult:
     """No month-gaps per account in the given table."""
     t, dc, ac = quote_ident(table), quote_ident(date_col), quote_ident(account_col)
-    rows = conn.execute(
+    rows = db.execute(
         f"WITH per AS ("  # noqa: S608  # identifiers validated by quote_ident
         f"  SELECT {ac} AS account, DATE_TRUNC('month', {dc}) AS m FROM {t} GROUP BY 1, 2"
         f"), bounds AS ("

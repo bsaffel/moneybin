@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from tests.scenarios._runner.expectations import (
-    ExpectationResult,
-    verify_expectations,
-)
+from moneybin.validation.result import ExpectationResult
+from tests.scenarios._runner._expectation_registry import verify_expectations
 from tests.scenarios._runner.loader import ExpectationSpec
 
 

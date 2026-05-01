@@ -7,7 +7,6 @@ returns a ``ScenarioResult`` describing the outcome.
 
 from __future__ import annotations
 
-import importlib
 import logging
 import os
 import shutil
@@ -19,11 +18,16 @@ from typing import Any
 
 from moneybin.database import Database, close_database, get_database
 from moneybin.validation.assertions import assert_sqlmesh_catalog_matches
-from moneybin.validation.result import AssertionResult, EvaluationResult
-from tests.scenarios._runner.expectations import (
+from moneybin.validation.result import (
+    AssertionResult,
+    EvaluationResult,
     ExpectationResult,
-    verify_expectations,
 )
+from tests.scenarios._runner._assertion_registry import (
+    resolve_assertion as _resolve_assertion,
+)
+from tests.scenarios._runner._evaluation_registry import resolve_evaluation
+from tests.scenarios._runner._expectation_registry import verify_expectations
 from tests.scenarios._runner.loader import (
     AssertionSpec,
     EvaluationSpec,
@@ -33,16 +37,6 @@ from tests.scenarios._runner.result import ScenarioResult
 from tests.scenarios._runner.steps import run_step
 
 logger = logging.getLogger(__name__)
-
-
-# Assertion functions whose first argument is a ``Database`` rather than a
-# DuckDB connection. Everything else takes a connection.
-_DATABASE_ASSERTION_FNS = frozenset({
-    "assert_sqlmesh_catalog_matches",
-    "assert_migrations_at_head",
-    "assert_min_rows",
-    "assert_no_unencrypted_db_files",
-})
 
 
 @contextmanager
@@ -246,11 +240,7 @@ def _run_assertion(
     args = _resolve_runtime_args(spec.args, tmpdir=tmpdir)
     try:
         fn = _resolve_assertion(spec.fn)
-        result = (
-            fn(db, **args)
-            if spec.fn in _DATABASE_ASSERTION_FNS
-            else fn(db.conn, **args)
-        )
+        result = fn(db, **args)
     except Exception as exc:  # noqa: BLE001 — surface as structured failure
         logger.error(f"assertion {spec.name} crashed: {type(exc).__name__}")
         logger.debug("assertion traceback", exc_info=True)
@@ -271,7 +261,7 @@ def _run_assertion(
 
 def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
     try:
-        fn = _resolve_evaluation(spec.fn)
+        fn = resolve_evaluation(spec.fn)
         return fn(db, threshold=spec.threshold.min, **spec.args)
     except Exception as exc:  # noqa: BLE001 — surface as structured failure
         logger.error(f"evaluation {spec.name} crashed: {type(exc).__name__}")
@@ -284,20 +274,6 @@ def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
             passed=False,
             breakdown={"error": str(exc)},
         )
-
-
-def _resolve_assertion(fn_name: str):
-    mod = importlib.import_module("moneybin.validation.assertions")
-    if not hasattr(mod, fn_name):
-        raise ValueError(f"unknown assertion fn: {fn_name}")
-    return getattr(mod, fn_name)
-
-
-def _resolve_evaluation(fn_name: str):
-    mod = importlib.import_module("moneybin.validation.evaluations")
-    if not hasattr(mod, fn_name):
-        raise ValueError(f"unknown evaluation fn: {fn_name}")
-    return getattr(mod, fn_name)
 
 
 def _build_result(
