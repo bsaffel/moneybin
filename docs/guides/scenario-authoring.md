@@ -85,12 +85,15 @@ Use the assertion primitives from `src/moneybin/validation/`:
 
 ```python
 import pytest
-from moneybin.validation import (
-    assert_row_count,
+from moneybin.validation.assertions import (
+    assert_amount_precision,
+    assert_date_bounds,
     assert_no_duplicates,
+    assert_row_count_exact,
+    assert_schema_snapshot,
     assert_source_system_populated,
-    assert_negative_match,
 )
+from moneybin.validation.expectations import verify_match_decision  # for negative cases
 
 
 @pytest.mark.scenarios
@@ -103,11 +106,44 @@ def test_csv_amazon_trailing_comma(scenario_db, load_fixture, run_pipeline):
     load_fixture("csv-amazon-trailing-comma/input.csv")
     run_pipeline(["transform", "match"])
 
-    assert_row_count(scenario_db, "raw.tabular_transactions", expected=20)
-    assert_row_count(scenario_db, "core.fct_transactions", expected=17)
-    assert_no_duplicates(scenario_db, "core.fct_transactions", "transaction_id")
-    assert_source_system_populated(scenario_db, expected={"csv"})
+    assert_row_count_exact(
+        scenario_db, table="raw.tabular_transactions", expected=20
+    ).raise_if_failed()
+    assert_row_count_exact(
+        scenario_db, table="core.fct_transactions", expected=17
+    ).raise_if_failed()
+    assert_no_duplicates(
+        scenario_db, table="core.fct_transactions", columns=["transaction_id"]
+    ).raise_if_failed()
+    assert_source_system_populated(
+        scenario_db, table="core.fct_transactions", expected_sources={"csv"}
+    ).raise_if_failed()
 ```
+
+For a "should NOT match" assertion, use `verify_match_decision` with
+`expected="not_matched"` — see `tests/scenarios/test_dedup_negative_fixture.py`
+for a worked example.
+
+### Available primitives (post-Phase-3)
+
+| Primitive | Tier | Use for |
+|---|---|---|
+| `assert_row_count_exact` | T1 | Exact row count derived from fixture or generator |
+| `assert_no_nulls` | T1 | Required columns must be populated |
+| `assert_no_duplicates` | T1 | Natural key uniqueness |
+| `assert_valid_foreign_keys` | T1 | Child rows reference existing parents |
+| `assert_no_orphans` | T1 | Provenance completeness |
+| `assert_source_system_populated` | T1 | Source attribution |
+| `assert_schema_snapshot` | T1 | Column set + types |
+| `assert_amount_precision` | T1 | Money columns are DECIMAL(p,s) |
+| `assert_date_bounds` | T1 | Dates within declared window |
+| `assert_sign_convention` | T1 | Expense<0, income>0, transfers exempt |
+| `assert_balanced_transfers` | T2 | Transfer pairs sum to zero |
+| `assert_distribution_within_bounds` | T2 | Match confidence / amount distribution |
+| `assert_ground_truth_coverage` | T4 | Labeled subset is ≥X% of total |
+| `assert_date_continuity` | T4 | No month gaps per account |
+| `verify_match_decision` (with `expected="not_matched"`) | T2 | Negative expectations |
+| Harnesses: `assert_idempotent`, `assert_empty_input_safe`, `assert_malformed_input_rejected` | T3 | Pipeline-execution patterns |
 
 ### Step 6 — Verify failure first
 

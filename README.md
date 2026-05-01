@@ -89,7 +89,15 @@ Once connected, ask things like:
 | MCP server: 9 tool domains, prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
 | Direct SQL: shell, DuckDB UI, key tables documented | [SQL Access](docs/guides/sql-access.md) |
 | Synthetic data generator (3 personas, ~200 merchants, ground-truth labels) | [Synthetic Data](docs/guides/synthetic-data.md) |
+| Scenario test suite (10 scenarios, five-tier taxonomy, bug-report recipe) | [Scenario Authoring](docs/guides/scenario-authoring.md) |
 | Structured logs + Prometheus-style metrics with DuckDB persistence | [Observability](docs/guides/observability.md) |
+
+**Scenario test suite (10 scenarios):** Whole-pipeline regression coverage
+across structural invariants, semantic correctness (categorization P/R,
+transfer F1+P+R, negative expectations), pipeline behavior (idempotency,
+empty/malformed input handling), and quality (date continuity,
+ground-truth coverage). New scenarios follow the bug-report recipe at
+[`docs/guides/scenario-authoring.md`](docs/guides/scenario-authoring.md).
 
 Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 
@@ -103,6 +111,7 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 | Cross-source dedup, transfer detection, golden-record merge | ✅ |
 | Rule engine + merchant normalization + auto-rule generation | ✅ |
 | Encryption at rest, key management, multi-profile, schema migrations, observability | ✅ |
+| Comprehensive scenario testing (five-tier taxonomy, 10 scenarios, bug-report recipe) | ✅ |
 | Native PDF parsing (beyond W-2), AI-assisted file parsing | 🗓️ |
 | ML-powered categorization, merchant entity resolution | 🗓️ |
 | Plaid Transactions sync (via `moneybin-server`) | 📐 |
