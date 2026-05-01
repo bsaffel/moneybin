@@ -351,3 +351,34 @@ class TestSyncFailure:
 
         result = svc.sync(year_month="2026-05")
         assert result.failed[0]["error_code"] == "import_error"
+
+
+class TestSyncBusy:
+    """Concurrent sync returns inbox_busy in result instead of raising."""
+
+    def test_concurrent_sync_returns_inbox_busy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                return ImportResult(file_path=path, file_type="tabular")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        outer = InboxService(db=db, settings=_make_settings(tmp_path))
+        inner = InboxService(db=db, settings=_make_settings(tmp_path))
+        outer.ensure_layout()
+
+        with outer.acquire_lock():
+            result = inner.sync(year_month="2026-05")
+
+        assert result.processed == []
+        assert result.failed == []
+        assert result.skipped == [{"reason": "inbox_busy"}]

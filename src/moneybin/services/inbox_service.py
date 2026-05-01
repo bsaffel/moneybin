@@ -209,14 +209,18 @@ class InboxService:
     def sync(self, year_month: str | None = None) -> InboxSyncResult:
         """Drain the inbox: import each eligible file and move it."""
         ym = year_month or datetime.now(UTC).strftime("%Y-%m")
-        with self.acquire_lock():
-            listing = self.enumerate()
-            result = InboxSyncResult(ignored=list(listing.ignored))
-            t0 = time.monotonic()
-            for item in listing.would_process:
-                self._sync_one(item, year_month=ym, result=result)
-            INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
-            return result
+        try:
+            with self.acquire_lock():
+                listing = self.enumerate()
+                result = InboxSyncResult(ignored=list(listing.ignored))
+                t0 = time.monotonic()
+                for item in listing.would_process:
+                    self._sync_one(item, year_month=ym, result=result)
+                INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
+                return result
+        except InboxBusyError:
+            INBOX_SYNC_TOTAL.labels(outcome="skipped").inc()
+            return InboxSyncResult(skipped=[{"reason": "inbox_busy"}])
 
     def _sync_one(
         self,
