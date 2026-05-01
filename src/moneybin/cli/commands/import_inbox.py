@@ -23,12 +23,25 @@ app = typer.Typer(
 
 
 def _build_service() -> InboxService:
-    """Build an InboxService bound to the active profile."""
+    """Build an InboxService with a live DB connection (required for sync)."""
     from moneybin.config import get_settings
     from moneybin.database import get_database
     from moneybin.services.inbox_service import InboxService
 
     return InboxService(db=get_database(), settings=get_settings())
+
+
+def _build_service_no_db() -> InboxService:
+    """Build an InboxService without opening the DB.
+
+    Used by `list` and `path`, which only read filesystem settings — keeps
+    inbox discovery available during onboarding/recovery scenarios where
+    the DB may be locked or uninitialized.
+    """
+    from moneybin.config import get_settings
+    from moneybin.services.inbox_service import InboxService
+
+    return InboxService(db=None, settings=get_settings())
 
 
 def _print_sync_text(result: InboxSyncResult) -> None:
@@ -47,7 +60,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
             f"({item.get('transactions', 0)} transactions)"
         )
     for item in failed:
-        typer.echo(f"✗ {item['filename']}  →  failed ({item['error_code']})")
+        typer.echo(f"✗ {item['filename']}  →  failed ({item['error_code']})", err=True)
         if "sidecar" in item:
             typer.echo(f"   See {item['sidecar']}", err=True)
 
@@ -87,7 +100,7 @@ def inbox_list(
     from moneybin.cli.utils import handle_cli_errors
 
     with handle_cli_errors():
-        result = _build_service().enumerate()
+        result = _build_service_no_db().enumerate()
 
     if output == OutputFormat.JSON:
         from moneybin.cli.utils import emit_json
@@ -109,4 +122,8 @@ def inbox_path() -> None:
     from moneybin.cli.utils import handle_cli_errors
 
     with handle_cli_errors():
-        typer.echo(str(_build_service().root))
+        service = _build_service_no_db()
+        # Materialize the layout so users can immediately copy files into
+        # `$(moneybin import inbox path)/inbox/...` on a fresh profile.
+        service.ensure_layout()
+        typer.echo(str(service.root))

@@ -82,8 +82,8 @@ class InboxListResult:
 class InboxService:
     """Filesystem-state-as-API import inbox; see module docstring."""
 
-    def __init__(self, db: Database, settings: MoneyBinSettings) -> None:
-        """Bind the inbox service to a database and settings."""
+    def __init__(self, db: Database | None, settings: MoneyBinSettings) -> None:
+        """Bind the inbox service to settings; db is required only for sync()."""
         self._db = db
         self._settings = settings
 
@@ -212,6 +212,7 @@ class InboxService:
 
         dest_dir = outcome_root / year_month
         dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+        dest_dir.chmod(_DIR_MODE)  # mkdir's mode is masked by umask
         final = self._next_available_path(dest_dir / src.name)
         staging.rename(final)
         return final
@@ -256,6 +257,7 @@ class InboxService:
                     )
                     continue
                 dest_candidate.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+                dest_candidate.parent.chmod(_DIR_MODE)  # mkdir's mode masked by umask
                 dest = self._next_available_path(dest_candidate)
                 entry.rename(dest)
                 recovered.append(dest)
@@ -278,6 +280,8 @@ class InboxService:
 
     def sync(self, year_month: str | None = None) -> InboxSyncResult:
         """Drain the inbox: import each eligible file and move it."""
+        if self._db is None:
+            raise RuntimeError("InboxService.sync() requires a database connection")
         ym = year_month or datetime.now(UTC).strftime("%Y-%m")
         try:
             with self.acquire_lock():

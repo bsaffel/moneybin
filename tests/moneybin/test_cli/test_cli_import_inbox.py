@@ -34,6 +34,9 @@ def patch_inbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     monkeypatch.setattr(
         "moneybin.cli.commands.import_inbox._build_service", lambda: fake
     )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.import_inbox._build_service_no_db", lambda: fake
+    )
     monkeypatch.setattr("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx)
     return fake
 
