@@ -160,7 +160,11 @@ def _parse_time_bound(value: str) -> datetime:
     except ValueError:
         pass
     try:
-        parsed = datetime.fromisoformat(value.rstrip("Z"))
+        # Replace (not strip) the `Z` suffix with `+00:00` so
+        # `fromisoformat` yields a tz-aware datetime; `rstrip("Z")`
+        # would silently drop the offset and produce a naive value
+        # that the `tzinfo` guard below couldn't recognize.
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as e:
         raise ValueError(
             f"--since/--until must be a duration (5m, 1h, 7d) "
@@ -191,7 +195,10 @@ def _do_prune(log_dir: Path, older_than: str, *, dry_run: bool, quiet: bool) -> 
 
     deleted = 0
     freed_bytes = 0
-    for log_file in log_dir.iterdir():
+    # Mirror `_find_log_files` and scope to *.log only — the log directory
+    # may contain non-log artifacts (lock files, .pid, symlinks) that must
+    # not be deleted by mtime.
+    for log_file in log_dir.glob("*.log"):
         if not log_file.is_file():
             continue
         mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
@@ -399,29 +406,28 @@ def logs_command(
         )
         raise typer.Exit(2)
 
+    settings = get_settings()
+    log_dir = settings.logging.log_file_path.parent
+
+    # `--print-path` is a side-effect-free path lookup; short-circuit before
+    # `--prune` / stream validation so wrappers that always append other
+    # flags (e.g., `--prune --older-than 30d`) don't fail when combined
+    # with `--print-path`.
+    if print_path:
+        typer.echo(str(log_dir))
+        return
+
     if prune and not older_than:
         typer.echo("Error: --prune requires --older-than DURATION", err=True)
         raise typer.Exit(2)
 
-    if (
-        not print_path
-        and not prune
-        and stream is not None
-        and stream.lower() not in _VALID_STREAMS
-    ):
+    if not prune and stream is not None and stream.lower() not in _VALID_STREAMS:
         typer.echo(
             f"Error: Unknown stream '{stream}'. Choose from: "
             f"{', '.join(_VALID_STREAMS)}",
             err=True,
         )
         raise typer.Exit(2)
-
-    settings = get_settings()
-    log_dir = settings.logging.log_file_path.parent
-
-    if print_path:
-        typer.echo(str(log_dir))
-        return
 
     if prune:
         # older_than presence enforced by guard above; type narrows here.

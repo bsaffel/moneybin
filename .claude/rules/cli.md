@@ -71,7 +71,7 @@ A **leaf command** is a top-level command with no subcommands (e.g., `moneybin s
 - Open database connections
 - Hit external services
 
-`main_callback` (in `src/moneybin/cli/main.py`) short-circuits when `--help`/`-h` is detected for the invoked subcommand. The detection is implemented by `_HelpAwareGroup` (a `TyperGroup` subclass) which pre-parses the unparsed token chain via Click's parser in `resilient_parsing=True` mode and sets `ctx.meta["help_requested"]`. Do not undo that guard.
+`main_callback` (in `src/moneybin/cli/main.py`) short-circuits when `--help`/`-h` is detected — *or* when the invoked subcommand will implicitly render help (a group with `no_args_is_help=True` and no further tokens). Detection walks the unparsed argv stashed on `ctx.meta` by `_MoneybinRootGroup.parse_args` (Click clears `ctx._protected_args`/`ctx.args` before the callback runs, so we capture the args in `parse_args` first). Programmatic invocations like `app(args=[...])` and `CliRunner.invoke` are covered because the walk reads the parser-supplied args, not `sys.argv`. Do not undo that guard.
 
 ## Exit Codes & stderr
 

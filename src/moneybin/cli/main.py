@@ -7,11 +7,11 @@ db, mcp.
 
 import logging
 import os
-import sys
-import warnings
 from typing import Annotated
 
+import click
 import typer
+from typer.core import TyperGroup
 
 from ..config import register_profile_resolver, set_current_profile
 from ..observability import setup_observability
@@ -38,13 +38,85 @@ from .utils import resolve_profile, stash_cli_flags
 logger = logging.getLogger(__name__)
 
 
+_RAW_ARGS_META_KEY = "moneybin._raw_args"
+
+
+class _MoneybinRootGroup(TyperGroup):
+    """Root group that captures the unparsed argv before Click clears it.
+
+    Click's ``Group.invoke`` resets ``ctx._protected_args`` and ``ctx.args``
+    to ``[]`` *before* the root callback runs, so the callback cannot see
+    the unparsed subcommand chain through the context. We need that chain
+    to detect implicit-help (a bare group with ``no_args_is_help=True``)
+    without falling back to ``sys.argv`` — ``sys.argv`` is wrong under
+    ``CliRunner`` and pytest-xdist (where it contains the worker's args).
+    Stashing the raw argv on ``ctx.meta`` during ``parse_args`` is the
+    single point that sees the original list for both real CLI invocations
+    and programmatic ``app(args=[...])`` calls.
+    """
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta[_RAW_ARGS_META_KEY] = list(args)
+        return super().parse_args(ctx, args)
+
+
 app = typer.Typer(
     name="moneybin",
     help="MoneyBin: Personal financial data aggregation and analysis tool",
     add_completion=False,
     rich_markup_mode="rich",
     no_args_is_help=True,
+    cls=_MoneybinRootGroup,
 )
+
+
+_HELP_TOKENS = frozenset({"--help", "-h"})
+
+# Root-callback options that consume the next argv token. Used by
+# ``_will_show_help`` to skip flag-value pairs when walking the
+# stashed argv.
+_ROOT_VALUE_FLAGS = frozenset({"-p", "--profile"})
+
+
+def _will_show_help(ctx: typer.Context, root: click.Command, argv: list[str]) -> bool:
+    """Walk argv to decide whether the invocation will render help.
+
+    Returns True for an explicit ``--help``/``-h`` flag anywhere in the
+    chain *or* implicit-help cases where the chain ends on a group with
+    ``no_args_is_help=True`` (e.g. bare ``moneybin db``). The argv list is
+    captured by ``_MoneybinRootGroup.parse_args`` and stashed on
+    ``ctx.meta`` because Click clears ``ctx._protected_args``/``ctx.args``
+    before the root callback runs.
+    """
+    cmd = root
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in _HELP_TOKENS:
+            return True
+        if tok.startswith("-"):
+            # Skip the value of root-level options that take one
+            # (e.g. `-p alice`). `--profile=alice` is a single token
+            # and needs no extra skip. Unknown leaf-level flags (e.g.
+            # `--print-path`) also fall here; treating them as
+            # value-less is safe because we only care about reaching
+            # the end of the subcommand chain.
+            if tok in _ROOT_VALUE_FLAGS and i + 1 < len(argv):
+                i += 2
+            else:
+                i += 1
+            continue
+        if isinstance(cmd, click.Group):
+            sub = cmd.get_command(ctx, tok)
+            if sub is None:
+                return False
+            cmd = sub
+            i += 1
+            continue
+        # Reached a leaf command — remaining tokens are its arguments;
+        # the leaf will run, not help.
+        return False
+    return isinstance(cmd, click.Group) and bool(getattr(cmd, "no_args_is_help", False))
 
 
 @app.callback()
@@ -108,32 +180,18 @@ def main_callback(
     # ``get_current_profile``, so docker-style usage errors (``moneybin logs``
     # with no stream) and ``--help`` never trigger it.
     #
-    # `--help`/`-h` anywhere in the unparsed-remainder ALSO bypasses eager
-    # resolution. Help text is documentation and must remain side-effect
-    # free even when `MONEYBIN_PROFILE` points to a deleted profile (which
-    # would otherwise surface a dir-check error before `--help` could
-    # render).
+    # Eager resolution is bypassed when the invocation will land on a help
+    # screen — explicit (`--help`/`-h` anywhere in the chain) or implicit
+    # (a group with `no_args_is_help=True` and no further tokens, e.g.
+    # bare `moneybin db`). Help text must remain side-effect free even when
+    # `MONEYBIN_PROFILE` points to a deleted profile.
     #
-    # Source the unparsed args from Click's context (`protected_args` +
-    # `args` is everything Click has not yet consumed at root-callback
-    # time, including the subcommand chain) and fall back to `sys.argv`
-    # for safety. Reading from `ctx` is the right primitive for
-    # programmatic invocations like `app(args=[...])` where `sys.argv`
-    # reflects the host process, not the command being parsed.
-    with warnings.catch_warnings():
-        # Click 8 splits unparsed tokens between `protected_args` (subcommand
-        # chain) and `args` (everything after); Click 9 unifies them onto
-        # `args`. Read both for now and silence the transitional warning.
-        warnings.filterwarnings(
-            "ignore",
-            message=".*protected_args.*",
-            category=DeprecationWarning,
-        )
-        remainder: list[str] = list(ctx.protected_args) + list(ctx.args)
-    help_tokens = {"--help", "-h"}
-    help_requested = any(arg in help_tokens for arg in remainder) or any(
-        arg in help_tokens for arg in sys.argv[1:]
-    )
+    # The unparsed argv is captured on ``ctx.meta`` by
+    # ``_MoneybinRootGroup.parse_args`` (Click clears its own copy before
+    # the callback runs). Reading from ``ctx.meta`` keeps detection
+    # correct for both real CLI invocations and ``CliRunner``-based tests.
+    raw_args: list[str] = ctx.meta.get(_RAW_ARGS_META_KEY, [])
+    help_requested = _will_show_help(ctx, ctx.command, raw_args)
 
     if explicit and not help_requested:
         resolve_profile()
