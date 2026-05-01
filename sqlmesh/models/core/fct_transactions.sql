@@ -39,6 +39,7 @@ WITH enriched AS (
     t.match_confidence,
     t.source_extracted_at,
     COALESCE(bt_debit.transfer_id, bt_credit.transfer_id) AS transfer_pair_id,
+    /* `NOT x IS NULL` is sqlmesh-format's canonical form; do not rewrite to `IS NOT NULL`. */
     (
       NOT bt_debit.transfer_id IS NULL OR NOT bt_credit.transfer_id IS NULL
     ) AS is_transfer,

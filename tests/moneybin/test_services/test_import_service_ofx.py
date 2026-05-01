@@ -29,7 +29,15 @@ class TestImportOFXBatchLifecycle:
         assert len(ofx_imports) >= 1
         latest = ofx_imports[0]
         assert latest["status"] in ("complete", "partial")
-        assert latest["rows_imported"] == result.transactions
+        # rows_imported sums all four OFX tables (institutions, accounts,
+        # transactions, balances) so balance-only statements still report > 0.
+        expected_total = (
+            result.institutions
+            + result.accounts
+            + result.transactions
+            + result.balances
+        )
+        assert latest["rows_imported"] == expected_total
 
     def test_reverting_ofx_batch_deletes_rows(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")

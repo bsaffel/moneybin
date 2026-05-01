@@ -502,20 +502,25 @@ class ImportService:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
             raise
 
-        rows_imported = rows_loaded["transactions"]
+        # Total across all four OFX tables — balance-only or no-activity
+        # statements still count as a successful import.
+        total_rows = sum(rows_loaded.values())
         finalize_status: Literal["complete", "partial"] = (
-            "complete" if rows_imported > 0 else "partial"
+            "complete" if total_rows > 0 else "partial"
         )
+        # IMPORT_RECORDS_TOTAL stays scoped to transactions for cross-source
+        # comparability with tabular/Plaid metrics.
+        transactions_imported = rows_loaded["transactions"]
 
         import_log.finalize_import(
             self._db,
             import_id,
             status=finalize_status,
-            rows_total=rows_imported,
-            rows_imported=rows_imported,
+            rows_total=total_rows,
+            rows_imported=total_rows,
         )
         OFX_IMPORT_BATCHES.labels(status=finalize_status).inc()
-        IMPORT_RECORDS_TOTAL.labels(source_type="ofx").inc(rows_imported)
+        IMPORT_RECORDS_TOTAL.labels(source_type="ofx").inc(transactions_imported)
         IMPORT_DURATION_SECONDS.labels(source_type="ofx").observe(
             time.monotonic() - _t0
         )
@@ -526,7 +531,7 @@ class ImportService:
         result.balances = rows_loaded["balances"]
         result.details = rows_loaded
 
-        if rows_imported > 0:
+        if transactions_imported > 0:
             result.date_range = self._query_date_range(
                 "raw.ofx_transactions", "CAST(date_posted AS DATE)", canonical_path
             )
