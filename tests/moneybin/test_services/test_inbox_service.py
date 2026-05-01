@@ -382,3 +382,47 @@ class TestSyncBusy:
         assert result.processed == []
         assert result.failed == []
         assert result.skipped == [{"reason": "inbox_busy"}]
+
+
+class TestRecovery:
+    """Crash-recovery: staging-* files in outcome roots revert to inbox/."""
+
+    def test_staging_files_in_processed_revert_to_inbox(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        ghost = svc.processed_dir / "staging-statement.csv"
+        ghost.write_text("partial\n")
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                return ImportResult(file_path=path, file_type="tabular")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        result = svc.sync(year_month="2026-05")
+
+        assert not ghost.exists()
+        final = svc.processed_dir / "2026-05" / "statement.csv"
+        assert final.exists()
+        assert len(result.processed) == 1
+
+    def test_staging_files_in_failed_also_recovered(self, tmp_path: Path) -> None:
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        ghost = svc.failed_dir / "staging-x.csv"
+        ghost.write_text("partial\n")
+
+        svc.recover_staging()
+
+        assert not ghost.exists()
+        assert (svc.inbox_dir / "x.csv").exists()

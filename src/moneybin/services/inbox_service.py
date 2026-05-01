@@ -173,6 +173,7 @@ class InboxService:
         result.ignored.append({"path": rel, "reason": "not_regular_file"})
 
     _OUTCOME_DIRS = ("processed", "failed")
+    _STAGING_PREFIX = "staging-"
 
     def move_to_outcome(
         self,
@@ -181,16 +182,43 @@ class InboxService:
         outcome: str,
         year_month: str,
     ) -> Path:
-        """Move ``src`` into the outcome's YYYY-MM bucket atomically."""
+        """Atomic two-step move: src → outcome/staging-name → outcome/YYYY-MM/name."""
         if outcome not in self._OUTCOME_DIRS:
             raise ValueError(f"Unknown outcome: {outcome}")
-        dest_dir = self.root / outcome / year_month
+        outcome_root = self.root / outcome
+        outcome_root.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+        outcome_root.chmod(_DIR_MODE)
+
+        staging = outcome_root / f"{self._STAGING_PREFIX}{src.name}"
+        staging = self._next_available_path(staging)
+        src.rename(staging)
+
+        dest_dir = outcome_root / year_month
         dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
         dest_dir.chmod(_DIR_MODE)
-
         final = self._next_available_path(dest_dir / src.name)
-        src.rename(final)
+        staging.rename(final)
         return final
+
+    def recover_staging(self) -> list[Path]:
+        """Move leftover staging-* files in outcome roots back to inbox/."""
+        self.ensure_layout()
+        recovered: list[Path] = []
+        for outcome in self._OUTCOME_DIRS:
+            outcome_root = self.root / outcome
+            if not outcome_root.exists():
+                continue
+            for entry in outcome_root.iterdir():
+                if not entry.is_file():
+                    continue
+                if not entry.name.startswith(self._STAGING_PREFIX):
+                    continue
+                original_name = entry.name[len(self._STAGING_PREFIX) :]
+                dest = self._next_available_path(self.inbox_dir / original_name)
+                entry.rename(dest)
+                recovered.append(dest)
+                logger.info(f"Recovered staging file → {dest.name}")
+        return recovered
 
     @staticmethod
     def _next_available_path(candidate: Path) -> Path:
@@ -211,6 +239,7 @@ class InboxService:
         ym = year_month or datetime.now(UTC).strftime("%Y-%m")
         try:
             with self.acquire_lock():
+                self.recover_staging()
                 listing = self.enumerate()
                 result = InboxSyncResult(ignored=list(listing.ignored))
                 t0 = time.monotonic()
