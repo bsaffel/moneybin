@@ -11,14 +11,21 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import logging
+import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
 from moneybin.config import MoneyBinSettings
 from moneybin.database import Database
+from moneybin.metrics.registry import (
+    INBOX_SYNC_DURATION_SECONDS,
+    INBOX_SYNC_TOTAL,
+)
+from moneybin.services.import_service import ImportService
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +188,58 @@ class InboxService:
             if not attempt.exists():
                 return attempt
             i += 1
+
+    def sync(self, year_month: str | None = None) -> InboxSyncResult:
+        """Drain the inbox: import each eligible file and move it."""
+        ym = year_month or datetime.now(UTC).strftime("%Y-%m")
+        with self.acquire_lock():
+            listing = self.enumerate()
+            result = InboxSyncResult(ignored=list(listing.ignored))
+            t0 = time.monotonic()
+            for item in listing.would_process:
+                self._sync_one(item, year_month=ym, result=result)
+            INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
+            return result
+
+    def _sync_one(
+        self,
+        item: dict[str, object],
+        *,
+        year_month: str,
+        result: InboxSyncResult,
+    ) -> None:
+        """Import one inbox item and move it to the processed/ bucket."""
+        rel_filename = str(item["filename"])
+        account_hint = item["account_hint"]
+        src = self.inbox_dir / rel_filename
+        importer = ImportService(self._db)
+        try:
+            import_result = importer.import_file(
+                str(src),
+                account_name=account_hint if isinstance(account_hint, str) else None,
+            )
+        except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
+            self._handle_failure(src, rel_filename, e, year_month, result)
+            return
+        final = self.move_to_outcome(src, outcome="processed", year_month=year_month)
+        result.processed.append({
+            "filename": rel_filename,
+            "moved_to": str(final.relative_to(self.root)),
+            "transactions": import_result.transactions,
+            "file_type": import_result.file_type,
+        })
+        INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
+
+    def _handle_failure(
+        self,
+        src: Path,
+        rel_filename: str,
+        error: Exception,
+        year_month: str,
+        result: InboxSyncResult,
+    ) -> None:
+        """Move a failed file to failed/ and record it; filled in by Task 8."""
+        raise error
 
     @staticmethod
     def write_error_sidecar(

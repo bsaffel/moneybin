@@ -218,3 +218,71 @@ class TestErrorSidecar:
         assert loaded["message"].startswith("Single-account")
         assert loaded["suggestion"].startswith("Move into")
         assert loaded["available_accounts"] == ["chase-checking", "amex"]
+
+
+class TestSyncHappyPath:
+    """sync() happy path: import file, move to processed/."""
+
+    def test_imports_root_file_and_moves_to_processed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+
+        captured: list[dict[str, object]] = []
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                captured.append({"path": path, **kwargs})
+                return ImportResult(
+                    file_path=path, file_type="tabular", transactions=42
+                )
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert len(result.processed) == 1
+        entry = result.processed[0]
+        assert entry["filename"] == "statement.csv"
+        assert entry["transactions"] == 42
+        assert not (svc.inbox_dir / "statement.csv").exists()
+        assert (svc.processed_dir / "2026-05" / "statement.csv").exists()
+        assert str(captured[0]["path"]).endswith("/inbox/statement.csv")
+
+    def test_subfolder_passes_account_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+
+        captured_kwargs: dict[str, object] = {}
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                captured_kwargs.update(kwargs)
+                return ImportResult(file_path=path, file_type="tabular")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        sub = svc.inbox_dir / "chase-checking"
+        sub.mkdir()
+        (sub / "march.csv").write_text("a\n1\n")
+
+        svc.sync(year_month="2026-05")
+
+        assert captured_kwargs["account_name"] == "chase-checking"
