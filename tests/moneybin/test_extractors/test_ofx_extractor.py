@@ -21,6 +21,9 @@ from moneybin.extractors.ofx_extractor import (
 # Path to test fixtures directory
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
 
+_IMPORT_ID = "00000000-0000-0000-0000-000000000001"
+_SOURCE_ORIGIN = "test_bank"
+
 
 @pytest.fixture
 def sample_ofx_file() -> Path:
@@ -93,7 +96,9 @@ def test_extract_from_file_creates_dataframes(
 ) -> None:
     """Test that extraction creates all expected DataFrames."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     # Check all expected tables are present
     assert "institutions" in results
@@ -114,7 +119,9 @@ def test_extract_institutions_data(
 ) -> None:
     """Test that institution data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     institutions = results["institutions"]
 
@@ -139,7 +146,9 @@ def test_extract_accounts_data(
 ) -> None:
     """Test that account data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     accounts = results["accounts"]
 
@@ -165,7 +174,9 @@ def test_extract_transactions_data(
 ) -> None:
     """Test that transaction data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     transactions = results["transactions"]
 
@@ -206,7 +217,9 @@ def test_extract_balances_data(
 ) -> None:
     """Test that balance data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     balances = results["balances"]
 
@@ -226,21 +239,6 @@ def test_extract_balances_data(
 
 
 @pytest.mark.unit
-def test_extract_with_institution_name_override(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
-) -> None:
-    """Test that institution name can be overridden."""
-    extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file, institution_name="My Bank")
-
-    institutions = results["institutions"]
-    first_row = institutions.row(0, named=True)
-
-    # Institution name should be overridden
-    assert first_row["organization"] == "My Bank"
-
-
-@pytest.mark.unit
 def test_extract_nonexistent_file_raises_error(
     extractor_config: OFXExtractionConfig,
 ) -> None:
@@ -248,7 +246,11 @@ def test_extract_nonexistent_file_raises_error(
     extractor = OFXExtractor(extractor_config)
 
     with pytest.raises(FileNotFoundError):
-        extractor.extract_from_file(Path("/nonexistent/file.qfx"))
+        extractor.extract_from_file(
+            Path("/nonexistent/file.qfx"),
+            import_id=_IMPORT_ID,
+            source_origin=_SOURCE_ORIGIN,
+        )
 
 
 @pytest.mark.unit
@@ -263,13 +265,17 @@ def test_extract_invalid_ofx_raises_error(
     extractor = OFXExtractor(extractor_config)
 
     with pytest.raises(ValueError, match="Invalid OFX file format"):
-        extractor.extract_from_file(invalid_file)
+        extractor.extract_from_file(
+            invalid_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+        )
 
 
 @pytest.mark.unit
 def test_convenience_function(sample_ofx_file: Path) -> None:
     """Test the convenience function for OFX extraction."""
-    results = extract_ofx_file(sample_ofx_file)
+    results = extract_ofx_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     # Check all expected tables are present
     assert "institutions" in results
@@ -287,7 +293,9 @@ def test_extract_preserves_metadata(
 ) -> None:
     """Test that extraction preserves metadata like source file and extraction time."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     # Check transactions have metadata
     transactions = results["transactions"]
@@ -309,7 +317,9 @@ def test_extracted_transaction_amount_is_decimal(
 ) -> None:
     """Transaction amount column must be pl.Decimal(18,2), not Float64."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     transactions = results["transactions"]
     assert transactions["amount"].dtype == pl.Decimal(precision=18, scale=2)
@@ -321,8 +331,74 @@ def test_extracted_balance_amounts_are_decimal(
 ) -> None:
     """Balance amount columns must be pl.Decimal(18,2), not Float64."""
     extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(sample_ofx_file)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
 
     balances = results["balances"]
     assert balances["ledger_balance"].dtype == pl.Decimal(precision=18, scale=2)
     assert balances["available_balance"].dtype == pl.Decimal(precision=18, scale=2)
+
+
+class TestExtractorPopulatesBatchColumns:
+    """extract_from_file populates import_id, source_type, and source_origin in DataFrames."""
+
+    def test_transactions_df_has_import_id_and_source_origin(self) -> None:
+        fixture = FIXTURES_DIR / "ofx" / "sample_minimal.ofx"
+        if not fixture.exists():
+            pytest.skip("OFX fixture not present yet")
+
+        extractor = OFXExtractor()
+        result = extractor.extract_from_file(
+            fixture,
+            import_id="11111111-1111-1111-1111-111111111111",
+            source_origin="test_bank",
+        )
+
+        txns = result["transactions"]
+        assert "import_id" in txns.columns
+        assert "source_origin" in txns.columns
+        assert "source_type" in txns.columns
+        assert all(
+            v == "11111111-1111-1111-1111-111111111111"
+            for v in txns["import_id"].to_list()
+        )
+        assert all(v == "test_bank" for v in txns["source_origin"].to_list())
+        assert all(v == "ofx" for v in txns["source_type"].to_list())
+
+    def test_all_dataframes_have_import_id_and_source_type(self) -> None:
+        """All four DataFrames carry import_id and source_type."""
+        fixture = FIXTURES_DIR / "ofx" / "sample_minimal.ofx"
+        if not fixture.exists():
+            pytest.skip("OFX fixture not present yet")
+
+        extractor = OFXExtractor()
+        result = extractor.extract_from_file(
+            fixture,
+            import_id="22222222-2222-2222-2222-222222222222",
+            source_origin="minimal_bank",
+        )
+
+        for name in ("institutions", "accounts", "transactions", "balances"):
+            df = result[name]
+            assert "import_id" in df.columns, f"{name} missing import_id"
+            assert "source_type" in df.columns, f"{name} missing source_type"
+
+    def test_institution_name_comes_from_file_not_caller(self) -> None:
+        """Institution org comes from <FI><ORG> in the file, not from a caller hint."""
+        fixture = FIXTURES_DIR / "ofx" / "sample_minimal.ofx"
+        if not fixture.exists():
+            pytest.skip("OFX fixture not present yet")
+
+        extractor = OFXExtractor()
+        result = extractor.extract_from_file(
+            fixture,
+            import_id=_IMPORT_ID,
+            source_origin=_SOURCE_ORIGIN,
+        )
+
+        institutions = result["institutions"]
+        assert len(institutions) >= 1
+        first = institutions.row(0, named=True)
+        # The fixture has <ORG>SAMPLE BANK</ORG>
+        assert first["organization"] == "SAMPLE BANK"

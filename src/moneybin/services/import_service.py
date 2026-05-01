@@ -334,8 +334,13 @@ class ImportService:
         result = ImportResult(file_path=str(file_path), file_type="ofx")
 
         # Extract
+        # TODO(Task 9): pass real import_id + source_origin once _import_ofx is rewritten.
         extractor = OFXExtractor()
-        data = extractor.extract_from_file(file_path, institution)
+        data = extractor.extract_from_file(
+            file_path,
+            import_id="legacy",
+            source_origin=institution or "legacy",
+        )
 
         # Load using OFXLoader (which manages its own connection)
         loader = OFXLoader(self._db)

@@ -169,24 +169,27 @@ class OFXExtractor:
         return content
 
     def extract_from_file(
-        self, file_path: Path, institution_name: str | None = None
+        self,
+        file_path: Path,
+        *,
+        import_id: str,
+        source_origin: str,
     ) -> dict[str, pl.DataFrame]:
-        """Extract all data from an OFX/QFX file.
+        """Extract all data from an OFX/QFX/QBO file.
 
         Args:
-            file_path: Path to the OFX/QFX file
-            institution_name: Optional institution name override
+            file_path: Path to the file.
+            import_id: UUID of the import batch this extraction belongs to.
+                Stamped on every row in every returned DataFrame.
+            source_origin: Institution slug resolved by the caller (service layer).
+                Stamped on transactions.
 
         Returns:
-            dict: Dictionary containing DataFrames for:
-                - institutions: Financial institution information
-                - accounts: Account details
-                - transactions: Transaction records
-                - balances: Account balance snapshots
+            dict with DataFrames for institutions, accounts, transactions, balances.
 
         Raises:
-            FileNotFoundError: If the file doesn't exist
-            ValueError: If the file cannot be parsed
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the file cannot be parsed.
         """
         if not file_path.exists():
             raise FileNotFoundError(f"OFX file not found: {file_path}")
@@ -194,39 +197,32 @@ class OFXExtractor:
         logger.info(f"Extracting data from OFX file: {file_path}")
 
         try:
-            # Read and preprocess OFX file to handle various formats
             with open(file_path, "rb") as f:
                 content = f.read().decode("utf-8", errors="ignore")
-
-            # Preprocess SGML-format OFX files (like Wells Fargo QFX)
-            # These files have headers on one line separated by tags rather than newlines
             content = self._preprocess_ofx_content(content)
 
             from io import BytesIO
 
-            # ofxparse library has incomplete type annotations
-            ofx = ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType] — ofxparse has no type stubs
+            ofx = ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
 
-            # Extract data into structured tables
             extraction_timestamp = datetime.now()
             source_file = str(file_path)
 
             results = {
                 "institutions": self._extract_institutions(
-                    ofx, institution_name, source_file, extraction_timestamp
+                    ofx, source_file, extraction_timestamp, import_id
                 ),
                 "accounts": self._extract_accounts(
-                    ofx, source_file, extraction_timestamp
+                    ofx, source_file, extraction_timestamp, import_id
                 ),
                 "transactions": self._extract_transactions(
-                    ofx, source_file, extraction_timestamp
+                    ofx, source_file, extraction_timestamp, import_id, source_origin
                 ),
                 "balances": self._extract_balances(
-                    ofx, source_file, extraction_timestamp
+                    ofx, source_file, extraction_timestamp, import_id
                 ),
             }
 
-            # Log extraction summary
             logger.info(
                 f"Extracted {len(results['institutions'])} institution(s), "
                 f"{len(results['accounts'])} account(s), "
@@ -242,9 +238,9 @@ class OFXExtractor:
     def _extract_institutions(
         self,
         ofx: Any,
-        institution_name_override: str | None,
         source_file: str,
         extraction_timestamp: datetime,
+        import_id: str,
     ) -> pl.DataFrame:
         """Extract institution information from OFX data."""
         institutions_data: list[dict[str, Any]] = []
@@ -252,11 +248,12 @@ class OFXExtractor:
         for account in ofx.accounts:
             if account.institution:
                 institution_data = {
-                    "organization": institution_name_override
-                    or account.institution.organization,
+                    "organization": account.institution.organization,
                     "fid": account.institution.fid,
                     "source_file": source_file,
                     "extracted_at": extraction_timestamp.isoformat(),
+                    "import_id": import_id,
+                    "source_type": "ofx",
                 }
                 institutions_data.append(institution_data)
 
@@ -272,11 +269,17 @@ class OFXExtractor:
                 "fid": pl.String,
                 "source_file": pl.String,
                 "extracted_at": pl.String,
+                "import_id": pl.String,
+                "source_type": pl.String,
             }
         )
 
     def _extract_accounts(
-        self, ofx: Any, source_file: str, extraction_timestamp: datetime
+        self,
+        ofx: Any,
+        source_file: str,
+        extraction_timestamp: datetime,
+        import_id: str,
     ) -> pl.DataFrame:
         """Extract account information from OFX data."""
         accounts_data: list[dict[str, Any]] = []
@@ -298,6 +301,8 @@ class OFXExtractor:
                 else None,
                 "source_file": source_file,
                 "extracted_at": extraction_timestamp.isoformat(),
+                "import_id": import_id,
+                "source_type": "ofx",
             }
             accounts_data.append(account_info)
 
@@ -312,18 +317,24 @@ class OFXExtractor:
                 "institution_fid": pl.String,
                 "source_file": pl.String,
                 "extracted_at": pl.String,
+                "import_id": pl.String,
+                "source_type": pl.String,
             }
         )
 
     def _extract_transactions(
-        self, ofx: Any, source_file: str, extraction_timestamp: datetime
+        self,
+        ofx: Any,
+        source_file: str,
+        extraction_timestamp: datetime,
+        import_id: str,
+        source_origin: str,
     ) -> pl.DataFrame:
         """Extract transaction data from OFX file."""
         transactions_data: list[dict[str, Any]] = []
 
         for account in ofx.accounts:
             for transaction in account.statement.transactions:
-                # Validate transaction data
                 tx_schema = OFXTransactionSchema(
                     id=transaction.id,
                     type=transaction.type,
@@ -347,6 +358,9 @@ class OFXExtractor:
                     "check_number": tx_schema.checknum,
                     "source_file": source_file,
                     "extracted_at": extraction_timestamp.isoformat(),
+                    "import_id": import_id,
+                    "source_type": "ofx",
+                    "source_origin": source_origin,
                 }
                 transactions_data.append(tx_data)
 
@@ -371,11 +385,18 @@ class OFXExtractor:
                 "check_number": pl.String,
                 "source_file": pl.String,
                 "extracted_at": pl.String,
+                "import_id": pl.String,
+                "source_type": pl.String,
+                "source_origin": pl.String,
             }
         )
 
     def _extract_balances(
-        self, ofx: Any, source_file: str, extraction_timestamp: datetime
+        self,
+        ofx: Any,
+        source_file: str,
+        extraction_timestamp: datetime,
+        import_id: str,
     ) -> pl.DataFrame:
         """Extract balance information from OFX file."""
         balances_data: list[dict[str, Any]] = []
@@ -403,6 +424,8 @@ class OFXExtractor:
                     else None,
                     "source_file": source_file,
                     "extracted_at": extraction_timestamp.isoformat(),
+                    "import_id": import_id,
+                    "source_type": "ofx",
                 }
                 balances_data.append(balance_info)
 
@@ -420,22 +443,20 @@ class OFXExtractor:
                 "available_balance": _DECIMAL_AMOUNT,
                 "source_file": pl.String,
                 "extracted_at": pl.String,
+                "import_id": pl.String,
+                "source_type": pl.String,
             }
         )
 
 
 def extract_ofx_file(
-    file_path: Path | str, institution_name: str | None = None
+    file_path: Path | str,
+    *,
+    import_id: str,
+    source_origin: str,
 ) -> dict[str, pl.DataFrame]:
-    """Convenience function to extract data from an OFX/QFX file.
-
-    Args:
-        file_path: Path to the OFX/QFX file
-        institution_name: Optional institution name override
-
-    Returns:
-        dict: Dictionary containing DataFrames for institutions, accounts,
-              transactions, and balances
-    """
+    """Convenience function to extract data from an OFX/QFX/QBO file."""
     extractor = OFXExtractor()
-    return extractor.extract_from_file(Path(file_path), institution_name)
+    return extractor.extract_from_file(
+        Path(file_path), import_id=import_id, source_origin=source_origin
+    )
