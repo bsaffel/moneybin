@@ -11,5 +11,7 @@ SELECT
   institution_fid,
   source_file,
   extracted_at,
-  loaded_at
+  loaded_at,
+  import_id,
+  'ofx' AS source_type
 FROM raw.ofx_accounts

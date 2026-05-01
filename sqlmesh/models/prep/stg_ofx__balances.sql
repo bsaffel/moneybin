@@ -12,5 +12,7 @@ SELECT
   available_balance,
   source_file,
   extracted_at,
-  loaded_at
+  loaded_at,
+  import_id,
+  'ofx' AS source_type
 FROM raw.ofx_balances
