@@ -7,7 +7,6 @@ returns a ``ScenarioResult`` describing the outcome.
 
 from __future__ import annotations
 
-import importlib
 import logging
 import os
 import shutil
@@ -27,6 +26,7 @@ from moneybin.validation.result import (
 from tests.scenarios._runner._assertion_registry import (
     resolve_assertion as _resolve_assertion,
 )
+from tests.scenarios._runner._evaluation_registry import resolve_evaluation
 from tests.scenarios._runner._expectation_registry import verify_expectations
 from tests.scenarios._runner.loader import (
     AssertionSpec,
@@ -261,7 +261,7 @@ def _run_assertion(
 
 def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
     try:
-        fn = _resolve_evaluation(spec.fn)
+        fn = resolve_evaluation(spec.fn)
         return fn(db, threshold=spec.threshold.min, **spec.args)
     except Exception as exc:  # noqa: BLE001 — surface as structured failure
         logger.error(f"evaluation {spec.name} crashed: {type(exc).__name__}")
@@ -274,13 +274,6 @@ def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
             passed=False,
             breakdown={"error": str(exc)},
         )
-
-
-def _resolve_evaluation(fn_name: str):
-    mod = importlib.import_module("moneybin.validation.evaluations")
-    if not hasattr(mod, fn_name):
-        raise ValueError(f"unknown evaluation fn: {fn_name}")
-    return getattr(mod, fn_name)
 
 
 def _build_result(

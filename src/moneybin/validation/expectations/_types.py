@@ -13,4 +13,4 @@ class SourceTransactionRef:
     source_transaction_id: str
     # Mirrors loader.FixtureSpec.source_type — extend together when a new
     # source type is added.
-    source_type: Literal["csv", "ofx", "pdf"]
+    source_type: Literal["csv", "ofx"]

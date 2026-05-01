@@ -81,8 +81,8 @@ def verify_match_decision(
     }
 
     if expected != "matched":
-        # not_matched: listed sources must resolve to ≥2 distinct gold rows.
-        # Coverage isn't required — a missing source is itself "not matched".
+        # not_matched: listed sources must resolve to ≥2 distinct gold rows
+        # (i.e., they were not collapsed into a single canonical record).
         return ExpectationResult(
             name=description or "match_decision",
             kind="match_decision",

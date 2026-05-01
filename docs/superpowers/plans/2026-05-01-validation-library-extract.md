@@ -122,7 +122,10 @@ Stages:
 # Append to tests/moneybin/test_validation/test_result.py
 def test_expectation_result_has_expected_shape():
     from moneybin.validation.result import ExpectationResult
-    r = ExpectationResult(name="x", kind="match_decision", passed=True, details={"a": 1})
+
+    r = ExpectationResult(
+        name="x", kind="match_decision", passed=True, details={"a": 1}
+    )
     assert r.name == "x"
     assert r.kind == "match_decision"
     assert r.passed is True
@@ -131,6 +134,7 @@ def test_expectation_result_has_expected_shape():
 
 def test_expectation_result_default_details_empty():
     from moneybin.validation.result import ExpectationResult
+
     r = ExpectationResult(name="x", kind="k", passed=False)
     assert r.details == {}
 ```
@@ -181,6 +185,7 @@ git commit -m "Add ExpectationResult to validation result types"
 def test_result_types_importable_from_package_root():
     # Stable contract: data-reconciliation imports the three Result types here.
     from moneybin.validation import AssertionResult, EvaluationResult, ExpectationResult
+
     assert AssertionResult.__name__ == "AssertionResult"
     assert EvaluationResult.__name__ == "EvaluationResult"
     assert ExpectationResult.__name__ == "ExpectationResult"
@@ -655,12 +660,19 @@ Change the function signature and call site:
 ```python
 # Before
 from duckdb import DuckDBPyConnection
-def assert_no_nulls(conn: DuckDBPyConnection, *, table: str, columns: list[str]) -> AssertionResult:
+
+
+def assert_no_nulls(
+    conn: DuckDBPyConnection, *, table: str, columns: list[str]
+) -> AssertionResult:
     ...
     per_col[col] = int(conn.execute(null_sql).fetchone()[0])
 
+
 # After
 from moneybin.database import Database
+
+
 def assert_no_nulls(db: Database, *, table: str, columns: list[str]) -> AssertionResult:
     ...
     per_col[col] = int(db.execute(null_sql).fetchone()[0])
@@ -683,7 +695,10 @@ For each match, update the call from `assert_X(conn, ...)` or `assert_X(db.conn,
 If a test was constructing a raw `duckdb.connect()` connection (not a `Database`), wrap it in a `Database` test fixture. Use `mock_secret_store` from the project's root `conftest.py` and `no_auto_upgrade=True`:
 ```python
 from moneybin.database import Database
-db = Database(tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True)
+
+db = Database(
+    tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+)
 ```
 
 - [ ] **Step 5: Run the three test files**
@@ -740,11 +755,7 @@ Remove lines 41–46 (the `_DATABASE_ASSERTION_FNS` set).
 
 In `_run_assertion` (around line 233), change:
 ```python
-result = (
-    fn(db, **args)
-    if spec.fn in _DATABASE_ASSERTION_FNS
-    else fn(db.conn, **args)
-)
+result = fn(db, **args) if spec.fn in _DATABASE_ASSERTION_FNS else fn(db.conn, **args)
 ```
 to:
 ```python
@@ -785,11 +796,13 @@ git commit -m "Drop _DATABASE_ASSERTION_FNS dispatch — every assertion takes D
 # tests/moneybin/test_validation/test_expectations_types.py
 def test_source_transaction_ref_is_frozen_dataclass():
     from moneybin.validation.expectations import SourceTransactionRef
+
     ref = SourceTransactionRef(source_transaction_id="csv_abc123", source_type="csv")
     assert ref.source_transaction_id == "csv_abc123"
     assert ref.source_type == "csv"
     # Frozen — must reject mutation
     import dataclasses
+
     with __import__("pytest").raises(dataclasses.FrozenInstanceError):
         ref.source_type = "ofx"  # type: ignore[misc]
 ```
@@ -1462,9 +1475,7 @@ def _adapt_provenance_for_transaction(
     return verify_provenance_for_transaction(
         db,
         transaction_id=body["transaction_id"],
-        expected_sources=[
-            SourceTransactionRef(**s) for s in body["expected_sources"]
-        ],
+        expected_sources=[SourceTransactionRef(**s) for s in body["expected_sources"]],
         description=spec.description,
     )
 
@@ -1534,7 +1545,9 @@ Find the `_resolve_assertion` helper (around line 279) and the `_resolve_evaluat
 
 Replace `_resolve_assertion`:
 ```python
-from moneybin.testing.scenarios._assertion_registry import resolve_assertion as _resolve_assertion
+from moneybin.testing.scenarios._assertion_registry import (
+    resolve_assertion as _resolve_assertion,
+)
 ```
 
 (`_resolve_evaluation` stays as-is — evaluations aren't part of this phase. Add a TODO if you want, but don't change it.)
