@@ -39,7 +39,6 @@ from moneybin.validation.assertions.schema import (
 from moneybin.validation.assertions.uniqueness import assert_no_duplicates
 from moneybin.validation.result import AssertionResult
 
-# AssertionFn signature: (db: Database, **kwargs) -> AssertionResult.
 AssertionFn = Callable[..., AssertionResult]
 
 ASSERTION_REGISTRY: dict[str, AssertionFn] = {

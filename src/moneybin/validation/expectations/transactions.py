@@ -45,15 +45,12 @@ def verify_category_for_transaction(
     *,
     transaction_id: str,
     expected_category: str,
+    # ``expected_categorized_by`` is an open vocabulary (rule, auto_rule, ai, user, …),
+    # so it stays ``str | None`` rather than a closed Literal.
     expected_categorized_by: str | None = None,
     description: str = "",
 ) -> ExpectationResult:
-    """Verify a transaction's category (and optionally its categorizer source).
-
-    ``categorized_by`` is open-ended in practice (``"rule"``, ``"auto_rule"``,
-    ``"ai"``, ``"user"``), so the parameter accepts ``str | None`` rather than
-    a closed ``Literal``.
-    """
+    """Verify a transaction's category (and optionally its categorizer source)."""
     row = db.execute(
         "SELECT category, categorized_by "  # noqa: S608 — TableRef constant
         f"FROM {FCT_TRANSACTIONS.full_name} "

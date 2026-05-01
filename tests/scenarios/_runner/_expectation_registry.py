@@ -91,11 +91,23 @@ EXPECTATION_REGISTRY: dict[str, ExpectationAdapter] = {
 }
 
 
+def resolve_expectation(kind: str) -> ExpectationAdapter:
+    """Return the adapter registered under ``kind`` or raise KeyError."""
+    if kind not in EXPECTATION_REGISTRY:
+        raise KeyError(f"unknown expectation kind: {kind!r}")
+    return EXPECTATION_REGISTRY[kind]
+
+
 def verify_expectations(
     db: Database, specs: list[ExpectationSpec]
 ) -> list[ExpectationResult]:
     """Dispatch each spec through its registered adapter and return results."""
-    return [EXPECTATION_REGISTRY[s.kind](db, s) for s in specs]
+    return [resolve_expectation(s.kind)(db, s) for s in specs]
 
 
-__all__ = ["EXPECTATION_REGISTRY", "ExpectationAdapter", "verify_expectations"]
+__all__ = [
+    "EXPECTATION_REGISTRY",
+    "ExpectationAdapter",
+    "resolve_expectation",
+    "verify_expectations",
+]

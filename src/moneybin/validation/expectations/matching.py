@@ -49,8 +49,6 @@ def verify_match_decision(
             details={"reason": f"unknown expected_match_type: {expected_match_type!r}"},
         )
 
-    # Row-IN-(VALUES ...) clause: placeholder count derived from a typed list,
-    # values bound via `?`.
     placeholders = ",".join(["(?, ?)"] * len(transactions))
     params: list[str] = []
     for t in transactions:
@@ -127,11 +125,7 @@ def verify_match_decision(
 def verify_transfers_match_ground_truth(
     db: Database, *, description: str = ""
 ) -> ExpectationResult:
-    """Assert every labeled transfer pair lands as one transfer_pair_id.
-
-    See _verify_transfers_match_ground_truth in the legacy module for
-    detailed semantics.
-    """
+    """Assert every labeled transfer pair lands as exactly one non-null transfer_pair_id shared by both legs."""
     rows = db.execute(f"""
         WITH gold_pairs AS (
             SELECT transfer_pair_id, source_transaction_id
