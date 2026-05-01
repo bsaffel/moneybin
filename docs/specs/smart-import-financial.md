@@ -160,6 +160,7 @@ Legacy rows imported before this change have `import_id = NULL`. They appear in 
 ```python
 # src/moneybin/loaders/import_log.py
 
+
 def begin_import(
     db: Database,
     *,
@@ -168,6 +169,7 @@ def begin_import(
     source_origin: str,
 ) -> str:
     """Create an import_log row in 'pending' state. Returns the new import_id (UUID)."""
+
 
 def finalize_import(
     db: Database,
@@ -178,9 +180,11 @@ def finalize_import(
 ) -> None:
     """Mark an import as finalized with row counts per raw table."""
 
+
 def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
     """Delete all rows tagged with import_id from raw tables matching the import's source_type.
     Updates log row to status='reverted'. Returns {'status': ..., 'rows_deleted': N}."""
+
 
 def get_import_history(
     db: Database,

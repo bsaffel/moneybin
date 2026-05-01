@@ -505,7 +505,9 @@ class TestRevertImport:
     """revert_import deletes from the right tables for the import's source_type."""
 
     def test_returns_not_found_for_missing_id(self, test_database: Database) -> None:
-        result = import_log.revert_import(test_database, "00000000-0000-0000-0000-000000000000")
+        result = import_log.revert_import(
+            test_database, "00000000-0000-0000-0000-000000000000"
+        )
         assert result["status"] == "not_found"
 
     def test_reverts_ofx_batch(self, test_database: Database) -> None:
@@ -575,7 +577,9 @@ class TestFindExistingImport:
     """find_existing_import detects prior imports of the same source_file."""
 
     def test_returns_none_for_new_file(self, test_database: Database) -> None:
-        result = import_log.find_existing_import(test_database, "/tmp/never_imported.ofx")
+        result = import_log.find_existing_import(
+            test_database, "/tmp/never_imported.ofx"
+        )
         assert result is None
 
     def test_returns_import_id_for_imported_file(self, test_database: Database) -> None:
@@ -985,7 +989,6 @@ that cannot be reverted via import revert.
 Idempotent: skips columns that already exist on a fresh install.
 """
 
-
 _TABLE_COLUMNS = {
     "raw.ofx_transactions": ["import_id", "source_type", "source_origin"],
     "raw.ofx_accounts": ["import_id", "source_type"],
@@ -1212,7 +1215,10 @@ class TestExtractorPopulatesBatchColumns:
         assert "import_id" in txns.columns
         assert "source_origin" in txns.columns
         assert "source_type" in txns.columns
-        assert all(v == "11111111-1111-1111-1111-111111111111" for v in txns["import_id"].to_list())
+        assert all(
+            v == "11111111-1111-1111-1111-111111111111"
+            for v in txns["import_id"].to_list()
+        )
         assert all(v == "test_bank" for v in txns["source_origin"].to_list())
         assert all(v == "ofx" for v in txns["source_type"].to_list())
 ```
@@ -1578,7 +1584,10 @@ _FID_TO_SLUG: dict[str, str] = {
 _FILENAME_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"wells[\s_-]*fargo", re.IGNORECASE), "wells_fargo"),
     (re.compile(r"chase", re.IGNORECASE), "chase"),
-    (re.compile(r"bank[\s_-]*of[\s_-]*america|\bboa\b", re.IGNORECASE), "bank_of_america"),
+    (
+        re.compile(r"bank[\s_-]*of[\s_-]*america|\bboa\b", re.IGNORECASE),
+        "bank_of_america",
+    ),
     (re.compile(r"\bciti\b|citibank", re.IGNORECASE), "citi"),
     (re.compile(r"us[\s_-]*bank", re.IGNORECASE), "us_bank"),
     (re.compile(r"capital[\s_-]*one", re.IGNORECASE), "capital_one"),
@@ -1953,9 +1962,7 @@ class TestImportOFXBatchLifecycle:
         assert latest["status"] == "complete"
         assert latest["rows_imported"] == result.transactions
 
-    def test_reverting_ofx_batch_deletes_rows(
-        self, test_database: Database
-    ) -> None:
+    def test_reverting_ofx_batch_deletes_rows(self, test_database: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
         if not fixture.exists():
             pytest.skip("Sample OFX fixture missing")
@@ -2158,9 +2165,7 @@ def _import_ofx(
     )
     OFX_IMPORT_BATCHES.labels(status=status).inc()
     IMPORT_RECORDS_TOTAL.labels(source_type="ofx").inc(rows_imported)
-    IMPORT_DURATION_SECONDS.labels(source_type="ofx").observe(
-        time.monotonic() - _t0
-    )
+    IMPORT_DURATION_SECONDS.labels(source_type="ofx").observe(time.monotonic() - _t0)
 
     result.institutions = rows_loaded["institutions"]
     result.accounts = rows_loaded["accounts"]
@@ -2523,7 +2528,10 @@ def test_force_allows_reimport(tmp_path, runner):
     # Second import without --force fails
     result = runner.invoke(app, ["import", str(fixture)])
     assert result.exit_code != 0
-    assert "already imported" in result.stderr.lower() or "already imported" in result.stdout.lower()
+    assert (
+        "already imported" in result.stderr.lower()
+        or "already imported" in result.stdout.lower()
+    )
 
     # Second import with --force succeeds
     result = runner.invoke(app, ["import", str(fixture), "--force"])

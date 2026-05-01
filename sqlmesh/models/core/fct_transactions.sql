@@ -40,7 +40,7 @@ WITH enriched AS (
     t.source_extracted_at,
     COALESCE(bt_debit.transfer_id, bt_credit.transfer_id) AS transfer_pair_id,
     (
-      bt_debit.transfer_id IS NOT NULL OR bt_credit.transfer_id IS NOT NULL
+      NOT bt_debit.transfer_id IS NULL OR NOT bt_credit.transfer_id IS NULL
     ) AS is_transfer,
     t.loaded_at
   FROM prep.int_transactions__merged AS t

@@ -42,7 +42,10 @@ WITH active_matches AS (
     st,
     stid,
     aid
-), match_component AS (
+), match_component /* NOTE: This single-pass connected-component algorithm is correct only when
+   each transaction participates in at most one match (1:1 bipartite assignment).
+   The greedy matcher enforces this invariant. If multi-hop matches are added
+   (e.g., 3+ way merges), replace with a recursive CTE label-propagation. */ AS (
   SELECT
     am.match_id,
     LEAST(n1.initial_component, n2.initial_component) AS component
@@ -55,10 +58,6 @@ WITH active_matches AS (
     ON am.source_type_b = n2.st
     AND am.source_transaction_id_b = n2.stid
     AND am.account_id = n2.aid
-/* NOTE: This single-pass connected-component algorithm is correct only when
-   each transaction participates in at most one match (1:1 bipartite assignment).
-   The greedy matcher enforces this invariant. If multi-hop matches are added
-   (e.g., 3+ way merges), replace with a recursive CTE label-propagation. */
 ), match_groups AS (
   SELECT
     st AS source_type,
@@ -132,7 +131,7 @@ WITH active_matches AS (
 )
 SELECT
   CASE
-    WHEN gk.transaction_id IS NOT NULL
+    WHEN NOT gk.transaction_id IS NULL
     THEN gk.transaction_id
     ELSE SUBSTRING(
       SHA256(u.source_type || '|' || u.source_transaction_id || '|' || u.account_id),
