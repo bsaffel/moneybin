@@ -1,7 +1,7 @@
 # ADR-008: Upgrade FastMCP to 3.x
 
 ## Status
-proposed
+accepted
 
 ## Context
 

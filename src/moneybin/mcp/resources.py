@@ -157,7 +157,10 @@ async def resource_tools() -> str:
 
     # Use the unfiltered provider listing so hidden (extended-domain) tools
     # are still counted in their namespace summary.
-    tools = await mcp._list_tools()  # noqa: SLF001 — public API filters by visibility  # pyright: ignore[reportPrivateUsage]
+    # fastmcp 3.1.x internal — public list_tools() filters by visibility,
+    # which would hide extended-domain tools from this summary. Re-verify on
+    # any fastmcp version bump.
+    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
     # Group registered tools by namespace. ``moneybin.discover`` is the
     # meta-tool — tracked separately so it doesn't appear under "core".
