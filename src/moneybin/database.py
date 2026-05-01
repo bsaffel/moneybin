@@ -608,7 +608,6 @@ def sqlmesh_context(
     set_console(NoopConsole())
 
     root = sqlmesh_root or _SQLMESH_ROOT
-    db_path = get_settings().database.path
 
     # Reuse the singleton's connection — DuckDB only allows one
     # connection per file.  Callers must call get_database() first.
@@ -622,6 +621,9 @@ def sqlmesh_context(
             "re-open it first."
         )
     conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
+    # Use the singleton's actual path, not settings — during `profile create`
+    # the new profile isn't yet the active one, so get_settings() would fail.
+    db_path = _database_instance._db_path  # type: ignore[reportPrivateUsage]
 
     cache_key = str(db_path)
     try:
