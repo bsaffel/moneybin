@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from moneybin.database import Database
-from tests.scenarios._runner.loader import ExpectationSpec
 from moneybin.validation.expectations import (
     SourceTransactionRef,
     verify_category_for_transaction,
@@ -25,6 +24,7 @@ from moneybin.validation.expectations import (
     verify_transfers_match_ground_truth,
 )
 from moneybin.validation.result import ExpectationResult
+from tests.scenarios._runner.loader import ExpectationSpec
 
 ExpectationAdapter = Callable[[Database, ExpectationSpec], ExpectationResult]
 

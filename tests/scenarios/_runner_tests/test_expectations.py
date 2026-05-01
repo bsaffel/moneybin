@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from moneybin.validation.result import ExpectationResult
 from tests.scenarios._runner._expectation_registry import verify_expectations
 from tests.scenarios._runner.loader import ExpectationSpec
-from moneybin.validation.result import ExpectationResult
 
 
 def _mock_db(
