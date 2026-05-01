@@ -17,23 +17,37 @@ Today's import surface is path-based: `moneybin import file <path>` (CLI) and `i
 - **Discoverability.** A new user has no obvious place to put a downloaded statement. They reach for chat-attachment upload, which exposes the entire file to the LLM (and the host's logs/cache) before any tool ever runs. The current docs don't push them toward a private alternative because there isn't a particularly natural one.
 - **Batch flow.** Importing five files means typing five paths or five chat turns. There's no "drain everything new" gesture that matches how users already think about sync folders.
 
-This spec adds a filesystem-state-as-API convention: `~/MoneyBin/inbox/` for incoming files, `~/MoneyBin/processed/YYYY-MM/` for successful imports, `~/MoneyBin/failed/YYYY-MM/` for failures with structured error sidecars. A pull-style sync command drains it. The convention is forward-compatible with a local web UI (the browser visualizes folders directly) and with future interactive resolution (a question/answer protocol can be layered on top without changing the v1 surface).
+This spec adds a filesystem-state-as-API convention: `~/Documents/MoneyBin/<profile>/inbox/` for incoming files, `~/Documents/MoneyBin/<profile>/processed/YYYY-MM/` for successful imports, `~/Documents/MoneyBin/<profile>/failed/YYYY-MM/` for failures with structured error sidecars. A pull-style sync command drains it. The convention is forward-compatible with a local web UI (the browser visualizes folders directly) and with future interactive resolution (a question/answer protocol can be layered on top without changing the v1 surface).
+
+### Two homes, two jobs
+
+MoneyBin already has an app-data home at `~/.moneybin/` (database, keys, logs, profiles per `config.py`). This spec deliberately introduces a *second*, visible home for user-facing files. The split is intentional and matches the modern professional convention used by Obsidian, paperless-ngx, Logseq, Hazel, Plex, and others:
+
+| Concern | Location | Visibility | Job |
+|---|---|---|---|
+| App-internal state | `~/.moneybin/` (today) | Hidden | "Don't touch this." Database, encryption keys, logs, profile metadata. |
+| User-facing workspace | `~/Documents/MoneyBin/<profile>/` (this spec) | Visible | "This is yours." Inbox, processed history, failed-import sidecars, future exports/backups/reports. |
+
+Hiding the inbox would defeat its purpose — users need to find it in Finder/Explorer to drop files into it. Putting app state in a visible folder would invite accidental modification of the database. The two homes serve genuinely different audiences (app vs. user) and should stay separate.
+
+The existing `~/.moneybin/` location is the older Unix dotdir form of platform conventions. A future migration to `platformdirs.user_data_dir("MoneyBin")` (which gives `~/Library/Application Support/MoneyBin/` on macOS, `$XDG_DATA_HOME/moneybin/` on Linux, `%LOCALAPPDATA%\MoneyBin\` on Windows) is out of scope here but worth noting as the eventual destination for app state. This spec does not touch `~/.moneybin/`.
 
 ## Requirements
 
 ### Functional
 
-1. **Inbox layout.** A configured parent directory (default `~/MoneyBin/`) contains three siblings: `inbox/`, `processed/`, `failed/`. The three are conventions inside the parent, not separately configurable.
+1. **Inbox layout.** A configured root directory (default `~/Documents/MoneyBin/`) contains one subdirectory per profile. Each profile subdirectory contains three siblings: `inbox/`, `processed/`, `failed/`. The trio are conventions inside each profile dir, not separately configurable. Default full path for the active profile is `<inbox_root>/<profile>/{inbox,processed,failed}/`.
+   - **Per-profile isolation.** All inbox operations act on the active profile's subdirectory only. Cross-profile imports are not silently possible — switching profiles (via `--profile` flag or `MoneyBinSettings.profile`) switches which inbox is drained. This mirrors the existing `~/.moneybin/profiles/<profile>/` isolation for app state.
 2. **Auto-create.** All three directories are created on first call to any inbox CLI command or MCP tool. Missing directories are not an error condition; they are reified.
 3. **File permissions.** Inbox parent and all three subdirectories are created with mode `0700` (owner read/write/execute only), matching the database-file posture defined by `privacy-data-protection.md`.
 4. **Account-by-subfolder.** A file located at `inbox/<account-slug>/<filename>` is imported with `account_name=<account-slug>` (slug fed through the existing fuzzy resolver in `ImportService`). A file in the `inbox/` root is imported with no account hint and relies on auto-detection (OFX, multi-account CSVs, etc.).
 5. **Drain semantics.** A successful import moves the file to `processed/YYYY-MM/<original-filename>`. A failed import moves the file to `failed/YYYY-MM/<original-filename>` and writes a sidecar `<original-filename>.error.yml` with structured error details. Filename collisions in destination directories are resolved by appending a numeric suffix (`-1`, `-2`, …) before the extension.
 6. **Error sidecar contract.** Failure sidecars are YAML with at least these fields: `error_code` (machine-readable identifier), `stage` (which import stage failed), `message` (human-readable summary), `suggestion` (when applicable, what the user can do next), and structured hints relevant to the error (e.g., `available_accounts` for `needs_account_name`).
 7. **Idempotent re-runs.** Re-running sync over an empty inbox is a no-op success. Re-importing an already-processed file (user copies it back into inbox) is handled by the existing content-hash dedup; the file moves to `processed/` again with a numeric suffix and the import is recorded as a duplicate (zero new transactions).
-8. **Concurrency safety.** Sync acquires an exclusive lockfile at `<inbox_path>/.inbox.lock`. A second concurrent sync returns `inbox_busy` immediately rather than queuing.
+8. **Concurrency safety.** Sync acquires an exclusive lockfile at `<inbox_root>/<profile>/.inbox.lock` (per-profile lock; concurrent syncs across different profiles are allowed). A second concurrent sync of the same profile returns `inbox_busy` immediately rather than queuing.
 9. **Atomic file movement.** Each file is processed in three filesystem steps: source → staging path inside the destination directory → final destination. Movement uses `os.rename` (atomic on the same filesystem). A crash mid-import leaves the file either in `inbox/` (not yet moved), in a discoverable `staging-*` path inside `processed/` or `failed/`, or at its final destination — never partially written or duplicated. A startup recovery pass (run at the start of every sync) cleans up stale `staging-*` entries by reverting them to `inbox/`.
 10. **Out-of-scope on inbox/processed/failed boundaries.** Sync only acts on regular files directly inside `inbox/` (root) or directly inside `inbox/<single-subfolder>/`. Nested subfolders deeper than one level, symlinks, and hidden files (starting with `.`) are skipped with an `ignored` entry in the response. This rules out sync recursing into `processed/`, `failed/`, or accidentally following a symlink out of the home directory.
-11. **CLI surface.** `moneybin import inbox` drains. `moneybin import inbox list` previews without moving. `moneybin import inbox path` prints the configured inbox parent. All three live under the existing `import` group per `cli-restructure.md`.
+11. **CLI surface.** `moneybin import inbox` drains the active profile's inbox. `moneybin import inbox list` previews without moving. `moneybin import inbox path` prints the active profile's inbox parent (`<inbox_root>/<profile>/`). All three live under the existing `import` group per `cli-restructure.md` and respect the global `--profile` flag.
 12. **MCP surface.** `import.inbox_sync` drains. `import.inbox_list` previews. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
 
 ### Non-Functional
@@ -66,7 +80,7 @@ Existing tables touched indirectly via `ImportService`:
 
 ### Files to Modify
 
-- `src/moneybin/config.py` — add `ImportSettings` submodel with `inbox_path: Path = Path.home() / "MoneyBin"`. Wire into `MoneyBinSettings`.
+- `src/moneybin/config.py` — add `ImportSettings` submodel with `inbox_root: Path = Path.home() / "Documents" / "MoneyBin"`. Wire into `MoneyBinSettings`. The active-profile inbox path (`<inbox_root>/<profile>/`) is derived at access time, not stored, so a profile switch picks up the new path without restart.
 - `src/moneybin/cli/import_.py` (or wherever the `import` group lives) — register the new subcommands.
 - `src/moneybin/mcp/_registration.py` — register the two new tools.
 - `src/moneybin/metrics/registry.py` — add the two new metrics.
@@ -75,7 +89,8 @@ Existing tables touched indirectly via `ImportService`:
 
 ### Key Decisions
 
-- **Why parent-dir config, not three separate dirs.** Configuring `inbox_path` as the parent and deriving `inbox/`, `processed/`, `failed/` from it keeps the surface tiny. A user who wants to relocate moves one setting, not three. The trio always travels together because the lifecycle of a file requires all three.
+- **Why root-dir config, not per-profile dirs.** Configuring `inbox_root` and deriving `<profile>/{inbox,processed,failed}/` keeps the surface tiny. A user who wants to relocate moves one setting, not three-times-N-profiles. The trio always travels together because the lifecycle of a file requires all three; profile dirs always travel together with the root because they share the same "user-facing workspace" purpose.
+- **Why per-profile subdirs, not a shared inbox with a sync flag.** A shared inbox with `--profile` selecting the destination is the dangerous variant: drop a business statement into the inbox, forget the active profile, sync runs against `personal`, file lands in the wrong DB. Per-profile subdirs make the destination visible at file-drop time. They also mirror the existing `~/.moneybin/profiles/<profile>/` isolation for app state — same mental model on both sides.
 - **Why YAML sidecars (vs. JSON or DB rows).** Sidecars need to be human-readable, hand-editable in a pinch, and discoverable from the filesystem alone. YAML matches the rest of the project's user-facing structured data (test fixtures, format definitions). DB rows would require sync to be the only path that learns about failures — bad for forward-compat with a web UI that wants to render `failed/` directly.
 - **Why atomic-rename with a staging pass.** `os.rename` is the only widely portable atomic filesystem operation, and a crash is otherwise indistinguishable from "import in progress" when scanning. The recovery pass at sync start ("any `staging-*` entries? move them back to inbox") makes the recovery model explicit.
 - **Why `0700` permissions.** Inbox files are about to become database rows that are encrypted at rest. Anything weaker on the staging directory would be the weakest link.
@@ -97,6 +112,7 @@ Example session:
 
 ```text
 $ cp ~/Downloads/chase-april-2026.csv $(moneybin import inbox path)/inbox/chase-checking/
+# (path resolves to ~/Documents/MoneyBin/<active-profile>/)
 $ moneybin import inbox
 ✓ chase-checking/chase-april-2026.csv  →  imported (47 transactions)
 Done: 1 imported, 0 failed.
