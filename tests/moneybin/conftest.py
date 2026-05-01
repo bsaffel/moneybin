@@ -72,15 +72,22 @@ def clean_profile_state() -> Generator[None, None, None]:
     - Runs for every test automatically (autouse=True)
     - Clears the settings cache to prevent test pollution
     - Resets current profile to 'test'
+    - Resets the module-level ``_CLIFlags`` singleton in ``cli.utils`` so
+      a stale ``--profile`` value from one test cannot leak into the
+      next via ``resolve_profile()``.
 
     This ensures tests are isolated and don't affect each other.
 
     For profile directory cleanup, use the temp_profile() context manager.
     """
+    from moneybin.cli import utils as cli_utils
+
     # Setup: clean state before test
     register_profile_resolver(None)
     clear_settings_cache()
     set_current_profile("test")
+    cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
+    cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
 
     # Yield to run the test
     yield
@@ -89,6 +96,8 @@ def clean_profile_state() -> Generator[None, None, None]:
     register_profile_resolver(None)
     clear_settings_cache()
     set_current_profile("test")
+    cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
+    cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.fixture()

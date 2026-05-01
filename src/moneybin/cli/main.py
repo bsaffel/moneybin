@@ -8,6 +8,7 @@ db, mcp.
 import logging
 import os
 import sys
+import warnings
 from typing import Annotated
 
 import typer
@@ -107,11 +108,32 @@ def main_callback(
     # ``get_current_profile``, so docker-style usage errors (``moneybin logs``
     # with no stream) and ``--help`` never trigger it.
     #
-    # `--help`/`-h` anywhere in argv ALSO bypasses eager resolution. Help text
-    # is documentation and must remain side-effect free even when
-    # `MONEYBIN_PROFILE` points to a deleted profile (which would otherwise
-    # surface a dir-check error before `--help` could render).
-    help_requested = any(arg in {"--help", "-h"} for arg in sys.argv[1:])
+    # `--help`/`-h` anywhere in the unparsed-remainder ALSO bypasses eager
+    # resolution. Help text is documentation and must remain side-effect
+    # free even when `MONEYBIN_PROFILE` points to a deleted profile (which
+    # would otherwise surface a dir-check error before `--help` could
+    # render).
+    #
+    # Source the unparsed args from Click's context (`protected_args` +
+    # `args` is everything Click has not yet consumed at root-callback
+    # time, including the subcommand chain) and fall back to `sys.argv`
+    # for safety. Reading from `ctx` is the right primitive for
+    # programmatic invocations like `app(args=[...])` where `sys.argv`
+    # reflects the host process, not the command being parsed.
+    with warnings.catch_warnings():
+        # Click 8 splits unparsed tokens between `protected_args` (subcommand
+        # chain) and `args` (everything after); Click 9 unifies them onto
+        # `args`. Read both for now and silence the transitional warning.
+        warnings.filterwarnings(
+            "ignore",
+            message=".*protected_args.*",
+            category=DeprecationWarning,
+        )
+        remainder: list[str] = list(ctx.protected_args) + list(ctx.args)
+    help_tokens = {"--help", "-h"}
+    help_requested = any(arg in help_tokens for arg in remainder) or any(
+        arg in help_tokens for arg in sys.argv[1:]
+    )
 
     if explicit and not help_requested:
         resolve_profile()

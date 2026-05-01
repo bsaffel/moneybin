@@ -268,7 +268,7 @@ class TestAutoRulePipeline:
             "SELECT transaction_id FROM core.fct_transactions "
             "WHERE description ILIKE '%COFFEE SHOP%' AND account_id = 'wf-autorule-acct-a' "
             "LIMIT 1",
-            "--format",
+            "--output",
             "csv",
             env=env,
         )

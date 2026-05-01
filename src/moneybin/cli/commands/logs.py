@@ -160,16 +160,20 @@ def _parse_time_bound(value: str) -> datetime:
     except ValueError:
         pass
     try:
-        # Strip tzinfo so comparisons against naive log-timestamp datetimes
-        # don't raise. `--since 2026-04-01T00:00:00+00:00` would otherwise
-        # produce a tz-aware datetime that can't be compared to the naive
-        # datetimes parsed out of log lines.
-        return datetime.fromisoformat(value.rstrip("Z")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(value.rstrip("Z"))
     except ValueError as e:
         raise ValueError(
             f"--since/--until must be a duration (5m, 1h, 7d) "
             f"or ISO-8601 timestamp; got '{value}'"
         ) from e
+    if parsed.tzinfo is not None:
+        # Convert tz-aware input to naive local time so comparisons against
+        # the naive datetimes parsed out of log lines (which are written in
+        # local time by `SanitizedLogFormatter`) reference the same instant.
+        # Naive stripping (`.replace(tzinfo=None)`) would silently drop the
+        # offset and shift the cutoff by the offset's magnitude.
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 
 def _do_prune(log_dir: Path, older_than: str, *, dry_run: bool, quiet: bool) -> None:
@@ -420,16 +424,17 @@ def logs_command(
         return
 
     if prune:
-        # older_than presence enforced above
-        _do_prune(log_dir, older_than or "", dry_run=dry_run, quiet=quiet)
+        # older_than presence enforced by guard above; type narrows here.
+        assert older_than is not None  # noqa: S101 — type-narrowing aid
+        _do_prune(log_dir, older_than, dry_run=dry_run, quiet=quiet)
         return
 
-    # stream presence and validity enforced above
-    stream_value = (stream or "").lower()
+    # stream presence and validity enforced by guards above; type narrows here.
+    assert stream is not None  # noqa: S101 — type-narrowing aid
 
     _do_view(
         log_dir=log_dir,
-        stream=stream_value,
+        stream=stream.lower(),
         follow=follow,
         lines=lines,
         level=level,

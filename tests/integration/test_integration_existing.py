@@ -273,7 +273,7 @@ class TestKeyRotation:
         db.close()
 
         # Rotate key
-        result = runner.invoke(app, ["rotate-key", "--yes"])
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
         assert result.exit_code == 0, result.output
 
         # Key should have changed
@@ -337,7 +337,7 @@ class TestQueryFormatFlag:
             lambda _name: "/usr/local/bin/duckdb",  # type: ignore[reportUnknownLambdaType]
         )
 
-        result = runner.invoke(app, ["query", "SELECT 1", "--format", "json"])
+        result = runner.invoke(app, ["query", "SELECT 1", "--output", "json"])
         assert result.exit_code == 0, result.output
 
         # Verify ordering: -json must come before -c

@@ -671,15 +671,22 @@ def import_status(
         if output == "json":
             typer.echo(
                 json.dumps(
-                    {"database": str(db_path), "tables": [], "exists": False},
+                    {
+                        "database": str(db_path),
+                        "tables": [],
+                        "exists": False,
+                        "error": "database not found",
+                    },
                     indent=2,
                     default=str,
                 )
             )
-            return
-        if not quiet:
+        elif not quiet:
             logger.warning(f"Database not found: {db_path}")
             logger.info("Run 'moneybin import file <path>' to import data first.")
+        # Both modes exit non-zero so machine consumers can detect missing/
+        # uninitialized state. The JSON payload carries the same signal as
+        # the human warning; the exit code carries it for scripts.
         raise typer.Exit(1)
 
     try:

@@ -25,6 +25,8 @@ _READ_ONLY_HELP_PATHS: list[list[str]] = [
     ["import", "formats", "show", "--help"],
     ["categorize", "summary", "--help"],
     ["categorize", "auto", "stats", "--help"],
+    ["categorize", "auto", "review", "--help"],
+    ["categorize", "auto", "rules", "--help"],
     ["categorize", "list-rules", "--help"],
     ["sync", "status", "--help"],
     ["profile", "list", "--help"],

@@ -149,6 +149,7 @@ def list_rules_cmd(
 @auto_app.command("review")
 def auto_review_cmd(
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -164,14 +165,16 @@ def auto_review_cmd(
 
     proposals = result.proposals
     if output == "json":
-        typer.echo(json.dumps(result.to_envelope().to_dict()))
+        typer.echo(json.dumps(result.to_envelope().to_dict(), indent=2))
         return
 
     if not proposals:
-        logger.info("No pending auto-rule proposals.")
+        if not quiet:
+            logger.info("No pending auto-rule proposals.")
         return
 
-    logger.info("👀 Pending auto-rule proposals:")
+    if not quiet:
+        logger.info("👀 Pending auto-rule proposals:")
     for p in proposals:
         sub = f" / {p['subcategory']}" if p["subcategory"] else ""
         samples = cast(list[str], p["sample_txn_ids"])
@@ -181,7 +184,7 @@ def auto_review_cmd(
             f"({p['match_type']}) -> {p['category']}{sub} "
             f"(×{p['trigger_count']}){sample_str}"
         )
-    if result.total_count > len(proposals):
+    if not quiet and result.total_count > len(proposals):
         logger.info(
             f"💡 Showing {len(proposals)} of {result.total_count} pending proposals "
             f"— increase --limit to see more"
@@ -359,6 +362,8 @@ def bulk_cmd(
 
 @auto_app.command("rules")
 def auto_rules_cmd(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -374,11 +379,17 @@ def auto_rules_cmd(
         rules = svc.list_active_rules(limit=limit)
         total = svc.count_active_rules()
 
-    if not rules:
-        logger.info("No active auto-rules.")
+    if output == "json":
+        emit_json("rules", {"rules": rules, "total": total})
         return
 
-    logger.info("Active auto-rules:")
+    if not rules:
+        if not quiet:
+            logger.info("No active auto-rules.")
+        return
+
+    if not quiet:
+        logger.info("Active auto-rules:")
     for r in rules:
         sub = f" / {r['subcategory']}" if r["subcategory"] else ""
         logger.info(
@@ -386,7 +397,7 @@ def auto_rules_cmd(
             f"({r['match_type']}) -> {r['category']}{sub} "
             f"(priority: {r['priority']})"
         )
-    if total > len(rules):
+    if not quiet and total > len(rules):
         logger.info(
             f"💡 Showing {len(rules)} of {total} active auto-rules "
             f"— increase --limit to see more"
