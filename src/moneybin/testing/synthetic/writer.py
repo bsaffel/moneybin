@@ -17,6 +17,7 @@ import polars as pl
 
 from moneybin.database import Database
 from moneybin.tables import GROUND_TRUTH
+from moneybin.testing.synthetic.category_mapping import to_canonical
 from moneybin.testing.synthetic.models import (
     GeneratedAccount,
     GeneratedTransaction,
@@ -263,7 +264,7 @@ class SyntheticWriter:
             rows.append({
                 "source_transaction_id": txn.transaction_id,
                 "account_id": acct.account_id,
-                "expected_category": txn.category,
+                "expected_category": to_canonical(txn.category),
                 "transfer_pair_id": txn.transfer_pair_id,
                 "persona": result.persona,
                 "seed": result.seed,

@@ -73,9 +73,7 @@ def test_resolve_account_via_matcher_uses_existing_id_on_match(
 ) -> None:
     """Matched account name → reuses the existing account_id."""
     from moneybin.database import Database
-    from moneybin.services.import_service import (
-        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
-    )
+    from moneybin.services.import_service import ImportService
 
     db = Database(
         tmp_path / "match.duckdb",
@@ -92,8 +90,7 @@ def test_resolve_account_via_matcher_uses_existing_id_on_match(
             ('chase-checking', 'Chase Checking', NULL, NULL, NULL, NULL, NULL,
              'old.csv', 'csv', 'chase', 'imp1')
         """)
-        aid = _resolve_account_via_matcher(
-            db,
+        aid = ImportService(db)._resolve_account_via_matcher(  # type: ignore[reportPrivateUsage]
             account_name="Chase Checking",
             account_number=None,
             threshold=0.6,
@@ -109,9 +106,7 @@ def test_resolve_account_via_matcher_creates_new_when_no_candidates(
 ) -> None:
     """No fuzzy candidates → fall back to slugify (creates a new account)."""
     from moneybin.database import Database
-    from moneybin.services.import_service import (
-        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
-    )
+    from moneybin.services.import_service import ImportService
 
     db = Database(
         tmp_path / "new.duckdb",
@@ -123,8 +118,7 @@ def test_resolve_account_via_matcher_creates_new_when_no_candidates(
         # not the except-Exception fallback.
         row = db.execute("SELECT COUNT(*) FROM raw.tabular_accounts").fetchone()
         assert row is not None and row[0] == 0
-        aid = _resolve_account_via_matcher(
-            db,
+        aid = ImportService(db)._resolve_account_via_matcher(  # type: ignore[reportPrivateUsage]
             account_name="Brand New Account",
             account_number=None,
             threshold=0.6,
@@ -140,9 +134,7 @@ def test_resolve_account_via_matcher_auto_accepts_top_candidate(
 ) -> None:
     """With auto_accept=True, a fuzzy candidate is taken without prompting."""
     from moneybin.database import Database
-    from moneybin.services.import_service import (
-        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
-    )
+    from moneybin.services.import_service import ImportService
 
     db = Database(
         tmp_path / "fuzzy.duckdb",
@@ -160,8 +152,7 @@ def test_resolve_account_via_matcher_auto_accepts_top_candidate(
              'old.csv', 'csv', 'chase', 'imp1')
         """)
         with caplog.at_level("INFO"):
-            aid = _resolve_account_via_matcher(
-                db,
+            aid = ImportService(db)._resolve_account_via_matcher(  # type: ignore[reportPrivateUsage]
                 account_name="Chase Checking",
                 account_number=None,
                 threshold=0.6,
@@ -178,9 +169,7 @@ def test_resolve_account_via_matcher_warns_and_falls_back_when_not_auto(
 ) -> None:
     """Without auto_accept, fuzzy candidates trigger a warning + slugify fallback."""
     from moneybin.database import Database
-    from moneybin.services.import_service import (
-        _resolve_account_via_matcher,  # type: ignore[reportPrivateUsage]
-    )
+    from moneybin.services.import_service import ImportService
 
     db = Database(
         tmp_path / "fuzzy2.duckdb",
@@ -198,8 +187,7 @@ def test_resolve_account_via_matcher_warns_and_falls_back_when_not_auto(
              'old.csv', 'csv', 'chase', 'imp1')
         """)
         with caplog.at_level("WARNING"):
-            aid = _resolve_account_via_matcher(
-                db,
+            aid = ImportService(db)._resolve_account_via_matcher(  # type: ignore[reportPrivateUsage]
                 account_name="Chase Checking",
                 account_number=None,
                 threshold=0.6,

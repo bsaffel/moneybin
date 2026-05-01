@@ -45,6 +45,7 @@ from moneybin.services.categorization_service import (
     CategorizationService,
     MatchType,
     SeedResult,
+    validate_bulk_items,
 )
 from moneybin.tables import (
     CATEGORIES,
@@ -309,7 +310,9 @@ def categorize_bulk(
             applied=0, skipped=0, errors=0, error_details=[]
         ).to_envelope(0)
 
-    result = CategorizationService(get_database()).bulk_categorize(items)
+    validated, parse_errors = validate_bulk_items(items)
+    result = CategorizationService(get_database()).bulk_categorize(validated)
+    result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(items))
 
 

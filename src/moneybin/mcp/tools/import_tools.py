@@ -72,15 +72,14 @@ def import_file(
         institution: Institution name (OFX only).
         format_name: Use a specific named format (bypass auto-detection).
     """
-    from moneybin.services.import_service import import_file as run_import
+    from moneybin.services.import_service import ImportService
 
     validated = _validate_file_path(file_path)
     if isinstance(validated, ResponseEnvelope):
         return validated
 
     try:
-        result = run_import(
-            get_database(),
+        result = ImportService(get_database()).import_file(
             str(validated),
             account_id=account_id,
             account_name=account_name,

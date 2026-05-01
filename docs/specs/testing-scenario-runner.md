@@ -1,14 +1,14 @@
 # Feature: Testing Scenario Runner
 
 > Last updated: 2026-04-26
-> Status: draft
+> Status: implemented
 > Type: Feature
 > Parent: [`testing-overview.md`](testing-overview.md)
 > Companions: [`testing-synthetic-data.md`](testing-synthetic-data.md) (consumed for personas + ground truth), [`e2e-testing.md`](e2e-testing.md) (peer test layer), [`mcp-architecture.md`](mcp-architecture.md) §4 (`ResponseEnvelope` shape), [`database-migration.md`](database-migration.md), [`privacy-data-protection.md`](privacy-data-protection.md), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Status
 
-draft
+implemented (shipped 2026-04-26)
 
 ## Goal
 
@@ -73,7 +73,7 @@ The SQLMesh-catalog bug is one symptom, not the thesis. The runner exists for th
 5. Each scenario run uses a fresh encrypted DuckDB in a temp directory. The user's profiles are never touched.
 6. Pipeline steps execute in declared order. Each step is responsible for leaving core in a consistent materialized state when it completes.
 7. The default pipeline is `generate → transform → match → categorize`. Scenarios may override the sequence — e.g., `migration-roundtrip` inserts `migrate` between `transform` and `match`.
-8. Steps execute in-process via the service layer (e.g., `CategorizationService.bulk_categorize()`, `MatchingService.run()`, `sqlmesh_context()`), not as subprocesses. The runner imports and calls them directly against the temp `Database`.
+8. Steps execute in-process via the service layer (e.g., `CategorizationService.bulk_categorize()`, `MatchingService.run()`, `sqlmesh_context()`), not as subprocesses. The runner imports and calls service classes directly against the temp `Database` — the same entrypoints the CLI and MCP tools use.
 9. Specific assertions may shell out to subprocesses when verifying cross-process invariants (e.g., encryption key propagation). This is per-assertion, not per-scenario.
 10. Assertions run after the pipeline completes. Each assertion returns a structured `AssertionResult(name, passed, details)` — never a bare bool.
 11. Evaluations run after assertions. Each evaluation returns an `EvaluationResult(name, metric, value, threshold, passed)`. Threshold gating is per-scenario.
@@ -292,8 +292,8 @@ Step names map to in-process callables registered in `src/moneybin/testing/scena
 | `generate` | `GeneratorEngine(persona, seed, years).run()` writing into the temp `Database` |
 | `load_fixtures` | Reads each `setup.fixtures[]` entry; calls the appropriate extractor; writes via `Database.ingest_dataframe()` |
 | `transform` | `with sqlmesh_context() as ctx: ctx.run()` against the temp DB |
-| `match` | `MatchingService(db).run_dedup_and_transfers()` |
-| `categorize` | `CategorizationService(db).bulk_categorize_uncategorized()` then `apply_pending_auto_rules()` if scenario requires |
+| `match` | `MatchingService(db, settings).run()` — runs same-record dedup (Tier 2b/3) and transfer detection (Tier 4) in one pass; thin wrapper around the existing `TransactionMatcher` primitive in `src/moneybin/matching/`. See §"Service-layer prerequisites." |
+| `categorize` | `CategorizationService(db).bulk_categorize_uncategorized()`; followed by `apply_pending_auto_rules()` once `categorization-auto-rules.md` ships. The categorization service class is introduced as part of `categorization-auto-rules.md` implementation. |
 | `migrate` | `MigrationRunner(db).run()` against an explicitly-set target version |
 | `transform_via_subprocess` | Shells out to `uv run moneybin transform apply` with the temp profile env |
 
@@ -458,7 +458,35 @@ Scenarios may declare `expectations:` — a list of facts about specific transac
 
 ### Fixture file format
 
-Fixture files live under `tests/fixtures/` per `testing-csv-fixtures.md` (planned). Each fixture row that participates in an expectation has a stable `source_transaction_id` so the YAML expectation can reference it. Fixture metadata (e.g., "this CSV contains 3 rows that overlap 3 OFX rows") lives in a sibling `.expectations.json` file owned by the fixture library spec; the runner reads that metadata when an expectation declares `from_fixture_metadata`.
+Fixture files live under `tests/fixtures/` per `testing-csv-fixtures.md` (planned). Each fixture row that participates in an expectation has a stable `source_transaction_id` so the scenario YAML can reference it.
+
+Fixture-side metadata (e.g., "this CSV contains 3 rows that overlap 3 OFX rows") lives in a sibling **`<fixture>.expectations.yaml`** file. This spec owns the schema; `testing-csv-fixtures.md` owns fixture content and curation. YAML over JSON because these files are hand-authored, support inline comments, match the existing `testing/synthetic/personas/*.yaml` convention, and are the planned contribution unit for community-submitted bug-report fixtures (anonymized export + expected behavior in a reviewable format).
+
+#### Minimum viable `.expectations.yaml` schema (v1)
+
+```yaml
+# Fixture-level metadata. The scenario YAML pulls from this file when an
+# expectation references a value derived from the fixture rather than declared
+# inline (e.g., `base_count: from_fixture_metadata`).
+fixture: chase_amazon_overlap.csv
+description: "Three Amazon-card rows that intentionally duplicate Chase OFX entries"
+
+# Total row count in the fixture file. Used by gold_record_count expectations
+# to compute expected post-dedup counts.
+row_count: 47
+
+# Rows in this fixture that are deliberate overlaps with synthetic-generated
+# data. Each entry pins down the expected matching behavior.
+labeled_overlaps:
+  - source_transaction_id: TBL_2024-03-15_AMZN_47.99
+    overlaps_with:
+      - source_transaction_id: SYN20240315001
+        source_type: ofx
+    expected_match_type: same_record
+    expected_confidence_min: 0.9
+```
+
+The Pydantic model lives in `src/moneybin/testing/scenarios/loader.py` alongside the scenario models. Loader rejects unknown top-level keys so future fields fail loudly rather than silently being ignored.
 
 ## Database isolation
 
@@ -551,7 +579,7 @@ Per `.claude/rules/cli.md`, every flag is sufficient on its own. No interactive 
 
 ## Representative scenarios for v1
 
-Seven scenarios ship with the runner. Each maps to one or more failure modes from §"Concrete failure modes."
+Six scenarios ship with the runner. Each maps to one or more failure modes from §"Concrete failure modes." (`categorization-priority-hierarchy` is deferred — see `docs/followups.md`.)
 
 | # | Scenario | Persona | Seed | Catches | Mode |
 |---|---|---|---|---|---|
@@ -620,7 +648,16 @@ Per `e2e-testing.md`, every CLI command needs an E2E test. The new `--list`, `--
 
 ### CI gating
 
-The full scenario suite (`moneybin synthetic verify --all`) runs on PRs and main. A failing scenario is a blocking signal — the diff broke whole-pipeline correctness in a way that other layers missed.
+The full scenario suite (`moneybin synthetic verify --all`) runs on PRs and main as a **separate GitHub Actions workflow** (`.github/workflows/scenarios.yml`), distinct from `ci.yml` (lint/type-check/unit/integration/E2E). The two workflows run in parallel: total PR feedback time is `max(ci, scenarios)`, not `ci + scenarios`.
+
+- Branch protection requires both `ci` and `scenarios` checks to pass before merge.
+- A failing scenario is a blocking signal — the diff broke whole-pipeline correctness in a way that other layers missed.
+- `scenarios.yml` uses `concurrency` with `cancel-in-progress: true` so superseded runs on the same branch don't pile up.
+- Skip conditions: a `paths-ignore` filter for docs-only changes (`docs/**`, `*.md`) keeps the scenario suite from running on doc PRs. Spec changes still trigger a run because spec files inform scenario authoring.
+
+#### Runtime budget
+
+`--all` against six scenarios on the family persona at 3 years is estimated at 2–5 min wall-clock. This is acceptable for v1 PR gating because it overlaps with `ci.yml`. The runner does not enforce a hard timeout in v1; instead, `--all` prints a per-scenario duration summary at the end of the run so drift is visible. The summary uses `data.duration_seconds` from each scenario's `ResponseEnvelope`. Promote to a hard gate (`assert_completes_within` on `--all`) when the suite grows past the budget.
 
 ## Data Model
 
@@ -631,6 +668,38 @@ No new schemas. The runner reads from existing tables:
 - `meta.fct_transaction_provenance` — provenance assertions
 - `app.match_decisions`, `app.transaction_categories` — match and categorization state
 - `app.versions` — migration head check
+
+## Service-layer prerequisites
+
+The runner orchestrates scenarios through the service layer at `src/moneybin/services/`. Two service classes need to exist for the pipeline step registry to be uniform:
+
+### `MatchingService` (introduced by this spec)
+
+A thin wrapper at `src/moneybin/services/matching_service.py`:
+
+```python
+class MatchingService:
+    def __init__(self, db: Database, settings: MatchingSettings | None = None) -> None:
+        self._db = db
+        self._settings = settings or get_settings().matching
+
+    def run(self) -> MatchResult:
+        """Run same-record dedup (Tier 2b/3) and transfer detection (Tier 4)."""
+        return TransactionMatcher(self._db, self._settings).run()
+```
+
+The wrapper exists so:
+- The scenario runner step registry references service classes uniformly with `CategorizationService`, `TransactionService`, etc.
+- Future MCP matching tools (when `mcp-tool-surface.md` adds them) call the service rather than the raw primitive.
+- The CLI (`cli/commands/matches.py`) migrates to `MatchingService(db).run()` at the same time, eliminating direct `TransactionMatcher` imports outside the service layer.
+
+This is in scope for the scenario-runner implementation plan.
+
+### `CategorizationService` (introduced by `categorization-auto-rules.md`)
+
+The categorization auto-rules implementation plan promotes the existing module-level functions in `src/moneybin/services/categorization_service.py` to a `CategorizationService` class with at minimum `bulk_categorize_uncategorized()` and `apply_pending_auto_rules()` methods. The scenario runner consumes the resulting class; this spec does not own its design.
+
+If the categorization plan ships first, the runner uses the class from day one. If the runner ships first, the `categorize` step temporarily calls `bulk_categorize(db, ...)` directly and migrates to the class when it lands. Either ordering works; the scenario YAML format does not change.
 
 ## Implementation Plan
 
@@ -648,14 +717,17 @@ No new schemas. The runner reads from existing tables:
 | `src/moneybin/validation/evaluations/__init__.py` | Re-exports |
 | `src/moneybin/validation/evaluations/categorization.py` | `score_categorization` |
 | `src/moneybin/validation/evaluations/matching.py` | `score_transfer_detection`, `score_dedup` |
+| `src/moneybin/services/matching_service.py` | `MatchingService` thin wrapper class — see §"Service-layer prerequisites" |
+| `tests/moneybin/test_services/test_matching_service.py` | Unit tests for the new service wrapper |
 | `src/moneybin/testing/scenarios/__init__.py` | Package init |
 | `src/moneybin/testing/scenarios/loader.py` | Pydantic models, YAML loader |
 | `src/moneybin/testing/scenarios/runner.py` | Orchestrator |
 | `src/moneybin/testing/scenarios/steps.py` | Pipeline step registry |
 | `src/moneybin/testing/scenarios/expectations.py` | Expectation kinds and verifiers |
-| `src/moneybin/testing/scenarios/data/*.yaml` | Seven shipped scenarios |
+| `src/moneybin/testing/scenarios/data/*.yaml` | Six shipped scenarios |
 | `tests/fixtures/dedup/chase_amazon_overlap.csv` | Hand-labeled overlap fixture |
-| `tests/fixtures/dedup/chase_amazon_overlap.expectations.json` | Fixture metadata |
+| `tests/fixtures/dedup/chase_amazon_overlap.expectations.yaml` | Fixture metadata (schema defined in this spec; see §"Fixture file format") |
+| `.github/workflows/scenarios.yml` | Parallel CI workflow running `moneybin synthetic verify --all` |
 | `tests/moneybin/test_validation/test_assertions_*.py` | Unit tests per assertion category |
 | `tests/moneybin/test_validation/test_evaluations.py` | Unit tests for evaluations |
 | `tests/integration/test_scenario_runner.py` | Integration tests for the runner |
@@ -689,8 +761,8 @@ No new schemas. The runner reads from existing tables:
 | Synthetic data generator (`testing-synthetic-data.md`) | ✅ Shipped | Personas, deterministic seeding, `synthetic.ground_truth` |
 | `Database` / `sqlmesh_context()` | ✅ Shipped | Encryption, schema init, encrypted SQLMesh adapter |
 | `ResponseEnvelope` (`mcp/envelope.py`) | ✅ Shipped | Result shape |
-| `MatchingService` | ✅ Shipped | In-process pipeline step |
-| `CategorizationService` | ✅ Shipped | In-process pipeline step |
+| `MatchingService` | Created as part of this spec | Thin wrapper at `src/moneybin/services/matching_service.py` over the existing `TransactionMatcher` primitive. See §"Service-layer prerequisites." |
+| `CategorizationService` | Created in `categorization-auto-rules.md` | Class wrapper around the existing `bulk_categorize` function in `src/moneybin/services/categorization_service.py`. The categorization plan owns its introduction; the scenario runner consumes it. |
 | `MigrationRunner` | ✅ Shipped | Migration step in `migration-roundtrip` scenario |
 | Fixture library (`testing-csv-fixtures.md`) | Planned | Owns fixture files; this spec owns the expectation contract |
 | Anonymized data generator (`testing-anonymized-data.md`) | Planned | Optional consumer — scenarios could use anonymized real data instead of generated personas |
@@ -716,10 +788,12 @@ No new schemas. The runner reads from existing tables:
 | Snapshot mode | When stable scenarios warrant Tier 1 regression coverage | Deterministic byte-equality on a curated query set |
 | Performance assertions as gates | When CI duration regression matters | `assert_completes_within` graduated from soft check to gate |
 
-## Open Questions
+## Resolved Design Questions
 
-1. **Existing assertion location.** The umbrella spec describes an assertion catalog at `src/moneybin/testing/assertions/`. That package does not yet exist (assertions are scattered across SQLMesh audits and ad-hoc test helpers). This spec assumes greenfield creation under `src/moneybin/validation/`. Confirm before implementation that no partial assertion package exists that should be moved instead of recreated.
-2. **`expectations:` block placement.** Currently a sibling of `assertions:` and `evaluations:`. An alternative is folding expectations into assertions as a new category (`assert_match_decision`, `assert_category_for_transaction`). The current design separates them because expectations have richer per-record semantics and reference fixture metadata; merging would simplify the YAML at the cost of conflating aggregate invariants with per-record claims. Revisit during implementation if the separation feels artificial.
-3. **Fixture expectation file format.** This spec references `<fixture>.expectations.json` but defers the schema to `testing-csv-fixtures.md`. If fixture work is ordered after scenario-runner implementation, an interim minimal schema is needed here. Block on fixture-library design or design a minimum viable `.expectations.json` in this spec's implementation plan.
-4. **CI runtime budget.** `--all` against seven scenarios on the family persona at 3 years takes an estimated 2-5 min. Acceptable for PR gating today; revisit when the catalog grows.
-5. **Scenario authoring discoverability.** With seven scenarios, an in-tree YAML index is fine. Past ~30, a generated index doc may be needed. Defer.
+The five questions raised in the draft were resolved during the 2026-04-26 ready-promotion review:
+
+1. **Existing assertion location** — Greenfield confirmed. Verified `src/moneybin/testing/assertions/` does not exist; no `def assert_*` helpers anywhere in `src/moneybin/`; no SQLMesh audit definitions to migrate. Implementation creates the package fresh under `src/moneybin/validation/`. The umbrella spec's `src/moneybin/testing/assertions/` reference is corrected as part of this spec's "Files to Modify" pass on `testing-overview.md`.
+2. **`expectations:` block placement** — Kept as a sibling of `assertions:` and `evaluations:`. The three-way framing (aggregate invariants / aggregate quality / pinned facts) is a load-bearing conceptual model. Folding expectations into assertions would require a polymorphic `AssertionResult` and lose the distinction between "this table has no orphans" and "transaction X matched transaction Y."
+3. **Fixture expectation file format** — This spec owns the contract. Format is **YAML** (`.expectations.yaml`), with a minimum-viable schema defined in §"Fixture file format." Rationale: hand-authored, comments useful, matches existing `testing/synthetic/personas/*.yaml` convention, and these files are the planned contribution unit for community-submitted bug-report fixtures (anonymized export + expected behavior in a reviewable PR-friendly format). `testing-csv-fixtures.md` owns fixture content/curation; this spec owns the metadata schema.
+4. **CI runtime budget** — Accepted at 2–5 min for v1. Scenarios run as a separate parallel `.github/workflows/scenarios.yml` workflow alongside `ci.yml`, so total PR feedback time is `max(ci, scenarios)` rather than additive. `--all` prints per-scenario duration summary at the end so drift is visible without enforcement. Promote to a hard gate when the suite outgrows the budget. See §"CI gating."
+5. **Scenario authoring discoverability** — Deferred. `--list` is sufficient for v1's six scenarios. Revisit past ~30 scenarios.

@@ -4,17 +4,22 @@ Covers merchant normalization, pattern matching, rule engine, merchant
 matching, prompt construction, and response parsing.
 """
 
+from collections import Counter
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.services._text import normalize_description
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization_service import (
+    BulkCategorizationItem,
+    CategorizationService,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -114,55 +119,49 @@ def db_with_transactions(db: Database) -> Database:
 # Merchant name normalization
 # ---------------------------------------------------------------------------
 
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
-class TestNormalizeDescription:
-    """Tests for normalize_description()."""
 
-    @pytest.mark.unit
-    def test_strips_square_prefix(self) -> None:
-        assert normalize_description("SQ *STARBUCKS #1234") == "STARBUCKS"
+def _load_normalize_cases(
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Load and validate normalize_description golden cases from YAML."""
+    if path is None:
+        path = _FIXTURES_DIR / "normalize_description_cases.yaml"
+    raw = yaml.safe_load(path.read_text())
+    cases = raw["cases"]
+    counts = Counter(c["id"] for c in cases)
+    duplicates = sorted(i for i, n in counts.items() if n > 1)
+    if duplicates:
+        raise ValueError(f"Duplicate case ids: {duplicates}")
+    for c in cases:
+        if not isinstance(c.get("raw"), str) or not isinstance(c.get("expected"), str):
+            raise ValueError(
+                f"Case {c.get('id')!r}: 'raw' and 'expected' must be strings"
+            )
+    return cases
 
-    @pytest.mark.unit
-    def test_strips_toast_prefix(self) -> None:
-        assert normalize_description("TST*PIZZA PLACE") == "PIZZA PLACE"
 
-    @pytest.mark.unit
-    def test_strips_paypal_prefix(self) -> None:
-        assert normalize_description("PP*SPOTIFY") == "SPOTIFY"
-
-    @pytest.mark.unit
-    def test_strips_trailing_state_zip(self) -> None:
-        result = normalize_description("WHOLEFDS MKT AUSTIN TX 78701")
-        assert "78701" not in result
-
-    @pytest.mark.unit
-    def test_strips_trailing_city_state(self) -> None:
-        result = normalize_description("STARBUCKS SEATTLE WA")
-        assert "SEATTLE" not in result
-        assert "WA" not in result
-
-    @pytest.mark.unit
-    def test_strips_trailing_store_id(self) -> None:
-        result = normalize_description("TARGET 00012345")
-        assert "00012345" not in result
+class TestNormalizeDescriptionGoldens:
+    """Parametrized golden-case tests for normalize_description()."""
 
     @pytest.mark.unit
-    def test_preserves_core_name(self) -> None:
-        assert "STARBUCKS" in normalize_description("SQ *STARBUCKS #1234 SEATTLE WA")
+    @pytest.mark.parametrize("case", _load_normalize_cases(), ids=lambda c: c["id"])
+    def test_case(self, case: dict[str, Any]) -> None:
+        assert normalize_description(case["raw"]) == case["expected"]
 
     @pytest.mark.unit
-    def test_empty_string(self) -> None:
-        assert normalize_description("") == ""
+    def test_loader_rejects_duplicate_ids(self, tmp_path: Path) -> None:
+        """The loader must surface duplicate ids loudly at collection time."""
+        bad_yaml = tmp_path / "dup.yaml"
+        bad_yaml.write_text(
+            "cases:\n"
+            '  - {id: a, raw: "x", expected: "x"}\n'
+            '  - {id: a, raw: "y", expected: "y"}\n'
+        )
 
-    @pytest.mark.unit
-    def test_none_handled(self) -> None:
-        # normalize_description expects str but should handle edge cases
-        assert normalize_description("   ") == ""
-
-    @pytest.mark.unit
-    def test_normalizes_whitespace(self) -> None:
-        result = normalize_description("SQ  *  COFFEE   SHOP")
-        assert "  " not in result
+        with pytest.raises(ValueError, match="Duplicate case ids"):
+            _load_normalize_cases(bad_yaml)
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +619,7 @@ def test_service_bulk_categorize_applies_categorization(
     )
     svc = CategorizationService(real_db)
     result = svc.bulk_categorize([
-        {"transaction_id": "ts1", "category": "Food & Drink"}
+        BulkCategorizationItem(transaction_id="ts1", category="Food & Drink")
     ])
     assert result.applied == 1
 
@@ -793,11 +792,11 @@ def test_bulk_categorize_creates_auto_rule_proposal(real_db: Database) -> None:
     svc = CategorizationService(real_db)
     svc.bulk_categorize(
         [
-            {
-                "transaction_id": "tb1",
-                "category": "Food & Drink",
-                "subcategory": "Coffee",
-            }
+            BulkCategorizationItem(
+                transaction_id="tb1",
+                category="Food & Drink",
+                subcategory="Coffee",
+            )
         ],
     )
 
@@ -841,7 +840,9 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
             [f"txn_{i}", f"Coffee shop {i}"],
         )
     items = [
-        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        BulkCategorizationItem(
+            transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
+        )
         for i in range(25)
     ]
 
@@ -897,7 +898,9 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
         )
 
     items = [
-        {"transaction_id": f"txn_{i}", "category": "Food", "subcategory": "Coffee"}
+        BulkCategorizationItem(
+            transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
+        )
         for i in range(3)
     ]
 
@@ -914,3 +917,43 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
     ).fetchone()
     assert merchant_count is not None
     assert merchant_count[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# find_matching_rule override tests (Task 3 — bulk path preparation)
+# ---------------------------------------------------------------------------
+
+
+def test_find_matching_rule_uses_rules_override(real_db: Database) -> None:
+    """When rules_override is provided, the rules table is not queried."""
+    svc = CategorizationService(real_db)
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('csv_test', 'acct_1', DATE '2026-01-01', -5.0, 'STARBUCKS COFFEE', 'csv')"
+    )
+    # Override rules list — nothing is in app.categorization_rules, so if the
+    # method queries the DB it would return no rules and the result would be None.
+    override_rules: list[tuple[Any, ...]] = [
+        ("rule_1", "STARBUCKS", "contains", None, None, None, "Food", "Coffee", "user")
+    ]
+    match = svc.find_matching_rule("csv_test", rules_override=override_rules)
+    assert match is not None
+    assert match[1] == "Food"
+    assert match[2] == "Coffee"
+
+
+def test_find_matching_rule_uses_txn_row_override(real_db: Database) -> None:
+    """When txn_row_override is provided, fct_transactions is not queried."""
+    svc = CategorizationService(real_db)
+    # No INSERT — fct_transactions has no row for ghost_txn.
+    override_rules: list[tuple[Any, ...]] = [
+        ("rule_1", "AMZN", "contains", None, None, None, "Shopping", None, "user")
+    ]
+    match = svc.find_matching_rule(
+        "ghost_txn",
+        rules_override=override_rules,
+        txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1"),
+    )
+    assert match is not None
+    assert match[1] == "Shopping"

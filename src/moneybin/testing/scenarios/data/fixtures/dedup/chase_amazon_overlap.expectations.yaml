@@ -1,0 +1,23 @@
+fixture: chase_amazon_overlap.csv
+description: "Three Amazon CSV rows that overlap three Chase OFX rows from chase_amazon_overlap_ofx.csv"
+row_count: 3
+labeled_overlaps:
+  - source_transaction_id: TBL_2024-03-15_AMZN_47.99
+    overlaps_with:
+      - source_transaction_id: SYN20240315001
+        source_type: ofx
+    expected_match_type: dedup
+    expected_confidence_min: 0.9
+  - source_transaction_id: TBL_2024-03-22_PRIME_14.99
+    overlaps_with:
+      - source_transaction_id: SYN20240322002
+        source_type: ofx
+    expected_match_type: dedup
+    expected_confidence_min: 0.9
+  - source_transaction_id: TBL_2024-03-30_DIGITAL_9.99
+    overlaps_with:
+      - source_transaction_id: SYN20240330003
+        source_type: ofx
+    expected_match_type: dedup
+    expected_confidence_min: 0.9
+expected_collapsed_count: 3

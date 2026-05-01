@@ -1,0 +1,59 @@
+scenario: dedup-cross-source
+description: "Cross-source dedup: 3 known overlaps must collapse to 3 gold records"
+
+setup:
+  persona: family
+  seed: 42
+  years: 1
+  fixtures:
+    - path: dedup/chase_amazon_overlap.csv
+      account: amazon-card
+      source_type: csv
+    - path: dedup/chase_amazon_overlap_ofx.csv
+      account: amazon-card
+      source_type: ofx
+
+pipeline:
+  - load_fixtures
+  - transform
+  - match
+
+assertions:
+  - name: no_duplicate_gold_records
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  - name: provenance_complete
+    fn: assert_no_orphans
+    args:
+      parent: core.fct_transactions
+      parent_column: transaction_id
+      child: meta.fct_transaction_provenance
+      child_column: transaction_id
+
+expectations:
+  - kind: match_decision
+    description: "Chase OFX 2024-03-15 $47.99 == Amazon CSV 2024-03-15 $47.99"
+    transactions:
+      - source_transaction_id: SYN20240315001
+        source_type: ofx
+      - source_transaction_id: TBL_2024-03-15_AMZN_47.99
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.9
+  - kind: gold_record_count
+    description: "Three labeled overlaps should produce three gold records, not six"
+    fixture_source_ids:
+      - SYN20240315001
+      - SYN20240322002
+      - SYN20240330003
+      - TBL_2024-03-15_AMZN_47.99
+      - TBL_2024-03-22_PRIME_14.99
+      - TBL_2024-03-30_DIGITAL_9.99
+    expected_collapsed_count: 3
+
+gates:
+  required_assertions: all
+  required_expectations: all
