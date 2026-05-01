@@ -9,8 +9,9 @@ import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Any, Literal, cast
 
 import duckdb
 
@@ -378,9 +379,6 @@ class ImportService:
         Raises:
             ValueError: On re-import without force, or when institution can't be derived.
         """
-        from io import BytesIO
-        from typing import Any, Literal
-
         import ofxparse  # type: ignore[import-untyped]
 
         from moneybin.extractors.institution_resolution import (
@@ -413,10 +411,17 @@ class ImportService:
         # Parse once for institution resolution; the extractor parses again
         # internally. These files are small — the duplicate parse is fine and
         # avoids leaking a parser-internal type into the extractor signature.
+        # Wrap parse failures as ValueError so MCP's error envelope catches them.
         with open(canonical_path, "rb") as f:
             content = f.read().decode("utf-8", errors="ignore")
         content = preprocess_ofx_content(content)
-        parsed_ofx: Any = ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
+        try:
+            parsed_ofx: Any = ofxparse.OfxParser.parse(  # type: ignore[reportUnknownMemberType]
+                BytesIO(content.encode("utf-8"))
+            )
+        except Exception as e:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="parse").inc()
+            raise ValueError(f"Invalid OFX file format: {e}") from e
 
         # Resolve institution (raises InstitutionResolutionError on non-interactive failure)
         try:
@@ -802,6 +807,7 @@ class ImportService:
             format_name=matched_format.name if matched_format else None,
             format_source=format_source,
         )
+        result.import_id = import_id
 
         # Stage 4: Transform
         from moneybin.config import get_settings

@@ -73,18 +73,14 @@ def resolve_institution(
     org = _first_org(parsed_ofx)
     if org:
         if cli_override:
-            logger.info(
-                f"--institution {cli_override!r} ignored; using <FI><ORG> from file"
-            )
+            logger.info("--institution argument ignored; using <FI><ORG> from file")
         return _to_slug(org)
 
     # Step 2: <FI><FID> lookup.
     fid = _first_fid(parsed_ofx)
     if fid and fid in _FID_TO_SLUG:
         if cli_override:
-            logger.info(
-                f"--institution {cli_override!r} ignored; using FID lookup for {fid!r}"
-            )
+            logger.info(f"--institution argument ignored; using FID lookup for {fid!r}")
         return _FID_TO_SLUG[fid]
 
     # Step 3: filename heuristic.
@@ -92,7 +88,7 @@ def resolve_institution(
         if pattern.search(file_path.name):
             if cli_override:
                 logger.info(
-                    f"--institution {cli_override!r} ignored; matched filename pattern {slug!r}"
+                    f"--institution argument ignored; matched filename pattern {slug!r}"
                 )
             return slug
 
@@ -117,8 +113,17 @@ def resolve_institution(
 
 
 def _to_slug(name: str) -> str:
-    """Convert a human-readable name to a snake_case slug."""
-    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    """Convert a human-readable name to a snake_case slug.
+
+    Raises InstitutionResolutionError if normalization yields an empty string
+    (e.g., input contained only separators).
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    if not slug:
+        raise InstitutionResolutionError(
+            f"Institution name {name!r} produced an empty slug after normalization."
+        )
+    return slug
 
 
 def _first_org(parsed_ofx: Any) -> str | None:

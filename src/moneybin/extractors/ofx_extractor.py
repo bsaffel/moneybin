@@ -203,10 +203,10 @@ class OFXExtractor:
 
             results = {
                 "institutions": self._extract_institutions(
-                    ofx, source_file, extraction_timestamp, import_id
+                    ofx, source_file, extraction_timestamp, import_id, source_origin
                 ),
                 "accounts": self._extract_accounts(
-                    ofx, source_file, extraction_timestamp, import_id
+                    ofx, source_file, extraction_timestamp, import_id, source_origin
                 ),
                 "transactions": self._extract_transactions(
                     ofx, source_file, extraction_timestamp, import_id, source_origin
@@ -234,14 +234,20 @@ class OFXExtractor:
         source_file: str,
         extraction_timestamp: datetime,
         import_id: str,
+        source_origin: str,
     ) -> pl.DataFrame:
-        """Extract institution information from OFX data."""
+        """Extract institution information from OFX data.
+
+        ``raw.ofx_institutions.organization`` is part of the primary key, so a
+        NULL ORG element would break the insert. Fall back to ``source_origin``
+        (the resolved slug) so files lacking ``<FI><ORG>`` still load.
+        """
         institutions_data: list[dict[str, Any]] = []
 
         for account in ofx.accounts:
             if account.institution:
                 institution_data = {
-                    "organization": account.institution.organization,
+                    "organization": account.institution.organization or source_origin,
                     "fid": account.institution.fid,
                     "source_file": source_file,
                     "extracted_at": extraction_timestamp.isoformat(),
@@ -273,11 +279,13 @@ class OFXExtractor:
         source_file: str,
         extraction_timestamp: datetime,
         import_id: str,
+        source_origin: str,
     ) -> pl.DataFrame:
         """Extract account information from OFX data."""
         accounts_data: list[dict[str, Any]] = []
 
         for account in ofx.accounts:
+            inst_org = account.institution.organization if account.institution else None
             account_info = {
                 "account_id": account.account_id,
                 "routing_number": account.routing_number
@@ -286,9 +294,7 @@ class OFXExtractor:
                 "account_type": account.account_type
                 if hasattr(account, "account_type")
                 else None,
-                "institution_org": account.institution.organization
-                if account.institution
-                else None,
+                "institution_org": inst_org or source_origin,
                 "institution_fid": account.institution.fid
                 if account.institution
                 else None,
