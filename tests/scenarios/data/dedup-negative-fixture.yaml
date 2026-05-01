@@ -1,0 +1,57 @@
+scenario: dedup-negative-fixture
+description: "Adversarial near-miss rows MUST NOT collapse"
+
+setup:
+  persona: family
+  seed: 42
+  years: 1
+  fixtures:
+    - path: dedup-negative/distinct_csv.csv
+      account: amazon-card
+      source_type: csv
+    - path: dedup-negative/distinct_ofx.csv
+      account: amazon-card
+      source_type: ofx
+
+pipeline:
+  - load_fixtures
+  - transform
+  - match
+
+assertions:
+  - name: row_count_no_collapse
+    fn: assert_row_count_exact
+    args:
+      table: core.fct_transactions
+      # Hand-counted: 3 CSV rows + 3 OFX rows, none should collapse.
+      expected: 6
+
+expectations:
+  - kind: match_decision
+    description: "WHOLE FOODS 04-10 vs AMAZON 04-10 must NOT match (different merchants)"
+    transactions:
+      - source_transaction_id: NEG_CSV_2024-04-10_WF_32.45
+        source_type: csv
+      - source_transaction_id: NEG_OFX_2024-04-10_AMZN
+        source_type: ofx
+    expected: not_matched
+  - kind: match_decision
+    description: "TJ 04-10 vs TJ 04-11 must NOT match (same merchant, different days)"
+    transactions:
+      - source_transaction_id: NEG_CSV_2024-04-10_TJ_28.10
+        source_type: csv
+      - source_transaction_id: NEG_OFX_2024-04-11_TJ
+        source_type: ofx
+    expected: not_matched
+  - kind: match_decision
+    description: "STARBUCKS vs DUNKIN same day same amount must NOT match"
+    transactions:
+      - source_transaction_id: NEG_CSV_2024-04-15_SB_5.75
+        source_type: csv
+      - source_transaction_id: NEG_OFX_2024-04-15_DUNKIN
+        source_type: ofx
+    expected: not_matched
+
+gates:
+  required_assertions: all
+  required_expectations: all
