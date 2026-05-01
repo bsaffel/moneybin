@@ -40,15 +40,17 @@ class TestImportOFXBatchLifecycle:
         history = import_log.get_import_history(db, limit=5)
         latest = [h for h in history if h["source_type"] == "ofx"][0]
         import_id = latest["import_id"]
+        assert isinstance(import_id, str)
 
         result = import_log.revert_import(db, import_id)
         assert result["status"] == "reverted"
 
-        remaining = db.execute(
+        remaining_row = db.execute(
             "SELECT COUNT(*) FROM raw.ofx_transactions WHERE import_id = ?",
             [import_id],
-        ).fetchone()[0]
-        assert remaining == 0
+        ).fetchone()
+        assert remaining_row is not None
+        assert remaining_row[0] == 0
 
     def test_reimport_without_force_raises(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")

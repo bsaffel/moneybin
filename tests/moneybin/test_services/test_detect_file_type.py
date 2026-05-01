@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.services.import_service import _detect_file_type
+from moneybin.services.import_service import (
+    _detect_file_type,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 class TestDetectFileType:
