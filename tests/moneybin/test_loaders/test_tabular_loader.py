@@ -132,8 +132,11 @@ class TestRevertImport:
                     "2024-01-01",
                 )
             elif call_count == 2:
-                # COUNT(*) = 5 rows
-                m.fetchone.return_value = (5,)
+                # COUNT(*) raw.tabular_transactions = 3
+                m.fetchone.return_value = (3,)
+            elif call_count == 3:
+                # COUNT(*) raw.tabular_accounts = 2 — total 5 across both tables
+                m.fetchone.return_value = (2,)
             return m
 
         mock_db.execute.side_effect = side_effect
@@ -179,9 +182,12 @@ class TestRevertImport:
                     "2024-01-01",
                 )
             elif call_count == 2:
-                # COUNT(*) — no rows with old import_id
+                # COUNT(*) raw.tabular_transactions — no rows
                 result.fetchone.return_value = (0,)
             elif call_count == 3:
+                # COUNT(*) raw.tabular_accounts — no rows
+                result.fetchone.return_value = (0,)
+            elif call_count == 4:
                 # re-import check — found a newer import
                 result.fetchone.return_value = ("new-import-id-1234",)
             return result

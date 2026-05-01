@@ -44,6 +44,9 @@ class ImportResult:
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
     core_tables_rebuilt: bool = False
+    import_id: str | None = None
+    """UUID of the raw.import_log row this import created. None for file types
+    that don't write to import_log (currently W-2/PDF)."""
 
     def summary(self) -> str:
         """Human-readable import summary."""
@@ -375,9 +378,8 @@ class ImportService:
         Raises:
             ValueError: On re-import without force, or when institution can't be derived.
         """
-        import time
         from io import BytesIO
-        from typing import Any
+        from typing import Any, Literal
 
         import ofxparse  # type: ignore[import-untyped]
 
@@ -385,21 +387,23 @@ class ImportService:
             InstitutionResolutionError,
             resolve_institution,
         )
-        from moneybin.extractors.ofx_extractor import OFXExtractor
-        from moneybin.loaders import import_log
-        from moneybin.metrics.registry import (
-            IMPORT_DURATION_SECONDS,
-            IMPORT_ERRORS_TOTAL,
-            IMPORT_RECORDS_TOTAL,
-            OFX_IMPORT_BATCHES,
+        from moneybin.extractors.ofx_extractor import (
+            OFXExtractor,
+            preprocess_ofx_content,
         )
+        from moneybin.loaders import import_log
+        from moneybin.metrics.registry import OFX_IMPORT_BATCHES
 
-        result = ImportResult(file_path=str(file_path), file_type="ofx")
+        # Canonicalize the path so relative + absolute + symlink-resolved
+        # variants of the same file are detected as the same source.
+        canonical_path = file_path.resolve()
+
+        result = ImportResult(file_path=str(canonical_path), file_type="ofx")
         _t0 = time.monotonic()
 
         # Re-import detection
         if not force:
-            existing = import_log.find_existing_import(self._db, str(file_path))
+            existing = import_log.find_existing_import(self._db, str(canonical_path))
             if existing:
                 raise ValueError(
                     f"File already imported (import_id {existing[:8]}...). "
@@ -409,17 +413,16 @@ class ImportService:
         # Parse once for institution resolution; the extractor parses again
         # internally. These files are small — the duplicate parse is fine and
         # avoids leaking a parser-internal type into the extractor signature.
-        with open(file_path, "rb") as f:
+        with open(canonical_path, "rb") as f:
             content = f.read().decode("utf-8", errors="ignore")
-        extractor = OFXExtractor()
-        content = extractor._preprocess_ofx_content(content)  # pyright: ignore[reportPrivateUsage]
+        content = preprocess_ofx_content(content)
         parsed_ofx: Any = ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
 
         # Resolve institution (raises InstitutionResolutionError on non-interactive failure)
         try:
             source_origin = resolve_institution(
                 parsed_ofx,
-                file_path=file_path,
+                file_path=canonical_path,
                 cli_override=institution,
                 interactive=interactive,
             )
@@ -429,21 +432,26 @@ class ImportService:
             ).inc()
             raise ValueError(str(e)) from e
 
-        # Begin batch BEFORE extraction so failures land as 'failed' status rows.
-        account_names = [
+        # OFX <ACCTID> values are institution-assigned account numbers, not
+        # display names. We pass them through to import_log as-is — the
+        # naming asymmetry with tabular's account_names is intentional and
+        # documented at the begin_import() call site.
+        account_ids = [
             a.account_id for a in parsed_ofx.accounts if a.account_id is not None
         ]
         import_id = import_log.begin_import(
             self._db,
-            source_file=str(file_path),
+            source_file=str(canonical_path),
             source_type="ofx",
             source_origin=source_origin,
-            account_names=account_names,
+            account_names=account_ids,
         )
+        result.import_id = import_id
 
+        extractor = OFXExtractor()
         try:
             data = extractor.extract_from_file(
-                file_path,
+                canonical_path,
                 import_id=import_id,
                 source_origin=source_origin,
             )
@@ -460,32 +468,48 @@ class ImportService:
             raise
 
         # Best-effort account matching for OFX (passthrough today; emits metrics).
-        self._match_ofx_accounts(account_names)
+        self._match_ofx_accounts(account_ids)
 
-        # Write all four DataFrames through the encrypted ingest path.
+        # Write all four DataFrames through the encrypted ingest path. Wrapped
+        # in try/except so a load failure marks the batch as failed instead of
+        # leaving raw.import_log.status='importing' and blocking re-imports.
         rows_loaded: dict[str, int] = {}
-        for table_key, qualified in (
-            ("institutions", "raw.ofx_institutions"),
-            ("accounts", "raw.ofx_accounts"),
-            ("transactions", "raw.ofx_transactions"),
-            ("balances", "raw.ofx_balances"),
-        ):
-            df = data[table_key]
-            if len(df) > 0:
-                self._db.ingest_dataframe(qualified, df, on_conflict="upsert")
-            rows_loaded[table_key] = len(df)
+        try:
+            for table_key, qualified in (
+                ("institutions", "raw.ofx_institutions"),
+                ("accounts", "raw.ofx_accounts"),
+                ("transactions", "raw.ofx_transactions"),
+                ("balances", "raw.ofx_balances"),
+            ):
+                df = data[table_key]
+                if len(df) > 0:
+                    self._db.ingest_dataframe(qualified, df, on_conflict="upsert")
+                rows_loaded[table_key] = len(df)
+        except Exception:
+            import_log.finalize_import(
+                self._db,
+                import_id,
+                status="failed",
+                rows_total=sum(rows_loaded.values()),
+                rows_imported=sum(rows_loaded.values()),
+            )
+            OFX_IMPORT_BATCHES.labels(status="failed").inc()
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
+            raise
 
         rows_imported = rows_loaded["transactions"]
-        status: str = "complete" if rows_imported > 0 else "partial"
+        finalize_status: Literal["complete", "partial"] = (
+            "complete" if rows_imported > 0 else "partial"
+        )
 
         import_log.finalize_import(
             self._db,
             import_id,
-            status=status,  # type: ignore[arg-type]  # status is one of the literal values
+            status=finalize_status,
             rows_total=rows_imported,
             rows_imported=rows_imported,
         )
-        OFX_IMPORT_BATCHES.labels(status=status).inc()
+        OFX_IMPORT_BATCHES.labels(status=finalize_status).inc()
         IMPORT_RECORDS_TOTAL.labels(source_type="ofx").inc(rows_imported)
         IMPORT_DURATION_SECONDS.labels(source_type="ofx").observe(
             time.monotonic() - _t0
@@ -499,12 +523,12 @@ class ImportService:
 
         if rows_imported > 0:
             result.date_range = self._query_date_range(
-                "raw.ofx_transactions", "CAST(date_posted AS DATE)", file_path
+                "raw.ofx_transactions", "CAST(date_posted AS DATE)", canonical_path
             )
 
         return result
 
-    def _match_ofx_accounts(self, account_names: list[str]) -> None:
+    def _match_ofx_accounts(self, account_ids: list[str]) -> None:
         """Best-effort account matching for OFX. Emits metrics; doesn't mutate data.
 
         Today's behavior (carried forward): the OFX file's account_id IS the
@@ -514,7 +538,7 @@ class ImportService:
         """
         from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
 
-        for _name in account_names:
+        for _aid in account_ids:
             ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="ofx_passthrough").inc()
 
     def _import_w2(

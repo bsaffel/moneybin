@@ -69,7 +69,6 @@ def import_file(
         force: If True, allow re-importing a file already in the import log.
             Returns a structured error otherwise.
     """
-    from moneybin.loaders import import_log
     from moneybin.services.import_service import ImportService
 
     db = get_database()
@@ -90,8 +89,7 @@ def import_file(
             sensitivity="low",
         )
 
-    history = import_log.get_import_history(db, limit=1)
-    import_id = history[0]["import_id"] if history else None
+    import_id = result.import_id
 
     return build_envelope(
         data={
@@ -183,11 +181,11 @@ def import_status(
         limit: Maximum number of records to return (default 20).
         import_id: Filter to a specific import ID for full details.
     """
-    from moneybin.loaders.tabular_loader import TabularLoader
+    from moneybin.loaders import import_log
 
     db = get_database()
-    loader = TabularLoader(db)
-    records = loader.get_import_history(
+    records = import_log.get_import_history(
+        db,
         limit=min(limit, 200),
         import_id=import_id,
     )

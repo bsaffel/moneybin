@@ -180,6 +180,52 @@ class TestFindExistingImport:
         assert result is None
 
 
+class TestRevertImportTabular:
+    """revert_import dispatches correctly to raw.tabular_* tables for tabular imports."""
+
+    def test_reverts_csv_batch(self, db: Database) -> None:
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/test.csv",  # noqa: S108  # test fixture path
+            source_type="csv",
+            source_origin="tiller",
+            account_names=["checking"],
+        )
+        db.execute(
+            """
+            INSERT INTO raw.tabular_transactions (
+                transaction_id, account_id, transaction_date, amount, description,
+                source_file, source_type, source_origin, import_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "csv_abc123",
+                "checking",
+                "2026-01-15",
+                "-50.00",
+                "Coffee",
+                "/tmp/test.csv",  # noqa: S108  # test fixture path
+                "csv",
+                "tiller",
+                import_id,
+            ],
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+
+        result = import_log.revert_import(db, import_id)
+        assert result["status"] == "reverted"
+        assert result["rows_deleted"] == 1
+
+        count_row = db.execute(
+            "SELECT COUNT(*) FROM raw.tabular_transactions WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+        assert count_row is not None
+        assert count_row[0] == 0
+
+
 class TestBeginImportValidatesSourceType:
     """begin_import raises ValueError for unrecognized source_type values."""
 

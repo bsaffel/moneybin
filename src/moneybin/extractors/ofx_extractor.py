@@ -110,6 +110,33 @@ class OFXExtractionConfig:
     validate_balances: bool = True
 
 
+def preprocess_ofx_content(content: str) -> str:
+    """Preprocess OFX content to handle SGML format without newlines.
+
+    Some institutions (notably Wells Fargo QFX exports) emit a single-line
+    SGML header that ofxparse rejects. Inserting newlines before each header
+    tag normalizes both single- and multi-line forms.
+    """
+    if content.startswith("OFXHEADER:") and "\n" not in content[:100]:
+        if "<OFX>" in content:
+            header_part, xml_part = content.split("<OFX>", 1)
+            for tag in (
+                "OFXHEADER:",
+                "DATA:",
+                "VERSION:",
+                "SECURITY:",
+                "ENCODING:",
+                "CHARSET:",
+                "COMPRESSION:",
+                "OLDFILEUID:",
+                "NEWFILEUID:",
+            ):
+                header_part = header_part.replace(tag, f"\n{tag}")
+            header_part = header_part.lstrip("\n")
+            content = header_part + "\n<OFX>" + xml_part
+    return content
+
+
 class OFXExtractor:
     """Extract financial data from OFX/QFX files into raw table structures."""
 
@@ -133,40 +160,6 @@ class OFXExtractor:
         logger.info(
             f"Initialized OFX extractor with output: {self.config.raw_data_path}"
         )
-
-    def _preprocess_ofx_content(self, content: str) -> str:
-        """Preprocess OFX content to handle SGML format without newlines.
-
-        Args:
-            content: Raw OFX file content
-
-        Returns:
-            str: Preprocessed content with proper formatting
-        """
-        # Check if this is SGML format (headers without newlines)
-        if content.startswith("OFXHEADER:") and "\n" not in content[:100]:
-            # Split the header section from the XML body
-            if "<OFX>" in content:
-                header_part, xml_part = content.split("<OFX>", 1)
-
-                # Add newlines after each header tag
-                header_part = header_part.replace("OFXHEADER:", "\nOFXHEADER:")
-                header_part = header_part.replace("DATA:", "\nDATA:")
-                header_part = header_part.replace("VERSION:", "\nVERSION:")
-                header_part = header_part.replace("SECURITY:", "\nSECURITY:")
-                header_part = header_part.replace("ENCODING:", "\nENCODING:")
-                header_part = header_part.replace("CHARSET:", "\nCHARSET:")
-                header_part = header_part.replace("COMPRESSION:", "\nCOMPRESSION:")
-                header_part = header_part.replace("OLDFILEUID:", "\nOLDFILEUID:")
-                header_part = header_part.replace("NEWFILEUID:", "\nNEWFILEUID:")
-
-                # Remove leading newline if added
-                header_part = header_part.lstrip("\n")
-
-                # Reconstruct the content
-                content = header_part + "\n<OFX>" + xml_part
-
-        return content
 
     def extract_from_file(
         self,
@@ -199,7 +192,7 @@ class OFXExtractor:
         try:
             with open(file_path, "rb") as f:
                 content = f.read().decode("utf-8", errors="ignore")
-            content = self._preprocess_ofx_content(content)
+            content = preprocess_ofx_content(content)
 
             from io import BytesIO
 

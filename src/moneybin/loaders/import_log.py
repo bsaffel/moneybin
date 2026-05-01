@@ -12,6 +12,8 @@ import logging
 import uuid
 from typing import Literal
 
+from sqlglot import exp
+
 from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
@@ -188,14 +190,17 @@ def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
 
     tables = _REVERT_TABLES[src_type]
 
-    # Count rows in the primary transactions table for this batch (used both
-    # for return value and superseded detection).
-    primary_table = tables[0]
-    rows_total = db.execute(
-        f"SELECT COUNT(*) FROM {primary_table} WHERE import_id = ?",  # noqa: S608 — table name is from allowlist
-        [import_id],
-    ).fetchone()
-    rows_to_delete = rows_total[0] if rows_total else 0
+    # Sum across every table the source_type populates. OFX statements with
+    # zero transactions but populated accounts/balances must still be
+    # detectable as live (not superseded) and reportable in rows_deleted.
+    rows_to_delete = 0
+    for table in tables:
+        result = db.execute(
+            f"SELECT COUNT(*) FROM {_quote_table(table)} WHERE import_id = ?",  # noqa: S608 — table from allowlist
+            [import_id],
+        ).fetchone()
+        if result:
+            rows_to_delete += result[0]
 
     if rows_to_delete == 0:
         # Same superseded check as the original tabular_loader: if a later
@@ -227,7 +232,7 @@ def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
     try:
         for table in tables:
             db.execute(
-                f"DELETE FROM {table} WHERE import_id = ?",  # noqa: S608 — table from allowlist
+                f"DELETE FROM {_quote_table(table)} WHERE import_id = ?",  # noqa: S608 — table from allowlist
                 [import_id],
             )
         db.execute(
@@ -293,6 +298,16 @@ def get_import_history(
         "completed_at",
     ]
     return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+def _quote_table(qualified: str) -> str:
+    """Double-quote each component of a `schema.table` identifier per security.md."""
+    schema, name = qualified.split(".", 1)
+    return (
+        exp.to_identifier(schema, quoted=True).sql("duckdb")
+        + "."
+        + exp.to_identifier(name, quoted=True).sql("duckdb")
+    )
 
 
 def find_existing_import(

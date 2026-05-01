@@ -15,7 +15,9 @@ class TestImportOFXBatchLifecycle:
     def test_import_creates_committed_batch(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
         if not fixture.exists():
-            pytest.skip("Sample OFX fixture missing")
+            pytest.fail(
+                "Sample OFX fixture missing at tests/fixtures/ofx/sample_minimal.ofx"
+            )
 
         service = ImportService(db)
         result = service.import_file(fixture, apply_transforms=False)
@@ -32,7 +34,9 @@ class TestImportOFXBatchLifecycle:
     def test_reverting_ofx_batch_deletes_rows(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
         if not fixture.exists():
-            pytest.skip("Sample OFX fixture missing")
+            pytest.fail(
+                "Sample OFX fixture missing at tests/fixtures/ofx/sample_minimal.ofx"
+            )
 
         service = ImportService(db)
         service.import_file(fixture, apply_transforms=False)
@@ -55,7 +59,9 @@ class TestImportOFXBatchLifecycle:
     def test_reimport_without_force_raises(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
         if not fixture.exists():
-            pytest.skip("Sample OFX fixture missing")
+            pytest.fail(
+                "Sample OFX fixture missing at tests/fixtures/ofx/sample_minimal.ofx"
+            )
 
         service = ImportService(db)
         service.import_file(fixture, apply_transforms=False)
@@ -66,16 +72,19 @@ class TestImportOFXBatchLifecycle:
     def test_reimport_with_force_creates_new_batch(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
         if not fixture.exists():
-            pytest.skip("Sample OFX fixture missing")
+            pytest.fail(
+                "Sample OFX fixture missing at tests/fixtures/ofx/sample_minimal.ofx"
+            )
 
         service = ImportService(db)
         service.import_file(fixture, apply_transforms=False)
         service.import_file(fixture, apply_transforms=False, force=True)
 
+        canonical = str(fixture.resolve())
         history = import_log.get_import_history(db, limit=10)
         ofx_for_file = [
             h
             for h in history
-            if h["source_type"] == "ofx" and h["source_file"] == str(fixture)
+            if h["source_type"] == "ofx" and h["source_file"] == canonical
         ]
         assert len(ofx_for_file) == 2
