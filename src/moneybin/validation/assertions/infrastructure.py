@@ -132,7 +132,7 @@ def _count(db: Database, table: str) -> int:
 
 
 def assert_no_unencrypted_db_files(
-    db: Database,  # noqa: ARG001 — conforms to _DATABASE_ASSERTION_FNS contract
+    db: Database,  # noqa: ARG001 — not used; Database first-arg is the standard signature
     *,
     tmpdir: Path,
 ) -> AssertionResult:

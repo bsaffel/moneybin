@@ -35,16 +35,6 @@ from tests.scenarios._runner.steps import run_step
 logger = logging.getLogger(__name__)
 
 
-# Assertion functions whose first argument is a ``Database`` rather than a
-# DuckDB connection. Everything else takes a connection.
-_DATABASE_ASSERTION_FNS = frozenset({
-    "assert_sqlmesh_catalog_matches",
-    "assert_migrations_at_head",
-    "assert_min_rows",
-    "assert_no_unencrypted_db_files",
-})
-
-
 @contextmanager
 def _patched_env(env: dict[str, str]):
     """Temporarily set env vars, restoring originals on exit."""
@@ -246,11 +236,7 @@ def _run_assertion(
     args = _resolve_runtime_args(spec.args, tmpdir=tmpdir)
     try:
         fn = _resolve_assertion(spec.fn)
-        result = (
-            fn(db, **args)
-            if spec.fn in _DATABASE_ASSERTION_FNS
-            else fn(db.conn, **args)
-        )
+        result = fn(db, **args)
     except Exception as exc:  # noqa: BLE001 — surface as structured failure
         logger.error(f"assertion {spec.name} crashed: {type(exc).__name__}")
         logger.debug("assertion traceback", exc_info=True)
