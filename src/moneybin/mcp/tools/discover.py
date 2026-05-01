@@ -19,7 +19,7 @@ async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
     """Reveal tools from an extended namespace for the calling session.
 
     Extended namespaces (categorize, budget, tax, privacy,
-    transactions.matches) start hidden. Calling this tool with a domain
+    transactions_matches) start hidden. Calling this tool with a domain
     name enables the tools tagged with that domain for the current session
     only — other connected clients are unaffected.
 

@@ -137,9 +137,17 @@ def _description_for(ns: str) -> str:
 def _namespace_for(tool_name: str) -> str:
     """Extract the namespace prefix from an underscore-joined tool name.
 
-    For ``spending_by_category`` returns ``spending``.
-    For ``categorize_auto_confirm`` returns ``categorize``.
+    Most namespaces are a single word, so a first-underscore split works:
+    ``spending_by_category`` → ``spending``, ``categorize_auto_confirm`` →
+    ``categorize``. Multi-segment namespaces (e.g. ``transactions_matches``)
+    are matched explicitly via longest-prefix lookup so tools like
+    ``transactions_matches_pending`` group correctly.
     """
+    from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS
+
+    for ns in EXTENDED_DOMAIN_DESCRIPTIONS:
+        if "_" in ns and tool_name.startswith(f"{ns}_"):
+            return ns
     head, sep, _ = tool_name.partition("_")
     return head if sep else tool_name
 

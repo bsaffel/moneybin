@@ -129,6 +129,10 @@ def config_generate(
     args: list[str] = ["run"]
     env: dict[str, str] = {}
 
+    # os.getenv used intentionally: get_settings().base_dir cannot distinguish
+    # an explicit MONEYBIN_HOME from the default-derived path; we need to know
+    # whether the user set it so we can pin it in the generated client config
+    # env block.
     moneybin_home = os.getenv("MONEYBIN_HOME")
     repo_root = find_repo_root()
 
