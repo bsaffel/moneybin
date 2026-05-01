@@ -255,6 +255,20 @@ def test_date_bounds_fails_when_nulls_present(db: Database) -> None:
     assert r.details["null_count"] == 1
 
 
+def test_date_bounds_accepts_iso_string_bounds(db: Database) -> None:
+    """YAML scenarios pass quoted dates as strings — coerce at function entry."""
+    db.execute("CREATE TABLE t (d DATE)")
+    db.execute("INSERT INTO t VALUES ('2024-06-15')")
+    r = assert_date_bounds(
+        db,
+        table="t",
+        column="d",
+        min_date="2024-01-01",
+        max_date="2024-12-31",
+    )
+    assert r.passed, r.details
+
+
 def test_date_bounds_passes_for_empty_table(db: Database) -> None:
     db.execute("CREATE TABLE t (d DATE)")
     r = assert_date_bounds(

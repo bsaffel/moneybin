@@ -63,13 +63,15 @@ def assert_source_system_populated(
     ).fetchall()
     observed = {str(r[0]) for r in value_rows}
     unexpected = sorted(observed - sources)
+    missing = sorted(sources - observed)
     return AssertionResult(
         name="source_system_populated",
-        passed=null_count == 0 and not unexpected,
+        passed=null_count == 0 and not unexpected and not missing,
         details={
             "null_count": null_count,
             "expected_sources": sorted(sources),
             "observed_sources": sorted(observed),
             "unexpected_values": unexpected,
+            "missing_sources": missing,
         },
     )

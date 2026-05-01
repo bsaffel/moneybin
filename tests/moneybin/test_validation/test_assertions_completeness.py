@@ -102,10 +102,23 @@ def test_source_system_populated_fails_on_unexpected_value(src_db: Database) -> 
     assert "plaid" in r.details["unexpected_values"]
 
 
-def test_source_system_populated_passes_for_empty_table(src_db: Database) -> None:
-    """Empty tables vacuously satisfy 'all rows populated'."""
+def test_source_system_populated_fails_on_empty_table(src_db: Database) -> None:
+    """Empty table cannot satisfy 'all expected sources present' — must fail."""
     r = assert_source_system_populated(src_db, table="t", expected_sources={"csv"})
-    assert r.passed
+    assert not r.passed
+    assert r.details["missing_sources"] == ["csv"]
+
+
+def test_source_system_populated_fails_on_missing_expected_source(
+    src_db: Database,
+) -> None:
+    """If an expected source has no rows, surface it via missing_sources and fail."""
+    src_db.execute("INSERT INTO t VALUES (1, 'csv'), (2, 'csv')")
+    r = assert_source_system_populated(
+        src_db, table="t", expected_sources={"csv", "ofx"}
+    )
+    assert not r.passed
+    assert r.details["missing_sources"] == ["ofx"]
 
 
 def test_source_system_populated_raises_on_empty_expected_sources(

@@ -118,15 +118,23 @@ def assert_date_bounds(
     *,
     table: str,
     column: str,
-    min_date: date,
-    max_date: date,
+    min_date: date | str,
+    max_date: date | str,
 ) -> AssertionResult:
     """Assert every ``column`` value falls within ``[min_date, max_date]`` inclusive.
 
     NULL values count as out-of-bounds — a missing date cannot be verified to
     fall within the window, and silently accepting NULLs would mask broken
     date extraction. Empty tables still pass (no rows to violate).
+
+    Accepts ISO-format strings for ``min_date`` / ``max_date`` so YAML
+    scenarios (which serialize dates as quoted strings) can call this
+    primitive without manual coercion in the registry shim.
     """
+    if isinstance(min_date, str):
+        min_date = date.fromisoformat(min_date)
+    if isinstance(max_date, str):
+        max_date = date.fromisoformat(max_date)
     if min_date > max_date:
         raise ValueError(f"min_date {min_date} must be <= max_date {max_date}")
     t = quote_ident(table)

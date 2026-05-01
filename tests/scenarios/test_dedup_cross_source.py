@@ -35,7 +35,10 @@ def test_dedup_cross_source() -> None:
             assert_source_system_populated(
                 db,
                 table="core.fct_transactions",
-                expected_sources={"csv", "ofx"},
+                # Fixture is two CSV files; OFX is absent. The stricter
+                # missing-sources check would (correctly) fail if we listed
+                # 'ofx' here.
+                expected_sources={"csv"},
                 column="source_type",
             ),
             assert_amount_precision(
