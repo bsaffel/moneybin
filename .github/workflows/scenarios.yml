@@ -44,21 +44,19 @@ jobs:
           MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
           set -o pipefail
-          start=$(date +%s)
-          uv run moneybin synthetic verify --all --output=json | tee scenarios.jsonl
-          end=$(date +%s)
-          echo "Total scenarios duration: $((end - start))s"
+          uv run pytest tests/scenarios/ -m scenarios -v \
+            --json-report --json-report-file=scenarios.json
 
       - name: Per-scenario summary
         if: always()
         run: |
           echo "## Scenario results" >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.data | "- \(.scenario): \(if .passed then "PASS" else "FAIL" end) (\(.duration_seconds)s)"' \
-            scenarios.jsonl >> "$GITHUB_STEP_SUMMARY" || true
+          jq -r '.tests[] | "- \(.nodeid | split("::") | last): \(.outcome | ascii_upcase) (\(.duration | tonumber | floor)s)"' \
+            scenarios.json >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scenarios-results
-          path: scenarios.jsonl
+          path: scenarios.json
