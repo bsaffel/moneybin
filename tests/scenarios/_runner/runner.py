@@ -104,6 +104,15 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ScenarioRe
     started = time.perf_counter()
     tmp = tempfile.mkdtemp(prefix=f"scenario-{scenario.name}-")
     env = {"MONEYBIN_HOME": tmp, "MONEYBIN_PROFILE": "scenario"}
+    # Propagate encryption key to subprocess steps (e.g., transform_via_subprocess).
+    if encryption_key := os.environ.get("MONEYBIN_DATABASE__ENCRYPTION_KEY"):
+        env["MONEYBIN_DATABASE__ENCRYPTION_KEY"] = encryption_key
+    # Propagate keyring backend so subprocess uses MemoryKeyring instead of system keyring.
+    if keyring_backend := os.environ.get("PYTHON_KEYRING_BACKEND"):
+        env["PYTHON_KEYRING_BACKEND"] = keyring_backend
+        # Also propagate PYTHONPATH so subprocess can import MemoryKeyring.
+        if pythonpath := os.environ.get("PYTHONPATH"):
+            env["PYTHONPATH"] = pythonpath
     cleanup = not keep_tmpdir
 
     db: Database | None = None
