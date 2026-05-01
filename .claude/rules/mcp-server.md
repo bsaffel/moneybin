@@ -29,7 +29,7 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 
 ## Tool Taxonomy
 
-Tools use dot-separated namespaces (MCP SEP-986): `domain.action_or_view`.
+Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-986 permits dots, but Anthropic and OpenAI clients enforce `^[a-zA-Z0-9_-]{1,64}$`, so we use the portable subset.
 
 | Namespace | Purpose |
 |---|---|
@@ -44,9 +44,9 @@ Tools use dot-separated namespaces (MCP SEP-986): `domain.action_or_view`.
 | `privacy.*` | Consent status, grants, revocations, audit log |
 | `overview.*` | Cross-domain summaries, system info |
 
-Naming: **noun = query** (`spending.summary`), **verb = action** (`categorize.bulk`). No CRUD naming.
+Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_bulk`). No CRUD naming.
 
-**Progressive disclosure:** Per-session, tag-based visibility. All tools are registered at boot; extended-namespace tools carry `tags={domain}` and are hidden by `Visibility(False, tags={domain})` transforms. Core namespaces (~19 tools) are visible at connect; extended namespaces (`categorize`, `budget`, `tax`, `privacy`, `transactions.matches`) are revealed for the calling session only via the `moneybin.discover` meta-tool. Each tool stays single-purpose — no consolidation into action-parameter tools. See `mcp-architecture.md` §3.
+**Progressive disclosure:** Per-session, tag-based visibility. All tools are registered at boot; extended-namespace tools carry `tags={domain}` and are hidden by `Visibility(False, tags={domain})` transforms. Core namespaces (~19 tools) are visible at connect; extended namespaces (`categorize`, `budget`, `tax`, `privacy`, `transactions_matches`) are revealed for the calling session only via the `moneybin_discover` meta-tool. Each tool stays single-purpose — no consolidation into action-parameter tools. See `mcp-architecture.md` §3.
 
 ## Response Envelope
 
@@ -56,7 +56,7 @@ Every tool returns this shape:
 {
   "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "USD"},
   "data": [ ... ],
-  "actions": ["Use spending.by_category for breakdown"]
+  "actions": ["Use spending_by_category for breakdown"]
 }
 ```
 

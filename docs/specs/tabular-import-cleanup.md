@@ -132,7 +132,7 @@ tabular import review and may have changed):
 
 ---
 
-## Stream B2: N+1 merchant lookup in `categorize.bulk`
+## Stream B2: N+1 merchant lookup in `categorize_bulk`
 
 ### B2.1 Batch merchant resolution
 

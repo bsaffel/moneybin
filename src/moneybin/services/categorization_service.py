@@ -22,7 +22,7 @@ from typing import Any, Literal
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import Database
 from moneybin.metrics.registry import (
     CATEGORIZE_BULK_DURATION_SECONDS,
     CATEGORIZE_BULK_ERRORS_TOTAL,
@@ -35,7 +35,6 @@ from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
     MERCHANTS,
-    SEED_CATEGORIES,
     TRANSACTION_CATEGORIES,
 )
 
@@ -66,7 +65,7 @@ class CategorizationStats:
         return build_envelope(
             data=data,
             sensitivity="low",
-            actions=["Use categorize.uncategorized to see uncategorized transactions"],
+            actions=["Use categorize_uncategorized to see uncategorized transactions"],
         )
 
 
@@ -93,8 +92,8 @@ class BulkCategorizationResult:
             sensitivity="medium",
             total_count=input_count,
             actions=[
-                "Use categorize.rules to review auto-created rules",
-                "Use categorize.uncategorized to fetch the next batch",
+                "Use categorize_rules to review auto-created rules",
+                "Use categorize_uncategorized to fetch the next batch",
             ],
         )
 
@@ -158,20 +157,6 @@ def validate_bulk_items(
             )
             errors.append({"transaction_id": txn_id, "reason": reason})
     return items, errors
-
-
-@dataclass(slots=True)
-class SeedResult:
-    """Typed result for category seeding."""
-
-    seeded_count: int
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope from this seed result."""
-        return build_envelope(
-            data={"seeded_count": self.seeded_count},
-            sensitivity="low",
-        )
 
 
 @lru_cache(maxsize=512)
@@ -822,83 +807,6 @@ class CategorizationService:
             "rule": rule_count,
             "total": total,
         }
-
-    # -- Taxonomy / seed --
-
-    def ensure_seed_table(self) -> None:
-        """Materialize the SQLMesh seed table if it doesn't exist yet.
-
-        Runs a targeted ``sqlmesh plan --auto-apply`` scoped to just the
-        ``seeds.categories`` model so the MCP server works without a
-        prior CLI invocation of ``sqlmesh apply``.
-        """
-        result = self._db.execute(
-            """
-            SELECT COUNT(*) FROM information_schema.tables
-            WHERE table_schema = ? AND table_name = ?
-            """,
-            [SEED_CATEGORIES.schema, SEED_CATEGORIES.name],
-        ).fetchone()
-        if result and result[0] > 0:
-            return  # already exists
-
-        logger.info("Seed table missing — running targeted SQLMesh apply")
-
-        with sqlmesh_context() as ctx:
-            ctx.plan(
-                auto_apply=True,
-                no_prompts=True,
-                select_models=[SEED_CATEGORIES.full_name],
-            )
-        logger.info("SQLMesh seed apply completed")
-
-    def seed(self) -> int:
-        """Populate ``app.categories`` from the SQLMesh seed table.
-
-        If the seed table does not yet exist, a targeted SQLMesh apply is
-        run automatically to materialize it. Skips any categories that
-        already exist. Safe to run multiple times.
-
-        Returns:
-            Number of categories inserted.
-        """
-        self.ensure_seed_table()
-
-        count_before = 0
-        try:
-            result = self._db.execute(
-                f"SELECT COUNT(*) FROM {CATEGORIES.full_name}"
-            ).fetchone()
-            count_before = result[0] if result else 0
-        except duckdb.CatalogException:
-            pass
-
-        self._db.execute(
-            f"""
-            INSERT OR IGNORE INTO {CATEGORIES.full_name}
-            (category_id, category, subcategory, description, is_default,
-             is_active, plaid_detailed, created_at)
-            SELECT
-                category_id,
-                category,
-                subcategory,
-                description,
-                true AS is_default,
-                true AS is_active,
-                plaid_detailed,
-                CURRENT_TIMESTAMP
-            FROM {SEED_CATEGORIES.full_name}
-            """
-        )
-
-        result = self._db.execute(
-            f"SELECT COUNT(*) FROM {CATEGORIES.full_name}"
-        ).fetchone()
-        count_after = result[0] if result else 0
-
-        inserted = count_after - count_before
-        logger.info(f"Seeded {inserted} categories ({count_after} total)")
-        return inserted
 
     def get_active_categories(self) -> list[dict[str, str | bool | None]]:
         """Get all active categories.

@@ -25,15 +25,16 @@ from moneybin.services.categorization_service import (
     BulkCategorizationResult,
     CategorizationService,
     MatchType,
-    SeedResult,
     validate_bulk_items,
 )
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
+    CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
     MERCHANTS,
     TRANSACTION_CATEGORIES,
+    USER_CATEGORIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,8 +107,9 @@ def categorize_categories(
         data=data,
         sensitivity="low",
         actions=[
-            "Use categorize.seed to populate default categories",
-            "Use categorize.create_category to add a custom category",
+            "Use categorize_create_category to add a custom category",
+            "Defaults are seeded automatically by `moneybin db init` and "
+            "`moneybin transform apply` (or `moneybin transform seed` to re-run).",
         ],
     )
 
@@ -153,8 +155,8 @@ def categorize_rules() -> ResponseEnvelope:
         data=data,
         sensitivity="low",
         actions=[
-            "Use categorize.create_rules to add new rules",
-            "Use categorize.delete_rule to soft-delete a rule",
+            "Use categorize_create_rules to add new rules",
+            "Use categorize_delete_rule to soft-delete a rule",
         ],
     )
 
@@ -195,7 +197,7 @@ def categorize_merchants() -> ResponseEnvelope:
         data=data,
         sensitivity="low",
         actions=[
-            "Use categorize.create_merchants to add new merchant mappings",
+            "Use categorize_create_merchants to add new merchant mappings",
         ],
     )
 
@@ -248,7 +250,7 @@ def categorize_uncategorized(
         return build_envelope(
             data=[],
             sensitivity="medium",
-            actions=["Import data first using import.file"],
+            actions=["Import data first using import_file"],
         )
 
     records = [dict(zip(columns, row, strict=False)) for row in fetched]
@@ -256,8 +258,8 @@ def categorize_uncategorized(
         data=records,
         sensitivity="medium",
         actions=[
-            "Use categorize.bulk to assign categories to these transactions",
-            "Use categorize.create_rules to set up automatic categorization",
+            "Use categorize_bulk to assign categories to these transactions",
+            "Use categorize_create_rules to set up automatic categorization",
         ],
     )
 
@@ -385,7 +387,7 @@ def categorize_create_rules(
         sensitivity="low",
         total_count=len(rules),
         actions=[
-            "Use categorize.rules to review all rules",
+            "Use categorize_rules to review all rules",
         ],
     )
 
@@ -494,7 +496,7 @@ def categorize_create_merchants(
         sensitivity="low",
         total_count=len(merchants),
         actions=[
-            "Use categorize.merchants to review all merchant mappings",
+            "Use categorize_merchants to review all merchant mappings",
         ],
     )
 
@@ -508,7 +510,7 @@ def categorize_create_category(
     """Create a custom category or subcategory.
 
     Categories created this way are marked as non-default and active.
-    They can be toggled on/off with ``categorize.toggle_category``.
+    They can be toggled on/off with ``categorize_toggle_category``.
 
     Args:
         category: Primary category name (e.g. 'Childcare').
@@ -521,10 +523,10 @@ def categorize_create_category(
     try:
         db.execute(
             f"""
-            INSERT INTO {CATEGORIES.full_name}
+            INSERT INTO {USER_CATEGORIES.full_name}
             (category_id, category, subcategory, description,
-             is_default, is_active, created_at)
-            VALUES (?, ?, ?, ?, false, true, CURRENT_TIMESTAMP)
+             is_active, created_at)
+            VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP)
             """,
             [cat_id, category, subcategory, description],
         )
@@ -564,34 +566,34 @@ def categorize_toggle_category(
         is_active: True to enable, False to disable.
     """
     db = get_database()
-    row = db.execute(
-        f"""
-        UPDATE {CATEGORIES.full_name}
-        SET is_active = ?
-        WHERE category_id = ?
-        RETURNING category_id
-        """,
-        [is_active, category_id],
+    cat = db.execute(
+        f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",
+        [category_id],
     ).fetchone()
-    if not row:
+    if not cat:
         raise UserError(f"Category {category_id} not found", code="CATEGORY_NOT_FOUND")
+
+    if cat[0]:  # default category — record/upsert the override
+        db.execute(
+            f"""
+            INSERT INTO {CATEGORY_OVERRIDES.full_name} (category_id, is_active, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT (category_id) DO UPDATE
+                SET is_active = excluded.is_active,
+                    updated_at = excluded.updated_at
+            """,
+            [category_id, is_active],
+        )
+    else:
+        db.execute(
+            f"UPDATE {USER_CATEGORIES.full_name} SET is_active = ? WHERE category_id = ?",
+            [is_active, category_id],
+        )
     action = "enabled" if is_active else "disabled"
     return build_envelope(
         data={"category_id": category_id, "action": action},
         sensitivity="low",
     )
-
-
-@mcp_tool(sensitivity="low", domain="categorize")
-def categorize_seed() -> ResponseEnvelope:
-    """Initialize default categories from the Plaid PFCv2 taxonomy.
-
-    Copies ~100 default categories from the SQLMesh seed table into
-    app.categories. Safe to call multiple times -- existing categories
-    are not overwritten.
-    """
-    count = CategorizationService(get_database()).seed()
-    return SeedResult(seeded_count=count).to_envelope()
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
@@ -648,89 +650,83 @@ def register_categorize_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         categorize_categories,
-        "categorize.categories",
+        "categorize_categories",
         "List all categories in the taxonomy.",
     )
     register(
         mcp,
         categorize_rules,
-        "categorize.rules",
+        "categorize_rules",
         "List all active categorization rules.",
     )
     register(
         mcp,
         categorize_merchants,
-        "categorize.merchants",
+        "categorize_merchants",
         "List all merchant name mappings.",
     )
     register(
         mcp,
         categorize_stats,
-        "categorize.stats",
+        "categorize_stats",
         "Get categorization coverage statistics: total, "
         "categorized, uncategorized, percent, and breakdown by source.",
     )
     register(
         mcp,
         categorize_uncategorized,
-        "categorize.uncategorized",
+        "categorize_uncategorized",
         "Find transactions that have not been categorized yet.",
     )
     register(
         mcp,
         categorize_bulk,
-        "categorize.bulk",
+        "categorize_bulk",
         "Assign categories to multiple transactions in one call. "
         "Auto-creates merchant mappings for future auto-categorization.",
     )
     register(
         mcp,
         categorize_create_rules,
-        "categorize.create_rules",
+        "categorize_create_rules",
         "Create multiple categorization rules for automatic "
         "transaction categorization.",
     )
     register(
         mcp,
         categorize_delete_rule,
-        "categorize.delete_rule",
+        "categorize_delete_rule",
         "Soft-delete a categorization rule (set inactive).",
     )
     register(
         mcp,
         categorize_create_merchants,
-        "categorize.create_merchants",
+        "categorize_create_merchants",
         "Create multiple merchant name mappings for description "
         "normalization and auto-categorization.",
     )
     register(
         mcp,
         categorize_create_category,
-        "categorize.create_category",
+        "categorize_create_category",
         "Create a custom category or subcategory.",
     )
     register(
         mcp,
         categorize_toggle_category,
-        "categorize.toggle_category",
+        "categorize_toggle_category",
         "Enable or disable a category in the taxonomy.",
     )
     register(
         mcp,
-        categorize_seed,
-        "categorize.seed",
-        "Initialize default categories from the Plaid PFCv2 taxonomy.",
-    )
-    register(
-        mcp,
         categorize_auto_review,
-        "categorize.auto_review",
+        "categorize_auto_review",
         "List pending auto-rule proposals with sample transactions and trigger counts.",
     )
     register(
         mcp,
         categorize_auto_confirm,
-        "categorize.auto_confirm",
+        "categorize_auto_confirm",
         "Batch approve/reject auto-rule proposals. Approved "
         "proposals become active rules and immediately categorize "
         "matching transactions.",
@@ -738,6 +734,6 @@ def register_categorize_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         categorize_auto_stats,
-        "categorize.auto_stats",
+        "categorize_auto_stats",
         "Auto-rule health: active count, pending proposals, transactions categorized.",
     )

@@ -2,7 +2,7 @@
 """SQL namespace tools — direct read-only SQL queries.
 
 Tools:
-    - sql.query — Execute a read-only SQL query (medium sensitivity)
+    - sql_query — Execute a read-only SQL query (medium sensitivity)
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def register_sql_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         sql_query,
-        "sql.query",
+        "sql_query",
         "Execute a read-only SQL query against the database. "
         "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN.",
     )

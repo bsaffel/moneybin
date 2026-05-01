@@ -70,6 +70,28 @@ def apply_transforms() -> None:
         raise typer.Exit(1) from e
 
 
+@app.command("seed")
+def seed_transforms() -> None:
+    """Materialize SQLMesh seed models and propagate to app tables.
+
+    Re-runs the seed step in isolation — useful after editing a seed CSV
+    or restoring deleted defaults. ``moneybin db init`` and ``moneybin
+    transform apply`` already run this implicitly.
+    """
+    from moneybin.seeds import materialize_seeds
+
+    logger.info("⚙️  Materializing seeds...")
+    try:
+        with handle_cli_errors() as db:
+            materialize_seeds(db)
+        logger.info("✅ Seeds materialized")
+    except typer.Exit:
+        raise
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ Seed materialization failed: {e}")
+        raise typer.Exit(1) from e
+
+
 @app.command("status")
 def transform_status() -> None:
     """Show current model state and environment."""

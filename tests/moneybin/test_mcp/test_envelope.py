@@ -64,7 +64,7 @@ class TestResponseEnvelope:
         envelope = ResponseEnvelope(
             summary=SummaryMeta(total_count=3, returned_count=3),
             data=[{"period": "2026-04", "income": 5200.00}],
-            actions=["Use spending.by_category for breakdown"],
+            actions=["Use spending_by_category for breakdown"],
         )
         d = envelope.to_dict()
         assert set(d.keys()) == {"summary", "data", "actions"}
@@ -154,9 +154,9 @@ class TestBuildEnvelope:
         envelope = build_envelope(
             data=[],
             sensitivity="low",
-            actions=["Try spending.by_category"],
+            actions=["Try spending_by_category"],
         )
-        assert envelope.actions == ["Try spending.by_category"]
+        assert envelope.actions == ["Try spending_by_category"]
 
     @pytest.mark.unit
     def test_build_write_result(self) -> None:

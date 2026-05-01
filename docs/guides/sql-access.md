@@ -23,7 +23,7 @@ The shell and UI connect to the encrypted database transparently — no manual k
 
 ## MCP SQL Access
 
-The `sql.query` MCP tool lets AI assistants execute arbitrary read-only SQL:
+The `sql_query` MCP tool lets AI assistants execute arbitrary read-only SQL:
 
 ```sql
 -- Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN are allowed

@@ -34,7 +34,7 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 
 ### Proposal generation
 
-1. After any categorization event (`categorize.bulk` MCP tool or `moneybin categorize` CLI), the system checks each categorized transaction for a potential auto-rule proposal.
+1. After any categorization event (`categorize_bulk` MCP tool or `moneybin categorize` CLI), the system checks each categorized transaction for a potential auto-rule proposal.
 2. A proposal is generated when no active rule or merchant mapping already covers the transaction's pattern AND no pending proposal for the same pattern exists (if a pending proposal exists, its `trigger_count` is incremented instead).
 3. The proposal threshold is configurable (`categorization.auto_rule_proposal_threshold`, default 1). A value of 1 means propose on first categorization; a value of 3 means propose after three matching categorizations.
 4. Pattern extraction uses the merchant-first strategy: canonical merchant name when a `merchant_id` exists, cleaned description otherwise.
@@ -138,7 +138,7 @@ The auto-rule engine hooks into the categorization service layer, which is share
 
 | Hook point | Trigger |
 |---|---|
-| `CategorizationService.bulk_categorize()` | Batch categorization via `categorize.bulk` MCP tool or `moneybin categorize` CLI |
+| `CategorizationService.bulk_categorize()` | Batch categorization via `categorize_bulk` MCP tool or `moneybin categorize` CLI |
 
 **CLI parity:** CLI commands use the same service layer as MCP tools. Same code path, not a separate implementation.
 
@@ -197,9 +197,9 @@ Imported 120 transactions from chase_checking.csv
 
 | Tool | Type | Description |
 |---|---|---|
-| `categorize.auto_review` | Read | List pending proposals with sample transactions, trigger counts, and pattern details |
-| `categorize.auto_confirm` | Write | Batch approve/reject proposals by ID. Approved proposals are promoted to active rules. |
-| `categorize.auto_stats` | Read | Auto-rule health: active count, proposal count, override rate, top-performing rules by match count |
+| `categorize_auto_review` | Read | List pending proposals with sample transactions, trigger counts, and pattern details |
+| `categorize_auto_confirm` | Write | Batch approve/reject proposals by ID. Approved proposals are promoted to active rules. |
+| `categorize_auto_stats` | Read | Auto-rule health: active count, proposal count, override rate, top-performing rules by match count |
 
 ### Prompt
 
@@ -216,12 +216,12 @@ sequenceDiagram
     participant Sys as MoneyBin
 
     User->>AI: Show me proposed rules
-    AI->>Sys: categorize.auto_review()
+    AI->>Sys: categorize_auto_review()
     Sys-->>AI: 8 pending rules with samples
     AI->>User: 8 patterns found:<br/>1. STARBUCKS -> Coffee (3 matches)<br/>2. AMAZON -> Shopping (5 matches)...
     User->>AI: Approve all except #4,<br/>that should be Groceries
-    AI->>Sys: categorize.auto_confirm(<br/>approve x7, reject x1)
-    AI->>Sys: categorize.create_rules(<br/>corrected #4 as Groceries)
+    AI->>Sys: categorize_auto_confirm(<br/>approve x7, reject x1)
+    AI->>Sys: categorize_create_rules(<br/>corrected #4 as Groceries)
     Sys-->>AI: 7 approved, 1 rejected, 1 created
     AI->>User: 7 rules activated,<br/>1 corrected to Groceries.<br/>Next import will auto-categorize<br/>these patterns.
 ```
@@ -256,7 +256,7 @@ Env var overrides:
 ### Integration tests
 
 - **End-to-end**: import -> bulk categorize -> verify proposals created -> approve -> re-import -> verify new transactions auto-categorized by the promoted rule
-- **Hook fires on all paths**: `categorize.bulk` MCP tool and CLI categorization both trigger proposal generation (same service layer)
+- **Hook fires on all paths**: `categorize_bulk` MCP tool and CLI categorization both trigger proposal generation (same service layer)
 - **Immediate effect**: approve a proposal, verify existing uncategorized transactions matching the pattern are categorized immediately
 - **Priority hierarchy**: transaction categorized by user rule -> auto-rule hook does not propose (pattern already covered)
 - **Hook idempotency**: categorize same transaction twice -> no duplicate proposal
@@ -272,7 +272,7 @@ Env var overrides:
 
 - Existing rule engine (`app.categorization_rules`, rule evaluation logic)
 - Existing merchant normalization (`app.merchants`, canonical name resolution)
-- Existing categorization service layer (`CategorizationService.bulk_categorize()`, backing `categorize.bulk` MCP tool)
+- Existing categorization service layer (`CategorizationService.bulk_categorize()`, backing `categorize_bulk` MCP tool)
 - Database migration system (`database-migration.md`) for `app.proposed_rules` table creation
 
 ## Out of Scope

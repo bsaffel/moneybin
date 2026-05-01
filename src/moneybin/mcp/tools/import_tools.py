@@ -2,10 +2,10 @@
 """Import namespace tools — file import, preview, status, format listing.
 
 Tools:
-    - import.file — Import a financial data file (low sensitivity)
-    - import.csv_preview — Preview a tabular file without importing (low sensitivity)
-    - import.status — List past import batches (low sensitivity)
-    - import.list_formats — List available tabular import formats (low sensitivity)
+    - import_file — Import a financial data file (low sensitivity)
+    - import_csv_preview — Preview a tabular file without importing (low sensitivity)
+    - import_status — List past import batches (low sensitivity)
+    - import_list_formats — List available tabular import formats (low sensitivity)
 """
 
 from __future__ import annotations
@@ -83,8 +83,8 @@ def import_file(
         },
         sensitivity="low",
         actions=[
-            "Use transactions.search to view imported transactions",
-            "Use categorize.uncategorized to categorize new transactions",
+            "Use transactions_search to view imported transactions",
+            "Use categorize_uncategorized to categorize new transactions",
         ],
     )
 
@@ -138,8 +138,8 @@ def import_csv_preview(file_path: str) -> ResponseEnvelope:
         data=preview,
         sensitivity="low",
         actions=[
-            "Use import.file to import after reviewing the preview",
-            "Use import.list_formats for available named formats",
+            "Use import_file to import after reviewing the preview",
+            "Use import_list_formats for available named formats",
         ],
     )
 
@@ -170,7 +170,7 @@ def import_status(
         data=records,
         sensitivity="low",
         actions=[
-            "Use import.file to import a new file",
+            "Use import_file to import a new file",
         ],
     )
 
@@ -180,7 +180,7 @@ def import_list_formats() -> ResponseEnvelope:
     """List all available tabular import formats (built-in and user-saved).
 
     Returns format name, institution, sign convention, date format, and
-    header signature for each format. Use ``import.csv_preview`` to test
+    header signature for each format. Use ``import_csv_preview`` to test
     a format against a specific file.
     """
     from moneybin.extractors.tabular.formats import (
@@ -213,8 +213,8 @@ def import_list_formats() -> ResponseEnvelope:
         data=format_list,
         sensitivity="low",
         actions=[
-            "Use import.csv_preview to test a format against a file",
-            "Use import.file with format_name to import using a specific format",
+            "Use import_csv_preview to test a format against a file",
+            "Use import_file with format_name to import using a specific format",
         ],
     )
 
@@ -224,26 +224,26 @@ def register_import_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         import_file,
-        "import.file",
+        "import_file",
         "Import a financial data file (OFX, CSV, TSV, Excel, "
         "Parquet, PDF) into MoneyBin.",
     )
     register(
         mcp,
         import_csv_preview,
-        "import.csv_preview",
+        "import_csv_preview",
         "Preview a tabular file's structure and detected column "
         "mapping without importing.",
     )
     register(
         mcp,
         import_status,
-        "import.status",
+        "import_status",
         "List past import batches with status, row counts, and detection confidence.",
     )
     register(
         mcp,
         import_list_formats,
-        "import.list_formats",
+        "import_list_formats",
         "List all available tabular import formats (built-in and user-saved).",
     )

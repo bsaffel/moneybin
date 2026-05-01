@@ -2,8 +2,8 @@
 """Spending namespace tools — expense analysis, trends, category breakdowns.
 
 Tools:
-    - spending.summary — Income vs expense totals by month (low sensitivity)
-    - spending.by_category — Spending by category for a period (low sensitivity)
+    - spending_summary — Income vs expense totals by month (low sensitivity)
+    - spending_by_category — Spending by category for a period (low sensitivity)
 """
 
 from __future__ import annotations
@@ -50,8 +50,8 @@ def spending_by_category(
 ) -> ResponseEnvelope:
     """Get spending breakdown by category for a period.
 
-    Requires transactions to be categorized. Use ``categorize.uncategorized``
-    and ``categorize.bulk`` to categorize transactions first.
+    Requires transactions to be categorized. Use ``categorize_uncategorized``
+    and ``categorize_bulk`` to categorize transactions first.
     """
     service = SpendingService(get_database())
     result = service.by_category(
@@ -70,14 +70,14 @@ def register_spending_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         spending_summary,
-        "spending.summary",
+        "spending_summary",
         "Get income vs expense totals by month. Returns time-series "
         "data suitable for charting.",
     )
     register(
         mcp,
         spending_by_category,
-        "spending.by_category",
+        "spending_by_category",
         "Get spending breakdown by category for a period. "
         "Requires transactions to be categorized.",
     )

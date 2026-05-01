@@ -2,8 +2,8 @@
 """Budget namespace tools — budget targets and spending status.
 
 Tools:
-    - budget.set — Create or update a budget target (low sensitivity)
-    - budget.status — Budget vs actual spending comparison (low sensitivity)
+    - budget_set — Create or update a budget target (low sensitivity)
+    - budget_status — Budget vs actual spending comparison (low sensitivity)
 """
 
 from __future__ import annotations
@@ -66,13 +66,13 @@ def register_budget_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         budget_set,
-        "budget.set",
+        "budget_set",
         "Create or update a monthly budget target for a spending category.",
     )
     register(
         mcp,
         budget_status,
-        "budget.status",
+        "budget_status",
         "Get budget vs actual spending comparison for a month. "
         "Shows target, spent, remaining, and status for each category.",
     )

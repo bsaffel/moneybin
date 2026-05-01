@@ -2,8 +2,8 @@
 """Transactions namespace tools — search and recurring pattern detection.
 
 Tools:
-    - transactions.search — Search transactions with filters (medium sensitivity)
-    - transactions.recurring — Detect recurring transaction patterns (medium sensitivity)
+    - transactions_search — Search transactions with filters (medium sensitivity)
+    - transactions_recurring — Detect recurring transaction patterns (medium sensitivity)
 """
 
 from __future__ import annotations
@@ -90,13 +90,13 @@ def register_transactions_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         transactions_search,
-        "transactions.search",
+        "transactions_search",
         "Search transactions with flexible filtering by date, "
         "amount, description, account, and category.",
     )
     register(
         mcp,
         transactions_recurring,
-        "transactions.recurring",
+        "transactions_recurring",
         "Detect recurring transaction patterns like subscriptions and regular charges.",
     )

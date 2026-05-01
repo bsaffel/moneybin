@@ -38,7 +38,7 @@ def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:
     the audit table.
 
     Args:
-        tool_name: The v1 dot-separated tool name.
+        tool_name: The registered tool name (underscore-joined).
         sensitivity: The tool's declared sensitivity tier.
     """
     logger.debug(f"MCP tool call: {tool_name} (sensitivity={sensitivity.value})")

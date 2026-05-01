@@ -33,7 +33,7 @@ class TestLogToolCall:
     def test_log_tool_call_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
         """log_tool_call is a stub — it logs but doesn't block."""
         with caplog.at_level("DEBUG"):
-            result = log_tool_call("spending.summary", Sensitivity.LOW)
+            result = log_tool_call("spending_summary", Sensitivity.LOW)
         assert result is None
 
     @pytest.mark.unit
@@ -41,8 +41,8 @@ class TestLogToolCall:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level("DEBUG"):
-            log_tool_call("transactions.search", Sensitivity.MEDIUM)
-        assert "transactions.search" in caplog.text
+            log_tool_call("transactions_search", Sensitivity.MEDIUM)
+        assert "transactions_search" in caplog.text
         assert "medium" in caplog.text
 
 

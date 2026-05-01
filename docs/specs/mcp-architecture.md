@@ -126,15 +126,15 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 ### Namespace principles
 
 1. **One namespace per concern, not per entity.** `import` handles all file types — there's no `import_ofx`, `import_csv`, `import_pdf`. The tool figures out the file type or accepts a hint parameter.
-2. **Read and write in the same namespace.** `categorize.bulk` (write) lives alongside `categorize.rules` (read). The verb in the tool name distinguishes intent.
-3. **No CRUD naming.** Tools are named for what the user wants to accomplish, not the database operation. `categorize.bulk` not `create_transaction_categories`. `transactions.correct` not `update_transaction`.
+2. **Read and write in the same namespace.** `categorize_bulk` (write) lives alongside `categorize_rules` (read). The verb in the tool name distinguishes intent.
+3. **No CRUD naming.** Tools are named for what the user wants to accomplish, not the database operation. `categorize_bulk` not `create_transaction_categories`. `transactions_correct` not `update_transaction`.
 4. **New domains added per quarter.** Q2 adds `investments.*`. Q4's multi-currency is a crosscutting concern handled at the service layer (amounts, conversions, rate lookups), not a separate tool namespace.
 
 ### Naming conventions
 
-- **Noun = query.** `spending.summary`, `accounts.balances`, `categorize.rules` — returns data.
-- **Verb = action.** `categorize.bulk`, `transactions.correct`, `import.file` — mutates state.
-- **Dot separator** per MCP SEP-986. Tool names are lowercase, no underscores within segments.
+- **Noun = query.** `spending_summary`, `accounts_balances`, `categorize_rules` — returns data.
+- **Verb = action.** `categorize_bulk`, `transactions_correct`, `import_file` — mutates state.
+- **Underscore separator.** `spending_summary`, `categorize_bulk`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `spending.summary`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
 
 ### Progressive disclosure via per-session visibility
 
@@ -154,7 +154,7 @@ The default core set keeps the initial tool count under ~20:
 | `import.*` | 2–4 | Primary data entry (core subset: `file`, `status`) |
 | `sql.*` | 1 | Power-user escape hatch |
 
-**Extended namespaces** are revealed per-session via the `moneybin.discover` meta-tool:
+**Extended namespaces** are revealed per-session via the `moneybin_discover` meta-tool:
 
 | Namespace | Tools | When needed |
 |---|---|---|
@@ -162,23 +162,23 @@ The default core set keeps the initial tool count under ~20:
 | `budget.*` | 4 | Budget tracking |
 | `tax.*` | 2 | Tax prep |
 | `privacy.*` | 4 | Privacy management |
-| `transactions.matches.*` | 6 | Match review workflow |
+| `transactions_matches.*` | 6 | Match review workflow |
 | `import.*` (extended) | 3 | AI parsing, folder import |
 
-**The core set is fixed by the server, not user-configured.** Per-session `moneybin.discover` covers the dynamic case — if the AI needs a budget or tax tool, it discovers the namespace mid-conversation. Static per-user "what loads at connect" config has no realistic value for a single-user app and was removed; the AI does the disclosing, not the user.
+**The core set is fixed by the server, not user-configured.** Per-session `moneybin_discover` covers the dynamic case — if the AI needs a budget or tax tool, it discovers the namespace mid-conversation. Static per-user "what loads at connect" config has no realistic value for a single-user app and was removed; the AI does the disclosing, not the user.
 
 **How it works:**
 
 1. **All tools are registered at boot**, but extended-namespace tools carry a `tags={domain}` marker (e.g. `tags={"categorize"}`). A server-level `Visibility(False, tags={domain})` transform hides each extended domain by default.
-2. **At connection time:** Each client sees only core (untagged) tools plus `moneybin.discover`. The `moneybin://tools` resource lists every available domain with one-line descriptions, so the AI knows what's available without seeing every schema.
-3. **On `moneybin.discover(domain="categorize")`:** The server calls `enable_components(ctx, tags={"categorize"})`, which flips visibility for that tag in the **calling session only**. fastmcp emits `tools/list_changed` automatically; other connected clients are unaffected.
+2. **At connection time:** Each client sees only core (untagged) tools plus `moneybin_discover`. The `moneybin://tools` resource lists every available domain with one-line descriptions, so the AI knows what's available without seeing every schema.
+3. **On `moneybin_discover(domain="categorize")`:** The server calls `enable_components(ctx, tags={"categorize"})`, which flips visibility for that tag in the **calling session only**. fastmcp emits `tools/list_changed` automatically; other connected clients are unaffected.
 4. **Once revealed, tools stay revealed** for that session. No unloading — the AI might reference a revealed tool later.
 5. **Hidden tools are uncallable.** Calling a tool from a domain that has not been discovered raises `ToolError: Unknown tool`, so visibility doubles as access control.
-6. **The `actions` array** in response envelopes serves as lightweight progressive disclosure within a session — when `spending.summary` suggests "Use spending.by_category for breakdown", the AI already has that tool (core). When a tool suggests one from an extended domain, the AI calls `discover` first.
+6. **The `actions` array** in response envelopes serves as lightweight progressive disclosure within a session — when `spending_summary` suggests "Use spending_by_category for breakdown", the AI already has that tool (core). When a tool suggests one from an extended domain, the AI calls `discover` first.
 
 **Design constraints:**
 
-- **`moneybin.discover` is always visible.** It's the only tool outside of core that's available at connection time.
+- **`moneybin_discover` is always visible.** It's the only tool outside of core that's available at connection time.
 - **No tool consolidation.** Each tool does one thing with a clean schema. The visibility pattern handles scale; individual tools stay simple.
 - **Per-session, not per-process.** Each client connection gets its own visibility state — a previous session's discovery does not bleed into a fresh one.
 - **Graceful fallback.** Clients that ignore `tools/list_changed` will not see newly-revealed tools, but core tools remain available throughout. Per-session disclosure is an optimization, not a requirement for correctness.
@@ -191,7 +191,7 @@ Multi-currency is not a tool domain. It surfaces as:
 - A **parameter** on existing tools (e.g., `detail` level that includes native currency alongside home-currency amounts).
 - **Response metadata** (`display_currency`, `native_currencies` — see section 4).
 - A **service-layer concern** (conversion at query time using cached exchange rates).
-- **Rate overrides** handled via `transactions.correct` as a correction on a specific transaction.
+- **Rate overrides** handled via `transactions_correct` as a correction on a specific transaction.
 
 ---
 
@@ -206,10 +206,10 @@ Tools that operate on collections accept and return lists in a single call. The 
 3. **Write tool** accepts the full list of decisions in one call.
 
 ```
-Turn 1: categorize.uncategorized(limit=50)
+Turn 1: categorize_uncategorized(limit=50)
         -> returns 50 transactions with descriptions, amounts, dates, suggested categories
 
-Turn 2: categorize.bulk([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
+Turn 2: categorize_bulk([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
         -> applies all 50 categorizations, returns summary: {applied: 48, skipped: 2, errors: [...]}
 ```
 
@@ -231,8 +231,8 @@ Every tool returns a consistent envelope:
   },
   "data": [ ... ],
   "actions": [
-    "Use spending.by_category for category breakdown",
-    "Use transactions.search with narrower date range for full results"
+    "Use spending_by_category for category breakdown",
+    "Use transactions_search with narrower date range for full results"
   ]
 }
 ```
@@ -317,9 +317,9 @@ Every tool declares its **maximum data sensitivity** — the highest sensitivity
 
 | Sensitivity | Data characteristics | Consent required | Example tools |
 |---|---|---|---|
-| `low` | Aggregates, counts, category labels, structural metadata | None | `spending.summary`, `overview.status`, `accounts.list` |
-| `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions.search`, `spending.merchants`, `categorize.uncategorized` |
-| `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts.details` |
+| `low` | Aggregates, counts, category labels, structural metadata | None | `spending_summary`, `overview_status`, `accounts_list` |
+| `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions_search`, `spending_merchants`, `categorize_uncategorized` |
+| `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts_details` |
 
 ### Sensitivity behavior by tier
 
@@ -393,7 +393,7 @@ MCP prompts are guided workflows — structured templates that help the AI walk 
 
 **Design principles:**
 
-1. **Workflow-oriented, not tool-oriented.** A prompt represents a user goal ("review my monthly finances"), not a tool wrapper ("call spending.summary with these params"). The prompt orchestrates multiple tools.
+1. **Workflow-oriented, not tool-oriented.** A prompt represents a user goal ("review my monthly finances"), not a tool wrapper ("call spending_summary with these params"). The prompt orchestrates multiple tools.
 2. **Opinionated sequence.** Each prompt defines the order of operations, what data to gather, what to present, and when to ask the user for input. The AI follows the script rather than improvising.
 3. **Composable with tools.** Prompts reference tools by name. When tools evolve (new parameters, richer responses), prompts automatically benefit.
 4. **Few, high-value.** Prompts exist for workflows that are common enough to standardize and complex enough that an AI might not discover the right tool composition on its own.
@@ -416,7 +416,7 @@ MCP resources are read-only data endpoints that give the AI ambient context with
 
 1. **Ambient, not interactive.** Resources provide background context the AI needs to be helpful — schema information, configuration state, available accounts. They don't accept parameters or perform actions.
 2. **Small and stable.** Resources should be compact enough to load into context without waste. They change infrequently (account list, schema shape, privacy status).
-3. **Bootstrap the AI.** The right set of resources means the AI's first tool call is the right one. Without resources, the AI has to call `overview.status` before it can do anything useful.
+3. **Bootstrap the AI.** The right set of resources means the AI's first tool call is the right one. Without resources, the AI has to call `overview_status` before it can do anything useful.
 
 **Resources:**
 
@@ -425,7 +425,7 @@ MCP resources are read-only data endpoints that give the AI ambient context with
 | `moneybin://status` | Data freshness, row counts, date ranges per source, last import timestamp | Lets the AI know what data exists without a tool call |
 | `moneybin://accounts` | Account list with types, institutions, currencies | Lets the AI reference accounts by name, filter by type |
 | `moneybin://privacy` | Active consent grants, configured backend, consent mode | Lets the AI know what it can and can't do before hitting a consent wall |
-| `moneybin://schema` | Core table schemas with column descriptions | Lets the AI write accurate SQL in `sql.query` without calling `describe_table` first |
+| `moneybin://schema` | Core table schemas with column descriptions | Lets the AI write accurate SQL in `sql_query` without calling `describe_table` first |
 
 **What's NOT a resource:** Anything that changes frequently (transaction lists, balance snapshots, budget status) or requires parameters (filtered queries). Those are tools.
 
@@ -471,12 +471,12 @@ def spending_summary_cmd(
 | **Error handling** | Structured error in response envelope | `logger.error` + `typer.Exit(1)` |
 | **Discoverability** | Tool descriptions + `actions` array | `--help` + command group structure |
 
-The `categorize.bulk` MCP tool has CLI parity via `moneybin categorize bulk`. Both surfaces share the same `CategorizationService.bulk_categorize` implementation, validated through the same `BulkCategorizationItem` Pydantic model at every boundary.
+The `categorize_bulk` MCP tool has CLI parity via `moneybin categorize bulk`. Both surfaces share the same `CategorizationService.bulk_categorize` implementation, validated through the same `BulkCategorizationItem` Pydantic model at every boundary.
 
 ### What symmetry does NOT mean
 
 - **Not identical UX.** The CLI uses tables, progress bars, and icons. MCP returns structured data. Same data, different presentation.
-- **Not identical invocation.** `moneybin spending summary --months 3` vs `spending.summary(months=3)`. The CLI uses Typer's conventions; MCP uses tool-call conventions.
+- **Not identical invocation.** `moneybin spending summary --months 3` vs `spending_summary(months=3)`. The CLI uses Typer's conventions; MCP uses tool-call conventions.
 - **Not a generated surface.** The CLI is hand-crafted for human ergonomics. It's not auto-generated from MCP tool schemas. Both surfaces are independently authored but share the service layer.
 
 ### CLI command structure
@@ -549,7 +549,7 @@ This spec does not define MCP Apps — that is the immediate follow-on spec. But
 
 1. **Structured data, never pre-formatted.** Tools return typed fields (`amount: 1245.67`, `date: "2026-04-15"`) not display strings (`"$1,245.67"`, `"April 15, 2026"`). Formatting is the consumer's job — whether that consumer is an AI composing a text response or an App rendering a chart.
 
-2. **Aggregation-ready responses.** Tools that return time-series data (`spending.summary`, `cashflow.summary`, `accounts.net-worth`) include data in a shape that maps directly to chart axes — arrays of `{period, value}` objects, not prose summaries. An App can render a chart from the response without post-processing.
+2. **Aggregation-ready responses.** Tools that return time-series data (`spending_summary`, `cashflow_summary`, `accounts_networth`) include data in a shape that maps directly to chart axes — arrays of `{period, value}` objects, not prose summaries. An App can render a chart from the response without post-processing.
 
 3. **Currency in metadata, not per-row.** `summary.display_currency` at the top of the response, not `currency: "USD"` on every row. Per-row currency fields only when the response contains mixed unconverted currencies (see section 4).
 
@@ -615,7 +615,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | **Service layer formalization** | Explicit shared services consumed by both MCP and CLI, returning typed Python objects |
 | **Response envelope** | Consistent `{summary, data, actions}` shape across all tools |
 | **Sensitivity declarations** | Static per-tool sensitivity tier driving automatic privacy enforcement |
-| **Progressive disclosure** | Namespace-based tool registration with `moneybin.discover` meta-tool; core namespaces at connection, extended on demand via `tools/list_changed` |
+| **Progressive disclosure** | Namespace-based tool registration with `moneybin_discover` meta-tool; core namespaces at connection, extended on demand via `tools/list_changed` |
 
 ---
 
@@ -642,12 +642,12 @@ These decisions and their rationale should be documented in the 12-month plan.
 |---|---|
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
-| [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions.review-matches`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
+| [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_matches_pending`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
 
 ## Resolved Decisions
 
-- **`sql.query` tool.** Kept as a power-user escape hatch with guardrails: read-only validation, file-access function blocking, `MAX_ROWS` cap. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §13.
+- **`sql_query` tool.** Kept as a power-user escape hatch with guardrails: read-only validation, file-access function blocking, `MAX_ROWS` cap. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §13.
 - **Prompt count.** Four prompts: `monthly-review`, `categorization-organize`, `onboarding`, `tax-prep`. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §14.
 - **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
 - **Privacy middleware implementation.** Decorator-based (`@mcp_tool(sensitivity="medium")`) that delegates to a middleware class. Decorator for ergonomics at the tool definition site; class for testability of the consent/audit/redaction logic.
-- **Tool count strategy.** Progressive disclosure via namespace-based registration, not tool consolidation. The full surface (46+ tools) exceeds practical limits for AI tool selection (~20-30 tools). Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Instead: core namespaces (~19 tools) registered at connection time, extended namespaces loaded on demand via `moneybin.discover` meta-tool and `tools/list_changed` notification. Each tool stays clean and single-purpose. See §3 "Progressive disclosure via namespace registration" and [`mcp-tool-surface.md`](mcp-tool-surface.md) §15b.
+- **Tool count strategy.** Progressive disclosure via namespace-based registration, not tool consolidation. The full surface (46+ tools) exceeds practical limits for AI tool selection (~20-30 tools). Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Instead: core namespaces (~19 tools) registered at connection time, extended namespaces loaded on demand via `moneybin_discover` meta-tool and `tools/list_changed` notification. Each tool stays clean and single-purpose. See §3 "Progressive disclosure via namespace registration" and [`mcp-tool-surface.md`](mcp-tool-surface.md) §15b.

@@ -67,7 +67,7 @@ class W2Result:
             data=[f.to_dict() for f in self.forms],
             sensitivity="high",
             actions=[
-                "Use spending.summary for spending overview",
+                "Use spending_summary for spending overview",
             ],
         )
 

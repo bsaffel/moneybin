@@ -351,7 +351,7 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 
 ### How synced data surfaces
 
-No sync-specific read tools needed. Once data is pulled and transformed, it flows through the existing core tables. All existing MCP tools (`transactions.list`, `spending.by_category`, `accounts.list`, etc.) automatically include synced data via `source_type = '{provider}'` — the data warehouse doing its job.
+No sync-specific read tools needed. Once data is pulled and transformed, it flows through the existing core tables. All existing MCP tools (`transactions_list`, `spending_by_category`, `accounts_list`, etc.) automatically include synced data via `source_type = '{provider}'` — the data warehouse doing its job.
 
 ---
 

@@ -5,14 +5,12 @@ matching, prompt construction, and response parsing.
 """
 
 from collections import Counter
-from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 import yaml
-from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.services._text import normalize_description
@@ -56,16 +54,6 @@ def get_categorization_stats(db: Database) -> dict[str, int | float]:
 def get_active_categories(db: Database) -> list[dict[str, str | bool | None]]:
     """Test shim — delegates to CategorizationService.get_active_categories."""
     return CategorizationService(db).get_active_categories()
-
-
-def seed_categories(db: Database) -> int:
-    """Test shim — delegates to CategorizationService.seed."""
-    return CategorizationService(db).seed()
-
-
-def ensure_seed_table(db: Database) -> None:
-    """Test shim — delegates to CategorizationService.ensure_seed_table."""
-    CategorizationService(db).ensure_seed_table()
 
 
 @pytest.fixture()
@@ -498,62 +486,17 @@ class TestGetCategorizationStats:
 
 
 # ---------------------------------------------------------------------------
-# Seed categories
+# Categories view (seeds + user, with overrides)
 # ---------------------------------------------------------------------------
 
 
-class TestEnsureSeedTable:
-    """Tests for lazy SQLMesh seed initialization."""
+class TestCategoriesView:
+    """Tests for the app.categories view that unions seeds + user_categories."""
 
-    @pytest.mark.unit
-    def test_skips_when_table_exists(self, db: Database) -> None:
-        """No SQLMesh call when seed table already exists."""
-        db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
-        db.execute("CREATE TABLE seeds.categories (category_id VARCHAR)")
-        # Should return without calling SQLMesh
-        ensure_seed_table(db)
+    @staticmethod
+    def _setup_seeds_and_view(db: Database) -> None:
+        from moneybin.seeds import refresh_views
 
-    @pytest.mark.unit
-    def test_calls_sqlmesh_when_missing(
-        self, db: Database, mocker: MockerFixture
-    ) -> None:
-        """Runs targeted SQLMesh apply when seed table is missing."""
-        from contextlib import contextmanager
-
-        mock_ctx = mocker.MagicMock()
-
-        @contextmanager
-        def mock_sqlmesh_ctx(**kwargs: object) -> Generator[MagicMock, None, None]:  # noqa: ARG001 — absorb kwargs
-            yield mock_ctx
-
-        mocker.patch(
-            "moneybin.services.categorization_service.sqlmesh_context",
-            side_effect=mock_sqlmesh_ctx,
-        )
-        # Table doesn't exist, but after plan() it would — simulate by
-        # having plan() create the table as a side effect
-
-        def create_table(*args: object, **kwargs: object) -> None:
-            db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
-            db.execute("CREATE TABLE seeds.categories (category_id VARCHAR)")
-
-        mock_ctx.plan.side_effect = create_table
-
-        ensure_seed_table(db)
-
-        mock_ctx.plan.assert_called_once_with(
-            auto_apply=True,
-            no_prompts=True,
-            select_models=["seeds.categories"],  # SEED_CATEGORIES.full_name
-        )
-
-
-class TestSeedCategories:
-    """Tests for category seeding."""
-
-    @pytest.mark.unit
-    def test_seed_idempotent(self, db: Database) -> None:
-        # Create a mock seed table
         db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
         db.execute("""
             CREATE TABLE seeds.categories (
@@ -569,26 +512,37 @@ class TestSeedCategories:
             ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK'),
             ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'FOOD_AND_DRINK_COFFEE')
         """)
-
-        first = seed_categories(db)
-        assert first == 2
-
-        second = seed_categories(db)
-        assert second == 0  # Idempotent
+        refresh_views(db)
 
     @pytest.mark.unit
-    def test_get_active_categories(self, db: Database) -> None:
-        db.execute("""
-            INSERT INTO app.categories
-            (category_id, category, subcategory, is_default, is_active)
-            VALUES
-            ('FND', 'Food & Drink', NULL, true, true),
-            ('FND-COF', 'Food & Drink', 'Coffee Shops', true, true),
-            ('OLD', 'Deprecated', NULL, true, false)
-        """)
+    def test_view_exposes_seeds_as_defaults(self, db: Database) -> None:
+        self._setup_seeds_and_view(db)
         categories = get_active_categories(db)
         assert len(categories) == 2
-        assert all(c["category"] == "Food & Drink" for c in categories)
+        assert all(c["is_default"] is True for c in categories)
+
+    @pytest.mark.unit
+    def test_view_unions_user_categories(self, db: Database) -> None:
+        self._setup_seeds_and_view(db)
+        db.execute("""
+            INSERT INTO app.user_categories (category_id, category, subcategory)
+            VALUES ('CUSTOM1', 'Childcare', 'Daycare')
+        """)
+        categories = get_active_categories(db)
+        ids = {c["category_id"] for c in categories}
+        assert ids == {"FND", "FND-COF", "CUSTOM1"}
+
+    @pytest.mark.unit
+    def test_view_applies_default_override_deactivation(self, db: Database) -> None:
+        self._setup_seeds_and_view(db)
+        db.execute("""
+            INSERT INTO app.category_overrides (category_id, is_active)
+            VALUES ('FND', false)
+        """)
+        categories = get_active_categories(db)
+        ids = {c["category_id"] for c in categories}
+        assert "FND" not in ids
+        assert "FND-COF" in ids
 
 
 # ---------------------------------------------------------------------------
@@ -681,11 +635,9 @@ def test_service_exposes_consolidated_methods(real_db: Database) -> None:
         "bulk_categorize",
         "apply_rules",
         "apply_deterministic",
-        "seed",
         "stats",
         "match_merchant",
         "apply_merchant_categories",
-        "ensure_seed_table",
         "get_active_categories",
         "categorization_stats",
         "find_matching_rule",
