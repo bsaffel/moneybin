@@ -11,7 +11,9 @@ from moneybin.database import Database
 from tests.scenarios._harnesses import (
     assert_empty_input_safe,
     assert_idempotent,
+    assert_incremental_safe,
     assert_malformed_input_rejected,
+    assert_subprocess_parity,
 )
 
 
@@ -91,3 +93,82 @@ def test_malformed_input_rejected_fails_on_wrong_message() -> None:
         run=bad_run, expected_message_substring="missing column"
     )
     assert not r.passed
+
+
+def test_incremental_safe_passes_when_counts_match_expected(db: Database) -> None:
+    """Load A → 2 rows; load B → 3 rows total (1 net-new). Both expectations met."""
+    db.execute("CREATE TABLE t (id INT)")
+
+    def load_a() -> None:
+        db.execute("INSERT INTO t VALUES (1), (2)")
+
+    def load_b() -> None:
+        db.execute("INSERT INTO t VALUES (3)")
+
+    r = assert_incremental_safe(
+        db,
+        tables=["t"],
+        load_a=load_a,
+        load_b=load_b,
+        expected_a_count={"t": 2},
+        expected_b_count={"t": 3},
+    )
+    assert r.passed, r.details
+
+
+def test_incremental_safe_fails_when_load_b_exceeds_expected(db: Database) -> None:
+    db.execute("CREATE TABLE t (id INT)")
+
+    def load_a() -> None:
+        db.execute("INSERT INTO t VALUES (1)")
+
+    def load_b() -> None:
+        db.execute("INSERT INTO t VALUES (2), (3), (4)")
+
+    r = assert_incremental_safe(
+        db,
+        tables=["t"],
+        load_a=load_a,
+        load_b=load_b,
+        expected_a_count={"t": 1},
+        expected_b_count={"t": 2},  # expect only 1 net-new, got 3
+    )
+    assert not r.passed
+    assert any("after-B" in f for f in r.details["failures"])
+
+
+def test_incremental_safe_reports_missing_expected_key_without_keyerror(
+    db: Database,
+) -> None:
+    """Missing key in expected_*_count must yield a failure result, not raise."""
+    db.execute("CREATE TABLE t (id INT)")
+    db.execute("INSERT INTO t VALUES (1)")
+
+    r = assert_incremental_safe(
+        db,
+        tables=["t"],
+        load_a=lambda: None,
+        load_b=lambda: None,
+        expected_a_count={},  # 't' missing
+        expected_b_count={},
+    )
+    assert not r.passed
+    assert any("None" in f for f in r.details["failures"])
+
+
+def test_subprocess_parity_passes_when_outputs_match() -> None:
+    r = assert_subprocess_parity(
+        in_process_outputs={"raw.t": 10, "core.t": 8},
+        subprocess_outputs={"raw.t": 10, "core.t": 8},
+    )
+    assert r.passed
+    assert r.details["diff"] == {}
+
+
+def test_subprocess_parity_fails_when_counts_diverge() -> None:
+    r = assert_subprocess_parity(
+        in_process_outputs={"raw.t": 10},
+        subprocess_outputs={"raw.t": 9},
+    )
+    assert not r.passed
+    assert r.details["diff"]["raw.t"] == {"in_process": 10, "subprocess": 9}
