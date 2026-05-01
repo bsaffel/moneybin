@@ -51,7 +51,7 @@ jobs:
         if: always()
         run: |
           echo "## Scenario results" >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.tests[] | "- \(.nodeid | split("::") | last): \(.outcome | ascii_upcase) (\(.duration | tonumber | floor)s)"' \
+          jq -r '.tests[] | "- \(.nodeid | split("::") | last): \(.outcome | ascii_upcase) (\((.setup.duration + .call.duration + .teardown.duration) | floor)s)"' \
             scenarios.json >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload artifact
