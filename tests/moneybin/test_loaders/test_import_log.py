@@ -195,7 +195,7 @@ class TestBeginImportValidatesSourceType:
             import_log.begin_import(
                 db,
                 source_file="/tmp/x",  # noqa: S108  # test fixture path
-                source_type="nope",
+                source_type="nope",  # type: ignore[arg-type]  # intentional: testing runtime validation
                 source_origin="x",
                 account_names=[],
             )

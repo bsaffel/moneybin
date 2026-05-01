@@ -10,7 +10,7 @@ source_type populates — see _REVERT_TABLES below.
 import json
 import logging
 import uuid
-from typing import Any, Literal
+from typing import Literal
 
 from moneybin.database import Database
 
@@ -43,7 +43,7 @@ def begin_import(
     db: Database,
     *,
     source_file: str,
-    source_type: str,
+    source_type: _SourceType,
     source_origin: str,
     account_names: list[str],
     format_name: str | None = None,
@@ -253,7 +253,7 @@ def get_import_history(
     *,
     limit: int = 20,
     import_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, str | int | None]]:
     """Query the import_log. If import_id is given, returns at most one row."""
     if import_id:
         rows = db.execute(
