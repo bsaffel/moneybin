@@ -72,3 +72,44 @@ class InboxService:
             d.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
             # mkdir's mode is masked by umask on creation; chmod fixes existing dirs too.
             d.chmod(_DIR_MODE)
+
+    def enumerate(self) -> InboxListResult:
+        """Walk the inbox one level deep and classify each entry.
+
+        Sync only acts on regular files in inbox/ root or in inbox/<one-subfolder>/.
+        Hidden files, symlinks, and entries deeper than one level are ignored
+        (returned with a reason) so the caller can show the user what was skipped.
+        """
+        self.ensure_layout()
+        result = InboxListResult()
+        for entry in sorted(self.inbox_dir.iterdir()):
+            self._classify(entry, account_hint=None, result=result)
+        return result
+
+    def _classify(
+        self,
+        entry: Path,
+        *,
+        account_hint: str | None,
+        result: InboxListResult,
+    ) -> None:
+        """Bucket a single entry into would_process or ignored based on type/depth."""
+        rel = entry.relative_to(self.inbox_dir).as_posix()
+        if entry.name.startswith("."):
+            result.ignored.append({"path": rel, "reason": "hidden_file"})
+            return
+        if entry.is_symlink():
+            result.ignored.append({"path": rel, "reason": "symlink"})
+            return
+        if entry.is_file():
+            result.would_process.append({"filename": rel, "account_hint": account_hint})
+            return
+        if entry.is_dir():
+            if account_hint is not None:
+                # Already inside one subfolder; deeper levels are ignored.
+                result.ignored.append({"path": rel, "reason": "nested_subfolder"})
+                return
+            for child in sorted(entry.iterdir()):
+                self._classify(child, account_hint=entry.name, result=result)
+            return
+        result.ignored.append({"path": rel, "reason": "not_regular_file"})

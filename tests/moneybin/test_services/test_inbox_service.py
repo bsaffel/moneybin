@@ -51,3 +51,60 @@ class TestDirectoryBootstrap:
     def test_idempotent(self, tmp_path: Path, inbox_service: InboxService) -> None:
         inbox_service.ensure_layout()
         inbox_service.ensure_layout()  # must not raise
+
+
+class TestEnumeration:
+    """enumerate() walks one level deep and classifies entries."""
+
+    def test_root_files_enumerated_with_no_account_hint(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        (inbox_service.inbox_dir / "statement.csv").write_text("a,b\n1,2\n")
+        items = inbox_service.enumerate()
+        assert len(items.would_process) == 1
+        assert items.would_process[0]["filename"] == "statement.csv"
+        assert items.would_process[0]["account_hint"] is None
+
+    def test_subfolder_files_get_account_slug(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        sub = inbox_service.inbox_dir / "chase-checking"
+        sub.mkdir()
+        (sub / "march.csv").write_text("a,b\n1,2\n")
+        items = inbox_service.enumerate()
+        assert len(items.would_process) == 1
+        assert items.would_process[0]["filename"] == "chase-checking/march.csv"
+        assert items.would_process[0]["account_hint"] == "chase-checking"
+
+    def test_hidden_files_ignored(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        (inbox_service.inbox_dir / ".DS_Store").write_text("")
+        items = inbox_service.enumerate()
+        assert items.would_process == []
+        assert items.ignored == [{"path": ".DS_Store", "reason": "hidden_file"}]
+
+    def test_symlinks_ignored(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        target = tmp_path / "outside.csv"
+        target.write_text("a\n")
+        (inbox_service.inbox_dir / "link.csv").symlink_to(target)
+        items = inbox_service.enumerate()
+        assert items.would_process == []
+        assert items.ignored[0]["reason"] == "symlink"
+
+    def test_nested_subfolders_ignored(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        nested = inbox_service.inbox_dir / "a" / "b"
+        nested.mkdir(parents=True)
+        (nested / "deep.csv").write_text("x\n")
+        items = inbox_service.enumerate()
+        assert items.would_process == []
+        assert any(i["reason"] == "nested_subfolder" for i in items.ignored)
