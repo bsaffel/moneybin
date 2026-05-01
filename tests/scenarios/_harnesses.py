@@ -105,10 +105,25 @@ def assert_malformed_input_rejected(
     expected_message_substring: str,
     expected_exception_type: type[Exception] = Exception,
 ) -> AssertionResult:
-    """Invoke ``run``; assert it raises the expected exception with a matching message."""
+    """Invoke ``run``; assert it raises the expected exception with a matching message.
+
+    A wrong-type exception is reported as a failing AssertionResult rather
+    than propagated, so callers always observe the harness contract.
+    """
     try:
         run()
-    except expected_exception_type as exc:
+    except Exception as exc:  # noqa: BLE001 — surface any failure as a result
+        if not isinstance(exc, expected_exception_type):
+            return AssertionResult(
+                name="malformed_input_rejected",
+                passed=False,
+                details={
+                    "reason": "wrong exception type raised",
+                    "expected_type": expected_exception_type.__name__,
+                    "actual_type": type(exc).__name__,
+                    "message_excerpt": str(exc)[:200],
+                },
+            )
         msg = str(exc)
         if expected_message_substring.lower() in msg.lower():
             return AssertionResult(

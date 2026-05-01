@@ -93,9 +93,12 @@ def assert_ground_truth_coverage(
         f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608  # TableRef constant
     ).fetchone()
     total = int(total_row[0]) if total_row else 0
+    # COUNT(DISTINCT t.transaction_id): int_transactions__matched can have
+    # multiple source rows per fct transaction, so a plain COUNT(*) inflates
+    # coverage via join fanout (potentially above 1.0).
     labeled_row = db.execute(
         f"""
-        SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} t
+        SELECT COUNT(DISTINCT t.transaction_id) FROM {FCT_TRANSACTIONS.full_name} t
         JOIN {INT_TRANSACTIONS_MATCHED.full_name} m
           ON m.transaction_id = t.transaction_id
         JOIN {GROUND_TRUTH.full_name} gt

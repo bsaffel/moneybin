@@ -11,6 +11,7 @@ pytest where the formula is in scope.
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Set as AbstractSet
 from datetime import date
 
 from moneybin.database import Database
@@ -103,7 +104,7 @@ def date_window_for(setup: SetupSpec) -> tuple[date, date]:
 def tier1_backfill(
     setup: SetupSpec,
     *,
-    expected_sources: set[str] = frozenset({"csv", "ofx"}),  # type: ignore[assignment]
+    expected_sources: AbstractSet[str] = frozenset({"csv", "ofx"}),
     expected_row_count: int | None = None,
     schema: dict[str, str] | None = None,
 ) -> Callable[[Database], list[AssertionResult]]:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from moneybin.database import Database
 from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
@@ -34,11 +36,17 @@ def assert_source_system_populated(
     db: Database,
     *,
     table: str,
-    expected_sources: set[str],
+    expected_sources: Iterable[str],
     column: str = "source_system",
 ) -> AssertionResult:
-    """Assert ``column`` is non-null on every row and all values are in ``expected_sources``."""
-    if not expected_sources:
+    """Assert ``column`` is non-null on every row and all values are in ``expected_sources``.
+
+    ``expected_sources`` accepts any iterable of strings (set, frozenset, list,
+    tuple) so YAML scenarios — which deserialize as lists — can call this
+    primitive without manual coercion in the registry shim.
+    """
+    sources = set(expected_sources)
+    if not sources:
         raise ValueError("expected_sources must be non-empty")
     t = quote_ident(table)
     c = quote_ident(column)
@@ -50,13 +58,13 @@ def assert_source_system_populated(
         f"SELECT DISTINCT {c} FROM {t} WHERE {c} IS NOT NULL"  # noqa: S608  # identifiers validated by quote_ident
     ).fetchall()
     observed = {str(r[0]) for r in value_rows}
-    unexpected = sorted(observed - expected_sources)
+    unexpected = sorted(observed - sources)
     return AssertionResult(
         name="source_system_populated",
         passed=null_count == 0 and not unexpected,
         details={
             "null_count": null_count,
-            "expected_sources": sorted(expected_sources),
+            "expected_sources": sorted(sources),
             "observed_sources": sorted(observed),
             "unexpected_values": unexpected,
         },

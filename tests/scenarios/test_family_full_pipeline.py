@@ -13,6 +13,10 @@ from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner import load_shipped_scenario, run_scenario
 from tests.scenarios._tier1_backfill import tier1_backfill
 
+# Per-category recall is too noisy to gate on at small support; skip
+# the assertion for categories with fewer than this many labeled rows.
+_MIN_SUPPORT_FOR_RECALL_CHECK = 5
+
 
 @pytest.mark.scenarios
 @pytest.mark.slow
@@ -59,7 +63,7 @@ def test_family_full_pipeline() -> None:
     )
     per_cat = cat_eval.breakdown["per_category"]
     for category, stats in per_cat.items():
-        if stats["support"] >= 5:
+        if stats["support"] >= _MIN_SUPPORT_FOR_RECALL_CHECK:
             assert stats["recall"] >= 0.7, f"recall too low for {category}: {stats}"
 
     # Assert transfer-detection precision and recall separately, not just F1,
