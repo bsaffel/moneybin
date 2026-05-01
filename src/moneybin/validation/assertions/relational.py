@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 from duckdb import DuckDBPyConnection
-from sqlglot import exp
 
+from moneybin.validation.assertions._helpers import quote_ident as _quote_ident
 from moneybin.validation.result import AssertionResult
-
-
-def _quote_ident(ident: str) -> str:
-    """Quote a dotted identifier via sqlglot, per .claude/rules/security.md."""
-    return ".".join(
-        exp.to_identifier(seg, quoted=True).sql("duckdb") for seg in ident.split(".")
-    )
 
 
 def assert_valid_foreign_keys(

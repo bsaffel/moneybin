@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from duckdb import DuckDBPyConnection
 
-from moneybin.validation.assertions.relational import (
-    _quote_ident,  # pyright: ignore[reportPrivateUsage]
-)
+from moneybin.validation.assertions._helpers import quote_ident as _quote_ident
 from moneybin.validation.result import AssertionResult
 
 
