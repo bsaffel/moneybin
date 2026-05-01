@@ -15,6 +15,7 @@ from moneybin.database import Database
 from moneybin.matching import UNIONED_TABLE
 from moneybin.matching.assignment import assign_greedy
 from moneybin.matching.persistence import (
+    MatchTier,
     create_match_decision,
     get_rejected_pairs,
 )
@@ -154,7 +155,7 @@ class TransactionMatcher:
     def _run_tier(
         self,
         *,
-        tier: str,
+        tier: MatchTier,
         candidates_fn: Callable[[set[tuple[str, str]]], list[CandidatePair]],
         excluded_ids: set[tuple[str, str]],
         result: MatchResult,
