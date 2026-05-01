@@ -90,8 +90,6 @@ def import_file(
             "Use categorize.uncategorized to categorize new transactions",
         ],
     )
-    # FileNotFoundError propagates — mcp_tool decorator converts it to an error envelope.
-    # Other unclassified exceptions propagate to fastmcp's mask_error_details.
 
 
 @mcp_tool(sensitivity="low")
@@ -147,8 +145,6 @@ def import_csv_preview(file_path: str) -> ResponseEnvelope:
             "Use import.list_formats for available named formats",
         ],
     )
-    # FileNotFoundError propagates — mcp_tool decorator converts it to an error envelope.
-    # Other unclassified exceptions propagate to fastmcp's mask_error_details.
 
 
 @mcp_tool(sensitivity="low")
