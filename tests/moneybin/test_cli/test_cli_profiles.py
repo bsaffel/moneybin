@@ -43,11 +43,11 @@ class TestCLIProfileHandling:
         mocker.patch.dict(os.environ, {})
         os.environ.pop("MONEYBIN_PROFILE", None)
 
-        mocker.patch("moneybin.cli.main.ensure_default_profile", return_value="test")
+        mocker.patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
 
         with _create_profile("test"):
             mocker.patch("moneybin.cli.commands.logs.get_settings")
-            result = runner.invoke(app, ["logs", "path"])
+            result = runner.invoke(app, ["logs", "--print-path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "test"
@@ -56,7 +56,7 @@ class TestCLIProfileHandling:
         """Test setting a different user profile."""
         with _create_profile("bob"):
             mocker.patch("moneybin.cli.commands.logs.get_settings")
-            result = runner.invoke(app, ["--profile=bob", "logs", "path"])
+            result = runner.invoke(app, ["--profile=bob", "logs", "--print-path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "bob"
@@ -65,7 +65,7 @@ class TestCLIProfileHandling:
         """Test using short -p flag for profile."""
         with _create_profile("alice"):
             mocker.patch("moneybin.cli.commands.logs.get_settings")
-            result = runner.invoke(app, ["-p", "alice", "logs", "path"])
+            result = runner.invoke(app, ["-p", "alice", "logs", "--print-path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
@@ -78,7 +78,7 @@ class TestCLIProfileHandling:
             mocker.patch("moneybin.cli.commands.logs.get_settings")
             result = runner.invoke(
                 app,
-                ["--profile=invalid/profile", "logs", "path"],
+                ["--profile=invalid/profile", "logs", "--print-path"],
             )
 
             assert result.exit_code == 0
@@ -90,7 +90,9 @@ class TestCLIProfileHandling:
         """Test that profile name with space gets normalized (space -> hyphen)."""
         with _create_profile("bad profile"):
             mocker.patch("moneybin.cli.commands.logs.get_settings")
-            result = runner.invoke(app, ["--profile=bad profile", "logs", "path"])
+            result = runner.invoke(
+                app, ["--profile=bad profile", "logs", "--print-path"]
+            )
 
             assert result.exit_code == 0
             assert get_current_profile() == "bad-profile"
@@ -101,7 +103,7 @@ class TestCLIProfileHandling:
             mocker.patch.dict(os.environ, {"MONEYBIN_PROFILE": "alice"})
             mocker.patch("moneybin.cli.commands.logs.get_settings")
 
-            result = runner.invoke(app, ["logs", "path"])
+            result = runner.invoke(app, ["logs", "--print-path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
@@ -114,7 +116,7 @@ class TestCLIProfileHandling:
             mocker.patch.dict(os.environ, {"MONEYBIN_PROFILE": "alice"})
             mocker.patch("moneybin.cli.commands.logs.get_settings")
 
-            result = runner.invoke(app, ["--profile=bob", "logs", "path"])
+            result = runner.invoke(app, ["--profile=bob", "logs", "--print-path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "bob"
@@ -123,7 +125,7 @@ class TestCLIProfileHandling:
         """Test that profile is set correctly in the config system."""
         with _create_profile("alice"):
             mocker.patch("moneybin.cli.commands.logs.get_settings")
-            result = runner.invoke(app, ["--profile=alice", "logs", "path"])
+            result = runner.invoke(app, ["--profile=alice", "logs", "--print-path"])
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
@@ -141,7 +143,7 @@ class TestCLIProfileHandling:
             mocker.patch("moneybin.cli.commands.logs.get_settings")
             result = runner.invoke(
                 app,
-                ["--profile=alice-personal", "logs", "path"],
+                ["--profile=alice-personal", "logs", "--print-path"],
             )
 
             assert result.exit_code == 0
@@ -153,7 +155,9 @@ class TestCLIProfileHandling:
         """Test that profile names with underscores get normalized to hyphens."""
         with _create_profile("alice_work"):
             mocker.patch("moneybin.cli.commands.logs.get_settings")
-            result = runner.invoke(app, ["--profile=alice_work", "logs", "path"])
+            result = runner.invoke(
+                app, ["--profile=alice_work", "logs", "--print-path"]
+            )
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice-work"
@@ -167,7 +171,7 @@ class TestProfileCommandsResolveProfileButSkipWizard:
         mocker.patch.dict(os.environ, {})
         os.environ.pop("MONEYBIN_PROFILE", None)
 
-        mock_ensure = mocker.patch("moneybin.cli.main.ensure_default_profile")
+        mock_ensure = mocker.patch("moneybin.cli.utils.ensure_default_profile")
 
         result = runner.invoke(app, ["profile", "list"])
 

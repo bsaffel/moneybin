@@ -19,5 +19,34 @@ the segfault.
 from __future__ import annotations
 
 import os
+import tempfile
+from pathlib import Path
 
 os.environ["MAX_FORK_WORKERS"] = "1"
+
+# Force every Typer app to use plain Click help rendering during tests.
+# Rich-mode help wraps option names in bold/dim ANSI escapes
+# (`--\x1b[1moutput\x1b[0m`) under CI environments that set CLICOLOR_FORCE
+# or FORCE_COLOR — breaking substring checks like `"--output" in stdout`.
+# `NO_COLOR` doesn't help because bold/dim aren't colors. Patching the
+# constructor here (before any moneybin module imports typer) ensures the
+# root app and every sub-typer instance render help in plain text.
+import typer  # noqa: E402
+
+_typer_init = typer.Typer.__init__
+
+
+def _typer_init_no_rich(self: typer.Typer, *args: object, **kwargs: object) -> None:
+    kwargs["rich_markup_mode"] = None
+    _typer_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+
+typer.Typer.__init__ = _typer_init_no_rich  # type: ignore[method-assign]
+
+# Per-xdist-worker MoneyBin home so parallel tests don't trample each other's
+# `.moneybin/profiles/` directory. Each worker (`gw0`, `gw1`, …) gets its own
+# tempdir; serial runs use a single shared dir under `gw-main`.
+_worker = os.environ.get("PYTEST_XDIST_WORKER", "gw-main")
+_worker_home = Path(tempfile.gettempdir()) / "moneybin-test-home" / _worker
+_worker_home.mkdir(parents=True, exist_ok=True)
+os.environ["MONEYBIN_HOME"] = str(_worker_home)

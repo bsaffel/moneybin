@@ -7,7 +7,8 @@ from typing import Any
 import duckdb as duckdb_mod
 import typer
 
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import VALID_MATCH_TYPES, get_match_log, undo_match
 
@@ -216,6 +217,8 @@ def matches_history_cmd(
     match_type: str | None = typer.Option(
         None, "--type", help="Filter by match type: dedup or transfer"
     ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Show recent match decisions."""
     if match_type and match_type not in VALID_MATCH_TYPES:
@@ -225,8 +228,13 @@ def matches_history_cmd(
     with handle_cli_errors() as db:
         entries = get_match_log(db, limit=limit, match_type=match_type)
 
+        if output == "json":
+            emit_json("matches", entries)
+            return
+
         if not entries:
-            logger.info("No match decisions found")
+            if not quiet:
+                logger.info("No match decisions found")
             return
 
         typer.echo(

@@ -378,7 +378,7 @@ mode: if unlocked, prints cached key; if locked, prompts for passphrase first bu
 NOT cache (does not implicitly unlock). Emits security warning.
 
 ```
-moneybin db rotate-key
+moneybin db key rotate
 ```
 Changes the encryption key or passphrase. Attaches old database with current key,
 creates new encrypted database with new key, copies via `COPY FROM DATABASE`, swaps

@@ -6,13 +6,13 @@ db, mcp.
 """
 
 import logging
+import os
 from typing import Annotated
 
 import typer
 
-from ..config import set_current_profile
+from ..config import register_profile_resolver, set_current_profile
 from ..observability import setup_observability
-from ..utils.user_config import ensure_default_profile
 from .commands import (
     categorize,
     db,
@@ -31,8 +31,10 @@ from .commands.stubs import (
     export_app,
     track_app,
 )
+from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
+
 
 app = typer.Typer(
     name="moneybin",
@@ -66,86 +68,34 @@ def main_callback(
 ) -> None:
     """Global options for MoneyBin CLI.
 
-    Profile resolution chain (uniform across all commands):
-        1. ``--profile`` flag
-        2. ``MONEYBIN_PROFILE`` env var
-        3. ``active_profile`` in ``<base>/config.yaml``
-        4. First-run wizard (``ensure_default_profile``) — only when the
-           command needs an existing profile to operate.
-
-    Profile commands (``profile *``) skip the existence check, since
-    ``profile create`` legitimately operates on a name that doesn't yet
-    exist. They still benefit from the same resolution chain so
-    ``profile show`` / ``profile set`` honor ``--profile`` / env var.
+    The callback is intentionally inert: it stashes ``--profile`` /
+    ``--verbose`` and registers a profile resolver, but does not touch the
+    active profile, run the first-run wizard, or open any files. Profile
+    resolution fires the first time a command actually calls ``get_settings``
+    / ``get_current_profile``. Keeping the callback inert means
+    ``moneybin <cmd> --help`` and docker-style usage errors
+    (``moneybin logs`` with no stream) never trigger the wizard or write
+    profile dirs before the leaf command surfaces its own response.
     """
-    import os
+    stash_cli_flags(profile_name, verbose)
+    setup_observability(stream="cli", verbose=verbose, profile=None)
 
-    # Commands that manage profiles don't require the resolved profile
-    # to point at an existing directory (e.g. `profile create alice`).
-    is_profile_cmd = ctx.invoked_subcommand == "profile"
-
-    # Synthetic commands manage their own profiles: `generate`/`reset` write
-    # to persona profiles (alice/bob/charlie) and call set_current_profile()
-    # themselves; `verify` provisions an ephemeral scenario profile in a
-    # tempdir. None of them should ever touch the user's default profile or
-    # trigger the first-run wizard.
-    is_synthetic_cmd = ctx.invoked_subcommand == "synthetic"
-
-    # Resolve env var manually (instead of via Typer's envvar=) so we can
-    # cleanly distinguish flag-provided vs env-provided values without
-    # inspecting raw argv.
-    profile_source: str | None = None
-    if profile_name is not None:
-        profile_source = "--profile flag"
-    elif env_profile := os.environ.get("MONEYBIN_PROFILE"):
-        profile_name = env_profile
-        profile_source = "MONEYBIN_PROFILE env var"
-
-    if profile_name is None and not is_profile_cmd and not is_synthetic_cmd:
-        # Non-profile commands need a profile. ensure_default_profile()
-        # consults config.yaml first and prompts only on true first run.
-        # Profile commands (list/show/set/create/delete) intentionally skip
-        # this fallback so they remain runnable even if the active profile's
-        # settings are invalid — users need profile commands to recover.
+    # Set the active profile name eagerly when one is explicit. This only
+    # validates the name format and updates module state — no dir check,
+    # no I/O — so it's safe for `--help` and bare-group invocations.
+    if explicit := profile_name or os.environ.get("MONEYBIN_PROFILE"):
         try:
-            profile_name = ensure_default_profile()
-            profile_source = "config.yaml or first-run wizard"
-        except KeyboardInterrupt:
-            raise typer.Abort() from None
-
-    if profile_name is not None and not is_synthetic_cmd:
-        try:
-            set_current_profile(profile_name)
+            set_current_profile(explicit)
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
-        if not is_profile_cmd:
-            from ..config import get_base_dir
-            from ..utils.user_config import normalize_profile_name
+    # Profile commands are recovery tools (`profile create` legitimately runs
+    # against a profile that doesn't yet exist) and synthetic commands manage
+    # their own profile lifecycle — both skip the lazy dir-check + wizard.
+    if ctx.invoked_subcommand in ("profile", "synthetic"):
+        return
 
-            normalized = normalize_profile_name(profile_name)
-            profile_dir = get_base_dir() / "profiles" / normalized
-            if not profile_dir.exists():
-                logger.error(f"❌ Profile '{normalized}' does not exist")
-                logger.info("💡 Run 'moneybin profile list' to see available profiles")
-                logger.info(
-                    f"💡 Run 'moneybin profile create {normalized}' to create it"
-                )
-                raise typer.Exit(1)
-
-    # Profile commands are recovery tools — they must run even when the
-    # active profile's settings are broken. Skip per-profile settings load
-    # (which would call get_settings() and could fail) by passing profile=None.
-    setup_observability(
-        stream="cli",
-        verbose=verbose,
-        profile=None if is_profile_cmd or is_synthetic_cmd else profile_name,
-    )
-    if profile_name is not None and not is_profile_cmd and not is_synthetic_cmd:
-        if profile_source:
-            logger.info(f"Using profile: {profile_name} (from {profile_source})")
-        else:
-            logger.info(f"Using profile: {profile_name}")
+    register_profile_resolver(resolve_profile)
 
 
 # Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops
@@ -181,7 +131,7 @@ app.add_typer(
     help="Generate and manage synthetic financial data for testing",
 )
 app.add_typer(track_app, name="track", help="Balance tracking and net worth")
-app.add_typer(stats.app, name="stats", help="Show lifetime metric aggregates")
+app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(
     mcp.app,
@@ -193,11 +143,10 @@ app.add_typer(
     name="db",
     help="Database management and exploration",
 )
-app.add_typer(
-    logs.app,
+app.command(
     name="logs",
-    help="Manage log files",
-)
+    help="View, prune, or locate MoneyBin log files for the active profile.",
+)(logs.logs_command)
 
 # Add db migrate as a sub-typer of db
 db.app.add_typer(migrate.app, name="migrate", help="Database migration management")

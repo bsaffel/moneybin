@@ -130,8 +130,8 @@ Derived from `MONEYBIN_PROFILE` env var or the database path. MCP server resolve
 Manual only. No automatic deletion or rotation.
 
 ```bash
-moneybin logs clean --older-than 30d            # Delete old logs
-moneybin logs clean --older-than 30d --dry-run  # Preview
+moneybin logs --prune --older-than 30d            # Delete old logs
+moneybin logs --prune --older-than 30d --dry-run  # Preview
 ```
 
 ## 3. Formatters & Sanitization
@@ -275,13 +275,13 @@ The MCP server calls `setup_observability(stream="mcp")` at startup.
 ### `moneybin logs`
 
 ```bash
-moneybin logs clean --older-than 30d            # Delete logs older than duration
-moneybin logs clean --older-than 30d --dry-run  # Preview what would be deleted
-moneybin logs path                              # Print log directory for current profile
-moneybin logs tail                              # Tail latest CLI log
-moneybin logs tail --stream mcp                 # Tail latest MCP log
-moneybin logs tail --stream sqlmesh             # Tail latest SQLMesh log
-moneybin logs tail -f                           # Follow mode
+moneybin logs --prune --older-than 30d            # Delete logs older than duration
+moneybin logs --prune --older-than 30d --dry-run  # Preview what would be deleted
+moneybin logs --print-path                        # Print log directory for current profile
+moneybin logs cli                                 # Tail latest CLI log
+moneybin logs mcp                                 # Tail latest MCP log
+moneybin logs sqlmesh                             # Tail latest SQLMesh log
+moneybin logs cli -f                              # Follow mode
 ```
 
 ### `moneybin stats`

@@ -6,23 +6,18 @@ Displays lifetime metric aggregates from the app.metrics table.
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(
-    help="Show lifetime metric aggregates",
-    no_args_is_help=True,
-)
 
-
-@app.command("show")
-def stats_show(
+def stats_command(
     since: Annotated[
         str | None,
         typer.Option("--since", help="Time window (e.g., 7d, 24h)"),
@@ -31,14 +26,11 @@ def stats_show(
         str | None,
         typer.Option("--metric", help="Filter to a metric family (e.g., import)"),
     ] = None,
-    output: Annotated[
-        Literal["text", "json"],
-        typer.Option("--output", help="Output format: text or json"),
-    ] = "text",
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Display lifetime metric aggregates."""
     with handle_cli_errors() as db:
-        # Build query with optional filters
         where_clauses: list[str] = []
         params: list[str | datetime] = []
 
@@ -53,7 +45,6 @@ def stats_show(
             params.append(cutoff)
 
         if metric:
-            # Escape LIKE metacharacters so _ and % match literally
             escaped = metric.replace("!", "!!").replace("%", "!%").replace("_", "!_")
             where_clauses.append("metric_name LIKE ? ESCAPE '!'")
             params.append(f"%{escaped}%")
@@ -62,8 +53,11 @@ def stats_show(
         if where_clauses:
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
+        # Use the latest snapshot per (metric_name, metric_type, labels) — values
+        # in app.metrics are cumulative, so SUM/AVG would double-count. The
+        # ROW_NUMBER() window picks the most recent row; snapshot_count is
+        # informational only.
         try:
-            # Use latest snapshot per metric+labels (not SUM — values are cumulative)
             rows = db.execute(
                 f"""
                 SELECT metric_name, metric_type, labels,
@@ -87,7 +81,7 @@ def stats_show(
                 )
                 WHERE rn = 1
                 ORDER BY metric_name
-                """,  # noqa: S608 — where_sql is built from validated fragments, not user input
+                """,  # noqa: S608 — where_sql is built from validated fragments
                 params if params else None,
             ).fetchall()
         except Exception:  # noqa: BLE001 — app.metrics table may not exist yet
@@ -112,10 +106,10 @@ def stats_show(
             return
 
         if not rows:
-            typer.echo("No metrics recorded yet. Run some operations first.")
+            if not quiet:
+                typer.echo("No metrics recorded yet. Run some operations first.")
             return
 
-        # Human-readable output
         for row in rows:
             name, metric_type, _labels, value, count, _last = row
             display_name = name.replace("moneybin_", "").replace("_", " ").title()

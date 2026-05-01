@@ -17,16 +17,19 @@ _HELP_COMMANDS: list[list[str]] = [
     [],  # moneybin --help
     ["profile"],
     ["import"],
+    ["import", "formats"],
     ["sync"],
     ["categorize"],
-    ["categorize", "auto-review"],
-    ["categorize", "auto-confirm"],
-    ["categorize", "auto-stats"],
-    ["categorize", "auto-rules"],
+    ["categorize", "auto"],
+    ["categorize", "auto", "review"],
+    ["categorize", "auto", "confirm"],
+    ["categorize", "auto", "stats"],
+    ["categorize", "auto", "rules"],
     ["matches"],
     ["transform"],
     ["synthetic"],
     ["db"],
+    ["db", "key"],
     ["db", "migrate"],
     ["logs"],
     ["mcp"],
@@ -40,6 +43,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["track", "investments"],
     ["export"],
     ["sync", "schedule"],
+    ["sync", "key"],
 ]
 
 

@@ -35,10 +35,10 @@ moneybin db lock
 moneybin db unlock
 
 # Show the current encryption key (for backup/recovery)
-moneybin db key
+moneybin db key show
 
 # Rotate to a new encryption key
-moneybin db rotate-key
+moneybin db key rotate
 
 # Create a timestamped backup
 moneybin db backup

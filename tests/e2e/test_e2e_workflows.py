@@ -48,7 +48,7 @@ class TestSyntheticPipeline:
                 "db",
                 "query",
                 "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--format",
+                "--output",
                 "csv",
                 env=env,
             )
@@ -87,7 +87,7 @@ class TestCSVImportPipeline:
                 "db",
                 "query",
                 "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--format",
+                "--output",
                 "csv",
                 env=env,
             )
@@ -124,7 +124,7 @@ class TestOFXImportPipeline:
                 "db",
                 "query",
                 "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--format",
+                "--output",
                 "csv",
                 env=env,
             )
@@ -204,8 +204,8 @@ class TestCategorizationPipeline:
         result = run_cli("categorize", "apply-rules", env=env)
         result.assert_success()
 
-        # Stats should work
-        result = run_cli("categorize", "stats", env=env)
+        # Summary should work
+        result = run_cli("categorize", "summary", env=env)
         result.assert_success()
 
 
@@ -268,7 +268,7 @@ class TestAutoRulePipeline:
             "SELECT transaction_id FROM core.fct_transactions "
             "WHERE description ILIKE '%COFFEE SHOP%' AND account_id = 'wf-autorule-acct-a' "
             "LIMIT 1",
-            "--format",
+            "--output",
             "csv",
             env=env,
         )
@@ -298,15 +298,15 @@ class TestAutoRulePipeline:
         result = run_cli("categorize", "bulk", "--input", str(json_path), env=env)
         result.assert_success()
 
-        # auto-review surfaces the generated proposal.
-        result = run_cli("categorize", "auto-review", env=env)
+        # auto-review surfaces the seeded proposal
+        result = run_cli("categorize", "auto", "review", env=env)
         result.assert_success()
         assert "COFFEE SHOP" in result.output, (
             f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
         )
 
-        # auto-confirm promotes the proposal to an active rule.
-        result = run_cli("categorize", "auto-confirm", "--approve-all", env=env)
+        # auto-confirm promotes the proposal to an active rule
+        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
         result.assert_success()
         assert "Approved 1" in result.output, (
             f"auto-confirm did not approve the proposal: {result.output}"
@@ -320,7 +320,7 @@ class TestAutoRulePipeline:
             "query",
             "SELECT COUNT(*) AS n FROM app.categorization_rules "
             "WHERE created_by = 'auto_rule' AND is_active = true",
-            "--format",
+            "--output",
             "csv",
             env=env,
         )
@@ -330,8 +330,8 @@ class TestAutoRulePipeline:
             f"Expected >=1 active auto_rule, got {rule_count}.\n{result.output}"
         )
 
-        # auto-stats reflects the promotion.
-        result = run_cli("categorize", "auto-stats", env=env)
+        # auto-stats reflects the promotion
+        result = run_cli("categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 
@@ -345,7 +345,7 @@ class TestAutoRulePipeline:
             "query",
             "SELECT COUNT(*) AS n FROM app.transaction_categories "
             "WHERE categorized_by = 'auto_rule'",
-            "--format",
+            "--output",
             "csv",
             env=env,
         )

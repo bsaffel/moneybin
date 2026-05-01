@@ -168,55 +168,55 @@ class TestImportFileValidation:
 
 
 class TestListFormats:
-    """Tests for the list-formats command."""
+    """Tests for the formats list command."""
 
     def test_lists_builtin_formats(self) -> None:
-        """list-formats exits 0 and includes known built-in format names."""
-        result = runner.invoke(app, ["list-formats"])
+        """Formats list exits 0 and includes known built-in format names."""
+        result = runner.invoke(app, ["formats", "list"])
         assert result.exit_code == 0
         assert "chase_credit" in result.output
 
     def test_output_includes_institution_name(self) -> None:
-        """list-formats output includes institution names."""
-        result = runner.invoke(app, ["list-formats"])
+        """Formats list output includes institution names."""
+        result = runner.invoke(app, ["formats", "list"])
         assert result.exit_code == 0
         assert "Chase" in result.output
 
     def test_lists_all_builtin_formats(self) -> None:
-        """list-formats lists all expected built-in formats."""
-        result = runner.invoke(app, ["list-formats"])
+        """Formats list lists all expected built-in formats."""
+        result = runner.invoke(app, ["formats", "list"])
         assert result.exit_code == 0
         for name in ("chase_credit", "citi_credit", "mint", "tiller", "ynab"):
             assert name in result.output, f"Expected format {name!r} in output"
 
 
 class TestShowFormat:
-    """Tests for the show-format command."""
+    """Tests for the formats show command."""
 
     def test_shows_known_format(self) -> None:
-        """show-format exits 0 and prints details for a valid format name."""
-        result = runner.invoke(app, ["show-format", "chase_credit"])
+        """Formats show exits 0 and prints details for a valid format name."""
+        result = runner.invoke(app, ["formats", "show", "chase_credit"])
         assert result.exit_code == 0
         assert "Chase" in result.output
 
     def test_shows_field_mapping(self) -> None:
-        """show-format output includes field mapping section."""
-        result = runner.invoke(app, ["show-format", "chase_credit"])
+        """Formats show output includes field mapping section."""
+        result = runner.invoke(app, ["formats", "show", "chase_credit"])
         assert result.exit_code == 0
         assert "Field mapping" in result.output
 
     def test_unknown_format_exits_with_error(self) -> None:
-        """show-format exits 1 for an unrecognised format name."""
-        result = runner.invoke(app, ["show-format", "nonexistent_format_xyz"])
+        """Formats show exits 1 for an unrecognised format name."""
+        result = runner.invoke(app, ["formats", "show", "nonexistent_format_xyz"])
         assert result.exit_code == 1
 
 
 class TestDeleteFormat:
-    """Tests for the delete-format command."""
+    """Tests for the formats delete command."""
 
     def test_builtin_format_cannot_be_deleted(self) -> None:
         """Attempting to delete a built-in format exits 1."""
-        result = runner.invoke(app, ["delete-format", "chase_credit", "--yes"])
+        result = runner.invoke(app, ["formats", "delete", "chase_credit", "--yes"])
         assert result.exit_code == 1
 
     def test_unknown_format_exits_with_error(self, mocker: Any) -> None:
@@ -226,7 +226,7 @@ class TestDeleteFormat:
             "moneybin.extractors.tabular.formats.delete_format_from_db",
             return_value=False,
         )
-        result = runner.invoke(app, ["delete-format", "my_custom_format", "--yes"])
+        result = runner.invoke(app, ["formats", "delete", "my_custom_format", "--yes"])
         assert result.exit_code == 1
 
 

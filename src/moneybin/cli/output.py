@@ -1,22 +1,22 @@
 # src/moneybin/cli/output.py
-"""CLI output format support.
+"""Shared output-format options for read-only CLI commands.
 
-Provides ``--output json`` on all CLI commands that have a corresponding
-MCP tool. When ``json`` is selected, the command returns the same
-``{summary, data, actions}`` response envelope as the MCP tool.
+`-o/--output` and `-q/--quiet` are required on every read-only command per
+`.claude/rules/cli.md`. Importing the shared options keeps the surface
+consistent and avoids 6-line copy-paste at every call site.
 
-Usage in a CLI command::
+Usage::
 
-    from moneybin.cli.output import OutputFormat, output_option, render_or_json
+    from moneybin.cli.output import OutputFormat, output_option, quiet_option
 
     @app.command("summary")
     def summary_cmd(
-        months: int = typer.Option(3),
         output: OutputFormat = output_option,
+        quiet: bool = quiet_option,
     ) -> None:
-        service = SpendingService(get_database())
-        result = service.summary(months=months)
-        render_or_json(result.to_envelope(), output, render_fn=_render_table)
+        ...
+        if output == OutputFormat.JSON:
+            ...
 """
 
 from __future__ import annotations
@@ -33,17 +33,25 @@ logger = logging.getLogger(__name__)
 
 
 class OutputFormat(StrEnum):
-    """CLI output format."""
+    """CLI output format for read-only commands."""
 
-    TABLE = "table"
+    TEXT = "text"
     JSON = "json"
 
 
 output_option: OutputFormat = typer.Option(
-    OutputFormat.TABLE,
-    "--output",
+    OutputFormat.TEXT,
     "-o",
-    help="Output format: 'table' (human-readable) or 'json' (response envelope).",
+    "--output",
+    help="Output format: 'text' (human-readable) or 'json' (machine-readable).",
+)
+
+
+quiet_option: bool = typer.Option(
+    False,
+    "-q",
+    "--quiet",
+    help="Suppress informational output (status lines, progress, ✅).",
 )
 
 
@@ -52,14 +60,7 @@ def render_or_json(
     output: OutputFormat,
     render_fn: Callable[[ResponseEnvelope], None] | None = None,
 ) -> None:
-    """Render a response envelope as a table or JSON.
-
-    Args:
-        envelope: The response envelope to render.
-        output: The output format.
-        render_fn: Function to render the envelope as a human-readable table.
-            If None, falls back to printing the JSON.
-    """
+    """Render a response envelope as text or JSON."""
     if output == OutputFormat.JSON:
         typer.echo(envelope.to_json())
     elif render_fn is not None:

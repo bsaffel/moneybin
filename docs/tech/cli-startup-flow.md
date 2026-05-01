@@ -7,16 +7,22 @@ How a MoneyBin CLI command goes from `moneybin <cmd>` to executing user code, wh
 ```mermaid
 flowchart TD
     A["moneybin &lt;cmd&gt; [--profile X] [-v]"] --> B[Module-level init]
-    B --> C[main_callback]
-    C --> D{Is subcommand<br/>'profile'?}
-    D -->|yes| E[Skip profile resolution]
-    D -->|no| F[Resolve profile name]
-    F --> G[set_current_profile]
-    G --> H[Validate profile dir exists]
-    E --> I[setup_observability]
-    H --> I
-    I --> J[Subcommand executes]
-    J --> K[Process exit]
+    B --> C[main_callback — inert]
+    C --> C1[stash flags]
+    C1 --> C2["setup_observability(profile=None)"]
+    C2 --> C3{explicit --profile<br/>or env var?}
+    C3 -->|yes| C4[set_current_profile<br/>name only — no I/O]
+    C3 -->|no| C5
+    C4 --> C5{subcommand in<br/>profile/synthetic?}
+    C5 -->|yes| C6[return — these manage<br/>their own lifecycle]
+    C5 -->|no| C7[register lazy<br/>profile resolver]
+    C7 --> J[Subcommand executes]
+    C6 --> J
+    J --> J1{Subcommand calls<br/>get_settings?}
+    J1 -->|yes, first time| J2["resolve_profile()<br/>full chain + wizard +<br/>dir-check + log re-init"]
+    J1 -->|no| J3[Skip resolution]
+    J2 --> J3
+    J3 --> K[Process exit]
     K --> L[atexit: flush metrics]
 ```
 
@@ -28,54 +34,56 @@ When `moneybin.config` is first imported, a module-level variable is initialized
 _current_profile: str | None = None
 ```
 
-No profile is set at import time — it stays `None` until `set_current_profile()` is called in `main_callback()`. Calling `get_settings()` or `get_current_profile()` before that raises `RuntimeError`.
+No profile is set at import time — it stays `None` until `set_current_profile()` is called, either eagerly by `main_callback` (when `--profile` or `MONEYBIN_PROFILE` is explicit) or lazily by `resolve_profile()` on first settings access. Calling `get_settings()` or `get_current_profile()` before that raises `RuntimeError`.
 
 **Side effects:** None. No YAML reads, no directories, no database.
 
-## Stage 2: main_callback
+## Stage 2: main_callback (inert)
 
-The Typer callback is the central orchestrator. All commands pass through it.
+The Typer callback is intentionally inert. It stashes flags, runs early observability with no profile, optionally sets the active profile *name* (no I/O), and registers a lazy resolver. Heavy work — wizard, dir-check, profile-scoped logging — fires only when a command first calls `get_settings()` / `get_current_profile()`.
 
 ```mermaid
 flowchart TD
-    A[main_callback entry] --> B{needs_profile?<br/>subcommand != 'profile'}
-
-    B -->|no — profile cmd| I[setup_observability<br/>profile=None for logging]
-
-    B -->|yes| C{profile_name<br/>provided?}
-    C -->|yes: --profile or<br/>MONEYBIN_PROFILE env| E
-    C -->|no| D[ensure_default_profile]
-    D -->|first run| D1[Interactive wizard<br/>+ auto DB init]
-    D -->|has default| D2[Return saved profile]
-    D1 --> E[set_current_profile]
-    D2 --> E
-
-    E --> F[Validate profile dir exists]
-    F -->|missing| G["Exit 1 + recovery hint"]
-    F -->|exists| I
-
-    I --> J[Log 'Using profile: X']
-    J --> K[Subcommand runs]
+    A[main_callback entry] --> A1[stash_cli_flags]
+    A1 --> A2["setup_observability(stream=cli, profile=None)"]
+    A2 --> B{explicit --profile<br/>or MONEYBIN_PROFILE?}
+    B -->|yes| B1["set_current_profile(name)<br/>format-validate only — no I/O"]
+    B1 --> B2{Bad name format?}
+    B2 -->|yes| B3[BadParameter — exit 2]
+    B2 -->|no| C
+    B -->|no| C
+    C{subcommand in<br/>profile / synthetic?}
+    C -->|yes| C1[return — these manage<br/>their own profile lifecycle]
+    C -->|no| D[register_profile_resolver]
+    D --> E[Subcommand runs]
+    C1 --> E
 ```
 
-### Profile Resolution Priority
+### Why inert?
+
+`--help`, bare-group invocations (e.g. `moneybin db`), and docker-style usage errors (`moneybin logs` with no stream) MUST be side-effect free — no wizard, no profile-dir creation, no log file rotation. Click short-circuits explicit `--help` before the callback runs; bare-group exits via `NoArgsIsHelpError` before any subcommand body runs. Because the callback never calls `resolve_profile()`, all of those paths are automatically safe — no walker or argv inspection needed.
+
+### Profile Resolution Priority (lazy path)
+
+When a command actually needs settings, `resolve_profile()` (in `cli/utils.py`) walks this chain:
 
 | Priority | Source | When used |
 |---|---|---|
-| 1 | `--profile` flag | Always wins |
+| 1 | `--profile` flag (stashed) | Always wins |
 | 2 | `MONEYBIN_PROFILE` env var | If no flag |
 | 3 | `ensure_default_profile()` | If neither flag nor env var |
 | 4 | Interactive first-run wizard | If `ensure_default_profile()` finds no saved default |
 
-### Profile Commands Are Special
+After resolution, `resolve_profile()` validates the profile dir exists, re-initializes observability with profile-scoped log files, and emits the `Using profile: X` banner.
 
-When `ctx.invoked_subcommand == "profile"`, the callback skips all profile resolution:
+### Profile and Synthetic Commands Are Special
 
-- No `ensure_default_profile()` call
-- No `set_current_profile()` call
-- No profile directory validation
+When `ctx.invoked_subcommand` is `"profile"` or `"synthetic"`, the callback returns *before* registering the lazy resolver:
 
-This is deliberate. Profile commands *manage* profiles rather than *operating within* one. Without this separation, `profile create` would try to resolve a profile before it exists.
+- `profile create` legitimately runs against a profile that doesn't yet exist — the dir-check would block recovery.
+- `synthetic` commands manage their own profile lifecycle (create, populate, tear down) and call `set_current_profile` directly.
+
+Both rely on `get_current_profile(auto_resolve=False)` so they never trigger the lazy chain. The eager `set_current_profile(name)` in the callback still runs for these — that just sets the active name from the flag/env, which both subgroups expect.
 
 ## Stage 3: setup_observability
 
@@ -259,13 +267,15 @@ These are the rules that prevent the bugs we've encountered:
 
 2. **The atexit handler never creates database connections.** It only flushes metrics if a `Database` singleton was already initialized during the session. Otherwise it's a no-op.
 
-3. **Profile commands skip profile resolution.** The `main_callback` does not call `set_current_profile()` or `ensure_default_profile()` when `invoked_subcommand == "profile"`. This prevents side-effects during profile lifecycle operations.
+3. **`main_callback` is inert.** It stashes flags, registers a lazy profile resolver, and (when explicit) sets the active profile *name* — but it never runs the wizard, validates dirs, or opens files. Heavy work happens only when a command calls `get_settings()` / `get_current_profile()`. This is what keeps `--help` and bare-group invocations side-effect free.
 
-4. **`get_settings()` is a pure read.** It loads configuration from files and environment variables but creates no directories and has no filesystem side effects. Safe to call from any context. Raises `RuntimeError` if called before `set_current_profile()`.
+4. **Profile and synthetic commands skip the lazy resolver.** The callback returns before `register_profile_resolver()` when `invoked_subcommand` is `"profile"` or `"synthetic"`. Both subgroups call `get_current_profile(auto_resolve=False)` and manage their own profile lifecycle.
 
-5. **`setup_logging()` is decoupled from `get_settings()`.** All log config values (level, format, file path) are passed explicitly by `setup_observability()`. Profile commands get console-only logging with defaults — no `get_settings()` call needed.
+5. **`get_settings()` is a pure read.** It loads configuration from files and environment variables but creates no directories and has no filesystem side effects. Safe to call from any context. Raises `RuntimeError` if called before `set_current_profile()`.
 
-6. **No module-level profile initialization.** `_current_profile` starts as `None`. The profile is set exclusively by `main_callback()` via `set_current_profile()`. This makes the flow linear: callback sets profile → everything else reads it. No stale-state windows.
+6. **`setup_logging()` is decoupled from `get_settings()`.** All log config values (level, format, file path) are passed explicitly by `setup_observability()`. The early `setup_observability(profile=None)` in the callback gives console-only logging until the lazy resolver re-initializes with profile-scoped files.
+
+7. **No module-level profile initialization.** `_current_profile` starts as `None`. It is set either eagerly in the callback (when an explicit name is provided) or lazily via `resolve_profile()` on first settings access. Either way, by the time any command body reads the profile, it has been set.
 
 ## Known Remaining Issues
 

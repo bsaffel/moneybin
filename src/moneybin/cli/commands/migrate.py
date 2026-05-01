@@ -5,11 +5,13 @@ need these — auto-upgrade in Database.__init__() handles everything
 transparently.
 """
 
+import json
 import logging
 from typing import Annotated
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.migrations import MigrationRunner, get_current_versions
 
@@ -56,16 +58,43 @@ def migrate_apply(
 
 
 @app.command("status")
-def migrate_status() -> None:
+def migrate_status(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
     """Show migration state — applied, pending, and drift warnings."""
     with handle_cli_errors() as db:
         runner = MigrationRunner(db)
 
-        # Applied migrations
         applied = runner.applied_details()
+        pending = runner.pending()
+        drift = runner.check_drift()
+        versions = get_current_versions(db)
+
+        if output == "json":
+            payload = {
+                "applied": [
+                    {
+                        "version": m.version,
+                        "filename": m.filename,
+                        "success": m.success,
+                        "execution_ms": m.execution_ms,
+                        "applied_at": m.applied_at,
+                    }
+                    for m in applied
+                ],
+                "pending": [
+                    {"filename": m.filename, "file_type": m.file_type} for m in pending
+                ],
+                "drift": [{"reason": w.reason} for w in drift],
+                "versions": versions,
+            }
+            typer.echo(json.dumps(payload, indent=2, default=str))
+            return
 
         if applied:
-            logger.info("Applied migrations:")
+            if not quiet:
+                logger.info("Applied migrations:")
             for m in applied:
                 status = "✅" if m.success else "❌"
                 time_str = (
@@ -74,28 +103,25 @@ def migrate_status() -> None:
                 logger.info(
                     f"  {status} V{m.version:03d} {m.filename}{time_str} — {m.applied_at}"
                 )
-        else:
+        elif not quiet:
             logger.info("No applied migrations")
 
-        # Pending
-        pending = runner.pending()
         if pending:
-            logger.info(f"\nPending migrations ({len(pending)}):")
+            if not quiet:
+                logger.info(f"\nPending migrations ({len(pending)}):")
             for m in pending:
                 logger.info(f"  ⚙️  {m.filename}")
-        else:
+        elif not quiet:
             logger.info("\nNo pending migrations")
 
-        # Drift warnings
-        drift = runner.check_drift()
         if drift:
-            logger.info("\nDrift warnings:")
+            if not quiet:
+                logger.info("\nDrift warnings:")
             for w in drift:
                 logger.warning(f"  ⚠️  {w.reason}")
 
-        # Version state
-        versions = get_current_versions(db)
         if versions:
-            logger.info("\nComponent versions:")
+            if not quiet:
+                logger.info("\nComponent versions:")
             for component, version in sorted(versions.items()):
                 logger.info(f"  {component}: {version}")

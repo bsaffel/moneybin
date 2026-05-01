@@ -9,17 +9,17 @@ Stream-based structured logging with daily rotating log files and automatic PII 
 ### CLI Commands
 
 ```bash
-# Follow log output in real time
-moneybin logs tail -f
+# Follow CLI log output in real time
+moneybin logs cli -f
 
 # View logs from a specific stream
-moneybin logs tail --stream mcp
+moneybin logs mcp
 
 # Print the log directory path
-moneybin logs path
+moneybin logs --print-path
 
 # Delete logs older than 30 days
-moneybin logs clean --older-than 30d
+moneybin logs --prune --older-than 30d
 ```
 
 ### Log Streams
@@ -50,7 +50,7 @@ The sanitizer masks and warns — it never suppresses log entries. Financial dat
 
 ```bash
 # View lifetime metric aggregates
-moneybin stats show
+moneybin stats
 ```
 
 Metrics are persisted to the `app.metrics` table in DuckDB and flushed on shutdown plus periodically during long operations. This means metrics survive process restarts — you see lifetime aggregates, not just the current session.

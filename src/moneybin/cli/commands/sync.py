@@ -1,13 +1,21 @@
 """Data synchronization commands for MoneyBin CLI."""
 
+import json
 import logging
 
 import typer
+
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 
 app = typer.Typer(
     help="Sync financial data from external services",
     no_args_is_help=True,
 )
+key_app = typer.Typer(
+    help="Manage the sync server's encryption key",
+    no_args_is_help=True,
+)
+app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
 
 
@@ -57,13 +65,24 @@ def sync_pull(
 
 
 @app.command("status")
-def sync_status() -> None:
+def sync_status(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — placeholder; nothing to suppress yet
+) -> None:
     """Show connected institutions and sync health."""
+    if output == "json":
+        typer.echo(
+            json.dumps(
+                {"status": "not_implemented", "spec": "docs/specs/sync-overview.md"},
+                indent=2,
+            )
+        )
+        return
     _not_implemented("sync-overview.md")
 
 
-@app.command("rotate-key")
-def sync_rotate_key() -> None:
+@key_app.command("rotate")
+def sync_key_rotate() -> None:
     """Rotate E2E encryption key pair."""
     _not_implemented("sync-overview.md")
 

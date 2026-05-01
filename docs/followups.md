@@ -155,6 +155,44 @@ Fix: grant the workflow permission to call `gh pr review` by adding to
 
 See PR #58 conversation for the exchange where this came up.
 
+## `db key {export,import,verify}` (post-PR for CLI symmetry refactor)
+
+The CLI symmetry refactor introduced the `db key` sub-group with stubs for three operations that are not yet implemented. They exist to reserve the command namespace and exit with code 1 + a "not yet implemented" message.
+
+### `db key export`
+
+Export the active profile's encryption key, wrapped in a user-supplied passphrase, to a backup file. Use case: disaster recovery when the keychain is lost.
+
+Design considerations:
+- Wrap with Argon2id-derived KEK + AES-256-GCM (same primitives as data-protection).
+- Output format should be portable: a small JSON envelope with `version`, `kdf_params`, `nonce`, `ciphertext`, `tag`.
+- File should be marked `0600`.
+- Must NOT print the unwrapped key to stdout.
+
+### `db key import`
+
+The inverse: read a backup file, prompt for the passphrase, restore into the keychain for the active profile.
+
+Design considerations:
+- Detect collision with an existing keychain entry; require `--force` to overwrite.
+- After import, run `db key verify` automatically.
+
+### `db key verify`
+
+Confirm the stored key actually decrypts the active profile's database (open + read a single row from a known table). Useful after restore, or as a periodic check.
+
+Design considerations:
+- Must not modify the database.
+- Should differentiate "key wrong" from "DB missing" in the error message.
+
+### Why deferred
+
+Each requires a small spec covering the file format, passphrase prompt UX, and rotation interaction. Better to land the CLI shape now and iterate the implementations against a reference spec than to inline-design under PR pressure.
+
+## CLI shadowing trap: `cli/__init__.py` re-exports `main`
+
+`from .main import main` in `src/moneybin/cli/__init__.py` makes `moneybin.cli.main` resolve to the function, not the module. Tests that monkeypatch attributes on the module must use `sys.modules["moneybin.cli.main"]` or import via a different path. Consider renaming the entry-point function (e.g., `cli_entry`) so the module shape is unambiguous.
+
 ## City-token stripping in `normalize_description` (post-PR #66)
 
 `_TRAILING_LOCATION` in `src/moneybin/services/_text.py` strips bare

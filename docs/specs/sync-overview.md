@@ -378,7 +378,7 @@ stateDiagram-v2
     Generated --> Stored: Private key → OS keychain<br/>(or passphrase-protected)
     Stored --> Registered: Public key → POST /auth/register-key
     Registered --> Active: Server encrypts payloads<br/>to this public key
-    Active --> Rotated: moneybin sync rotate-key
+    Active --> Rotated: moneybin sync key rotate
     Rotated --> Generated: Generate new key pair
 
     note right of Active
@@ -395,7 +395,7 @@ stateDiagram-v2
 3. **Registration.** Client sends public key to server via `POST /auth/register-key`. Server stores it alongside the user record. The server uses this key to encrypt all sync payloads before returning them.
 4. **Encryption.** Server encrypts sync payloads to the client's registered public key before returning from `GET /sync/data`. Response body is an encrypted blob instead of raw JSON.
 5. **Decryption.** Client decrypts with its private key. The JSON inside is identical to the unencrypted format — loaders, staging views, and core models are all unchanged.
-6. **Rotation.** `moneybin sync rotate-key` generates a new key pair, registers the new public key with the server. Old key retained briefly for in-flight payloads during the transition window.
+6. **Rotation.** `moneybin sync key rotate` generates a new key pair, registers the new public key with the server. Old key retained briefly for in-flight payloads during the transition window.
 
 ### Key protection
 
@@ -663,7 +663,7 @@ The [`testing-and-validation-overview.md`](testing-and-validation-overview.md) u
 - Key generation, OS keychain storage, passphrase-protected storage
 - `POST /auth/register-key` integration
 - Auto-negotiation (`application/json` vs `application/age`)
-- `moneybin sync rotate-key` command
+- `moneybin sync key rotate` command
 - Blocked on moneybin-server Phase 5
 
 ### Phase 4: Post-quantum upgrade

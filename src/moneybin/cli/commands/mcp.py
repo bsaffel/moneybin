@@ -14,6 +14,8 @@ from typing import Annotated, Any, Literal, get_args
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
 from moneybin.config import get_base_dir
 from moneybin.mcp.server import mcp as mcp_server
 
@@ -224,7 +226,10 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
 
 
 @app.command("list-tools")
-def list_tools() -> None:
+def list_tools(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — list-tools has no info chatter; only data lines
+) -> None:
     """List all registered MCP tools.
 
     Enumerates the v1 namespace registry. Useful for verifying that
@@ -240,7 +245,20 @@ def list_tools() -> None:
     # including extended-namespace tools that are hidden by default.
     tools = asyncio.run(mcp._list_tools())  # noqa: SLF001 — public API filters by visibility  # pyright: ignore[reportPrivateUsage]
 
-    for tool in sorted(tools, key=lambda t: t.name):
+    sorted_tools = sorted(tools, key=lambda t: t.name)
+
+    if output == "json":
+        tools_payload = [
+            {
+                "name": tool.name,
+                "description": getattr(tool, "description", "") or "",
+            }
+            for tool in sorted_tools
+        ]
+        emit_json("tools", tools_payload)
+        return
+
+    for tool in sorted_tools:
         description = getattr(tool, "description", "") or ""
         typer.echo(f"  {tool.name}: {description}")
 
@@ -249,7 +267,10 @@ def list_tools() -> None:
 
 
 @app.command("list-prompts")
-def list_prompts() -> None:
+def list_prompts(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
     """List all registered MCP prompts.
 
     Imports prompt modules to trigger decorator registration, then
@@ -266,11 +287,25 @@ def list_prompts() -> None:
 
     prompts = asyncio.run(mcp_server.list_prompts(run_middleware=False))
 
-    if not prompts:
-        typer.echo("No prompts registered.")
+    sorted_prompts = sorted(prompts, key=lambda p: p.name)
+
+    if output == "json":
+        prompts_payload = [
+            {
+                "name": prompt.name,
+                "description": getattr(prompt, "description", None) or "",
+            }
+            for prompt in sorted_prompts
+        ]
+        emit_json("prompts", prompts_payload)
         return
 
-    for prompt in sorted(prompts, key=lambda p: p.name):
+    if not sorted_prompts:
+        if not quiet:
+            typer.echo("No prompts registered.")
+        return
+
+    for prompt in sorted_prompts:
         description = getattr(prompt, "description", None) or ""
         typer.echo(f"  {prompt.name}  {description}")
 

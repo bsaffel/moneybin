@@ -873,7 +873,7 @@ class ImportService:
             if pending:
                 logger.info(f"  {pending} new auto-rule proposals")
                 logger.info(
-                    "  💡 Run 'moneybin categorize auto-review' to review proposed rules"
+                    "  💡 Run 'moneybin categorize auto review' to review proposed rules"
                 )
         except Exception:  # noqa: BLE001 — categorization is best-effort; failure skips without aborting import
             logger.debug(

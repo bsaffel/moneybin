@@ -29,9 +29,10 @@ moneybin
 │   ├── history      List recent imports with batch details
 │   ├── preview      Preview file structure (dry run)
 │   ├── revert       Undo an import batch
-│   ├── list-formats List all available formats
-│   ├── show-format  Show format details
-│   └── delete-format Delete a user-saved format
+│   └── formats      Manage saved import formats
+│       ├── list     List all available formats
+│       ├── show     Show format details
+│       └── delete   Delete a user-saved format
 │
 ├── sync             Bank sync via moneybin-server (📐 designed)
 │   ├── login / logout
@@ -44,12 +45,13 @@ moneybin
 │   ├── apply-rules  Run rules + merchants on uncategorized transactions
 │   ├── bulk         Bulk-assign categories from a JSON file or stdin
 │   ├── seed         Initialize default categories (Plaid PFCv2)
-│   ├── stats        Coverage statistics
+│   ├── summary      Coverage statistics
 │   ├── list-rules   Display active manual rules
-│   ├── auto-review  List pending auto-rule proposals
-│   ├── auto-confirm Approve/reject auto-rule proposals
-│   ├── auto-rules   List active auto-generated rules
-│   └── auto-stats   Auto-rule health (active, pending, categorized)
+│   └── auto         Auto-rule sub-group
+│       ├── review   List pending auto-rule proposals
+│       ├── confirm  Approve/reject auto-rule proposals
+│       ├── rules    List active auto-generated rules
+│       └── stats    Auto-rule health (active, pending, categorized)
 │
 ├── matches          Dedup + transfer review
 │   ├── run          Run matcher against existing transactions
@@ -73,8 +75,7 @@ moneybin
 │   ├── recurring show
 │   └── investments show
 │
-├── stats            Observability
-│   └── show         Lifetime metric aggregates
+├── stats            Lifetime metric aggregates (leaf)
 │
 ├── export           Export to CSV/Excel/Sheets (🗓️ planned)
 │   └── run
@@ -100,10 +101,7 @@ moneybin
 │   ├── ps / kill    Inspect or kill processes holding the DB
 │   └── migrate {apply,status}
 │
-├── logs             Log management
-│   ├── tail         View recent log entries (-f to follow)
-│   ├── path         Print log directory path
-│   └── clean        Delete old log files
+├── logs <stream>    View logs for cli/mcp/sqlmesh (leaf; --print-path, --prune)
 │
 └── synthetic        Test data + scenario verification
     ├── generate     Generate synthetic data for a persona
@@ -129,9 +127,9 @@ moneybin import file ~/Downloads/checking.qfx
 moneybin import file ~/Downloads/chase_may.csv --account-name "Chase Checking"
 moneybin matches review                # Review any pending dedup/transfer proposals
 moneybin categorize apply-rules        # Apply rules + merchants
-moneybin categorize auto-review        # Inspect auto-rule proposals
-moneybin categorize auto-confirm --approve-all
-moneybin categorize stats
+moneybin categorize auto review        # Inspect auto-rule proposals
+moneybin categorize auto confirm --approve-all
+moneybin categorize summary
 ```
 
 `import file` runs the matcher and rule-based categorization automatically. The explicit commands above are useful when reviewing pending work or tuning behavior.

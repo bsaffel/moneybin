@@ -4,13 +4,19 @@ Deterministic categorization operations — no LLM dependency.
 LLM-based auto-categorization is available through the MCP server.
 """
 
+import json
 import logging
 from typing import cast
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, render_or_json
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
@@ -19,6 +25,12 @@ app = typer.Typer(
     help="Manage transaction categories, rules, and merchants",
     no_args_is_help=True,
 )
+
+auto_app = typer.Typer(
+    help="Auto-categorization workflows: review, confirm, stats, rules",
+    no_args_is_help=True,
+)
+app.add_typer(auto_app, name="auto")
 
 
 @app.command("apply-rules")
@@ -53,13 +65,20 @@ def seed_cmd() -> None:
         logger.info(f"\u2705 Seeded {count} new categories")
 
 
-@app.command("stats")
-def stats_cmd() -> None:
-    """Show categorization coverage statistics."""
+@app.command("summary")
+def summary_cmd(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
+) -> None:
+    """Show categorization coverage summary."""
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors() as db:
         stats = CategorizationService(db).categorization_stats()
+
+    if output == "json":
+        emit_json("summary", stats)
+        return
 
     total = stats["total"]
     categorized = stats["categorized"]
@@ -79,7 +98,10 @@ def stats_cmd() -> None:
 
 
 @app.command("list-rules")
-def list_rules_cmd() -> None:
+def list_rules_cmd(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
     """Display all active categorization rules."""
     from moneybin.tables import CATEGORIZATION_RULES
 
@@ -94,11 +116,29 @@ def list_rules_cmd() -> None:
             """
         ).fetchall()
 
-    if not rows:
-        logger.info("No active categorization rules.")
+    if output == "json":
+        rules = [
+            {
+                "rule_id": r[0],
+                "name": r[1],
+                "merchant_pattern": r[2],
+                "match_type": r[3],
+                "category": r[4],
+                "subcategory": r[5],
+                "priority": r[6],
+            }
+            for r in rows
+        ]
+        emit_json("rules", rules)
         return
 
-    logger.info("Active categorization rules:")
+    if not rows:
+        if not quiet:
+            logger.info("No active categorization rules.")
+        return
+
+    if not quiet:
+        logger.info("Active categorization rules:")
     for rule_id, name, pattern, match_type, cat, subcat, priority in rows:
         sub = f" / {subcat}" if subcat else ""
         logger.info(
@@ -106,11 +146,10 @@ def list_rules_cmd() -> None:
         )
 
 
-@app.command("auto-review")
+@auto_app.command("review")
 def auto_review_cmd(
-    output: str = typer.Option(
-        "table", "--output", help="Output format: table or json"
-    ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -119,8 +158,6 @@ def auto_review_cmd(
     ),
 ) -> None:
     """List pending auto-rule proposals with sample transactions and trigger counts."""
-    import json
-
     from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
     from moneybin.services.auto_rule_service import AutoRuleService
 
@@ -129,14 +166,16 @@ def auto_review_cmd(
 
     proposals = result.proposals
     if output == "json":
-        typer.echo(json.dumps(auto_review_envelope(result).to_dict()))
+        typer.echo(json.dumps(auto_review_envelope(result).to_dict(), indent=2))
         return
 
     if not proposals:
-        logger.info("No pending auto-rule proposals.")
+        if not quiet:
+            logger.info("No pending auto-rule proposals.")
         return
 
-    logger.info("👀 Pending auto-rule proposals:")
+    if not quiet:
+        logger.info("👀 Pending auto-rule proposals:")
     for p in proposals:
         sub = f" / {p['subcategory']}" if p["subcategory"] else ""
         samples = cast(list[str], p["sample_txn_ids"])
@@ -146,14 +185,14 @@ def auto_review_cmd(
             f"({p['match_type']}) -> {p['category']}{sub} "
             f"(×{p['trigger_count']}){sample_str}"
         )
-    if result.total_count > len(proposals):
+    if not quiet and result.total_count > len(proposals):
         logger.info(
             f"💡 Showing {len(proposals)} of {result.total_count} pending proposals "
             f"— increase --limit to see more"
         )
 
 
-@app.command("auto-confirm")
+@auto_app.command("confirm")
 def auto_confirm_cmd(
     approve: list[str] = typer.Option(
         None, "--approve", help="Proposal IDs to approve"
@@ -199,13 +238,27 @@ def auto_confirm_cmd(
     )
 
 
-@app.command("auto-stats")
-def auto_stats_cmd() -> None:
+@auto_app.command("stats")
+def auto_stats_cmd(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — stats has no informational chatter; only data
+) -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors() as db:
         stats = AutoRuleService(db).stats()
+
+    if output == "json":
+        emit_json(
+            "stats",
+            {
+                "active_auto_rules": stats.active_auto_rules,
+                "pending_proposals": stats.pending_proposals,
+                "transactions_categorized": stats.transactions_categorized,
+            },
+        )
+        return
 
     logger.info("Auto-rule health:")
     logger.info(f"  Active auto-rules:        {stats.active_auto_rules}")
@@ -308,8 +361,10 @@ def bulk_cmd(
         raise typer.Exit(1)
 
 
-@app.command("auto-rules")
+@auto_app.command("rules")
 def auto_rules_cmd(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -325,11 +380,17 @@ def auto_rules_cmd(
         rules = svc.list_active_rules(limit=limit)
         total = svc.count_active_rules()
 
-    if not rules:
-        logger.info("No active auto-rules.")
+    if output == "json":
+        emit_json("rules", {"rules": rules, "total": total})
         return
 
-    logger.info("Active auto-rules:")
+    if not rules:
+        if not quiet:
+            logger.info("No active auto-rules.")
+        return
+
+    if not quiet:
+        logger.info("Active auto-rules:")
     for r in rules:
         sub = f" / {r['subcategory']}" if r["subcategory"] else ""
         logger.info(
@@ -337,7 +398,7 @@ def auto_rules_cmd(
             f"({r['match_type']}) -> {r['category']}{sub} "
             f"(priority: {r['priority']})"
         )
-    if total > len(rules):
+    if not quiet and total > len(rules):
         logger.info(
             f"💡 Showing {len(rules)} of {total} active auto-rules "
             f"— increase --limit to see more"

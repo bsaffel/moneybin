@@ -5,6 +5,8 @@ from typing import Annotated
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
 from moneybin.services.profile_service import (
     ProfileExistsError,
     ProfileNotFoundError,
@@ -38,13 +40,22 @@ def profile_create(
 
 
 @app.command("list")
-def profile_list() -> None:
+def profile_list(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
     """List all profiles, marking the active one."""
     svc = ProfileService()
     profiles = svc.list()
+
+    if output == "json":
+        emit_json("profiles", profiles)
+        return
+
     if not profiles:
-        logger.info("No profiles found")
-        logger.info("💡 Run 'moneybin profile create <name>' to create one")
+        if not quiet:
+            logger.info("No profiles found")
+            logger.info("💡 Run 'moneybin profile create <name>' to create one")
         return
     for p in profiles:
         marker = " (active)" if p["active"] else ""
@@ -98,6 +109,8 @@ def profile_show(
         str | None,
         typer.Argument(help="Profile name (defaults to active profile)"),
     ] = None,
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — show has no info chatter; only data lines
 ) -> None:
     """Show resolved settings for a profile."""
     svc = ProfileService()
@@ -105,11 +118,14 @@ def profile_show(
         from moneybin.config import get_current_profile
 
         try:
-            name = get_current_profile()
+            name = get_current_profile(auto_resolve=False)
         except RuntimeError:
             name = None
     try:
         info = svc.show(name)
+        if output == "json":
+            emit_json("profile", info)
+            return
         marker = " (active)" if info["active"] else ""
         logger.info(f"Profile: {info['name']}{marker}")
         logger.info(f"  Path:     {info['path']}")
@@ -145,7 +161,7 @@ def profile_set(
         from moneybin.config import get_current_profile
 
         try:
-            target = get_current_profile()
+            target = get_current_profile(auto_resolve=False)
         except RuntimeError:
             profiles = svc.list()
             active = next((p["name"] for p in profiles if p["active"]), None)

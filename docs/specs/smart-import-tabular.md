@@ -1097,16 +1097,16 @@ $ moneybin import history
 moneybin import preview statement.csv
 
 # List all formats (built-in + user-saved)
-moneybin import list-formats
+moneybin import formats list
 
 # Show format details
-moneybin import show-format chase_credit
+moneybin import formats show chase_credit
 
 # Delete a user format
-moneybin import delete-format my_bank
+moneybin import formats delete my_bank
 
 # Diff user format against built-in (when user overrode a built-in)
-moneybin import diff-format chase_credit
+moneybin import formats diff chase_credit
 ```
 
 ### Non-interactive parity summary

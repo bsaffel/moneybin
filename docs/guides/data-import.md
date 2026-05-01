@@ -175,13 +175,13 @@ Formats define how to read a specific institution's tabular exports. They specif
 
 ```bash
 # List all formats (built-in and user-saved)
-moneybin import list-formats
+moneybin import formats list
 
 # Show details for a format
-moneybin import show-format chase_credit
+moneybin import formats show chase_credit
 
 # Delete a user-saved format
-moneybin import delete-format my_bank
+moneybin import formats delete my_bank
 ```
 
 When you import a file and auto-detection succeeds, the mapping is saved as a user format. Future imports from the same institution use the saved format directly, skipping detection.

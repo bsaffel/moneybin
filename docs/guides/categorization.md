@@ -107,24 +107,24 @@ Every time `categorize.bulk` writes a categorization (CLI, MCP, or AI agent), Mo
 
 ```bash
 # List pending auto-rule proposals (table or JSON)
-moneybin categorize auto-review
-moneybin categorize auto-review --output json
+moneybin categorize auto review
+moneybin categorize auto review --output json
 
 # Approve / reject specific proposals
-moneybin categorize auto-confirm --approve abc123 --approve def456
-moneybin categorize auto-confirm --reject abc123
+moneybin categorize auto confirm --approve abc123 --approve def456
+moneybin categorize auto confirm --reject abc123
 
 # Approve all pending — except the ones you reject explicitly
-moneybin categorize auto-confirm --approve-all --reject abc123
+moneybin categorize auto confirm --approve-all --reject abc123
 
 # Reject everything pending
-moneybin categorize auto-confirm --reject-all
+moneybin categorize auto confirm --reject-all
 
 # List active auto-rules
-moneybin categorize auto-rules
+moneybin categorize auto rules
 
 # Show health: active auto-rules, pending proposals, transactions auto-ruled
-moneybin categorize auto-stats
+moneybin categorize auto stats
 ```
 
 ### Tunables
@@ -167,7 +167,7 @@ A proposal is suppressed when an active rule or merchant mapping already produce
 2. **Seed categories** — `moneybin categorize seed` (first time only)
 3. **Apply existing rules** — `moneybin categorize apply-rules`
 4. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions"*
-5. **Review auto-rule proposals** — `moneybin categorize auto-review`, then approve the ones that look right
+5. **Review auto-rule proposals** — `moneybin categorize auto review`, then approve the ones that look right
 6. **Rules build up** — each categorization creates merchant mappings and feeds auto-rule learning, so the next import has fewer uncategorized transactions
 
 Over time, the rule engine, merchant mappings, and auto-rules handle most categorization automatically. Each import requires less manual work.

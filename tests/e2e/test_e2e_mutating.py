@@ -189,7 +189,7 @@ class TestDBOperations:
 
     def test_db_rotate_key(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "rotatetest")
-        result = run_cli("db", "rotate-key", "--yes", env=env)
+        result = run_cli("db", "key", "rotate", "--yes", env=env)
         result.assert_success()
 
     def test_db_migrate_apply(self, tmp_path: Path) -> None:
@@ -299,18 +299,18 @@ class TestCategorizeMutating:
         result.assert_success()
 
         # auto-review lists the pending proposal
-        result = run_cli("categorize", "auto-review", env=env)
+        result = run_cli("categorize", "auto", "review", env=env)
         result.assert_success()
         assert "autoe2e0001" in result.output, (
             f"auto-review did not surface proposal: {result.output}"
         )
 
         # auto-stats reports the pending proposal
-        result = run_cli("categorize", "auto-stats", env=env)
+        result = run_cli("categorize", "auto", "stats", env=env)
         result.assert_success()
 
         # auto-confirm --approve-all promotes it
-        result = run_cli("categorize", "auto-confirm", "--approve-all", env=env)
+        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
         result.assert_success()
         assert "Approved" in result.output, (
             f"auto-confirm missing approval message: {result.output}"
@@ -318,11 +318,11 @@ class TestCategorizeMutating:
 
         # auto-rules now lists at least one active rule, and auto-stats
         # reflects the promotion
-        result = run_cli("categorize", "auto-rules", env=env)
+        result = run_cli("categorize", "auto", "rules", env=env)
         result.assert_success()
         assert "autoe2e0001" not in result.output  # listed by rule_id, not proposal_id
 
-        result = run_cli("categorize", "auto-stats", env=env)
+        result = run_cli("categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 
@@ -380,7 +380,7 @@ class TestImportMutating:
     def test_import_delete_format(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "delfmt")
         result = run_cli(
-            "import", "delete-format", "nonexistent-format", "--yes", env=env
+            "import", "formats", "delete", "nonexistent-format", "--yes", env=env
         )
         assert "Traceback (most recent call last)" not in result.output
 
@@ -431,5 +431,5 @@ class TestLogsMutating:
     def test_logs_clean(self, tmp_path: Path) -> None:
         env = {"MONEYBIN_HOME": str(tmp_path), "MONEYBIN_PROFILE": "logstest"}
         run_cli("profile", "create", "logstest", env=env)
-        result = run_cli("logs", "clean", "--older-than", "0d", env=env)
+        result = run_cli("logs", "--prune", "--older-than", "0d", env=env)
         result.assert_success()

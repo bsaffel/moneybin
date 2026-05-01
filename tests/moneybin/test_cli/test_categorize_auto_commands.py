@@ -6,6 +6,7 @@ Business logic is tested via auto_rule_service tests.
 import re
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.categorize import app
@@ -25,14 +26,14 @@ def _plain(s: str) -> str:
 
 def test_auto_review_help():
     """auto-review --help mentions pending proposals."""
-    result = runner.invoke(app, ["auto-review", "--help"])
+    result = runner.invoke(app, ["auto", "review", "--help"])
     assert result.exit_code == 0
     assert "pending" in _plain(result.stdout).lower()
 
 
 def test_auto_confirm_help_lists_approve_and_reject_flags():
     """auto-confirm --help exposes batch approve/reject flags."""
-    result = runner.invoke(app, ["auto-confirm", "--help"])
+    result = runner.invoke(app, ["auto", "confirm", "--help"])
     assert result.exit_code == 0
     out = _plain(result.stdout)
     assert "--approve" in out
@@ -43,14 +44,25 @@ def test_auto_confirm_help_lists_approve_and_reject_flags():
 
 def test_auto_stats_help():
     """auto-stats --help renders without error."""
-    result = runner.invoke(app, ["auto-stats", "--help"])
+    result = runner.invoke(app, ["auto", "stats", "--help"])
     assert result.exit_code == 0
 
 
 def test_auto_rules_help():
     """auto-rules --help renders without error."""
-    result = runner.invoke(app, ["auto-rules", "--help"])
+    result = runner.invoke(app, ["auto", "rules", "--help"])
     assert result.exit_code == 0
+
+
+@pytest.mark.unit
+def test_auto_subgroup_help_lists_all_actions() -> None:
+    """Auto --help lists each sub-action."""
+    from moneybin.cli.commands.categorize import app as categorize_app
+
+    result = runner.invoke(categorize_app, ["auto", "--help"])
+    assert result.exit_code == 0
+    for action in ("review", "confirm", "stats", "rules"):
+        assert action in result.stdout
 
 
 def _confirm_result(
@@ -75,7 +87,9 @@ def test_auto_confirm_explicit_approve(
     svc = mock_svc_cls.return_value
     svc.confirm.return_value = _confirm_result(approved=2)
 
-    result = runner.invoke(app, ["auto-confirm", "--approve", "a1", "--approve", "a2"])
+    result = runner.invoke(
+        app, ["auto", "confirm", "--approve", "a1", "--approve", "a2"]
+    )
     assert result.exit_code == 0
     svc.confirm.assert_called_once_with(approve=["a1", "a2"], reject=[])
 
@@ -90,7 +104,7 @@ def test_auto_confirm_explicit_reject(
     svc = mock_svc_cls.return_value
     svc.confirm.return_value = _confirm_result(rejected=1)
 
-    result = runner.invoke(app, ["auto-confirm", "--reject", "r1"])
+    result = runner.invoke(app, ["auto", "confirm", "--reject", "r1"])
     assert result.exit_code == 0
     svc.confirm.assert_called_once_with(approve=[], reject=["r1"])
 
@@ -109,7 +123,7 @@ def test_auto_confirm_approve_all_expands_pending(
     ]
     svc.confirm.return_value = _confirm_result(approved=2)
 
-    result = runner.invoke(app, ["auto-confirm", "--approve-all"])
+    result = runner.invoke(app, ["auto", "confirm", "--approve-all"])
     assert result.exit_code == 0
     svc.confirm.assert_called_once_with(approve=["p1", "p2"], reject=[])
 
@@ -128,7 +142,7 @@ def test_auto_confirm_reject_all_expands_pending(
     ]
     svc.confirm.return_value = _confirm_result(rejected=2)
 
-    result = runner.invoke(app, ["auto-confirm", "--reject-all"])
+    result = runner.invoke(app, ["auto", "confirm", "--reject-all"])
     assert result.exit_code == 0
     svc.confirm.assert_called_once_with(approve=[], reject=["p1", "p2"])
 
@@ -148,12 +162,12 @@ def test_auto_confirm_approve_all_with_explicit_reject_excludes_id(
     ]
     svc.confirm.return_value = _confirm_result(approved=2, rejected=1)
 
-    result = runner.invoke(app, ["auto-confirm", "--approve-all", "--reject", "p2"])
+    result = runner.invoke(app, ["auto", "confirm", "--approve-all", "--reject", "p2"])
     assert result.exit_code == 0
     svc.confirm.assert_called_once_with(approve=["p1", "p3"], reject=["p2"])
 
 
 def test_auto_confirm_rejects_both_all_flags() -> None:
     """--approve-all and --reject-all are mutually exclusive (exit code 2)."""
-    result = runner.invoke(app, ["auto-confirm", "--approve-all", "--reject-all"])
+    result = runner.invoke(app, ["auto", "confirm", "--approve-all", "--reject-all"])
     assert result.exit_code == 2
