@@ -6,6 +6,7 @@ from moneybin.validation.assertions.completeness import (
 )
 from moneybin.validation.assertions.distribution import (
     assert_distribution_within_bounds,
+    assert_ground_truth_coverage,
     assert_unique_value_count,
 )
 from moneybin.validation.assertions.domain import (
@@ -42,6 +43,7 @@ __all__ = [
     "assert_date_bounds",
     "assert_date_continuity",
     "assert_distribution_within_bounds",
+    "assert_ground_truth_coverage",
     "assert_migrations_at_head",
     "assert_min_rows",
     "assert_no_duplicates",

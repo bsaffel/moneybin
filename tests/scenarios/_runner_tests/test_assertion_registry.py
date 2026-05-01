@@ -4,7 +4,7 @@ from tests.scenarios._runner._assertion_registry import ASSERTION_REGISTRY
 
 
 def test_registry_includes_all_yaml_callable_assertions() -> None:
-    """Registry covers exactly the 21 YAML-callable assertions."""
+    """Registry covers exactly the 22 YAML-callable assertions."""
     expected = {
         "assert_amount_precision",
         "assert_balanced_transfers",
@@ -13,6 +13,7 @@ def test_registry_includes_all_yaml_callable_assertions() -> None:
         "assert_date_bounds",
         "assert_date_continuity",
         "assert_distribution_within_bounds",
+        "assert_ground_truth_coverage",
         "assert_migrations_at_head",
         "assert_min_rows",
         "assert_no_duplicates",
