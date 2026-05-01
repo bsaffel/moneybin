@@ -17,3 +17,8 @@ def has_ground_truth(db: Database) -> bool:
         """
     ).fetchall()
     return bool(rows)
+
+
+def safe_div(num: float, denom: float) -> float:
+    """Divide and round to 4 decimals; return 0.0 when the denominator is zero."""
+    return round(num / denom, 4) if denom else 0.0

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from duckdb import DuckDBPyConnection
 
-from moneybin.validation.assertions.relational import (
-    _quote_ident,  # pyright: ignore[reportPrivateUsage]  # intentionally shared within the assertions package
-)
+from moneybin.validation.assertions.relational import quote_ident
 from moneybin.validation.result import AssertionResult
 
 
@@ -68,7 +66,7 @@ def assert_column_types(
 
 def _row_count(conn: DuckDBPyConnection, table: str) -> int:
     """Return the row count for the given table."""
-    sql = f"SELECT COUNT(*) FROM {_quote_ident(table)}"  # noqa: S608  # identifier validated by _quote_ident
+    sql = f"SELECT COUNT(*) FROM {quote_ident(table)}"  # noqa: S608  # identifier validated by quote_ident
     return int(conn.execute(sql).fetchone()[0])  # type: ignore[index]
 
 
