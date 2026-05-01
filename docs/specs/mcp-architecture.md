@@ -165,7 +165,7 @@ The default core set keeps the initial tool count under ~20:
 | `transactions.matches.*` | 6 | Match review workflow |
 | `import.*` (extended) | 3 | AI parsing, folder import |
 
-**The core set is configurable.** Users who primarily budget can add `budget` to core; users doing tax prep can add `tax`. Configuration lives in the profile's `config.yaml` under `mcp.core_namespaces`. Setting the list to `["*"]` disables progressive disclosure and loads all tools at connection (equivalent to `MONEYBIN_MCP_LOAD_ALL=true`).
+**The core set is fixed by the server, not user-configured.** Per-session `moneybin.discover` covers the dynamic case — if the AI needs a budget or tax tool, it discovers the namespace mid-conversation. Static per-user "what loads at connect" config has no realistic value for a single-user app and was removed; the AI does the disclosing, not the user.
 
 **How it works:**
 
