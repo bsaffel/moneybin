@@ -31,7 +31,7 @@ EXTENDED_DOMAIN_DESCRIPTIONS: dict[str, str] = {
     "budget": "Budget targets, status, rollovers",
     "tax": "W-2 data, deductible expense search",
     "privacy": "Consent status, grants, revocations, audit log",
-    "transactions.matches": "Match review workflow",
+    "transactions_matches": "Match review workflow",
 }
 
 EXTENDED_DOMAINS: frozenset[str] = frozenset(EXTENDED_DOMAIN_DESCRIPTIONS)
@@ -42,7 +42,7 @@ mcp = FastMCP(
     "MoneyBin",
     instructions=(
         "MoneyBin is an AI-powered personal finance app. Tools use "
-        "dot-separated namespaces (spending_summary, accounts_balances, etc.). "
+        "underscore-joined namespaces (spending_summary, accounts_balances, etc.). "
         "Core tools are available immediately. Extended namespaces "
         "(categorize, budget, tax, privacy) can be loaded with "
         "moneybin_discover. All data stays local in DuckDB.\n\n"

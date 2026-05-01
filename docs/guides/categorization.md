@@ -74,12 +74,7 @@ Both surfaces share the same response envelope; pass `--output json` to get the 
 
 ## Category Taxonomy
 
-MoneyBin ships with the Plaid Personal Finance Category v2 (PFCv2) taxonomy — approximately 100 default categories organized into top-level categories and subcategories.
-
-```bash
-# Initialize default categories (safe to run multiple times)
-moneybin categorize seed
-```
+MoneyBin ships with the Plaid Personal Finance Category v2 (PFCv2) taxonomy — approximately 100 default categories organized into top-level categories and subcategories. Defaults are seeded automatically by `moneybin db init` and refreshed by `moneybin transform apply`. Run `moneybin transform seed` if you need to re-materialize them on demand.
 
 **Top-level categories include:** Food & Drink, Shopping, Travel, Transportation, Entertainment, Bills & Utilities, Health & Fitness, Personal Care, Education, Income, Transfer, and more.
 
@@ -163,12 +158,11 @@ A proposal is suppressed when an active rule or merchant mapping already produce
 
 ## Typical Workflow
 
-1. **Import data** — `moneybin import file transactions_csv`
-2. **Seed categories** — `moneybin categorize seed` (first time only)
-3. **Apply existing rules** — `moneybin categorize apply-rules`
-4. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions"*
-5. **Review auto-rule proposals** — `moneybin categorize auto review`, then approve the ones that look right
-6. **Rules build up** — each categorization creates merchant mappings and feeds auto-rule learning, so the next import has fewer uncategorized transactions
+1. **Import data** — `moneybin import file transactions.csv` (defaults are already seeded by `db init`)
+2. **Apply existing rules** — `moneybin categorize apply-rules`
+3. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions"*
+4. **Review auto-rule proposals** — `moneybin categorize auto review`, then approve the ones that look right
+5. **Rules build up** — each categorization creates merchant mappings and feeds auto-rule learning, so the next import has fewer uncategorized transactions
 
 Over time, the rule engine, merchant mappings, and auto-rules handle most categorization automatically. Each import requires less manual work.
 

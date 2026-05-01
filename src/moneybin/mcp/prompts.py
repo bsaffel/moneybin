@@ -70,10 +70,10 @@ def categorization_organize() -> str:
         **Workflow:**
         1. Check categorize_stats to see how many are uncategorized
         2. Fetch a batch with categorize_uncategorized (limit ~20)
-        4. Group similar transactions by description pattern
-        5. For repeating patterns, suggest a rule (categorize_create_rules)
-        6. For one-offs, use categorize_bulk directly
-        7. Repeat until coverage is acceptable
+        3. Group similar transactions by description pattern
+        4. For repeating patterns, suggest a rule (categorize_create_rules)
+        5. For one-offs, use categorize_bulk directly
+        6. Repeat until coverage is acceptable
 
         **Guardrails:**
         - Always confirm category assignments with the user before applying

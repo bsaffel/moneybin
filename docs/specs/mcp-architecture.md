@@ -549,7 +549,7 @@ This spec does not define MCP Apps — that is the immediate follow-on spec. But
 
 1. **Structured data, never pre-formatted.** Tools return typed fields (`amount: 1245.67`, `date: "2026-04-15"`) not display strings (`"$1,245.67"`, `"April 15, 2026"`). Formatting is the consumer's job — whether that consumer is an AI composing a text response or an App rendering a chart.
 
-2. **Aggregation-ready responses.** Tools that return time-series data (`spending_summary`, `cashflow_summary`, `accounts_net-worth`) include data in a shape that maps directly to chart axes — arrays of `{period, value}` objects, not prose summaries. An App can render a chart from the response without post-processing.
+2. **Aggregation-ready responses.** Tools that return time-series data (`spending_summary`, `cashflow_summary`, `accounts_networth`) include data in a shape that maps directly to chart axes — arrays of `{period, value}` objects, not prose summaries. An App can render a chart from the response without post-processing.
 
 3. **Currency in metadata, not per-row.** `summary.display_currency` at the top of the response, not `currency: "USD"` on every row. Per-row currency fields only when the response contains mixed unconverted currencies (see section 4).
 
@@ -642,7 +642,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 |---|---|
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
-| [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_review-matches`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
+| [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_matches_pending`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
 
 ## Resolved Decisions
 

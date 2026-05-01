@@ -76,7 +76,7 @@ These apply to all tools that accept them and are not repeated per tool:
 
 ### Namespace conventions
 
-Two levels by default (`domain.action`). Three levels when a sub-domain has a distinct workflow identity (e.g., `transactions_matches_pending`). Tool names are lowercase with dot separators, no underscores within segments. Noun = query, verb = action.
+Two segments by default (`domain_action`, e.g. `spending_summary`). Three segments when a sub-domain has a distinct workflow identity (e.g., `transactions_matches_pending`). Tool names are lowercase with underscore separators — no dots, since Anthropic's and OpenAI's MCP clients enforce `^[a-zA-Z0-9_-]{1,64}$` regardless of what the spec permits. Noun = query, verb = action.
 
 ### Service layer convention
 
@@ -731,16 +731,6 @@ Enable or disable a category.
 - **Service:** `CategorizationService.toggle_category() -> ToggleResult`
 - **CLI:** `moneybin categorize toggle-category --category-id ID --active/--inactive`
 
-### `categorize_seed`
-
-Initialize default categories from the Plaid PFCv2 taxonomy.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** None.
-- **Behavior:** Idempotent — existing categories are not overwritten. Returns `{seeded_count}`. Requires SQLMesh transforms to have been run so seed data exists.
-- **Service:** `CategorizationService.seed() -> SeedResult`
-- **CLI:** `moneybin categorize seed`
-
 ### `categorize_stats`
 
 Categorization coverage statistics.
@@ -1027,11 +1017,11 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Work through uncategorized transactions in batches, applying categories, creating merchant mappings, and building rules so future imports require less manual work.
 
-**Relevant tools:** `categorize_stats`, `categorize_categories`, `categorize_seed`, `categorize_uncategorized`, `categorize_bulk`, `categorize_create_rules`, `categorize_create_merchants`, `categorize_create_category`
+**Relevant tools:** `categorize_stats`, `categorize_categories`, `categorize_uncategorized`, `categorize_bulk`, `categorize_create_rules`, `categorize_create_merchants`, `categorize_create_category`
 
 **Guardrails:**
 
-- Check if categories exist first — seed if needed
+- Defaults are seeded automatically by `db init`; no MCP-side seed step
 - Fetch uncategorized transactions in manageable batches (50)
 - Always use bulk tools, never single-item equivalents
 - Present proposed categorizations to the user for confirmation before applying
@@ -1046,7 +1036,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Guide a first-time user from empty database to imported, transformed, and categorized data.
 
-**Relevant tools:** `overview_status`, `import_file`, `import_csv_preview`, `import_list_formats`, `categorize_seed`, `categorize_stats`
+**Relevant tools:** `overview_status`, `import_file`, `import_csv_preview`, `import_list_formats`, `categorize_stats`
 
 **Guardrails:**
 
@@ -1178,7 +1168,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `import_file` | `import_file` | |
 | `categorize_transaction` | `categorize_bulk` | Single-item removed; use list of one |
 | `get_uncategorized_transactions` | `categorize_uncategorized` | |
-| `seed_categories` | `categorize_seed` | |
+| `seed_categories` | _removed_ | Seeds run automatically via `db init` / `transform seed` |
 | `toggle_category` | `categorize_toggle_category` | |
 | `create_category` | `categorize_create_category` | |
 | `create_merchant_mapping` | `categorize_create_merchants` | Single → bulk |

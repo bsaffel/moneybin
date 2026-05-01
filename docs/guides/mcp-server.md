@@ -62,7 +62,6 @@ Tools are organized into domain namespaces. Names are stable — AI clients call
 | `categorize_create_merchants` | Create one or many merchant mappings |
 | `categorize_create_category` | Create a custom category or subcategory |
 | `categorize_toggle_category` | Enable or disable a category |
-| `categorize_seed` | Initialize default category taxonomy (Plaid PFCv2) |
 | `categorize_auto_review` | List pending auto-rule proposals |
 | `categorize_auto_confirm` | Approve or reject auto-rule proposals |
 | `categorize_auto_stats` | Auto-rule health (active, pending, transactions covered) |

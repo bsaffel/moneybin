@@ -117,7 +117,6 @@ Commands marked 📐 (designed) or 🗓️ (planned) reserve the namespace and p
 
 ```bash
 moneybin profile create personal
-moneybin categorize seed
 moneybin import file ~/Downloads/checking.qfx
 ```
 

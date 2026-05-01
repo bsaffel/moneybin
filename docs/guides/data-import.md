@@ -34,7 +34,7 @@ The universal tabular importer handles CSV, TSV, Excel (.xlsx), Parquet, and Fea
 moneybin import file ~/Downloads/chase_activity.csv --account-name "Chase Checking"
 
 # Use a built-in or saved format
-moneybin import file ~/Downloads/transactions_csv --format chase_credit
+moneybin import file ~/Downloads/transactions.csv --format chase_credit
 
 # Override specific column mappings when auto-detection misses
 moneybin import file export.csv --override date=TransDate --override amount=Amt
@@ -43,7 +43,7 @@ moneybin import file export.csv --override date=TransDate --override amount=Amt
 moneybin import file ~/Downloads/report.xlsx --sheet "Transactions"
 
 # Import Parquet from a data warehouse export
-moneybin import file ~/Downloads/transactions_parquet --account-name "Main Account"
+moneybin import file ~/Downloads/transactions.parquet --account-name "Main Account"
 ```
 
 ### Five-Stage Pipeline
@@ -155,7 +155,7 @@ moneybin import status
 moneybin import history
 
 # Preview a file's structure without importing
-moneybin import preview ~/Downloads/transactions_csv
+moneybin import preview ~/Downloads/transactions.csv
 
 # Revert an import (deletes all rows from that batch)
 moneybin import revert <import-id>

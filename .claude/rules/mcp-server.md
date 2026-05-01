@@ -29,7 +29,7 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 
 ## Tool Taxonomy
 
-Tools use dot-separated namespaces (MCP SEP-986): `domain.action_or_view`.
+Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-986 permits dots, but Anthropic and OpenAI clients enforce `^[a-zA-Z0-9_-]{1,64}$`, so we use the portable subset.
 
 | Namespace | Purpose |
 |---|---|

@@ -6,7 +6,7 @@ additions and apply user overrides (e.g. deactivations). This keeps seed
 edits flowing through immediately while preserving user state.
 
 To add a new seed: add a SQLMesh seed model, add its full name to
-``_SEED_MODELS``, and create the corresponding view in ``_create_views``.
+``_SEED_MODELS``, and extend ``refresh_views`` with the corresponding view.
 """
 
 from __future__ import annotations

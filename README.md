@@ -61,7 +61,7 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 moneybin import file path/to/checking.qfx     # OFX/QFX
-moneybin import file path/to/transactions_csv # CSV/TSV/Excel/Parquet/Feather
+moneybin import file path/to/transactions.csv # CSV/TSV/Excel/Parquet/Feather
 moneybin import file path/to/w2.pdf           # W-2 PDF
 moneybin import inbox                         # drain ~/Documents/MoneyBin/<profile>/inbox/
 moneybin import status

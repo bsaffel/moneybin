@@ -53,11 +53,11 @@ No schema changes. New in-memory types only:
   - Add optional `context` param to `record_categorization`, `_extract_pattern`, `_active_rule_covers_transaction`, `_merchant_mapping_covers`. When present, route through context.
 - `src/moneybin/services/categorization_service.py::find_matching_rule`
   - Optional `rules_override: list[ActiveRuleRow] | None` and `txn_row_override: TxnRow | None` to evaluate against pre-loaded data. Keeps rule-engine semantics (`match_first_rule`) in one place.
-- `src/moneybin/cli/commands/categorize_py`
+- `src/moneybin/cli/commands/categorize.py`
   - New `bulk` Typer command. Reads file or stdin (sentinel `-`). Calls a shared `_validate_items()` helper that returns `(items, parse_errors)`.
   - Merges `parse_errors` into `BulkCategorizationResult.error_details`.
   - Exit code per Requirement 4.
-- `src/moneybin/mcp/tools/categorize_py`
+- `src/moneybin/mcp/tools/categorize.py`
   - Replace inline dict-passing with the shared `_validate_items()` helper. Same partial-success envelope.
 - `src/moneybin/metrics/registry.py`
   - Register the three new metrics.

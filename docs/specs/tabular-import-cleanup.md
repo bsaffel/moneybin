@@ -136,7 +136,7 @@ tabular import review and may have changed):
 
 ### B2.1 Batch merchant resolution
 
-**Problem**: `categorize_bulk()` in `src/moneybin/mcp/tools/categorize_py`
+**Problem**: `categorize_bulk()` in `src/moneybin/mcp/tools/categorize.py`
 resolves merchants one transaction at a time inside a loop. For each item it:
 1. Queries `fct_transactions` for the description
 2. Calls `match_merchant()` against all merchant mappings
@@ -154,7 +154,7 @@ categorization of 100+ transactions is noticeably slow.
 
 This keeps the same behavior but reduces round-trips from O(N) to O(1).
 
-**Files**: `src/moneybin/mcp/tools/categorize_py` (primary),
+**Files**: `src/moneybin/mcp/tools/categorize.py` (primary),
 `src/moneybin/services/categorization_service.py` (may need a
 `match_merchant_batch()` or `get_all_merchants()` helper).
 
