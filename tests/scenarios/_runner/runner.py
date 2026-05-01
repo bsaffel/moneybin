@@ -19,11 +19,15 @@ from typing import Any
 
 from moneybin.database import Database, close_database, get_database
 from moneybin.validation.assertions import assert_sqlmesh_catalog_matches
-from moneybin.validation.result import AssertionResult, EvaluationResult
-from tests.scenarios._runner.expectations import (
+from moneybin.validation.result import (
+    AssertionResult,
+    EvaluationResult,
     ExpectationResult,
-    verify_expectations,
 )
+from tests.scenarios._runner._assertion_registry import (
+    resolve_assertion as _resolve_assertion,
+)
+from tests.scenarios._runner._expectation_registry import verify_expectations
 from tests.scenarios._runner.loader import (
     AssertionSpec,
     EvaluationSpec,
@@ -270,13 +274,6 @@ def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
             passed=False,
             breakdown={"error": str(exc)},
         )
-
-
-def _resolve_assertion(fn_name: str):
-    mod = importlib.import_module("moneybin.validation.assertions")
-    if not hasattr(mod, fn_name):
-        raise ValueError(f"unknown assertion fn: {fn_name}")
-    return getattr(mod, fn_name)
 
 
 def _resolve_evaluation(fn_name: str):
