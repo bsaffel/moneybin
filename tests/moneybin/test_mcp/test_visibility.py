@@ -130,7 +130,7 @@ async def test_full_discover_reveals_every_extended_tool() -> None:
         visible = {t.name for t in await client.list_tools()}
         all_registered = {
             t.name
-            for t in await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            for t in await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
         }
         assert visible == all_registered, (
             f"Visible tool set diverged from registered tool set after full "
