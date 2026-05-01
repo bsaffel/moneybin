@@ -15,6 +15,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from time import perf_counter
 from typing import Any, Literal
 
@@ -173,6 +174,11 @@ class SeedResult:
         )
 
 
+@lru_cache(maxsize=512)
+def _compile_regex(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern, re.IGNORECASE)
+
+
 def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
     """Check if text matches a pattern using the specified match type.
 
@@ -193,10 +199,11 @@ def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return pattern_lower in text_lower
     elif match_type == "regex":
         try:
-            return bool(re.search(pattern, text, re.IGNORECASE))
+            compiled = _compile_regex(pattern)
         except re.error:
             logger.warning("Invalid regex pattern in merchant rule")
             return False
+        return bool(compiled.search(text))
     else:
         logger.warning(f"Unknown match_type: {match_type}")
         return False
