@@ -12,11 +12,16 @@ def assert_no_nulls(db: Database, *, table: str, columns: list[str]) -> Assertio
     if not columns:
         raise ValueError("columns must be non-empty")
     t = quote_ident(table)
-    per_col: dict[str, int] = {}
-    for col in columns:
-        cq = quote_ident(col)
-        null_sql = f"SELECT COUNT(*) FROM {t} WHERE {cq} IS NULL"  # noqa: S608  # identifiers validated by quote_ident
-        per_col[col] = int(db.execute(null_sql).fetchone()[0])  # type: ignore[index]
+    per_col_select = ", ".join(
+        f"SUM(CASE WHEN {quote_ident(col)} IS NULL THEN 1 ELSE 0 END)"
+        for col in columns
+    )
+    sql = f"SELECT {per_col_select} FROM {t}"  # noqa: S608  # identifiers validated by quote_ident
+    row = db.execute(sql).fetchone()
+    counts = (
+        [int(v) if v is not None else 0 for v in row] if row else [0] * len(columns)
+    )
+    per_col = dict(zip(columns, counts, strict=True))
     total = sum(per_col.values())
     return AssertionResult(
         name="no_nulls",

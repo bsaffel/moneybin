@@ -9,12 +9,9 @@ See ``mcp-tool-surface.md`` section 14.
 
 from __future__ import annotations
 
-import logging
 import textwrap
 
 from .server import mcp
-
-logger = logging.getLogger(__name__)
 
 
 def _dedent(text: str) -> str:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.validation.assertions._helpers import quote_ident as _quote_ident
+from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
 
 
@@ -17,9 +17,9 @@ def assert_distribution_within_bounds(
     mean_range: tuple[float, float],
 ) -> AssertionResult:
     """Assert column statistics fall within author-specified bounds."""
-    t, c = _quote_ident(table), _quote_ident(col)
+    t, c = quote_ident(table), quote_ident(col)
     row = db.execute(
-        f"SELECT MIN({c}), MAX({c}), AVG({c}) FROM {t}"  # noqa: S608  # identifiers validated by _quote_ident
+        f"SELECT MIN({c}), MAX({c}), AVG({c}) FROM {t}"  # noqa: S608  # identifiers validated by quote_ident
     ).fetchone()
     if row is None or row[0] is None:
         return AssertionResult(
@@ -56,8 +56,8 @@ def assert_unique_value_count(
     tolerance_pct: float,
 ) -> AssertionResult:
     """Assert the number of distinct values in a column is within tolerance of expected."""
-    t, c = _quote_ident(table), _quote_ident(col)
-    actual = int(db.execute(f"SELECT COUNT(DISTINCT {c}) FROM {t}").fetchone()[0])  # noqa: S608  # type: ignore[index]  # identifiers validated by _quote_ident
+    t, c = quote_ident(table), quote_ident(col)
+    actual = int(db.execute(f"SELECT COUNT(DISTINCT {c}) FROM {t}").fetchone()[0])  # noqa: S608  # type: ignore[index]  # identifiers validated by quote_ident
     if expected == 0:
         # Cannot compute a percentage delta against 0; treat any actual rows as a fail.
         passed = actual == 0

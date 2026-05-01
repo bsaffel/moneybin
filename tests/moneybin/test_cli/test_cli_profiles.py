@@ -12,7 +12,9 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
@@ -22,6 +24,21 @@ from moneybin.utils.user_config import normalize_profile_name
 from tests.moneybin.conftest import temp_profile
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_moneybin_home(  # pyright: ignore[reportUnusedFunction]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Give each test its own MONEYBIN_HOME to prevent xdist worker races.
+
+    Tests in this file create profile directories with fixed names
+    ("alice", "bob"). Without isolation, parallel xdist workers race on
+    the shared ``~/.moneybin/profiles/`` tree — one worker's cleanup
+    deletes another's profile mid-test, surfacing as a CLI
+    "Profile 'alice' does not exist" error.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
 
 
 @contextmanager

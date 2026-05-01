@@ -9,6 +9,7 @@ from moneybin.tables import FCT_TRANSACTIONS, GROUND_TRUTH, INT_TRANSACTIONS_MAT
 from moneybin.validation.evaluations._common import (
     GroundTruthMissingError,
     has_ground_truth,
+    safe_div,
 )
 from moneybin.validation.result import EvaluationResult
 
@@ -64,8 +65,8 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
     breakdown = {
         "per_category": {
             cat: {
-                "precision": _safe_div(s["tp"], s["tp"] + s["fp"]),
-                "recall": _safe_div(s["tp"], s["tp"] + s["fn"]),
+                "precision": round(safe_div(s["tp"], s["tp"] + s["fp"]), 4),
+                "recall": round(safe_div(s["tp"], s["tp"] + s["fn"]), 4),
                 "support": s["support"],
             }
             for cat, s in per_cat.items()
@@ -82,7 +83,3 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
         passed=accuracy >= threshold,
         breakdown=breakdown,
     )
-
-
-def _safe_div(num: int, denom: int) -> float:
-    return round(num / denom, 4) if denom else 0.0

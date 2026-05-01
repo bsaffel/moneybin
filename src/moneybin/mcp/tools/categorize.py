@@ -1,23 +1,4 @@
-# src/moneybin/mcp/tools/categorize.py
-"""Categorize namespace tools — rules, merchants, bulk categorization.
-
-Tools:
-    - categorize.categories — List categories (low)
-    - categorize.rules — List categorization rules (low)
-    - categorize.merchants — List merchant mappings (low)
-    - categorize.stats — Categorization coverage stats (low)
-    - categorize.uncategorized — Find uncategorized transactions (medium)
-    - categorize.bulk — Bulk-assign categories (medium)
-    - categorize.create_rules — Create categorization rules (low)
-    - categorize.delete_rule — Soft-delete a rule (low)
-    - categorize.create_merchants — Create merchant mappings (low)
-    - categorize.create_category — Create a custom category (low)
-    - categorize.toggle_category — Enable/disable a category (low)
-    - categorize.seed — Seed default categories from taxonomy (low)
-    - categorize.auto_review — List pending auto-rule proposals (medium)
-    - categorize.auto_confirm — Approve/reject auto-rule proposals (medium)
-    - categorize.auto_stats — Auto-rule health metrics (low)
-"""
+"""Categorize namespace tools — rules, merchants, bulk categorization."""
 
 from __future__ import annotations
 
@@ -78,11 +59,6 @@ def _validate_match_type(match_type: str) -> MatchType:
             f"Must be one of: {', '.join(sorted(_VALID_MATCH_TYPES))}"
         )
     return match_type  # type: ignore[return-value]  # validated above
-
-
-# ---------------------------------------------------------------------------
-# Read tools
-# ---------------------------------------------------------------------------
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
@@ -262,10 +238,12 @@ def categorize_uncategorized(
                 ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
             ORDER BY t.transaction_date DESC
+            LIMIT ?
             """,
+            [clamped_limit],
         )
         columns = [desc[0] for desc in result.description]
-        fetched = result.fetchmany(clamped_limit)
+        fetched = result.fetchall()
     except duckdb.CatalogException:
         return build_envelope(
             data=[],
@@ -282,11 +260,6 @@ def categorize_uncategorized(
             "Use categorize.create_rules to set up automatic categorization",
         ],
     )
-
-
-# ---------------------------------------------------------------------------
-# Write tools
-# ---------------------------------------------------------------------------
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
@@ -437,13 +410,10 @@ def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
         """,
         [rule_id],
     ).fetchone()
-    if row:
-        return build_envelope(
-            data={"rule_id": rule_id, "action": "deactivated"},
-            sensitivity="low",
-        )
+    if not row:
+        raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
     return build_envelope(
-        data={"error": f"Rule {rule_id} not found"},
+        data={"rule_id": rule_id, "action": "deactivated"},
         sensitivity="low",
     )
 
@@ -467,7 +437,7 @@ def categorize_create_merchants(
             sensitivity="low",
         )
 
-    db = get_database()
+    service = CategorizationService(get_database())
     created = 0
     skipped = 0
     error_details: list[dict[str, str]] = []
@@ -498,7 +468,7 @@ def categorize_create_merchants(
         subcategory = str(item.get("subcategory", "")).strip() or None
 
         try:
-            CategorizationService(db).create_merchant(
+            service.create_merchant(
                 raw_pattern,
                 canonical_name,
                 match_type=match_type,
@@ -603,14 +573,11 @@ def categorize_toggle_category(
         """,
         [is_active, category_id],
     ).fetchone()
-    if row:
-        action = "enabled" if is_active else "disabled"
-        return build_envelope(
-            data={"category_id": category_id, "action": action},
-            sensitivity="low",
-        )
+    if not row:
+        raise UserError(f"Category {category_id} not found", code="CATEGORY_NOT_FOUND")
+    action = "enabled" if is_active else "disabled"
     return build_envelope(
-        data={"error": f"Category {category_id} not found"},
+        data={"category_id": category_id, "action": action},
         sensitivity="low",
     )
 

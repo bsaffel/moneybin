@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.validation.assertions._helpers import quote_ident as _quote_ident
+from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
 
 
@@ -65,7 +65,7 @@ def assert_column_types(
 
 def _row_count(db: Database, table: str) -> int:
     """Return the row count for the given table."""
-    sql = f"SELECT COUNT(*) FROM {_quote_ident(table)}"  # noqa: S608  # identifier validated by _quote_ident
+    sql = f"SELECT COUNT(*) FROM {quote_ident(table)}"  # noqa: S608  # identifier validated by quote_ident
     return int(db.execute(sql).fetchone()[0])  # type: ignore[index]
 
 

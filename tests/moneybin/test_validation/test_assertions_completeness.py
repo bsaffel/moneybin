@@ -52,3 +52,10 @@ def test_no_nulls_raises_on_empty_columns(db: Database) -> None:
     """Empty column list raises ValueError."""
     with pytest.raises(ValueError):
         assert_no_nulls(db, table="txn", columns=[])
+
+
+def test_no_nulls_passes_on_empty_table(db: Database) -> None:
+    """Empty table reports zero counts (exercises the SUM-returns-NULL path)."""
+    r = assert_no_nulls(db, table="txn", columns=["amount", "note"])
+    assert r.passed
+    assert r.details == {"null_counts": {"amount": 0, "note": 0}, "total": 0}

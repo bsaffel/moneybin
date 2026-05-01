@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.tables import FCT_TRANSACTIONS
-from moneybin.validation.assertions._helpers import quote_ident as _quote_ident
+from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
 
 # Each predicate matches *violations*, not valid rows. Transfers are
@@ -34,9 +34,12 @@ def assert_balanced_transfers(db: Database) -> AssertionResult:
     """Confirmed transfer pairs (transfer_pair_id NOT NULL) must net to zero."""
     rows = db.execute(
         f"SELECT transfer_pair_id, SUM(amount) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
-        "WHERE transfer_pair_id IS NOT NULL GROUP BY transfer_pair_id"
+        "WHERE transfer_pair_id IS NOT NULL "
+        "GROUP BY transfer_pair_id HAVING SUM(amount) IS DISTINCT FROM 0"
     ).fetchall()
-    unbalanced = [(pair, float(total)) for pair, total in rows if total != 0]
+    unbalanced = [
+        (pair, float(total) if total is not None else None) for pair, total in rows
+    ]
     return AssertionResult(
         name="balanced_transfers",
         passed=not unbalanced,
@@ -51,16 +54,16 @@ def assert_date_continuity(
     db: Database, *, table: str, date_col: str, account_col: str
 ) -> AssertionResult:
     """No month-gaps per account in the given table."""
-    t, dc, ac = _quote_ident(table), _quote_ident(date_col), _quote_ident(account_col)
+    t, dc, ac = quote_ident(table), quote_ident(date_col), quote_ident(account_col)
     rows = db.execute(
-        f"WITH per AS ("  # noqa: S608  # identifiers validated by _quote_ident
+        f"WITH per AS ("  # noqa: S608  # identifiers validated by quote_ident
         f"  SELECT {ac} AS account, DATE_TRUNC('month', {dc}) AS m FROM {t} GROUP BY 1, 2"
         f"), bounds AS ("
         f"  SELECT account, MIN(m) AS lo, MAX(m) AS hi, COUNT(*) AS observed FROM per GROUP BY account"
-        f") SELECT account, observed,"
-        f"  DATE_DIFF('month', lo, hi) + 1 AS expected FROM bounds"
+        f") SELECT account, observed, DATE_DIFF('month', lo, hi) + 1 AS expected"
+        f" FROM bounds WHERE observed IS DISTINCT FROM DATE_DIFF('month', lo, hi) + 1"
     ).fetchall()
-    gaps = [(acc, obs, exp) for acc, obs, exp in rows if obs != exp]
+    gaps = [(acc, obs, exp) for acc, obs, exp in rows]
     return AssertionResult(
         name="date_continuity",
         passed=not gaps,
