@@ -53,6 +53,10 @@ def stats_command(
         if where_clauses:
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
+        # Use the latest snapshot per (metric_name, metric_type, labels) — values
+        # in app.metrics are cumulative, so SUM/AVG would double-count. The
+        # ROW_NUMBER() window picks the most recent row; snapshot_count is
+        # informational only.
         try:
             rows = db.execute(
                 f"""

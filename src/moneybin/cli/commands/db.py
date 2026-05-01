@@ -624,7 +624,7 @@ def db_unlock() -> None:
 @key_app.command("show")
 def db_key_show(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — security warning is unconditional
 ) -> None:
     """Print the database encryption key."""
     from moneybin.secrets import SecretNotFoundError, SecretStore
@@ -639,15 +639,19 @@ def db_key_show(
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
 
+    # Security warning is unconditional — the key provides full database
+    # access, so the warning must reach stderr regardless of -q/--quiet or
+    # --output json. Hoisted above all branches so neither path can suppress
+    # it.
+    logger.warning(
+        "⚠️  Security warning: this key provides full access to your "
+        "database. Do not share it or store it in plain text."
+    )
+
     if output == "json":
         emit_json("encryption_key", key)
         return
 
-    if not quiet:
-        logger.warning(
-            "⚠️  Security warning: this key provides full access to your "
-            "database. Do not share it or store it in plain text."
-        )
     typer.echo(key)
 
 

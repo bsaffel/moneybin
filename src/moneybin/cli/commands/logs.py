@@ -160,7 +160,11 @@ def _parse_time_bound(value: str) -> datetime:
     except ValueError:
         pass
     try:
-        return datetime.fromisoformat(value.rstrip("Z"))
+        # Strip tzinfo so comparisons against naive log-timestamp datetimes
+        # don't raise. `--since 2026-04-01T00:00:00+00:00` would otherwise
+        # produce a tz-aware datetime that can't be compared to the naive
+        # datetimes parsed out of log lines.
+        return datetime.fromisoformat(value.rstrip("Z")).replace(tzinfo=None)
     except ValueError as e:
         raise ValueError(
             f"--since/--until must be a duration (5m, 1h, 7d) "
@@ -391,6 +395,23 @@ def logs_command(
         )
         raise typer.Exit(2)
 
+    if prune and not older_than:
+        typer.echo("Error: --prune requires --older-than DURATION", err=True)
+        raise typer.Exit(2)
+
+    if (
+        not print_path
+        and not prune
+        and stream is not None
+        and stream.lower() not in _VALID_STREAMS
+    ):
+        typer.echo(
+            f"Error: Unknown stream '{stream}'. Choose from: "
+            f"{', '.join(_VALID_STREAMS)}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     settings = get_settings()
     log_dir = settings.logging.log_file_path.parent
 
@@ -399,21 +420,16 @@ def logs_command(
         return
 
     if prune:
-        if not older_than:
-            logger.error("❌ --prune requires --older-than DURATION")
-            raise typer.Exit(2)
-        _do_prune(log_dir, older_than, dry_run=dry_run, quiet=quiet)
+        # older_than presence enforced above
+        _do_prune(log_dir, older_than or "", dry_run=dry_run, quiet=quiet)
         return
 
-    if stream is None or stream.lower() not in _VALID_STREAMS:
-        logger.error(
-            f"❌ Unknown stream '{stream}'. Choose from: {', '.join(_VALID_STREAMS)}"
-        )
-        raise typer.Exit(2)
+    # stream presence and validity enforced above
+    stream_value = (stream or "").lower()
 
     _do_view(
         log_dir=log_dir,
-        stream=stream.lower(),
+        stream=stream_value,
         follow=follow,
         lines=lines,
         level=level,

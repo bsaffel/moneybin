@@ -7,6 +7,7 @@ db, mcp.
 
 import logging
 import os
+import sys
 from typing import Annotated
 
 import typer
@@ -105,7 +106,14 @@ def main_callback(
     # fires only when a command actually calls ``get_settings`` /
     # ``get_current_profile``, so docker-style usage errors (``moneybin logs``
     # with no stream) and ``--help`` never trigger it.
-    if explicit:
+    #
+    # `--help`/`-h` anywhere in argv ALSO bypasses eager resolution. Help text
+    # is documentation and must remain side-effect free even when
+    # `MONEYBIN_PROFILE` points to a deleted profile (which would otherwise
+    # surface a dir-check error before `--help` could render).
+    help_requested = any(arg in {"--help", "-h"} for arg in sys.argv[1:])
+
+    if explicit and not help_requested:
         resolve_profile()
     else:
         register_profile_resolver(resolve_profile)

@@ -24,6 +24,13 @@ from pathlib import Path
 
 os.environ["MAX_FORK_WORKERS"] = "1"
 
+# Disable Rich/Click ANSI styling so help-text assertions match plain strings.
+# CI sets FORCE_COLOR=1, which causes Typer/Rich to inject color escapes inside
+# option names (`--\x1b[36moutput\x1b[0m`) — breaking substring checks like
+# `"--output" in result.stdout`. NO_COLOR is the standard opt-out.
+os.environ["NO_COLOR"] = "1"
+os.environ.pop("FORCE_COLOR", None)
+
 # Per-xdist-worker MoneyBin home so parallel tests don't trample each other's
 # `.moneybin/profiles/` directory. Each worker (`gw0`, `gw1`, …) gets its own
 # tempdir; serial runs use a single shared dir under `gw-main`.

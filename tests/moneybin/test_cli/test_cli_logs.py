@@ -447,6 +447,27 @@ class TestLogsViewFilters:
         result = runner.invoke(logs_command_app, ["cli", "--since", "bogus"])
         assert result.exit_code != 0
 
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_tz_aware_since_does_not_crash(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """--since with a tz-aware ISO timestamp must not raise.
+
+        Regression: ``datetime.fromisoformat`` returns a tz-aware datetime
+        for `+00:00` suffixes; comparing against the naive datetimes parsed
+        out of log lines previously raised TypeError.
+        """
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "cli_2026-04-21.log").write_text(
+            "2026-04-21 14:00:00,000 - cli - INFO - hello\n"
+        )
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+        result = runner.invoke(
+            logs_command_app, ["cli", "--since", "2026-04-01T00:00:00+00:00"]
+        )
+        assert result.exit_code == 0
+
 
 class TestParseLogLines:
     """Tests for _parse_log_lines and _filter_entries helpers."""
