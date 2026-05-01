@@ -1,9 +1,8 @@
-"""Tests for relational integrity assertion primitives."""
+"""Tests for referential-integrity assertion primitives."""
 
 import duckdb
 
-from moneybin.validation.assertions.relational import (
-    assert_no_duplicates,
+from moneybin.validation.assertions.integrity import (
     assert_no_orphans,
     assert_valid_foreign_keys,
 )
@@ -37,15 +36,6 @@ def test_valid_foreign_keys_fails_with_violation_count() -> None:
     )
     assert not r.passed
     assert r.details["violations"] == 1
-
-
-def test_no_duplicates_detects_repeats() -> None:
-    """Duplicate rows in a column set are detected."""
-    c = _conn()
-    c.execute("INSERT INTO child VALUES (10, 1), (10, 1)")
-    r = assert_no_duplicates(c, table="child", columns=["id"])
-    assert not r.passed
-    assert r.details["duplicate_groups"] == 1
 
 
 def test_no_orphans_passes_when_every_parent_has_child() -> None:
