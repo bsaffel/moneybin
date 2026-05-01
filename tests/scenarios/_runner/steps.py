@@ -10,11 +10,11 @@ from collections.abc import Callable
 from moneybin.database import Database, sqlmesh_context
 from moneybin.services.categorization_service import CategorizationService
 from moneybin.services.matching_service import MatchingService
-from moneybin.testing.scenarios.loader import SetupSpec
-from moneybin.testing.scenarios.seed_merchants import seed_merchants_from_persona
 from moneybin.testing.synthetic.engine import GeneratorEngine
 from moneybin.testing.synthetic.models import load_persona
 from moneybin.testing.synthetic.writer import SyntheticWriter
+from tests.scenarios._runner.loader import SetupSpec
+from tests.scenarios._runner.seed_merchants import seed_merchants_from_persona
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def _step_generate(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
 
 
 def _step_load_fixtures(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
-    from moneybin.testing.scenarios.fixture_loader import load_fixture_into_db
+    from tests.scenarios._runner.fixture_loader import load_fixture_into_db
 
     for spec in setup.fixtures:
         load_fixture_into_db(db, spec)

@@ -2,7 +2,7 @@
 
 Boots a fresh encrypted Database in a tempdir, dispatches the YAML pipeline
 through the step registry, runs assertions/expectations/evaluations, and
-returns a ``ResponseEnvelope`` describing the outcome.
+returns a ``ScenarioResult`` describing the outcome.
 """
 
 from __future__ import annotations
@@ -19,19 +19,19 @@ from pathlib import Path
 from typing import Any
 
 from moneybin.database import Database, close_database, get_database
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
-from moneybin.testing.scenarios.expectations import (
+from moneybin.validation.assertions import assert_sqlmesh_catalog_matches
+from moneybin.validation.result import AssertionResult, EvaluationResult
+from tests.scenarios._runner.expectations import (
     ExpectationResult,
     verify_expectations,
 )
-from moneybin.testing.scenarios.loader import (
+from tests.scenarios._runner.loader import (
     AssertionSpec,
     EvaluationSpec,
     Scenario,
 )
-from moneybin.testing.scenarios.steps import run_step
-from moneybin.validation.assertions import assert_sqlmesh_catalog_matches
-from moneybin.validation.result import AssertionResult, EvaluationResult
+from tests.scenarios._runner.result import ScenarioResult
+from tests.scenarios._runner.steps import run_step
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,8 @@ def _restored_profile():
             _config._current_profile = None  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001 — internal save/restore
 
 
-def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEnvelope:
-    """Run ``scenario`` end-to-end and return a ``ResponseEnvelope``.
+def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ScenarioResult:
+    """Run ``scenario`` end-to-end and return a ``ScenarioResult``.
 
     The runner provisions a profile under a fresh tempdir, opens an
     encrypted ``Database``, dispatches the configured pipeline steps, and
@@ -97,8 +97,9 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
             post-mortem inspection. Otherwise the tempdir is removed.
 
     Returns:
-        A ``ResponseEnvelope`` whose ``data`` payload describes scenario
-        results, gates, and structured failure details.
+        A ``ScenarioResult`` holding the scenario name, pass/fail boolean,
+        halted reason (if the run was aborted early), and per-result lists
+        for assertions, expectations, and evaluations.
     """
     started = time.perf_counter()
     tmp = tempfile.mkdtemp(prefix=f"scenario-{scenario.name}-")
@@ -112,7 +113,7 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
 
             preflight = assert_sqlmesh_catalog_matches(db)
             if not preflight.passed:
-                return _build_envelope(
+                return _build_result(
                     scenario=scenario,
                     started=started,
                     tmpdir=tmp,
@@ -130,14 +131,14 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                     # DuckDB file lock for a subprocess). Re-fetch so the
                     # next step / assertion phase has a live connection.
                     db = get_database()
-            except Exception as exc:  # noqa: BLE001 — surface as halted envelope
+            except Exception as exc:  # noqa: BLE001 — surface as halted result
                 # Don't use logger.exception — tracebacks may include local
                 # variables holding amounts/descriptions (PII rule).
                 logger.error(
                     f"scenario {scenario.name} pipeline crashed: {type(exc).__name__}"
                 )
                 logger.debug("scenario pipeline traceback", exc_info=True)
-                return _build_envelope(
+                return _build_result(
                     scenario=scenario,
                     started=started,
                     tmpdir=tmp,
@@ -155,13 +156,13 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
             ]
             try:
                 expectations = verify_expectations(db, scenario.expectations)
-            except Exception as exc:  # noqa: BLE001 — surface as halted envelope
+            except Exception as exc:  # noqa: BLE001 — surface as halted result
                 logger.error(
                     f"scenario {scenario.name} expectations crashed: "
                     f"{type(exc).__name__}"
                 )
                 logger.debug("scenario expectations traceback", exc_info=True)
-                return _build_envelope(
+                return _build_result(
                     scenario=scenario,
                     started=started,
                     tmpdir=tmp,
@@ -173,7 +174,7 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ResponseEn
                 )
             evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
 
-            return _build_envelope(
+            return _build_result(
                 scenario=scenario,
                 started=started,
                 tmpdir=tmp,
@@ -250,7 +251,7 @@ def _run_assertion(
             details={"args": args},
             error=str(exc),
         )
-    # Preserve the scenario-author's name so envelope output matches the YAML.
+    # Preserve the scenario-author's name so result output matches the YAML.
     return AssertionResult(
         name=spec.name,
         passed=result.passed,
@@ -290,7 +291,7 @@ def _resolve_evaluation(fn_name: str):
     return getattr(mod, fn_name)
 
 
-def _build_envelope(
+def _build_result(
     *,
     scenario: Scenario,
     started: float,
@@ -300,37 +301,20 @@ def _build_envelope(
     expectations: list[ExpectationResult],
     evaluations: list[EvaluationResult],
     halted: str | None = None,
-) -> ResponseEnvelope:
+) -> ScenarioResult:
     duration = round(time.perf_counter() - started, 2)
     all_a = all(a.passed for a in assertions)
     all_e = all(e.passed for e in expectations) if expectations else True
     all_v = all(e.passed for e in evaluations) if evaluations else True
     passed = all_a and all_e and all_v and halted is None
 
-    actions: list[str] = []
-    for a in assertions:
-        if not a.passed:
-            # Names only — assertion details may carry account IDs or amounts
-            # (PII rule). Callers needing details read the structured field.
-            actions.append(f"Inspect failing assertion: {a.name}")
-    if halted:
-        actions.append(f"Run halted: {halted}")
-
-    data: dict[str, Any] = {
-        "scenario": scenario.name,
-        "passed": passed,
-        "duration_seconds": duration,
-        # When cleanup ran, the path no longer exists — null it so JSON output
-        # doesn't advertise a stale path.
-        "tmpdir": tmpdir if keep_tmpdir else None,
-        "halted": halted,
-        "assertions": [asdict(a) for a in assertions],
-        "expectations": [asdict(e) for e in expectations],
-        "evaluations": [asdict(e) for e in evaluations],
-        "gates": {
-            "all_assertions_passed": all_a,
-            "all_expectations_passed": all_e,
-            "all_evaluations_passed": all_v,
-        },
-    }
-    return build_envelope(data=data, sensitivity="low", actions=actions)
+    return ScenarioResult(
+        scenario=scenario.name,
+        passed=passed,
+        duration_seconds=duration,
+        tmpdir=tmpdir if keep_tmpdir else None,
+        halted=halted,
+        assertions=[asdict(a) for a in assertions],
+        expectations=[asdict(e) for e in expectations],
+        evaluations=[asdict(e) for e in evaluations],
+    )

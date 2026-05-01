@@ -22,7 +22,7 @@ from moneybin.tables import (
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
 )
-from moneybin.testing.scenarios.loader import FIXTURES_ROOT, FixtureSpec
+from tests.scenarios._runner.loader import FIXTURES_ROOT, FixtureSpec
 
 
 def load_fixture_into_db(db: Database, spec: FixtureSpec) -> None:
