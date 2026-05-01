@@ -84,6 +84,19 @@ def test_balanced_transfers_flags_imbalance() -> None:
     assert not r.passed
 
 
+def test_balanced_transfers_flags_null_sum_as_violation() -> None:
+    """Transfer pair whose amounts are all NULL nets to NULL — must not silently pass."""
+    c = _txn_conn()
+    c.execute(
+        "INSERT INTO core.fct_transactions VALUES "
+        "('t1', NULL, 'Transfer', 'p1', TRUE),"
+        "('t2', NULL, 'Transfer', 'p1', TRUE)"
+    )
+    r = assert_balanced_transfers(c)
+    assert not r.passed
+    assert r.details["unbalanced_count"] == 1
+
+
 def test_date_continuity_passes_with_no_gaps() -> None:
     """All months populated for each account → passes."""
     c = _continuity_conn()
@@ -128,3 +141,14 @@ def test_date_continuity_year_boundary_passes() -> None:
     assert assert_date_continuity(
         c, table="txns", date_col="transaction_date", account_col="account_id"
     ).passed
+
+
+def test_date_continuity_flags_account_with_all_null_dates() -> None:
+    """Account whose dates are all NULL produces NULL bounds — must not silently pass."""
+    c = _continuity_conn()
+    c.execute("INSERT INTO txns VALUES ('a', NULL), ('a', NULL)")
+    r = assert_date_continuity(
+        c, table="txns", date_col="transaction_date", account_col="account_id"
+    )
+    assert not r.passed
+    assert r.details["gap_count"] == 1

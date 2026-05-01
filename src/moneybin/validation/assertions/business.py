@@ -36,9 +36,11 @@ def assert_balanced_transfers(conn: DuckDBPyConnection) -> AssertionResult:
     rows = conn.execute(
         f"SELECT transfer_pair_id, SUM(amount) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
         "WHERE transfer_pair_id IS NOT NULL "
-        "GROUP BY transfer_pair_id HAVING SUM(amount) != 0"
+        "GROUP BY transfer_pair_id HAVING SUM(amount) IS DISTINCT FROM 0"
     ).fetchall()
-    unbalanced = [(pair, float(total)) for pair, total in rows]
+    unbalanced = [
+        (pair, float(total) if total is not None else None) for pair, total in rows
+    ]
     return AssertionResult(
         name="balanced_transfers",
         passed=not unbalanced,
@@ -60,7 +62,7 @@ def assert_date_continuity(
         f"), bounds AS ("
         f"  SELECT account, MIN(m) AS lo, MAX(m) AS hi, COUNT(*) AS observed FROM per GROUP BY account"
         f") SELECT account, observed, DATE_DIFF('month', lo, hi) + 1 AS expected"
-        f" FROM bounds WHERE observed != DATE_DIFF('month', lo, hi) + 1"
+        f" FROM bounds WHERE observed IS DISTINCT FROM DATE_DIFF('month', lo, hi) + 1"
     ).fetchall()
     gaps = [(acc, obs, exp) for acc, obs, exp in rows]
     return AssertionResult(
