@@ -58,10 +58,13 @@ def temp_profile(profile: str) -> Generator[str, None, None]:
         # Don't check exists() because tests may mock it - just try to remove
         base = get_base_dir()
         profile_dir = base / "profiles" / normalized
-        try:
-            shutil.rmtree(profile_dir)
-        except FileNotFoundError:
-            pass  # Directory doesn't exist, nothing to clean up
+        # ignore_errors covers two distinct xdist races: ENOTEMPTY when
+        # workers race the shared profiles/ dir teardown, and ENOENT when
+        # tests in test_cli_profiles.py share fixed profile names ("alice",
+        # "bob") across workers. Narrowing this masks the second race as
+        # CLI FileNotFoundError instead — properly fixing it needs those
+        # tests to use isolated tmp_path, which is out of scope here.
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

@@ -153,9 +153,9 @@ test-e2e: venv ## Development: Run end-to-end subprocess tests
 	@echo "$(BLUE)🧪 Running end-to-end tests...$(RESET)"
 	@uv run pytest tests/e2e/ -m "e2e" -v
 
-test-scenarios: venv ## Development: Run all synthetic scenarios via the scenario runner
+test-scenarios: venv ## Development: Run all whole-pipeline scenarios via pytest
 	@echo "$(BLUE)🧪 Running all scenarios...$(RESET)"
-	@uv run moneybin synthetic verify --all
+	@uv run pytest tests/scenarios/ -m scenarios -v
 
 format: venv ## Development: Format code with ruff
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"

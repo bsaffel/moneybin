@@ -149,10 +149,11 @@ moneybin mcp config generate --client claude-desktop --install
 
 ### Verify the pipeline (developer)
 
+Whole-pipeline scenarios run as pytest tests under `tests/scenarios/`:
+
 ```bash
-moneybin synthetic verify --list
-moneybin synthetic verify --scenario basic-full-pipeline
-moneybin synthetic verify --all --output json
+make test-scenarios                                    # Run the full scenario suite
+uv run pytest tests/scenarios/ -m scenarios -v         # Same, via pytest directly
 ```
 
 ### Database maintenance

@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from moneybin.testing.scenarios.loader import VALID_STEP_NAMES, SetupSpec
-from moneybin.testing.scenarios.steps import STEP_REGISTRY, run_step
+from tests.scenarios._runner.loader import VALID_STEP_NAMES, SetupSpec
+from tests.scenarios._runner.steps import STEP_REGISTRY, run_step
 
 
 def test_step_names_match_registry() -> None:
@@ -32,7 +32,7 @@ def test_match_step_invokes_matching_service() -> None:
     """The match step constructs MatchingService(db) and calls .run()."""
     db = MagicMock()
     setup = SetupSpec(persona="family", seed=42, years=1)
-    with patch("moneybin.testing.scenarios.steps.MatchingService") as svc:
+    with patch("tests.scenarios._runner.steps.MatchingService") as svc:
         run_step("match", setup, db, env={})
     svc.assert_called_once_with(db)
     svc.return_value.run.assert_called_once_with(auto_accept_transfers=True)

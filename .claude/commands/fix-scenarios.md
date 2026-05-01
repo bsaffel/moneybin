@@ -1,8 +1,8 @@
 Find and fix failures in the latest `Scenarios` workflow run for a branch.
 
-The `Scenarios` workflow runs `moneybin synthetic verify --all` against every shipped
-scenario YAML in `src/moneybin/testing/scenarios/data/`. Failures are surfaced both as
-non-zero CI exit and as per-scenario PASS/FAIL lines in the JSONL artifact.
+The `Scenarios` workflow runs `uv run pytest tests/scenarios/ -m scenarios -v` against
+every shipped scenario YAML in `tests/scenarios/data/`. Failures are surfaced both as
+non-zero CI exit and as per-scenario PASS/FAIL lines in the pytest-json-report artifact.
 
 ## Usage
 
@@ -29,32 +29,29 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the JSONL artifact.
    and stop.
 
 3. **Pull the structured scenario results**. The workflow uploads a `scenarios-results`
-   artifact containing `scenarios.jsonl` — one JSON envelope per scenario. This is
-   far more useful than raw logs because each line carries the failing assertion
-   names, expectation diffs, and evaluation breakdowns.
+   artifact containing `scenarios.json` — a pytest-json-report document with one
+   entry per test. Each entry carries the failing assertion names, expectation
+   diffs, and evaluation breakdowns.
    ```
    mkdir -p /tmp/fix-scenarios-<run-id>
    gh run download <run-id> --name scenarios-results --dir /tmp/fix-scenarios-<run-id>
    ```
    If the artifact is unavailable (job timed out or crashed before upload), fall
-   back to `gh run view <run-id> --log-failed` and parse the verify output.
+   back to `gh run view <run-id> --log-failed` and parse the pytest output.
 
-4. **Identify the failing scenarios** from the JSONL. Each line is a
-   `ResponseEnvelope`; failures have `data.passed=false`. For each failed scenario,
-   extract:
-   - `data.scenario` — name (matches the YAML filename in
-     `src/moneybin/testing/scenarios/data/`)
-   - `data.halted` — non-null means a pipeline step crashed before assertions ran
-   - `data.assertions[]` — entries with `passed=false` carry `details` and `error`
-   - `data.expectations[]` — failures carry the expected vs. actual diff
-   - `data.evaluations[]` — failures carry `metric`, `value`, `threshold`,
-     `breakdown`
+4. **Identify the failing scenarios** from the JSON. Failures have
+   `outcome="failed"`. For each failed scenario, extract:
+   - `nodeid` — pytest test ID (maps to a YAML filename in
+     `tests/scenarios/data/`)
+   - The `longrepr` / captured stdout — `result.failure_summary()` is what pytest
+     prints; it lists halted step, failing assertion names, expectations, and
+     evaluations.
 
    ```
-   jq -r 'select(.data.passed==false) | "\(.data.scenario): halted=\(.data.halted)"' \
-     /tmp/fix-scenarios-<run-id>/scenarios.jsonl
-   jq 'select(.data.passed==false) | {scenario: .data.scenario, failed_assertions: [.data.assertions[] | select(.passed==false)], failed_expectations: [.data.expectations[] | select(.passed==false)], failed_evaluations: [.data.evaluations[] | select(.passed==false)]}' \
-     /tmp/fix-scenarios-<run-id>/scenarios.jsonl
+   jq -r '.tests[] | select(.outcome=="failed") | .nodeid' \
+     /tmp/fix-scenarios-<run-id>/scenarios.json
+   jq '.tests[] | select(.outcome=="failed") | {nodeid, longrepr: .call.longrepr}' \
+     /tmp/fix-scenarios-<run-id>/scenarios.json
    ```
 
 5. **If the target branch is not the current branch**, warn the user and ask whether
@@ -66,7 +63,7 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the JSONL artifact.
 
    | Symptom | Likely cause | Where to look |
    |---|---|---|
-   | `halted` non-null, no assertions ran | Pipeline step crashed (loader, transform, match, etc.) | `src/moneybin/testing/scenarios/steps.py` and the called service |
+   | `halted` non-null, no assertions ran | Pipeline step crashed (loader, transform, match, etc.) | `tests/scenarios/_runner/steps.py` and the called service |
    | Assertion failed with `error` | Assertion fn raised | `src/moneybin/validation/assertions/` |
    | Assertion failed with `details` | Pipeline output diverged from spec | The pipeline step that owns the data, **or** the scenario YAML if the expectation is wrong |
    | Expectation failed | Per-record claim doesn't match | The fixture YAML, the expectation engine, or the categorize/match step |
@@ -77,7 +74,7 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the JSONL artifact.
    the scenario clearly encodes an out-of-date expectation.
 
 7. **Read the affected files** in full before making any changes:
-   - The scenario YAML at `src/moneybin/testing/scenarios/data/<name>.yaml`
+   - The scenario YAML at `tests/scenarios/data/<name>.yaml`
    - Any referenced fixtures under `tests/fixtures/`
    - The pipeline step or assertion implicated by the failure
 
@@ -96,11 +93,11 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the JSONL artifact.
 9. **Reproduce locally** before claiming the fix works. The full suite is slow, so
    target the failing scenario:
    ```
-   uv run moneybin synthetic verify --scenario=<name> --output=json
+   uv run pytest tests/scenarios/test_<name>.py -v
    ```
-   For the integration tests that exercise the runner directly:
+   For unit tests that exercise the runner internals directly:
    ```
-   uv run pytest tests/integration/test_scenario_runner.py -v
+   uv run pytest tests/scenarios/_runner_tests/ -v
    ```
 
 10. **Verify** with the full pre-commit checklist:
@@ -109,7 +106,7 @@ non-zero CI exit and as per-scenario PASS/FAIL lines in the JSONL artifact.
     ```
     Plus the scenario suite end-to-end:
     ```
-    uv run moneybin synthetic verify --all
+    make test-scenarios
     ```
     If anything still fails, fix it before proceeding.
 

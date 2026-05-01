@@ -63,12 +63,12 @@ PRs that touch code run the scenario suite via [`.github/workflows/scenarios.yml
 Run locally:
 
 ```bash
-moneybin synthetic verify --list                       # Show shipped scenarios
-moneybin synthetic verify --scenario basic-full-pipeline
-moneybin synthetic verify --all --output json          # CI mode
+make test-scenarios                                    # Run all shipped scenarios
+uv run pytest tests/scenarios/ -m scenarios -v         # Same, via pytest directly
+uv run pytest tests/scenarios/test_basic_full_pipeline.py -v  # Single scenario
 ```
 
-Scenarios live at `src/moneybin/testing/scenarios/data/*.yaml`. The runner is documented in [`docs/specs/testing-scenario-runner.md`](docs/specs/testing-scenario-runner.md). Per [`docs/specs/testing-scenario-comprehensive.md`](docs/specs/testing-scenario-comprehensive.md), scenarios are migrating to `tests/scenarios/` as pytest tests.
+Scenarios live at `tests/scenarios/data/*.yaml`. The runner is documented in [`docs/specs/testing-scenario-runner.md`](docs/specs/testing-scenario-runner.md). Per [`docs/specs/testing-scenario-comprehensive.md`](docs/specs/testing-scenario-comprehensive.md), scenarios run as pytest tests under `tests/scenarios/`.
 
 ### Authoring a new scenario (especially for a user bug report)
 

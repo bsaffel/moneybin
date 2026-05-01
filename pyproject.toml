@@ -67,15 +67,11 @@ where = ["src"]
 include = ["moneybin*"]
 
 [tool.setuptools.package-data]
-# Include SQLMesh project files and shipped scenario assets (YAML scenarios +
-# their fixtures) so wheel installs can run `moneybin synthetic verify` without
-# a source checkout.
+# Include SQLMesh project files so wheel installs can run transformations
+# without a source checkout.
 moneybin = [
     "../../sqlmesh/config.yaml",
     "../../sqlmesh/models/**/*.sql",
-    "testing/scenarios/data/*.yaml",
-    "testing/scenarios/data/fixtures/**/*.csv",
-    "testing/scenarios/data/fixtures/**/*.yaml",
 ]
 
 [project.scripts]
@@ -97,6 +93,7 @@ dev = [
     # Testing framework and tools
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
+    "pytest-json-report>=1.5.0",
     "pytest-mock>=3.15.1",
     "pytest-asyncio>=1.3.0",
     "pytest-xdist>=3.8.0",
@@ -256,6 +253,7 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "e2e: marks tests as end-to-end subprocess tests",
+    "scenarios: marks whole-pipeline scenario tests (slow, real DB, real SQLMesh)",
 ]
 filterwarnings = [
     # Ignore deprecation warnings from third-party libraries we don't control

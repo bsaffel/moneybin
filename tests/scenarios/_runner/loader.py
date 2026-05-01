@@ -21,11 +21,11 @@ VALID_STEP_NAMES = {
     "transform_via_subprocess",
 }
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-# Fixtures live alongside the scenario YAMLs under package data so they're
-# bundled in wheel installs (no source checkout required to run shipped
-# scenarios). Paths in scenario YAML are resolved relative to this root.
-FIXTURES_ROOT = (Path(__file__).parent / "data" / "fixtures").resolve()
+# Anchor at <repo>/tests/scenarios/data — scenario YAML and fixtures live
+# under tests/, not the installed package.
+_DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+FIXTURES_ROOT = (_DATA_ROOT / "fixtures").resolve()
 
 
 class ScenarioValidationError(ValueError):
@@ -163,7 +163,7 @@ def load_scenario(path: Path) -> Scenario:
     return load_scenario_from_string(path.read_text())
 
 
-SHIPPED_SCENARIOS_DIR = Path(__file__).parent / "data"
+SHIPPED_SCENARIOS_DIR = _DATA_ROOT
 
 
 def list_shipped_scenarios() -> list[Scenario]:

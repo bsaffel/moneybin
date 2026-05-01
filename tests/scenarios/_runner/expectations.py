@@ -20,7 +20,7 @@ from moneybin.tables import (
     INT_TRANSACTIONS_MATCHED,
     MATCH_DECISIONS,
 )
-from moneybin.testing.scenarios.loader import ExpectationSpec
+from tests.scenarios._runner.loader import ExpectationSpec
 
 
 @dataclass(frozen=True, slots=True)

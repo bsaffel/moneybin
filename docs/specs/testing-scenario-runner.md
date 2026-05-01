@@ -1,5 +1,15 @@
 # Feature: Testing Scenario Runner
 
+> **Status update (2026-04-30):** The scenario runner has moved from
+> `src/moneybin/testing/scenarios/` to `tests/scenarios/_runner/`, and
+> scenarios now run via `make test-scenarios` (which invokes
+> `pytest tests/scenarios/ -m scenarios`) instead of the (now-removed)
+> `moneybin synthetic verify` CLI. See
+> [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md)
+> for the migration plan. The architecture and assertion vocabulary
+> documented below are still accurate; path and CLI references in the
+> body describe the pre-relocation layout for historical context.
+
 > Last updated: 2026-04-26
 > Status: implemented
 > Type: Feature
