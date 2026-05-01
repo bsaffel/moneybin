@@ -10,7 +10,6 @@ Tools:
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -20,8 +19,6 @@ from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-
-logger = logging.getLogger(__name__)
 
 
 def _validate_file_path(file_path: str) -> Path:

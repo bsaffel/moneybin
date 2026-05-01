@@ -7,8 +7,6 @@ Tools:
 
 from __future__ import annotations
 
-import logging
-
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
@@ -16,8 +14,6 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-
-logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="medium")
