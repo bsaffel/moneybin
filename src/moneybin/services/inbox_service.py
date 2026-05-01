@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote, unquote
 
 import yaml
 
@@ -34,7 +35,9 @@ logger = logging.getLogger(__name__)
 _DIR_MODE = 0o700
 _ACCOUNT_SLUG_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _YEAR_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
-_STAGING_PATH_SEP = "__"
+# Cap exception message length in sidecars so unfiltered exception text can't
+# leak large amounts of PII (paths, parsed rows) past the log sanitizer.
+_SIDECAR_MESSAGE_MAX = 200
 
 # Substring → (error_code, stage) for ValueError messages from ImportService.
 _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
@@ -214,12 +217,18 @@ class InboxService:
         return final
 
     def _encode_staging_name(self, src: Path) -> str:
-        """Encode src's inbox-relative path into a flat staging filename."""
+        """Reversibly encode src's inbox-relative path into a flat filename.
+
+        Uses URL-encoding so any byte (including '/') round-trips exactly.
+        Matters for filenames containing the encoded separator natively
+        (e.g. `bank__may.csv`), which a non-bijective scheme would mangle
+        on crash recovery.
+        """
         try:
             rel = src.relative_to(self.inbox_dir).as_posix()
         except ValueError:
-            return src.name
-        return rel.replace("/", _STAGING_PATH_SEP)
+            rel = src.name
+        return quote(rel, safe="")
 
     def recover_staging(self) -> list[Path]:
         """Move leftover staging-* files in outcome roots back to inbox/."""
@@ -235,8 +244,17 @@ class InboxService:
                 if not entry.name.startswith(self._STAGING_PREFIX):
                     continue
                 encoded = entry.name[len(self._STAGING_PREFIX) :]
-                rel_path = encoded.replace(_STAGING_PATH_SEP, "/")
+                rel_path = unquote(encoded)
                 dest_candidate = self.inbox_dir / rel_path
+                # Defense-in-depth: even with reversible encoding, refuse any
+                # decoded path that escapes inbox_dir (e.g., crafted "../../").
+                inbox_root = self.inbox_dir.resolve()
+                if not dest_candidate.resolve().is_relative_to(inbox_root):
+                    logger.warning(
+                        f"Skipping staging file with unsafe decoded path: "
+                        f"{entry.name!r}"
+                    )
+                    continue
                 dest_candidate.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
                 dest = self._next_available_path(dest_candidate)
                 entry.rename(dest)
@@ -298,7 +316,16 @@ class InboxService:
         except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
             self._handle_failure(src, rel_filename, e, year_month, result)
             return
-        final = self.move_to_outcome(src, outcome="processed", year_month=year_month)
+        try:
+            final = self.move_to_outcome(
+                src, outcome="processed", year_month=year_month
+            )
+        except OSError as e:
+            # File raced out from under us between import and move (external
+            # mv, race with another tool). Record as failure so the rest of
+            # the batch continues to drain.
+            self._handle_failure(src, rel_filename, e, year_month, result)
+            return
         result.processed.append({
             "filename": rel_filename,
             "moved_to": str(final.relative_to(self.root)),
@@ -333,7 +360,7 @@ class InboxService:
             moved,
             error_code=error_code,
             stage=stage,
-            message=str(error),
+            message=str(error)[:_SIDECAR_MESSAGE_MAX],
             suggestion=self._suggestion_for(error_code),
         )
         result.failed.append({

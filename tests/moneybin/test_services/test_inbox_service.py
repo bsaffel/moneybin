@@ -461,9 +461,9 @@ class TestRecovery:
         src = sub / "march.csv"
         src.write_text("a,b\n1,2\n")
 
-        # Simulate first-leg rename: src → outcome/staging-<encoded>
-        # Encoding flattens "chase-checking/march.csv" → "chase-checking__march.csv"
-        staging = inbox_service.processed_dir / "staging-chase-checking__march.csv"
+        # Simulate first-leg rename: src → outcome/staging-<url-encoded-rel-path>
+        # `chase-checking/march.csv` URL-encodes to `chase-checking%2Fmarch.csv`.
+        staging = inbox_service.processed_dir / "staging-chase-checking%2Fmarch.csv"
         src.rename(staging)
         assert staging.exists()
         assert not src.exists()
@@ -473,6 +473,115 @@ class TestRecovery:
         assert recovered == [inbox_service.inbox_dir / "chase-checking" / "march.csv"]
         assert (inbox_service.inbox_dir / "chase-checking" / "march.csv").exists()
         assert not staging.exists()
+
+
+class TestRecoveryEncoding:
+    """Staging-name encoding round-trips and rejects path traversal."""
+
+    def test_double_underscore_filename_round_trips(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        """Filenames with `__` recover to original path (reversible encoding)."""
+        inbox_service.ensure_layout()
+        src = inbox_service.inbox_dir / "bank__may.csv"
+        src.write_text("a,b\n1,2\n")
+        # URL-encoded form preserves `__` as-is and ends with the original name.
+        staging = inbox_service.processed_dir / "staging-bank__may.csv"
+        src.rename(staging)
+
+        recovered = inbox_service.recover_staging()
+
+        assert recovered == [inbox_service.inbox_dir / "bank__may.csv"]
+        assert (inbox_service.inbox_dir / "bank__may.csv").exists()
+        # Critically, NOT decoded into `bank/may.csv`:
+        assert not (inbox_service.inbox_dir / "bank" / "may.csv").exists()
+
+    def test_path_traversal_in_staging_name_is_skipped(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        """Decoded paths that escape inbox_dir are skipped, not moved."""
+        inbox_service.ensure_layout()
+        # URL-encoded "../../evil.csv":
+        evil = inbox_service.processed_dir / "staging-..%2F..%2Fevil.csv"
+        evil.write_text("payload\n")
+
+        recovered = inbox_service.recover_staging()
+
+        assert recovered == []
+        assert evil.exists()  # Skipped, not moved.
+        # And nothing escaped to the parent of inbox_dir.
+        assert not (inbox_service.inbox_dir.parent.parent / "evil.csv").exists()
+
+
+class TestSyncMoveRace:
+    """Successful import but file vanishes before move-to-processed."""
+
+    def test_post_import_move_failure_routed_as_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If src vanishes after import_file() succeeds, batch continues."""
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                # Import succeeds but external process removes file before move.
+                Path(path).unlink()
+                return ImportResult(file_path=path, file_type="tabular", transactions=5)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "raced.csv").write_text("a\n1\n")
+        (svc.inbox_dir / "ok.csv").write_text("a\n1\n")
+
+        # Force deterministic ordering: enumerate sorts entries.
+        result = svc.sync(year_month="2026-05")
+
+        # First file failed, but the batch still drained the second.
+        assert len(result.processed) + len(result.failed) == 2
+        # The vanished one is recorded as a failure with no sidecar.
+        failed_filenames = [f["filename"] for f in result.failed]
+        assert "raced.csv" in failed_filenames
+
+
+class TestSidecarPIIBudget:
+    """Exception message in sidecar is capped to limit PII surface area."""
+
+    def test_long_error_message_truncated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        from moneybin.services import inbox_service as mod
+
+        long_msg = "X" * 5000
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise RuntimeError(long_msg)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "x.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        sidecar_rel = result.failed[0]["sidecar"]
+        sidecar = svc.root / str(sidecar_rel)
+        loaded = yaml.safe_load(sidecar.read_text())
+        assert len(loaded["message"]) <= 200
 
 
 class TestSyncVanishedSource:
