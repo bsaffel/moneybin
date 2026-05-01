@@ -215,6 +215,15 @@ Each plan is written only after the prior PR merges, so it grounds in the real p
 
 After PR 3 merges, this spec moves to `implemented` and becomes the binding architectural reference for all future scenario work.
 
+### Deferred from Phase 1 (PR #73)
+
+Runner unit-test coverage gaps surfaced in PR #73 review. None block Phase 1 (pure relocation), but they should land before this spec moves to `implemented`. Bucket into the PR that already touches the relevant code:
+
+- **Runner failure path** (`tests/scenarios/_runner/runner.py`). The deleted integration test `test_runner_reports_failure_without_crashing` (TINY inline scenario with an impossible row-count expectation) had no replacement. Add `tests/scenarios/_runner_tests/test_runner.py` with a TINY-scenario equivalent that asserts `result.passed is False` and `_build_result` populates the failure branches. **Land in: PR 2 or PR 3** (whichever first touches `_runner/`).
+- **`ScenarioResult` branch coverage** (`tests/scenarios/_runner/result.py`). `passed` has three paths (halted → False, all-empty → True, partial-fail → False) and `failure_summary()` has four branches (halted, assertion, expectation, evaluation). Add `tests/scenarios/_runner_tests/test_result.py` constructing `ScenarioResult` directly — no DB needed. **Land in: PR 2** (validation-library work will already touch result types).
+- **`keep_tmpdir` coverage** (`tests/scenarios/_runner/runner.py`). The `keep_tmpdir=True` branch and `tmpdir` field are useful for local debugging but are currently untested. Add a test alongside `test_runner.py` above, or remove the parameter if Phase 2/3 finds it unused. **Land in: PR 2 or PR 3.**
+- **Function-docstring cleanup in scenario test files** (`tests/scenarios/test_*.py`). All six files have function docstrings that duplicate the module docstring word-for-word; per `AGENTS.md` convention, drop the function docstrings. Trivial, but Phase 2 already touches these files when adding new scenarios. **Land in: PR 2.**
+
 ### Key Decisions
 
 - **Drop ResponseEnvelope.** No installed base; pytest expresses step-level halting via fixture failure context and mixed result types via separate test functions / parametrize cases. `pytest-json-report` covers the CI artifact need. If a future agent loop needs richer metadata, design that on real requirements.
