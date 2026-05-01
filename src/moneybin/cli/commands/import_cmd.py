@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -97,7 +98,17 @@ def import_file(
         None,
         "--institution",
         "-i",
-        help="Institution name (OFX) or CSV profile name (auto-detects if omitted)",
+        help=(
+            "Institution override for OFX/QFX/QBO files. Consulted only when "
+            "the file's <FI><ORG>, FID lookup, and filename heuristic all "
+            "yield nothing. For CSV/tabular files, selects the format profile."
+        ),
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-F",
+        help="Re-import a file already in the import log (creates a new batch).",
     ),
     account_id: str | None = typer.Option(
         None, "--account-id", "-a", help="Account identifier (bypasses name matching)"
@@ -210,12 +221,16 @@ def import_file(
         )
         raise typer.Exit(1)
 
+    interactive = not yes and sys.stdin.isatty()
+
     try:
         with handle_cli_errors() as db:
             result = ImportService(db).import_file(
                 file_path=source,
                 apply_transforms=not skip_transform,
                 institution=institution,
+                force=force,
+                interactive=interactive,
                 account_id=account_id,
                 account_name=account_name,
                 format_name=format_name,

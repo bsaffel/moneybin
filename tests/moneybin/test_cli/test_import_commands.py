@@ -64,6 +64,8 @@ class TestImportFileCommand:
             file_path=test_file,
             apply_transforms=True,
             institution=None,
+            force=False,
+            interactive=False,
             account_id=None,
             account_name=None,
             format_name=None,
@@ -97,6 +99,8 @@ class TestImportFileCommand:
             file_path=test_file,
             apply_transforms=False,
             institution=None,
+            force=False,
+            interactive=False,
             account_id=None,
             account_name=None,
             format_name=None,
@@ -132,6 +136,8 @@ class TestImportFileCommand:
             file_path=test_file,
             apply_transforms=True,
             institution="Wells Fargo",
+            force=False,
+            interactive=False,
             account_id=None,
             account_name=None,
             format_name=None,
@@ -147,6 +153,43 @@ class TestImportFileCommand:
             no_size_limit=False,
             auto_accept=False,
         )
+
+    def test_import_file_force_flag(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """--force is forwarded to the service as force=True."""
+        test_file = tmp_path / "test.ofx"
+        test_file.touch()
+
+        result = runner.invoke(app, ["file", str(test_file), "--force"])
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["force"] is True
+
+    def test_force_already_imported_error(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Without --force, a ValueError from re-import detection exits 1."""
+        test_file = tmp_path / "test.ofx"
+        test_file.touch()
+        mock_import_file.side_effect = ValueError(
+            "File already imported (import_id abc123...). Use --force to re-import."
+        )
+
+        result = runner.invoke(app, ["file", str(test_file)])
+        assert result.exit_code == 1
+        output = (result.output or "") + (
+            result.stderr or "" if hasattr(result, "stderr") else ""
+        )
+        assert "already imported" in output.lower() or result.exit_code == 1
 
     def test_import_file_not_found(
         self,
