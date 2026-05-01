@@ -283,6 +283,21 @@ class SyncConfig(BaseModel):
     )
 
 
+class ImportSettings(BaseModel):
+    """File-import related settings (inbox layout)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    inbox_root: Path = Field(
+        default_factory=lambda: Path.home() / "Documents" / "MoneyBin",
+        description=(
+            "Parent directory for the user-facing import workspace. "
+            "Per-profile subdirs (<inbox_root>/<profile>/{inbox,processed,failed}/) "
+            "are created on first use. Defaults to ~/Documents/MoneyBin."
+        ),
+    )
+
+
 class MatchingSettings(BaseModel):
     """Transaction matching and dedup configuration."""
 
@@ -461,6 +476,10 @@ class MoneyBinSettings(BaseSettings):
     categorization: CategorizationSettings = Field(
         default_factory=CategorizationSettings
     )
+    import_: ImportSettings = Field(
+        default_factory=ImportSettings,
+        alias="import",
+    )
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
@@ -586,6 +605,7 @@ class MoneyBinSettings(BaseSettings):
         case_sensitive=False,
         extra="ignore",  # Allow extra env vars that don't match our schema
         frozen=True,
+        populate_by_name=True,
     )
 
     @field_validator("environment")
@@ -595,6 +615,11 @@ class MoneyBinSettings(BaseSettings):
         if v == "production" and os.getenv("DEBUG", "").lower() in ("true", "1"):
             raise ValueError("DEBUG mode cannot be enabled in production")
         return v
+
+    @property
+    def profile_inbox_dir(self) -> Path:
+        """Active profile's inbox parent: <inbox_root>/<profile>/."""
+        return self.import_.inbox_root / self.profile
 
     def validate_required_credentials(self) -> None:
         """Validate that required credentials are present.
