@@ -28,3 +28,36 @@ def assert_no_nulls(db: Database, *, table: str, columns: list[str]) -> Assertio
         passed=total == 0,
         details={"null_counts": per_col, "total": total},
     )
+
+
+def assert_source_system_populated(
+    db: Database,
+    *,
+    table: str,
+    expected_sources: set[str],
+    column: str = "source_system",
+) -> AssertionResult:
+    """Assert ``column`` is non-null on every row and all values are in ``expected_sources``."""
+    if not expected_sources:
+        raise ValueError("expected_sources must be non-empty")
+    t = quote_ident(table)
+    c = quote_ident(column)
+    null_row = db.execute(
+        f"SELECT COUNT(*) FROM {t} WHERE {c} IS NULL"  # noqa: S608  # identifiers validated by quote_ident
+    ).fetchone()
+    null_count = int(null_row[0]) if null_row else 0
+    value_rows = db.execute(
+        f"SELECT DISTINCT {c} FROM {t} WHERE {c} IS NOT NULL"  # noqa: S608  # identifiers validated by quote_ident
+    ).fetchall()
+    observed = {str(r[0]) for r in value_rows}
+    unexpected = sorted(observed - expected_sources)
+    return AssertionResult(
+        name="source_system_populated",
+        passed=null_count == 0 and not unexpected,
+        details={
+            "null_count": null_count,
+            "expected_sources": sorted(expected_sources),
+            "observed_sources": sorted(observed),
+            "unexpected_values": unexpected,
+        },
+    )

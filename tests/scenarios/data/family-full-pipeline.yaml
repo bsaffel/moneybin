@@ -34,12 +34,12 @@ assertions:
     args:
       table: core.fct_transactions
       columns: [transaction_id]
-  - name: row_count_within_tolerance
-    fn: assert_row_count_delta
-    args:
-      table: core.fct_transactions
-      expected: 2900
-      tolerance_pct: 15
+  # Row count is asserted in pytest using the deterministic GeneratorEngine
+  # output (see tests/scenarios/test_family_full_pipeline.py). The previous
+  # ±15% tolerance band was an observe-and-paste expectation; replacing it
+  # with the generator-derived exact count is required by
+  # .claude/rules/testing.md ("Scenario Expectations Must Be Independently
+  # Derived").
   - name: transfers_balance_to_zero
     fn: assert_balanced_transfers
 

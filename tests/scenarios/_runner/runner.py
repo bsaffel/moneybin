@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -76,26 +77,8 @@ def _restored_profile():
             _config._current_profile = None  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001 — internal save/restore
 
 
-def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ScenarioResult:
-    """Run ``scenario`` end-to-end and return a ``ScenarioResult``.
-
-    The runner provisions a profile under a fresh tempdir, opens an
-    encrypted ``Database``, dispatches the configured pipeline steps, and
-    then evaluates assertions, expectations, and evaluations against the
-    resulting state.
-
-    Args:
-        scenario: A validated scenario specification.
-        keep_tmpdir: If True, leave the tempdir in place after the run for
-            post-mortem inspection. Otherwise the tempdir is removed.
-
-    Returns:
-        A ``ScenarioResult`` holding the scenario name, pass/fail boolean,
-        halted reason (if the run was aborted early), and per-result lists
-        for assertions, expectations, and evaluations.
-    """
-    started = time.perf_counter()
-    tmp = tempfile.mkdtemp(prefix=f"scenario-{scenario.name}-")
+def _build_env(tmp: str) -> dict[str, str]:
+    """Build the env dict for a scenario run (caller-propagated keys included)."""
     env = {"MONEYBIN_HOME": tmp, "MONEYBIN_PROFILE": "scenario"}
     # Propagate caller's keyring/encryption/import context to subprocess steps
     # (e.g. transform_via_subprocess) so they see the same MemoryKeyring and
@@ -107,94 +90,154 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ScenarioRe
     ):
         if value := os.environ.get(var):
             env[var] = value
-    cleanup = not keep_tmpdir
+    return env
 
+
+@contextmanager
+def scenario_env(
+    scenario: Scenario, *, keep_tmpdir: bool = False
+) -> Generator[tuple[Database, str, dict[str, str]], None, None]:
+    """Yield ``(db, tmpdir, env)`` for a fully bootstrapped scenario environment.
+
+    Cleans up the singleton Database and removes the tempdir on exit
+    (unless ``keep_tmpdir=True``). Use this directly when a test needs to
+    drive scenario steps step-by-step (e.g. snapshotting state between steps).
+    """
+    tmp = tempfile.mkdtemp(prefix=f"scenario-{scenario.name}-")
+    env = _build_env(tmp)
     db: Database | None = None
     try:
         with _patched_env(env), _restored_profile():
             db = _bootstrap_database()
+            yield db, tmp, env
+    finally:
+        if db is not None:
+            close_database()
+        if not keep_tmpdir:
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            logger.info(f"scenario.tmpdir_kept path={tmp}")
 
-            preflight = assert_sqlmesh_catalog_matches(db)
-            if not preflight.passed:
-                return _build_result(
-                    scenario=scenario,
-                    started=started,
-                    tmpdir=tmp,
-                    keep_tmpdir=keep_tmpdir,
-                    assertions=[preflight],
-                    expectations=[],
-                    evaluations=[],
-                    halted="catalog wiring failed pre-flight",
-                )
 
-            try:
-                for step in scenario.pipeline:
-                    run_step(step, scenario.setup, db, env=env)
-                    # Steps may close the singleton (e.g., to release the
-                    # DuckDB file lock for a subprocess). Re-fetch so the
-                    # next step / assertion phase has a live connection.
-                    db = get_database()
-            except Exception as exc:  # noqa: BLE001 — surface as halted result
-                # Don't use logger.exception — tracebacks may include local
-                # variables holding amounts/descriptions (PII rule).
-                logger.error(
-                    f"scenario {scenario.name} pipeline crashed: {type(exc).__name__}"
-                )
-                logger.debug("scenario pipeline traceback", exc_info=True)
-                return _build_result(
-                    scenario=scenario,
-                    started=started,
-                    tmpdir=tmp,
-                    keep_tmpdir=keep_tmpdir,
-                    assertions=[preflight],
-                    expectations=[],
-                    evaluations=[],
-                    # Use type name only — full str(exc) may carry amounts /
-                    # descriptions from local variables (PII rule).
-                    halted=f"pipeline step crashed: {type(exc).__name__}",
-                )
+def run_scenario(
+    scenario: Scenario,
+    *,
+    keep_tmpdir: bool = False,
+    extra_assertions: Callable[[Database], list[AssertionResult]] | None = None,
+) -> ScenarioResult:
+    """Run ``scenario`` end-to-end and return a ``ScenarioResult``.
 
-            assertions = [
-                _run_assertion(a, db, tmpdir=tmp) for a in scenario.assertions
-            ]
-            try:
-                expectations = verify_expectations(db, scenario.expectations)
-            except Exception as exc:  # noqa: BLE001 — surface as halted result
-                logger.error(
-                    f"scenario {scenario.name} expectations crashed: "
-                    f"{type(exc).__name__}"
-                )
-                logger.debug("scenario expectations traceback", exc_info=True)
-                return _build_result(
-                    scenario=scenario,
-                    started=started,
-                    tmpdir=tmp,
-                    keep_tmpdir=keep_tmpdir,
-                    assertions=[preflight, *assertions],
-                    expectations=[],
-                    evaluations=[],
-                    halted=f"expectations crashed: {type(exc).__name__}",
-                )
-            evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
+    The runner provisions a profile under a fresh tempdir, opens an
+    encrypted ``Database``, dispatches the configured pipeline steps, and
+    then evaluates assertions, expectations, and evaluations against the
+    resulting state.
 
+    Args:
+        scenario: A validated scenario specification.
+        keep_tmpdir: If True, leave the tempdir in place after the run for
+            post-mortem inspection. Otherwise the tempdir is removed.
+        extra_assertions: Optional callback invoked with the live ``Database``
+            after the standard assertion/expectation/evaluation phases. Its
+            returned ``AssertionResult``s are merged into the scenario's
+            assertions. A crash inside the callback halts the scenario.
+
+    Returns:
+        A ``ScenarioResult`` holding the scenario name, pass/fail boolean,
+        halted reason (if the run was aborted early), and per-result lists
+        for assertions, expectations, and evaluations.
+    """
+    started = time.perf_counter()
+    with scenario_env(scenario, keep_tmpdir=keep_tmpdir) as (db, tmp, env):
+        preflight = assert_sqlmesh_catalog_matches(db)
+        if not preflight.passed:
+            return _build_result(
+                scenario=scenario,
+                started=started,
+                tmpdir=tmp,
+                keep_tmpdir=keep_tmpdir,
+                assertions=[preflight],
+                expectations=[],
+                evaluations=[],
+                halted="catalog wiring failed pre-flight",
+            )
+
+        try:
+            for step in scenario.pipeline:
+                run_step(step, scenario.setup, db, env=env)
+                # Steps may close the singleton (e.g., to release the
+                # DuckDB file lock for a subprocess). Re-fetch so the
+                # next step / assertion phase has a live connection.
+                db = get_database()
+        except Exception as exc:  # noqa: BLE001 — surface as halted result
+            # Don't use logger.exception — tracebacks may include local
+            # variables holding amounts/descriptions (PII rule).
+            logger.error(
+                f"scenario {scenario.name} pipeline crashed: {type(exc).__name__}"
+            )
+            logger.debug("scenario pipeline traceback", exc_info=True)
+            return _build_result(
+                scenario=scenario,
+                started=started,
+                tmpdir=tmp,
+                keep_tmpdir=keep_tmpdir,
+                assertions=[preflight],
+                expectations=[],
+                evaluations=[],
+                # Use type name only — full str(exc) may carry amounts /
+                # descriptions from local variables (PII rule).
+                halted=f"pipeline step crashed: {type(exc).__name__}",
+            )
+
+        assertions = [_run_assertion(a, db, tmpdir=tmp) for a in scenario.assertions]
+        try:
+            expectations = verify_expectations(db, scenario.expectations)
+        except Exception as exc:  # noqa: BLE001 — surface as halted result
+            logger.error(
+                f"scenario {scenario.name} expectations crashed: {type(exc).__name__}"
+            )
+            logger.debug("scenario expectations traceback", exc_info=True)
             return _build_result(
                 scenario=scenario,
                 started=started,
                 tmpdir=tmp,
                 keep_tmpdir=keep_tmpdir,
                 assertions=[preflight, *assertions],
-                expectations=expectations,
-                evaluations=evaluations,
+                expectations=[],
+                evaluations=[],
+                halted=f"expectations crashed: {type(exc).__name__}",
             )
-    finally:
-        # Close the singleton Database before tempdir removal so DuckDB's
-        # file handles are released cleanly on every platform.
-        if db is not None:
-            close_database()
-        if cleanup:
-            shutil.rmtree(tmp, ignore_errors=True)
-        else:
-            logger.info(f"scenario.tmpdir_kept path={tmp}")
+        evaluations = [_run_evaluation(e, db) for e in scenario.evaluations]
+
+        extra: list[AssertionResult] = []
+        if extra_assertions is not None:
+            try:
+                extra = list(extra_assertions(db))
+            except Exception as exc:  # noqa: BLE001 — surface as halted
+                logger.error(
+                    f"scenario {scenario.name} extra_assertions crashed: "
+                    f"{type(exc).__name__}"
+                )
+                logger.debug("extra_assertions traceback", exc_info=True)
+                return _build_result(
+                    scenario=scenario,
+                    started=started,
+                    tmpdir=tmp,
+                    keep_tmpdir=keep_tmpdir,
+                    assertions=[preflight, *assertions],
+                    expectations=expectations,
+                    evaluations=evaluations,
+                    halted=f"extra_assertions crashed: {type(exc).__name__}",
+                )
+
+        return _build_result(
+            scenario=scenario,
+            started=started,
+            tmpdir=tmp,
+            keep_tmpdir=keep_tmpdir,
+            assertions=[preflight, *assertions, *extra],
+            expectations=expectations,
+            evaluations=evaluations,
+        )
 
 
 def _bootstrap_database() -> Database:

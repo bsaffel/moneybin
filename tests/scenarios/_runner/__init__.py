@@ -12,7 +12,7 @@ from tests.scenarios._runner.loader import (
     load_shipped_scenario,
 )
 from tests.scenarios._runner.result import ScenarioResult
-from tests.scenarios._runner.runner import run_scenario
+from tests.scenarios._runner.runner import run_scenario, scenario_env
 
 __all__ = [
     "Scenario",
@@ -23,4 +23,5 @@ __all__ = [
     "load_scenario_from_string",
     "load_shipped_scenario",
     "run_scenario",
+    "scenario_env",
 ]

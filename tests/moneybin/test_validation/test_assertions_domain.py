@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9,7 +10,9 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.validation.assertions.domain import (
+    assert_amount_precision,
     assert_balanced_transfers,
+    assert_date_bounds,
     assert_date_continuity,
     assert_sign_convention,
 )
@@ -165,6 +168,88 @@ def test_date_continuity_flags_account_with_all_null_dates(
     )
     assert not r.passed
     assert r.details["gap_count"] == 1
+
+
+@pytest.fixture()
+def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
+    """Provide an empty test Database for tests that create their own table ``t``."""
+    return Database(
+        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
+
+
+def test_amount_precision_passes_for_decimal_18_2_column(db: Database) -> None:
+    db.execute("CREATE TABLE t (amount DECIMAL(18,2))")
+    db.execute("INSERT INTO t VALUES (47.99), (-1500.00), (0.01)")
+    r = assert_amount_precision(db, table="t", column="amount", precision=18, scale=2)
+    assert r.passed, r.details
+
+
+def test_amount_precision_fails_when_column_is_double(db: Database) -> None:
+    db.execute("CREATE TABLE t (amount DOUBLE)")
+    db.execute("INSERT INTO t VALUES (47.99)")
+    r = assert_amount_precision(db, table="t", column="amount", precision=18, scale=2)
+    assert not r.passed
+    assert "DOUBLE" in r.details["actual_type"]
+
+
+def test_amount_precision_fails_when_scale_too_small(db: Database) -> None:
+    db.execute("CREATE TABLE t (amount DECIMAL(18,1))")
+    r = assert_amount_precision(db, table="t", column="amount", precision=18, scale=2)
+    assert not r.passed
+
+
+def test_date_bounds_passes_when_all_in_range(db: Database) -> None:
+    db.execute("CREATE TABLE t (d DATE)")
+    db.execute("INSERT INTO t VALUES ('2024-01-01'), ('2024-06-15'), ('2024-12-31')")
+    r = assert_date_bounds(
+        db,
+        table="t",
+        column="d",
+        min_date=date(2024, 1, 1),
+        max_date=date(2024, 12, 31),
+    )
+    assert r.passed, r.details
+
+
+def test_date_bounds_fails_below_min(db: Database) -> None:
+    db.execute("CREATE TABLE t (d DATE)")
+    db.execute("INSERT INTO t VALUES ('2023-12-31'), ('2024-06-15')")
+    r = assert_date_bounds(
+        db,
+        table="t",
+        column="d",
+        min_date=date(2024, 1, 1),
+        max_date=date(2024, 12, 31),
+    )
+    assert not r.passed
+    assert r.details["below_min_count"] == 1
+
+
+def test_date_bounds_fails_above_max(db: Database) -> None:
+    db.execute("CREATE TABLE t (d DATE)")
+    db.execute("INSERT INTO t VALUES ('2024-06-15'), ('2025-01-01')")
+    r = assert_date_bounds(
+        db,
+        table="t",
+        column="d",
+        min_date=date(2024, 1, 1),
+        max_date=date(2024, 12, 31),
+    )
+    assert not r.passed
+    assert r.details["above_max_count"] == 1
+
+
+def test_date_bounds_passes_for_empty_table(db: Database) -> None:
+    db.execute("CREATE TABLE t (d DATE)")
+    r = assert_date_bounds(
+        db,
+        table="t",
+        column="d",
+        min_date=date(2024, 1, 1),
+        max_date=date(2024, 12, 31),
+    )
+    assert r.passed
 
 
 def test_date_continuity_year_boundary_passes(continuity_db: Database) -> None:

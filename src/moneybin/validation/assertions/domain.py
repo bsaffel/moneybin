@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from moneybin.database import Database
 from moneybin.tables import FCT_TRANSACTIONS
-from moneybin.validation.assertions._helpers import quote_ident
+from moneybin.validation.assertions._helpers import quote_ident, split_table_ident
 from moneybin.validation.result import AssertionResult
 
 # Each predicate matches *violations*, not valid rows. Transfers are
@@ -68,4 +70,87 @@ def assert_date_continuity(
         name="date_continuity",
         passed=not gaps,
         details={"gap_accounts": gaps[:20], "gap_count": len(gaps)},
+    )
+
+
+def assert_amount_precision(
+    db: Database,
+    *,
+    table: str,
+    column: str,
+    precision: int,
+    scale: int,
+) -> AssertionResult:
+    """Assert ``column`` in ``table`` is ``DECIMAL(precision, scale)``.
+
+    Catches the silent regression where an upstream cast drops a money column
+    to ``DOUBLE``, losing exact representation. Compares against
+    ``information_schema.columns.data_type`` — DuckDB renders DECIMAL types
+    as ``DECIMAL(p,s)`` literally, so a string-equality check is sufficient.
+    """
+    expected_type = f"DECIMAL({precision},{scale})"
+    schema, name = split_table_ident(table)
+    if schema is None:
+        rows = db.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = ? AND column_name = ?",
+            [name, column],
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_schema = ? AND table_name = ? AND column_name = ?",
+            [schema, name, column],
+        ).fetchall()
+    actual_type = str(rows[0][0]) if rows else "<missing>"
+    return AssertionResult(
+        name="amount_precision",
+        passed=actual_type == expected_type,
+        details={
+            "expected_type": expected_type,
+            "actual_type": actual_type,
+        },
+    )
+
+
+def assert_date_bounds(
+    db: Database,
+    *,
+    table: str,
+    column: str,
+    min_date: date,
+    max_date: date,
+) -> AssertionResult:
+    """Assert every ``column`` value falls within ``[min_date, max_date]`` inclusive.
+
+    Empty tables pass — there are no out-of-range rows to find. Authors who
+    require non-empty input should pair this with ``assert_min_rows``.
+    """
+    if min_date > max_date:
+        raise ValueError(f"min_date {min_date} must be <= max_date {max_date}")
+    t = quote_ident(table)
+    c = quote_ident(column)
+    row = db.execute(
+        f"SELECT "  # noqa: S608  # identifiers validated by quote_ident
+        f"  SUM(CASE WHEN {c} < ? THEN 1 ELSE 0 END), "
+        f"  SUM(CASE WHEN {c} > ? THEN 1 ELSE 0 END), "
+        f"  MIN({c}), MAX({c}) "
+        f"FROM {t}",
+        [min_date, max_date],
+    ).fetchone()
+    below = int(row[0]) if row and row[0] is not None else 0
+    above = int(row[1]) if row and row[1] is not None else 0
+    observed_min = row[2] if row else None
+    observed_max = row[3] if row else None
+    return AssertionResult(
+        name="date_bounds",
+        passed=below == 0 and above == 0,
+        details={
+            "min_date": min_date.isoformat(),
+            "max_date": max_date.isoformat(),
+            "observed_min": observed_min.isoformat() if observed_min else None,
+            "observed_max": observed_max.isoformat() if observed_max else None,
+            "below_min_count": below,
+            "above_max_count": above,
+        },
     )
