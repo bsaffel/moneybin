@@ -7,6 +7,7 @@ from moneybin.tables import FCT_TRANSACTIONS, GROUND_TRUTH, INT_TRANSACTIONS_MAT
 from moneybin.validation.evaluations._common import (
     GroundTruthMissingError,
     has_ground_truth,
+    safe_div,
 )
 from moneybin.validation.result import EvaluationResult
 
@@ -59,9 +60,9 @@ def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationRes
     tp = len(true_pairs & predicted_pairs)
     fp = len(predicted_pairs - true_pairs)
     fn = len(true_pairs - predicted_pairs)
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+    precision = safe_div(tp, tp + fp)
+    recall = safe_div(tp, tp + fn)
+    f1 = safe_div(2 * precision * recall, precision + recall)
 
     return EvaluationResult(
         name="transfer_f1",

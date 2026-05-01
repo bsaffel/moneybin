@@ -4,6 +4,7 @@ import duckdb
 
 from moneybin.validation.assertions.relational import (
     assert_no_duplicates,
+    assert_no_nulls,
     assert_no_orphans,
     assert_valid_foreign_keys,
 )
@@ -56,3 +57,32 @@ def test_no_orphans_passes_when_every_parent_has_child() -> None:
         c, parent="parent", parent_column="id", child="child", child_column="parent_id"
     )
     assert r.passed
+
+
+def test_no_nulls_passes_when_all_columns_populated() -> None:
+    """Populated table with no null values in checked columns passes."""
+    c = duckdb.connect(":memory:")
+    c.execute("CREATE TABLE t (a INT, b INT)")
+    c.execute("INSERT INTO t VALUES (1, 10), (2, 20)")
+    r = assert_no_nulls(c, table="t", columns=["a", "b"])
+    assert r.passed
+    assert r.details == {"null_counts": {"a": 0, "b": 0}, "total": 0}
+
+
+def test_no_nulls_fails_with_per_column_counts() -> None:
+    """Each column's null count is reported when the assertion fails."""
+    c = duckdb.connect(":memory:")
+    c.execute("CREATE TABLE t (a INT, b INT)")
+    c.execute("INSERT INTO t VALUES (1, NULL), (NULL, 20), (NULL, NULL)")
+    r = assert_no_nulls(c, table="t", columns=["a", "b"])
+    assert not r.passed
+    assert r.details == {"null_counts": {"a": 2, "b": 2}, "total": 4}
+
+
+def test_no_nulls_passes_on_empty_table() -> None:
+    """Empty table reports zero counts (exercises the SUM-returns-NULL path)."""
+    c = duckdb.connect(":memory:")
+    c.execute("CREATE TABLE t (a INT, b INT)")
+    r = assert_no_nulls(c, table="t", columns=["a", "b"])
+    assert r.passed
+    assert r.details == {"null_counts": {"a": 0, "b": 0}, "total": 0}

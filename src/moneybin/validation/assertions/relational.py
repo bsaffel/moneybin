@@ -8,7 +8,7 @@ from sqlglot import exp
 from moneybin.validation.result import AssertionResult
 
 
-def _quote_ident(ident: str) -> str:
+def quote_ident(ident: str) -> str:
     """Quote a dotted identifier via sqlglot, per .claude/rules/security.md."""
     return ".".join(
         exp.to_identifier(seg, quoted=True).sql("duckdb") for seg in ident.split(".")
@@ -24,13 +24,13 @@ def assert_valid_foreign_keys(
     parent_column: str,
 ) -> AssertionResult:
     """Assert every non-null child column value exists in the parent table."""
-    c = _quote_ident(child)
-    col = _quote_ident(column)
-    p = _quote_ident(parent)
-    pc = _quote_ident(parent_column)
-    total_sql = f"SELECT COUNT(*) FROM {c} WHERE {col} IS NOT NULL"  # noqa: S608  # identifiers validated by _quote_ident
+    c = quote_ident(child)
+    col = quote_ident(column)
+    p = quote_ident(parent)
+    pc = quote_ident(parent_column)
+    total_sql = f"SELECT COUNT(*) FROM {c} WHERE {col} IS NOT NULL"  # noqa: S608  # identifiers validated by quote_ident
     total = int(conn.execute(total_sql).fetchone()[0])  # type: ignore[index]
-    violations_sql = f"SELECT COUNT(*) FROM {c} ch WHERE ch.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {p} pa WHERE pa.{pc} = ch.{col})"  # noqa: S608  # identifiers validated by _quote_ident
+    violations_sql = f"SELECT COUNT(*) FROM {c} ch WHERE ch.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {p} pa WHERE pa.{pc} = ch.{col})"  # noqa: S608  # identifiers validated by quote_ident
     violations = int(conn.execute(violations_sql).fetchone()[0])  # type: ignore[index]
     return AssertionResult(
         name="valid_foreign_keys",
@@ -48,11 +48,11 @@ def assert_no_orphans(
     child_column: str,
 ) -> AssertionResult:
     """Assert every parent row has at least one matching child row."""
-    p = _quote_ident(parent)
-    pc = _quote_ident(parent_column)
-    c = _quote_ident(child)
-    cc = _quote_ident(child_column)
-    orphans_sql = f"SELECT COUNT(*) FROM {p} pa WHERE NOT EXISTS (SELECT 1 FROM {c} ch WHERE ch.{cc} = pa.{pc})"  # noqa: S608  # identifiers validated by _quote_ident
+    p = quote_ident(parent)
+    pc = quote_ident(parent_column)
+    c = quote_ident(child)
+    cc = quote_ident(child_column)
+    orphans_sql = f"SELECT COUNT(*) FROM {p} pa WHERE NOT EXISTS (SELECT 1 FROM {c} ch WHERE ch.{cc} = pa.{pc})"  # noqa: S608  # identifiers validated by quote_ident
     orphans = int(conn.execute(orphans_sql).fetchone()[0])  # type: ignore[index]
     return AssertionResult(
         name="no_orphans",
@@ -67,9 +67,9 @@ def assert_no_duplicates(
     """Assert no duplicate rows exist across the given column set."""
     if not columns:
         raise ValueError("columns must be non-empty")
-    t = _quote_ident(table)
-    cols = ", ".join(_quote_ident(c) for c in columns)
-    dup_sql = f"SELECT COUNT(*) FROM (SELECT {cols} FROM {t} GROUP BY {cols} HAVING COUNT(*) > 1)"  # noqa: S608  # identifiers validated by _quote_ident
+    t = quote_ident(table)
+    cols = ", ".join(quote_ident(c) for c in columns)
+    dup_sql = f"SELECT COUNT(*) FROM (SELECT {cols} FROM {t} GROUP BY {cols} HAVING COUNT(*) > 1)"  # noqa: S608  # identifiers validated by quote_ident
     dup_groups = int(conn.execute(dup_sql).fetchone()[0])  # type: ignore[index]
     return AssertionResult(
         name="no_duplicates",
@@ -84,12 +84,17 @@ def assert_no_nulls(
     """Assert no null values exist in the given columns."""
     if not columns:
         raise ValueError("columns must be non-empty")
-    t = _quote_ident(table)
-    per_col: dict[str, int] = {}
-    for col in columns:
-        cq = _quote_ident(col)
-        null_sql = f"SELECT COUNT(*) FROM {t} WHERE {cq} IS NULL"  # noqa: S608  # identifiers validated by _quote_ident
-        per_col[col] = int(conn.execute(null_sql).fetchone()[0])  # type: ignore[index]
+    t = quote_ident(table)
+    per_col_select = ", ".join(
+        f"SUM(CASE WHEN {quote_ident(col)} IS NULL THEN 1 ELSE 0 END)"
+        for col in columns
+    )
+    sql = f"SELECT {per_col_select} FROM {t}"  # noqa: S608  # identifiers validated by quote_ident
+    row = conn.execute(sql).fetchone()
+    counts = (
+        [int(v) if v is not None else 0 for v in row] if row else [0] * len(columns)
+    )
+    per_col = dict(zip(columns, counts, strict=True))
     total = sum(per_col.values())
     return AssertionResult(
         name="no_nulls",
