@@ -366,8 +366,12 @@ def db_info(
                 for schema, table in tables:
                     safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
                     safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+                    # Double single-quotes per SQL standard so identifiers like
+                    # `o'clock` survive embedding as string literal labels.
+                    label_schema = schema.replace("'", "''")
+                    label_table = table.replace("'", "''")
                     sql = (
-                        f"SELECT '{schema}' AS schema, '{table}' AS \"table\", "  # noqa: S608 — sqlglot-quoted catalog identifiers; labels are information_schema-sourced
+                        f"SELECT '{label_schema}' AS schema, '{label_table}' AS \"table\", "  # noqa: S608 — sqlglot-quoted FROM identifiers; labels are quote-escaped
                         f"COUNT(*) AS rows FROM {safe_schema}.{safe_table}"
                     )
                     count_selects.append(sql)
