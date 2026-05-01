@@ -8,7 +8,10 @@ sidecar on failure. See docs/specs/smart-import-inbox.md.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import logging
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +21,10 @@ from moneybin.database import Database
 logger = logging.getLogger(__name__)
 
 _DIR_MODE = 0o700
+
+
+class InboxBusyError(Exception):
+    """Another sync is in progress for this profile."""
 
 
 @dataclass
@@ -65,6 +72,31 @@ class InboxService:
     def failed_dir(self) -> Path:
         """Quarantine root for files whose import raised (organized by YYYY-MM)."""
         return self.root / "failed"
+
+    @property
+    def lock_path(self) -> Path:
+        """Path to the per-profile lockfile."""
+        return self.root / ".inbox.lock"
+
+    @contextlib.contextmanager
+    def acquire_lock(self) -> Generator[None, None, None]:
+        """Hold an exclusive flock on .inbox.lock for the duration of the block."""
+        self.ensure_layout()
+        fh = open(self.lock_path, "a")  # noqa: SIM115  # contextmanager handles close
+        try:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as e:
+                fh.close()
+                raise InboxBusyError(
+                    "Another sync is in progress for this profile."
+                ) from e
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
     def ensure_layout(self) -> None:
         """Create <root>/{inbox,processed,failed}/ with 0700 perms (idempotent)."""

@@ -156,3 +156,33 @@ class TestAtomicMove:
             src, outcome="processed", year_month="2026-05"
         )
         assert final.name == "README-1"
+
+
+class TestLock:
+    """Lockfile contention semantics."""
+
+    def test_lock_acquired_and_released(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        with inbox_service.acquire_lock():
+            pass
+        with inbox_service.acquire_lock():
+            pass
+
+    def test_concurrent_lock_raises_inbox_busy(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        from moneybin.services.inbox_service import InboxBusyError
+
+        with inbox_service.acquire_lock():
+            with pytest.raises(InboxBusyError):
+                with inbox_service.acquire_lock():
+                    pass
+
+    def test_different_profiles_have_independent_locks(self, tmp_path: Path) -> None:
+        db = MagicMock(spec=Database)
+        a = InboxService(db=db, settings=_make_settings(tmp_path, profile="alice"))
+        b = InboxService(db=db, settings=_make_settings(tmp_path, profile="bob"))
+        with a.acquire_lock():
+            with b.acquire_lock():
+                pass
