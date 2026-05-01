@@ -37,12 +37,7 @@ def _scenario_keyring() -> Generator[None, None, None]:  # type: ignore[reportUn
 
 @pytest.fixture(autouse=True)
 def _scenario_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[reportUnusedFunction]
-    """Provide an ephemeral encryption key and configure subprocess keyring.
-
-    Sets the encryption key env var and configures PYTHON_KEYRING_BACKEND
-    so that subprocess steps (e.g., transform_via_subprocess) can access
-    the in-memory keyring and encryption key.
-    """
+    """Provide ephemeral encryption key + subprocess keyring config."""
     monkeypatch.setenv(
         "MONEYBIN_DATABASE__ENCRYPTION_KEY",
         "scenario-ephemeral-key-tmpdir-only",

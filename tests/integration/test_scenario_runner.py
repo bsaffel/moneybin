@@ -13,9 +13,9 @@ from typing import Any, cast
 
 import keyring
 import pytest
-
 from moneybin.testing.scenarios.loader import load_scenario_from_string
 from moneybin.testing.scenarios.runner import run_scenario
+
 from tests.e2e.memory_keyring import MemoryKeyring
 
 
