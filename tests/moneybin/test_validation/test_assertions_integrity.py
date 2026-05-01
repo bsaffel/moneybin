@@ -53,3 +53,12 @@ def test_no_orphans_passes_when_every_parent_has_child(db: Database) -> None:
         db, parent="parent", parent_column="id", child="child", child_column="parent_id"
     )
     assert r.passed
+
+
+def test_no_orphans_fails_when_parent_has_no_child(db: Database) -> None:
+    """Parent rows with no matching child rows are counted as orphans."""
+    r = assert_no_orphans(
+        db, parent="parent", parent_column="id", child="child", child_column="parent_id"
+    )
+    assert not r.passed
+    assert r.details["orphan_count"] == 3

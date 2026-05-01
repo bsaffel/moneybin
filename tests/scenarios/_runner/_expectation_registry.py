@@ -31,9 +31,12 @@ ExpectationAdapter = Callable[[Database, ExpectationSpec], ExpectationResult]
 
 def _adapt_match_decision(db: Database, spec: ExpectationSpec) -> ExpectationResult:
     body = spec.model_dump()
+    transactions_raw = body.get("transactions")
+    if not transactions_raw:
+        raise ValueError("match_decision spec requires a non-empty 'transactions' list")
     return verify_match_decision(
         db,
-        transactions=[SourceTransactionRef(**t) for t in body["transactions"]],
+        transactions=[SourceTransactionRef(**t) for t in transactions_raw],
         expected=body.get("expected", "matched"),
         expected_match_type=body.get("expected_match_type"),
         expected_confidence_min=float(body.get("expected_confidence_min", 0.0)),
@@ -68,10 +71,15 @@ def _adapt_provenance_for_transaction(
     db: Database, spec: ExpectationSpec
 ) -> ExpectationResult:
     body = spec.model_dump()
+    expected_sources_raw = body.get("expected_sources")
+    if not expected_sources_raw:
+        raise ValueError(
+            "provenance_for_transaction spec requires a non-empty 'expected_sources' list"
+        )
     return verify_provenance_for_transaction(
         db,
         transaction_id=body["transaction_id"],
-        expected_sources=[SourceTransactionRef(**s) for s in body["expected_sources"]],
+        expected_sources=[SourceTransactionRef(**s) for s in expected_sources_raw],
         description=spec.description,
     )
 

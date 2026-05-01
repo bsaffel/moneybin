@@ -6,7 +6,7 @@ from tests.scenarios._runner._expectation_registry import (
 )
 
 
-def test_registry_covers_every_expectation_kind():
+def test_registry_covers_every_expectation_kind() -> None:
     """Registry covers every ExpectationSpec.kind value."""
     expected = {
         "match_decision",
@@ -18,12 +18,12 @@ def test_registry_covers_every_expectation_kind():
     assert set(EXPECTATION_REGISTRY) == expected
 
 
-def test_registry_values_are_callable():
+def test_registry_values_are_callable() -> None:
     """Every adapter is callable."""
     for kind, fn in EXPECTATION_REGISTRY.items():
         assert callable(fn), f"{kind} adapter is not callable"
 
 
-def test_verify_expectations_on_empty_list():
+def test_verify_expectations_on_empty_list() -> None:
     """Empty input → empty output, no DB needed."""
     assert verify_expectations(db=None, specs=[]) == []  # type: ignore[arg-type]

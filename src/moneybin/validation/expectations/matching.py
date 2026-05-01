@@ -30,6 +30,8 @@ def verify_match_decision(
     See docs/specs/testing-scenario-comprehensive.md §R1 Tier 2 for the
     matched-branch semantics (coverage, collapse, confidence, match_type).
     """
+    if not transactions:
+        raise ValueError("transactions must be non-empty")
     if expected not in {"matched", "not_matched"}:
         return ExpectationResult(
             name=description or "match_decision",
@@ -125,7 +127,7 @@ def verify_match_decision(
 def verify_transfers_match_ground_truth(
     db: Database, *, description: str = ""
 ) -> ExpectationResult:
-    """Assert every labeled transfer pair lands as exactly one non-null transfer_pair_id shared by both legs."""
+    """Assert every labeled transfer pair resolves to one non-null pair id shared by both legs."""
     rows = db.execute(f"""
         WITH gold_pairs AS (
             SELECT transfer_pair_id, source_transaction_id

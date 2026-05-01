@@ -3,7 +3,7 @@
 from tests.scenarios._runner._assertion_registry import ASSERTION_REGISTRY
 
 
-def test_registry_includes_all_yaml_callable_assertions():
+def test_registry_includes_all_yaml_callable_assertions() -> None:
     """Registry covers exactly the 17 YAML-callable assertions."""
     expected = {
         "assert_balanced_transfers",
@@ -27,7 +27,7 @@ def test_registry_includes_all_yaml_callable_assertions():
     assert set(ASSERTION_REGISTRY) == expected
 
 
-def test_registry_values_are_callable():
+def test_registry_values_are_callable() -> None:
     """Every registered assertion is callable."""
     for name, fn in ASSERTION_REGISTRY.items():
         assert callable(fn), f"{name} is not callable"

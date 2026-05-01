@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from unittest.mock import MagicMock
 
 import duckdb
 import pytest
 
 import moneybin.database as database_module
+from moneybin.database import Database
 from moneybin.migrations import MigrationRunner
 from moneybin.validation.assertions.infrastructure import (
     assert_migrations_at_head,
+    assert_min_rows,
     assert_no_unencrypted_db_files,
     assert_sqlmesh_catalog_matches,
 )
-
-if TYPE_CHECKING:
-    from moneybin.database import Database
 
 # `assert_no_unencrypted_db_files` ignores its db argument — it only inspects the
 # tmpdir for leaked files — so a mock suffices in unit tests.
@@ -92,6 +91,34 @@ def test_migrations_at_head_fails_when_pending_exist(
     assert not result.passed
     assert result.details["pending_count"] == 1
     assert "V099__future.sql" in str(result.details["pending"])
+
+
+def test_min_rows_passes_when_table_meets_threshold(db: Database) -> None:
+    """A table with enough rows passes the min-rows check."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("CREATE TABLE core.t (id INT)")
+    db.execute("INSERT INTO core.t VALUES (1), (2), (3)")
+    result = assert_min_rows(db, table_min_rows={"core.t": 2})
+    assert result.passed
+    assert result.details["counts"] == {"core.t": 3}
+    assert result.details["failures"] == {}
+
+
+def test_min_rows_fails_when_table_below_threshold(db: Database) -> None:
+    """Tables below the required row count are reported as failures."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("CREATE TABLE core.t (id INT)")
+    db.execute("INSERT INTO core.t VALUES (1)")
+    result = assert_min_rows(db, table_min_rows={"core.t": 5})
+    assert not result.passed
+    assert result.details["failures"]["core.t"] == {"min_required": 5, "actual": 1}
+
+
+def test_min_rows_treats_missing_table_as_zero_rows(db: Database) -> None:
+    """A table that does not exist contributes 0 rows rather than erroring."""
+    result = assert_min_rows(db, table_min_rows={"core.does_not_exist": 1})
+    assert not result.passed
+    assert result.details["counts"]["core.does_not_exist"] == 0
 
 
 @pytest.mark.integration

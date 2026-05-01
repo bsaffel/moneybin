@@ -97,8 +97,7 @@ def assert_row_count_delta(
         details={
             "expected": expected,
             "actual": actual,
-            # JSON cannot represent ``inf``; encode unbounded delta as None so
-            # ``ResponseEnvelope.to_json()`` doesn't raise.
+            # JSON cannot represent ``inf``; encode unbounded delta as None.
             "delta_pct": round(delta_pct, 2) if delta_pct != float("inf") else None,
             "tolerance_pct": tolerance_pct,
         },

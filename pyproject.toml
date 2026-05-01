@@ -144,6 +144,7 @@ ignore = [
 "tests/**/*.py" = [
     "S101",  # assert used - standard in pytest
     "D102",  # test methods don't need docstrings
+    "D103",  # test functions don't need docstrings (test name describes the case)
 ]
 # CLI commands and user config use print() for user-facing output
 "src/moneybin/cli/commands/*.py" = [
