@@ -24,7 +24,7 @@ from tests.e2e.memory_keyring import MemoryKeyring
 
 
 @pytest.fixture(autouse=True)
-def _scenario_keyring() -> Generator[None, None, None]:  # type: ignore[reportUnusedFunction]
+def _scenario_keyring() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
     """Swap in the dict-backed keyring for every scenario test."""
     previous = keyring.get_keyring()
     keyring.set_keyring(MemoryKeyring())
@@ -36,7 +36,7 @@ def _scenario_keyring() -> Generator[None, None, None]:  # type: ignore[reportUn
 
 
 @pytest.fixture(autouse=True)
-def _scenario_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[reportUnusedFunction]
+def _scenario_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
     """Provide ephemeral encryption key + subprocess keyring config."""
     monkeypatch.setenv(
         "MONEYBIN_DATABASE__ENCRYPTION_KEY",

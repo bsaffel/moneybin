@@ -93,7 +93,7 @@ def _step_transform_via_subprocess(
     if proc.returncode != 0:
         # Log stderr separately at DEBUG — it may carry DuckDB error text that
         # echoes amounts/descriptions (PII rule). The exception message stays
-        # PII-free so it's safe for the runner's error envelope.
+        # PII-free so it's safe for the runner's error result.
         logger.debug(f"transform subprocess stderr: {proc.stderr[-500:]}")
         raise RuntimeError(f"transform subprocess failed (rc={proc.returncode})")
 
