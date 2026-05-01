@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 
+from fastmcp import FastMCP
+
 from moneybin.database import get_database
+from moneybin.mcp._registration import tags_for
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -39,36 +41,24 @@ def sql_query(query: str) -> ResponseEnvelope:
         )
 
     db = get_database()
-    try:
-        # Security: This tool intentionally executes user-provided SQL.
-        # Parameterized queries are not applicable here — the entire query
-        # is user input. Safety relies on validate_read_only_query() above,
-        # which blocks write operations, file-access functions, and URL schemes.
-        result = db.execute(query)
-        columns = [desc[0] for desc in result.description]
-        rows = result.fetchmany(get_max_rows())
-        records = [dict(zip(columns, row, strict=False)) for row in rows]
-        return build_envelope(data=records, sensitivity="medium")
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on query execution
-        logger.exception("sql.query failed")
-        return build_envelope(
-            data={"error": "Query execution failed — check syntax and column names."},
-            sensitivity="low",
-        )
+    # Security: This tool intentionally executes user-provided SQL.
+    # Parameterized queries are not applicable here — the entire query
+    # is user input. Safety relies on validate_read_only_query() above,
+    # which blocks write operations, file-access functions, and URL schemes.
+    result = db.execute(query)
+    columns = [desc[0] for desc in result.description]
+    rows = result.fetchmany(get_max_rows())
+    records = [dict(zip(columns, row, strict=False)) for row in rows]
+    return build_envelope(data=records, sensitivity="medium")
 
 
-def register_sql_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:
-    """Register all sql namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="sql.query",
-            description=(
-                "Execute a read-only SQL query against the database. "
-                "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN."
-            ),
-            fn=sql_query,
+def register_sql_tools(mcp: FastMCP) -> None:
+    """Register all sql namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="sql.query",
+        description=(
+            "Execute a read-only SQL query against the database. "
+            "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN."
         ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(sql_query),
+    )(sql_query)

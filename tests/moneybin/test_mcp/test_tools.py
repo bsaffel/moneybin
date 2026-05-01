@@ -1,19 +1,16 @@
 # tests/moneybin/test_mcp/test_tools.py
-"""Tests for v1 MCP tool registration and basic functionality.
+"""Tests for v1 MCP tool functions.
 
-These tests verify that the prototype tools have been successfully
-migrated to v1 namespace-based tools. Individual tool logic is tested
-in the service layer tests — these test the registration and wiring.
+These tests exercise the underlying tool functions directly. Registration
+with the FastMCP server is covered by tests/mcp/test_visibility.py.
 """
 
-import json
-
 import pytest
+from fastmcp import FastMCP
 
-from moneybin.mcp.namespaces import NamespaceRegistry
-from moneybin.mcp.tools.accounts import register_accounts_tools
+from moneybin.mcp.tools.accounts import accounts_list, register_accounts_tools
 from moneybin.mcp.tools.spending import register_spending_tools
-from moneybin.mcp.tools.sql import register_sql_tools
+from moneybin.mcp.tools.sql import register_sql_tools, sql_query
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -40,27 +37,29 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_spending_tools_register(self) -> None:
-        registry = NamespaceRegistry()
-        tools = register_spending_tools(registry)
-        names = {t.name for t in tools}
+        srv = FastMCP("test")
+        register_spending_tools(srv)
+        # Synchronous accessor surface differs by version; resolve via asyncio.
+        import asyncio
+
+        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "spending.summary" in names
         assert "spending.by_category" in names
 
     @pytest.mark.unit
     def test_accounts_tools_register(self) -> None:
-        registry = NamespaceRegistry()
-        tools = register_accounts_tools(registry)
-        names = {t.name for t in tools}
+        import asyncio
+
+        srv = FastMCP("test")
+        register_accounts_tools(srv)
+        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "accounts.list" in names
         assert "accounts.balances" in names
 
     @pytest.mark.unit
     def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
-        registry = NamespaceRegistry()
-        tools = register_accounts_tools(registry)
-        tool = next(t for t in tools if t.name == "accounts.list")
-        result = tool.fn()
-        parsed = json.loads(result)
+        result = accounts_list()
+        parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
@@ -72,10 +71,10 @@ class TestV1ToolRegistration:
 
         get_db().execute(_INSERT_TRANSACTIONS)
 
-        registry = NamespaceRegistry()
-        tools = register_sql_tools(registry)
-        tool = next(t for t in tools if t.name == "sql.query")
-        result = tool.fn(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
-        parsed = json.loads(result)
+        # Also exercise registration to ensure no smoke errors.
+        register_sql_tools(FastMCP("test"))
+
+        result = sql_query(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
+        parsed = result.to_dict()
         assert "summary" in parsed
         assert parsed["data"][0]["cnt"] == 2

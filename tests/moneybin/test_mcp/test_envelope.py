@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from moneybin.mcp.envelope import (
+from moneybin.protocol.envelope import (
     DetailLevel,
     ResponseEnvelope,
     SummaryMeta,

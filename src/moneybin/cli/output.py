@@ -27,7 +27,7 @@ from enum import StrEnum
 
 import typer
 
-from moneybin.mcp.envelope import ResponseEnvelope
+from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 

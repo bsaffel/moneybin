@@ -27,11 +27,18 @@ import uuid
 from collections.abc import Mapping, Sequence
 
 import duckdb
+from fastmcp import FastMCP
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
+from moneybin.mcp._registration import tags_for
+from moneybin.mcp.adapters.categorize_adapters import (
+    auto_confirm_envelope,
+    auto_review_envelope,
+    auto_stats_envelope,
+)
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
     BulkCategorizationResult,
@@ -78,7 +85,7 @@ def _validate_match_type(match_type: str) -> MatchType:
 # ---------------------------------------------------------------------------
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_categories(
     include_inactive: bool = False,
 ) -> ResponseEnvelope:
@@ -129,7 +136,7 @@ def categorize_categories(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_rules() -> ResponseEnvelope:
     """List all categorization rules.
 
@@ -176,7 +183,7 @@ def categorize_rules() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_merchants() -> ResponseEnvelope:
     """List all merchant name mappings.
 
@@ -217,7 +224,7 @@ def categorize_merchants() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_stats() -> ResponseEnvelope:
     """Get categorization coverage statistics.
 
@@ -229,7 +236,7 @@ def categorize_stats() -> ResponseEnvelope:
     return result.to_envelope()
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_uncategorized(
     limit: int = 50,
 ) -> ResponseEnvelope:
@@ -282,7 +289,7 @@ def categorize_uncategorized(
 # ---------------------------------------------------------------------------
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_bulk(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
@@ -309,7 +316,7 @@ def categorize_bulk(
     return result.to_envelope(len(items))
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_create_rules(
     rules: list[dict[str, str | float | int | None]],
 ) -> ResponseEnvelope:
@@ -410,7 +417,7 @@ def categorize_create_rules(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
     """Soft-delete a categorization rule by setting it inactive.
 
@@ -421,34 +428,27 @@ def categorize_delete_rule(rule_id: str) -> ResponseEnvelope:
         rule_id: The rule ID to deactivate.
     """
     db = get_database()
-    try:
-        row = db.execute(
-            f"""
-            UPDATE {CATEGORIZATION_RULES.full_name}
-            SET is_active = false, updated_at = CURRENT_TIMESTAMP
-            WHERE rule_id = ?
-            RETURNING rule_id
-            """,
-            [rule_id],
-        ).fetchone()
-        if row:
-            return build_envelope(
-                data={"rule_id": rule_id, "action": "deactivated"},
-                sensitivity="low",
-            )
+    row = db.execute(
+        f"""
+        UPDATE {CATEGORIZATION_RULES.full_name}
+        SET is_active = false, updated_at = CURRENT_TIMESTAMP
+        WHERE rule_id = ?
+        RETURNING rule_id
+        """,
+        [rule_id],
+    ).fetchone()
+    if row:
         return build_envelope(
-            data={"error": f"Rule {rule_id} not found"},
+            data={"rule_id": rule_id, "action": "deactivated"},
             sensitivity="low",
         )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception(f"delete_rule failed for {rule_id}")
-        return build_envelope(
-            data={"error": "Failed to delete rule — check logs for details."},
-            sensitivity="low",
-        )
+    return build_envelope(
+        data={"error": f"Rule {rule_id} not found"},
+        sensitivity="low",
+    )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_create_merchants(
     merchants: list[dict[str, str | None]],
 ) -> ResponseEnvelope:
@@ -529,7 +529,7 @@ def categorize_create_merchants(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_create_category(
     category: str,
     subcategory: str | None = None,
@@ -558,32 +558,28 @@ def categorize_create_category(
             """,
             [cat_id, category, subcategory, description],
         )
-        sub = f" / {subcategory}" if subcategory else ""
-        return build_envelope(
-            data={
-                "category_id": cat_id,
-                "category": category,
-                "subcategory": subcategory,
-                "action": "created",
-                "display": f"{category}{sub}",
-            },
-            sensitivity="low",
-        )
     except duckdb.ConstraintException:
         sub = f" / {subcategory}" if subcategory else ""
-        return build_envelope(
-            data={"error": f"Category already exists: {category}{sub}"},
-            sensitivity="low",
-        )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("create_category failed")
-        return build_envelope(
-            data={"error": "Failed to create category — check logs for details."},
-            sensitivity="low",
-        )
+        raise UserError(
+            f"Category already exists: {category}{sub}",
+            code="CATEGORY_ALREADY_EXISTS",
+        ) from None
+    # Other DuckDB errors propagate to fastmcp's mask_error_details.
+
+    sub = f" / {subcategory}" if subcategory else ""
+    return build_envelope(
+        data={
+            "category_id": cat_id,
+            "category": category,
+            "subcategory": subcategory,
+            "action": "created",
+            "display": f"{category}{sub}",
+        },
+        sensitivity="low",
+    )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_toggle_category(
     category_id: str,
     is_active: bool,
@@ -598,35 +594,28 @@ def categorize_toggle_category(
         is_active: True to enable, False to disable.
     """
     db = get_database()
-    try:
-        row = db.execute(
-            f"""
-            UPDATE {CATEGORIES.full_name}
-            SET is_active = ?
-            WHERE category_id = ?
-            RETURNING category_id
-            """,
-            [is_active, category_id],
-        ).fetchone()
-        if row:
-            action = "enabled" if is_active else "disabled"
-            return build_envelope(
-                data={"category_id": category_id, "action": action},
-                sensitivity="low",
-            )
+    row = db.execute(
+        f"""
+        UPDATE {CATEGORIES.full_name}
+        SET is_active = ?
+        WHERE category_id = ?
+        RETURNING category_id
+        """,
+        [is_active, category_id],
+    ).fetchone()
+    if row:
+        action = "enabled" if is_active else "disabled"
         return build_envelope(
-            data={"error": f"Category {category_id} not found"},
+            data={"category_id": category_id, "action": action},
             sensitivity="low",
         )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("toggle_category failed")
-        return build_envelope(
-            data={"error": "Failed to toggle category — check logs for details."},
-            sensitivity="low",
-        )
+    return build_envelope(
+        data={"error": f"Category {category_id} not found"},
+        sensitivity="low",
+    )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_seed() -> ResponseEnvelope:
     """Initialize default categories from the Plaid PFCv2 taxonomy.
 
@@ -634,18 +623,11 @@ def categorize_seed() -> ResponseEnvelope:
     app.categories. Safe to call multiple times -- existing categories
     are not overwritten.
     """
-    try:
-        count = CategorizationService(get_database()).seed()
-        return SeedResult(seeded_count=count).to_envelope()
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("seed_categories failed")
-        return build_envelope(
-            data={"error": "Failed to seed categories — check logs for details."},
-            sensitivity="low",
-        )
+    count = CategorizationService(get_database()).seed()
+    return SeedResult(seeded_count=count).to_envelope()
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
     """List pending auto-rule proposals.
 
@@ -658,18 +640,11 @@ def categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
             ``summary.has_more`` flag indicates whether more proposals exist
             beyond the returned page.
     """
-    try:
-        result = AutoRuleService(get_database()).review(limit=limit)
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("categorize.auto_review failed")
-        return build_envelope(
-            data={"error": "Failed to load proposals — check logs for details."},
-            sensitivity="medium",
-        )
-    return result.to_envelope()
+    result = AutoRuleService(get_database()).review(limit=limit)
+    return auto_review_envelope(result)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", domain="categorize")
 def categorize_auto_confirm(
     approve: list[str] | None = None,
     reject: list[str] | None = None,
@@ -683,143 +658,120 @@ def categorize_auto_confirm(
         approve: Proposal IDs to approve and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
     """
-    try:
-        result = AutoRuleService(get_database()).confirm(
-            approve=approve or [],
-            reject=reject or [],
-        )
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("categorize.auto_confirm failed")
-        return build_envelope(
-            data={"error": "Failed to confirm proposals — check logs for details."},
-            sensitivity="medium",
-        )
-    return result.to_envelope()
+    result = AutoRuleService(get_database()).confirm(
+        approve=approve or [],
+        reject=reject or [],
+    )
+    return auto_confirm_envelope(result)
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="categorize")
 def categorize_auto_stats() -> ResponseEnvelope:
     """Auto-rule health metrics.
 
     Returns counts of active auto-rules, pending proposals, and
     transactions categorized by auto-rules.
     """
-    try:
-        data = AutoRuleService(get_database()).stats()
-    except Exception:  # noqa: BLE001 — DuckDB raises untyped errors
-        logger.exception("categorize.auto_stats failed")
-        return build_envelope(
-            data={"error": "Failed to load auto-rule stats — check logs for details."},
-            sensitivity="low",
-        )
-    return data.to_envelope()
+    data = AutoRuleService(get_database()).stats()
+    return auto_stats_envelope(data)
 
 
-def register_categorize_tools(
-    registry: NamespaceRegistry,
-) -> list[ToolDefinition]:
-    """Register all categorize namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="categorize.categories",
-            description="List all categories in the taxonomy.",
-            fn=categorize_categories,
+def register_categorize_tools(mcp: FastMCP) -> None:
+    """Register all categorize namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="categorize.categories",
+        description="List all categories in the taxonomy.",
+        tags=tags_for(categorize_categories),
+    )(categorize_categories)
+    mcp.tool(
+        name="categorize.rules",
+        description="List all active categorization rules.",
+        tags=tags_for(categorize_rules),
+    )(categorize_rules)
+    mcp.tool(
+        name="categorize.merchants",
+        description="List all merchant name mappings.",
+        tags=tags_for(categorize_merchants),
+    )(categorize_merchants)
+    mcp.tool(
+        name="categorize.stats",
+        description=(
+            "Get categorization coverage statistics: total, "
+            "categorized, uncategorized, percent, and breakdown by source."
         ),
-        ToolDefinition(
-            name="categorize.rules",
-            description="List all active categorization rules.",
-            fn=categorize_rules,
+        tags=tags_for(categorize_stats),
+    )(categorize_stats)
+    mcp.tool(
+        name="categorize.uncategorized",
+        description="Find transactions that have not been categorized yet.",
+        tags=tags_for(categorize_uncategorized),
+    )(categorize_uncategorized)
+    mcp.tool(
+        name="categorize.bulk",
+        description=(
+            "Assign categories to multiple transactions in one call. "
+            "Auto-creates merchant mappings for future auto-categorization."
         ),
-        ToolDefinition(
-            name="categorize.merchants",
-            description="List all merchant name mappings.",
-            fn=categorize_merchants,
+        tags=tags_for(categorize_bulk),
+    )(categorize_bulk)
+    mcp.tool(
+        name="categorize.create_rules",
+        description=(
+            "Create multiple categorization rules for automatic "
+            "transaction categorization."
         ),
-        ToolDefinition(
-            name="categorize.stats",
-            description=(
-                "Get categorization coverage statistics: total, "
-                "categorized, uncategorized, percent, and breakdown by source."
-            ),
-            fn=categorize_stats,
+        tags=tags_for(categorize_create_rules),
+    )(categorize_create_rules)
+    mcp.tool(
+        name="categorize.delete_rule",
+        description="Soft-delete a categorization rule (set inactive).",
+        tags=tags_for(categorize_delete_rule),
+    )(categorize_delete_rule)
+    mcp.tool(
+        name="categorize.create_merchants",
+        description=(
+            "Create multiple merchant name mappings for description "
+            "normalization and auto-categorization."
         ),
-        ToolDefinition(
-            name="categorize.uncategorized",
-            description=("Find transactions that have not been categorized yet."),
-            fn=categorize_uncategorized,
+        tags=tags_for(categorize_create_merchants),
+    )(categorize_create_merchants)
+    mcp.tool(
+        name="categorize.create_category",
+        description="Create a custom category or subcategory.",
+        tags=tags_for(categorize_create_category),
+    )(categorize_create_category)
+    mcp.tool(
+        name="categorize.toggle_category",
+        description="Enable or disable a category in the taxonomy.",
+        tags=tags_for(categorize_toggle_category),
+    )(categorize_toggle_category)
+    mcp.tool(
+        name="categorize.seed",
+        description=("Initialize default categories from the Plaid PFCv2 taxonomy."),
+        tags=tags_for(categorize_seed),
+    )(categorize_seed)
+    mcp.tool(
+        name="categorize.auto_review",
+        description=(
+            "List pending auto-rule proposals with sample transactions "
+            "and trigger counts."
         ),
-        ToolDefinition(
-            name="categorize.bulk",
-            description=(
-                "Assign categories to multiple transactions in one call. "
-                "Auto-creates merchant mappings for future auto-categorization."
-            ),
-            fn=categorize_bulk,
+        tags=tags_for(categorize_auto_review),
+    )(categorize_auto_review)
+    mcp.tool(
+        name="categorize.auto_confirm",
+        description=(
+            "Batch approve/reject auto-rule proposals. Approved "
+            "proposals become active rules and immediately categorize "
+            "matching transactions."
         ),
-        ToolDefinition(
-            name="categorize.create_rules",
-            description=(
-                "Create multiple categorization rules for automatic "
-                "transaction categorization."
-            ),
-            fn=categorize_create_rules,
+        tags=tags_for(categorize_auto_confirm),
+    )(categorize_auto_confirm)
+    mcp.tool(
+        name="categorize.auto_stats",
+        description=(
+            "Auto-rule health: active count, pending proposals, "
+            "transactions categorized."
         ),
-        ToolDefinition(
-            name="categorize.delete_rule",
-            description="Soft-delete a categorization rule (set inactive).",
-            fn=categorize_delete_rule,
-        ),
-        ToolDefinition(
-            name="categorize.create_merchants",
-            description=(
-                "Create multiple merchant name mappings for description "
-                "normalization and auto-categorization."
-            ),
-            fn=categorize_create_merchants,
-        ),
-        ToolDefinition(
-            name="categorize.create_category",
-            description="Create a custom category or subcategory.",
-            fn=categorize_create_category,
-        ),
-        ToolDefinition(
-            name="categorize.toggle_category",
-            description="Enable or disable a category in the taxonomy.",
-            fn=categorize_toggle_category,
-        ),
-        ToolDefinition(
-            name="categorize.seed",
-            description=(
-                "Initialize default categories from the Plaid PFCv2 taxonomy."
-            ),
-            fn=categorize_seed,
-        ),
-        ToolDefinition(
-            name="categorize.auto_review",
-            description=(
-                "List pending auto-rule proposals with sample transactions "
-                "and trigger counts."
-            ),
-            fn=categorize_auto_review,
-        ),
-        ToolDefinition(
-            name="categorize.auto_confirm",
-            description=(
-                "Batch approve/reject auto-rule proposals. Approved "
-                "proposals become active rules and immediately categorize "
-                "matching transactions."
-            ),
-            fn=categorize_auto_confirm,
-        ),
-        ToolDefinition(
-            name="categorize.auto_stats",
-            description=(
-                "Auto-rule health: active count, pending proposals, "
-                "transactions categorized."
-            ),
-            fn=categorize_auto_stats,
-        ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(categorize_auto_stats),
+    )(categorize_auto_stats)

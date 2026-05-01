@@ -82,7 +82,7 @@ class TestMCPServerBoot:
 
                 # Call moneybin.discover — always works, no data needed
                 result = await session.call_tool(
-                    "moneybin.discover", {"namespace": "categorize"}
+                    "moneybin.discover", {"domain": "categorize"}
                 )
 
                 assert not result.isError, f"Tool returned error: {result.content}"
@@ -95,5 +95,5 @@ class TestMCPServerBoot:
                 assert "data" in envelope
                 assert "actions" in envelope
                 assert envelope["summary"]["sensitivity"] == "low"
-                assert envelope["data"]["namespace"] == "categorize"
-                assert len(envelope["data"]["tools_loaded"]) > 0
+                assert envelope["data"]["domain"] == "categorize"
+                assert envelope["actions"], "discover should return next-step hints"

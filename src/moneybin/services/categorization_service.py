@@ -22,12 +22,12 @@ import duckdb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.database import Database, sqlmesh_context
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
 from moneybin.metrics.registry import (
     CATEGORIZE_BULK_DURATION_SECONDS,
     CATEGORIZE_BULK_ERRORS_TOTAL,
     CATEGORIZE_BULK_ITEMS_TOTAL,
 )
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import normalize_description
 from moneybin.tables import (
     CATEGORIES,

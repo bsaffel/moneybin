@@ -1,10 +1,9 @@
-# src/moneybin/mcp/envelope.py
-"""Response envelope for MCP tools and CLI --output json.
+"""Cross-transport response envelope.
 
 Every MCP tool and every CLI command with ``--output json`` returns this
-shape: ``{summary, data, actions}``. The envelope gives AI consumers
-consistent metadata (counts, truncation, sensitivity, currency) and
-contextual next-step hints.
+shape: ``{summary, data, actions}``. A future HTTP/FastAPI surface will
+use the same envelope. The shape gives consumers consistent metadata
+(counts, truncation, sensitivity, currency) and contextual next-step hints.
 
 See ``mcp-architecture.md`` section 4 for design rationale.
 """
