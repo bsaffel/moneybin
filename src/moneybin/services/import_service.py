@@ -99,31 +99,68 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
-def _detect_file_type(file_path: Path) -> str:
-    """Detect file type from extension.
+# Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
+# (.txt / .dat are excluded because they're generic and may contain OFX content.)
+_UNAMBIGUOUS_TABULAR: frozenset[str] = frozenset({
+    ".csv",
+    ".tsv",
+    ".tab",
+    ".xlsx",
+    ".xls",
+    ".parquet",
+    ".pq",
+    ".feather",
+    ".arrow",
+    ".ipc",
+})
 
-    Args:
-        file_path: Path to the file.
+
+def _detect_file_type(file_path: Path) -> str:
+    """Detect file type from extension, falling back to magic-byte sniffing.
 
     Returns:
         File type string: 'ofx', 'w2', or 'tabular'.
 
     Raises:
-        ValueError: If extension is not recognized.
+        ValueError: If the file cannot be classified.
     """
     from moneybin.extractors.tabular.format_detector import TABULAR_EXTENSIONS
 
     suffix = file_path.suffix.lower()
-    if suffix in (".ofx", ".qfx"):
+    if suffix in (".ofx", ".qfx", ".qbo"):
         return "ofx"
     if suffix == ".pdf":
         return "w2"
+    if suffix in _UNAMBIGUOUS_TABULAR:
+        return "tabular"
+
+    # Try magic-byte sniffing before falling back to remaining tabular extensions
+    # (.txt, .dat) and the unknown-extension error path.
+    if _sniff_ofx_content(file_path):
+        return "ofx"
+
     if suffix in TABULAR_EXTENSIONS:
         return "tabular"
+
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
+        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
     )
+
+
+def _sniff_ofx_content(file_path: Path) -> bool:
+    """Return True if the file's first 1024 bytes look like OFX/QFX/QBO content."""
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(1024)
+    except OSError:
+        return False
+    head_lstripped = head.lstrip()
+    if head_lstripped.startswith(b"OFXHEADER:"):
+        return True
+    if head_lstripped.startswith(b"<?xml") and b"<OFX>" in head:
+        return True
+    return False
 
 
 class ImportService:
