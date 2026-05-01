@@ -65,8 +65,8 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
     breakdown = {
         "per_category": {
             cat: {
-                "precision": safe_div(s["tp"], s["tp"] + s["fp"]),
-                "recall": safe_div(s["tp"], s["tp"] + s["fn"]),
+                "precision": round(safe_div(s["tp"], s["tp"] + s["fp"]), 4),
+                "recall": round(safe_div(s["tp"], s["tp"] + s["fn"]), 4),
                 "support": s["support"],
             }
             for cat, s in per_cat.items()

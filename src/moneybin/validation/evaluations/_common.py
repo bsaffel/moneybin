@@ -20,5 +20,5 @@ def has_ground_truth(db: Database) -> bool:
 
 
 def safe_div(num: float, denom: float) -> float:
-    """Divide and round to 4 decimals; return 0.0 when the denominator is zero."""
-    return round(num / denom, 4) if denom else 0.0
+    """Divide; return 0.0 when the denominator is zero. Caller rounds for display."""
+    return num / denom if denom else 0.0

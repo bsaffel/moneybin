@@ -91,7 +91,9 @@ def assert_no_nulls(
     )
     sql = f"SELECT {per_col_select} FROM {t}"  # noqa: S608  # identifiers validated by quote_ident
     row = conn.execute(sql).fetchone()
-    counts = [int(v or 0) for v in row] if row else [0] * len(columns)
+    counts = (
+        [int(v) if v is not None else 0 for v in row] if row else [0] * len(columns)
+    )
     per_col = dict(zip(columns, counts, strict=True))
     total = sum(per_col.values())
     return AssertionResult(
