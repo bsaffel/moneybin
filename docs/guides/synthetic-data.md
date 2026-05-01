@@ -58,14 +58,16 @@ moneybin synthetic generate --persona <name> --profile <profile>
 
 # Reset (wipe and regenerate) — refuses to wipe non-generated profiles
 moneybin synthetic reset --persona <name> --profile <profile>
-
-# Run scenario verification suites against synthetic fixtures
-moneybin synthetic verify --list
-moneybin synthetic verify --scenario basic-full-pipeline
-moneybin synthetic verify --all --output json
 ```
 
-`synthetic verify` runs whole-pipeline scenarios — generate → transform → match → categorize — and reports assertions, expectations, and evaluations. See [`testing-scenario-runner`](../specs/testing-scenario-runner.md) for the model and [CONTRIBUTING.md](../../CONTRIBUTING.md) for the developer workflow.
+Whole-pipeline scenarios run as pytest tests under `tests/scenarios/`:
+
+```bash
+make test-scenarios                                    # Run the full scenario suite
+uv run pytest tests/scenarios/ -m scenarios -v         # Same, via pytest directly
+```
+
+The scenario suite exercises generate → transform → match → categorize and reports assertions, expectations, and evaluations. See [`testing-scenario-runner`](../specs/testing-scenario-runner.md) for the model and [CONTRIBUTING.md](../../CONTRIBUTING.md) for the developer workflow.
 
 ### Safety
 

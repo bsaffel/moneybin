@@ -123,7 +123,7 @@ Now fix the underlying bug. Re-run:
 
 ```bash
 uv run pytest tests/scenarios/test_<bug-id>.py -v
-make verify-scenarios   # confirm no regressions in other scenarios
+make test-scenarios     # confirm no regressions in other scenarios
 ```
 
 Both must pass. If the fix breaks another scenario, that's signal — investigate before updating any expectations. Per the independent-expectations rule, "the new code produces a different number" is not justification.

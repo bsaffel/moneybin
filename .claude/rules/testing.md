@@ -113,7 +113,7 @@ Every shipped feature must have tests at the appropriate layers:
 | Integration (`tests/integration/`) | Cross-subsystem wiring | Feature touches >1 subsystem |
 | E2E (`tests/e2e/`) | Boot, wiring, schema, subprocess errors | Every CLI command (see below) |
 | E2E workflow (`tests/e2e/test_e2e_workflows.py`) | Multi-step pipeline breakage | Feature adds a user-facing workflow |
-| Scenario (`tests/integration/test_scenario_runner.py` + `moneybin synthetic verify`) | Whole-pipeline correctness against synthetic + labeled fixtures | When changing data shapes, matching/categorization heuristics, or migrations |
+| Scenario (`tests/scenarios/` + `make test-scenarios`) | Whole-pipeline correctness against synthetic + labeled fixtures | When changing data shapes, matching/categorization heuristics, or migrations |
 
 - New import formats or data sources: add an E2E workflow test that imports a fixture file
 - New DB schema changes: covered automatically by existing E2E tests (they exercise `init_schemas`)

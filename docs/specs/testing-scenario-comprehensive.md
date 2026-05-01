@@ -1,7 +1,7 @@
 # Feature: Comprehensive Scenario Testing
 
 ## Status
-draft
+in-progress
 
 ## Goal
 
@@ -143,7 +143,7 @@ A contributor (or their coding agent) MUST follow [`docs/guides/scenario-authori
 
 ### R5 — Relocation to `tests/scenarios/`
 
-The scenario runner, steps, loader, fixture loader, expectations module, and YAML data move from `src/moneybin/testing/scenarios/` to `tests/scenarios/`. The synthetic data **generator** (`src/moneybin/testing/synthetic/`) stays in `src/` because `moneybin synthetic generate` remains a supported user command. The `moneybin synthetic verify` CLI is removed; scenarios run via `pytest tests/scenarios/ -m scenarios` and a `make verify-scenarios` target. The bespoke `ResponseEnvelope` is dropped in favor of `pytest-json-report`.
+The scenario runner, steps, loader, fixture loader, expectations module, and YAML data move from `src/moneybin/testing/scenarios/` to `tests/scenarios/`. The synthetic data **generator** (`src/moneybin/testing/synthetic/`) stays in `src/` because `moneybin synthetic generate` remains a supported user command. The `moneybin synthetic verify` CLI is removed; scenarios run via `pytest tests/scenarios/ -m scenarios` and the `make test-scenarios` target. The bespoke `ResponseEnvelope` is dropped in favor of `pytest-json-report`.
 
 ### R6 — Shared validation library
 
@@ -184,7 +184,7 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 - `docs/specs/INDEX.md` — add this spec
 - `docs/specs/testing-overview.md` — reference this spec; note relocation to `tests/`
 - `docs/specs/testing-scenario-runner.md` — note that scenarios now live in `tests/scenarios/`, link to this spec for taxonomy
-- `Makefile` — add `verify-scenarios` target
+- `Makefile` — repoint `test-scenarios` target at pytest
 - `.github/workflows/scenarios.yml` — replace `moneybin synthetic verify --all --output=json` with `uv run pytest tests/scenarios/ -m scenarios --json-report`
 
 ### Files to Delete
@@ -228,7 +228,7 @@ After PR 3 merges, this spec moves to `implemented` and becomes the binding arch
 Replacement:
 
 ```bash
-make verify-scenarios                                          # Run all scenario tests
+make test-scenarios                                            # Run all scenario tests
 uv run pytest tests/scenarios/ -m scenarios -v                 # Same, manual
 uv run pytest tests/scenarios/test_dedup_cross_source.py -v    # Single scenario
 uv run pytest tests/scenarios/ -m scenarios --json-report      # CI artifact

@@ -255,7 +255,7 @@ The synthetic data generator (`testing-synthetic-data.md`) should produce data t
 - Expected daily balance per account (derived from the generator's perfect knowledge of all transactions)
 - Expected net worth per day (cross-account sum)
 
-This lets `moneybin synthetic verify` validate that `fct_balances_daily` and `agg_net_worth` match the generator's known-correct values.
+This lets the scenario suite (`make test-scenarios`) validate that `fct_balances_daily` and `agg_net_worth` match the generator's known-correct values.
 
 ## Testing Strategy
 
@@ -273,7 +273,7 @@ This lets `moneybin synthetic verify` validate that `fct_balances_daily` and `ag
 
 ### Tier 2 — Synthetic data verification
 
-- `moneybin synthetic verify` scenarios compare `fct_balances_daily` and `agg_net_worth` against ground-truth values from the generator.
+- Scenario tests under `tests/scenarios/` (run via `make test-scenarios`) compare `fct_balances_daily` and `agg_net_worth` against ground-truth values from the generator.
 - Reconciliation delta scenarios: persona with deliberate gaps produces expected non-zero deltas.
 
 ### Tier 3 — Integration

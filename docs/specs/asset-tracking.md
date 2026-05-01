@@ -385,7 +385,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ### Tier 2 — Synthetic data verification
 
-- `moneybin synthetic verify` scenarios that include assets with known valuations and verify `fct_asset_valuations_daily` and `agg_net_worth` match expected values.
+- Scenario tests under `tests/scenarios/` (run via `make test-scenarios`) that include assets with known valuations and verify `fct_asset_valuations_daily` and `agg_net_worth` match expected values.
 - Staleness scenarios: assets with old valuations trigger warnings at the correct thresholds.
 
 ### Tier 3 — Integration

@@ -90,7 +90,7 @@ The catalog grows organically — when a new child spec or feature needs a check
 
 | Context | When | Who triggers | What runs | What you see |
 |---|---|---|---|---|
-| **Development** | Agent or human building a feature | `moneybin synthetic verify` or direct assertion calls | Everything — unit tests, audits, assertions, evaluations | Structured pass/fail/score report |
+| **Development** | Agent or human building a feature | `make test-scenarios` (pytest scenarios) or direct assertion calls | Everything — unit tests, audits, assertions, evaluations | Structured pass/fail/score report |
 | **Pipeline** | `sqlmesh run` transforms data | Automatic | SQLMesh audits + unit tests fire as part of the run | Pipeline halts or warns on failure |
 | **CI** | PR or commit | GitHub Actions (future) | Full scenario suite against synthetic data | Pass/fail gate on the PR |
 | **Runtime** | After a real data load or import | `moneybin data verify` or post-load hook | Assertions against the live database | User-facing health report |
@@ -129,7 +129,7 @@ Generate synthetic data that preserves the statistical properties and structure 
 
 ## Scenario Runner
 
-Scenarios are pinned, reproducible test plans that go from an empty encrypted DuckDB through the full pipeline (`generate → transform → match → categorize`) and run assertions, expectations, and evaluations against the resulting data. The scenario file format, orchestration model, assertion/evaluation libraries, fixture-expectation contract, CLI surface (`moneybin synthetic verify`), and v1 scenario catalog are owned by [`testing-scenario-runner.md`](testing-scenario-runner.md).
+Scenarios are pinned, reproducible test plans that go from an empty encrypted DuckDB through the full pipeline (`generate → transform → match → categorize`) and run assertions, expectations, and evaluations against the resulting data. The scenario file format, orchestration model, assertion/evaluation libraries, fixture-expectation contract, pytest harness (`make test-scenarios` / `pytest tests/scenarios/`), and v1 scenario catalog are owned by [`testing-scenario-runner.md`](testing-scenario-runner.md).
 
 The runner is the missing test layer above unit, integration, and E2E: those check their own slice in isolation; the runner asserts that whole-pipeline output is correct.
 
@@ -140,7 +140,7 @@ Four child specs under this umbrella. Each is independently useful, designed kno
 | Child spec | Purpose | V1 scope | Key design concerns |
 |---|---|---|---|
 | `testing-synthetic-data.md` | Produce life-like financial histories | Three fictional personas (`basic`, `family`, `freelancer`); deterministic seeding; ground-truth labels; YAML-driven personas and merchant catalogs; Level 2 realism | Declarative YAML architecture, merchant catalogs with real brand names, spending distributions, temporal realism, income patterns. Anonymized mode is a separate child spec (`testing-anonymized-data.md`). |
-| `testing-scenario-runner.md` | Whole-pipeline correctness with structured assertions, expectations, and evaluations | YAML scenario format, orchestrator with fresh encrypted DB per run, validation/evaluation primitive libraries, `moneybin synthetic verify` CLI, six shipped scenarios | Database isolation via `MONEYBIN_HOME` override; in-process service-layer execution; `ResponseEnvelope` reuse; fixture expectations as first-class signal |
+| `testing-scenario-runner.md` | Whole-pipeline correctness with structured assertions, expectations, and evaluations | YAML scenario format, orchestrator with fresh encrypted DB per run, validation/evaluation primitive libraries, pytest harness (`make test-scenarios`), six shipped scenarios | Database isolation via `MONEYBIN_HOME` override; in-process service-layer execution; fixture expectations as first-class signal |
 | `testing-csv-fixtures.md` | Curated bank export samples for format compatibility testing | Directory convention (`tests/fixtures/csv_formats/`), naming schema (`<institution>_<account_type>_<year>.csv` + `.expected.json`), initial fixtures from anonymized real exports | Anonymization checklist, contribution path, expected-result format for scoring smart detection |
 | `testing-format-compat.md` | Verify parsers handle all known file formats correctly | Test harness that runs each extractor against its fixtures, compares to expected output | Assertion integration, how to add a new format test, failure reporting |
 | `testing-migration-safety.md` | Verify schema migrations preserve data integrity | Pre/post migration assertions (row counts, checksums, no orphaned FKs, no NULLed fields) | Requires synthetic data to populate a DB before migration; depends on generator |
@@ -177,8 +177,8 @@ These grow as needed. No upfront framework — add an assertion when a new cross
 | `moneybin synthetic generate --persona=family --profile=bob --years=3 --seed=42` | Generate persona-based synthetic data into a named profile |
 | `moneybin synthetic anonymize --profile=anon --seed=42` | Generate anonymized synthetic data from current profile into a named profile (see `testing-anonymized-data.md`, separate child spec) |
 | `moneybin synthetic reset --persona=family --seed=42` | Wipe a generated profile and regenerate to clean state |
-| `moneybin synthetic verify --scenario=family-full-pipeline` | Run a pinned scenario (generate + pipeline + assertions + evaluation) |
-| `moneybin synthetic verify --quick --profile=bob` | Run property assertions only against a profile |
+| `uv run pytest tests/scenarios/test_family_full_pipeline.py -v` | Run a pinned scenario (generate + pipeline + assertions + evaluation) |
+| `make test-scenarios` | Run the full scenario suite |
 | `moneybin data verify` | User-facing health check — core assertions against the active profile |
 
 ## Dependencies
