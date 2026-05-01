@@ -23,7 +23,7 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 def _registered_names() -> set[str]:
     srv = FastMCP("test")
     register_categorize_tools(srv)
-    return {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001
+    return {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 
 class TestCategorizeToolRegistration:

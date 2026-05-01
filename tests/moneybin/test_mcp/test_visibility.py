@@ -7,7 +7,7 @@ from fastmcp import Client
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _register_tools() -> None:
+def _register_tools() -> None:  # pyright: ignore[reportUnusedFunction]
     """Ensure all tools and visibility transforms are installed before tests run."""
     from moneybin.mcp.server import register_core_tools
 

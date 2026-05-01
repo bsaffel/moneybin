@@ -42,7 +42,7 @@ class TestV1ToolRegistration:
         # Synchronous accessor surface differs by version; resolve via asyncio.
         import asyncio
 
-        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001
+        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "spending.summary" in names
         assert "spending.by_category" in names
 
@@ -52,7 +52,7 @@ class TestV1ToolRegistration:
 
         srv = FastMCP("test")
         register_accounts_tools(srv)
-        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001
+        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "accounts.list" in names
         assert "accounts.balances" in names
 
