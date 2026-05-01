@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from duckdb import DuckDBPyConnection
-
+from moneybin.database import Database
 from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
 
 
-def assert_no_nulls(
-    conn: DuckDBPyConnection, *, table: str, columns: list[str]
-) -> AssertionResult:
+def assert_no_nulls(db: Database, *, table: str, columns: list[str]) -> AssertionResult:
     """Assert no null values exist in the given columns."""
     if not columns:
         raise ValueError("columns must be non-empty")
@@ -19,7 +16,7 @@ def assert_no_nulls(
     for col in columns:
         cq = quote_ident(col)
         null_sql = f"SELECT COUNT(*) FROM {t} WHERE {cq} IS NULL"  # noqa: S608  # identifiers validated by quote_ident
-        per_col[col] = int(conn.execute(null_sql).fetchone()[0])  # type: ignore[index]
+        per_col[col] = int(db.execute(null_sql).fetchone()[0])  # type: ignore[index]
     total = sum(per_col.values())
     return AssertionResult(
         name="no_nulls",

@@ -1,22 +1,31 @@
 """Tests for uniqueness assertion primitives."""
 
-import duckdb
+from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from moneybin.database import Database
 from moneybin.validation.assertions.uniqueness import assert_no_duplicates
 
 
-def _conn() -> duckdb.DuckDBPyConnection:
-    c = duckdb.connect(":memory:")
-    c.execute("CREATE TABLE parent (id INT)")
-    c.execute("INSERT INTO parent VALUES (1), (2), (3)")
-    c.execute("CREATE TABLE child (id INT, parent_id INT)")
-    return c
+@pytest.fixture()
+def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
+    """Provide a test Database with parent/child tables."""
+    database = Database(
+        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
+    database.execute("CREATE TABLE parent (id INT)")
+    database.execute("INSERT INTO parent VALUES (1), (2), (3)")
+    database.execute("CREATE TABLE child (id INT, parent_id INT)")
+    return database
 
 
-def test_no_duplicates_detects_repeats() -> None:
+def test_no_duplicates_detects_repeats(db: Database) -> None:
     """Duplicate rows in a column set are detected."""
-    c = _conn()
-    c.execute("INSERT INTO child VALUES (10, 1), (10, 1)")
-    r = assert_no_duplicates(c, table="child", columns=["id"])
+    db.execute("INSERT INTO child VALUES (10, 1), (10, 1)")
+    r = assert_no_duplicates(db, table="child", columns=["id"])
     assert not r.passed
     assert r.details["duplicate_groups"] == 1
