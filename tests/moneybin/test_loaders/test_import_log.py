@@ -80,7 +80,7 @@ class TestRevertImport:
         assert result["status"] == "not_found"
 
     def test_reverts_ofx_batch(self, db: Database) -> None:
-        # Setup: create import row + a single OFX transaction row.
+        """Verifies revert clears all four raw.ofx_* tables, not just transactions."""
         import_id = import_log.begin_import(
             db,
             source_file="/tmp/test.ofx",  # noqa: S108  # test fixture path
@@ -88,6 +88,7 @@ class TestRevertImport:
             source_origin="wells_fargo",
             account_names=["checking"],
         )
+        # 1 transaction
         db.execute(
             """
             INSERT INTO raw.ofx_transactions (
@@ -112,20 +113,85 @@ class TestRevertImport:
                 "wells_fargo",
             ],
         )
+        # 1 account
+        db.execute(
+            """
+            INSERT INTO raw.ofx_accounts (
+                account_id, routing_number, account_type, institution_org,
+                institution_fid, source_file, extracted_at, import_id, source_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "checking",
+                "12345",
+                "CHECKING",
+                "Wells Fargo",
+                "3000",
+                "/tmp/test.ofx",  # noqa: S108  # test fixture path
+                "2026-01-15 10:00:00",
+                import_id,
+                "ofx",
+            ],
+        )
+        # 1 balance
+        db.execute(
+            """
+            INSERT INTO raw.ofx_balances (
+                account_id, statement_start_date, statement_end_date,
+                ledger_balance, ledger_balance_date, available_balance,
+                source_file, extracted_at, import_id, source_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "checking",
+                "2026-01-01",
+                "2026-01-31",
+                "1000.00",
+                "2026-01-31 23:59:59",
+                "950.00",
+                "/tmp/test.ofx",  # noqa: S108  # test fixture path
+                "2026-01-15 10:00:00",
+                import_id,
+                "ofx",
+            ],
+        )
+        # 1 institution
+        db.execute(
+            """
+            INSERT INTO raw.ofx_institutions (
+                organization, fid, source_file, extracted_at, import_id, source_type
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "Wells Fargo",
+                "3000",
+                "/tmp/test.ofx",  # noqa: S108  # test fixture path
+                "2026-01-15 10:00:00",
+                import_id,
+                "ofx",
+            ],
+        )
         import_log.finalize_import(
-            db, import_id, status="complete", rows_total=1, rows_imported=1
+            db, import_id, status="complete", rows_total=4, rows_imported=4
         )
 
         result = import_log.revert_import(db, import_id)
         assert result["status"] == "reverted"
-        assert result["rows_deleted"] == 1
+        assert result["rows_deleted"] == 4
 
-        count_row = db.execute(
-            "SELECT COUNT(*) FROM raw.ofx_transactions WHERE import_id = ?",
-            [import_id],
-        ).fetchone()
-        assert count_row is not None
-        assert count_row[0] == 0
+        # All four raw.ofx_* tables must be empty for this import_id.
+        for table in (
+            "raw.ofx_transactions",
+            "raw.ofx_accounts",
+            "raw.ofx_balances",
+            "raw.ofx_institutions",
+        ):
+            count_row = db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE import_id = ?",  # noqa: S608  # test input string from a closed set
+                [import_id],
+            ).fetchone()
+            assert count_row is not None
+            assert count_row[0] == 0, f"{table} not emptied after revert"
 
     def test_already_reverted_returns_status(self, db: Database) -> None:
         import_id = import_log.begin_import(
@@ -150,7 +216,7 @@ class TestFindExistingImport:
         result = import_log.find_existing_import(db, "/tmp/never_imported.ofx")  # noqa: S108  # test fixture path
         assert result is None
 
-    def test_returns_import_id_for_imported_file(self, db: Database) -> None:
+    def test_returns_import_id_and_status_for_imported_file(self, db: Database) -> None:
         import_id = import_log.begin_import(
             db,
             source_file="/tmp/once.ofx",  # noqa: S108  # test fixture path
@@ -162,7 +228,20 @@ class TestFindExistingImport:
             db, import_id, status="complete", rows_total=1, rows_imported=1
         )
         result = import_log.find_existing_import(db, "/tmp/once.ofx")  # noqa: S108  # test fixture path
-        assert result == import_id
+        assert result == (import_id, "complete")
+
+    def test_returns_importing_status_for_in_progress_batch(self, db: Database) -> None:
+        """A crashed/in-progress batch is detectable so callers can craft a clear error."""
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/in_progress.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        # Don't finalize — simulate a crash mid-import.
+        result = import_log.find_existing_import(db, "/tmp/in_progress.ofx")  # noqa: S108  # test fixture path
+        assert result == (import_id, "importing")
 
     def test_skips_reverted_imports(self, db: Database) -> None:
         import_id = import_log.begin_import(

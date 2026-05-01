@@ -313,15 +313,16 @@ def _quote_table(qualified: str) -> str:
 def find_existing_import(
     db: Database,
     source_file: str,
-) -> str | None:
-    """Return the most recent non-reverted import_id for source_file, or None.
+) -> tuple[str, str] | None:
+    """Return (import_id, status) for the most recent live batch, or None.
 
-    Used by the OFX path (and eventually tabular) to detect re-imports and
-    refuse without --force.
+    Excludes 'reverted' and 'failed' rows. Returns 'importing' batches too
+    so callers can distinguish a successful prior import from a crashed
+    in-progress one in their error messages.
     """
     row = db.execute(
         """
-        SELECT import_id
+        SELECT import_id, status
         FROM raw.import_log
         WHERE source_file = ?
           AND status NOT IN ('reverted', 'failed')
@@ -330,4 +331,6 @@ def find_existing_import(
         """,
         [source_file],
     ).fetchone()
-    return row[0] if row else None
+    if row is None:
+        return None
+    return (row[0], row[1])

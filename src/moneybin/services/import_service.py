@@ -403,8 +403,16 @@ class ImportService:
         if not force:
             existing = import_log.find_existing_import(self._db, str(canonical_path))
             if existing:
+                existing_id, existing_status = existing
+                if existing_status == "importing":
+                    raise ValueError(
+                        f"A prior import of this file is in-progress or was "
+                        f"interrupted (import_id {existing_id[:8]}..., "
+                        f"status=importing). If the previous run crashed, pass "
+                        f"--force to start a new batch."
+                    )
                 raise ValueError(
-                    f"File already imported (import_id {existing[:8]}...). "
+                    f"File already imported (import_id {existing_id[:8]}...). "
                     f"Use --force to re-import."
                 )
 
