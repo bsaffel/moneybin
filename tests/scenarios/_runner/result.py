@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from moneybin.validation.result import AssertionResult, EvaluationResult
-from tests.scenarios._runner.expectations import ExpectationResult
+from moneybin.validation.result import (
+    AssertionResult,
+    EvaluationResult,
+    ExpectationResult,
+)
 
 
 @dataclass(frozen=True, slots=True)
