@@ -82,12 +82,28 @@ class TestMCPToolDecorator:
             assert args[1] == Sensitivity.MEDIUM
 
     @pytest.mark.unit
-    def test_decorator_returns_response_envelope(self) -> None:
-        """When a tool returns a ResponseEnvelope, decorator returns it directly.
+    def test_decorator_supports_domain(self) -> None:
+        """The mcp_tool decorator carries the domain string as an attribute."""
 
-        fastmcp 3.x serializes Pydantic models (and dataclasses) to both
-        content and structured_content — returning the model object is correct.
-        """
+        @mcp_tool(sensitivity="medium", domain="categorize")
+        def example_tool() -> ResponseEnvelope:  # type: ignore[return]
+            ...
+
+        assert example_tool._mcp_domain == "categorize"  # type: ignore[attr-defined]
+
+    @pytest.mark.unit
+    def test_decorator_default_domain_is_none(self) -> None:
+        """Tools without an explicit domain are core tools (always visible)."""
+
+        @mcp_tool(sensitivity="low")
+        def example_tool() -> ResponseEnvelope:  # type: ignore[return]
+            ...
+
+        assert example_tool._mcp_domain is None  # type: ignore[attr-defined]
+
+    @pytest.mark.unit
+    def test_decorator_returns_response_envelope(self) -> None:
+        """When a tool returns a ResponseEnvelope, the decorator returns it directly."""
 
         @mcp_tool(sensitivity="low")
         def my_tool() -> ResponseEnvelope:
@@ -103,11 +119,7 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_raises_type_error_for_non_envelope(self) -> None:
-        """Tools that return non-ResponseEnvelope raise TypeError.
-
-        fastmcp 3.x expects structured outputs; returning a plain string would
-        bypass the envelope contract.
-        """
+        """Tools that return non-ResponseEnvelope raise TypeError."""
         import pytest
 
         @mcp_tool(sensitivity="low")

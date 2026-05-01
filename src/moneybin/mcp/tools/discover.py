@@ -18,15 +18,6 @@ from moneybin.protocol.envelope import (
 logger = logging.getLogger(__name__)
 
 
-_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
-    "categorize": "Rules, merchant mappings, bulk categorization",
-    "budget": "Budget targets, status, rollovers",
-    "tax": "W-2 data, deductible expense search",
-    "privacy": "Consent status, grants, revocations, audit log",
-    "transactions.matches": "Match review workflow",
-}
-
-
 @mcp_tool(sensitivity="low")
 async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
     """Reveal tools from an extended namespace for the calling session.
@@ -41,7 +32,7 @@ async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
         ctx: FastMCP request context (auto-injected). Used to scope the
             visibility change to the calling session only.
     """
-    from moneybin.mcp.server import EXTENDED_DOMAINS
+    from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS, EXTENDED_DOMAINS
 
     if domain not in EXTENDED_DOMAINS:
         known = ", ".join(sorted(EXTENDED_DOMAINS))
@@ -58,7 +49,7 @@ async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
     return build_envelope(
         data={
             "domain": domain,
-            "description": _NAMESPACE_DESCRIPTIONS.get(domain, ""),
+            "description": EXTENDED_DOMAIN_DESCRIPTIONS.get(domain, ""),
         },
         sensitivity="low",
         actions=[

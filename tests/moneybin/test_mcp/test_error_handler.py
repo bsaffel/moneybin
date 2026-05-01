@@ -1,11 +1,6 @@
-"""Tests for error envelope building (formerly tested handle_mcp_errors decorator).
+"""Tests for error envelope construction and serialization.
 
-The handle_mcp_errors decorator was deleted in the fastmcp 3.x migration.
-Error handling is now folded into the mcp_tool decorator. Tests for the new
-mcp_tool error-handling behavior live in tests/mcp/test_error_handling.py.
-
-This file retains envelope construction and serialization tests that belong
-in the moneybin unit test tree.
+Decorator-level error classification is covered in test_error_handling.py.
 """
 
 import json

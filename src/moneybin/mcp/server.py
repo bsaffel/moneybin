@@ -35,6 +35,15 @@ EXTENDED_DOMAINS: frozenset[str] = frozenset({
 })
 
 
+EXTENDED_DOMAIN_DESCRIPTIONS: dict[str, str] = {
+    "categorize": "Rules, merchant mappings, bulk categorization",
+    "budget": "Budget targets, status, rollovers",
+    "tax": "W-2 data, deductible expense search",
+    "privacy": "Consent status, grants, revocations, audit log",
+    "transactions.matches": "Match review workflow",
+}
+
+
 # Global server instance — tools/resources/prompts register against this
 mcp = FastMCP(
     "MoneyBin",
@@ -50,10 +59,14 @@ mcp = FastMCP(
         "Every tool returns {summary, data, actions}. Check summary.has_more "
         "for pagination and actions[] for suggested next steps."
     ),
-    mask_error_details=True,  # Per ADR-008: masks unclassified exceptions to a generic
-    # ToolError. Domain exceptions are caught by the mcp_tool decorator (Task 4) and
-    # converted to error envelopes before they reach the server boundary.
+    # mask_error_details wraps unclassified exceptions in a generic ToolError.
+    # Classified domain exceptions are caught by mcp_tool and returned as error
+    # envelopes before reaching this boundary.
+    mask_error_details=True,
 )
+
+
+_tools_registered = False
 
 
 def get_db() -> duckdb.DuckDBPyConnection:
@@ -123,12 +136,17 @@ def close_db() -> None:
 
 
 def register_core_tools() -> None:
-    """Register all MCP tools and install per-domain Visibility transforms.
+    """Register all MCP tools and install the extended-namespace visibility guard.
 
-    Tools tagged with an extended-namespace domain (categorize, budget, tax,
-    privacy, transactions.matches) are hidden globally by Visibility transforms
-    installed below. moneybin.discover re-enables them per-session.
+    Tools tagged with an extended-namespace domain are hidden globally by a
+    single Visibility transform; moneybin.discover re-enables them per-session.
+
+    Idempotent — safe to call multiple times within a process.
     """
+    global _tools_registered
+    if _tools_registered:
+        return
+
     from moneybin.mcp.tools.accounts import register_accounts_tools
     from moneybin.mcp.tools.budget import register_budget_tools
     from moneybin.mcp.tools.categorize import register_categorize_tools
@@ -149,10 +167,9 @@ def register_core_tools() -> None:
     register_sql_tools(mcp)
     register_discover_tool(mcp)
 
-    # Hide each extended namespace globally; sessions re-enable via discover.
-    for domain in EXTENDED_DOMAINS:
-        mcp.add_transform(Visibility(False, tags={domain}))
+    mcp.add_transform(Visibility(False, tags=set(EXTENDED_DOMAINS)))
 
+    _tools_registered = True
     logger.info(
         f"Registered tools; {len(EXTENDED_DOMAINS)} extended namespaces hidden by default"
     )

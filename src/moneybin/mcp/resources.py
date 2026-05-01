@@ -115,7 +115,7 @@ def resource_schema() -> str:
     return json.dumps({"tables": list(tables.values())}, indent=2, default=str)
 
 
-_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
+_CORE_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "overview": "Data status and financial health snapshot",
     "spending": "Expense analysis, trends, category breakdowns",
     "cashflow": "Income vs outflows, net cash position",
@@ -123,12 +123,15 @@ _NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "transactions": "Search, corrections, annotations, recurring",
     "import": "File import, status, format management",
     "sql": "Direct read-only SQL queries",
-    "categorize": "Rules, merchant mappings, bulk categorization",
-    "budget": "Budget targets, status, rollovers",
-    "tax": "W-2 data, deductible expense search",
-    "privacy": "Consent status, grants, revocations, audit log",
-    "transactions.matches": "Match review workflow",
 }
+
+
+def _description_for(ns: str) -> str:
+    from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS
+
+    return _CORE_NAMESPACE_DESCRIPTIONS.get(ns) or EXTENDED_DOMAIN_DESCRIPTIONS.get(
+        ns, ""
+    )
 
 
 def _namespace_for(tool_name: str) -> str:
@@ -176,7 +179,7 @@ async def resource_tools() -> str:
             "namespace": ns,
             "tools": namespaces.get(ns, 0),
             "loaded": ns not in EXTENDED_DOMAINS,
-            "description": _NAMESPACE_DESCRIPTIONS.get(ns, ""),
+            "description": _description_for(ns),
         }
         if ns in EXTENDED_DOMAINS:
             extended_list.append(entry)

@@ -1,8 +1,4 @@
-"""Per-session visibility tests for MCP tools.
-
-Replaces NamespaceRegistry-based progressive disclosure with fastmcp 3.x
-tag-based visibility transforms.
-"""
+"""Per-session visibility tests for MCP tools."""
 
 from __future__ import annotations
 
