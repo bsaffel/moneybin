@@ -108,3 +108,51 @@ class TestEnumeration:
         items = inbox_service.enumerate()
         assert items.would_process == []
         assert any(i["reason"] == "nested_subfolder" for i in items.ignored)
+
+
+class TestAtomicMove:
+    """move_to_outcome() moves files atomically with numeric-suffix collision handling."""
+
+    def test_move_to_dated_subdir(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        src = inbox_service.inbox_dir / "a.csv"
+        src.write_text("data\n")
+        final = inbox_service.move_to_outcome(
+            src, outcome="processed", year_month="2026-05"
+        )
+        assert final == inbox_service.processed_dir / "2026-05" / "a.csv"
+        assert final.read_text() == "data\n"
+        assert not src.exists()
+
+    def test_collision_appends_numeric_suffix(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        dest = inbox_service.processed_dir / "2026-05"
+        dest.mkdir(parents=True)
+        (dest / "a.csv").write_text("old\n")
+
+        src = inbox_service.inbox_dir / "a.csv"
+        src.write_text("new\n")
+        final = inbox_service.move_to_outcome(
+            src, outcome="processed", year_month="2026-05"
+        )
+        assert final.name == "a-1.csv"
+        assert final.read_text() == "new\n"
+
+    def test_collision_handles_no_extension(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        dest = inbox_service.processed_dir / "2026-05"
+        dest.mkdir(parents=True)
+        (dest / "README").write_text("old\n")
+
+        src = inbox_service.inbox_dir / "README"
+        src.write_text("new\n")
+        final = inbox_service.move_to_outcome(
+            src, outcome="processed", year_month="2026-05"
+        )
+        assert final.name == "README-1"

@@ -113,3 +113,37 @@ class InboxService:
                 self._classify(child, account_hint=entry.name, result=result)
             return
         result.ignored.append({"path": rel, "reason": "not_regular_file"})
+
+    _OUTCOME_DIRS = ("processed", "failed")
+
+    def move_to_outcome(
+        self,
+        src: Path,
+        *,
+        outcome: str,
+        year_month: str,
+    ) -> Path:
+        """Move ``src`` into the outcome's YYYY-MM bucket atomically."""
+        if outcome not in self._OUTCOME_DIRS:
+            raise ValueError(f"Unknown outcome: {outcome}")
+        dest_dir = self.root / outcome / year_month
+        dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+        dest_dir.chmod(_DIR_MODE)
+
+        final = self._next_available_path(dest_dir / src.name)
+        src.rename(final)
+        return final
+
+    @staticmethod
+    def _next_available_path(candidate: Path) -> Path:
+        """Append -1, -2, ... before the suffix until we find a free name."""
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        i = 1
+        while True:
+            attempt = candidate.with_name(f"{stem}-{i}{suffix}")
+            if not attempt.exists():
+                return attempt
+            i += 1
