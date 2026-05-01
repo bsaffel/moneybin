@@ -2,7 +2,7 @@
 
 import duckdb
 
-from moneybin.validation.assertions.distributional import (
+from moneybin.validation.assertions.distribution import (
     assert_distribution_within_bounds,
     assert_unique_value_count,
 )

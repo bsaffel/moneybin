@@ -1,7 +1,7 @@
 """Assertion primitives — every function returns AssertionResult, never raises on data failure."""
 
 from moneybin.validation.assertions.completeness import assert_no_nulls
-from moneybin.validation.assertions.distributional import (
+from moneybin.validation.assertions.distribution import (
     assert_distribution_within_bounds,
     assert_unique_value_count,
 )
