@@ -9,5 +9,7 @@ CREATE TABLE IF NOT EXISTS raw.ofx_balances (
     source_file VARCHAR, -- Path to the OFX/QFX file this record was loaded from; part of primary key
     extracted_at TIMESTAMP, -- Timestamp when the OFX file was parsed
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this record was inserted into the database
+    import_id VARCHAR, -- UUID of the import batch this row belongs to; NULL for rows imported before V003
+    source_type VARCHAR DEFAULT 'ofx', -- Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files
     PRIMARY KEY (account_id, statement_end_date, source_file)
 );

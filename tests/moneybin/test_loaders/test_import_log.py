@@ -66,6 +66,7 @@ class TestFinalizeImport:
             "FROM raw.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
+        assert row is not None
         assert row[0] == "complete"
         assert row[1] == 100
         assert row[2] is not None
@@ -78,9 +79,6 @@ class TestRevertImport:
         result = import_log.revert_import(db, "00000000-0000-0000-0000-000000000000")
         assert result["status"] == "not_found"
 
-    @pytest.mark.skip(
-        reason="depends on V003 migration in Task 3 (raw.ofx_transactions needs import_id column)"
-    )
     def test_reverts_ofx_batch(self, db: Database) -> None:
         # Setup: create import row + a single OFX transaction row.
         import_id = import_log.begin_import(
@@ -122,15 +120,13 @@ class TestRevertImport:
         assert result["status"] == "reverted"
         assert result["rows_deleted"] == 1
 
-        remaining = db.execute(
+        count_row = db.execute(
             "SELECT COUNT(*) FROM raw.ofx_transactions WHERE import_id = ?",
             [import_id],
-        ).fetchone()[0]
-        assert remaining == 0
+        ).fetchone()
+        assert count_row is not None
+        assert count_row[0] == 0
 
-    @pytest.mark.skip(
-        reason="depends on V003 migration in Task 3 (raw.ofx_transactions needs import_id column)"
-    )
     def test_already_reverted_returns_status(self, db: Database) -> None:
         import_id = import_log.begin_import(
             db,
@@ -168,9 +164,6 @@ class TestFindExistingImport:
         result = import_log.find_existing_import(db, "/tmp/once.ofx")  # noqa: S108  # test fixture path
         assert result == import_id
 
-    @pytest.mark.skip(
-        reason="depends on V003 migration in Task 3 (raw.ofx_transactions needs import_id column)"
-    )
     def test_skips_reverted_imports(self, db: Database) -> None:
         import_id = import_log.begin_import(
             db,
