@@ -1,10 +1,11 @@
 # src/moneybin/mcp/tools/import_tools.py
-"""Import namespace tools — file import, preview, status, format listing.
+"""Import namespace tools — file import, preview, status, revert, format listing.
 
 Tools:
     - import_file — Import a financial data file (low sensitivity)
     - import_csv_preview — Preview a tabular file without importing (low sensitivity)
     - import_status — List past import batches (low sensitivity)
+    - import_revert — Undo an import batch by import_id (low sensitivity)
     - import_list_formats — List available tabular import formats (low sensitivity)
 """
 
@@ -199,6 +200,41 @@ def import_status(
 
 
 @mcp_tool(sensitivity="low")
+def import_revert(import_id: str) -> ResponseEnvelope:
+    """Undo an import batch by deleting all rows it produced.
+
+    Looks up source_type from raw.import_log and deletes rows tagged with
+    import_id from the matching raw tables (raw.tabular_* or raw.ofx_*).
+    Updates the import_log row's status to 'reverted'.
+
+    Args:
+        import_id: UUID of the import batch to revert. Get it from
+            import.file's response or from import.status.
+    """
+    from moneybin.loaders import import_log
+
+    db = get_database()
+    result = import_log.revert_import(db, import_id)
+    status = result.get("status")
+
+    if status == "reverted":
+        return build_envelope(
+            data=result,
+            sensitivity="low",
+            actions=[
+                "Use import.status to confirm the batch shows status='reverted'",
+            ],
+        )
+    return build_error_envelope(
+        error=UserError(
+            str(result.get("reason") or f"Cannot revert (status={status})"),
+            code=f"revert_{status}",
+        ),
+        sensitivity="low",
+    )
+
+
+@mcp_tool(sensitivity="low")
 def import_list_formats() -> ResponseEnvelope:
     """List all available tabular import formats (built-in and user-saved).
 
@@ -263,6 +299,13 @@ def register_import_tools(mcp: FastMCP) -> None:
         import_status,
         "import_status",
         "List past import batches with status, row counts, and detection confidence.",
+    )
+    register(
+        mcp,
+        import_revert,
+        "import_revert",
+        "Undo an import batch by import_id (deletes the rows it produced and "
+        "marks the batch as reverted).",
     )
     register(
         mcp,
