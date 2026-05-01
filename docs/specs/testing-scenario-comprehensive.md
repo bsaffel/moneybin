@@ -201,7 +201,19 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 5. **Phase 5 — Tier 2/4 enrichment.** Add P/R breakdowns, ground-truth coverage, date continuity to applicable scenarios.
 6. **Phase 6 — Recipe + governance.** Ship `docs/guides/scenario-authoring.md` and CONTRIBUTING.md updates. Update `testing-overview.md` and `testing-scenario-runner.md` references.
 
-Each phase ships independently as its own PR. After Phase 6, this spec moves to `implemented` and becomes the binding architectural reference for all future scenario work.
+### PR Grouping (chosen 2026-04-30)
+
+The six phases ship as **three** PRs, not six — grouped by review-coherence rather than phase boundaries:
+
+| PR | Phases | Plan | Why grouped this way |
+|---|---|---|---|
+| **PR 1** | Phase 1 | [`docs/superpowers/plans/2026-04-30-scenario-relocation.md`](../superpowers/plans/2026-04-30-scenario-relocation.md) | Pure relocation — safe to plan in detail before any other PR exists. |
+| **PR 2** | Phases 2 + 3 + 4 | _written after PR 1 merges_ | Validation-library extract (P2) is the input to Tier 1 backfill (P3); the four new scenarios (P4) need both to be authored cleanly. Splitting them produces churn. |
+| **PR 3** | Phases 5 + 6 | _written after PR 2 merges_ | Tier 2/4 enrichment (P5) and the contributor recipe (P6) are the documentation/quality polish layer; they don't gate each other but neither blocks anything downstream. |
+
+Each plan is written only after the prior PR merges, so it grounds in the real post-merge file layout instead of a predicted one.
+
+After PR 3 merges, this spec moves to `implemented` and becomes the binding architectural reference for all future scenario work.
 
 ### Key Decisions
 
