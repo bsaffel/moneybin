@@ -298,6 +298,7 @@ class ImportService:
         """
         from moneybin.config import get_settings
         from moneybin.matching.priority import seed_source_priority
+        from moneybin.seeds import refresh_views
 
         logger.info("Running SQLMesh transforms")
 
@@ -305,6 +306,9 @@ class ImportService:
 
         with sqlmesh_context() as ctx:
             ctx.plan(auto_apply=True, no_prompts=True)
+
+        # Full plan rebuilds seeds.* too, so refresh the views that read them.
+        refresh_views(self._db)
 
         logger.info("SQLMesh transforms completed")
         return True

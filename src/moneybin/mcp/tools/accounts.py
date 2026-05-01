@@ -2,8 +2,8 @@
 """Accounts namespace tools — account listing and balances.
 
 Tools:
-    - accounts.list — List all accounts (low sensitivity)
-    - accounts.balances — Get latest account balances (medium sensitivity)
+    - accounts_list — List all accounts (low sensitivity)
+    - accounts_balances — Get latest account balances (medium sensitivity)
 """
 
 from __future__ import annotations
@@ -52,13 +52,13 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         accounts_list,
-        "accounts.list",
+        "accounts_list",
         "List all accounts in MoneyBin with type, institution, and source information.",
     )
     register(
         mcp,
         accounts_balances,
-        "accounts.balances",
+        "accounts_balances",
         "Get latest balance snapshot for each account. "
         "Optionally filter by account ID.",
     )

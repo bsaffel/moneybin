@@ -263,9 +263,10 @@ class TestTransformMutating:
 class TestCategorizeMutating:
     """Categorization commands that write to the database."""
 
-    def test_categorize_seed(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "catseed")
-        result = run_cli("categorize", "seed", env=env)
+    def test_transform_seed(self, tmp_path: Path) -> None:
+        """Seeds materialize via the transform command, not categorize."""
+        env = make_workflow_env(tmp_path, "transformseed")
+        result = run_cli("transform", "seed", env=env, timeout=180)
         result.assert_success()
 
     def test_categorize_apply_rules(self, tmp_path: Path) -> None:

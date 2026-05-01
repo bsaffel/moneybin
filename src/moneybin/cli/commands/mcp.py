@@ -9,6 +9,7 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
@@ -16,7 +17,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json
-from moneybin.config import get_base_dir
+from moneybin.config import find_repo_root
 from moneybin.mcp.server import mcp as mcp_server
 
 app = typer.Typer(help="MCP server for AI assistant integration", no_args_is_help=True)
@@ -125,19 +126,28 @@ def config_generate(
 
     resolved_profile = profile or get_current_profile()
 
-    server_entry: dict[str, Any] = {
-        "command": "uv",
-        "args": [
-            "run",
-            "--directory",
-            str(get_base_dir()),
-            "moneybin",
-            "--profile",
-            resolved_profile,
-            "mcp",
-            "serve",
-        ],
-    }
+    args: list[str] = ["run"]
+    env: dict[str, str] = {}
+
+    moneybin_home = os.getenv("MONEYBIN_HOME")
+    repo_root = find_repo_root()
+
+    if moneybin_home:
+        # Explicit override — pin the home so it survives the client's launch context.
+        env["MONEYBIN_HOME"] = str(Path(moneybin_home).expanduser().resolve())
+        if repo_root is not None:
+            args += ["--directory", str(repo_root)]
+    elif repo_root is not None:
+        # Repo checkout: anchor uv at the repo root so repo detection resolves
+        # the local .moneybin/ at server-launch time.
+        args += ["--directory", str(repo_root)]
+    # else: default ~/.moneybin/ — omit --directory; rely on a global install on PATH.
+
+    args += ["moneybin", "--profile", resolved_profile, "mcp", "serve"]
+
+    server_entry: dict[str, Any] = {"command": "uv", "args": args}
+    if env:
+        server_entry["env"] = env
 
     entry_name = (
         f"MoneyBin ({resolved_profile})"

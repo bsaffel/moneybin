@@ -479,6 +479,9 @@ class TestDbInitCommand:
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         mock_db = MagicMock()
         mocker.patch("moneybin.database.Database", return_value=mock_db)
+        # init_db calls materialize_seeds inside the with block; bypass real
+        # SQLMesh + view creation since Database itself is mocked here.
+        mocker.patch("moneybin.seeds.materialize_seeds")
         return mock_store, mock_db
 
     def test_init_auto_key_stores_key_and_creates_db(

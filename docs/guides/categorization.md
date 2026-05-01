@@ -58,12 +58,12 @@ Each merchant mapping specifies:
 All categorization operations support batch mode for efficient processing. These are designed for AI assistants that review and categorize many transactions in a single interaction turn.
 
 **Via MCP tools** (all batch-capable — single or many records per call):
-- `categorize.bulk` — categorize one or many transactions (auto-creates merchant mappings)
-- `categorize.create_rules` — create one or many categorization rules
-- `categorize.create_merchants` — create one or many merchant mappings
-- `categorize.delete_rule` — remove a rule
+- `categorize_bulk` — categorize one or many transactions (auto-creates merchant mappings)
+- `categorize_create_rules` — create one or many categorization rules
+- `categorize_create_merchants` — create one or many merchant mappings
+- `categorize_delete_rule` — remove a rule
 
-**Via CLI** — the `categorize.bulk` tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
+**Via CLI** — the `categorize_bulk` tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
 
 ```bash
 moneybin categorize bulk --input cats.json
@@ -84,7 +84,7 @@ moneybin categorize seed
 **Top-level categories include:** Food & Drink, Shopping, Travel, Transportation, Entertainment, Bills & Utilities, Health & Fitness, Personal Care, Education, Income, Transfer, and more.
 
 You can also:
-- **Create custom categories** via the `categorize.create_category` MCP tool
+- **Create custom categories** via the `categorize_create_category` MCP tool
 - **Toggle categories on/off** — disabled categories are hidden from the taxonomy but existing categorizations are preserved
 
 ## Auto-Rules
@@ -93,7 +93,7 @@ MoneyBin learns categorization patterns from how you (or your AI assistant) cate
 
 ### How learning works
 
-Every time `categorize.bulk` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
+Every time `categorize_bulk` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
 
 | Term | Meaning |
 |---|---|
@@ -154,7 +154,7 @@ You'll see the new proposal in `auto-review`. Approve it to install the correcte
 
 ### What patterns get proposed
 
-The proposal pattern comes from the merchant resolution that already happens during `categorize.bulk`:
+The proposal pattern comes from the merchant resolution that already happens during `categorize_bulk`:
 
 - **If the transaction matched an existing merchant** — the merchant's `raw_pattern` and `match_type` are used (e.g., `AMZN` / `exact`). This is the precise substring that matches statement descriptions, not the canonical display name.
 - **If no merchant matched** — the cleaned-up description with `match_type='contains'` is used as a fallback.
@@ -163,7 +163,7 @@ A proposal is suppressed when an active rule or merchant mapping already produce
 
 ## Typical Workflow
 
-1. **Import data** — `moneybin import file transactions.csv`
+1. **Import data** — `moneybin import file transactions_csv`
 2. **Seed categories** — `moneybin categorize seed` (first time only)
 3. **Apply existing rules** — `moneybin categorize apply-rules`
 4. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions"*

@@ -61,8 +61,9 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 moneybin import file path/to/checking.qfx     # OFX/QFX
-moneybin import file path/to/transactions.csv # CSV/TSV/Excel/Parquet/Feather
+moneybin import file path/to/transactions_csv # CSV/TSV/Excel/Parquet/Feather
 moneybin import file path/to/w2.pdf           # W-2 PDF
+moneybin import inbox                         # drain ~/Documents/MoneyBin/<profile>/inbox/
 moneybin import status
 
 moneybin mcp config generate --client claude-desktop --install
@@ -81,6 +82,7 @@ Once connected, ask things like:
 | Capability | Guide |
 |---|---|
 | Import: OFX/QFX, CSV/TSV/Excel/Parquet/Feather, W-2 PDF; heuristic column detection; migration profiles (Tiller, Mint, YNAB, Maybe) | [Data Import](docs/guides/data-import.md) |
+| Watched inbox: drop files in `~/Documents/MoneyBin/<profile>/inbox/` (or `inbox/<account-slug>/` for single-account files), `moneybin import inbox` drains them — successes move to `processed/YYYY-MM/`, failures to `failed/YYYY-MM/` with a YAML error sidecar. Same surface via `import_inbox_sync` MCP tool. | [Smart Import Inbox](docs/specs/smart-import-inbox.md) |
 | Three-layer SQL pipeline: raw → staging → core, multi-source union, source-agnostic consumers | [Data Pipeline](docs/guides/data-pipeline.md) |
 | Cross-source dedup, transfer detection, golden-record merge, review/undo workflow | [Data Pipeline](docs/guides/data-pipeline.md) · [matching specs](docs/specs/matching-overview.md) |
 | Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits | [Categorization](docs/guides/categorization.md) |
@@ -99,7 +101,7 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 
 | Area | Status |
 |---|---|
-| OFX/QFX, tabular (CSV/TSV/Excel/Parquet/Feather), W-2 PDF import; competitor migration profiles | ✅ |
+| OFX/QFX, tabular (CSV/TSV/Excel/Parquet/Feather), W-2 PDF import; competitor migration profiles; watched-folder inbox | ✅ |
 | Cross-source dedup, transfer detection, golden-record merge | ✅ |
 | Rule engine + merchant normalization + auto-rule generation | ✅ |
 | Encryption at rest, key management, multi-profile, schema migrations, observability | ✅ |

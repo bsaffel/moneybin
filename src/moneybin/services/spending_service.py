@@ -55,7 +55,7 @@ class SpendingSummary:
             sensitivity="low",
             period=self.period_label,
             actions=[
-                "Use spending.by_category for category breakdown",
+                "Use spending_by_category for category breakdown",
                 "Use spending.compare to compare periods",
             ],
         )
@@ -99,7 +99,7 @@ class CategoryBreakdown:
             period=self.period_label,
             actions=[
                 "Use spending.merchants for merchant-level breakdown",
-                "Use transactions.search to see individual transactions in a category",
+                "Use transactions_search to see individual transactions in a category",
             ],
         )
 

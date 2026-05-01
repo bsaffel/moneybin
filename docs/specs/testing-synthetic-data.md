@@ -158,7 +158,7 @@ src/moneybin/testing/synthetic/
 │   ├── __init__.py
 │   ├── income.py          # Salary, freelance invoices
 │   ├── recurring.py       # Rent, subscriptions, insurance
-│   ├── spending.py        # Discretionary by category
+│   ├── spending_py        # Discretionary by category
 │   └── transfers.py       # Account-to-account moves
 ├── models.py              # Pydantic models for persona/merchant YAML schemas
 ├── writer.py              # Raw table writer + synthetic.ground_truth writer
@@ -869,7 +869,7 @@ The spec template (`_template.md`) includes this as an optional section. See
 | `src/moneybin/testing/synthetic/generators/__init__.py` | Generator package init |
 | `src/moneybin/testing/synthetic/generators/income.py` | Income generation |
 | `src/moneybin/testing/synthetic/generators/recurring.py` | Recurring charge generation |
-| `src/moneybin/testing/synthetic/generators/spending.py` | Discretionary spending generation |
+| `src/moneybin/testing/synthetic/generators/spending_py` | Discretionary spending generation |
 | `src/moneybin/testing/synthetic/generators/transfers.py` | Transfer pair generation |
 | `src/moneybin/testing/synthetic/data/personas/*.yaml` | Three persona definitions |
 | `src/moneybin/testing/synthetic/data/merchants/*.yaml` | ~14 merchant catalogs |

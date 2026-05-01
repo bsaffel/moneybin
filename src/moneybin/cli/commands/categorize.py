@@ -51,20 +51,6 @@ def apply_rules_cmd() -> None:
             )
 
 
-@app.command("seed")
-def seed_cmd() -> None:
-    """Initialize default categories from Plaid PFCv2 taxonomy.
-
-    Requires SQLMesh transforms to have been run at least once.
-    Safe to run multiple times — existing categories are not overwritten.
-    """
-    from moneybin.services.categorization_service import CategorizationService
-
-    with handle_cli_errors() as db:
-        count = CategorizationService(db).seed()
-        logger.info(f"\u2705 Seeded {count} new categories")
-
-
 @app.command("summary")
 def summary_cmd(
     output: OutputFormat = output_option,

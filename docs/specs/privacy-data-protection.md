@@ -302,7 +302,7 @@ class DatabaseConfig(BaseModel):
 - `src/moneybin/services/*.py` — all other services follow the same contract
 - `src/moneybin/mcp/server.py` — replace connection management
   (`refresh_read_connection`, `get_write_connection`) with `get_database()`
-- `src/moneybin/cli/commands/categorize.py` — replace `duckdb.connect()` calls
+- `src/moneybin/cli/commands/categorize_py` — replace `duckdb.connect()` calls
 - `src/moneybin/cli/commands/import_cmd.py` — replace `duckdb.connect()` calls
 - `src/moneybin/logging_config.py` (or wherever logging is configured) — wire in
   `SanitizedLogFormatter`

@@ -1,12 +1,17 @@
-/* Spending category definitions; seeded from Plaid PFCv2 taxonomy and extended with user-defined categories */
-CREATE TABLE IF NOT EXISTS app.categories (
-    category_id VARCHAR PRIMARY KEY, -- Short mnemonic code for seed categories (e.g. INC-SAL); UUID hex for user-created categories
-    category VARCHAR NOT NULL, -- Top-level spending category name, e.g. Food and Drink
-    subcategory VARCHAR, -- Subcategory within the parent category, e.g. Coffee; NULL for top-level-only entries
+/* User-created spending categories. Seed defaults live in seeds.categories (managed by SQLMesh) and are exposed alongside these via the app.categories view */
+CREATE TABLE IF NOT EXISTS app.user_categories (
+    category_id VARCHAR PRIMARY KEY, -- 12-char UUID hex assigned at creation
+    category VARCHAR NOT NULL, -- Top-level spending category name
+    subcategory VARCHAR, -- Subcategory within the parent category; NULL for top-level-only entries
     description VARCHAR, -- Human-readable description of what transactions belong in this category
-    is_default BOOLEAN DEFAULT false, -- True for categories seeded from Plaid PFCv2 taxonomy; false for user-defined categories
-    is_active BOOLEAN DEFAULT true, -- False for categories that have been soft-deleted or disabled
-    plaid_detailed VARCHAR, -- Corresponding Plaid PFCv2 detailed category name; NULL for user-defined categories
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this category was added to the table
+    is_active BOOLEAN DEFAULT true, -- False to soft-delete a user category without losing existing categorizations
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this category was added
     UNIQUE (category, subcategory)
+);
+
+/* User overrides on default (seeded) categories — the only mutation users can make to defaults is deactivation */
+CREATE TABLE IF NOT EXISTS app.category_overrides (
+    category_id VARCHAR PRIMARY KEY, -- Matches seeds.categories.category_id
+    is_active BOOLEAN NOT NULL, -- False to hide a default category from the taxonomy
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp when this override was last changed
 );

@@ -39,6 +39,14 @@ def _is_moneybin_repo(path: Path) -> bool:
         return False
 
 
+def find_repo_root() -> Path | None:
+    """Return the moneybin repo root if CWD is a repo checkout, else None."""
+    cwd = Path.cwd()
+    if _is_moneybin_repo(cwd):
+        return cwd.resolve()
+    return None
+
+
 def get_base_dir() -> Path:
     """Determine the base directory for MoneyBin data and configuration.
 
@@ -228,6 +236,16 @@ class MCPConfig(BaseModel):
         description=(
             "Optional allowlist of fully-qualified table names the query tool may access "
             '(e.g. ["core.fct_transactions"]). None means all tables are permitted.'
+        ),
+    )
+    progressive_disclosure: bool = Field(
+        default=False,
+        description=(
+            "Hide extended-namespace tools (categorize, budget, tax) at connect "
+            "and reveal per-session via moneybin_discover. Requires the client "
+            "to honor notifications/tools/list_changed — Claude Desktop's "
+            "support is unreliable, so this defaults off and every tool is "
+            "visible at connect."
         ),
     )
 

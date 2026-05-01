@@ -26,7 +26,7 @@ Make the MCP server the **primary** interface, with the data toolkit (DuckDB SQL
 - This allows other processes (CLI, notebooks, other MCP instances) to read the database concurrently
 - Reads from **core schema only** (`dim_accounts`, `fct_transactions`, etc.)
 - Uses `TableRef` constants for table references, never hardcoded strings
-- Uses dot-separated namespaces per MCP SEP-986 (e.g., `spending.monthly_summary`)
+- Uses dot-separated namespaces per MCP SEP-986 (e.g., `spending_monthly_summary`)
 
 ### Privacy controls
 

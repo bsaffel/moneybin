@@ -12,7 +12,6 @@ from fastmcp import FastMCP
 
 from moneybin.mcp.tools.categorize import (
     categorize_categories,
-    categorize_seed,
     categorize_stats,
     register_categorize_tools,
 )
@@ -32,18 +31,17 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     def test_all_categorize_tools_register(self) -> None:
         names = _registered_names()
-        assert "categorize.categories" in names
-        assert "categorize.rules" in names
-        assert "categorize.merchants" in names
-        assert "categorize.stats" in names
-        assert "categorize.uncategorized" in names
-        assert "categorize.bulk" in names
-        assert "categorize.create_rules" in names
-        assert "categorize.delete_rule" in names
-        assert "categorize.create_merchants" in names
-        assert "categorize.create_category" in names
-        assert "categorize.toggle_category" in names
-        assert "categorize.seed" in names
+        assert "categorize_categories" in names
+        assert "categorize_rules" in names
+        assert "categorize_merchants" in names
+        assert "categorize_stats" in names
+        assert "categorize_uncategorized" in names
+        assert "categorize_bulk" in names
+        assert "categorize_create_rules" in names
+        assert "categorize_delete_rule" in names
+        assert "categorize_create_merchants" in names
+        assert "categorize_create_category" in names
+        assert "categorize_toggle_category" in names
 
     @pytest.mark.unit
     def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
@@ -51,19 +49,6 @@ class TestCategorizeToolRegistration:
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
-
-    @pytest.mark.unit
-    def test_categorize_seed_returns_envelope(self, mcp_db: object) -> None:
-        """Seed materializes the SQLMesh seed table and seeds categories.
-
-        ``ensure_seed_table`` runs a targeted SQLMesh plan to create
-        ``seeds.categories`` before seeding, so this succeeds even
-        without a prior ``sqlmesh apply``.
-        """
-        seed_result = categorize_seed().to_dict()
-        assert "summary" in seed_result
-        assert "data" in seed_result
-        assert "seeded_count" in seed_result["data"]
 
     @pytest.mark.unit
     def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:
@@ -77,7 +62,7 @@ class TestCategorizeToolRegistration:
     def test_register_includes_auto_rule_tools(self) -> None:
         names = _registered_names()
         assert {
-            "categorize.auto_review",
-            "categorize.auto_confirm",
-            "categorize.auto_stats",
+            "categorize_auto_review",
+            "categorize_auto_confirm",
+            "categorize_auto_stats",
         } <= names

@@ -1,4 +1,4 @@
-"""moneybin.discover — per-session progressive disclosure via tag enablement."""
+"""moneybin_discover — per-session progressive disclosure via tag enablement."""
 
 from __future__ import annotations
 
@@ -56,12 +56,12 @@ async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
 
 
 def register_discover_tool(mcp: FastMCP) -> None:
-    """Register moneybin.discover with the server (always visible — no domain tag)."""
+    """Register moneybin_discover with the server (always visible — no domain tag)."""
     from moneybin.mcp.server import EXTENDED_DOMAINS
 
     domains = ", ".join(sorted(EXTENDED_DOMAINS))
     mcp.tool(
-        name="moneybin.discover",
+        name="moneybin_discover",
         description=(
             f"Reveal tools from an extended namespace ({domains}) "
             "for the current session."

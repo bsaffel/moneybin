@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Extended-namespace domains. Each tool tagged with one of these starts hidden
 # by the Visibility transform installed in register_core_tools() and is
-# re-enabled per-session via moneybin.discover.
+# re-enabled per-session via moneybin_discover.
 EXTENDED_DOMAIN_DESCRIPTIONS: dict[str, str] = {
     "categorize": "Rules, merchant mappings, bulk categorization",
     "budget": "Budget targets, status, rollovers",
@@ -42,11 +42,11 @@ mcp = FastMCP(
     "MoneyBin",
     instructions=(
         "MoneyBin is an AI-powered personal finance app. Tools use "
-        "dot-separated namespaces (spending.summary, accounts.balances, etc.). "
+        "dot-separated namespaces (spending_summary, accounts_balances, etc.). "
         "Core tools are available immediately. Extended namespaces "
         "(categorize, budget, tax, privacy) can be loaded with "
-        "moneybin.discover. All data stays local in DuckDB.\n\n"
-        "IMPORTANT: Prefer bulk tools (categorize.bulk, categorize.create_rules) "
+        "moneybin_discover. All data stays local in DuckDB.\n\n"
+        "IMPORTANT: Prefer bulk tools (categorize_bulk, categorize_create_rules) "
         "over single-item operations. Fetch a batch, reason about all items, "
         "then submit in one call.\n\n"
         "Every tool returns {summary, data, actions}. Check summary.has_more "
@@ -132,7 +132,7 @@ def register_core_tools() -> None:
     """Register all MCP tools and install the extended-namespace visibility guard.
 
     Tools tagged with an extended-namespace domain are hidden globally by a
-    single Visibility transform; moneybin.discover re-enables them per-session.
+    single Visibility transform; moneybin_discover re-enables them per-session.
 
     Idempotent — safe to call multiple times within a process.
     """
@@ -160,14 +160,21 @@ def register_core_tools() -> None:
     register_sql_tools(mcp)
     register_discover_tool(mcp)
 
-    # Single Visibility transform with OR-match semantics across all extended
-    # domains: a tool tagged with ANY of these tags is hidden until enabled by
-    # moneybin.discover. Verified against fastmcp 3.1.x; see
-    # tests/moneybin/test_mcp/test_visibility.py::test_visibility_or_match_semantics
-    # which guards against an upstream change to AND-match.
-    mcp.add_transform(Visibility(False, tags=set(EXTENDED_DOMAINS)))
+    from moneybin.config import get_settings
+
+    if get_settings().mcp.progressive_disclosure:
+        # Single Visibility transform with OR-match semantics across all extended
+        # domains: a tool tagged with ANY of these tags is hidden until enabled by
+        # moneybin_discover. Verified against fastmcp 3.1.x; see
+        # tests/moneybin/test_mcp/test_visibility.py::test_visibility_or_match_semantics
+        # which guards against an upstream change to AND-match.
+        mcp.add_transform(Visibility(False, tags=set(EXTENDED_DOMAINS)))
+        logger.info(
+            f"Registered tools; {len(EXTENDED_DOMAINS)} extended namespaces hidden by default"
+        )
+    else:
+        logger.info(
+            "Registered tools; progressive disclosure disabled — all namespaces visible"
+        )
 
     _tools_registered = True
-    logger.info(
-        f"Registered tools; {len(EXTENDED_DOMAINS)} extended namespaces hidden by default"
-    )

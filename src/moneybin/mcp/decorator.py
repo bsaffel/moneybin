@@ -48,7 +48,7 @@ def mcp_tool(
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool with a sensitivity tier and optional domain.
 
-    Tools with a ``domain`` start hidden; ``moneybin.discover`` enables them
+    Tools with a ``domain`` start hidden; ``moneybin_discover`` enables them
     per-session via FastMCP tag visibility.
     """
     tier = Sensitivity(sensitivity)
