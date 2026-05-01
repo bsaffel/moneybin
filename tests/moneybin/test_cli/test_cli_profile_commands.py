@@ -17,11 +17,30 @@ class TestProfileCreate:
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_success(self, mock_cls: MagicMock) -> None:
+        """Non-TTY default: init_inbox=False (safe for scripts)."""
         mock_svc = mock_cls.return_value
         mock_svc.create.return_value = Path("/fake/profiles/alice")
         result = runner.invoke(app, ["create", "alice"])
         assert result.exit_code == 0
-        mock_svc.create.assert_called_once_with("alice")
+        mock_svc.create.assert_called_once_with("alice", init_inbox=False)
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_with_init_inbox_flag(self, mock_cls: MagicMock) -> None:
+        """--init-inbox forwards init_inbox=True to the service."""
+        mock_svc = mock_cls.return_value
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+        result = runner.invoke(app, ["create", "alice", "--init-inbox"])
+        assert result.exit_code == 0
+        mock_svc.create.assert_called_once_with("alice", init_inbox=True)
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_with_no_init_inbox_flag(self, mock_cls: MagicMock) -> None:
+        """--no-init-inbox forwards init_inbox=False explicitly."""
+        mock_svc = mock_cls.return_value
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+        result = runner.invoke(app, ["create", "alice", "--no-init-inbox"])
+        assert result.exit_code == 0
+        mock_svc.create.assert_called_once_with("alice", init_inbox=False)
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_duplicate_fails(self, mock_cls: MagicMock) -> None:

@@ -56,6 +56,30 @@ class TestProfileCreate:
         svc.create("Alice Work")
         assert (tmp_path / "profiles" / "alice-work").exists()
 
+    def test_create_with_init_inbox_creates_layout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """init_inbox=True provisions <inbox_root>/<profile>/{inbox,...}."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        # Redirect the inbox root away from the user's real ~/Documents.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice", init_inbox=True)
+        inbox_root = tmp_path / "Documents" / "MoneyBin" / "alice"
+        assert (inbox_root / "inbox").is_dir()
+        assert (inbox_root / "processed").is_dir()
+        assert (inbox_root / "failed").is_dir()
+
+    def test_create_without_init_inbox_skips_layout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default (init_inbox=False) does not create the inbox tree."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        assert not (tmp_path / "Documents" / "MoneyBin" / "alice").exists()
+
     def test_create_rolls_back_on_db_init_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
