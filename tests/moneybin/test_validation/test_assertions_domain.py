@@ -240,6 +240,21 @@ def test_date_bounds_fails_above_max(db: Database) -> None:
     assert r.details["above_max_count"] == 1
 
 
+def test_date_bounds_fails_when_nulls_present(db: Database) -> None:
+    """NULL values count as out-of-bounds — they cannot be verified in window."""
+    db.execute("CREATE TABLE t (d DATE)")
+    db.execute("INSERT INTO t VALUES ('2024-06-15'), (NULL)")
+    r = assert_date_bounds(
+        db,
+        table="t",
+        column="d",
+        min_date=date(2024, 1, 1),
+        max_date=date(2024, 12, 31),
+    )
+    assert not r.passed
+    assert r.details["null_count"] == 1
+
+
 def test_date_bounds_passes_for_empty_table(db: Database) -> None:
     db.execute("CREATE TABLE t (d DATE)")
     r = assert_date_bounds(

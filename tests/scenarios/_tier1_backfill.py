@@ -91,9 +91,9 @@ def date_window_for(setup: SetupSpec) -> tuple[date, date]:
     """Return the calendar window the synthetic generator targets.
 
     Mirrors ``GeneratorEngine``'s logic: N complete calendar years ending at
-    ``current_year - 1``. We pad one day on each side to absorb date-arithmetic
-    rounding (none expected — the generator uses calendar dates directly —
-    but cheap insurance against off-by-one bugs in the assertion itself).
+    ``current_year - 1``. Returns the exact ``(Jan 1 start_year, Dec 31 end_year)``
+    boundaries — the generator emits calendar dates directly, so no padding
+    is required.
     """
     today = date.today()
     end_year = today.year - 1

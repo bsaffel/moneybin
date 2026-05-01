@@ -55,11 +55,11 @@ def assert_incremental_safe(
     for t in tables:
         if after_a[t] != expected_a_count.get(t):
             failures.append(
-                f"{t} after-A: expected {expected_a_count[t]}, got {after_a[t]}"
+                f"{t} after-A: expected {expected_a_count.get(t)!r}, got {after_a[t]}"
             )
         if after_b[t] != expected_b_count.get(t):
             failures.append(
-                f"{t} after-B: expected {expected_b_count[t]}, got {after_b[t]}"
+                f"{t} after-B: expected {expected_b_count.get(t)!r}, got {after_b[t]}"
             )
     return AssertionResult(
         name="incremental_safe",

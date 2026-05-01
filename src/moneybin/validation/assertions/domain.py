@@ -123,8 +123,9 @@ def assert_date_bounds(
 ) -> AssertionResult:
     """Assert every ``column`` value falls within ``[min_date, max_date]`` inclusive.
 
-    Empty tables pass — there are no out-of-range rows to find. Authors who
-    require non-empty input should pair this with ``assert_min_rows``.
+    NULL values count as out-of-bounds — a missing date cannot be verified to
+    fall within the window, and silently accepting NULLs would mask broken
+    date extraction. Empty tables still pass (no rows to violate).
     """
     if min_date > max_date:
         raise ValueError(f"min_date {min_date} must be <= max_date {max_date}")
@@ -134,17 +135,19 @@ def assert_date_bounds(
         f"SELECT "  # noqa: S608  # identifiers validated by quote_ident
         f"  SUM(CASE WHEN {c} < ? THEN 1 ELSE 0 END), "
         f"  SUM(CASE WHEN {c} > ? THEN 1 ELSE 0 END), "
+        f"  SUM(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END), "
         f"  MIN({c}), MAX({c}) "
         f"FROM {t}",
         [min_date, max_date],
     ).fetchone()
     below = int(row[0]) if row and row[0] is not None else 0
     above = int(row[1]) if row and row[1] is not None else 0
-    observed_min = row[2] if row else None
-    observed_max = row[3] if row else None
+    null_count = int(row[2]) if row and row[2] is not None else 0
+    observed_min = row[3] if row else None
+    observed_max = row[4] if row else None
     return AssertionResult(
         name="date_bounds",
-        passed=below == 0 and above == 0,
+        passed=below == 0 and above == 0 and null_count == 0,
         details={
             "min_date": min_date.isoformat(),
             "max_date": max_date.isoformat(),
@@ -152,5 +155,6 @@ def assert_date_bounds(
             "observed_max": observed_max.isoformat() if observed_max else None,
             "below_min_count": below,
             "above_max_count": above,
+            "null_count": null_count,
         },
     )

@@ -26,11 +26,11 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
 
 @pytest.fixture()
 def src_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
-    """Provide a test Database with a source_system table."""
+    """Provide a test Database with a ``source_type`` column (the assertion default)."""
     database = Database(
         tmp_path / "src.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
     )
-    database.execute("CREATE TABLE t (id INT, source_system VARCHAR)")
+    database.execute("CREATE TABLE t (id INT, source_type VARCHAR)")
     return database
 
 

@@ -37,9 +37,13 @@ def assert_source_system_populated(
     *,
     table: str,
     expected_sources: Iterable[str],
-    column: str = "source_system",
+    column: str = "source_type",
 ) -> AssertionResult:
     """Assert ``column`` is non-null on every row and all values are in ``expected_sources``.
+
+    Default column is ``source_type`` to match ``core.fct_transactions``'s
+    canonical schema; pass ``column=`` for staging tables that use a different
+    name.
 
     ``expected_sources`` accepts any iterable of strings (set, frozenset, list,
     tuple) so YAML scenarios — which deserialize as lists — can call this
