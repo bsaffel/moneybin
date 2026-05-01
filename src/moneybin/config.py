@@ -40,7 +40,12 @@ def _is_moneybin_repo(path: Path) -> bool:
 
 
 def find_repo_root() -> Path | None:
-    """Return the moneybin repo root if CWD is a repo checkout, else None."""
+    """Return the moneybin repo root if CWD *is* the repo root, else None.
+
+    Only the exact CWD is checked — no parent traversal. Calling from a
+    subdirectory of the repo (e.g. ``src/``) returns None. Mirrors the
+    contract used by ``get_base_dir()``'s repo-detection branch.
+    """
     cwd = Path.cwd()
     if _is_moneybin_repo(cwd):
         return cwd.resolve()

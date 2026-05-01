@@ -1238,5 +1238,3 @@ These tools can be fully implemented with the current codebase and existing infr
 **`sql.*`**: `query`
 
 This is a 34-tool surface (33 domain tools + `moneybin_discover`) that can ship independently of any pending spec work. With progressive disclosure, the AI sees ~19 core tools at connection time plus `moneybin_discover`; extended namespaces load on demand.
-
-This is a 33-tool surface that can ship independently of any pending spec work.

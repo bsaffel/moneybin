@@ -134,7 +134,7 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 
 - **Noun = query.** `spending_summary`, `accounts_balances`, `categorize_rules` — returns data.
 - **Verb = action.** `categorize_bulk`, `transactions_correct`, `import_file` — mutates state.
-- **Underscore separator.** `spending_summary`, `categorize_bulk`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (`spending_summary`), and that was the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
+- **Underscore separator.** `spending_summary`, `categorize_bulk`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `spending.summary`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
 
 ### Progressive disclosure via per-session visibility
 

@@ -82,7 +82,7 @@ Once connected, ask things like:
 | Capability | Guide |
 |---|---|
 | Import: OFX/QFX, CSV/TSV/Excel/Parquet/Feather, W-2 PDF; heuristic column detection; migration profiles (Tiller, Mint, YNAB, Maybe) | [Data Import](docs/guides/data-import.md) |
-| Watched inbox: drop files in `~/Documents/MoneyBin/<profile>/inbox/` (or `inbox/<account-slug>/` for single-account files), `moneybin import inbox` drains them — successes move to `processed/YYYY-MM/`, failures to `failed/YYYY-MM/` with a YAML error sidecar. Same surface via `import_inbox_sync` MCP tool. | [Smart Import Inbox](docs/specs/smart-import-inbox.md) |
+| Watched inbox: drop files in `~/Documents/MoneyBin/<profile>/inbox/` (or `inbox/<account-slug>/` for single-account files), `moneybin import inbox` drains them — successes move to `processed/YYYY-MM/`, failures to `failed/YYYY-MM/` with a YAML error sidecar. | [Smart Import Inbox](docs/specs/smart-import-inbox.md) |
 | Three-layer SQL pipeline: raw → staging → core, multi-source union, source-agnostic consumers | [Data Pipeline](docs/guides/data-pipeline.md) |
 | Cross-source dedup, transfer detection, golden-record merge, review/undo workflow | [Data Pipeline](docs/guides/data-pipeline.md) · [matching specs](docs/specs/matching-overview.md) |
 | Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits | [Categorization](docs/guides/categorization.md) |
