@@ -1,7 +1,8 @@
 """Tests for the scenario YAML loader."""
 
 import pytest
-from moneybin.testing.scenarios.loader import (
+
+from tests.scenarios._runner.loader import (
     Scenario,
     ScenarioValidationError,
     list_shipped_scenarios,
