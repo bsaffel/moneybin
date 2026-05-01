@@ -1,12 +1,13 @@
 # tests/moneybin/test_mcp/test_v1_tools.py
-"""Tests for v1 MCP tools."""
+"""Tests for v1 MCP tools.
 
-import json
+These tests exercise the underlying tool functions directly. Registration
+with the FastMCP server is covered by tests/mcp/test_visibility.py.
+"""
 
 import pytest
 
-from moneybin.mcp.namespaces import NamespaceRegistry
-from moneybin.mcp.tools.spending import register_spending_tools
+from moneybin.mcp.tools.spending import spending_summary
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -35,13 +36,11 @@ class TestSpendingSummaryTool:
     @pytest.mark.unit
     def test_returns_envelope(self, mcp_db: object) -> None:
         self._insert_data(mcp_db)
-        registry = NamespaceRegistry()
-        tools = register_spending_tools(registry)
-        # Find spending.summary
-        summary_tool = next(t for t in tools if t.name == "spending.summary")
-        result = summary_tool.fn(months=3)
-        assert isinstance(result, str)
-        parsed = json.loads(result)
+        result = spending_summary(months=3)
+        from moneybin.protocol.envelope import ResponseEnvelope
+
+        assert isinstance(result, ResponseEnvelope)
+        parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert "actions" in parsed
@@ -50,10 +49,7 @@ class TestSpendingSummaryTool:
     @pytest.mark.unit
     def test_data_shape(self, mcp_db: object) -> None:
         self._insert_data(mcp_db)
-        registry = NamespaceRegistry()
-        tools = register_spending_tools(registry)
-        summary_tool = next(t for t in tools if t.name == "spending.summary")
-        parsed = json.loads(summary_tool.fn(months=3))
+        parsed = spending_summary(months=3).to_dict()
         data = parsed["data"]
         assert len(data) >= 1
         assert "period" in data[0]

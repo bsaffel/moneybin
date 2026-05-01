@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import logging
 
+from fastmcp import FastMCP
+
 from moneybin.database import get_database
+from moneybin.mcp._registration import tags_for
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.tax_service import TaxService
 
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="high")
+@mcp_tool(sensitivity="high", domain="tax")
 def tax_w2(
     tax_year: int | None = None,
 ) -> ResponseEnvelope:
@@ -36,18 +38,13 @@ def tax_w2(
     return result.to_envelope()
 
 
-def register_tax_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:
-    """Register all tax namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="tax.w2",
-            description=(
-                "Retrieve W-2 form data (wages, taxes, deductions). "
-                "PII fields (SSN, EIN) are excluded."
-            ),
-            fn=tax_w2,
+def register_tax_tools(mcp: FastMCP) -> None:
+    """Register all tax namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="tax.w2",
+        description=(
+            "Retrieve W-2 form data (wages, taxes, deductions). "
+            "PII fields (SSN, EIN) are excluded."
         ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(tax_w2),
+    )(tax_w2)

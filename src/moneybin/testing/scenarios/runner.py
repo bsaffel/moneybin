@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from moneybin.database import Database, close_database, get_database
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.testing.scenarios.expectations import (
     ExpectationResult,
     verify_expectations,

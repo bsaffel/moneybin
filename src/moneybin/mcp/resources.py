@@ -115,13 +115,80 @@ def resource_schema() -> str:
     return json.dumps({"tables": list(tables.values())}, indent=2, default=str)
 
 
-@mcp.resource("moneybin://tools")
-def resource_tools() -> str:
-    """Available tool namespaces with descriptions and loaded status."""
-    logger.info("Resource read: moneybin://tools")
-    from moneybin.mcp.namespaces import CORE_NAMESPACES_DEFAULT
-    from moneybin.mcp.server import get_registry
+_CORE_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
+    "overview": "Data status and financial health snapshot",
+    "spending": "Expense analysis, trends, category breakdowns",
+    "cashflow": "Income vs outflows, net cash position",
+    "accounts": "Account listing, balances, net worth",
+    "transactions": "Search, corrections, annotations, recurring",
+    "import": "File import, status, format management",
+    "sql": "Direct read-only SQL queries",
+}
 
-    registry = get_registry()
-    data = registry.tools_resource_data(CORE_NAMESPACES_DEFAULT)
+
+def _description_for(ns: str) -> str:
+    from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS
+
+    return _CORE_NAMESPACE_DESCRIPTIONS.get(ns) or EXTENDED_DOMAIN_DESCRIPTIONS.get(
+        ns, ""
+    )
+
+
+def _namespace_for(tool_name: str) -> str:
+    """Extract the namespace from a dot-separated tool name.
+
+    For ``transactions.matches.pending`` returns ``transactions.matches``.
+    For ``spending.summary`` returns ``spending``.
+    """
+    parts = tool_name.rsplit(".", 1)
+    return parts[0] if len(parts) == 2 else tool_name
+
+
+@mcp.resource("moneybin://tools")
+async def resource_tools() -> str:
+    """Available tool namespaces with descriptions and loaded status.
+
+    "Loaded" here means visible by default — i.e. the namespace is not in
+    ``EXTENDED_DOMAINS``. Extended namespaces are hidden globally and only
+    enabled per-session via ``moneybin.discover``.
+    """
+    logger.info("Resource read: moneybin://tools")
+    from moneybin.mcp.server import EXTENDED_DOMAINS
+
+    # Use the unfiltered provider listing so hidden (extended-domain) tools
+    # are still counted in their namespace summary.
+    tools = await mcp._list_tools()  # noqa: SLF001 — public API filters by visibility  # pyright: ignore[reportPrivateUsage]
+
+    # Group registered tools by namespace. ``moneybin.discover`` is the
+    # meta-tool — tracked separately so it doesn't appear under "core".
+    namespaces: dict[str, int] = {}
+    for tool in tools:
+        if tool.name == "moneybin.discover":
+            continue
+        ns = _namespace_for(tool.name)
+        namespaces[ns] = namespaces.get(ns, 0) + 1
+
+    # Extended namespaces aren't visible at connect time but we still list
+    # them so discoverers know what to call moneybin.discover with.
+    all_namespaces = set(namespaces.keys()) | set(EXTENDED_DOMAINS)
+
+    core_list: list[dict[str, Any]] = []
+    extended_list: list[dict[str, Any]] = []
+    for ns in sorted(all_namespaces):
+        entry = {
+            "namespace": ns,
+            "tools": namespaces.get(ns, 0),
+            "loaded": ns not in EXTENDED_DOMAINS,
+            "description": _description_for(ns),
+        }
+        if ns in EXTENDED_DOMAINS:
+            extended_list.append(entry)
+        else:
+            core_list.append(entry)
+
+    data = {
+        "core": core_list,
+        "extended": extended_list,
+        "discover_tool": "moneybin.discover",
+    }
     return json.dumps(data, indent=2)

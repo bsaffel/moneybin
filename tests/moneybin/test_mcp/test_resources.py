@@ -188,25 +188,20 @@ class TestResourceTools:
     """Tests for moneybin://tools resource."""
 
     @pytest.fixture(autouse=True)
-    def _mock_registry(self) -> Any:
-        """Provide a populated registry for resource_tools()."""
-        from unittest.mock import patch
+    def _ensure_tools_registered(self) -> None:
+        """Ensure the real FastMCP server has core tools registered."""
+        from moneybin.mcp.server import register_core_tools
 
-        from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+        register_core_tools()
 
-        registry = NamespaceRegistry()
-        for ns in ("spending", "accounts", "transactions", "import", "sql"):
-            tool = ToolDefinition(f"{ns}.stub", f"{ns} stub tool", lambda: None)
-            registry.register(tool)
-            registry.mark_loaded(ns)
+    def _read(self) -> dict[str, Any]:
+        import asyncio
 
-        with patch("moneybin.mcp.server.get_registry", return_value=registry):
-            yield registry
+        return json.loads(asyncio.run(resource_tools()))
 
     @pytest.mark.unit
     def test_returns_core_namespaces(self) -> None:
-        result = resource_tools()
-        data: dict[str, Any] = json.loads(result)
+        data = self._read()
         assert "core" in data
         assert isinstance(data["core"], list)
         core: list[dict[str, Any]] = data["core"]
@@ -214,8 +209,7 @@ class TestResourceTools:
 
     @pytest.mark.unit
     def test_core_namespaces_have_required_fields(self) -> None:
-        result = resource_tools()
-        data: dict[str, Any] = json.loads(result)
+        data = self._read()
         for entry in data["core"]:
             assert "namespace" in entry
             assert "loaded" in entry
@@ -223,21 +217,18 @@ class TestResourceTools:
 
     @pytest.mark.unit
     def test_core_namespaces_loaded_true(self) -> None:
-        result = resource_tools()
-        data: dict[str, Any] = json.loads(result)
+        data = self._read()
         core_entries: list[dict[str, Any]] = data["core"]
         assert all(entry["loaded"] is True for entry in core_entries)
 
     @pytest.mark.unit
     def test_discover_tool_present(self) -> None:
-        result = resource_tools()
-        data: dict[str, Any] = json.loads(result)
+        data = self._read()
         assert data["discover_tool"] == "moneybin.discover"
 
     @pytest.mark.unit
     def test_known_namespaces_present(self) -> None:
-        result = resource_tools()
-        data: dict[str, Any] = json.loads(result)
+        data = self._read()
         namespaces = {e["namespace"] for e in data["core"]}
         assert "spending" in namespaces
         assert "accounts" in namespaces

@@ -90,8 +90,9 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [E2E Testing](e2e-testing.md) | Feature | implemented | Subprocess-based E2E tests: smoke tests (help, no-DB, DB commands), golden-path workflow tests (synthetic, CSV, OFX, lock/unlock, categorization) |
 | [Scenario Runner](testing-scenario-runner.md) | Feature | implemented | Whole-pipeline correctness: empty DB → pipeline → assertions/expectations/evaluations against synthetic ground truth and hand-labeled fixtures; `moneybin synthetic verify` CLI; validation primitives reusable for live-data checks |
 | [Normalize-Description Fixtures](testing-normalize-description-fixtures.md) | Feature | implemented | YAML golden cases for `normalize_description()`; parametrized exact-equality tests; contributor-facing surface for adding real-world transaction descriptions |
+| [Comprehensive Scenario Testing](testing-scenario-comprehensive.md) | Feature | draft | Five-tier assertion taxonomy, independent-expectations rule, bug-report recipe, relocation of scenarios to `tests/scenarios/`. Architectural authority for all future scenario work. |
+| [Anonymized Data Generator](testing-anonymized-data.md) | Feature | planned | Structure-preserving anonymization of real databases for shipping bug-report fixtures and format seeds without leaking PII; statistical similarity guarantees. |
 | `testing-csv-fixtures.md` | Feature | planned | Curated bank export samples with expected-result YAML for format detection testing |
-| `testing-anonymized-data.md` | Feature | planned | Structure-preserving anonymization of real databases with statistical similarity guarantees |
 | `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |
 | `testing-migration-safety.md` | Feature | planned | Pre/post migration data integrity assertions |
 

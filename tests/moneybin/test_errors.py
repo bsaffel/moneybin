@@ -36,11 +36,11 @@ def test_classify_unknown_exception_returns_none() -> None:
 
 def test_user_error_to_dict_omits_none_hint() -> None:
     """UserError.to_dict drops the hint field when not set."""
-    err = UserError(message="m", code="c")
+    err = UserError("m", code="c")
     assert err.to_dict() == {"message": "m", "code": "c"}
 
 
 def test_user_error_to_dict_includes_hint() -> None:
     """UserError.to_dict includes the hint when populated."""
-    err = UserError(message="m", code="c", hint="h")
+    err = UserError("m", code="c", hint="h")
     assert err.to_dict() == {"message": "m", "code": "c", "hint": "h"}

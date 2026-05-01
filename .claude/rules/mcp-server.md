@@ -46,7 +46,7 @@ Tools use dot-separated namespaces (MCP SEP-986): `domain.action_or_view`.
 
 Naming: **noun = query** (`spending.summary`), **verb = action** (`categorize.bulk`). No CRUD naming.
 
-**Progressive disclosure:** Core namespaces (~19 tools) registered at connection time. Extended namespaces (`categorize`, `budget`, `tax`, `privacy`, `transactions.matches`) loaded on demand via `moneybin.discover` meta-tool + `tools/list_changed`. Each tool stays single-purpose — no consolidation into action-parameter tools. See `mcp-architecture.md` §3.
+**Progressive disclosure:** Per-session, tag-based visibility. All tools are registered at boot; extended-namespace tools carry `tags={domain}` and are hidden by `Visibility(False, tags={domain})` transforms. Core namespaces (~19 tools) are visible at connect; extended namespaces (`categorize`, `budget`, `tax`, `privacy`, `transactions.matches`) are revealed for the calling session only via the `moneybin.discover` meta-tool. Each tool stays single-purpose — no consolidation into action-parameter tools. See `mcp-architecture.md` §3.
 
 ## Response Envelope
 
