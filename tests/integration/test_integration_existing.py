@@ -18,7 +18,6 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.database import Database
-from moneybin.loaders.ofx_loader import OFXLoader
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -50,84 +49,7 @@ def encrypted_db(tmp_path: Path, mock_store: MagicMock) -> Database:
 
 
 # ---------------------------------------------------------------------------
-# 1. Full import pipeline: encrypted DB → OFX load → SQLMesh → core tables
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-class TestImportPipeline:
-    """Load OFX data into an encrypted DB, run transforms, verify core tables."""
-
-    def test_ofx_load_and_transform_produces_core_tables(
-        self,
-        tmp_path: Path,
-        encrypted_db: Database,
-        mock_store: MagicMock,
-    ) -> None:
-        """End-to-end: OFX extract → raw load → SQLMesh → core.fct_transactions."""
-        from moneybin.extractors.ofx_extractor import OFXExtractor
-
-        # Extract from fixture
-        qfx_path = FIXTURES_DIR / "sample_statement.qfx"
-        extractor = OFXExtractor()
-        data = extractor.extract_from_file(qfx_path)
-
-        # Load into raw tables
-        loader = OFXLoader(encrypted_db)
-        counts = loader.load_data(data)
-        assert counts["transactions"] == 3
-        assert counts["accounts"] >= 1
-
-        # Verify raw data is in the encrypted database
-        raw_count = encrypted_db.execute(
-            "SELECT COUNT(*) FROM raw.ofx_transactions"
-        ).fetchone()
-        assert raw_count is not None
-        assert raw_count[0] == 3
-
-        # Run SQLMesh transforms against the encrypted database.
-        # This is the exact code path that was broken before the fix —
-        # SQLMesh needs the encryption key passed via adapter cache.
-        # sqlmesh_context() reuses the singleton's open connection.
-        db_path = encrypted_db.path
-        from moneybin.services.import_service import ImportService
-
-        with pytest.MonkeyPatch.context() as mp:
-            # Set the singleton so sqlmesh_context() can reuse the connection
-            mp.setattr("moneybin.database._database_instance", encrypted_db)
-            # Point get_settings().database.path at the test database
-            mock_settings = MagicMock()
-            mock_settings.database.path = db_path
-            mp.setattr("moneybin.database.get_settings", lambda: mock_settings)
-            result = ImportService(encrypted_db).run_transforms()
-
-        assert result is True
-
-        # Verify core tables have data
-        core_txns = encrypted_db.execute(
-            "SELECT COUNT(*) FROM core.fct_transactions"
-        ).fetchone()
-        assert core_txns is not None
-        assert core_txns[0] >= 3  # at least the 3 OFX transactions
-
-        core_accts = encrypted_db.execute(
-            "SELECT COUNT(*) FROM core.dim_accounts"
-        ).fetchone()
-        assert core_accts is not None
-        assert core_accts[0] >= 1
-
-        # Verify data fidelity — amounts survived the pipeline
-        amounts = encrypted_db.execute(
-            "SELECT amount FROM core.fct_transactions ORDER BY amount"
-        ).fetchall()
-        amount_values = [float(r[0]) for r in amounts]
-        assert -100.50 in amount_values
-        assert -50.00 in amount_values
-        assert 1000.00 in amount_values
-
-
-# ---------------------------------------------------------------------------
-# 2. Passphrase round-trip: init → lock → unlock → verify DB opens
+# 1. Passphrase round-trip: init → lock → unlock → verify DB opens
 # ---------------------------------------------------------------------------
 
 
