@@ -61,10 +61,13 @@ async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
 
 def register_discover_tool(mcp: FastMCP) -> None:
     """Register moneybin.discover with the server (always visible — no domain tag)."""
+    from moneybin.mcp.server import EXTENDED_DOMAINS
+
+    domains = ", ".join(sorted(EXTENDED_DOMAINS))
     mcp.tool(
         name="moneybin.discover",
         description=(
-            "Reveal tools from an extended namespace (categorize, budget, "
-            "tax, privacy, transactions.matches) for the current session."
+            f"Reveal tools from an extended namespace ({domains}) "
+            "for the current session."
         ),
     )(moneybin_discover)

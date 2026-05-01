@@ -23,18 +23,9 @@ from moneybin.tables import TableRef
 logger = logging.getLogger(__name__)
 
 
-# Extended-namespace domain names. Each tool tagged with one of these starts
-# hidden by a Visibility(False, tags={domain}) transform and is re-enabled
-# per-session via moneybin.discover.
-EXTENDED_DOMAINS: frozenset[str] = frozenset({
-    "categorize",
-    "budget",
-    "tax",
-    "privacy",
-    "transactions.matches",
-})
-
-
+# Extended-namespace domains. Each tool tagged with one of these starts hidden
+# by the Visibility transform installed in register_core_tools() and is
+# re-enabled per-session via moneybin.discover.
 EXTENDED_DOMAIN_DESCRIPTIONS: dict[str, str] = {
     "categorize": "Rules, merchant mappings, bulk categorization",
     "budget": "Budget targets, status, rollovers",
@@ -42,6 +33,8 @@ EXTENDED_DOMAIN_DESCRIPTIONS: dict[str, str] = {
     "privacy": "Consent status, grants, revocations, audit log",
     "transactions.matches": "Match review workflow",
 }
+
+EXTENDED_DOMAINS: frozenset[str] = frozenset(EXTENDED_DOMAIN_DESCRIPTIONS)
 
 
 # Global server instance — tools/resources/prompts register against this
@@ -167,6 +160,11 @@ def register_core_tools() -> None:
     register_sql_tools(mcp)
     register_discover_tool(mcp)
 
+    # Single Visibility transform with OR-match semantics across all extended
+    # domains: a tool tagged with ANY of these tags is hidden until enabled by
+    # moneybin.discover. Verified against fastmcp 3.1.x; see
+    # tests/moneybin/test_mcp/test_visibility.py::test_visibility_or_match_semantics
+    # which guards against an upstream change to AND-match.
     mcp.add_transform(Visibility(False, tags=set(EXTENDED_DOMAINS)))
 
     _tools_registered = True

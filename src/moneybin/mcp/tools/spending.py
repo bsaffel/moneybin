@@ -13,7 +13,7 @@ import logging
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.spending_service import SpendingService
@@ -71,19 +71,17 @@ def spending_by_category(
 
 def register_spending_tools(mcp: FastMCP) -> None:
     """Register all spending namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="spending.summary",
-        description=(
-            "Get income vs expense totals by month. Returns time-series "
-            "data suitable for charting."
-        ),
-        tags=tags_for(spending_summary),
-    )(spending_summary)
-    mcp.tool(
-        name="spending.by_category",
-        description=(
-            "Get spending breakdown by category for a period. "
-            "Requires transactions to be categorized."
-        ),
-        tags=tags_for(spending_by_category),
-    )(spending_by_category)
+    register(
+        mcp,
+        spending_summary,
+        "spending.summary",
+        "Get income vs expense totals by month. Returns time-series "
+        "data suitable for charting.",
+    )
+    register(
+        mcp,
+        spending_by_category,
+        "spending.by_category",
+        "Get spending breakdown by category for a period. "
+        "Requires transactions to be categorized.",
+    )

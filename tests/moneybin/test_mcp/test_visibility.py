@@ -93,6 +93,53 @@ async def test_per_session_discover_isolated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_visibility_or_match_semantics() -> None:
+    """A tool tagged with one extended domain stays hidden when only a different domain is enabled.
+
+    The server installs a single ``Visibility(False, tags=set(EXTENDED_DOMAINS))``
+    transform — this test pins the OR-match contract verified against fastmcp
+    3.1.x. If a future SDK change flips this to AND-match semantics, every
+    extended tool would become visible at boot, which would be a silent
+    privacy regression.
+    """
+    from moneybin.mcp.server import mcp
+
+    async with Client(mcp) as client:
+        await client.call_tool("moneybin.discover", {"domain": "categorize"})
+        names = {t.name for t in await client.list_tools()}
+        assert "categorize.bulk" in names, "categorize tools should be enabled"
+        assert "budget.set" not in names, (
+            "budget tools must remain hidden when only categorize is enabled — "
+            "Visibility transform OR-match contract is broken."
+        )
+
+
+@pytest.mark.asyncio
+async def test_full_discover_reveals_every_extended_tool() -> None:
+    """After discovering every extended domain, total visible tool count matches the unfiltered registry.
+
+    Guards against an extended namespace silently dropping a tool during a
+    future refactor — if the count diverges, either a tool lost its tag or a
+    visible tool gained a stray tag.
+    """
+    from moneybin.mcp.server import EXTENDED_DOMAINS, mcp
+
+    async with Client(mcp) as client:
+        for domain in EXTENDED_DOMAINS:
+            await client.call_tool("moneybin.discover", {"domain": domain})
+        visible = {t.name for t in await client.list_tools()}
+        all_registered = {
+            t.name
+            for t in await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        }
+        assert visible == all_registered, (
+            f"Visible tool set diverged from registered tool set after full "
+            f"discover. Missing: {all_registered - visible}; "
+            f"unexpected: {visible - all_registered}"
+        )
+
+
+@pytest.mark.asyncio
 async def test_hidden_tool_is_uncallable_via_tools_call() -> None:
     """Hidden tools must be uncallable.
 

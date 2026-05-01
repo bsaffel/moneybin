@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 
 def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
     if not isinstance(result, ResponseEnvelope):
+        # Log the contract violation explicitly: with mask_error_details=True
+        # at the server boundary, the TypeError is otherwise wrapped in a
+        # generic ToolError and the developer signal is lost.
+        logger.error(
+            f"Tool {fn_name} returned {type(result).__name__}, expected ResponseEnvelope"
+        )
         raise TypeError(
             f"{fn_name} returned {type(result).__name__}, expected ResponseEnvelope"
         )

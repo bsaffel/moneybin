@@ -16,7 +16,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -247,34 +247,29 @@ def import_list_formats() -> ResponseEnvelope:
 
 def register_import_tools(mcp: FastMCP) -> None:
     """Register all import namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="import.file",
-        description=(
-            "Import a financial data file (OFX, CSV, TSV, Excel, "
-            "Parquet, PDF) into MoneyBin."
-        ),
-        tags=tags_for(import_file),
-    )(import_file)
-    mcp.tool(
-        name="import.csv_preview",
-        description=(
-            "Preview a tabular file's structure and detected column "
-            "mapping without importing."
-        ),
-        tags=tags_for(import_csv_preview),
-    )(import_csv_preview)
-    mcp.tool(
-        name="import.status",
-        description=(
-            "List past import batches with status, row counts, "
-            "and detection confidence."
-        ),
-        tags=tags_for(import_status),
-    )(import_status)
-    mcp.tool(
-        name="import.list_formats",
-        description=(
-            "List all available tabular import formats (built-in and user-saved)."
-        ),
-        tags=tags_for(import_list_formats),
-    )(import_list_formats)
+    register(
+        mcp,
+        import_file,
+        "import.file",
+        "Import a financial data file (OFX, CSV, TSV, Excel, "
+        "Parquet, PDF) into MoneyBin.",
+    )
+    register(
+        mcp,
+        import_csv_preview,
+        "import.csv_preview",
+        "Preview a tabular file's structure and detected column "
+        "mapping without importing.",
+    )
+    register(
+        mcp,
+        import_status,
+        "import.status",
+        "List past import batches with status, row counts, and detection confidence.",
+    )
+    register(
+        mcp,
+        import_list_formats,
+        "import.list_formats",
+        "List all available tabular import formats (built-in and user-saved).",
+    )

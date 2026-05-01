@@ -31,7 +31,7 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
-from moneybin.mcp._registration import tags_for
+from moneybin.mcp._registration import register
 from moneybin.mcp.adapters.categorize_adapters import (
     auto_confirm_envelope,
     auto_review_envelope,
@@ -678,100 +678,99 @@ def categorize_auto_stats() -> ResponseEnvelope:
 
 def register_categorize_tools(mcp: FastMCP) -> None:
     """Register all categorize namespace tools with the FastMCP server."""
-    mcp.tool(
-        name="categorize.categories",
-        description="List all categories in the taxonomy.",
-        tags=tags_for(categorize_categories),
-    )(categorize_categories)
-    mcp.tool(
-        name="categorize.rules",
-        description="List all active categorization rules.",
-        tags=tags_for(categorize_rules),
-    )(categorize_rules)
-    mcp.tool(
-        name="categorize.merchants",
-        description="List all merchant name mappings.",
-        tags=tags_for(categorize_merchants),
-    )(categorize_merchants)
-    mcp.tool(
-        name="categorize.stats",
-        description=(
-            "Get categorization coverage statistics: total, "
-            "categorized, uncategorized, percent, and breakdown by source."
-        ),
-        tags=tags_for(categorize_stats),
-    )(categorize_stats)
-    mcp.tool(
-        name="categorize.uncategorized",
-        description="Find transactions that have not been categorized yet.",
-        tags=tags_for(categorize_uncategorized),
-    )(categorize_uncategorized)
-    mcp.tool(
-        name="categorize.bulk",
-        description=(
-            "Assign categories to multiple transactions in one call. "
-            "Auto-creates merchant mappings for future auto-categorization."
-        ),
-        tags=tags_for(categorize_bulk),
-    )(categorize_bulk)
-    mcp.tool(
-        name="categorize.create_rules",
-        description=(
-            "Create multiple categorization rules for automatic "
-            "transaction categorization."
-        ),
-        tags=tags_for(categorize_create_rules),
-    )(categorize_create_rules)
-    mcp.tool(
-        name="categorize.delete_rule",
-        description="Soft-delete a categorization rule (set inactive).",
-        tags=tags_for(categorize_delete_rule),
-    )(categorize_delete_rule)
-    mcp.tool(
-        name="categorize.create_merchants",
-        description=(
-            "Create multiple merchant name mappings for description "
-            "normalization and auto-categorization."
-        ),
-        tags=tags_for(categorize_create_merchants),
-    )(categorize_create_merchants)
-    mcp.tool(
-        name="categorize.create_category",
-        description="Create a custom category or subcategory.",
-        tags=tags_for(categorize_create_category),
-    )(categorize_create_category)
-    mcp.tool(
-        name="categorize.toggle_category",
-        description="Enable or disable a category in the taxonomy.",
-        tags=tags_for(categorize_toggle_category),
-    )(categorize_toggle_category)
-    mcp.tool(
-        name="categorize.seed",
-        description=("Initialize default categories from the Plaid PFCv2 taxonomy."),
-        tags=tags_for(categorize_seed),
-    )(categorize_seed)
-    mcp.tool(
-        name="categorize.auto_review",
-        description=(
-            "List pending auto-rule proposals with sample transactions "
-            "and trigger counts."
-        ),
-        tags=tags_for(categorize_auto_review),
-    )(categorize_auto_review)
-    mcp.tool(
-        name="categorize.auto_confirm",
-        description=(
-            "Batch approve/reject auto-rule proposals. Approved "
-            "proposals become active rules and immediately categorize "
-            "matching transactions."
-        ),
-        tags=tags_for(categorize_auto_confirm),
-    )(categorize_auto_confirm)
-    mcp.tool(
-        name="categorize.auto_stats",
-        description=(
-            "Auto-rule health: active count, pending proposals, "
-            "transactions categorized."
-        ),
-        tags=tags_for(categorize_auto_stats),
-    )(categorize_auto_stats)
+    register(
+        mcp,
+        categorize_categories,
+        "categorize.categories",
+        "List all categories in the taxonomy.",
+    )
+    register(
+        mcp,
+        categorize_rules,
+        "categorize.rules",
+        "List all active categorization rules.",
+    )
+    register(
+        mcp,
+        categorize_merchants,
+        "categorize.merchants",
+        "List all merchant name mappings.",
+    )
+    register(
+        mcp,
+        categorize_stats,
+        "categorize.stats",
+        "Get categorization coverage statistics: total, "
+        "categorized, uncategorized, percent, and breakdown by source.",
+    )
+    register(
+        mcp,
+        categorize_uncategorized,
+        "categorize.uncategorized",
+        "Find transactions that have not been categorized yet.",
+    )
+    register(
+        mcp,
+        categorize_bulk,
+        "categorize.bulk",
+        "Assign categories to multiple transactions in one call. "
+        "Auto-creates merchant mappings for future auto-categorization.",
+    )
+    register(
+        mcp,
+        categorize_create_rules,
+        "categorize.create_rules",
+        "Create multiple categorization rules for automatic "
+        "transaction categorization.",
+    )
+    register(
+        mcp,
+        categorize_delete_rule,
+        "categorize.delete_rule",
+        "Soft-delete a categorization rule (set inactive).",
+    )
+    register(
+        mcp,
+        categorize_create_merchants,
+        "categorize.create_merchants",
+        "Create multiple merchant name mappings for description "
+        "normalization and auto-categorization.",
+    )
+    register(
+        mcp,
+        categorize_create_category,
+        "categorize.create_category",
+        "Create a custom category or subcategory.",
+    )
+    register(
+        mcp,
+        categorize_toggle_category,
+        "categorize.toggle_category",
+        "Enable or disable a category in the taxonomy.",
+    )
+    register(
+        mcp,
+        categorize_seed,
+        "categorize.seed",
+        "Initialize default categories from the Plaid PFCv2 taxonomy.",
+    )
+    register(
+        mcp,
+        categorize_auto_review,
+        "categorize.auto_review",
+        "List pending auto-rule proposals with sample transactions and trigger counts.",
+    )
+    register(
+        mcp,
+        categorize_auto_confirm,
+        "categorize.auto_confirm",
+        "Batch approve/reject auto-rule proposals. Approved "
+        "proposals become active rules and immediately categorize "
+        "matching transactions.",
+    )
+    register(
+        mcp,
+        categorize_auto_stats,
+        "categorize.auto_stats",
+        "Auto-rule health: active count, pending proposals, transactions categorized.",
+    )
