@@ -161,6 +161,13 @@ class AutoRuleService:
     def __init__(self, db: Database) -> None:
         """Bind the service to a database connection."""
         self._db = db
+        self._cat_service: CategorizationService | None = None
+
+    @property
+    def _categorization(self) -> CategorizationService:
+        if self._cat_service is None:
+            self._cat_service = CategorizationService(self._db)
+        return self._cat_service
 
     # -- Observation --
 
@@ -770,7 +777,7 @@ class AutoRuleService:
             if txn_row is not None
             else None
         )
-        match = CategorizationService(self._db).find_matching_rule(
+        match = self._categorization.find_matching_rule(
             transaction_id,
             rules_override=rules_override,
             txn_row_override=txn_row_override,
@@ -853,8 +860,7 @@ class AutoRuleService:
         (subsequent ``apply_rules`` runs use ``INSERT OR IGNORE`` and won't
         override). Only assigns when the priority winner is this rule.
         """
-        cat_service = CategorizationService(self._db)
-        active_rules = cat_service.fetch_active_rules()
+        active_rules = self._categorization.fetch_active_rules()
         scan_cap = get_settings().categorization.auto_rule_backfill_scan_cap
         rows = self._db.execute(
             f"""
