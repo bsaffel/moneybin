@@ -44,3 +44,12 @@ def test_expectation_result_default_details_empty():
 
     r = ExpectationResult(name="x", kind="k", passed=False)
     assert r.details == {}
+
+
+def test_result_types_importable_from_package_root():
+    """Stable contract: data-reconciliation imports the three Result types here."""
+    from moneybin.validation import AssertionResult, EvaluationResult, ExpectationResult
+
+    assert AssertionResult.__name__ == "AssertionResult"
+    assert EvaluationResult.__name__ == "EvaluationResult"
+    assert ExpectationResult.__name__ == "ExpectationResult"
