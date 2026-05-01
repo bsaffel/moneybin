@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 from fastmcp import Context, FastMCP
 from fastmcp.server.transforms.visibility import enable_components
 
@@ -14,8 +12,6 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low")

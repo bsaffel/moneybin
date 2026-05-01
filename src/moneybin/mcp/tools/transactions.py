@@ -8,7 +8,6 @@ Tools:
 
 from __future__ import annotations
 
-import logging
 from decimal import Decimal
 
 from fastmcp import FastMCP
@@ -18,8 +17,6 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.transaction_service import TransactionService
-
-logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="medium")
