@@ -1,4 +1,4 @@
-"""Business-rule assertions for the canonical core schema."""
+"""Domain (business-rule) assertions for the canonical core schema."""
 
 from __future__ import annotations
 

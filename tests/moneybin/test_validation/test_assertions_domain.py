@@ -2,7 +2,7 @@
 
 import duckdb
 
-from moneybin.validation.assertions.business import (
+from moneybin.validation.assertions.domain import (
     assert_balanced_transfers,
     assert_date_continuity,
     assert_sign_convention,

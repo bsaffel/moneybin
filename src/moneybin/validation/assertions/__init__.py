@@ -1,14 +1,14 @@
 """Assertion primitives — every function returns AssertionResult, never raises on data failure."""
 
-from moneybin.validation.assertions.business import (
-    assert_balanced_transfers,
-    assert_date_continuity,
-    assert_sign_convention,
-)
 from moneybin.validation.assertions.completeness import assert_no_nulls
 from moneybin.validation.assertions.distributional import (
     assert_distribution_within_bounds,
     assert_unique_value_count,
+)
+from moneybin.validation.assertions.domain import (
+    assert_balanced_transfers,
+    assert_date_continuity,
+    assert_sign_convention,
 )
 from moneybin.validation.assertions.infrastructure import (
     assert_migrations_at_head,
