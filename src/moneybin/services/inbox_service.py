@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import logging
+import re
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -31,6 +32,9 @@ from moneybin.services.import_service import ImportService
 logger = logging.getLogger(__name__)
 
 _DIR_MODE = 0o700
+_ACCOUNT_SLUG_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_YEAR_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+_STAGING_PATH_SEP = "__"
 
 # Substring → (error_code, stage) for ValueError messages from ImportService.
 _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
@@ -167,6 +171,15 @@ class InboxService:
             if account_hint is not None:
                 result.ignored.append({"path": rel, "reason": "nested_subfolder"})
                 return
+            if not _ACCOUNT_SLUG_RE.match(entry.name):
+                # Refuse to forward arbitrary folder names downstream as account hints.
+                for child in sorted(entry.iterdir()):
+                    child_rel = child.relative_to(self.inbox_dir).as_posix()
+                    result.ignored.append({
+                        "path": child_rel,
+                        "reason": "invalid_account_slug",
+                    })
+                return
             for child in sorted(entry.iterdir()):
                 self._classify(child, account_hint=entry.name, result=result)
             return
@@ -183,9 +196,15 @@ class InboxService:
         year_month: str,
     ) -> Path:
         """Atomic two-step move: src → outcome/staging-name → outcome/YYYY-MM/name."""
+        if not _YEAR_MONTH_RE.fullmatch(year_month):
+            raise ValueError(f"year_month must be YYYY-MM, got {year_month!r}")
         outcome_root = self.root / outcome
-        staging = outcome_root / f"{self._STAGING_PREFIX}{src.name}"
-        staging = self._next_available_path(staging)
+        # Encode subfolder context so crash recovery restores files under their
+        # original <account-slug>/ subfolder instead of dropping to inbox root.
+        encoded_name = self._encode_staging_name(src)
+        staging = self._next_available_path(
+            outcome_root / f"{self._STAGING_PREFIX}{encoded_name}"
+        )
         src.rename(staging)
 
         dest_dir = outcome_root / year_month
@@ -193,6 +212,14 @@ class InboxService:
         final = self._next_available_path(dest_dir / src.name)
         staging.rename(final)
         return final
+
+    def _encode_staging_name(self, src: Path) -> str:
+        """Encode src's inbox-relative path into a flat staging filename."""
+        try:
+            rel = src.relative_to(self.inbox_dir).as_posix()
+        except ValueError:
+            return src.name
+        return rel.replace("/", _STAGING_PATH_SEP)
 
     def recover_staging(self) -> list[Path]:
         """Move leftover staging-* files in outcome roots back to inbox/."""
@@ -207,11 +234,14 @@ class InboxService:
                     continue
                 if not entry.name.startswith(self._STAGING_PREFIX):
                     continue
-                original_name = entry.name[len(self._STAGING_PREFIX) :]
-                dest = self._next_available_path(self.inbox_dir / original_name)
+                encoded = entry.name[len(self._STAGING_PREFIX) :]
+                rel_path = encoded.replace(_STAGING_PATH_SEP, "/")
+                dest_candidate = self.inbox_dir / rel_path
+                dest_candidate.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+                dest = self._next_available_path(dest_candidate)
                 entry.rename(dest)
                 recovered.append(dest)
-                logger.info(f"Recovered staging file → {dest.name}")
+                logger.info(f"Recovered staging file → {dest.relative_to(self.root)}")
         return recovered
 
     @staticmethod
@@ -287,6 +317,17 @@ class InboxService:
     ) -> None:
         """Move failed file to failed/ and write YAML sidecar."""
         error_code, stage = self._classify_error(error)
+        if not src.exists():
+            # File vanished between enumerate() and import — nothing to move.
+            # Record the failure but continue draining remaining files.
+            result.failed.append({
+                "filename": rel_filename,
+                "error_code": error_code,
+                "stage": stage,
+            })
+            INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
+            logger.warning(f"Inbox import failed: {rel_filename} → {error_code}")
+            return
         moved = self.move_to_outcome(src, outcome="failed", year_month=year_month)
         sidecar = self.write_error_sidecar(
             moved,

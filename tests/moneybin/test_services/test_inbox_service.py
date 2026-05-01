@@ -109,6 +109,18 @@ class TestEnumeration:
         assert items.would_process == []
         assert any(i["reason"] == "nested_subfolder" for i in items.ignored)
 
+    def test_invalid_account_slug_folder_ignored(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        """Folder names that fail the slug regex have their contents ignored."""
+        inbox_service.ensure_layout()
+        bad = inbox_service.inbox_dir / "weird name!"
+        bad.mkdir()
+        (bad / "march.csv").write_text("a,b\n1,2\n")
+        items = inbox_service.enumerate()
+        assert items.would_process == []
+        assert any(i["reason"] == "invalid_account_slug" for i in items.ignored)
+
 
 class TestAtomicMove:
     """move_to_outcome() moves files atomically with numeric-suffix collision handling."""
@@ -156,6 +168,18 @@ class TestAtomicMove:
             src, outcome="processed", year_month="2026-05"
         )
         assert final.name == "README-1"
+
+    def test_invalid_year_month_raises(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        """year_month must match YYYY-MM; path-traversal candidates rejected."""
+        inbox_service.ensure_layout()
+        src = inbox_service.inbox_dir / "a.csv"
+        src.write_text("data\n")
+        with pytest.raises(ValueError, match="year_month"):
+            inbox_service.move_to_outcome(
+                src, outcome="processed", year_month="2026-05/../sensitive"
+            )
 
 
 class TestLock:
@@ -426,3 +450,61 @@ class TestRecovery:
 
         assert not ghost.exists()
         assert (svc.inbox_dir / "x.csv").exists()
+
+    def test_staging_name_round_trip_preserves_subfolder(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        """A subfolder file moved + crashed mid-rename recovers to its subfolder."""
+        inbox_service.ensure_layout()
+        sub = inbox_service.inbox_dir / "chase-checking"
+        sub.mkdir()
+        src = sub / "march.csv"
+        src.write_text("a,b\n1,2\n")
+
+        # Simulate first-leg rename: src → outcome/staging-<encoded>
+        # Encoding flattens "chase-checking/march.csv" → "chase-checking__march.csv"
+        staging = inbox_service.processed_dir / "staging-chase-checking__march.csv"
+        src.rename(staging)
+        assert staging.exists()
+        assert not src.exists()
+
+        # Crash before second-leg rename — recovery should restore subfolder layout.
+        recovered = inbox_service.recover_staging()
+        assert recovered == [inbox_service.inbox_dir / "chase-checking" / "march.csv"]
+        assert (inbox_service.inbox_dir / "chase-checking" / "march.csv").exists()
+        assert not staging.exists()
+
+
+class TestSyncVanishedSource:
+    """sync() handles a file that disappears between enumeration and import."""
+
+    def test_failure_with_vanished_source_does_not_raise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If src is gone before failure handling runs, record failure cleanly."""
+        from moneybin.services import inbox_service as mod
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                # Delete the file then raise — simulates external mv during import.
+                Path(path).unlink()
+                raise RuntimeError("disk full")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "ghost.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert len(result.failed) == 1
+        entry = result.failed[0]
+        assert entry["filename"] == "ghost.csv"
+        assert entry["error_code"] == "import_error"
+        assert "sidecar" not in entry  # no sidecar since file vanished
+        assert not (svc.failed_dir / "2026-05" / "ghost.csv").exists()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
 
@@ -11,10 +12,13 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
+if TYPE_CHECKING:
+    from moneybin.services.inbox_service import InboxService
+
 logger = logging.getLogger(__name__)
 
 
-def _build_service() -> object:
+def _build_service() -> InboxService:
     """Indirection for tests to monkeypatch."""
     from moneybin.config import get_settings
     from moneybin.database import get_database
@@ -27,7 +31,7 @@ def _build_service() -> object:
 def inbox_sync() -> ResponseEnvelope:
     """Drain the active profile's import inbox."""
     service = _build_service()
-    result = dataclasses.asdict(service.sync())  # type: ignore[arg-type]
+    result = dataclasses.asdict(service.sync())
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
     if result["failed"]:
@@ -42,7 +46,7 @@ def inbox_sync() -> ResponseEnvelope:
 def inbox_list() -> ResponseEnvelope:
     """Preview the active profile's inbox without moving anything."""
     service = _build_service()
-    result = dataclasses.asdict(service.enumerate())  # type: ignore[arg-type]
+    result = dataclasses.asdict(service.enumerate())
     return build_envelope(
         data=result,
         sensitivity="low",
