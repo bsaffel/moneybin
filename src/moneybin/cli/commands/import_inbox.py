@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 from typing import TYPE_CHECKING
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.database import DatabaseKeyError
 from moneybin.services.inbox_service import InboxSyncResult
 
 if TYPE_CHECKING:
@@ -65,15 +63,15 @@ def inbox_default(
     """Default action: drain the inbox."""
     if ctx.invoked_subcommand is not None:
         return
-    try:
-        service = _build_service()
-        result = service.sync()
-    except DatabaseKeyError as e:
-        typer.echo(f"❌ {e}. Run 'moneybin db unlock'.", err=True)
-        raise typer.Exit(1) from e
+    from moneybin.cli.utils import handle_cli_errors
+
+    with handle_cli_errors():
+        result = _build_service().sync()
 
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps(dataclasses.asdict(result), default=str))
+        from moneybin.cli.utils import emit_json
+
+        emit_json("sync", dataclasses.asdict(result))
         return
     if quiet:
         return
@@ -86,15 +84,15 @@ def inbox_list(
     quiet: bool = quiet_option,
 ) -> None:
     """Show what a sync would do, without moving anything."""
-    try:
-        service = _build_service()
-        result = service.enumerate()
-    except DatabaseKeyError as e:
-        typer.echo(f"❌ {e}. Run 'moneybin db unlock'.", err=True)
-        raise typer.Exit(1) from e
+    from moneybin.cli.utils import handle_cli_errors
+
+    with handle_cli_errors():
+        result = _build_service().enumerate()
 
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps(dataclasses.asdict(result), default=str))
+        from moneybin.cli.utils import emit_json
+
+        emit_json("list", dataclasses.asdict(result))
         return
     if quiet:
         return
@@ -108,5 +106,7 @@ def inbox_list(
 @app.command("path")
 def inbox_path() -> None:
     """Print the active profile's inbox parent directory."""
-    service = _build_service()
-    typer.echo(str(service.root))
+    from moneybin.cli.utils import handle_cli_errors
+
+    with handle_cli_errors():
+        typer.echo(str(_build_service().root))

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -13,24 +15,34 @@ from moneybin.cli.main import app
 from moneybin.services.inbox_service import InboxListResult, InboxSyncResult
 
 
+@contextmanager
+def _fake_db_ctx() -> Generator[object, None, None]:
+    yield object()
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     """Return a Typer CliRunner for invoking the root app."""
     return CliRunner()
 
 
-def test_inbox_drain_prints_summary(
-    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Draining the inbox prints 'N imported, M failed' summary."""
+@pytest.fixture
+def patch_inbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
+    """Patch _build_service + handle_cli_errors so CLI tests don't open a real DB."""
     fake = MagicMock()
-    fake.sync.return_value = InboxSyncResult(
-        processed=[{"filename": "chase-checking/march.csv", "transactions": 47}],
-        failed=[],
-    )
     fake.root = tmp_path / "inbox-root"
     monkeypatch.setattr(
         "moneybin.cli.commands.import_inbox._build_service", lambda: fake
+    )
+    monkeypatch.setattr("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx)
+    return fake
+
+
+def test_inbox_drain_prints_summary(runner: CliRunner, patch_inbox: MagicMock) -> None:
+    """Draining the inbox prints 'N imported, M failed' summary."""
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[{"filename": "chase-checking/march.csv", "transactions": 47}],
+        failed=[],
     )
 
     result = runner.invoke(app, ["import", "inbox"])
@@ -41,11 +53,10 @@ def test_inbox_drain_prints_summary(
 
 
 def test_inbox_drain_failure_exits_zero_but_warns(
-    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
     """Failed files exit 0 but display error_code in output."""
-    fake = MagicMock()
-    fake.sync.return_value = InboxSyncResult(
+    patch_inbox.sync.return_value = InboxSyncResult(
         processed=[],
         failed=[
             {
@@ -54,10 +65,6 @@ def test_inbox_drain_failure_exits_zero_but_warns(
                 "sidecar": "failed/2026-05/x.csv.error.yml",
             }
         ],
-    )
-    fake.root = tmp_path / "inbox-root"
-    monkeypatch.setattr(
-        "moneybin.cli.commands.import_inbox._build_service", lambda: fake
     )
 
     result = runner.invoke(app, ["import", "inbox"])
@@ -68,39 +75,27 @@ def test_inbox_drain_failure_exits_zero_but_warns(
     assert "1 failed" in result.stdout
 
 
-def test_inbox_drain_json_output(
-    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """--output json emits a JSON payload with processed list."""
-    fake = MagicMock()
-    fake.sync.return_value = InboxSyncResult(
+def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:
+    """--output json emits a JSON envelope with sync payload."""
+    patch_inbox.sync.return_value = InboxSyncResult(
         processed=[{"filename": "a.csv", "transactions": 3}],
-    )
-    fake.root = tmp_path / "inbox-root"
-    monkeypatch.setattr(
-        "moneybin.cli.commands.import_inbox._build_service", lambda: fake
     )
 
     result = runner.invoke(app, ["import", "inbox", "--output", "json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["processed"][0]["filename"] == "a.csv"
+    assert payload["sync"]["processed"][0]["filename"] == "a.csv"
 
 
 def test_inbox_list_prints_would_process(
-    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
     """`inbox list` shows each file that would be processed."""
-    fake = MagicMock()
-    fake.enumerate.return_value = InboxListResult(
+    patch_inbox.enumerate.return_value = InboxListResult(
         would_process=[
             {"filename": "chase-checking/march.csv", "account_hint": "chase-checking"}
         ],
-    )
-    fake.root = tmp_path / "inbox-root"
-    monkeypatch.setattr(
-        "moneybin.cli.commands.import_inbox._build_service", lambda: fake
     )
 
     result = runner.invoke(app, ["import", "inbox", "list"])
@@ -110,16 +105,10 @@ def test_inbox_list_prints_would_process(
 
 
 def test_inbox_path_prints_active_profile_root(
-    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
     """`inbox path` prints the service root directory."""
-    fake = MagicMock()
-    fake.root = tmp_path / "MoneyBin" / "alice"
-    monkeypatch.setattr(
-        "moneybin.cli.commands.import_inbox._build_service", lambda: fake
-    )
-
     result = runner.invoke(app, ["import", "inbox", "path"])
 
     assert result.exit_code == 0
-    assert str(fake.root) in result.stdout.strip()
+    assert str(patch_inbox.root) in result.stdout.strip()

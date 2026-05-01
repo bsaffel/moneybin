@@ -115,15 +115,16 @@ class ImportSettings(BaseModel):
 In `MoneyBinSettings`, add the field and the derived property. The trailing underscore on `import_` avoids shadowing the keyword:
 
 ```python
-    import_: ImportSettings = Field(
-        default_factory=ImportSettings,
-        alias="import",
-    )
+import_: ImportSettings = Field(
+    default_factory=ImportSettings,
+    alias="import",
+)
 
-    @property
-    def profile_inbox_dir(self) -> Path:
-        """Active profile's inbox parent: <inbox_root>/<profile>/."""
-        return self.import_.inbox_root / self.profile
+
+@property
+def profile_inbox_dir(self) -> Path:
+    """Active profile's inbox parent: <inbox_root>/<profile>/."""
+    return self.import_.inbox_root / self.profile
 ```
 
 `alias="import"` lets env vars use `MONEYBIN_IMPORT__INBOX_ROOT` without the trailing underscore. Add `populate_by_name=True` to the `model_config` if it isn't there already (BaseSettings has it on by default for aliased fields, but verify when running tests).
@@ -375,47 +376,46 @@ Expected: FAIL — `enumerate` not defined.
 Append to `InboxService` in `src/moneybin/services/inbox_service.py`:
 
 ```python
-    def enumerate(self) -> InboxListResult:
-        """Walk the inbox one level deep and classify each entry.
+def enumerate(self) -> InboxListResult:
+    """Walk the inbox one level deep and classify each entry.
 
-        Sync only acts on regular files in inbox/ root or in inbox/<one-subfolder>/.
-        Hidden files, symlinks, and entries deeper than one level are ignored
-        (returned with a reason) so the caller can show the user what was skipped.
-        """
-        self.ensure_layout()
-        result = InboxListResult()
-        for entry in sorted(self.inbox_dir.iterdir()):
-            self._classify(entry, account_hint=None, result=result)
-        return result
+    Sync only acts on regular files in inbox/ root or in inbox/<one-subfolder>/.
+    Hidden files, symlinks, and entries deeper than one level are ignored
+    (returned with a reason) so the caller can show the user what was skipped.
+    """
+    self.ensure_layout()
+    result = InboxListResult()
+    for entry in sorted(self.inbox_dir.iterdir()):
+        self._classify(entry, account_hint=None, result=result)
+    return result
 
-    def _classify(
-        self,
-        entry: Path,
-        *,
-        account_hint: str | None,
-        result: InboxListResult,
-    ) -> None:
-        rel = entry.relative_to(self.inbox_dir).as_posix()
-        if entry.name.startswith("."):
-            result.ignored.append({"path": rel, "reason": "hidden_file"})
+
+def _classify(
+    self,
+    entry: Path,
+    *,
+    account_hint: str | None,
+    result: InboxListResult,
+) -> None:
+    rel = entry.relative_to(self.inbox_dir).as_posix()
+    if entry.name.startswith("."):
+        result.ignored.append({"path": rel, "reason": "hidden_file"})
+        return
+    if entry.is_symlink():
+        result.ignored.append({"path": rel, "reason": "symlink"})
+        return
+    if entry.is_file():
+        result.would_process.append({"filename": rel, "account_hint": account_hint})
+        return
+    if entry.is_dir():
+        if account_hint is not None:
+            # Already inside one subfolder; deeper levels are ignored.
+            result.ignored.append({"path": rel, "reason": "nested_subfolder"})
             return
-        if entry.is_symlink():
-            result.ignored.append({"path": rel, "reason": "symlink"})
-            return
-        if entry.is_file():
-            result.would_process.append(
-                {"filename": rel, "account_hint": account_hint}
-            )
-            return
-        if entry.is_dir():
-            if account_hint is not None:
-                # Already inside one subfolder; deeper levels are ignored.
-                result.ignored.append({"path": rel, "reason": "nested_subfolder"})
-                return
-            for child in sorted(entry.iterdir()):
-                self._classify(child, account_hint=entry.name, result=result)
-            return
-        result.ignored.append({"path": rel, "reason": "not_regular_file"})
+        for child in sorted(entry.iterdir()):
+            self._classify(child, account_hint=entry.name, result=result)
+        return
+    result.ignored.append({"path": rel, "reason": "not_regular_file"})
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -500,46 +500,48 @@ Expected: FAIL — `move_to_outcome` not defined.
 Append to `InboxService`:
 
 ```python
-    _OUTCOME_DIRS = ("processed", "failed")
+_OUTCOME_DIRS = ("processed", "failed")
 
-    def move_to_outcome(
-        self,
-        src: Path,
-        *,
-        outcome: str,
-        year_month: str,
-    ) -> Path:
-        """Move ``src`` into the outcome's YYYY-MM bucket atomically.
 
-        Uses os.rename via Path.rename — atomic on the same filesystem. If a
-        file with the same name already exists in the destination, append
-        ``-1``, ``-2``, ... before the extension to avoid clobbering.
+def move_to_outcome(
+    self,
+    src: Path,
+    *,
+    outcome: str,
+    year_month: str,
+) -> Path:
+    """Move ``src`` into the outcome's YYYY-MM bucket atomically.
 
-        Returns the final destination path.
-        """
-        if outcome not in self._OUTCOME_DIRS:
-            raise ValueError(f"Unknown outcome: {outcome}")
-        dest_dir = (self.root / outcome / year_month)
-        dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
-        dest_dir.chmod(_DIR_MODE)
+    Uses os.rename via Path.rename — atomic on the same filesystem. If a
+    file with the same name already exists in the destination, append
+    ``-1``, ``-2``, ... before the extension to avoid clobbering.
 
-        final = self._next_available_path(dest_dir / src.name)
-        src.rename(final)
-        return final
+    Returns the final destination path.
+    """
+    if outcome not in self._OUTCOME_DIRS:
+        raise ValueError(f"Unknown outcome: {outcome}")
+    dest_dir = self.root / outcome / year_month
+    dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+    dest_dir.chmod(_DIR_MODE)
 
-    @staticmethod
-    def _next_available_path(candidate: Path) -> Path:
-        """Append -1, -2, ... before the suffix until we find a free name."""
-        if not candidate.exists():
-            return candidate
-        stem = candidate.stem
-        suffix = candidate.suffix  # includes leading "." or empty string
-        i = 1
-        while True:
-            attempt = candidate.with_name(f"{stem}-{i}{suffix}")
-            if not attempt.exists():
-                return attempt
-            i += 1
+    final = self._next_available_path(dest_dir / src.name)
+    src.rename(final)
+    return final
+
+
+@staticmethod
+def _next_available_path(candidate: Path) -> Path:
+    """Append -1, -2, ... before the suffix until we find a free name."""
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix  # includes leading "." or empty string
+    i = 1
+    while True:
+        attempt = candidate.with_name(f"{stem}-{i}{suffix}")
+        if not attempt.exists():
+            return attempt
+        i += 1
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -587,9 +589,7 @@ class TestLock:
                 with inbox_service.acquire_lock():
                     pass
 
-    def test_different_profiles_have_independent_locks(
-        self, tmp_path: Path
-    ) -> None:
+    def test_different_profiles_have_independent_locks(self, tmp_path: Path) -> None:
         db = MagicMock(spec=Database)
         a = InboxService(db=db, settings=_make_settings(tmp_path, profile="alice"))
         b = InboxService(db=db, settings=_make_settings(tmp_path, profile="bob"))
@@ -620,37 +620,36 @@ class InboxBusyError(Exception):
 Add to `InboxService`:
 
 ```python
-    @property
-    def lock_path(self) -> Path:
-        return self.root / ".inbox.lock"
+@property
+def lock_path(self) -> Path:
+    return self.root / ".inbox.lock"
 
-    @contextlib.contextmanager
-    def acquire_lock(self) -> Iterator[None]:
-        """Hold an exclusive flock on .inbox.lock for the duration of the block.
 
-        Per-profile lock (the path is under self.root, which is per-profile),
-        so concurrent syncs of different profiles do not contend. fcntl.flock
-        with LOCK_NB raises BlockingIOError when held; we surface that as
-        InboxBusyError so callers can return a structured error rather than
-        block.
-        """
-        self.ensure_layout()
-        # Open in "a" so the file exists; do not truncate.
-        fh = open(self.lock_path, "a")
+@contextlib.contextmanager
+def acquire_lock(self) -> Iterator[None]:
+    """Hold an exclusive flock on .inbox.lock for the duration of the block.
+
+    Per-profile lock (the path is under self.root, which is per-profile),
+    so concurrent syncs of different profiles do not contend. fcntl.flock
+    with LOCK_NB raises BlockingIOError when held; we surface that as
+    InboxBusyError so callers can return a structured error rather than
+    block.
+    """
+    self.ensure_layout()
+    # Open in "a" so the file exists; do not truncate.
+    fh = open(self.lock_path, "a")
+    try:
         try:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as e:
-                fh.close()
-                raise InboxBusyError(
-                    "Another sync is in progress for this profile."
-                ) from e
-            try:
-                yield
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
             fh.close()
+            raise InboxBusyError("Another sync is in progress for this profile.") from e
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -867,53 +866,52 @@ from moneybin.services.import_service import ImportService
 Add to `InboxService`:
 
 ```python
-    def sync(self, year_month: str | None = None) -> InboxSyncResult:
-        """Drain the inbox: import each eligible file and move it.
+def sync(self, year_month: str | None = None) -> InboxSyncResult:
+    """Drain the inbox: import each eligible file and move it.
 
-        Args:
-            year_month: Override the YYYY-MM bucket (testing). Defaults to UTC now.
-        """
-        ym = year_month or datetime.now(timezone.utc).strftime("%Y-%m")
-        with self.acquire_lock():
-            listing = self.enumerate()
-            result = InboxSyncResult(
-                ignored=list(listing.ignored),
-            )
-            t0 = time.monotonic()
-            for item in listing.would_process:
-                self._sync_one(item, year_month=ym, result=result)
-            INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
-            return result
-
-    def _sync_one(
-        self,
-        item: dict[str, object],
-        *,
-        year_month: str,
-        result: InboxSyncResult,
-    ) -> None:
-        rel_filename = str(item["filename"])
-        account_hint = item["account_hint"]
-        src = self.inbox_dir / rel_filename
-        importer = ImportService(self._db)
-        try:
-            import_result = importer.import_file(
-                str(src),
-                account_name=account_hint if isinstance(account_hint, str) else None,
-            )
-        except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
-            self._handle_failure(src, rel_filename, e, year_month, result)
-            return
-        final = self.move_to_outcome(src, outcome="processed", year_month=year_month)
-        result.processed.append(
-            {
-                "filename": rel_filename,
-                "moved_to": str(final.relative_to(self.root)),
-                "transactions": import_result.transactions,
-                "file_type": import_result.file_type,
-            }
+    Args:
+        year_month: Override the YYYY-MM bucket (testing). Defaults to UTC now.
+    """
+    ym = year_month or datetime.now(timezone.utc).strftime("%Y-%m")
+    with self.acquire_lock():
+        listing = self.enumerate()
+        result = InboxSyncResult(
+            ignored=list(listing.ignored),
         )
-        INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
+        t0 = time.monotonic()
+        for item in listing.would_process:
+            self._sync_one(item, year_month=ym, result=result)
+        INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
+        return result
+
+
+def _sync_one(
+    self,
+    item: dict[str, object],
+    *,
+    year_month: str,
+    result: InboxSyncResult,
+) -> None:
+    rel_filename = str(item["filename"])
+    account_hint = item["account_hint"]
+    src = self.inbox_dir / rel_filename
+    importer = ImportService(self._db)
+    try:
+        import_result = importer.import_file(
+            str(src),
+            account_name=account_hint if isinstance(account_hint, str) else None,
+        )
+    except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
+        self._handle_failure(src, rel_filename, e, year_month, result)
+        return
+    final = self.move_to_outcome(src, outcome="processed", year_month=year_month)
+    result.processed.append({
+        "filename": rel_filename,
+        "moved_to": str(final.relative_to(self.root)),
+        "transactions": import_result.transactions,
+        "file_type": import_result.file_type,
+    })
+    INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
 ```
 
 `_handle_failure` is added in Task 8 — for now stub it:
@@ -1038,7 +1036,11 @@ _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
         "needs_account_name",
         "resolve_account",
     ),
-    ("Could not reliably detect column mapping", "low_confidence_mapping", "map_columns"),
+    (
+        "Could not reliably detect column mapping",
+        "low_confidence_mapping",
+        "map_columns",
+    ),
     ("Unsupported file type", "unsupported_file_type", "detect_file_type"),
     ("No data rows found", "empty_file", "read_file"),
     ("Transform failed", "transform_error", "transform"),
@@ -1048,61 +1050,61 @@ _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
 Replace the stub `_handle_failure` in `InboxService`:
 
 ```python
-    def _handle_failure(
-        self,
-        src: Path,
-        rel_filename: str,
-        error: Exception,
-        year_month: str,
-        result: InboxSyncResult,
-    ) -> None:
-        error_code, stage = self._classify_error(error)
-        moved = self.move_to_outcome(src, outcome="failed", year_month=year_month)
-        sidecar = self.write_error_sidecar(
-            moved,
-            error_code=error_code,
-            stage=stage,
-            message=str(error),
-            suggestion=self._suggestion_for(error_code),
-        )
-        result.failed.append(
-            {
-                "filename": rel_filename,
-                "error_code": error_code,
-                "stage": stage,
-                "moved_to": str(moved.relative_to(self.root)),
-                "sidecar": str(sidecar.relative_to(self.root)),
-            }
-        )
-        INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
-        logger.warning(f"Inbox import failed: {rel_filename} → {error_code}")
+def _handle_failure(
+    self,
+    src: Path,
+    rel_filename: str,
+    error: Exception,
+    year_month: str,
+    result: InboxSyncResult,
+) -> None:
+    error_code, stage = self._classify_error(error)
+    moved = self.move_to_outcome(src, outcome="failed", year_month=year_month)
+    sidecar = self.write_error_sidecar(
+        moved,
+        error_code=error_code,
+        stage=stage,
+        message=str(error),
+        suggestion=self._suggestion_for(error_code),
+    )
+    result.failed.append({
+        "filename": rel_filename,
+        "error_code": error_code,
+        "stage": stage,
+        "moved_to": str(moved.relative_to(self.root)),
+        "sidecar": str(sidecar.relative_to(self.root)),
+    })
+    INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
+    logger.warning(f"Inbox import failed: {rel_filename} → {error_code}")
 
-    @staticmethod
-    def _classify_error(error: Exception) -> tuple[str, str]:
-        if isinstance(error, FileNotFoundError):
-            return ("file_not_found", "open_file")
-        if isinstance(error, ValueError):
-            msg = str(error)
-            for needle, code, stage in _VALUE_ERROR_PATTERNS:
-                if needle in msg:
-                    return (code, stage)
-            return ("value_error", "import")
-        return ("import_error", "import")
 
-    @staticmethod
-    def _suggestion_for(error_code: str) -> str | None:
-        return {
-            "needs_account_name": (
-                "Move the file into inbox/<account-slug>/ "
-                "(e.g., inbox/chase-checking/) and re-run sync."
-            ),
-            "low_confidence_mapping": (
-                "Use 'moneybin import file <path> --override field=column' "
-                "to map columns explicitly, then re-drop in inbox/."
-            ),
-            "unsupported_file_type": "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF.",
-            "empty_file": "File contained no data rows; remove or replace.",
-        }.get(error_code)
+@staticmethod
+def _classify_error(error: Exception) -> tuple[str, str]:
+    if isinstance(error, FileNotFoundError):
+        return ("file_not_found", "open_file")
+    if isinstance(error, ValueError):
+        msg = str(error)
+        for needle, code, stage in _VALUE_ERROR_PATTERNS:
+            if needle in msg:
+                return (code, stage)
+        return ("value_error", "import")
+    return ("import_error", "import")
+
+
+@staticmethod
+def _suggestion_for(error_code: str) -> str | None:
+    return {
+        "needs_account_name": (
+            "Move the file into inbox/<account-slug>/ "
+            "(e.g., inbox/chase-checking/) and re-run sync."
+        ),
+        "low_confidence_mapping": (
+            "Use 'moneybin import file <path> --override field=column' "
+            "to map columns explicitly, then re-drop in inbox/."
+        ),
+        "unsupported_file_type": "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF.",
+        "empty_file": "File contained no data rows; remove or replace.",
+    }.get(error_code)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1244,9 +1246,7 @@ class TestRecovery:
         assert final.exists()
         assert len(result.processed) == 1
 
-    def test_staging_files_in_failed_also_recovered(
-        self, tmp_path: Path
-    ) -> None:
+    def test_staging_files_in_failed_also_recovered(self, tmp_path: Path) -> None:
         db = MagicMock(spec=Database)
         svc = InboxService(db=db, settings=_make_settings(tmp_path))
         svc.ensure_layout()
@@ -1269,64 +1269,66 @@ Expected: FAIL — `recover_staging` not defined and `move_to_outcome` doesn't u
 Replace `move_to_outcome` in `inbox_service.py`:
 
 ```python
-    _STAGING_PREFIX = "staging-"
+_STAGING_PREFIX = "staging-"
 
-    def move_to_outcome(
-        self,
-        src: Path,
-        *,
-        outcome: str,
-        year_month: str,
-    ) -> Path:
-        """Atomic two-step move via a staging name in the outcome root.
 
-        1. Rename src → <outcome>/staging-<name>  (atomic, same FS guaranteed
-           because outcome dirs are siblings of inbox under self.root).
-        2. Rename staging-<name> → <outcome>/<year_month>/<name>  (atomic).
+def move_to_outcome(
+    self,
+    src: Path,
+    *,
+    outcome: str,
+    year_month: str,
+) -> Path:
+    """Atomic two-step move via a staging name in the outcome root.
 
-        A crash between (1) and (2) leaves a discoverable staging-* file at
-        the outcome root, which `recover_staging()` reverts on next sync.
-        """
-        if outcome not in self._OUTCOME_DIRS:
-            raise ValueError(f"Unknown outcome: {outcome}")
+    1. Rename src → <outcome>/staging-<name>  (atomic, same FS guaranteed
+       because outcome dirs are siblings of inbox under self.root).
+    2. Rename staging-<name> → <outcome>/<year_month>/<name>  (atomic).
+
+    A crash between (1) and (2) leaves a discoverable staging-* file at
+    the outcome root, which `recover_staging()` reverts on next sync.
+    """
+    if outcome not in self._OUTCOME_DIRS:
+        raise ValueError(f"Unknown outcome: {outcome}")
+    outcome_root = self.root / outcome
+    outcome_root.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+    outcome_root.chmod(_DIR_MODE)
+
+    staging = outcome_root / f"{self._STAGING_PREFIX}{src.name}"
+    staging = self._next_available_path(staging)
+    src.rename(staging)
+
+    dest_dir = outcome_root / year_month
+    dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+    dest_dir.chmod(_DIR_MODE)
+    final = self._next_available_path(dest_dir / src.name)
+    staging.rename(final)
+    return final
+
+
+def recover_staging(self) -> list[Path]:
+    """Move any leftover staging-* files in outcome roots back to inbox/.
+
+    Run at the start of every sync. Returns the recovered destinations
+    (in inbox/) so callers can log them if useful.
+    """
+    self.ensure_layout()
+    recovered: list[Path] = []
+    for outcome in self._OUTCOME_DIRS:
         outcome_root = self.root / outcome
-        outcome_root.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
-        outcome_root.chmod(_DIR_MODE)
-
-        staging = outcome_root / f"{self._STAGING_PREFIX}{src.name}"
-        staging = self._next_available_path(staging)
-        src.rename(staging)
-
-        dest_dir = outcome_root / year_month
-        dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
-        dest_dir.chmod(_DIR_MODE)
-        final = self._next_available_path(dest_dir / src.name)
-        staging.rename(final)
-        return final
-
-    def recover_staging(self) -> list[Path]:
-        """Move any leftover staging-* files in outcome roots back to inbox/.
-
-        Run at the start of every sync. Returns the recovered destinations
-        (in inbox/) so callers can log them if useful.
-        """
-        self.ensure_layout()
-        recovered: list[Path] = []
-        for outcome in self._OUTCOME_DIRS:
-            outcome_root = self.root / outcome
-            if not outcome_root.exists():
+        if not outcome_root.exists():
+            continue
+        for entry in outcome_root.iterdir():
+            if not entry.is_file():
                 continue
-            for entry in outcome_root.iterdir():
-                if not entry.is_file():
-                    continue
-                if not entry.name.startswith(self._STAGING_PREFIX):
-                    continue
-                original_name = entry.name[len(self._STAGING_PREFIX):]
-                dest = self._next_available_path(self.inbox_dir / original_name)
-                entry.rename(dest)
-                recovered.append(dest)
-                logger.info(f"Recovered staging file → {dest.name}")
-        return recovered
+            if not entry.name.startswith(self._STAGING_PREFIX):
+                continue
+            original_name = entry.name[len(self._STAGING_PREFIX) :]
+            dest = self._next_available_path(self.inbox_dir / original_name)
+            entry.rename(dest)
+            recovered.append(dest)
+            logger.info(f"Recovered staging file → {dest.name}")
+    return recovered
 ```
 
 Call `recover_staging()` at the top of `sync()`, before `enumerate()`:
@@ -1437,9 +1439,7 @@ def test_inbox_drain_prints_summary(
 ) -> None:
     fake = MagicMock()
     fake.sync.return_value = InboxSyncResult(
-        processed=[
-            {"filename": "chase-checking/march.csv", "transactions": 47}
-        ],
+        processed=[{"filename": "chase-checking/march.csv", "transactions": 47}],
         failed=[],
     )
     fake.root = tmp_path / "inbox-root"
@@ -1603,9 +1603,7 @@ def _print_text(result: object) -> tuple[int, int]:
             f"({item.get('transactions', 0)} transactions)"
         )
     for item in failed:
-        typer.echo(
-            f"✗ {item['filename']}  →  failed ({item['error_code']})"
-        )
+        typer.echo(f"✗ {item['filename']}  →  failed ({item['error_code']})")
         if "sidecar" in item:
             typer.echo(f"   See {item['sidecar']}", err=True)
 
@@ -1725,9 +1723,7 @@ from moneybin.services.inbox_service import InboxListResult, InboxSyncResult
 def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
-    monkeypatch.setattr(
-        "moneybin.mcp.tools.import_inbox._build_service", lambda: fake
-    )
+    monkeypatch.setattr("moneybin.mcp.tools.import_inbox._build_service", lambda: fake)
     return fake
 
 
@@ -1907,9 +1903,9 @@ git commit -m "Add import.inbox_sync and import.inbox_list MCP tools"
 Open `tests/e2e/test_e2e_help.py` and find the `_HELP_COMMANDS` list. Add entries (matching the surrounding style):
 
 ```python
-    "import inbox",
-    "import inbox list",
-    "import inbox path",
+("import inbox",)
+("import inbox list",)
+("import inbox path",)
 ```
 
 - [ ] **Step 2: Write the workflow E2E test**

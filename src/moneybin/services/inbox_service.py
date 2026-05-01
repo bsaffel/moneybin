@@ -16,6 +16,7 @@ from collections.abc import Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -75,7 +76,7 @@ class InboxService:
     """Filesystem-state-as-API import inbox; see module docstring."""
 
     def __init__(self, db: Database, settings: MoneyBinSettings) -> None:
-        """Bind the inbox to a database and settings (paths derive from profile)."""
+        """Bind the inbox service to a database and settings."""
         self._db = db
         self._settings = settings
 
@@ -91,12 +92,12 @@ class InboxService:
 
     @property
     def processed_dir(self) -> Path:
-        """Archive root for successfully imported files (organized by YYYY-MM)."""
+        """Archive root for successfully imported files."""
         return self.root / "processed"
 
     @property
     def failed_dir(self) -> Path:
-        """Quarantine root for files whose import raised (organized by YYYY-MM)."""
+        """Quarantine root for files whose import raised."""
         return self.root / "failed"
 
     @property
@@ -164,7 +165,6 @@ class InboxService:
             return
         if entry.is_dir():
             if account_hint is not None:
-                # Already inside one subfolder; deeper levels are ignored.
                 result.ignored.append({"path": rel, "reason": "nested_subfolder"})
                 return
             for child in sorted(entry.iterdir()):
@@ -172,30 +172,24 @@ class InboxService:
             return
         result.ignored.append({"path": rel, "reason": "not_regular_file"})
 
-    _OUTCOME_DIRS = ("processed", "failed")
+    _OUTCOME_DIRS: tuple[Literal["processed", "failed"], ...] = ("processed", "failed")
     _STAGING_PREFIX = "staging-"
 
     def move_to_outcome(
         self,
         src: Path,
         *,
-        outcome: str,
+        outcome: Literal["processed", "failed"],
         year_month: str,
     ) -> Path:
         """Atomic two-step move: src → outcome/staging-name → outcome/YYYY-MM/name."""
-        if outcome not in self._OUTCOME_DIRS:
-            raise ValueError(f"Unknown outcome: {outcome}")
         outcome_root = self.root / outcome
-        outcome_root.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
-        outcome_root.chmod(_DIR_MODE)
-
         staging = outcome_root / f"{self._STAGING_PREFIX}{src.name}"
         staging = self._next_available_path(staging)
         src.rename(staging)
 
         dest_dir = outcome_root / year_month
         dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
-        dest_dir.chmod(_DIR_MODE)
         final = self._next_available_path(dest_dir / src.name)
         staging.rename(final)
         return final
@@ -242,9 +236,12 @@ class InboxService:
                 self.recover_staging()
                 listing = self.enumerate()
                 result = InboxSyncResult(ignored=list(listing.ignored))
+                importer = ImportService(self._db)
                 t0 = time.monotonic()
                 for item in listing.would_process:
-                    self._sync_one(item, year_month=ym, result=result)
+                    self._sync_one(
+                        item, importer=importer, year_month=ym, result=result
+                    )
                 INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
                 return result
         except InboxBusyError:
@@ -255,6 +252,7 @@ class InboxService:
         self,
         item: dict[str, object],
         *,
+        importer: ImportService,
         year_month: str,
         result: InboxSyncResult,
     ) -> None:
@@ -262,7 +260,6 @@ class InboxService:
         rel_filename = str(item["filename"])
         account_hint = item["account_hint"]
         src = self.inbox_dir / rel_filename
-        importer = ImportService(self._db)
         try:
             import_result = importer.import_file(
                 str(src),
