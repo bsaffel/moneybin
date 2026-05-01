@@ -23,3 +23,24 @@ def test_evaluation_result_passed_inferred_externally() -> None:
     )
     assert r.passed is True
     assert r.value > r.threshold
+
+
+def test_expectation_result_has_expected_shape():
+    """ExpectationResult stores all fields correctly."""
+    from moneybin.validation.result import ExpectationResult
+
+    r = ExpectationResult(
+        name="x", kind="match_decision", passed=True, details={"a": 1}
+    )
+    assert r.name == "x"
+    assert r.kind == "match_decision"
+    assert r.passed is True
+    assert r.details == {"a": 1}
+
+
+def test_expectation_result_default_details_empty():
+    """ExpectationResult defaults details to an empty dict."""
+    from moneybin.validation.result import ExpectationResult
+
+    r = ExpectationResult(name="x", kind="k", passed=False)
+    assert r.details == {}
