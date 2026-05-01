@@ -14,7 +14,6 @@ import shutil
 import tempfile
 import time
 from contextlib import contextmanager
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -104,15 +103,16 @@ def run_scenario(scenario: Scenario, *, keep_tmpdir: bool = False) -> ScenarioRe
     started = time.perf_counter()
     tmp = tempfile.mkdtemp(prefix=f"scenario-{scenario.name}-")
     env = {"MONEYBIN_HOME": tmp, "MONEYBIN_PROFILE": "scenario"}
-    # Propagate encryption key to subprocess steps (e.g., transform_via_subprocess).
-    if encryption_key := os.environ.get("MONEYBIN_DATABASE__ENCRYPTION_KEY"):
-        env["MONEYBIN_DATABASE__ENCRYPTION_KEY"] = encryption_key
-    # Propagate keyring backend so subprocess uses MemoryKeyring instead of system keyring.
-    if keyring_backend := os.environ.get("PYTHON_KEYRING_BACKEND"):
-        env["PYTHON_KEYRING_BACKEND"] = keyring_backend
-        # Also propagate PYTHONPATH so subprocess can import MemoryKeyring.
-        if pythonpath := os.environ.get("PYTHONPATH"):
-            env["PYTHONPATH"] = pythonpath
+    # Propagate caller's keyring/encryption/import context to subprocess steps
+    # (e.g. transform_via_subprocess) so they see the same MemoryKeyring and
+    # encryption key as the in-process steps.
+    for var in (
+        "MONEYBIN_DATABASE__ENCRYPTION_KEY",
+        "PYTHON_KEYRING_BACKEND",
+        "PYTHONPATH",
+    ):
+        if value := os.environ.get(var):
+            env[var] = value
     cleanup = not keep_tmpdir
 
     db: Database | None = None
@@ -311,19 +311,12 @@ def _build_result(
     evaluations: list[EvaluationResult],
     halted: str | None = None,
 ) -> ScenarioResult:
-    duration = round(time.perf_counter() - started, 2)
-    all_a = all(a.passed for a in assertions)
-    all_e = all(e.passed for e in expectations) if expectations else True
-    all_v = all(e.passed for e in evaluations) if evaluations else True
-    passed = all_a and all_e and all_v and halted is None
-
     return ScenarioResult(
         scenario=scenario.name,
-        passed=passed,
-        duration_seconds=duration,
+        duration_seconds=round(time.perf_counter() - started, 2),
         tmpdir=tmpdir if keep_tmpdir else None,
         halted=halted,
-        assertions=[asdict(a) for a in assertions],
-        expectations=[asdict(e) for e in expectations],
-        evaluations=[asdict(e) for e in evaluations],
+        assertions=assertions,
+        expectations=expectations,
+        evaluations=evaluations,
     )
