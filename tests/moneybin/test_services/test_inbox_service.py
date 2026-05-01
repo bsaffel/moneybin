@@ -186,3 +186,35 @@ class TestLock:
         with a.acquire_lock():
             with b.acquire_lock():
                 pass
+
+
+class TestErrorSidecar:
+    """YAML error sidecar writer."""
+
+    def test_writes_yaml_alongside_failed_file(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        import yaml
+
+        inbox_service.ensure_layout()
+        failed_dir = inbox_service.failed_dir / "2026-05"
+        failed_dir.mkdir(parents=True)
+        moved = failed_dir / "unknown.csv"
+        moved.write_text("col1\n1\n")
+
+        sidecar = inbox_service.write_error_sidecar(
+            moved,
+            error_code="needs_account_name",
+            stage="resolve_account",
+            message="Single-account file requires an account hint",
+            suggestion="Move into inbox/<account-slug>/ and re-run sync",
+            extra={"available_accounts": ["chase-checking", "amex"]},
+        )
+
+        assert sidecar == failed_dir / "unknown.csv.error.yml"
+        loaded = yaml.safe_load(sidecar.read_text())
+        assert loaded["error_code"] == "needs_account_name"
+        assert loaded["stage"] == "resolve_account"
+        assert loaded["message"].startswith("Single-account")
+        assert loaded["suggestion"].startswith("Move into")
+        assert loaded["available_accounts"] == ["chase-checking", "amex"]

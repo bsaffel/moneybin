@@ -15,6 +15,8 @@ from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from moneybin.config import MoneyBinSettings
 from moneybin.database import Database
 
@@ -179,3 +181,27 @@ class InboxService:
             if not attempt.exists():
                 return attempt
             i += 1
+
+    @staticmethod
+    def write_error_sidecar(
+        moved_path: Path,
+        *,
+        error_code: str,
+        stage: str,
+        message: str,
+        suggestion: str | None = None,
+        extra: dict[str, object] | None = None,
+    ) -> Path:
+        """Write a <filename>.error.yml sidecar next to a failed file."""
+        sidecar = moved_path.with_name(moved_path.name + ".error.yml")
+        payload: dict[str, object] = {
+            "error_code": error_code,
+            "stage": stage,
+            "message": message,
+        }
+        if suggestion is not None:
+            payload["suggestion"] = suggestion
+        if extra:
+            payload.update(extra)
+        sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))
+        return sidecar
