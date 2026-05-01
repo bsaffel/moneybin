@@ -24,12 +24,24 @@ from pathlib import Path
 
 os.environ["MAX_FORK_WORKERS"] = "1"
 
-# Disable Rich/Click ANSI styling so help-text assertions match plain strings.
-# CI sets FORCE_COLOR=1, which causes Typer/Rich to inject color escapes inside
-# option names (`--\x1b[36moutput\x1b[0m`) — breaking substring checks like
-# `"--output" in result.stdout`. NO_COLOR is the standard opt-out.
-os.environ["NO_COLOR"] = "1"
-os.environ.pop("FORCE_COLOR", None)
+# Force every Typer app to use plain Click help rendering during tests.
+# Rich-mode help wraps option names in bold/dim ANSI escapes
+# (`--\x1b[1moutput\x1b[0m`) under CI environments that set CLICOLOR_FORCE
+# or FORCE_COLOR — breaking substring checks like `"--output" in stdout`.
+# `NO_COLOR` doesn't help because bold/dim aren't colors. Patching the
+# constructor here (before any moneybin module imports typer) ensures the
+# root app and every sub-typer instance render help in plain text.
+import typer  # noqa: E402
+
+_typer_init = typer.Typer.__init__
+
+
+def _typer_init_no_rich(self: typer.Typer, *args: object, **kwargs: object) -> None:
+    kwargs["rich_markup_mode"] = None
+    _typer_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+
+typer.Typer.__init__ = _typer_init_no_rich  # type: ignore[method-assign]
 
 # Per-xdist-worker MoneyBin home so parallel tests don't trample each other's
 # `.moneybin/profiles/` directory. Each worker (`gw0`, `gw1`, …) gets its own
