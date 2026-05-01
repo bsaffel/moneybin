@@ -853,10 +853,16 @@ class TestDbInfoCommand:
 
         mock_db = MagicMock()
         mock_db.__enter__ = lambda self: self  # type: ignore[assignment]
-        mock_db.execute.return_value.fetchall.return_value = [
-            ("core", "fct_transactions")
-        ]
-        mock_db.execute.return_value.fetchone.return_value = (42,)
+
+        def execute_side_effect(sql: str, *_args: Any, **_kw: Any) -> MagicMock:
+            result = MagicMock()
+            if "information_schema" in sql:
+                result.fetchall.return_value = [("core", "fct_transactions")]
+            else:
+                result.fetchall.return_value = [("core", "fct_transactions", 42)]
+            return result
+
+        mock_db.execute.side_effect = execute_side_effect
         mock_db.sql.return_value.fetchone.return_value = ("v1.2.3",)
         mocker.patch("moneybin.database.Database", return_value=mock_db)
 
