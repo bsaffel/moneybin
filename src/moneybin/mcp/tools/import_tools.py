@@ -18,7 +18,11 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    build_envelope,
+    build_error_envelope,
+)
 
 
 def _validate_file_path(file_path: str) -> Path:
@@ -41,11 +45,12 @@ def import_file(
     account_name: str | None = None,
     institution: str | None = None,
     format_name: str | None = None,
+    force: bool = False,
 ) -> ResponseEnvelope:
     """Import a financial data file into MoneyBin.
 
     Supported formats (detected automatically by extension):
-      - .ofx / .qfx -- OFX/Quicken bank statements
+      - .ofx / .qfx / .qbo -- OFX/Quicken bank statements
       - .pdf -- W-2 tax forms
       - .csv / .tsv / .xlsx / .parquet / .feather -- tabular transaction exports
 
@@ -56,22 +61,38 @@ def import_file(
         file_path: Absolute path to the file to import.
         account_id: Explicit account identifier (bypasses name matching).
         account_name: Account name for single-account tabular files.
-        institution: Institution name (OFX only).
+        institution: Institution name override for OFX/QFX/QBO files. Consulted
+            only when the file's <FI><ORG>, FID lookup, and filename heuristic
+            all yield nothing. For files with institution metadata, this
+            argument is logged and ignored.
         format_name: Use a specific named format (bypass auto-detection).
+        force: If True, allow re-importing a file already in the import log.
+            Returns a structured error otherwise.
     """
+    from moneybin.loaders import import_log
     from moneybin.services.import_service import ImportService
 
+    db = get_database()
     validated = _validate_file_path(file_path)
     try:
-        result = ImportService(get_database()).import_file(
+        result = ImportService(db).import_file(
             str(validated),
             account_id=account_id,
             account_name=account_name,
             institution=institution,
             format_name=format_name,
+            force=force,
+            interactive=False,
         )
     except ValueError as e:
-        raise UserError(str(e), code="import_error") from e
+        return build_error_envelope(
+            error=UserError(str(e), code="import_error"),
+            sensitivity="low",
+        )
+
+    history = import_log.get_import_history(db, limit=1)
+    import_id = history[0]["import_id"] if history else None
+
     return build_envelope(
         data={
             "message": result.summary(),
@@ -80,9 +101,13 @@ def import_file(
             "accounts": result.accounts,
             "date_range": result.date_range,
             "core_tables_rebuilt": result.core_tables_rebuilt,
+            "import_id": import_id,
         },
         sensitivity="low",
         actions=[
+            f"Use import_revert with import_id={import_id} to undo this import"
+            if import_id
+            else "Use import_status to view recent imports",
             "Use transactions_search to view imported transactions",
             "Use categorize_uncategorized to categorize new transactions",
         ],
@@ -225,7 +250,7 @@ def register_import_tools(mcp: FastMCP) -> None:
         mcp,
         import_file,
         "import_file",
-        "Import a financial data file (OFX, CSV, TSV, Excel, "
+        "Import a financial data file (OFX, QFX, QBO, CSV, TSV, Excel, "
         "Parquet, PDF) into MoneyBin.",
     )
     register(
