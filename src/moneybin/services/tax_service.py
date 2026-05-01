@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
-from moneybin.mcp.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import W2_FORMS
 
 logger = logging.getLogger(__name__)

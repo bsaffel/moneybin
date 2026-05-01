@@ -11,16 +11,18 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from fastmcp import FastMCP
+
 from moneybin.database import get_database
+from moneybin.mcp._registration import tags_for
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.budget_service import BudgetService
 
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="budget")
 def budget_set(
     category: str,
     monthly_amount: str,
@@ -45,7 +47,7 @@ def budget_set(
     return result.to_envelope()
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", domain="budget")
 def budget_status(
     month: str | None = None,
 ) -> ResponseEnvelope:
@@ -62,25 +64,20 @@ def budget_status(
     return result.to_envelope()
 
 
-def register_budget_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:
-    """Register all budget namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="budget.set",
-            description=(
-                "Create or update a monthly budget target for a spending category."
-            ),
-            fn=budget_set,
+def register_budget_tools(mcp: FastMCP) -> None:
+    """Register all budget namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="budget.set",
+        description=(
+            "Create or update a monthly budget target for a spending category."
         ),
-        ToolDefinition(
-            name="budget.status",
-            description=(
-                "Get budget vs actual spending comparison for a month. "
-                "Shows target, spent, remaining, and status for each category."
-            ),
-            fn=budget_status,
+        tags=tags_for(budget_set),
+    )(budget_set)
+    mcp.tool(
+        name="budget.status",
+        description=(
+            "Get budget vs actual spending comparison for a month. "
+            "Shows target, spent, remaining, and status for each category."
         ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(budget_status),
+    )(budget_status)

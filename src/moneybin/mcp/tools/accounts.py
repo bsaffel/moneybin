@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import logging
 
+from fastmcp import FastMCP
+
 from moneybin.database import get_database
+from moneybin.mcp._registration import tags_for
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.envelope import ResponseEnvelope
-from moneybin.mcp.namespaces import NamespaceRegistry, ToolDefinition
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.account_service import AccountService
 
 logger = logging.getLogger(__name__)
@@ -49,26 +51,21 @@ def accounts_balances(
     return result.to_envelope()
 
 
-def register_accounts_tools(registry: NamespaceRegistry) -> list[ToolDefinition]:
-    """Register all accounts namespace tools with the registry."""
-    tools = [
-        ToolDefinition(
-            name="accounts.list",
-            description=(
-                "List all accounts in MoneyBin with type, institution, "
-                "and source information."
-            ),
-            fn=accounts_list,
+def register_accounts_tools(mcp: FastMCP) -> None:
+    """Register all accounts namespace tools with the FastMCP server."""
+    mcp.tool(
+        name="accounts.list",
+        description=(
+            "List all accounts in MoneyBin with type, institution, "
+            "and source information."
         ),
-        ToolDefinition(
-            name="accounts.balances",
-            description=(
-                "Get latest balance snapshot for each account. "
-                "Optionally filter by account ID."
-            ),
-            fn=accounts_balances,
+        tags=tags_for(accounts_list),
+    )(accounts_list)
+    mcp.tool(
+        name="accounts.balances",
+        description=(
+            "Get latest balance snapshot for each account. "
+            "Optionally filter by account ID."
         ),
-    ]
-    for tool in tools:
-        registry.register(tool)
-    return tools
+        tags=tags_for(accounts_balances),
+    )(accounts_balances)

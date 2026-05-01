@@ -11,7 +11,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, render_or_json
 from moneybin.cli.utils import handle_cli_errors
-from moneybin.mcp.envelope import ResponseEnvelope
+from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,7 @@ def auto_review_cmd(
     """List pending auto-rule proposals with sample transactions and trigger counts."""
     import json
 
+    from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors() as db:
@@ -128,7 +129,7 @@ def auto_review_cmd(
 
     proposals = result.proposals
     if output == "json":
-        typer.echo(json.dumps(result.to_envelope().to_dict()))
+        typer.echo(json.dumps(auto_review_envelope(result).to_dict()))
         return
 
     if not proposals:
