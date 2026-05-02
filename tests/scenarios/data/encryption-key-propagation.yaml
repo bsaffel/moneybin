@@ -16,12 +16,9 @@ pipeline:
   - transform_via_subprocess
 
 assertions:
-  - name: subprocess_wrote_to_encrypted_db
-    fn: assert_min_rows
-    args:
-      table_min_rows:
-        core.fct_transactions: 100
-        core.dim_accounts: 2
+  # Row-count parity with the deterministic generator is asserted in pytest
+  # (see tests/scenarios/test_encryption_key_propagation.py). The previous
+  # `min_rows ≥ 100` band was an observe-and-paste expectation.
   - name: no_unencrypted_artifacts
     fn: assert_no_unencrypted_db_files
     args:

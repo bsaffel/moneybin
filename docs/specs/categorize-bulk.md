@@ -5,11 +5,11 @@ implemented
 
 ## Goal
 
-Add a `moneybin categorize bulk` CLI command that mirrors the existing `categorize.bulk` MCP tool, and eliminate per-item duplicate DB lookups inside `CategorizationService.bulk_categorize` by threading a shared `BulkRecordingContext` through `AutoRuleService.record_categorization`. Tighten the bulk-categorize input contract by replacing untyped dicts with a shared Pydantic model validated at every boundary.
+Add a `moneybin categorize bulk` CLI command that mirrors the existing `categorize_bulk` MCP tool, and eliminate per-item duplicate DB lookups inside `CategorizationService.bulk_categorize` by threading a shared `BulkRecordingContext` through `AutoRuleService.record_categorization`. Tighten the bulk-categorize input contract by replacing untyped dicts with a shared Pydantic model validated at every boundary.
 
 ## Background
 
-- `mcp-architecture.md` §5 (CLI Symmetry) requires every MCP tool to have a CLI equivalent. `categorize.bulk` is the largest remaining gap.
+- `mcp-architecture.md` §5 (CLI Symmetry) requires every MCP tool to have a CLI equivalent. `categorize_bulk` is the largest remaining gap.
 - `private/followups.md` items: "No `categorize bulk` CLI command", "Cache active-rule patterns and merchant pairs across `bulk_categorize` loop", "Avoid duplicate description SELECT in `bulk_categorize`".
 - Auto-rule learning is *triggered* by `bulk_categorize`. Without a CLI surface, there is no honest end-to-end CLI path through the auto-rule pipeline. `tests/e2e/test_e2e_workflows.py::TestAutoRulePipeline::test_import_then_promote_proposal` currently seeds `app.proposed_rules` via raw `db query` SQL as a workaround.
 - Today's hot path: `AutoRuleService.record_categorization` runs ~5 DB queries per item (description SELECT, rule-engine evaluation queries, merchants table SELECT) — many of which duplicate state the bulk loop already fetched.
@@ -18,7 +18,7 @@ Add a `moneybin categorize bulk` CLI command that mirrors the existing `categori
 
 1. New CLI command `moneybin categorize bulk` accepts a JSON array of categorization items from a file (`--input <path>`) or stdin (sentinel `-`), with `--output {table,json}` mirroring sibling commands.
 2. `CategorizationService.bulk_categorize` requires `Sequence[BulkCategorizationItem]` (Pydantic model). No untyped-dict input path.
-3. The Pydantic model is shared between the CLI command and the `categorize.bulk` MCP tool. Both surfaces validate per-item, accumulate validation failures into the existing `BulkCategorizationResult.error_details`, and never short-circuit a partially-valid batch.
+3. The Pydantic model is shared between the CLI command and the `categorize_bulk` MCP tool. Both surfaces validate per-item, accumulate validation failures into the existing `BulkCategorizationResult.error_details`, and never short-circuit a partially-valid batch.
 4. CLI exit code is `1` when any item failed to apply (`errors > 0` or `skipped > 0`), `0` otherwise.
 5. `bulk_categorize` builds one `BulkRecordingContext` (txn-row map with `description`/`amount`/`account_id`, active-rule rows, merchant rows) before the per-item loop and threads it into every `record_categorization` call. Context owns merchant-cache invalidation when the loop creates a new merchant.
 6. `AutoRuleService.record_categorization` accepts an optional `context: BulkRecordingContext | None`. When provided, helpers consult the context instead of issuing DB queries. When `None`, behavior is unchanged for non-bulk callers.
@@ -66,7 +66,7 @@ No schema changes. New in-memory types only:
 - `tests/moneybin/test_categorization_service.py`, `tests/moneybin/test_auto_rule_service.py`
   - Migrate dict-based bulk tests to construct `BulkCategorizationItem`. Add coverage for context-routed paths and assertions that DB queries are not issued when the context is provided.
 - `docs/specs/INDEX.md` — add this spec under Categorization.
-- `docs/specs/mcp-architecture.md` §5 — note that `categorize.bulk` now has CLI parity.
+- `docs/specs/mcp-architecture.md` §5 — note that `categorize_bulk` now has CLI parity.
 - `private/followups.md` — remove the three resolved items.
 - `README.md` — per `.claude/rules/shipping.md`: update CLI section / categorization roadmap.
 
@@ -114,7 +114,7 @@ Exit code: `0` if every item applied cleanly, `1` if any item failed parse, vali
 
 ## MCP Interface
 
-`categorize.bulk` tool — no signature change at the protocol level. Internally:
+`categorize_bulk` tool — no signature change at the protocol level. Internally:
 
 - Same `_validate_items()` helper as the CLI; validation failures accumulate to `error_details`.
 - Result envelope unchanged: `{summary, data, actions}` with the existing `BulkCategorizationResult` fields under `data`.

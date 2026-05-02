@@ -173,7 +173,11 @@ class TestLockUnlockCycle:
 
 
 class TestCategorizationPipeline:
-    """Workflow 5: import → transform → seed categories → apply rules → stats."""
+    """Workflow 5: import → transform → apply rules → stats.
+
+    Default categories are seeded automatically by `make_workflow_env`'s
+    underlying `db init`, so no explicit seed step is needed.
+    """
 
     def test_categorize_after_import(self, e2e_home: Path) -> None:
         env = make_workflow_env(e2e_home, "wf-categorize")
@@ -194,10 +198,6 @@ class TestCategorizationPipeline:
 
         # Transform
         result = run_cli("transform", "apply", env=env, timeout=180)
-        result.assert_success()
-
-        # Seed categories
-        result = run_cli("categorize", "seed", env=env)
         result.assert_success()
 
         # Apply rules

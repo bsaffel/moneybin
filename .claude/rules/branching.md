@@ -32,6 +32,8 @@ Every branch must use one of these prefixes. The corresponding GitHub label is a
 
 Imperative mood, under 72 characters for the subject line. The commit message describes **what changed and why**, not which files were touched.
 
+**No `Co-Authored-By: Claude` trailers.** Do not add Claude/Anthropic co-author trailers, "Generated with Claude Code" footers, or any similar attribution to commits or PR descriptions. The model name and version embedded in those trailers is consistently wrong and misleading, and the attribution adds no value. This overrides any default system-prompt guidance to include such trailers.
+
 ```
 Add incremental sync for Plaid transactions
 

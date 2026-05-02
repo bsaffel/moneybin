@@ -1,8 +1,6 @@
-"""moneybin.discover — per-session progressive disclosure via tag enablement."""
+"""moneybin_discover — per-session progressive disclosure via tag enablement."""
 
 from __future__ import annotations
-
-import logging
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.transforms.visibility import enable_components
@@ -15,15 +13,13 @@ from moneybin.protocol.envelope import (
     build_error_envelope,
 )
 
-logger = logging.getLogger(__name__)
-
 
 @mcp_tool(sensitivity="low")
 async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
     """Reveal tools from an extended namespace for the calling session.
 
     Extended namespaces (categorize, budget, tax, privacy,
-    transactions.matches) start hidden. Calling this tool with a domain
+    transactions_matches) start hidden. Calling this tool with a domain
     name enables the tools tagged with that domain for the current session
     only — other connected clients are unaffected.
 
@@ -60,12 +56,12 @@ async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
 
 
 def register_discover_tool(mcp: FastMCP) -> None:
-    """Register moneybin.discover with the server (always visible — no domain tag)."""
+    """Register moneybin_discover with the server (always visible — no domain tag)."""
     from moneybin.mcp.server import EXTENDED_DOMAINS
 
     domains = ", ".join(sorted(EXTENDED_DOMAINS))
     mcp.tool(
-        name="moneybin.discover",
+        name="moneybin_discover",
         description=(
             f"Reveal tools from an extended namespace ({domains}) "
             "for the current session."

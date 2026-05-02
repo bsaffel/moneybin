@@ -2,13 +2,11 @@
 """Accounts namespace tools — account listing and balances.
 
 Tools:
-    - accounts.list — List all accounts (low sensitivity)
-    - accounts.balances — Get latest account balances (medium sensitivity)
+    - accounts_list — List all accounts (low sensitivity)
+    - accounts_balances — Get latest account balances (medium sensitivity)
 """
 
 from __future__ import annotations
-
-import logging
 
 from fastmcp import FastMCP
 
@@ -17,8 +15,6 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.account_service import AccountService
-
-logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low")
@@ -56,13 +52,13 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         accounts_list,
-        "accounts.list",
+        "accounts_list",
         "List all accounts in MoneyBin with type, institution, and source information.",
     )
     register(
         mcp,
         accounts_balances,
-        "accounts.balances",
+        "accounts_balances",
         "Get latest balance snapshot for each account. "
         "Optionally filter by account ID.",
     )

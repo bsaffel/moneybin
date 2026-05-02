@@ -39,7 +39,11 @@ IMPORT_LOG = TableRef("raw", "import_log")
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories")
 BUDGETS = TableRef("app", "budgets")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes")
-CATEGORIES = TableRef("app", "categories")
+CATEGORIES = TableRef(
+    "app", "categories"
+)  # view: seeds.categories ∪ app.user_categories, with overrides applied
+USER_CATEGORIES = TableRef("app", "user_categories")
+CATEGORY_OVERRIDES = TableRef("app", "category_overrides")
 MERCHANTS = TableRef("app", "merchants")
 CATEGORIZATION_RULES = TableRef("app", "categorization_rules")
 PROPOSED_RULES = TableRef("app", "proposed_rules")

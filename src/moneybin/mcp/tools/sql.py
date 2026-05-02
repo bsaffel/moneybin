@@ -2,12 +2,10 @@
 """SQL namespace tools — direct read-only SQL queries.
 
 Tools:
-    - sql.query — Execute a read-only SQL query (medium sensitivity)
+    - sql_query — Execute a read-only SQL query (medium sensitivity)
 """
 
 from __future__ import annotations
-
-import logging
 
 from fastmcp import FastMCP
 
@@ -16,8 +14,6 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-
-logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="medium")
@@ -57,7 +53,7 @@ def register_sql_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         sql_query,
-        "sql.query",
+        "sql_query",
         "Execute a read-only SQL query against the database. "
         "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN.",
     )

@@ -13,6 +13,7 @@ from typing import Any
 
 from moneybin.database import Database
 from moneybin.matching import UNIONED_TABLE, quote_table_ref
+from moneybin.matching.persistence import MatchTier
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ def _get_candidates(
     *,
     table: str,
     date_window_days: int,
-    tier: str,
+    tier: MatchTier,
     excluded_ids: set[tuple[str, str]] | None,
     rejected_pairs: list[dict[str, Any]] | None,
 ) -> list[CandidatePair]:

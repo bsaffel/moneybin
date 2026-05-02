@@ -9,12 +9,9 @@ See ``mcp-tool-surface.md`` section 14.
 
 from __future__ import annotations
 
-import logging
 import textwrap
 
 from .server import mcp
-
-logger = logging.getLogger(__name__)
 
 
 def _dedent(text: str) -> str:
@@ -32,18 +29,18 @@ def monthly_review() -> str:
         that needs attention.
 
         **Relevant tools:**
-        - spending.summary — income vs expenses by month
-        - spending.by_category — category breakdown
-        - budget.status — budget vs actual comparison
-        - accounts.balances — current account balances
-        - transactions.recurring — subscription/recurring charge review
+        - spending_summary — income vs expenses by month
+        - spending_by_category — category breakdown
+        - budget_status — budget vs actual comparison
+        - accounts_balances — current account balances
+        - transactions_recurring — subscription/recurring charge review
 
         **Workflow:**
-        1. Start with spending.summary for the last 1-2 months
-        2. If spending is above average, drill into spending.by_category
-        3. Check budget.status for any categories over budget
-        4. Review accounts.balances for current position
-        5. Optionally check transactions.recurring for subscription review
+        1. Start with spending_summary for the last 1-2 months
+        2. If spending is above average, drill into spending_by_category
+        3. Check budget_status for any categories over budget
+        4. Review accounts_balances for current position
+        5. Optionally check transactions_recurring for subscription review
 
         **Guardrails:**
         - Present totals and trends, not individual transaction details unless asked
@@ -63,21 +60,20 @@ def categorization_organize() -> str:
         using a mix of rules and direct categorization.
 
         **Relevant tools:**
-        - categorize.stats — check current categorization coverage
-        - categorize.uncategorized — fetch uncategorized transactions
-        - categorize.categories — see available categories
-        - categorize.bulk — apply categories to transactions
-        - categorize.create_rules — create rules for recurring patterns
-        - categorize.create_merchants — map merchant names to categories
+        - categorize_stats — check current categorization coverage
+        - categorize_uncategorized — fetch uncategorized transactions
+        - categorize_categories — see available categories
+        - categorize_bulk — apply categories to transactions
+        - categorize_create_rules — create rules for recurring patterns
+        - categorize_create_merchants — map merchant names to categories
 
         **Workflow:**
-        1. Check categorize.stats to see how many are uncategorized
-        2. If categories haven't been seeded, use categorize.seed first
-        3. Fetch a batch with categorize.uncategorized (limit ~20)
-        4. Group similar transactions by description pattern
-        5. For repeating patterns, suggest a rule (categorize.create_rules)
-        6. For one-offs, use categorize.bulk directly
-        7. Repeat until coverage is acceptable
+        1. Check categorize_stats to see how many are uncategorized
+        2. Fetch a batch with categorize_uncategorized (limit ~20)
+        3. Group similar transactions by description pattern
+        4. For repeating patterns, suggest a rule (categorize_create_rules)
+        5. For one-offs, use categorize_bulk directly
+        6. Repeat until coverage is acceptable
 
         **Guardrails:**
         - Always confirm category assignments with the user before applying
@@ -99,17 +95,17 @@ def review_auto_rules() -> str:
         they can promote useful rules to active and reject noisy ones.
 
         **Relevant tools:**
-        - categorize.auto_stats — pending proposal count and rule health
-        - categorize.auto_review — list pending proposals with samples
-        - categorize.auto_confirm — batch approve/reject proposals by ID
-        - categorize.rules — review currently active rules
+        - categorize_auto_stats — pending proposal count and rule health
+        - categorize_auto_review — list pending proposals with samples
+        - categorize_auto_confirm — batch approve/reject proposals by ID
+        - categorize_rules — review currently active rules
 
         **Workflow:**
-        1. Check categorize.auto_stats for pending proposal count
-        2. Fetch proposals with categorize.auto_review
+        1. Check categorize_auto_stats for pending proposal count
+        2. Fetch proposals with categorize_auto_review
         3. For each proposal, show the merchant pattern, suggested
            category, sample matching transactions, and trigger count
-        4. Group user decisions and submit them with categorize.auto_confirm
+        4. Group user decisions and submit them with categorize_auto_confirm
 
         **Guardrails:**
         - Always show sample transactions before asking for approval
@@ -129,20 +125,21 @@ def onboarding() -> str:
         so they can start querying their finances.
 
         **Relevant tools:**
-        - import.file — import financial data files
-        - import.list_formats — see supported formats
-        - accounts.list — verify imported accounts
-        - categorize.seed — initialize default categories
-        - categorize.stats — check categorization coverage
-        - spending.summary — first look at their data
+        - import_file — import financial data files
+        - import_list_formats — see supported formats
+        - accounts_list — verify imported accounts
+        - categorize_stats — check categorization coverage
+        - spending_summary — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
-        2. Import files one at a time with import.file
-        3. Verify with accounts.list that accounts were created
-        4. Seed categories with categorize.seed
-        5. Check categorize.stats — if many uncategorized, offer to help
-        6. Show spending.summary as their first financial snapshot
+        2. Import files one at a time with import_file
+        3. Verify with accounts_list that accounts were created
+        4. Check categorize_stats — if many uncategorized, offer to help
+        5. Show spending_summary as their first financial snapshot
+
+        Default categories are seeded automatically by `moneybin db init`
+        and `moneybin transform apply`.
 
         **Guardrails:**
         - Be patient — new users may not know their file formats
@@ -162,17 +159,17 @@ def tax_prep() -> str:
         expenses for tax preparation.
 
         **Relevant tools:**
-        - tax.w2 — retrieve W-2 wage and tax data
-        - spending.by_category — find deduction-eligible categories
-        - transactions.search — search for specific deductible expenses
-        - categorize.categories — review tax-relevant categories
+        - tax_w2 — retrieve W-2 wage and tax data
+        - spending_by_category — find deduction-eligible categories
+        - transactions_search — search for specific deductible expenses
+        - categorize_categories — review tax-relevant categories
 
         **Workflow:**
         1. Ask for the tax year
-        2. Pull W-2 data with tax.w2 for that year
-        3. Review spending.by_category for deduction-eligible categories
+        2. Pull W-2 data with tax_w2 for that year
+        3. Review spending_by_category for deduction-eligible categories
            (charitable, medical, business expenses, etc.)
-        4. If needed, search for specific transactions with transactions.search
+        4. If needed, search for specific transactions with transactions_search
         5. Summarize totals by deduction category
 
         **Guardrails:**

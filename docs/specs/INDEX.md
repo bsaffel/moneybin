@@ -54,7 +54,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 |---|---|---|---|
 | [Overview](categorization-overview.md) | Umbrella | ready | Auto-rule generation, ML categorization, priority hierarchy, bootstrap strategies. Supersedes archived `transaction-categorization` spec. |
 | [Auto-Rule Generation](categorization-auto-rules.md) | Feature | implemented | Auto-generate categorization rules from user edits (pillar E); merchant-first pattern extraction, proposal review queue |
-| [Categorize Bulk](categorize-bulk.md) | Feature | implemented | `moneybin categorize bulk` CLI parity for `categorize.bulk` MCP tool; shared Pydantic input model with per-item validation; `BulkRecordingContext` to drop per-item duplicate DB lookups in the bulk loop |
+| [Categorize Bulk](categorize-bulk.md) | Feature | implemented | `moneybin categorize bulk` CLI parity for `categorize_bulk` MCP tool; shared Pydantic input model with per-item validation; `BulkRecordingContext` to drop per-item duplicate DB lookups in the bulk loop |
 | `categorization-ml.md` | Feature | planned | Pillar D: local ML-powered categorization |
 | `merchant-entity-resolution.md` | Feature | planned | Evolve merchants from pattern-to-category cache to first-class entities; multi-pattern matching, automated discovery, query-time resolution |
 
@@ -91,7 +91,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [E2E Testing](e2e-testing.md) | Feature | implemented | Subprocess-based E2E tests: smoke tests (help, no-DB, DB commands), golden-path workflow tests (synthetic, CSV, OFX, lock/unlock, categorization) |
 | [Scenario Runner](testing-scenario-runner.md) | Feature | implemented | Whole-pipeline correctness: empty DB → pipeline → assertions/expectations/evaluations against synthetic ground truth and hand-labeled fixtures; scenario suite (`make test-scenarios`); validation primitives reusable for live-data checks |
 | [Normalize-Description Fixtures](testing-normalize-description-fixtures.md) | Feature | implemented | YAML golden cases for `normalize_description()`; parametrized exact-equality tests; contributor-facing surface for adding real-world transaction descriptions |
-| [Comprehensive Scenario Testing](testing-scenario-comprehensive.md) | Feature | in-progress | Five-tier assertion taxonomy, independent-expectations rule, bug-report recipe, relocation of scenarios to `tests/scenarios/`. Architectural authority for all future scenario work. |
+| [Comprehensive Scenario Testing](testing-scenario-comprehensive.md) | Feature | implemented | Five-tier assertion taxonomy, independent-expectations rule, bug-report recipe, relocation of scenarios to `tests/scenarios/`. Architectural authority for all future scenario work. |
 | [Anonymized Data Generator](testing-anonymized-data.md) | Feature | planned | Structure-preserving anonymization of real databases for shipping bug-report fixtures and format seeds without leaking PII; statistical similarity guarantees. |
 | `testing-csv-fixtures.md` | Feature | planned | Curated bank export samples with expected-result YAML for format detection testing |
 | `testing-format-compat.md` | Feature | planned | Extractor verification against fixture files |

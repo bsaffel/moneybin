@@ -214,3 +214,38 @@ Add goldens for both directions when fixed:
 - `TARGET STORE NY 10001` → `TARGET STORE` (merchant token preserved)
 
 Flagged by claude[bot] and chatgpt-codex-connector in PR #66 review.
+
+## CLI simplify pass — deferred findings (refactor/cli-simplify)
+
+Surfaced by `/simplify` review agents on the cli/ pass. Each was deemed
+out of scope for the narrow PR (which only collapses N+1 COUNT queries
+in `db info`) and parked here for future, focused changes.
+
+- **Lazy command-group imports in `cli/main.py`** — top-level imports of
+  every command module make `moneybin --help` pay the cost of loading
+  DuckDB, Plaid, etc. Defer with `typer.Typer(callback=...)` or
+  per-subcommand lazy imports. Quantify startup before/after first.
+- **`ImportConfig` dataclass for `import file`** — the command currently
+  takes ~16 typer options that get plumbed through. A frozen dataclass
+  would tighten the signature and make the call sites in tests less
+  brittle. Watch out for typer's introspection of parameter defaults.
+- **`render_or_json()` helper across `cli/commands/`** — the
+  `if json_output: typer.echo(json.dumps(...)) else: <table>` pattern
+  is repeated in `db.py`, `accounts.py`, and others. A small helper
+  taking `(payload, table_renderer)` would collapse it.
+- **Table-formatter helpers** — Rich `Table` construction is
+  copy-pasted with column-name-only differences. Consider a
+  `render_rows(rows, columns)` utility once a third command needs it
+  (rule of three).
+- **Broad `except Exception` audit in `synthetic.py` / `transform.py`** —
+  several handlers swallow all exceptions and re-raise as `typer.Exit`,
+  losing tracebacks. Narrow to expected types (`duckdb.Error`,
+  `OSError`, `pydantic.ValidationError`) where feasible.
+- **`_with_encryption_key` context manager for db key commands** — the
+  rotate/rekey/unlock paths each repeat the "load key → open db → run
+  op → zero key" dance. Extract a `with _encryption_key(...) as db:`
+  helper. Touches privacy-sensitive code; needs careful review.
+- **Stringly-typed validation flags → `Literal`** — several CLI options
+  accept free-form strings then validate against a hardcoded set
+  (`--format`, `--mode`, etc.). Switch to `Literal[...]` types so typer
+  generates the choices and pyright catches typos at call sites.

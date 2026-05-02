@@ -224,7 +224,7 @@ class TestResourceTools:
     @pytest.mark.unit
     def test_discover_tool_present(self) -> None:
         data = self._read()
-        assert data["discover_tool"] == "moneybin.discover"
+        assert data["discover_tool"] == "moneybin_discover"
 
     @pytest.mark.unit
     def test_known_namespaces_present(self) -> None:

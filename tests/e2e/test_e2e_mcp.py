@@ -60,9 +60,9 @@ class TestMCPServerBoot:
                 assert len(tool_names) > 0, "No tools registered"
 
                 # Core tools that should always be present
-                assert "spending.summary" in tool_names
-                assert "accounts.list" in tool_names
-                assert "moneybin.discover" in tool_names
+                assert "spending_summary" in tool_names
+                assert "accounts_list" in tool_names
+                assert "moneybin_discover" in tool_names
 
     async def test_server_invokes_tool(self, mcp_env: dict[str, str]) -> None:
         """MCP server can invoke a tool and return a valid response envelope."""
@@ -80,9 +80,9 @@ class TestMCPServerBoot:
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
-                # Call moneybin.discover — always works, no data needed
+                # Call moneybin_discover — always works, no data needed
                 result = await session.call_tool(
-                    "moneybin.discover", {"domain": "categorize"}
+                    "moneybin_discover", {"domain": "categorize"}
                 )
 
                 assert not result.isError, f"Tool returned error: {result.content}"

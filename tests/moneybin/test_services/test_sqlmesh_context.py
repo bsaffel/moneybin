@@ -50,6 +50,8 @@ class TestSQLMeshContext:
         mock_db = MagicMock()
         mock_db._conn = mock_conn
         db_path = tmp_path / "test.duckdb"
+        # sqlmesh_context derives db_path from _database_instance._db_path.
+        mock_db._db_path = db_path
 
         cache: dict[str, object] = {}
 
@@ -59,10 +61,7 @@ class TestSQLMeshContext:
                 "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
                 cache,
             ),
-            patch("moneybin.database.get_settings") as mock_settings,
         ):
-            mock_settings.return_value.database.path = db_path
-
             from moneybin.database import sqlmesh_context
 
             with sqlmesh_context() as ctx:
@@ -91,6 +90,7 @@ class TestSQLMeshContext:
         mock_db._conn = mock_conn
         mock_ctx_cls.return_value.plan.side_effect = RuntimeError("SQLMesh boom")
         db_path = tmp_path / "test.duckdb"
+        mock_db._db_path = db_path
 
         cache: dict[str, object] = {}
 
@@ -100,10 +100,7 @@ class TestSQLMeshContext:
                 "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
                 cache,
             ),
-            patch("moneybin.database.get_settings") as mock_settings,
         ):
-            mock_settings.return_value.database.path = db_path
-
             from moneybin.database import sqlmesh_context
 
             with pytest.raises(RuntimeError, match="SQLMesh boom"):

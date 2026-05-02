@@ -359,18 +359,27 @@ def db_info(
             from sqlglot import exp
 
             table_rows: list[dict[str, object]] = []
-            for schema, table in tables:
-                safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
-                safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
-                count_result = db.execute(
-                    f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
-                ).fetchone()
-                count = count_result[0] if count_result else 0
-                table_rows.append({
-                    "schema": schema,
-                    "table": table,
-                    "rows": count,
-                })
+            if tables:
+                # One round trip instead of N — UNION ALL over per-table counts
+                # so DuckDB plans them together.
+                count_selects: list[str] = []
+                for schema, table in tables:
+                    safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+                    safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+                    # Double single-quotes per SQL standard so identifiers like
+                    # `o'clock` survive embedding as string literal labels.
+                    label_schema = schema.replace("'", "''")
+                    label_table = table.replace("'", "''")
+                    sql = (
+                        f"SELECT '{label_schema}' AS schema, '{label_table}' AS \"table\", "  # noqa: S608 — sqlglot-quoted FROM identifiers; labels are quote-escaped
+                        f"COUNT(*) AS rows FROM {safe_schema}.{safe_table}"
+                    )
+                    count_selects.append(sql)
+                union_sql = " UNION ALL ".join(count_selects)
+                count_rows = db.execute(union_sql).fetchall()  # noqa: S608 — sqlglot-quoted catalog identifiers and information_schema-sourced names
+                table_rows = [
+                    {"schema": s, "table": t, "rows": c} for s, t, c in count_rows
+                ]
 
             payload["tables"] = table_rows
 

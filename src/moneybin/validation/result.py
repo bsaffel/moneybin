@@ -33,3 +33,13 @@ class EvaluationResult:
     threshold: float
     passed: bool
     breakdown: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectationResult:
+    """Outcome of verifying a single per-record expectation against the database."""
+
+    name: str
+    kind: str
+    passed: bool
+    details: dict[str, Any] = field(default_factory=dict)

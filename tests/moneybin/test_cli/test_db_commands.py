@@ -479,6 +479,9 @@ class TestDbInitCommand:
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         mock_db = MagicMock()
         mocker.patch("moneybin.database.Database", return_value=mock_db)
+        # init_db calls materialize_seeds inside the with block; bypass real
+        # SQLMesh + view creation since Database itself is mocked here.
+        mocker.patch("moneybin.seeds.materialize_seeds")
         return mock_store, mock_db
 
     def test_init_auto_key_stores_key_and_creates_db(
@@ -853,10 +856,16 @@ class TestDbInfoCommand:
 
         mock_db = MagicMock()
         mock_db.__enter__ = lambda self: self  # type: ignore[assignment]
-        mock_db.execute.return_value.fetchall.return_value = [
-            ("core", "fct_transactions")
-        ]
-        mock_db.execute.return_value.fetchone.return_value = (42,)
+
+        def execute_side_effect(sql: str, *_args: Any, **_kw: Any) -> MagicMock:
+            result = MagicMock()
+            if "information_schema" in sql:
+                result.fetchall.return_value = [("core", "fct_transactions")]
+            else:
+                result.fetchall.return_value = [("core", "fct_transactions", 42)]
+            return result
+
+        mock_db.execute.side_effect = execute_side_effect
         mock_db.sql.return_value.fetchone.return_value = ("v1.2.3",)
         mocker.patch("moneybin.database.Database", return_value=mock_db)
 

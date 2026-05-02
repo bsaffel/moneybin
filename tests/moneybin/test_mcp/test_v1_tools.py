@@ -26,7 +26,7 @@ _INSERT_TRANSACTIONS = """
 
 
 class TestSpendingSummaryTool:
-    """Tests for spending.summary v1 tool."""
+    """Tests for spending_summary v1 tool."""
 
     def _insert_data(self, mcp_db: object) -> None:
         from moneybin.mcp.server import get_db

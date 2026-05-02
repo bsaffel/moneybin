@@ -135,13 +135,21 @@ def _description_for(ns: str) -> str:
 
 
 def _namespace_for(tool_name: str) -> str:
-    """Extract the namespace from a dot-separated tool name.
+    """Extract the namespace prefix from an underscore-joined tool name.
 
-    For ``transactions.matches.pending`` returns ``transactions.matches``.
-    For ``spending.summary`` returns ``spending``.
+    Most namespaces are a single word, so a first-underscore split works:
+    ``spending_by_category`` → ``spending``, ``categorize_auto_confirm`` →
+    ``categorize``. Multi-segment namespaces (e.g. ``transactions_matches``)
+    are matched explicitly via longest-prefix lookup so tools like
+    ``transactions_matches_pending`` group correctly.
     """
-    parts = tool_name.rsplit(".", 1)
-    return parts[0] if len(parts) == 2 else tool_name
+    from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS
+
+    for ns in EXTENDED_DOMAIN_DESCRIPTIONS:
+        if "_" in ns and tool_name.startswith(f"{ns}_"):
+            return ns
+    head, sep, _ = tool_name.partition("_")
+    return head if sep else tool_name
 
 
 @mcp.resource("moneybin://tools")
@@ -150,7 +158,7 @@ async def resource_tools() -> str:
 
     "Loaded" here means visible by default — i.e. the namespace is not in
     ``EXTENDED_DOMAINS``. Extended namespaces are hidden globally and only
-    enabled per-session via ``moneybin.discover``.
+    enabled per-session via ``moneybin_discover``.
     """
     logger.info("Resource read: moneybin://tools")
     from moneybin.mcp.server import EXTENDED_DOMAINS
@@ -160,17 +168,17 @@ async def resource_tools() -> str:
     # version bump beyond 3.1.x.
     tools = await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
 
-    # Group registered tools by namespace. ``moneybin.discover`` is the
+    # Group registered tools by namespace. ``moneybin_discover`` is the
     # meta-tool — tracked separately so it doesn't appear under "core".
     namespaces: dict[str, int] = {}
     for tool in tools:
-        if tool.name == "moneybin.discover":
+        if tool.name == "moneybin_discover":
             continue
         ns = _namespace_for(tool.name)
         namespaces[ns] = namespaces.get(ns, 0) + 1
 
     # Extended namespaces aren't visible at connect time but we still list
-    # them so discoverers know what to call moneybin.discover with.
+    # them so discoverers know what to call moneybin_discover with.
     all_namespaces = set(namespaces.keys()) | set(EXTENDED_DOMAINS)
 
     core_list: list[dict[str, Any]] = []
@@ -190,6 +198,6 @@ async def resource_tools() -> str:
     data = {
         "core": core_list,
         "extended": extended_list,
-        "discover_tool": "moneybin.discover",
+        "discover_tool": "moneybin_discover",
     }
     return json.dumps(data, indent=2)

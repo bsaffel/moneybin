@@ -36,7 +36,7 @@ class TestMCPListTools:
 
         async def fake_get_tools() -> list[MagicMock]:
             tool = MagicMock()
-            tool.name = "spending.summary"
+            tool.name = "spending_summary"
             tool.description = "Monthly spending"
             return [tool]
 
@@ -47,7 +47,7 @@ class TestMCPListTools:
             result = runner.invoke(app, ["list-tools"])
 
         assert result.exit_code == 0
-        assert "spending.summary" in result.output
+        assert "spending_summary" in result.output
         assert "Monthly spending" in result.output
 
     def test_list_tools_empty(self) -> None:

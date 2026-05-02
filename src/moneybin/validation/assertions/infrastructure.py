@@ -23,10 +23,9 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sqlglot import exp
-
 from moneybin.database import Database, sqlmesh_context
 from moneybin.migrations import MigrationRunner
+from moneybin.validation.assertions._helpers import quote_ident
 from moneybin.validation.result import AssertionResult
 
 logger = logging.getLogger(__name__)
@@ -124,15 +123,12 @@ def _count(db: Database, table: str) -> int:
     valid = {row[0] for row in catalog_rows}
     if table not in valid:
         return 0
-    safe = ".".join(
-        exp.to_identifier(seg, quoted=True).sql("duckdb") for seg in table.split(".")
-    )
-    row = db.execute(f"SELECT COUNT(*) FROM {safe}").fetchone()  # noqa: S608  — identifier validated against catalog above
+    row = db.execute(f"SELECT COUNT(*) FROM {quote_ident(table)}").fetchone()  # noqa: S608  — identifier validated against catalog above
     return int(row[0]) if row else 0
 
 
 def assert_no_unencrypted_db_files(
-    db: Database,  # noqa: ARG001 — conforms to _DATABASE_ASSERTION_FNS contract
+    db: Database,  # noqa: ARG001 — not used; Database first-arg is the standard signature
     *,
     tmpdir: Path,
 ) -> AssertionResult:

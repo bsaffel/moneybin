@@ -534,6 +534,22 @@ def close_database() -> None:
         _database_instance = None
 
 
+@contextmanager
+def _temporary_singleton(db: Database) -> Generator[None, None, None]:
+    """Register ``db`` as the singleton for the duration of the block.
+
+    Used by ``init_db`` to let ``sqlmesh_context()`` find the locally-opened
+    Database. Restores the prior state on exit.
+    """
+    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
+    prior = _database_instance
+    _database_instance = db
+    try:
+        yield
+    finally:
+        _database_instance = prior
+
+
 # ---------------------------------------------------------------------------
 # SQLMesh encrypted-context helper
 # ---------------------------------------------------------------------------
@@ -592,7 +608,6 @@ def sqlmesh_context(
     set_console(NoopConsole())
 
     root = sqlmesh_root or _SQLMESH_ROOT
-    db_path = get_settings().database.path
 
     # Reuse the singleton's connection — DuckDB only allows one
     # connection per file.  Callers must call get_database() first.
@@ -606,6 +621,9 @@ def sqlmesh_context(
             "re-open it first."
         )
     conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
+    # Use the singleton's actual path, not settings — during `profile create`
+    # the new profile isn't yet the active one, so get_settings() would fail.
+    db_path = _database_instance._db_path  # type: ignore[reportPrivateUsage]
 
     cache_key = str(db_path)
     try:
@@ -758,8 +776,11 @@ def init_db(
             # after _KEY_NAME succeeded still triggers the rollback below.
             store.set_key(_KEY_NAME, encryption_key)
             store.set_key(SALT_NAME, base64.b64encode(salt).decode())
-            with Database(db_path, secret_store=store, no_auto_upgrade=False):
-                pass
+            with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
+                from moneybin.seeds import materialize_seeds
+
+                with _temporary_singleton(db):
+                    materialize_seeds(db)
         except Exception:
             # Roll back keychain to previous state so the existing DB
             # remains accessible with its original key.
@@ -818,8 +839,11 @@ def init_db(
                 )
 
         try:
-            with Database(db_path, secret_store=store, no_auto_upgrade=False):
-                pass
+            with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
+                from moneybin.seeds import materialize_seeds
+
+                with _temporary_singleton(db):
+                    materialize_seeds(db)
         except Exception:
             # Roll back the freshly persisted key and any orphan DB file.
             # We only undo persistence we just performed — a pre-existing

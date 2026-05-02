@@ -66,8 +66,8 @@ class TransactionSearchResult:
             sensitivity="medium",
             total_count=self.total_count,
             actions=[
-                "Use transactions.recurring to find subscription patterns",
-                "Use categorize.bulk to categorize uncategorized transactions",
+                "Use transactions_recurring to find subscription patterns",
+                "Use categorize_bulk to categorize uncategorized transactions",
             ],
         )
 
@@ -105,8 +105,8 @@ class RecurringResult:
             data=[t.to_dict() for t in self.transactions],
             sensitivity="medium",
             actions=[
-                "Use transactions.search to see individual occurrences",
-                "Use budget.set to create a budget for a recurring expense",
+                "Use transactions_search to see individual occurrences",
+                "Use budget_set to create a budget for a recurring expense",
             ],
         )
 

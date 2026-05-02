@@ -43,8 +43,8 @@ class BudgetSetResult:
             data=self.to_dict(),
             sensitivity="low",
             actions=[
-                "Use budget.status to see spending vs budget",
-                "Use spending.by_category for category breakdown",
+                "Use budget_status to see spending vs budget",
+                "Use spending_by_category for category breakdown",
             ],
         )
 
@@ -84,8 +84,8 @@ class BudgetStatusResult:
             sensitivity="low",
             period=self.month,
             actions=[
-                "Use budget.set to adjust a budget target",
-                "Use spending.by_category for detailed category breakdown",
+                "Use budget_set to adjust a budget target",
+                "Use spending_by_category for detailed category breakdown",
             ],
         )
 

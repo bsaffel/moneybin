@@ -157,7 +157,6 @@ Verifies: database remains accessible after lock/unlock.
 profile create → db init
 → import file <fixture>
 → transform apply
-→ categorize seed
 → categorize apply-rules
 → categorize stats
 ```

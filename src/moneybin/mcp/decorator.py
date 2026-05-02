@@ -1,26 +1,10 @@
-"""MCP tool decorator with sensitivity tier, privacy logging, and error handling.
-
-Wraps tool functions with:
-
-1. Sensitivity logging via the privacy middleware stub.
-2. Domain exception classification into error ``ResponseEnvelope`` values.
-3. Direct return of ``ResponseEnvelope`` (the server serializes the dataclass).
+"""MCP tool decorator: sensitivity logging, error classification, envelope guard.
 
 Classified exceptions (``UserError``, ``DatabaseKeyError``, ``FileNotFoundError``)
 become error envelopes so every surface — MCP, CLI ``--output json``, future
 HTTP — returns a consistent shape. Anything else propagates to the server's
-``mask_error_details`` boundary.
-
-The decorator does NOT register the tool with the server; the registration
-layer in ``moneybin.mcp.tools.*`` does that, optionally passing ``tags={domain}``
-so the visibility system can hide extended-namespace tools.
-
-Usage::
-
-    @mcp_tool(sensitivity="medium")
-    def spending_summary(months: int = 3) -> ResponseEnvelope:
-        service = SpendingService(get_database())
-        return service.summary(months).to_envelope()
+``mask_error_details`` boundary. Registration of the wrapped function with
+FastMCP happens separately in ``moneybin.mcp._registration``.
 """
 
 from __future__ import annotations
@@ -29,7 +13,7 @@ import functools
 import inspect
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from moneybin.errors import classify_user_error
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
@@ -40,15 +24,11 @@ logger = logging.getLogger(__name__)
 
 def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
     if not isinstance(result, ResponseEnvelope):
-        # Log the contract violation explicitly: with mask_error_details=True
-        # at the server boundary, the TypeError is otherwise wrapped in a
-        # generic ToolError and the developer signal is lost.
-        logger.error(
-            f"Tool {fn_name} returned {type(result).__name__}, expected ResponseEnvelope"
-        )
-        raise TypeError(
-            f"{fn_name} returned {type(result).__name__}, expected ResponseEnvelope"
-        )
+        # mask_error_details=True at the server boundary swallows the TypeError
+        # into a generic ToolError, so log the contract violation first.
+        msg = f"{fn_name} returned {type(result).__name__}, expected ResponseEnvelope"
+        logger.error(msg)
+        raise TypeError(msg)
     return result
 
 
@@ -63,21 +43,13 @@ def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope:
 
 def mcp_tool(
     *,
-    sensitivity: str,
+    sensitivity: Literal["low", "medium", "high"],
     domain: str | None = None,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool with a sensitivity tier and optional domain.
 
-    Args:
-        sensitivity: Data sensitivity tier (``"low"``, ``"medium"``, ``"high"``).
-        domain: Extended-namespace name (e.g. ``"categorize"``). Tools with a
-            domain start hidden and are revealed per-session via
-            ``moneybin.discover``. The registration layer translates this into
-            ``mcp.tool(tags={domain})``.
-
-    Returns:
-        Decorator that wraps the function with privacy logging, error
-        classification, and direct ``ResponseEnvelope`` return.
+    Tools with a ``domain`` start hidden; ``moneybin_discover`` enables them
+    per-session via FastMCP tag visibility.
     """
     tier = Sensitivity(sensitivity)
 

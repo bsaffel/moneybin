@@ -9,6 +9,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.matching.persistence import (
+    MatchStatus,
     create_match_decision,
     get_active_matches,
     get_match_log,
@@ -39,7 +40,7 @@ def _create_test_match(
     db: Database,
     *,
     match_id: str | None = None,
-    status: str = "accepted",
+    status: MatchStatus = "accepted",
     confidence: float = 0.98,
     stid_a: str = "a",
     stid_b: str = "b",

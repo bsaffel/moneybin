@@ -72,12 +72,12 @@ CREATE TABLE IF NOT EXISTS app.budget_rollovers (
 
 | Tool | Description |
 |------|-------------|
-| `budget.list` | List all active budgets |
-| `budget.history` | Budget performance trend over N months |
-| `budget.delete` | Remove a budget |
-| `budget.copy_month` | Copy budgets from one month to another |
-| `budget.rollover` | Calculate and apply rollover for a month |
-| `budget.summary` | Total budgeted vs total spent across all categories |
+| `budget_list` | List all active budgets |
+| `budget_history` | Budget performance trend over N months |
+| `budget_delete` | Remove a budget |
+| `budget_copy_month` | Copy budgets from one month to another |
+| `budget_rollover` | Calculate and apply rollover for a month |
+| `budget_summary` | Total budgeted vs total spent across all categories |
 
 ## Testing Strategy
 

@@ -399,3 +399,61 @@ class TestGetDatabase:
         assert db_module._database_instance is db  # type: ignore[reportPrivateUsage]  # test-only: verify singleton state
         close_database()
         assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only: verify singleton reset
+
+
+class TestTemporarySingleton:
+    """_temporary_singleton must restore prior state on both clean exit and exception."""
+
+    def test_restores_prior_singleton_on_clean_exit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin import database as db_module
+        from moneybin.database import (
+            _temporary_singleton,  # pyright: ignore[reportPrivateUsage]  # test-only: verify state-restoration contract
+        )
+
+        prior = MagicMock(name="prior_singleton")
+        monkeypatch.setattr(db_module, "_database_instance", prior)
+
+        local = MagicMock(name="local_db")
+        with _temporary_singleton(local):
+            assert db_module._database_instance is local  # type: ignore[reportPrivateUsage]  # test-only
+
+        assert db_module._database_instance is prior  # type: ignore[reportPrivateUsage]  # test-only
+
+    def test_restores_prior_singleton_on_exception(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin import database as db_module
+        from moneybin.database import (
+            _temporary_singleton,  # pyright: ignore[reportPrivateUsage]  # test-only: verify state-restoration contract
+        )
+
+        prior = MagicMock(name="prior_singleton")
+        monkeypatch.setattr(db_module, "_database_instance", prior)
+
+        local = MagicMock(name="local_db")
+        with pytest.raises(RuntimeError, match="boom"):
+            with _temporary_singleton(local):
+                raise RuntimeError("boom")
+
+        assert db_module._database_instance is prior  # type: ignore[reportPrivateUsage]  # test-only
+
+    def test_restores_none_when_no_prior_singleton(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin import database as db_module
+        from moneybin.database import (
+            _temporary_singleton,  # pyright: ignore[reportPrivateUsage]  # test-only: verify state-restoration contract
+        )
+
+        monkeypatch.setattr(db_module, "_database_instance", None)
+
+        local = MagicMock(name="local_db")
+        with _temporary_singleton(local):
+            assert db_module._database_instance is local  # type: ignore[reportPrivateUsage]  # test-only
+
+        assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only

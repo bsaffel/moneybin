@@ -6,21 +6,42 @@ All database access uses parameterized queries via the Database class.
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal, get_args
 
 from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
-VALID_MATCH_TYPES = {"dedup", "transfer"}
+MatchType = Literal["dedup", "transfer"]
+MatchStatus = Literal["accepted", "pending", "rejected", "reversed"]
+MatchTier = Literal["2b", "3"]
 
+VALID_MATCH_TYPES = frozenset(get_args(MatchType))
 
-def _columns(db: Database) -> list[str]:
-    """Return column names for app.match_decisions."""
-    return [
-        desc[0]
-        for desc in db.execute("SELECT * FROM app.match_decisions LIMIT 0").description
-    ]
+# Column order matches the CREATE TABLE in app.match_decisions migration; kept
+# in sync with the schema so SELECT/zip never re-derives it at runtime.
+_MATCH_DECISION_COLUMNS: tuple[str, ...] = (
+    "match_id",
+    "source_transaction_id_a",
+    "source_type_a",
+    "source_origin_a",
+    "source_transaction_id_b",
+    "source_type_b",
+    "source_origin_b",
+    "account_id",
+    "confidence_score",
+    "match_signals",
+    "match_type",
+    "match_tier",
+    "account_id_b",
+    "match_status",
+    "match_reason",
+    "decided_by",
+    "decided_at",
+    "reversed_at",
+    "reversed_by",
+)
+_MATCH_DECISION_SELECT = ", ".join(_MATCH_DECISION_COLUMNS)
 
 
 def create_match_decision(
@@ -36,11 +57,11 @@ def create_match_decision(
     account_id: str,
     confidence_score: float,
     match_signals: dict[str, Any],
-    match_tier: str | None,
-    match_status: str,
+    match_tier: MatchTier | None,
+    match_status: MatchStatus,
     decided_by: str,
     match_reason: str | None = None,
-    match_type: str = "dedup",
+    match_type: MatchType = "dedup",
     account_id_b: str | None = None,
 ) -> None:
     """Insert a new match decision."""
@@ -88,14 +109,13 @@ def get_active_matches(
         params.append(match_type)
     rows = db.execute(
         f"""
-        SELECT * FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
         {where}
         ORDER BY decided_at DESC
         """,  # noqa: S608 — match_type validated above
         params,
     ).fetchall()
-    cols = _columns(db)
-    return [dict(zip(cols, row, strict=True)) for row in rows]
+    return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
 
 
 def get_pending_matches(
@@ -116,18 +136,17 @@ def get_pending_matches(
         params.append(match_type)
     rows = db.execute(
         f"""
-        SELECT * FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
         {where}
         ORDER BY confidence_score DESC
         """,  # noqa: S608 — match_type validated above
         params,
     ).fetchall()
-    cols = _columns(db)
-    return [dict(zip(cols, row, strict=True)) for row in rows]
+    return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
 
 
 def update_match_status(
-    db: Database, match_id: str, *, status: str, decided_by: str
+    db: Database, match_id: str, *, status: MatchStatus, decided_by: str
 ) -> None:
     """Update the status of a match decision (e.g., pending -> accepted)."""
     db.execute(
@@ -158,7 +177,9 @@ def undo_match(db: Database, match_id: str, *, reversed_by: str) -> None:
     )
 
 
-def get_rejected_pairs(db: Database, match_type: str = "dedup") -> list[dict[str, Any]]:
+def get_rejected_pairs(
+    db: Database, match_type: MatchType = "dedup"
+) -> list[dict[str, Any]]:
     """Return rejected pair keys to avoid re-proposing them."""
     rows = db.execute(
         """
@@ -198,12 +219,11 @@ def get_match_log(
     params.append(limit)
     rows = db.execute(
         f"""
-        SELECT * FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
         {where}
         ORDER BY decided_at DESC
         LIMIT ?
         """,  # noqa: S608 — match_type validated above; limit is parameterized
         params,
     ).fetchall()
-    cols = _columns(db)
-    return [dict(zip(cols, row, strict=True)) for row in rows]
+    return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]

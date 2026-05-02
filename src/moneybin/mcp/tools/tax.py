@@ -2,12 +2,10 @@
 """Tax namespace tools -- W-2 data retrieval.
 
 Tools:
-    - tax.w2 — Retrieve W-2 form data (high sensitivity)
+    - tax_w2 — Retrieve W-2 form data (high sensitivity)
 """
 
 from __future__ import annotations
-
-import logging
 
 from fastmcp import FastMCP
 
@@ -16,8 +14,6 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.tax_service import TaxService
-
-logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="high", domain="tax")
@@ -43,7 +39,7 @@ def register_tax_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         tax_w2,
-        "tax.w2",
+        "tax_w2",
         "Retrieve W-2 form data (wages, taxes, deductions). "
         "PII fields (SSN, EIN) are excluded.",
     )

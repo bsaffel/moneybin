@@ -1,7 +1,7 @@
 # Feature: Comprehensive Scenario Testing
 
 ## Status
-in-progress
+implemented
 
 ## Goal
 
@@ -147,7 +147,19 @@ The scenario runner, steps, loader, fixture loader, expectations module, and YAM
 
 ### R6 — Shared validation library
 
-Reusable check primitives (the `assert_*` functions in the tier tables) live at `src/moneybin/validation/` and are consumed by both the scenario suite and `data-reconciliation.md`'s runtime views. This is the only validation code that ships with the package — scenario fixtures and runner code are test-only.
+Reusable check primitives live at `src/moneybin/validation/`, split into three peer subpackages reflecting the three Result types they return:
+
+- `assertions/` — table-level predicates returning `AssertionResult`. Categories: `schema`, `completeness`, `uniqueness`, `integrity`, `domain`, `distribution`, `infrastructure`.
+- `expectations/` — per-record predicates returning `ExpectationResult`. Modules: `matching`, `transactions`.
+- `evaluations/` — metric scoring against thresholds, returning `EvaluationResult`. Modules: `categorization`, `matching`.
+
+Every primitive takes `Database` as its first positional argument (per `.claude/rules/database.md`). Top-level `moneybin.validation` re-exports only the three Result types.
+
+This library is the **stable contract** consumed by both this spec's pytest suite and `data-reconciliation.md`'s runtime views. Stability rules:
+
+- Additive optional kwargs are non-breaking.
+- Renaming or removing a primitive requires a deprecation alias for one release.
+- `details` (on `AssertionResult`/`ExpectationResult`) and `breakdown` (on `EvaluationResult`) payloads are per-function, not cross-function contract — consumers must not pattern-match on them across primitives.
 
 ## Data Model
 
@@ -157,10 +169,10 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 
 ### Files to Create
 
-- `src/moneybin/validation/structural.py` — `assert_row_count`, `assert_schema_snapshot`, `assert_source_system_populated`, `assert_amount_precision`, `assert_date_bounds`
-- `src/moneybin/validation/behavioral.py` — `assert_idempotent`, `assert_incremental_safe`, `assert_empty_input_safe`, `assert_malformed_input_rejected`, `assert_subprocess_parity`
-- `src/moneybin/validation/quality.py` — `assert_amount_distribution`, `assert_date_continuity`, `assert_ground_truth_coverage`, `assert_category_distribution`
-- `src/moneybin/validation/semantic.py` — `assert_negative_match`, P/R breakdown helpers
+- `src/moneybin/validation/assertions/{schema,completeness,uniqueness,integrity,domain,distribution,infrastructure}.py` — assertion primitives, organized along industry-recognized data-quality categories. New Phase 3 primitives slot into the existing module that matches their shape (no new module names without a corresponding new category).
+- `src/moneybin/validation/expectations/{matching,transactions}.py` — per-record predicate library, decoupled from YAML loader. Public API: `verify_*` functions returning `ExpectationResult`.
+- `src/moneybin/testing/scenarios/_assertion_registry.py`, `_expectation_registry.py` — explicit YAML-name → callable maps. Adding a new YAML-callable primitive requires a registry entry.
+- Harness primitives (`assert_idempotent`, `assert_subprocess_parity`, `assert_incremental_safe`, `assert_empty_input_safe`, `assert_malformed_input_rejected`) live in `tests/scenarios/_harnesses.py` (Phase 4), **not** in `validation/`. They are pipeline-execution patterns, not data assertions.
 - `tests/scenarios/conftest.py` — shared fixtures: encrypted DB bootstrap, MONEYBIN_HOME isolation, persona generator helpers
 - `tests/scenarios/test_basic_full_pipeline.py` — port + add idempotency
 - `tests/scenarios/test_family_full_pipeline.py` — port + replace `±15%`, add date continuity, ground-truth coverage
@@ -195,7 +207,7 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 ### Sequencing
 
 1. **Phase 1 — Relocation.** Move `src/moneybin/testing/scenarios/` to `tests/scenarios/`, port to pytest, drop ResponseEnvelope, remove `synthetic verify` CLI, update CI workflow. No new behavior; existing assertions/expectations preserved 1:1.
-2. **Phase 2 — Validation library.** Extract shared primitives to `src/moneybin/validation/`. Update existing scenarios to use them. No new assertions yet.
+2. **Phase 2 — Validation library.** Reorganize `src/moneybin/validation/` into seven industry-aligned assertion modules; standardize on `Database` as every primitive's first argument; decouple per-record expectations from the YAML loader; wire two explicit registries (assertions, expectations) co-located with the runner; lock the public API as a stable contract. No new assertions yet — Phase 3 backfills the missing Tier 1 primitives.
 3. **Phase 3 — Tier 1 backfill.** Add the missing Tier 1 assertions to every existing scenario (source attribution, schema snapshot, amount precision, date bounds). Replace `±15%` and `min_rows ≥ 100` with derived formulas.
 4. **Phase 4 — New scenarios.** Author the four new scenarios (`idempotency-rerun`, `dedup-negative-fixture`, `empty-input-handling`, `malformed-input-rejection`).
 5. **Phase 5 — Tier 2/4 enrichment.** Add P/R breakdowns, ground-truth coverage, date continuity to applicable scenarios.
@@ -203,17 +215,27 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 
 ### PR Grouping (chosen 2026-04-30)
 
-The six phases ship as **three** PRs, not six — grouped by review-coherence rather than phase boundaries:
+The six phases ship as **four** PRs, not six — grouped by review-coherence rather than phase boundaries. (Original 2026-04-30 plan combined Phases 2+3+4 into a single PR 2; split into PR 2a/PR 2b on 2026-05-01 because the validation-library extract turned out to be a coherent reviewable unit on its own and waiting on Tier 1 backfill + new scenarios would have produced an unreasonably large diff.)
 
 | PR | Phases | Plan | Why grouped this way |
 |---|---|---|---|
 | **PR 1** | Phase 1 | _shipped_ | Pure relocation — runner moved to `tests/scenarios/_runner/`, scenarios driven via pytest. |
-| **PR 2** | Phases 2 + 3 + 4 | _written after PR 1 merges_ | Validation-library extract (P2) is the input to Tier 1 backfill (P3); the four new scenarios (P4) need both to be authored cleanly. Splitting them produces churn. |
-| **PR 3** | Phases 5 + 6 | _written after PR 2 merges_ | Tier 2/4 enrichment (P5) and the contributor recipe (P6) are the documentation/quality polish layer; they don't gate each other but neither blocks anything downstream. |
+| **PR 2a** | Phase 2 | `docs/superpowers/plans/2026-05-01-validation-library-extract.md` | Validation-library reorganization, `Database` first-arg standardization, expectation decoupling, explicit registries. Locks the stable `moneybin.validation.*` contract. |
+| **PR 2b** | Phases 3 + 4 | _written after PR 2a merges_ | Tier 1 backfill (P3) adds the missing primitives and replaces `±15%`/`min_rows ≥ 100` with derived formulas; the four new scenarios (P4) need both PR 2a's library and the Tier 1 backfill to be authored cleanly. |
+| **PR 3** | Phases 5 + 6 | _written after PR 2b merges_ | Tier 2/4 enrichment (P5) and the contributor recipe (P6) are the documentation/quality polish layer; they don't gate each other but neither blocks anything downstream. |
 
 Each plan is written only after the prior PR merges, so it grounds in the real post-merge file layout instead of a predicted one.
 
 After PR 3 merges, this spec moves to `implemented` and becomes the binding architectural reference for all future scenario work.
+
+### Deferred from Phase 1 (PR #73)
+
+Runner unit-test coverage gaps surfaced in PR #73 review. None block Phase 1 (pure relocation), but they should land before this spec moves to `implemented`. Bucket into the PR that already touches the relevant code:
+
+- **Runner failure path** (`tests/scenarios/_runner/runner.py`). The deleted integration test `test_runner_reports_failure_without_crashing` (TINY inline scenario with an impossible row-count expectation) had no replacement. Add `tests/scenarios/_runner_tests/test_runner.py` with a TINY-scenario equivalent that asserts `result.passed is False` and `_build_result` populates the failure branches. **Land in: PR 2 or PR 3** (whichever first touches `_runner/`).
+- **`ScenarioResult` branch coverage** (`tests/scenarios/_runner/result.py`). `passed` has three paths (halted → False, all-empty → True, partial-fail → False) and `failure_summary()` has four branches (halted, assertion, expectation, evaluation). Add `tests/scenarios/_runner_tests/test_result.py` constructing `ScenarioResult` directly — no DB needed. **Land in: PR 2** (validation-library work will already touch result types).
+- **`keep_tmpdir` coverage** (`tests/scenarios/_runner/runner.py`). The `keep_tmpdir=True` branch and `tmpdir` field are useful for local debugging but are currently untested. Add a test alongside `test_runner.py` above, or remove the parameter if Phase 2/3 finds it unused. **Land in: PR 2 or PR 3.**
+- **Function-docstring cleanup in scenario test files** (`tests/scenarios/test_*.py`). All six files have function docstrings that duplicate the module docstring word-for-word; per `AGENTS.md` convention, drop the function docstrings. Trivial, but Phase 2 already touches these files when adding new scenarios. **Land in: PR 2.**
 
 ### Key Decisions
 

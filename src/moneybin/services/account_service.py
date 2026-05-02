@@ -50,8 +50,8 @@ class AccountListResult:
             data=[a.to_dict() for a in self.accounts],
             sensitivity="low",
             actions=[
-                "Use accounts.balances for current balances",
-                "Use spending.summary with account_id to filter by account",
+                "Use accounts_balances for current balances",
+                "Use spending_summary with account_id to filter by account",
             ],
         )
 
@@ -92,8 +92,8 @@ class BalanceListResult:
             data=[b.to_dict() for b in self.balances],
             sensitivity="medium",
             actions=[
-                "Use spending.summary for spending trends",
-                "Use transactions.search with account_id for recent activity",
+                "Use spending_summary for spending trends",
+                "Use transactions_search with account_id for recent activity",
             ],
         )
 
