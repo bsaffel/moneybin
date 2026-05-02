@@ -71,7 +71,7 @@ def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> No
                 raise AssertionError(
                     f"import_file({spec.path}): expected error substring "
                     f"{spec.expect_error_substring!r} but got "
-                    f"{type(exc).__name__}"
+                    f"{type(exc).__name__}: {exc}"
                 ) from exc
             logger.info(
                 f"scenario_import.expected_failure path={spec.path} "

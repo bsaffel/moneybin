@@ -13,10 +13,11 @@ setup:
       expect_failure: true
       expect_error_substring: "could not be derived"
     # Same file with explicit institution override resolves successfully.
+    # No force needed: the first import raised before begin_import() wrote
+    # an import_log row, so the re-import guard sees no prior batch.
     - path: ofx/missing_institution_sample.ofx
       apply_transforms: false
       institution: "Local Bank"
-      force: true
 
 pipeline:
   - import_file
