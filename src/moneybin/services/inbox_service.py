@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import time
 from collections.abc import Generator
@@ -32,6 +33,9 @@ from moneybin.services.import_service import ImportService
 logger = logging.getLogger(__name__)
 
 _DIR_MODE = 0o700
+_FILE_MODE = 0o600
+_OUTCOME_DIRS: tuple[Literal["processed", "failed"], ...] = ("processed", "failed")
+_STAGING_PREFIX = "staging-"
 _ACCOUNT_SLUG_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _YEAR_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 # Cap exception message length in sidecars so unfiltered exception text can't
@@ -144,7 +148,15 @@ class InboxService:
         import fcntl
 
         self.ensure_layout()
-        fh = open(self.lock_path, "a")  # noqa: SIM115  # contextmanager handles close
+        # Open with explicit 0o600 so the lockfile is owner-only even if umask
+        # would have produced 0644. Parent dir is 0700 already; this is
+        # defense-in-depth per privacy-data-protection.md.
+        fd = os.open(
+            str(self.lock_path),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            _FILE_MODE,
+        )
+        fh = os.fdopen(fd, "a")  # noqa: SIM115  # contextmanager handles close
         try:
             try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -215,9 +227,6 @@ class InboxService:
             return
         result.ignored.append({"path": rel, "reason": "not_regular_file"})
 
-    _OUTCOME_DIRS: tuple[Literal["processed", "failed"], ...] = ("processed", "failed")
-    _STAGING_PREFIX = "staging-"
-
     def move_to_outcome(
         self,
         src: Path,
@@ -233,7 +242,7 @@ class InboxService:
         # original <account-slug>/ subfolder instead of dropping to inbox root.
         encoded_name = self._encode_staging_name(src)
         staging = self._next_available_path(
-            outcome_root / f"{self._STAGING_PREFIX}{encoded_name}"
+            outcome_root / f"{_STAGING_PREFIX}{encoded_name}"
         )
         src.rename(staging)
 
@@ -262,16 +271,16 @@ class InboxService:
         """Move leftover staging-* files in outcome roots back to inbox/."""
         self.ensure_layout()
         recovered: list[Path] = []
-        for outcome in self._OUTCOME_DIRS:
+        for outcome in _OUTCOME_DIRS:
             outcome_root = self.root / outcome
             if not outcome_root.exists():
                 continue
             for entry in outcome_root.iterdir():
                 if not entry.is_file():
                     continue
-                if not entry.name.startswith(self._STAGING_PREFIX):
+                if not entry.name.startswith(_STAGING_PREFIX):
                     continue
-                encoded = entry.name[len(self._STAGING_PREFIX) :]
+                encoded = entry.name[len(_STAGING_PREFIX) :]
                 rel_path = unquote(encoded)
                 dest_candidate = self.inbox_dir / rel_path
                 # Defense-in-depth: even with reversible encoding, refuse any
@@ -429,6 +438,8 @@ class InboxService:
         """Map an exception to (error_code, stage)."""
         if isinstance(error, FileNotFoundError):
             return ("file_not_found", "open_file")
+        if isinstance(error, PermissionError):
+            return ("permission_error", "open_file")
         if isinstance(error, ValueError):
             msg = str(error)
             for needle, code, stage in _VALUE_ERROR_PATTERNS:
@@ -453,6 +464,10 @@ class InboxService:
                 "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF."
             ),
             "empty_file": "File contained no data rows; remove or replace.",
+            "permission_error": (
+                "Check file ownership and permissions "
+                "(e.g., chmod 644 or chown to your user)."
+            ),
         }.get(error_code)
 
     @staticmethod
@@ -477,4 +492,5 @@ class InboxService:
         if extra:
             payload.update(extra)
         sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))
+        sidecar.chmod(_FILE_MODE)
         return sidecar

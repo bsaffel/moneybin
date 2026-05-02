@@ -71,10 +71,13 @@ def inbox_list(
     quiet: bool = quiet_option,
 ) -> None:
     """Show what a sync would do, without moving anything."""
-    from moneybin.cli.utils import handle_cli_errors
-
-    with handle_cli_errors():
+    # No handle_cli_errors(): for_active_profile_no_db() exists precisely so
+    # this command works when the DB is locked or its key is unavailable.
+    try:
         result = InboxService.for_active_profile_no_db().enumerate()
+    except (OSError, ValueError) as e:
+        logger.error(f"❌ {e}")
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         from moneybin.cli.utils import emit_json
@@ -91,13 +94,29 @@ def inbox_list(
 
 
 @app.command("path")
-def inbox_path() -> None:
+def inbox_path(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
     """Print the active profile's inbox parent directory."""
-    from moneybin.cli.utils import handle_cli_errors
-
-    with handle_cli_errors():
+    # No handle_cli_errors(): printing a path doesn't need the DB.
+    try:
         service = InboxService.for_active_profile_no_db()
         # Materialize the layout so users can immediately copy files into
         # `$(moneybin import inbox path)/inbox/...` on a fresh profile.
         service.ensure_layout()
-        typer.echo(str(service.root))
+    except (OSError, ValueError) as e:
+        logger.error(f"❌ {e}")
+        raise typer.Exit(1) from e
+
+    if output == OutputFormat.JSON:
+        from moneybin.cli.utils import emit_json
+
+        emit_json(
+            "path",
+            {"path": str(service.root), "inbox": str(service.inbox_dir)},
+        )
+        return
+    if quiet:
+        return
+    typer.echo(str(service.root))
