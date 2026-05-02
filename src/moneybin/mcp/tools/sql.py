@@ -3,6 +3,7 @@
 
 Tools:
     - sql_query — Execute a read-only SQL query (medium sensitivity)
+    - sql_schema — Return the curated schema doc (low sensitivity)
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.schema_catalog import build_schema_doc
 
 
 @mcp_tool(sensitivity="medium")
@@ -51,6 +53,18 @@ def sql_query(query: str) -> ResponseEnvelope:
     return build_envelope(data=records, sensitivity="medium")
 
 
+@mcp_tool(sensitivity="low")
+def sql_schema() -> ResponseEnvelope:
+    """Return the curated database schema for ad-hoc SQL composition.
+
+    Equivalent to reading the ``moneybin://schema`` MCP resource. Provided
+    as a tool for hosts that don't surface MCP resources to the model
+    (e.g. Claude.ai chat). Returns interface tables, columns, comments,
+    conventions, and example queries.
+    """
+    return build_envelope(data=build_schema_doc(), sensitivity="low")
+
+
 def register_sql_tools(mcp: FastMCP) -> None:
     """Register all sql namespace tools with the FastMCP server."""
     register(
@@ -59,5 +73,14 @@ def register_sql_tools(mcp: FastMCP) -> None:
         "sql_query",
         "Execute a read-only SQL query against the database. "
         "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. "
-        "Read resource moneybin://schema for tables, columns, and example queries.",
+        "Call sql_schema (or read resource moneybin://schema) for tables, "
+        "columns, and example queries.",
+    )
+    register(
+        mcp,
+        sql_schema,
+        "sql_schema",
+        "Return the curated database schema: interface tables, columns, "
+        "comments, conventions, and example queries. Mirrors the "
+        "moneybin://schema resource for hosts that don't expose MCP resources.",
     )

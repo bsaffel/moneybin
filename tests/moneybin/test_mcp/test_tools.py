@@ -10,7 +10,7 @@ from fastmcp import FastMCP
 
 from moneybin.mcp.tools.accounts import accounts_list, register_accounts_tools
 from moneybin.mcp.tools.spending import register_spending_tools
-from moneybin.mcp.tools.sql import register_sql_tools, sql_query
+from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -78,3 +78,14 @@ class TestV1ToolRegistration:
         parsed = result.to_dict()
         assert "summary" in parsed
         assert parsed["data"][0]["cnt"] == 2
+
+    @pytest.mark.unit
+    def test_sql_schema_returns_envelope(self, mcp_db: object) -> None:
+        result = sql_schema()
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "low"
+        data = parsed["data"]
+        assert data["version"] == 1
+        names = {t["name"] for t in data["tables"]}
+        assert "core.fct_transactions" in names
+        assert "core.dim_accounts" in names
