@@ -1,4 +1,4 @@
-"""Tests for import.inbox_sync / import.inbox_list MCP tools."""
+"""Tests for import_inbox_sync / import_inbox_list MCP tools."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
 
 
 class TestInboxSyncTool:
-    """import.inbox_sync envelope shape and actions."""
+    """import_inbox_sync envelope shape and actions."""
 
     def test_returns_low_sensitivity_envelope(self, patch_service: MagicMock) -> None:
         patch_service.sync.return_value = InboxSyncResult(
@@ -63,7 +63,7 @@ class TestInboxSyncTool:
 
 
 class TestInboxListTool:
-    """import.inbox_list envelope shape."""
+    """import_inbox_list envelope shape."""
 
     def test_returns_would_process_shape(self, patch_service: MagicMock) -> None:
         patch_service.enumerate.return_value = InboxListResult(

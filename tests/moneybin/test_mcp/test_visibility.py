@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -161,6 +162,29 @@ async def test_full_discover_reveals_every_extended_tool() -> None:
             f"discover. Missing: {all_registered - visible}; "
             f"unexpected: {visible - all_registered}"
         )
+
+
+@pytest.mark.asyncio
+async def test_every_tool_name_matches_anthropic_openai_pattern() -> None:
+    """Every registered tool name must match ``^[a-zA-Z0-9_-]{1,64}$``.
+
+    Why: Anthropic and OpenAI clients reject tool definitions whose names
+    don't match this regex (FastMCP/MCP SDK itself does not enforce it, so a
+    bad name boots fine and only fails at the frontend on connect). See
+    ``.claude/rules/mcp-server.md`` — "we use the portable subset."
+    """
+    from moneybin.mcp.server import mcp
+
+    pattern = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+    names = [
+        t.name
+        for t in await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
+    ]
+    bad = [n for n in names if not pattern.match(n)]
+    assert not bad, (
+        f"Tool names violate ^[a-zA-Z0-9_-]{{1,64}}$ (Anthropic/OpenAI "
+        f"frontend regex): {bad}"
+    )
 
 
 @pytest.mark.asyncio

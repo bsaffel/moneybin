@@ -48,7 +48,7 @@ The existing `~/.moneybin/` location is the older Unix dotdir form of platform c
 9. **Atomic file movement.** Each file is processed in three filesystem steps: source → staging path inside the destination directory → final destination. Movement uses `os.rename` (atomic on the same filesystem). A crash mid-import leaves the file either in `inbox/` (not yet moved), in a discoverable `staging-*` path inside `processed/` or `failed/`, or at its final destination — never partially written or duplicated. A startup recovery pass (run at the start of every sync) cleans up stale `staging-*` entries by reverting them to `inbox/`.
 10. **Out-of-scope on inbox/processed/failed boundaries.** Sync only acts on regular files directly inside `inbox/` (root) or directly inside `inbox/<single-subfolder>/`. Nested subfolders deeper than one level, symlinks, and hidden files (starting with `.`) are skipped with an `ignored` entry in the response. This rules out sync recursing into `processed/`, `failed/`, or accidentally following a symlink out of the home directory.
 11. **CLI surface.** `moneybin import inbox` drains the active profile's inbox. `moneybin import inbox list` previews without moving. `moneybin import inbox path` prints the active profile's inbox parent (`<inbox_root>/<profile>/`). All three live under the existing `import` group per `cli-restructure.md` and respect the global `--profile` flag.
-12. **MCP surface.** `import.inbox_sync` drains. `import.inbox_list` previews. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
+12. **MCP surface.** `import_inbox_sync` drains. `import_inbox_list` previews. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
 
 ### Non-Functional
 
@@ -73,7 +73,7 @@ Existing tables touched indirectly via `ImportService`:
 
 - `src/moneybin/services/inbox_service.py` — `InboxService` class encapsulating directory layout, locking, the recovery pass, file movement, and the sync/list operations. Calls `ImportService.import_file()` for each file. Returns a dataclass result (`InboxSyncResult`) with `processed`, `failed`, `skipped`, `ignored` lists.
 - `src/moneybin/cli/import_inbox.py` — Typer subcommands `inbox`, `inbox list`, `inbox path` registered under the existing `import` group.
-- `src/moneybin/mcp/tools/import_inbox.py` — `import.inbox_sync` and `import.inbox_list` MCP tools (or extend `import_tools.py` if it stays small).
+- `src/moneybin/mcp/tools/import_inbox.py` — `import_inbox_sync` and `import_inbox_list` MCP tools (or extend `import_tools.py` if it stays small).
 - `tests/services/test_inbox_service.py` — service-level unit + integration tests.
 - `tests/cli/test_import_inbox.py` — CLI subprocess tests.
 - `tests/mcp/test_import_inbox_tools.py` — MCP tool tests.
@@ -132,7 +132,7 @@ Done: 1 imported, 1 failed.
 
 Two new tools under the existing `import.*` namespace.
 
-### `import.inbox_sync`
+### `import_inbox_sync`
 
 - **Sensitivity:** `low` (returns counts, filenames, error codes; never file contents)
 - **Args:** none
@@ -153,9 +153,9 @@ Two new tools under the existing `import.*` namespace.
     "ignored": [{"path": ".DS_Store", "reason": "hidden_file"}]
   }
   ```
-- **Actions hints:** `"Move failed files into inbox/<account-slug>/ and re-run import.inbox_sync"` when any failures are returned.
+- **Actions hints:** `"Move failed files into inbox/<account-slug>/ and re-run import_inbox_sync"` when any failures are returned.
 
-### `import.inbox_list`
+### `import_inbox_list`
 
 - **Sensitivity:** `low`
 - **Args:** none

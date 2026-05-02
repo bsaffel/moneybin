@@ -25,7 +25,7 @@ def inbox_sync() -> ResponseEnvelope:
     if result["failed"]:
         actions.insert(
             0,
-            "Move failed files into inbox/<account-slug>/ and re-run import.inbox_sync",
+            "Move failed files into inbox/<account-slug>/ and re-run import_inbox_sync",
         )
     return build_envelope(data=result, sensitivity="low", actions=actions)
 
@@ -38,7 +38,7 @@ def inbox_list() -> ResponseEnvelope:
     return build_envelope(
         data=result,
         sensitivity="low",
-        actions=["Use import.inbox_sync to drain the inbox"],
+        actions=["Use import_inbox_sync to drain the inbox"],
     )
 
 
@@ -47,13 +47,13 @@ def register_inbox_tools(mcp: FastMCP) -> None:
     register(
         mcp,
         inbox_sync,
-        "import.inbox_sync",
+        "import_inbox_sync",
         "Drain the active profile's import inbox; move successes to "
         "processed/ and failures to failed/ with structured error sidecars.",
     )
     register(
         mcp,
         inbox_list,
-        "import.inbox_list",
+        "import_inbox_list",
         "Preview the active profile's import inbox without moving anything.",
     )
