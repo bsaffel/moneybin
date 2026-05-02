@@ -18,6 +18,9 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
     monkeypatch.setattr("moneybin.mcp.tools.import_inbox._build_service", lambda: fake)
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_inbox._build_service_no_db", lambda: fake
+    )
     return fake
 
 

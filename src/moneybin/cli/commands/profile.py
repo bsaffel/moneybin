@@ -38,10 +38,13 @@ def profile_create(
     ] = None,
 ) -> None:
     """Create a new profile with directory structure, config, and encrypted database."""
+    from moneybin.utils.user_config import normalize_profile_name
+
+    normalized = normalize_profile_name(name)
     if init_inbox is None:
         init_inbox = (
             typer.confirm(
-                f"Set up the import inbox at ~/Documents/MoneyBin/{name}/?",
+                f"Set up the import inbox at ~/Documents/MoneyBin/{normalized}/?",
                 default=True,
             )
             if sys.stdin.isatty()
@@ -50,9 +53,11 @@ def profile_create(
     svc = ProfileService()
     try:
         profile_dir = svc.create(name, init_inbox=init_inbox)
-        logger.info(f"✅ Created profile {name} at {profile_dir}")
+        logger.info(f"✅ Created profile {normalized} at {profile_dir}")
         if init_inbox:
-            logger.info(f"Import inbox ready at ~/Documents/MoneyBin/{name}/inbox/")
+            logger.info(
+                f"Import inbox ready at ~/Documents/MoneyBin/{normalized}/inbox/"
+            )
     except ProfileExistsError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e

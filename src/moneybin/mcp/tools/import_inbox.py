@@ -27,6 +27,19 @@ def _build_service() -> InboxService:
     return InboxService(db=get_database(), settings=get_settings())
 
 
+def _build_service_no_db() -> InboxService:
+    """Same as _build_service but without opening the database.
+
+    Used by inbox_list, which only enumerates the filesystem and does not
+    need DB access. Lets the tool work even when the DB is locked or its
+    encryption key is unavailable (e.g., onboarding/recovery flows).
+    """
+    from moneybin.config import get_settings
+    from moneybin.services.inbox_service import InboxService
+
+    return InboxService(db=None, settings=get_settings())
+
+
 @mcp_tool(sensitivity="low")
 def inbox_sync() -> ResponseEnvelope:
     """Drain the active profile's import inbox."""
@@ -45,7 +58,7 @@ def inbox_sync() -> ResponseEnvelope:
 @mcp_tool(sensitivity="low")
 def inbox_list() -> ResponseEnvelope:
     """Preview the active profile's inbox without moving anything."""
-    service = _build_service()
+    service = _build_service_no_db()
     result = dataclasses.asdict(service.enumerate())
     return build_envelope(
         data=result,

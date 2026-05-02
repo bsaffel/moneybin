@@ -9,7 +9,6 @@ sidecar on failure. See docs/specs/smart-import-inbox.md.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import logging
 import re
 import time
@@ -115,13 +114,18 @@ class InboxService:
     @contextlib.contextmanager
     def acquire_lock(self) -> Generator[None, None, None]:
         """Hold an exclusive flock on .inbox.lock for the duration of the block."""
+        # Lazy import: fcntl is Unix-only. Importing at module load would make
+        # the entire CLI fail to start on Windows, since import_inbox is imported
+        # during command dispatch. Deferring keeps non-inbox commands portable;
+        # `inbox sync` itself remains Unix-only (see spec).
+        import fcntl
+
         self.ensure_layout()
         fh = open(self.lock_path, "a")  # noqa: SIM115  # contextmanager handles close
         try:
             try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as e:
-                fh.close()
                 raise InboxBusyError(
                     "Another sync is in progress for this profile."
                 ) from e
@@ -288,6 +292,8 @@ class InboxService:
                 self.recover_staging()
                 listing = self.enumerate()
                 result = InboxSyncResult(ignored=list(listing.ignored))
+                if listing.ignored:
+                    INBOX_SYNC_TOTAL.labels(outcome="ignored").inc(len(listing.ignored))
                 importer = ImportService(self._db)
                 t0 = time.monotonic()
                 for item in listing.would_process:
@@ -359,7 +365,23 @@ class InboxService:
             INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
             logger.warning(f"Inbox import failed: {rel_filename} → {error_code}")
             return
-        moved = self.move_to_outcome(src, outcome="failed", year_month=year_month)
+        try:
+            moved = self.move_to_outcome(src, outcome="failed", year_month=year_month)
+        except OSError as move_err:
+            # Disk full, cross-device, permission, etc. Don't let a failed
+            # move-to-failed/ abort the whole drain — record what we know and
+            # continue to the next file.
+            result.failed.append({
+                "filename": rel_filename,
+                "error_code": error_code,
+                "stage": stage,
+            })
+            INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
+            logger.warning(
+                f"Inbox import failed: {rel_filename} → {error_code} "
+                f"(could not move to failed/: {move_err.__class__.__name__})"
+            )
+            return
         sidecar = self.write_error_sidecar(
             moved,
             error_code=error_code,
