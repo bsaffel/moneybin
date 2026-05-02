@@ -259,3 +259,20 @@ logic, examples that lag behind schema changes), revisit the **sibling
 `.examples.sql`** approach: one file per table next to the model, parsed
 at startup. See `docs/specs/mcp-sql-discoverability.md` Section "Out of
 Scope" and the brainstorming session that produced it.
+
+## MCP schema discoverability — app.* drift coverage
+
+The drift tests in `tests/moneybin/test_services/test_schema_catalog.py`
+only exercise `core.*` interface tables because the `schema_catalog_db`
+fixture only seeds `core.dim_accounts`, `core.fct_transactions`, and
+`core.bridge_transfers`. Six `app.*` interface tables (`categories`,
+`budgets`, `transaction_notes`, `merchants`, `categorization_rules`,
+`transaction_categories`) are silently skipped — a column rename in any
+of them is not caught by CI until the schema doc is read at runtime.
+
+Add a `create_app_interface_tables_raw()` helper to
+`tests/moneybin/db_helpers.py` (parallel to `create_core_tables_raw`)
+and extend the `schema_catalog_db` fixture to call it. The DDL exists in
+`src/moneybin/sql/schema/app_*.sql` and could be loaded directly via
+`schema.py:init_schemas()` if a non-private interface is exposed, or
+mirrored as Python constants like the core helpers do today.

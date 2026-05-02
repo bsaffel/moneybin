@@ -50,12 +50,13 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
         Example(
-            question="Transactions for an account in a date range",
+            question="Transactions for one account within a date range "
+            "(substitute YOUR_ACCOUNT_ID and the real dates)",
             sql="""
                 SELECT transaction_date, description, amount, category
                 FROM core.fct_transactions
-                WHERE account_id = ?
-                  AND transaction_date BETWEEN ? AND ?
+                WHERE account_id = 'YOUR_ACCOUNT_ID'
+                  AND transaction_date BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'
                 ORDER BY transaction_date DESC
             """,
         ),
@@ -124,11 +125,12 @@ EXAMPLES: dict[str, list[Example]] = {
     ],
     "app.transaction_notes": [
         Example(
-            question="All notes on a specific transaction",
+            question="Notes for a specific transaction "
+            "(substitute YOUR_TRANSACTION_ID)",
             sql="""
                 SELECT transaction_id, note, created_at
                 FROM app.transaction_notes
-                WHERE transaction_id = ?
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
                 ORDER BY created_at
             """,
         ),
@@ -235,7 +237,7 @@ def build_schema_doc() -> dict[str, Any]:
     return {
         "version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
-        "conventions": CONVENTIONS,
+        "conventions": dict(CONVENTIONS),
         "tables": tables,
         "beyond_the_interface": {
             "note": _BEYOND_NOTE,

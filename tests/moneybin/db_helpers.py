@@ -122,6 +122,10 @@ CORE_TABLE_COMMENTS: dict[str, str] = {
     "core.dim_accounts": (
         "Canonical accounts dimension; one row per account across sources"
     ),
+    "core.bridge_transfers": (
+        "Confirmed transfer pairs linking two fct_transactions rows; "
+        "derived from app.match_decisions where match_type = 'transfer'"
+    ),
 }
 
 CORE_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
