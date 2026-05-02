@@ -1,4 +1,5 @@
 /* Merchant normalization patterns matched against transaction descriptions to canonicalize merchant names and cache category assignments */
+-- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
 CREATE TABLE IF NOT EXISTS app.merchants (
     merchant_id VARCHAR PRIMARY KEY, -- Unique identifier for this merchant record
     raw_pattern VARCHAR NOT NULL, -- Pattern matched against fct_transactions.description to identify this merchant
