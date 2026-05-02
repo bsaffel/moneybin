@@ -249,3 +249,13 @@ in `db info`) and parked here for future, focused changes.
   accept free-form strings then validate against a hardcoded set
   (`--format`, `--mode`, etc.). Switch to `Literal[...]` types so typer
   generates the choices and pyright catches typos at call sites.
+## Schema examples co-location (post-`mcp-sql-discoverability`)
+
+Example queries currently live in `src/moneybin/services/schema_catalog.py`
+(`EXAMPLES` dict) with one-line pointer comments in each interface model
+and DDL file. If example drift becomes a real maintenance problem
+(examples that reference dropped columns, examples that contradict model
+logic, examples that lag behind schema changes), revisit the **sibling
+`.examples.sql`** approach: one file per table next to the model, parsed
+at startup. See `docs/specs/mcp-sql-discoverability.md` Section "Out of
+Scope" and the brainstorming session that produced it.
