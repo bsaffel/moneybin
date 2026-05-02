@@ -56,6 +56,14 @@ def test_every_interface_table_has_at_least_one_example() -> None:
     assert not missing, f"Interface tables missing examples: {sorted(missing)}"
 
 
+def _present_tables(db: Database) -> set[str]:
+    """Return fully-qualified names of all tables in the test DB."""
+    rows = db.execute(
+        "SELECT schema_name || '.' || table_name FROM duckdb_tables()"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
 @pytest.fixture()
 def schema_db(tmp_path: Path) -> Generator[Database, None, None]:
     """Database with core tables created and comments applied."""
@@ -122,3 +130,42 @@ def test_build_schema_doc_includes_examples_for_present_tables(
     first = fct["examples"][0]
     assert "question" in first
     assert "sql" in first
+
+
+def test_interface_tables_present_in_catalog(schema_db: Database) -> None:
+    """Stale-entry drift: an interface-tagged table is missing from the DB.
+
+    Only checks tables the test DB actually creates (core.*); the assertion
+    here is that nothing tagged interface in the *core* schema is missing.
+    """
+    present = _present_tables(schema_db)
+    # Filter to core.* — the test fixture only seeds core tables.
+    # Broaden this filter when app.* gets seeded.
+    missing_core = [
+        t.full_name
+        for t in INTERFACE_TABLES
+        if t.schema == "core" and t.full_name not in present
+    ]
+    assert not missing_core, (
+        f"INTERFACE_TABLES core entries missing from catalog: {missing_core}"
+    )
+
+
+def test_examples_parse_and_execute(schema_db: Database) -> None:
+    """Examples must parse and execute against the live schema.
+
+    Catches column-renamed-but-example-not-updated drift. Skips examples
+    for tables not present in the test DB (app.* tables not seeded here).
+    Parameterized examples (containing '?') are validated via PREPARE
+    instead of execution.
+    """
+    present = _present_tables(schema_db)
+    for table_name, examples in EXAMPLES.items():
+        if table_name not in present:
+            continue
+        for ex in examples:
+            if "?" in ex.sql:
+                schema_db.execute(f"PREPARE schema_catalog_probe AS {ex.sql}")
+                schema_db.execute("DEALLOCATE schema_catalog_probe")
+            else:
+                schema_db.execute(ex.sql).fetchall()

@@ -29,6 +29,16 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
 );
 """
 
+CORE_BRIDGE_TRANSFERS_DDL = """\
+CREATE TABLE IF NOT EXISTS core.bridge_transfers (
+    transfer_id VARCHAR PRIMARY KEY,
+    debit_transaction_id VARCHAR,
+    credit_transaction_id VARCHAR,
+    date_offset_days INTEGER,
+    amount DECIMAL(18, 2)
+);
+"""
+
 CORE_FCT_TRANSACTIONS_DDL = """\
 CREATE TABLE IF NOT EXISTS core.fct_transactions (
     transaction_id VARCHAR,
@@ -83,6 +93,7 @@ def create_core_tables(db: Database) -> None:
     """
     db.execute(CORE_DIM_ACCOUNTS_DDL)
     db.execute(CORE_FCT_TRANSACTIONS_DDL)
+    db.execute(CORE_BRIDGE_TRANSFERS_DDL)
 
 
 def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
@@ -96,6 +107,7 @@ def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
     """
     conn.execute(CORE_DIM_ACCOUNTS_DDL)
     conn.execute(CORE_FCT_TRANSACTIONS_DDL)
+    conn.execute(CORE_BRIDGE_TRANSFERS_DDL)
 
 
 # Table and column comments for core tables — mirror the SQLMesh model
