@@ -1,0 +1,38 @@
+scenario: ofx-reimport-idempotent
+description: "Re-import detection: importing the same OFX file twice without --force is rejected"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+  imports:
+    # First import succeeds and creates a single batch.
+    - path: ofx/sample_minimal.ofx
+      apply_transforms: false
+    # Second import without force must fail with the canonical 'already imported' message.
+    - path: ofx/sample_minimal.ofx
+      apply_transforms: false
+      expect_failure: true
+      expect_error_substring: "already imported"
+
+pipeline:
+  - import_file
+
+# Only one batch should exist after the second (rejected) attempt.
+assertions:
+  - name: import_log_single_batch
+    fn: assert_row_count_exact
+    args:
+      table: raw.import_log
+      expected: 1
+  - name: ofx_transactions_not_duplicated
+    fn: assert_row_count_exact
+    args:
+      table: raw.ofx_transactions
+      expected: 2
+
+gates:
+  required_assertions: all
+  required_evaluations: all
+  required_expectations: all

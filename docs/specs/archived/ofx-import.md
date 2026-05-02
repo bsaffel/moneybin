@@ -1,7 +1,11 @@
 # Feature: OFX/QFX Import
 
+> **Superseded by [`smart-import-financial.md`](../smart-import-financial.md)** (2026-05-01). This spec describes the original 2024-vintage OFX import, which used a bespoke `OFXLoader` and bypassed the import-batch infrastructure. The replacement brings OFX/QFX/QBO onto the same contract surface as smart-import-tabular.
+
+---
+
 ## Status
-implemented
+superseded
 
 ## Goal
 Import financial data from OFX/QFX bank files into MoneyBin with an idempotent, archive-friendly workflow.

@@ -1,0 +1,49 @@
+scenario: ofx-missing-institution-metadata
+description: "Resolution chain: file without <FI><ORG> fails non-interactively; --institution override succeeds"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+  imports:
+    # No <FI> block + filename doesn't match any pattern → resolution fails.
+    - path: ofx/missing_institution_sample.ofx
+      apply_transforms: false
+      expect_failure: true
+      expect_error_substring: "could not be derived"
+    # Same file with explicit institution override resolves successfully.
+    # No force needed: the first import raised before begin_import() wrote
+    # an import_log row, so the re-import guard sees no prior batch.
+    - path: ofx/missing_institution_sample.ofx
+      apply_transforms: false
+      institution: "Local Bank"
+
+pipeline:
+  - import_file
+  - transform
+
+# After the first (rejected) and second (succeeded) imports there should be
+# exactly one batch in import_log carrying the override-derived source_origin.
+assertions:
+  - name: import_log_single_successful_batch
+    fn: assert_row_count_exact
+    args:
+      table: raw.import_log
+      expected: 1
+  - name: ofx_transactions_present
+    fn: assert_row_count_exact
+    args:
+      table: raw.ofx_transactions
+      expected: 1
+  - name: source_origin_is_override
+    fn: assert_source_system_populated
+    args:
+      table: raw.ofx_transactions
+      column: source_origin
+      expected_sources: [local_bank]
+
+gates:
+  required_assertions: all
+  required_evaluations: all
+  required_expectations: all

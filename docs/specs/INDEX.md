@@ -37,6 +37,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Tabular Import](smart-import-tabular.md) | Feature | implemented | Universal tabular importer (CSV, TSV, Excel, Parquet, Feather); heuristic detection engine, multi-account support, migration formats (Tiller, Mint, YNAB, Maybe). Supersedes archived `csv-import` spec. |
 | [Tabular Cleanup](tabular-import-cleanup.md) | Feature | implemented | Post-ship cleanup: ResolvedMapping dataclass, Literal types, config params, DatabaseKeyError handler, Decimal correctness, N+1 merchant batch optimization, account matching wiring |
 | [Smart Import Inbox](smart-import-inbox.md) | Feature | implemented | Watched-folder import UX: drop files in `~/Documents/MoneyBin/<profile>/inbox/`, run `moneybin import inbox` (or `import_inbox_sync` MCP), files move to `processed/YYYY-MM/` or `failed/YYYY-MM/` with YAML error sidecar. Per-profile lockfile + crash-recovery via staging-rename. |
+| [Financial Format Import](smart-import-financial.md) | Feature | implemented | OFX/QFX/QBO parity with `smart-import-tabular.md`: shared `import_log` infrastructure, reversible imports, `Database.ingest_dataframe()` writes, magic-byte detection, institution resolution chain, formalized QBO support. Supersedes archived `ofx-import.md`. |
 | `smart-import-pdf.md` | Feature | planned | Pillar C: native-text PDF import |
 | `smart-import-ai-parsing.md` | Feature | planned | Pillar F: LLM fallback for file parsing |
 
