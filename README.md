@@ -121,7 +121,7 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 | Net worth & balance tracking, budget tracking | 📐 |
 | Investment tracking (holdings, cost basis) | 🗓️ |
 | Privacy tiers & consent model | 📐 |
-| MCP SQL schema discoverability (curated `moneybin://schema` resource) | 📐 |
+| MCP SQL schema discoverability (curated `moneybin://schema` resource) | ✅ |
 | Export (CSV, Excel, Google Sheets) | 🗓️ |
 
 Per-feature design specs live in [`docs/specs/`](docs/specs/INDEX.md).

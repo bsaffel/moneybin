@@ -1,7 +1,7 @@
 # Feature: MCP SQL Schema Discoverability
 
 ## Status
-in-progress
+implemented
 
 ## Goal
 
