@@ -71,6 +71,31 @@ def test_threshold_min_required_for_evaluations() -> None:
         load_scenario_from_string(bad)
 
 
+def test_import_path_traversal_rejected() -> None:
+    """Import paths escaping the tests/fixtures root are rejected."""
+    bad = VALID.replace(
+        "fixtures: []",
+        "fixtures: []\n  imports:\n    - path: ../../../etc/passwd",
+    )
+    with pytest.raises(ScenarioValidationError) as exc:
+        load_scenario_from_string(bad)
+    assert "tests/fixtures" in str(exc.value).lower()
+
+
+def test_expect_error_substring_requires_expect_failure() -> None:
+    """expect_error_substring without expect_failure must fail validation."""
+    bad = VALID.replace(
+        "fixtures: []",
+        "fixtures: []\n"
+        "  imports:\n"
+        "    - path: ofx/sample_minimal.ofx\n"
+        "      expect_error_substring: boom",
+    )
+    with pytest.raises(ScenarioValidationError) as exc:
+        load_scenario_from_string(bad)
+    assert "expect_failure" in str(exc.value)
+
+
 def test_loads_shipped_scenarios() -> None:
     """All bundled scenario YAMLs parse and the canonical names are present."""
     scenarios = list_shipped_scenarios()

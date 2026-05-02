@@ -90,6 +90,15 @@ class ImportFileSpec(BaseModel):
             ) from exc
         return self
 
+    @model_validator(mode="after")
+    def _check_failure_spec(self) -> ImportFileSpec:
+        # The substring check only runs inside the except branch gated on
+        # expect_failure — without this guard, a typo'd scenario would
+        # silently skip the substring assertion and look like it passed.
+        if self.expect_error_substring and not self.expect_failure:
+            raise ValueError("expect_error_substring requires expect_failure: true")
+        return self
+
 
 class SetupSpec(BaseModel):
     """Scenario setup: persona, seed, year span, and fixtures."""
