@@ -125,10 +125,13 @@ class ProfileService:
     @staticmethod
     def _init_inbox(profile: str) -> Path:
         """Create the import-inbox layout for ``profile`` and return its root."""
-        from moneybin.config import ImportSettings, MoneyBinSettings
+        from moneybin.config import MoneyBinSettings
         from moneybin.services.inbox_service import InboxService
 
-        settings = MoneyBinSettings(profile=profile, import_=ImportSettings())
+        # Don't pass import_= explicitly — let MoneyBinSettings build it via
+        # its default_factory so MONEYBIN_IMPORT___INBOX_ROOT env overrides
+        # apply (e.g. test isolation in tests/conftest.py).
+        settings = MoneyBinSettings(profile=profile)
         service = InboxService(db=None, settings=settings)
         service.ensure_layout()
         return service.root
