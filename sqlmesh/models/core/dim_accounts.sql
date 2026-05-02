@@ -1,4 +1,5 @@
 /* Canonical accounts dimension; deduplicated accounts from all sources, keeping the most recently extracted record per account_id */
+-- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
 MODEL (
   name core.dim_accounts,
   kind FULL,

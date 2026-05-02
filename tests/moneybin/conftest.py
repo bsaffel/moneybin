@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import moneybin.database as db_module
 from moneybin.config import (
     clear_settings_cache,
     get_base_dir,
@@ -19,6 +20,7 @@ from moneybin.config import (
     set_current_profile,
 )
 from moneybin.database import Database
+from tests.moneybin.db_helpers import apply_core_table_comments, create_core_tables_raw
 
 
 @contextmanager
@@ -110,6 +112,26 @@ def mock_secret_store() -> MagicMock:
     store = MagicMock()
     store.get_key.return_value = "test-encryption-key-for-unit-tests"
     return store
+
+
+@pytest.fixture()
+def schema_catalog_db(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> Generator[Database, None, None]:
+    """Database with core tables + comments applied; for schema-catalog tests."""
+    database = Database(
+        tmp_path / "schema_catalog.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    create_core_tables_raw(database.conn)
+    apply_core_table_comments(database)
+    db_module._database_instance = database  # type: ignore[attr-defined]
+    try:
+        yield database
+    finally:
+        db_module._database_instance = None  # type: ignore[attr-defined]
+        database.close()
 
 
 @pytest.fixture()

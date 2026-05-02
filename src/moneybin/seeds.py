@@ -50,6 +50,7 @@ def materialize_seeds(db: Database) -> None:
 
 def refresh_views(db: Database) -> None:
     """Create or replace the app views that expose seeds + user data."""
+    # Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
     sql = f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
         SELECT

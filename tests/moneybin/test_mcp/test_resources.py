@@ -10,7 +10,6 @@ import pytest
 from moneybin.mcp.resources import (
     resource_accounts,
     resource_privacy,
-    resource_schema,
     resource_status,
     resource_tools,
 )
@@ -135,48 +134,6 @@ class TestResourcePrivacy:
         result = resource_privacy()
         data: dict[str, Any] = json.loads(result)
         assert data["unmask_critical"] is False
-
-
-# ---------------------------------------------------------------------------
-# moneybin://schema
-# ---------------------------------------------------------------------------
-
-
-class TestResourceSchema:
-    """Tests for moneybin://schema resource."""
-
-    @pytest.mark.unit
-    def test_returns_tables_list(self) -> None:
-        result = resource_schema()
-        data: dict[str, Any] = json.loads(result)
-        assert "tables" in data
-        assert isinstance(data["tables"], list)
-
-    @pytest.mark.unit
-    def test_tables_have_required_fields(self) -> None:
-        result = resource_schema()
-        data: dict[str, Any] = json.loads(result)
-        if data["tables"]:
-            table = data["tables"][0]
-            assert "schema" in table
-            assert "table" in table
-            assert "columns" in table
-
-    @pytest.mark.unit
-    def test_columns_have_name_and_type(self) -> None:
-        result = resource_schema()
-        data: dict[str, Any] = json.loads(result)
-        for table in data["tables"]:
-            for col in table["columns"]:
-                assert "name" in col
-                assert "type" in col
-
-    @pytest.mark.unit
-    def test_core_schema_included(self) -> None:
-        result = resource_schema()
-        data: dict[str, Any] = json.loads(result)
-        schemas = {t["schema"] for t in data["tables"]}
-        assert "core" in schemas
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 /* Auto-categorization rules evaluated in priority order; assign categories based on description patterns, amount bounds, and account filters */
+-- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
 CREATE TABLE IF NOT EXISTS app.categorization_rules (
     rule_id VARCHAR PRIMARY KEY, -- Unique identifier for this rule
     name VARCHAR NOT NULL, -- Human-readable label for this rule, e.g. Starbucks coffee purchases

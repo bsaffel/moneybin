@@ -3,7 +3,14 @@
 All consumers (MCP server, CLI, services) import table constants from here.
 """
 
-from typing import NamedTuple
+from __future__ import annotations
+
+import sys
+from typing import Literal, NamedTuple
+
+# When adding a new TableRef constant: if it should be visible to MCP
+# clients via the curated `moneybin://schema` resource, pass
+# audience="interface". Otherwise it stays internal (default).
 
 
 class TableRef(NamedTuple):
@@ -11,6 +18,7 @@ class TableRef(NamedTuple):
 
     schema: str
     name: str
+    audience: Literal["interface", "internal"] = "internal"
 
     @property
     def full_name(self) -> str:
@@ -19,9 +27,9 @@ class TableRef(NamedTuple):
 
 
 # -- Core layer (canonical tables built by SQLMesh transforms) --
-DIM_ACCOUNTS = TableRef("core", "dim_accounts")
-FCT_TRANSACTIONS = TableRef("core", "fct_transactions")
-BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers")
+DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
+FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")
+BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
@@ -36,16 +44,15 @@ TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
 IMPORT_LOG = TableRef("raw", "import_log")
 
 # -- App tables (application-managed data) --
-TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories")
-BUDGETS = TableRef("app", "budgets")
-TRANSACTION_NOTES = TableRef("app", "transaction_notes")
-CATEGORIES = TableRef(
-    "app", "categories"
-)  # view: seeds.categories ∪ app.user_categories, with overrides applied
+TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")
+BUDGETS = TableRef("app", "budgets", audience="interface")
+TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
+# view: seeds.categories ∪ app.user_categories, with overrides applied
+CATEGORIES = TableRef("app", "categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")
 CATEGORY_OVERRIDES = TableRef("app", "category_overrides")
-MERCHANTS = TableRef("app", "merchants")
-CATEGORIZATION_RULES = TableRef("app", "categorization_rules")
+MERCHANTS = TableRef("app", "merchants", audience="interface")
+CATEGORIZATION_RULES = TableRef("app", "categorization_rules", audience="interface")
 PROPOSED_RULES = TableRef("app", "proposed_rules")
 RULE_DEACTIVATIONS = TableRef("app", "rule_deactivations")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
@@ -69,3 +76,20 @@ FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")
 
 # -- Synthetic tables (created on demand by the generator) --
 GROUND_TRUTH = TableRef("synthetic", "ground_truth")
+
+
+def _all_table_refs() -> tuple[TableRef, ...]:
+    """Collect every TableRef constant defined at module scope.
+
+    Walks this module's globals so the interface set is derived from
+    the constant declarations rather than maintained as a parallel list.
+    """
+    module = sys.modules[__name__]
+    return tuple(
+        value for value in vars(module).values() if isinstance(value, TableRef)
+    )
+
+
+INTERFACE_TABLES: tuple[TableRef, ...] = tuple(
+    t for t in _all_table_refs() if t.audience == "interface"
+)

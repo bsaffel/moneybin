@@ -1,5 +1,6 @@
 /* Canonical transactions fact view; reads from the deduplicated merged layer
    with categorization and merchant joins; negative amount = expense, positive = income */
+-- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
 MODEL (
   name core.fct_transactions,
   kind VIEW,

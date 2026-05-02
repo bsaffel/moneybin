@@ -1,4 +1,5 @@
 /* Monthly spending budget targets by category; each record defines a spending limit for a category over a date range */
+-- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
 CREATE TABLE IF NOT EXISTS app.budgets (
     budget_id VARCHAR PRIMARY KEY, -- Unique identifier for this budget record
     category VARCHAR NOT NULL, -- Spending category this budget applies to; matches app.categories.category
