@@ -152,18 +152,14 @@ TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
 IMPORT_LOG = TableRef("raw", "import_log")
 
 # -- App tables (application-managed data) --
-TRANSACTION_CATEGORIES = TableRef(
-    "app", "transaction_categories", audience="interface"
-)
+TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")
 BUDGETS = TableRef("app", "budgets", audience="interface")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
 CATEGORIES = TableRef("app", "categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")
 CATEGORY_OVERRIDES = TableRef("app", "category_overrides")
 MERCHANTS = TableRef("app", "merchants", audience="interface")
-CATEGORIZATION_RULES = TableRef(
-    "app", "categorization_rules", audience="interface"
-)
+CATEGORIZATION_RULES = TableRef("app", "categorization_rules", audience="interface")
 PROPOSED_RULES = TableRef("app", "proposed_rules")
 RULE_DEACTIVATIONS = TableRef("app", "rule_deactivations")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
@@ -197,9 +193,7 @@ def _all_table_refs() -> tuple[TableRef, ...]:
     """
     module = sys.modules[__name__]
     return tuple(
-        value
-        for value in vars(module).values()
-        if isinstance(value, TableRef)
+        value for value in vars(module).values() if isinstance(value, TableRef)
     )
 
 
@@ -486,13 +480,10 @@ CORE_TABLE_COMMENTS: dict[str, str] = {
 CORE_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
     "core.fct_transactions": {
         "transaction_id": (
-            "Gold key: deterministic SHA-256 hash, "
-            "unique per real-world transaction"
+            "Gold key: deterministic SHA-256 hash, unique per real-world transaction"
         ),
         "amount": "Transaction amount; negative = expense, positive = income",
-        "transaction_direction": (
-            "Derived from amount sign: expense, income, or zero"
-        ),
+        "transaction_direction": ("Derived from amount sign: expense, income, or zero"),
         "category": (
             "Spending category; from app.transaction_categories when "
             "categorized, else source value"
@@ -591,9 +582,7 @@ def test_build_schema_doc_columns_carry_type_and_comment(
     schema_db: Database,
 ) -> None:
     doc = build_schema_doc()
-    fct = next(
-        t for t in doc["tables"] if t["name"] == "core.fct_transactions"
-    )
+    fct = next(t for t in doc["tables"] if t["name"] == "core.fct_transactions")
     cols_by_name = {c["name"]: c for c in fct["columns"]}
     assert "amount" in cols_by_name
     assert "DECIMAL" in cols_by_name["amount"]["type"].upper()
@@ -604,9 +593,7 @@ def test_build_schema_doc_includes_examples_for_present_tables(
     schema_db: Database,
 ) -> None:
     doc = build_schema_doc()
-    fct = next(
-        t for t in doc["tables"] if t["name"] == "core.fct_transactions"
-    )
+    fct = next(t for t in doc["tables"] if t["name"] == "core.fct_transactions")
     assert len(fct["examples"]) >= 1
     first = fct["examples"][0]
     assert "question" in first
@@ -679,25 +666,23 @@ def build_schema_doc() -> dict[str, Any]:
             """,
             [schema_name, table_name],
         ).fetchall()
-        tables.append(
-            {
-                "name": full_name,
-                "purpose": table_comment,
-                "columns": [
-                    {
-                        "name": name,
-                        "type": dtype,
-                        "nullable": bool(nullable),
-                        "comment": comment,
-                    }
-                    for name, dtype, nullable, comment in col_rows
-                ],
-                "examples": [
-                    {"question": ex.question, "sql": ex.sql}
-                    for ex in EXAMPLES.get(full_name, [])
-                ],
-            }
-        )
+        tables.append({
+            "name": full_name,
+            "purpose": table_comment,
+            "columns": [
+                {
+                    "name": name,
+                    "type": dtype,
+                    "nullable": bool(nullable),
+                    "comment": comment,
+                }
+                for name, dtype, nullable, comment in col_rows
+            ],
+            "examples": [
+                {"question": ex.question, "sql": ex.sql}
+                for ex in EXAMPLES.get(full_name, [])
+            ],
+        })
 
     logger.info("Schema doc built: %d interface tables present", len(tables))
 
@@ -944,9 +929,10 @@ In `src/moneybin/mcp/tools/sql.py`, replace the `sql_query` docstring (lines 21-
 And update the registration description in `register_sql_tools` to:
 
 ```python
-        "Execute a read-only SQL query against the database. "
-        "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. "
-        "Read resource moneybin://schema for tables, columns, and example queries.",
+"Execute a read-only SQL query against the database."
+
+"Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. "
+("Read resource moneybin://schema for tables, columns, and example queries.",)
 ```
 
 - [ ] **Step 2: Verify nothing else broke**
