@@ -44,9 +44,7 @@ TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
 IMPORT_LOG = TableRef("raw", "import_log")
 
 # -- App tables (application-managed data) --
-TRANSACTION_CATEGORIES = TableRef(
-    "app", "transaction_categories", audience="interface"
-)
+TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")
 BUDGETS = TableRef("app", "budgets", audience="interface")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
 # view: seeds.categories ∪ app.user_categories, with overrides applied
@@ -54,9 +52,7 @@ CATEGORIES = TableRef("app", "categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")
 CATEGORY_OVERRIDES = TableRef("app", "category_overrides")
 MERCHANTS = TableRef("app", "merchants", audience="interface")
-CATEGORIZATION_RULES = TableRef(
-    "app", "categorization_rules", audience="interface"
-)
+CATEGORIZATION_RULES = TableRef("app", "categorization_rules", audience="interface")
 PROPOSED_RULES = TableRef("app", "proposed_rules")
 RULE_DEACTIVATIONS = TableRef("app", "rule_deactivations")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
