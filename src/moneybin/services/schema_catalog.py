@@ -7,7 +7,15 @@ declared in `moneybin.tables`.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from moneybin.database import get_database
+from moneybin.tables import INTERFACE_TABLES
+
+logger = logging.getLogger(__name__)
 
 CONVENTIONS: dict[str, str] = {
     "amount_sign": "negative = expense, positive = income",
@@ -158,3 +166,81 @@ EXAMPLES: dict[str, list[Example]] = {
         ),
     ],
 }
+
+_BEYOND_NOTE = (
+    "The tables above are the curated query surface. Other schemas exist "
+    "for raw ingest (raw), staging (prep), provenance (meta), and seed "
+    "data (seeds). Use them only when the curated tables cannot answer "
+    "the question."
+)
+_BEYOND_QUERY = (
+    "SELECT table_schema, table_name, comment FROM duckdb_tables() "
+    "WHERE table_schema NOT IN ('main', 'pg_catalog') ORDER BY 1, 2"
+)
+
+
+def build_schema_doc() -> dict[str, Any]:
+    """Return the schema document for the LLM-facing catalog.
+
+    Reads `duckdb_tables()` and `duckdb_columns()` for every interface
+    table that exists in the live database; missing tables are silently
+    skipped (the test/dev DB may not have every interface table).
+    """
+    db = get_database()
+
+    interface_names = [t.full_name for t in INTERFACE_TABLES]
+    placeholders = ",".join(["?"] * len(interface_names))
+    table_rows = db.execute(
+        f"""
+        SELECT schema_name || '.' || table_name AS full_name,
+               COALESCE(comment, '') AS comment
+        FROM duckdb_tables()
+        WHERE schema_name || '.' || table_name IN ({placeholders})
+        ORDER BY schema_name, table_name
+        """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
+        interface_names,
+    ).fetchall()
+
+    tables: list[dict[str, Any]] = []
+    for full_name, table_comment in table_rows:
+        schema_name, table_name = full_name.split(".", 1)
+        col_rows = db.execute(
+            """
+            SELECT column_name, data_type, is_nullable,
+                   COALESCE(comment, '') AS comment
+            FROM duckdb_columns()
+            WHERE schema_name = ? AND table_name = ?
+            ORDER BY column_index
+            """,
+            [schema_name, table_name],
+        ).fetchall()
+        tables.append({
+            "name": full_name,
+            "purpose": table_comment,
+            "columns": [
+                {
+                    "name": name,
+                    "type": dtype,
+                    "nullable": bool(nullable),
+                    "comment": comment,
+                }
+                for name, dtype, nullable, comment in col_rows
+            ],
+            "examples": [
+                {"question": ex.question, "sql": ex.sql}
+                for ex in EXAMPLES.get(full_name, [])
+            ],
+        })
+
+    logger.info(f"Schema doc built: {len(tables)} interface tables present")
+
+    return {
+        "version": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "conventions": dict(CONVENTIONS),
+        "tables": tables,
+        "beyond_the_interface": {
+            "note": _BEYOND_NOTE,
+            "catalog_query": _BEYOND_QUERY,
+        },
+    }

@@ -96,3 +96,55 @@ def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
     """
     conn.execute(CORE_DIM_ACCOUNTS_DDL)
     conn.execute(CORE_FCT_TRANSACTIONS_DDL)
+
+
+# Table and column comments for core tables — mirror the SQLMesh model
+# headers and inline column comments. Applied separately because the
+# minimal CREATE TABLE DDL above does not embed them.
+CORE_TABLE_COMMENTS: dict[str, str] = {
+    "core.fct_transactions": (
+        "Canonical transactions fact view; reads from the deduplicated "
+        "merged layer with categorization and merchant joins; "
+        "negative amount = expense, positive = income"
+    ),
+    "core.dim_accounts": (
+        "Canonical accounts dimension; one row per account across sources"
+    ),
+}
+
+CORE_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
+    "core.fct_transactions": {
+        "transaction_id": (
+            "Gold key: deterministic SHA-256 hash, unique per real-world transaction"
+        ),
+        "amount": "Transaction amount; negative = expense, positive = income",
+        "transaction_direction": ("Derived from amount sign: expense, income, or zero"),
+        "category": (
+            "Spending category; from app.transaction_categories when "
+            "categorized, else source value"
+        ),
+    },
+    "core.dim_accounts": {
+        "account_id": "Stable per-source account identifier",
+        "institution_name": "Display name of the issuing institution",
+    },
+}
+
+
+def apply_core_table_comments(database: Database) -> None:
+    """Apply COMMENT ON TABLE/COLUMN for core test tables.
+
+    Production comments are applied by SQLMesh's `register_comments`;
+    tests need to mirror that for the schema catalog tests to see prose.
+    """
+    for table, comment in CORE_TABLE_COMMENTS.items():
+        escaped = comment.replace("'", "''")
+        database.execute(  # noqa: S608  # static module constants, not user input
+            f"COMMENT ON TABLE {table} IS '{escaped}'"
+        )
+    for table, cols in CORE_COLUMN_COMMENTS.items():
+        for col, comment in cols.items():
+            escaped = comment.replace("'", "''")
+            database.execute(  # noqa: S608  # static module constants, not user input
+                f"COMMENT ON COLUMN {table}.{col} IS '{escaped}'"
+            )
