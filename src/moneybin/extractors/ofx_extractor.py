@@ -191,7 +191,12 @@ class OFXExtractor:
 
         try:
             with open(file_path, "rb") as f:
-                content = f.read().decode("utf-8", errors="ignore")
+                content = f.read().decode("utf-8", errors="replace")
+            if "�" in content:
+                logger.warning(
+                    f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
+                    f"{file_path.name}"
+                )
             content = preprocess_ofx_content(content)
 
             from io import BytesIO
