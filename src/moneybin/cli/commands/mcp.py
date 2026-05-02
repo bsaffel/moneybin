@@ -121,9 +121,13 @@ def config_path(
         logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
         raise typer.Exit(2)
 
+    # Profile resolution only matters for profile-scoped clients (claude-code).
+    # Fixed-path and workspace-scoped clients have profile-independent paths,
+    # so skip the lookup and let an unset profile produce a placeholder.
+    needs_profile = client in _PROFILE_SCOPED_CLIENTS
     if profile:
         resolved_profile = profile
-    else:
+    elif needs_profile:
         try:
             resolved_profile = get_current_profile(auto_resolve=False)
         except RuntimeError as e:
@@ -132,9 +136,16 @@ def config_path(
                 "Run `moneybin profile create <name>` or pass `--profile <name>`."
             )
             raise typer.Exit(1) from e
+    else:
+        resolved_profile = ""  # unused for non-profile-scoped clients
 
     path = _client_install_path(client, resolved_profile)
     if path is None:
+        if client in _WORKSPACE_SCOPED_CLIENTS:
+            logger.error(
+                f"❌ {client} config path requires running inside a repo "
+                "(no git root found from current directory)."
+            )
         raise typer.Exit(1)
     typer.echo(str(path))
 
@@ -292,8 +303,8 @@ def config_generate(
         return
 
     config_path = _get_client_config_path(client)
-    _confirm_and_merge(config_path, snippet, yes=yes)
-    _maybe_warn_auto_load(client, resolved_profile)
+    if _confirm_and_merge(config_path, snippet, yes=yes):
+        _maybe_warn_auto_load(client, resolved_profile)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -368,23 +379,29 @@ def _render_codex_toml(snippet: dict[str, Any]) -> str:
 
 def _confirm_and_merge(
     config_path: Path, snippet: dict[str, Any], *, yes: bool
-) -> None:
+) -> bool:
     """Confirm with the user (unless --yes) and merge the snippet into the file.
 
     Dispatches by file suffix: `.toml` files are round-tripped through tomlkit
     so existing comments and key ordering survive the merge. JSON files use
     the simpler shallow-merge path.
+
+    Returns True if the file was written, False if the user declined the
+    confirmation prompt. Callers gate post-install side effects (e.g. the
+    auto-load warning) on the return value so users who decline don't get
+    warnings about a server they didn't install.
     """
     if not yes:
         confirmed = typer.confirm(f"\nInstall into {config_path}?", default=False)
         if not confirmed:
             logger.info("Installation cancelled.")
-            return
+            return False
     if config_path.suffix == ".toml":
         _merge_toml_config(config_path, snippet)
     else:
         _merge_client_config(config_path, snippet)
     logger.info(f"✅ Config written to {config_path}")
+    return True
 
 
 def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
@@ -467,9 +484,13 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
 
 def _print_claude_code_launch_hint(config_path: Path) -> None:
     """Tell the user how to launch Claude Code with the generated config."""
+    import shlex
+
     typer.echo("")
     typer.echo("Launch Claude Code with this MCP server only:")
-    typer.echo(f"  claude --strict-mcp-config --mcp-config {config_path}")
+    typer.echo(
+        f"  claude --strict-mcp-config --mcp-config {shlex.quote(str(config_path))}"
+    )
     typer.echo("")
     typer.echo(
         "Or run `make claude-mcp` from the repo to launch with the active profile."

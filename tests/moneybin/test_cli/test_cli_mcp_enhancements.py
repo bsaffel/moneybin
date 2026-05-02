@@ -301,6 +301,22 @@ class TestMCPConfigPath:
         assert ".cursor" in result.output
         assert "mcp.json" in result.output
 
+    def test_path_fixed_path_client_no_profile_required(self) -> None:
+        """Fixed-path clients work without --profile and without an active profile."""
+        result = runner.invoke(app, ["config", "path", "--client", "cursor"])
+        assert result.exit_code == 0
+        assert "mcp.json" in result.output
+
+    def test_path_vscode_outside_repo_exits_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Vscode config path errors with a diagnostic when no repo root is found."""
+        monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
+        result = runner.invoke(
+            app, ["config", "path", "--client", "vscode", "--profile", "alice"]
+        )
+        assert result.exit_code == 1
+
 
 class TestMCPConfigGenerateCodex:
     """Codex emits a TOML [mcp_servers] block and installs via tomlkit round-trip."""
@@ -350,6 +366,33 @@ class TestMCPConfigGenerateCodex:
         assert "moneybin" in entry["args"]
         # Concurrency guardrail must fire on per-invocation client installs.
         assert "auto-loads" in result.output
+
+    def test_generate_codex_install_cancelled_skips_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Declining the install prompt suppresses the auto-load warning."""
+        target = tmp_path / "config.toml"
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp._get_client_config_path",
+            lambda client: target,  # type: ignore[reportUnknownLambdaType]
+        )
+        result = runner.invoke(
+            app,
+            [
+                "config",
+                "generate",
+                "--client",
+                "codex",
+                "--profile",
+                "alice",
+                "--install",
+            ],
+            input="n\n",
+        )
+        assert result.exit_code == 0
+        # User declined → file not written, warning suppressed.
+        assert not target.exists()
+        assert "auto-loads" not in result.output
 
     def test_generate_codex_install_preserves_existing_keys_and_comments(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
