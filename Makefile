@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv test-e2e test-scenarios
+.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv test-e2e test-scenarios claude-mcp
 
 # Default target
 .DEFAULT_GOAL := help
@@ -179,6 +179,9 @@ type-check: venv ## Development: Type check with pyright
 
 check: format lint type-check ## Development: Run all code quality checks
 	@echo "$(GREEN)✅ All code quality checks complete$(RESET)"
+
+claude-mcp: venv ## Development: Launch Claude Code with the MoneyBin MCP server (PROFILE=name to override active profile)
+	@exec ./scripts/claude-mcp.sh $(PROFILE)
 
 
 clean-cache: ## Utility: Clean Python cache files

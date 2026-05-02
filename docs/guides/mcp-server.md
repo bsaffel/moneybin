@@ -12,7 +12,7 @@ moneybin mcp config generate --client claude-desktop
 moneybin mcp config generate --client claude-desktop --install
 ```
 
-Supported clients: **Claude Desktop**, **Cursor**, **Windsurf**. Works with any MCP-compatible client that accepts stdio transport config.
+Supported clients: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), and ChatGPT Desktop. See [Configuring MCP Clients](mcp-clients.md) for install paths, the concurrency model, and Claude Code's per-session opt-in.
 
 After connecting, you can ask your AI assistant things like:
 - *"What's my spending by category this month?"*

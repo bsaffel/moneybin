@@ -17,7 +17,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json
-from moneybin.config import find_repo_root
+from moneybin.config import find_repo_root, get_base_dir
 from moneybin.mcp.server import mcp as mcp_server
 
 app = typer.Typer(help="MCP server for AI assistant integration", no_args_is_help=True)
@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 TransportType = Literal["stdio", "sse", "streamable-http"]
 _VALID_TRANSPORTS: tuple[str, ...] = get_args(TransportType)
 
-# Supported MCP client config file locations
+# MCP client config file locations for clients that auto-load from a fixed path.
+# claude-code uses a per-profile path resolved at runtime (see _client_install_path).
+# vscode uses a workspace-local path (.vscode/mcp.json) resolved at runtime.
+# chatgpt-desktop has no config file — servers are added via the Connectors UI.
 _CLIENT_CONFIG_PATHS: dict[str, Path] = {
     "claude-desktop": Path.home()
     / "Library"
@@ -36,7 +39,21 @@ _CLIENT_CONFIG_PATHS: dict[str, Path] = {
     / "claude_desktop_config.json",
     "cursor": Path.home() / ".cursor" / "mcp.json",
     "windsurf": Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
+    "gemini-cli": Path.home() / ".gemini" / "settings.json",
+    "codex": Path.home() / ".codex" / "config.toml",
 }
+
+# Clients that don't write to a fixed path. Listed for help text and validation.
+_PROFILE_SCOPED_CLIENTS: tuple[str, ...] = ("claude-code",)
+_WORKSPACE_SCOPED_CLIENTS: tuple[str, ...] = ("vscode",)
+_NO_INSTALL_CLIENTS: tuple[str, ...] = ("chatgpt-desktop",)
+
+_SUPPORTED_CLIENTS: tuple[str, ...] = (
+    *_CLIENT_CONFIG_PATHS,
+    *_PROFILE_SCOPED_CLIENTS,
+    *_WORKSPACE_SCOPED_CLIENTS,
+    *_NO_INSTALL_CLIENTS,
+)
 
 _DEFAULT_CLIENT = "claude-desktop"
 
@@ -69,6 +86,57 @@ def config_show(ctx: typer.Context) -> None:
     typer.echo(f"max_chars:  {settings.mcp.max_chars}")
 
 
+@config_app.command("path")
+def config_path(
+    client: Annotated[
+        str,
+        typer.Option(
+            "--client",
+            "-c",
+            help=f"MCP client. Supported: {', '.join(_SUPPORTED_CLIENTS)}",
+        ),
+    ] = _DEFAULT_CLIENT,
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", "-p", help="MoneyBin profile (default: active)."),
+    ] = None,
+) -> None:
+    """Print the install path of an MCP client's config file.
+
+    Used by `make claude-mcp` to locate the per-profile Claude Code config.
+    Exits non-zero with no output for clients that don't have a JSON config
+    file (e.g. chatgpt-desktop).
+
+    Profile resolution is non-interactive: if no profile is set and `--profile`
+    is not given, this exits with a clear error instead of starting the
+    first-run wizard. The wizard's stdin prompts would hang under any
+    `$(...)` command substitution that captures stdout.
+    """
+    from moneybin.config import get_current_profile
+
+    if client not in _SUPPORTED_CLIENTS:
+        supported = ", ".join(_SUPPORTED_CLIENTS)
+        logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
+        raise typer.Exit(2)
+
+    if profile:
+        resolved_profile = profile
+    else:
+        try:
+            resolved_profile = get_current_profile(auto_resolve=False)
+        except RuntimeError as e:
+            logger.error(
+                "❌ No active profile and --profile not supplied. "
+                "Run `moneybin profile create <name>` or pass `--profile <name>`."
+            )
+            raise typer.Exit(1) from e
+
+    path = _client_install_path(client, resolved_profile)
+    if path is None:
+        raise typer.Exit(1)
+    typer.echo(str(path))
+
+
 @config_app.command("generate")
 def config_generate(
     client: Annotated[
@@ -76,7 +144,7 @@ def config_generate(
         typer.Option(
             "--client",
             "-c",
-            help=f"MCP client to generate config for. Supported: {', '.join(_CLIENT_CONFIG_PATHS)}",
+            help=f"MCP client to generate config for. Supported: {', '.join(_SUPPORTED_CLIENTS)}",
         ),
     ] = _DEFAULT_CLIENT,
     profile: Annotated[
@@ -121,8 +189,28 @@ def config_generate(
 
         # Install directly without prompting
         moneybin mcp config generate --client claude-desktop --install --yes
+
+        # Profile-scoped Claude Code config (loaded only with `claude --mcp-config`)
+        moneybin mcp config generate --client claude-code --install --yes
+
+        # Print snippet + step-by-step Connector setup for ChatGPT Desktop
+        moneybin mcp config generate --client chatgpt-desktop
+
+        # Codex (CLI / Desktop app / IDE extension all share ~/.codex/config.toml)
+        moneybin mcp config generate --client codex --install --yes
+
+        # Workspace-local .vscode/mcp.json
+        moneybin mcp config generate --client vscode --install --yes
+
+        # User-level ~/.gemini/settings.json
+        moneybin mcp config generate --client gemini-cli --install --yes
     """
     from moneybin.config import get_current_profile
+
+    if client not in _SUPPORTED_CLIENTS:
+        supported = ", ".join(_SUPPORTED_CLIENTS)
+        logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
+        raise typer.Exit(1)
 
     resolved_profile = profile or get_current_profile()
 
@@ -158,49 +246,271 @@ def config_generate(
         if resolved_profile != "default"
         else "MoneyBin"
     )
-    snippet = {"mcpServers": {entry_name: server_entry}}
-    snippet_json = json.dumps(snippet, indent=2)
+    snippet, snippet_text = _build_snippet(client, entry_name, server_entry)
+    typer.echo(snippet_text)
 
-    typer.echo(snippet_json)
+    if client == "chatgpt-desktop":
+        if install:
+            logger.error(
+                "❌ --install is not supported for chatgpt-desktop. "
+                "ChatGPT Desktop adds MCP servers through its Connectors UI, "
+                "not a JSON config file. Follow the instructions below to add "
+                "MoneyBin as a custom connector."
+            )
+            _print_chatgpt_desktop_instructions(server_entry, entry_name)
+            raise typer.Exit(1)
+        _print_chatgpt_desktop_instructions(server_entry, entry_name)
+        return
+
+    if client == "claude-code":
+        config_path = _client_install_path(client, resolved_profile)
+        if config_path is None:  # unreachable — claude-code always resolves a path
+            raise typer.Exit(1)
+        if not install:
+            _print_claude_code_launch_hint(config_path)
+            return
+        _confirm_and_merge(config_path, snippet, yes=yes)
+        _print_claude_code_launch_hint(config_path)
+        return
+
+    if client == "vscode":
+        vscode_path = _client_install_path(client, resolved_profile)
+        if vscode_path is None:
+            logger.error(
+                "❌ vscode --install requires running inside a repo "
+                "(creates .vscode/mcp.json in the repo root)."
+            )
+            raise typer.Exit(1)
+        if not install:
+            return
+        _confirm_and_merge(vscode_path, snippet, yes=yes)
+        return
 
     if not install:
         return
 
     config_path = _get_client_config_path(client)
-
-    if not yes:
-        confirmed = typer.confirm(
-            f"\nInstall into {config_path}?",
-            default=False,
-        )
-        if not confirmed:
-            logger.info("Installation cancelled.")
-            return
-
-    _merge_client_config(config_path, snippet)
-    logger.info(f"✅ Config written to {config_path}")
+    _confirm_and_merge(config_path, snippet, yes=yes)
+    _maybe_warn_auto_load(client, resolved_profile)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+def _client_install_path(client: str, profile: str) -> Path | None:
+    """Resolve the install path for a client, or None if it has no config file.
+
+    Claude Code is the only client with per-launch MCP override support, so we
+    keep its config in a per-profile file (`<base>/profiles/<profile>/...`) and
+    leave it un-auto-loaded; `make claude-mcp` opts in via
+    `claude --strict-mcp-config --mcp-config <path>`. The other clients all
+    auto-load their canonical config — see docs/guides/mcp-clients.md for the
+    concurrency model. VS Code uses a workspace-local `.vscode/mcp.json`
+    resolved from the current repo root; returns None when not in a repo.
+    """
+    if client in _CLIENT_CONFIG_PATHS:
+        return _CLIENT_CONFIG_PATHS[client]
+    if client == "claude-code":
+        return get_base_dir() / "profiles" / profile / "claude-code-mcp.json"
+    if client == "vscode":
+        repo = find_repo_root()
+        if repo is None:
+            return None
+        return repo / ".vscode" / "mcp.json"
+    return None
+
+
+def _build_snippet(
+    client: str, entry_name: str, server_entry: dict[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """Build the (parsed-snippet-dict, rendered-text) pair for a client.
+
+    Most clients use the canonical `{"mcpServers": {<name>: {...}}}` JSON shape.
+    VS Code's workspace `.vscode/mcp.json` uses `{"servers": {...}}` with an
+    explicit `"type": "stdio"` field. Codex uses TOML under `[mcp_servers.<name>]`.
+    The dict half is what `_merge_client_config` writes; the text half is what
+    we echo to the user.
+    """
+    if client == "vscode":
+        vscode_entry = {"type": "stdio", **server_entry}
+        snippet: dict[str, Any] = {"servers": {entry_name: vscode_entry}}
+        return snippet, json.dumps(snippet, indent=2)
+    if client == "codex":
+        text = _render_codex_toml(entry_name, server_entry)
+        # Codex never writes via _merge_client_config, but return a stable
+        # dict so the caller's contract holds.
+        return {"mcp_servers": {entry_name: server_entry}}, text
+    snippet = {"mcpServers": {entry_name: server_entry}}
+    return snippet, json.dumps(snippet, indent=2)
+
+
+def _render_codex_toml(entry_name: str, server_entry: dict[str, Any]) -> str:
+    """Render an MCP server as a Codex `[mcp_servers.<name>]` TOML block.
+
+    Hand-formatted to avoid pulling in a TOML-writer dependency for one block.
+    Quoting matches what `tomli`/`tomli_w` would produce for the field types we
+    emit (strings, lists of strings, flat string→string env tables).
+    """
+    safe_name = entry_name.replace('"', '\\"')
+    lines = [f'[mcp_servers."{safe_name}"]']
+    lines.append(f"command = {json.dumps(server_entry['command'])}")
+    args = server_entry.get("args", [])
+    if args:
+        rendered_args = ", ".join(json.dumps(a) for a in args)
+        lines.append(f"args = [{rendered_args}]")
+    env_pairs = server_entry.get("env", {})
+    if env_pairs:
+        rendered_env = ", ".join(f"{k} = {json.dumps(v)}" for k, v in env_pairs.items())
+        lines.append(f"env = {{ {rendered_env} }}")
+    return "\n".join(lines)
+
+
+def _confirm_and_merge(
+    config_path: Path, snippet: dict[str, Any], *, yes: bool
+) -> None:
+    """Confirm with the user (unless --yes) and merge the snippet into the file.
+
+    Dispatches by file suffix: `.toml` files are round-tripped through tomlkit
+    so existing comments and key ordering survive the merge. JSON files use
+    the simpler shallow-merge path.
+    """
+    if not yes:
+        confirmed = typer.confirm(f"\nInstall into {config_path}?", default=False)
+        if not confirmed:
+            logger.info("Installation cancelled.")
+            return
+    if config_path.suffix == ".toml":
+        _merge_toml_config(config_path, snippet)
+    else:
+        _merge_client_config(config_path, snippet)
+    logger.info(f"✅ Config written to {config_path}")
+
+
+def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
+    """Merge `patch` into a TOML file, preserving comments and key ordering.
+
+    `patch` follows the same nested-dict shape as JSON snippets (e.g.
+    `{"mcp_servers": {"<name>": {...}}}`). Only the leaf entries we own are
+    overwritten — sibling keys, comments, and formatting are left intact.
+    """
+    import tomlkit
+    from tomlkit.exceptions import TOMLKitError
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if config_path.exists():
+        try:
+            doc = tomlkit.parse(config_path.read_text())
+        except TOMLKitError:
+            logger.error(
+                f"❌ Cannot parse existing TOML at {config_path}. "
+                "Fix the file manually before running --install again."
+            )
+            raise typer.Exit(1) from None
+    else:
+        doc = tomlkit.document()
+
+    for top_key, top_val in patch.items():
+        if isinstance(top_val, dict):
+            section = doc.get(top_key)  # pyright: ignore[reportUnknownMemberType]
+            if not isinstance(section, dict):
+                section = tomlkit.table()
+                doc[top_key] = section
+            for entry_name, entry_val in top_val.items():
+                section[entry_name] = entry_val  # type: ignore[index]
+        else:
+            doc[top_key] = top_val
+
+    config_path.write_text(tomlkit.dumps(doc))  # pyright: ignore[reportUnknownMemberType]
+
+
 def _get_client_config_path(client: str) -> Path:
-    """Return the config file path for the given MCP client.
+    """Return the fixed-path config file for clients in `_CLIENT_CONFIG_PATHS`.
 
-    Args:
-        client: Client identifier (e.g. "claude-desktop").
-
-    Returns:
-        Absolute path to the client's config file.
-
-    Raises:
-        typer.Exit: If the client is not recognized.
+    Profile-scoped (`claude-code`) and no-install (`chatgpt-desktop`) clients are
+    handled inline in `config_generate` and never reach this helper.
     """
     if client not in _CLIENT_CONFIG_PATHS:
         supported = ", ".join(_CLIENT_CONFIG_PATHS)
         logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
         raise typer.Exit(1)
     return _CLIENT_CONFIG_PATHS[client]
+
+
+# Per-invocation CLI clients: every shell command spawns a fresh server.
+# Surface this so users understand the "always-on" install semantics.
+_PER_INVOCATION_CLIENTS: frozenset[str] = frozenset({"codex", "gemini-cli"})
+
+
+def _maybe_warn_auto_load(client: str, profile: str) -> None:
+    """Warn after install when the client auto-loads on every invocation.
+
+    For codex (CLI/Desktop/IDE) and gemini-cli, install means MoneyBin starts on
+    every shell launch of that tool — same profile from two terminals will fight
+    over the lock. Surface this so users can choose paste-only instead.
+    """
+    if client not in _PER_INVOCATION_CLIENTS:
+        return
+    surface = (
+        "the Codex CLI, Desktop app, and IDE extension"
+        if client == "codex"
+        else "every `gemini` invocation"
+    )
+    typer.echo("")
+    typer.echo(
+        f"⚠️  {client} auto-loads MoneyBin on {surface}. Two concurrent "
+        f"sessions on profile '{profile}' will fight over the DB write lock — "
+        "the second exits. See docs/guides/mcp-clients.md."
+    )
+
+
+def _print_claude_code_launch_hint(config_path: Path) -> None:
+    """Tell the user how to launch Claude Code with the generated config."""
+    typer.echo("")
+    typer.echo("Launch Claude Code with this MCP server only:")
+    typer.echo(f"  claude --strict-mcp-config --mcp-config {config_path}")
+    typer.echo("")
+    typer.echo(
+        "Or run `make claude-mcp` from the repo to launch with the active profile."
+    )
+
+
+def _print_chatgpt_desktop_instructions(
+    server_entry: dict[str, Any], entry_name: str
+) -> None:
+    """Print step-by-step Connector setup for ChatGPT Desktop.
+
+    ChatGPT Desktop installs MCP servers through Settings → Connectors (Developer
+    Mode), not a JSON config file we can write. The snippet above is informational
+    — copy individual fields into the connector form.
+    """
+    command = server_entry["command"]
+    args_str = " ".join(server_entry.get("args", []))
+    env_pairs = server_entry.get("env", {})
+
+    typer.echo("")
+    typer.echo("ChatGPT Desktop install steps:")
+    typer.echo("  1. Open ChatGPT → Settings → Connectors.")
+    typer.echo(
+        "     If you don't see 'Add custom connector', enable Developer Mode "
+        "under Settings → Advanced first."
+    )
+    typer.echo("  2. Click 'Add custom connector' → choose the local/stdio option.")
+    typer.echo(f"  3. Name: {entry_name}")
+    typer.echo(f"     Command: {command}")
+    typer.echo(f"     Arguments: {args_str}")
+    if env_pairs:
+        typer.echo("     Environment variables:")
+        for key, value in env_pairs.items():
+            typer.echo(f"       {key}={value}")
+    typer.echo("  4. Save. ChatGPT will spawn the server on demand.")
+    typer.echo("")
+    typer.echo(
+        "Note: ChatGPT Desktop's MCP support is gated by version and plan. "
+        "If your build only accepts HTTP connectors, run "
+        "`moneybin mcp serve --transport streamable-http` and add the resulting "
+        "URL as a custom connector instead."
+    )
 
 
 def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:

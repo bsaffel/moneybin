@@ -70,6 +70,8 @@ moneybin import status
 moneybin mcp config generate --client claude-desktop --install
 ```
 
+Supported clients: **claude-desktop**, **claude-code**, **cursor**, **windsurf**, **vscode**, **gemini-cli**, **codex** (CLI / Desktop app / IDE extension), **chatgpt-desktop**. MoneyBin's single-writer DuckDB lock means only one MCP session per profile can run at a time — see [Configuring MCP Clients](docs/guides/mcp-clients.md) for the concurrency model, per-client behavior, and per-session opt-in for Claude Code (`make claude-mcp`).
+
 `import file` is the golden path: extract → load → transform → categorize, in one command. See the [Data Import guide](docs/guides/data-import.md) for formats, batch management, and migration profiles (Tiller, Mint, YNAB, Maybe).
 
 Once connected, ask things like:
