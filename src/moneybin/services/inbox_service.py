@@ -37,6 +37,9 @@ _YEAR_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 # Cap exception message length in sidecars so unfiltered exception text can't
 # leak large amounts of PII (paths, parsed rows) past the log sanitizer.
 _SIDECAR_MESSAGE_MAX = 200
+# Defensive cap on filename collision suffixes (-1, -2, ...). Practical
+# imports never reach this; the bound just makes the loop terminate.
+_MAX_FILENAME_COLLISIONS = 9999
 
 # Substring → (error_code, stage) for ValueError messages from ImportService.
 _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
@@ -85,6 +88,26 @@ class InboxService:
         """Bind the inbox service to settings; db is required only for sync()."""
         self._db = db
         self._settings = settings
+
+    @classmethod
+    def for_active_profile(cls) -> InboxService:
+        """Construct an InboxService against the active profile with a live DB."""
+        from moneybin.config import get_settings
+        from moneybin.database import get_database
+
+        return cls(db=get_database(), settings=get_settings())
+
+    @classmethod
+    def for_active_profile_no_db(cls) -> InboxService:
+        """Construct an InboxService for read-only filesystem operations.
+
+        Skips opening the encrypted database so `enumerate()` and `path` work
+        during onboarding/recovery flows when the DB is locked or its key is
+        unavailable. Calling sync() on this instance raises.
+        """
+        from moneybin.config import get_settings
+
+        return cls(db=None, settings=get_settings())
 
     @property
     def root(self) -> Path:
@@ -275,12 +298,14 @@ class InboxService:
             return candidate
         stem = candidate.stem
         suffix = candidate.suffix
-        i = 1
-        while True:
+        for i in range(1, _MAX_FILENAME_COLLISIONS + 1):
             attempt = candidate.with_name(f"{stem}-{i}{suffix}")
             if not attempt.exists():
                 return attempt
-            i += 1
+        raise RuntimeError(
+            f"Too many filename collisions for {candidate.name!r} "
+            f"(>{_MAX_FILENAME_COLLISIONS})"
+        )
 
     def sync(self, year_month: str | None = None) -> InboxSyncResult:
         """Drain the inbox: import each eligible file and move it."""

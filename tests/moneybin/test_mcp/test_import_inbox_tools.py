@@ -9,17 +9,29 @@ import pytest
 
 from moneybin.mcp.tools.import_inbox import inbox_list as inbox_list_tool
 from moneybin.mcp.tools.import_inbox import inbox_sync as inbox_sync_tool
-from moneybin.services.inbox_service import InboxListResult, InboxSyncResult
+from moneybin.services.inbox_service import (
+    InboxListResult,
+    InboxService,
+    InboxSyncResult,
+)
 
 
 @pytest.fixture
 def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
-    """Patch _build_service to return a MagicMock."""
+    """Patch InboxService factories so MCP tool tests don't open a real DB."""
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
-    monkeypatch.setattr("moneybin.mcp.tools.import_inbox._build_service", lambda: fake)
+
+    def _factory(cls: type[InboxService]) -> MagicMock:
+        return fake
+
     monkeypatch.setattr(
-        "moneybin.mcp.tools.import_inbox._build_service_no_db", lambda: fake
+        "moneybin.services.inbox_service.InboxService.for_active_profile",
+        classmethod(_factory),
+    )
+    monkeypatch.setattr(
+        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+        classmethod(_factory),
     )
     return fake
 

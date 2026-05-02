@@ -12,7 +12,11 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.services.inbox_service import InboxListResult, InboxSyncResult
+from moneybin.services.inbox_service import (
+    InboxListResult,
+    InboxService,
+    InboxSyncResult,
+)
 
 
 @contextmanager
@@ -28,14 +32,20 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def patch_inbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
-    """Patch _build_service + handle_cli_errors so CLI tests don't open a real DB."""
+    """Patch InboxService factories + handle_cli_errors to skip the real DB."""
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
+
+    def _factory(cls: type[InboxService]) -> MagicMock:
+        return fake
+
     monkeypatch.setattr(
-        "moneybin.cli.commands.import_inbox._build_service", lambda: fake
+        "moneybin.services.inbox_service.InboxService.for_active_profile",
+        classmethod(_factory),
     )
     monkeypatch.setattr(
-        "moneybin.cli.commands.import_inbox._build_service_no_db", lambda: fake
+        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+        classmethod(_factory),
     )
     monkeypatch.setattr("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx)
     return fake
@@ -51,8 +61,10 @@ def test_inbox_drain_prints_summary(runner: CliRunner, patch_inbox: MagicMock) -
     result = runner.invoke(app, ["import", "inbox"])
 
     assert result.exit_code == 0, result.stderr
-    assert "1 imported" in result.stdout
-    assert "0 failed" in result.stdout
+    # Per-file ✓ lines on stdout (data); summary on stderr (status).
+    assert "chase-checking/march.csv" in result.stdout
+    assert "1 imported" in result.stderr
+    assert "0 failed" in result.stderr
 
 
 def test_inbox_drain_failure_exits_zero_but_warns(
@@ -73,9 +85,9 @@ def test_inbox_drain_failure_exits_zero_but_warns(
     result = runner.invoke(app, ["import", "inbox"])
 
     assert result.exit_code == 0
-    assert "needs_account_name" in result.stdout + result.stderr
-    assert "0 imported" in result.stdout
-    assert "1 failed" in result.stdout
+    assert "needs_account_name" in result.stderr
+    assert "0 imported" in result.stderr
+    assert "1 failed" in result.stderr
 
 
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:

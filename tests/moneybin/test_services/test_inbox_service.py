@@ -512,6 +512,21 @@ class TestRecoveryEncoding:
         # And nothing escaped to the parent of inbox_dir.
         assert not (inbox_service.inbox_dir.parent.parent / "evil.csv").exists()
 
+    def test_fully_encoded_path_traversal_is_skipped(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        """Fully-encoded `%2E%2E%2F` traversal is also caught by the guard."""
+        inbox_service.ensure_layout()
+        # Every byte percent-encoded — decodes to "../../escaped":
+        evil = inbox_service.processed_dir / "staging-%2E%2E%2F%2E%2E%2Fescaped"
+        evil.write_text("payload\n")
+
+        recovered = inbox_service.recover_staging()
+
+        assert recovered == []
+        assert evil.exists()
+        assert not (inbox_service.inbox_dir.parent.parent / "escaped").exists()
+
 
 class TestSyncMoveRace:
     """Successful import but file vanishes before move-to-processed."""

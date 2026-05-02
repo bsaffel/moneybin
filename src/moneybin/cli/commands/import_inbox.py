@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import TYPE_CHECKING
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.services.inbox_service import InboxSyncResult
-
-if TYPE_CHECKING:
-    from moneybin.services.inbox_service import InboxService
+from moneybin.services.inbox_service import InboxService, InboxSyncResult
 
 logger = logging.getLogger(__name__)
 
@@ -20,28 +16,6 @@ app = typer.Typer(
     help="Drop files into the inbox and drain them into MoneyBin.",
     no_args_is_help=False,
 )
-
-
-def _build_service() -> InboxService:
-    """Build an InboxService with a live DB connection (required for sync)."""
-    from moneybin.config import get_settings
-    from moneybin.database import get_database
-    from moneybin.services.inbox_service import InboxService
-
-    return InboxService(db=get_database(), settings=get_settings())
-
-
-def _build_service_no_db() -> InboxService:
-    """Build an InboxService without opening the DB.
-
-    Used by `list` and `path`, which only read filesystem settings — keeps
-    inbox discovery available during onboarding/recovery scenarios where
-    the DB may be locked or uninitialized.
-    """
-    from moneybin.config import get_settings
-    from moneybin.services.inbox_service import InboxService
-
-    return InboxService(db=None, settings=get_settings())
 
 
 def _print_sync_text(result: InboxSyncResult) -> None:
@@ -64,7 +38,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
         if "sidecar" in item:
             typer.echo(f"   See {item['sidecar']}", err=True)
 
-    typer.echo(f"Done: {len(processed)} imported, {len(failed)} failed.")
+    typer.echo(f"Done: {len(processed)} imported, {len(failed)} failed.", err=True)
 
 
 @app.callback(invoke_without_command=True)
@@ -79,7 +53,7 @@ def inbox_default(
     from moneybin.cli.utils import handle_cli_errors
 
     with handle_cli_errors():
-        result = _build_service().sync()
+        result = InboxService.for_active_profile().sync()
 
     if output == OutputFormat.JSON:
         from moneybin.cli.utils import emit_json
@@ -100,7 +74,7 @@ def inbox_list(
     from moneybin.cli.utils import handle_cli_errors
 
     with handle_cli_errors():
-        result = _build_service_no_db().enumerate()
+        result = InboxService.for_active_profile_no_db().enumerate()
 
     if output == OutputFormat.JSON:
         from moneybin.cli.utils import emit_json
@@ -122,7 +96,7 @@ def inbox_path() -> None:
     from moneybin.cli.utils import handle_cli_errors
 
     with handle_cli_errors():
-        service = _build_service_no_db()
+        service = InboxService.for_active_profile_no_db()
         # Materialize the layout so users can immediately copy files into
         # `$(moneybin import inbox path)/inbox/...` on a fresh profile.
         service.ensure_layout()
