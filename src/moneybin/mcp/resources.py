@@ -14,6 +14,7 @@ import json
 import logging
 from typing import Any
 
+from moneybin.services.schema_catalog import build_schema_doc
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS
 
 from .server import get_db, mcp, table_exists
@@ -84,35 +85,10 @@ def resource_privacy() -> str:
 
 @mcp.resource("moneybin://schema")
 def resource_schema() -> str:
-    """Core and app table schemas with column names, types, and descriptions."""
+    """Curated schema for ad-hoc SQL: interface tables, columns, comments, example queries."""
     logger.info("Resource read: moneybin://schema")
-    db = get_db()
-
-    result = db.execute("""
-        SELECT
-            schema_name,
-            table_name,
-            column_name,
-            data_type,
-            comment
-        FROM duckdb_columns()
-        WHERE schema_name IN ('core', 'app', 'raw')
-        ORDER BY schema_name, table_name, column_index
-    """)
-    rows = result.fetchall()
-
-    tables: dict[str, Any] = {}
-    for row in rows:
-        key = f"{row[0]}.{row[1]}"
-        if key not in tables:
-            tables[key] = {"schema": row[0], "table": row[1], "columns": []}
-        tables[key]["columns"].append({
-            "name": row[2],
-            "type": row[3],
-            "description": row[4],
-        })
-
-    return json.dumps({"tables": list(tables.values())}, indent=2, default=str)
+    doc = build_schema_doc()
+    return json.dumps(doc, indent=2, default=str)
 
 
 _CORE_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
