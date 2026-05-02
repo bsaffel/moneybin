@@ -176,8 +176,8 @@ _BEYOND_NOTE = (
     "the question."
 )
 _BEYOND_QUERY = (
-    "SELECT table_schema, table_name, comment FROM duckdb_tables() "
-    "WHERE table_schema NOT IN ('main', 'pg_catalog') ORDER BY 1, 2"
+    "SELECT schema_name, table_name, comment FROM duckdb_tables() "
+    "WHERE schema_name NOT IN ('main', 'pg_catalog') ORDER BY 1, 2"
 )
 
 
@@ -192,8 +192,18 @@ def build_schema_doc() -> dict[str, Any]:
 
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
+    # Union tables and views — `duckdb_tables()` excludes views, but
+    # interface objects like `app.categories` are views (see seeds.py).
     rows = db.execute(
         f"""
+        WITH interface_objects AS (
+            SELECT schema_name, table_name, comment
+            FROM duckdb_tables()
+            UNION ALL
+            SELECT schema_name, view_name AS table_name, comment
+            FROM duckdb_views()
+            WHERE NOT internal
+        )
         SELECT
             t.schema_name || '.' || t.table_name AS full_name,
             COALESCE(t.comment, '') AS table_comment,
@@ -201,7 +211,7 @@ def build_schema_doc() -> dict[str, Any]:
             c.data_type,
             c.is_nullable,
             COALESCE(c.comment, '') AS column_comment
-        FROM duckdb_tables() t
+        FROM interface_objects t
         JOIN duckdb_columns() c
           ON t.schema_name = c.schema_name AND t.table_name = c.table_name
         WHERE t.schema_name || '.' || t.table_name IN ({placeholders})

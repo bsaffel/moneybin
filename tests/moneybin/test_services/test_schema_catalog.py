@@ -81,6 +81,41 @@ def test_build_schema_doc_includes_present_interface_tables(
     assert "core.dim_accounts" in names
 
 
+def test_build_schema_doc_includes_interface_views(
+    schema_catalog_db: Database,
+) -> None:
+    """Interface objects that are views (not tables) must appear too.
+
+    Regression test: `duckdb_tables()` excludes views, so the catalog
+    query must union it with `duckdb_views()` to surface objects like
+    `app.categories` (created via CREATE OR REPLACE VIEW in seeds.py).
+    """
+    schema_catalog_db.execute("CREATE SCHEMA IF NOT EXISTS app")
+    schema_catalog_db.execute(
+        "CREATE OR REPLACE VIEW app.categories AS "
+        "SELECT 'X' AS category_id, 'X' AS category, "
+        "NULL::VARCHAR AS subcategory, NULL::VARCHAR AS description, "
+        "true AS is_active"
+    )
+    doc = build_schema_doc()
+    names = {t["name"] for t in doc["tables"]}
+    assert "app.categories" in names
+
+
+def test_beyond_the_interface_query_executes(
+    schema_catalog_db: Database,
+) -> None:
+    """The catalog query in the footer must run via the same connection.
+
+    Regression test: previously used `table_schema` (an information_schema
+    column), which fails on `duckdb_tables()`. The query must use
+    `schema_name` so power users / LLMs copying it can run it directly.
+    """
+    doc = build_schema_doc()
+    query = doc["beyond_the_interface"]["catalog_query"]
+    schema_catalog_db.execute(query).fetchall()
+
+
 def test_build_schema_doc_columns_carry_type_and_comment(
     schema_catalog_db: Database,
 ) -> None:
