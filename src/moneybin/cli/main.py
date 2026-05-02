@@ -1,8 +1,8 @@
 """Main CLI application for MoneyBin.
 
-This module provides the unified entry point for all MoneyBin CLI operations,
-organizing commands into groups: profile, import, sync, categorize, transform,
-db, mcp.
+Unified entry point for MoneyBin CLI operations. Commands are organized into
+top-level groups for entity management, workflows, reports, and infrastructure
+per `docs/specs/cli-restructure.md` v2.
 """
 
 import logging
