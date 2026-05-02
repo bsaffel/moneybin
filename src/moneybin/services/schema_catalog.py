@@ -190,54 +190,52 @@ def build_schema_doc() -> dict[str, Any]:
 
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
-    table_rows = db.execute(
+    rows = db.execute(
         f"""
-        SELECT schema_name || '.' || table_name AS full_name,
-               COALESCE(comment, '') AS comment
-        FROM duckdb_tables()
-        WHERE schema_name || '.' || table_name IN ({placeholders})
-        ORDER BY schema_name, table_name
+        SELECT
+            t.schema_name || '.' || t.table_name AS full_name,
+            COALESCE(t.comment, '') AS table_comment,
+            c.column_name,
+            c.data_type,
+            c.is_nullable,
+            COALESCE(c.comment, '') AS column_comment
+        FROM duckdb_tables() t
+        JOIN duckdb_columns() c
+          ON t.schema_name = c.schema_name AND t.table_name = c.table_name
+        WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
+        ORDER BY t.schema_name, t.table_name, c.column_index
         """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
         interface_names,
     ).fetchall()
 
-    tables: list[dict[str, Any]] = []
-    for full_name, table_comment in table_rows:
-        schema_name, table_name = full_name.split(".", 1)
-        col_rows = db.execute(
-            """
-            SELECT column_name, data_type, is_nullable,
-                   COALESCE(comment, '') AS comment
-            FROM duckdb_columns()
-            WHERE schema_name = ? AND table_name = ?
-            ORDER BY column_index
-            """,
-            [schema_name, table_name],
-        ).fetchall()
-        tables.append({
-            "name": full_name,
-            "purpose": table_comment,
-            "columns": [
-                {
-                    "name": name,
-                    "type": dtype,
-                    "nullable": bool(nullable),
-                    "comment": comment,
-                }
-                for name, dtype, nullable, comment in col_rows
-            ],
-            "examples": [
-                {"question": ex.question, "sql": ex.sql}
-                for ex in EXAMPLES.get(full_name, [])
-            ],
+    tables_by_name: dict[str, dict[str, Any]] = {}
+    for full_name, table_comment, col_name, dtype, nullable, col_comment in rows:
+        entry = tables_by_name.setdefault(
+            full_name,
+            {
+                "name": full_name,
+                "purpose": table_comment,
+                "columns": [],
+                "examples": [
+                    {"question": ex.question, "sql": ex.sql}
+                    for ex in EXAMPLES.get(full_name, [])
+                ],
+            },
+        )
+        entry["columns"].append({
+            "name": col_name,
+            "type": dtype,
+            "nullable": bool(nullable),
+            "comment": col_comment,
         })
 
+    tables = list(tables_by_name.values())
     logger.info(f"Schema doc built: {len(tables)} interface tables present")
 
     return {
         "version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
-        "conventions": dict(CONVENTIONS),
+        "conventions": CONVENTIONS,
         "tables": tables,
         "beyond_the_interface": {
             "note": _BEYOND_NOTE,

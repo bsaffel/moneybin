@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.schema_catalog import (
     CONVENTIONS,
@@ -17,10 +12,8 @@ from moneybin.services.schema_catalog import (
     build_schema_doc,
 )
 from moneybin.tables import INTERFACE_TABLES
-from tests.moneybin.db_helpers import (
-    apply_core_table_comments,
-    create_core_tables_raw,
-)
+
+pytestmark = pytest.mark.unit
 
 
 def test_conventions_has_required_keys() -> None:
@@ -64,27 +57,7 @@ def _present_tables(db: Database) -> set[str]:
     return {r[0] for r in rows}
 
 
-@pytest.fixture()
-def schema_db(tmp_path: Path) -> Generator[Database, None, None]:
-    """Database with core tables created and comments applied."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "schema.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-    )
-    create_core_tables_raw(database.conn)
-    apply_core_table_comments(database)
-    db_module._database_instance = database  # type: ignore[attr-defined]
-    try:
-        yield database
-    finally:
-        db_module._database_instance = None  # type: ignore[attr-defined]
-        database.close()
-
-
-def test_build_schema_doc_top_level_keys(schema_db: Database) -> None:
+def test_build_schema_doc_top_level_keys(schema_catalog_db: Database) -> None:
     """The returned dict must have all expected top-level keys with correct types."""
     doc = build_schema_doc()
     assert doc["version"] == 1
@@ -96,7 +69,7 @@ def test_build_schema_doc_top_level_keys(schema_db: Database) -> None:
 
 
 def test_build_schema_doc_includes_present_interface_tables(
-    schema_db: Database,
+    schema_catalog_db: Database,
 ) -> None:
     """Core interface tables present in the DB must appear in the output."""
     doc = build_schema_doc()
@@ -109,7 +82,7 @@ def test_build_schema_doc_includes_present_interface_tables(
 
 
 def test_build_schema_doc_columns_carry_type_and_comment(
-    schema_db: Database,
+    schema_catalog_db: Database,
 ) -> None:
     """Each column entry must include data_type and the applied comment."""
     doc = build_schema_doc()
@@ -121,7 +94,7 @@ def test_build_schema_doc_columns_carry_type_and_comment(
 
 
 def test_build_schema_doc_includes_examples_for_present_tables(
-    schema_db: Database,
+    schema_catalog_db: Database,
 ) -> None:
     """Each table entry must carry at least one example with question and sql."""
     doc = build_schema_doc()
@@ -132,13 +105,13 @@ def test_build_schema_doc_includes_examples_for_present_tables(
     assert "sql" in first
 
 
-def test_interface_tables_present_in_catalog(schema_db: Database) -> None:
+def test_interface_tables_present_in_catalog(schema_catalog_db: Database) -> None:
     """Stale-entry drift: an interface-tagged table is missing from the DB.
 
     Only checks tables the test DB actually creates (core.*); the assertion
     here is that nothing tagged interface in the *core* schema is missing.
     """
-    present = _present_tables(schema_db)
+    present = _present_tables(schema_catalog_db)
     # Filter to core.* — the test fixture only seeds core tables.
     # Broaden this filter when app.* gets seeded.
     missing_core = [
@@ -151,7 +124,7 @@ def test_interface_tables_present_in_catalog(schema_db: Database) -> None:
     )
 
 
-def test_examples_parse_and_execute(schema_db: Database) -> None:
+def test_examples_parse_and_execute(schema_catalog_db: Database) -> None:
     """Examples must parse and execute against the live schema.
 
     Catches column-renamed-but-example-not-updated drift. Skips examples
@@ -159,13 +132,13 @@ def test_examples_parse_and_execute(schema_db: Database) -> None:
     Parameterized examples (containing '?') are validated via PREPARE
     instead of execution.
     """
-    present = _present_tables(schema_db)
+    present = _present_tables(schema_catalog_db)
     for table_name, examples in EXAMPLES.items():
         if table_name not in present:
             continue
         for ex in examples:
             if "?" in ex.sql:
-                schema_db.execute(f"PREPARE schema_catalog_probe AS {ex.sql}")
-                schema_db.execute("DEALLOCATE schema_catalog_probe")
+                schema_catalog_db.execute(f"PREPARE schema_catalog_probe AS {ex.sql}")
+                schema_catalog_db.execute("DEALLOCATE schema_catalog_probe")
             else:
-                schema_db.execute(ex.sql).fetchall()
+                schema_catalog_db.execute(ex.sql).fetchall()

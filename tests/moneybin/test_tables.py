@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from moneybin.tables import (
     BRIDGE_TRANSFERS,
     BUDGETS,
@@ -16,6 +18,8 @@ from moneybin.tables import (
     TRANSACTION_NOTES,
     TableRef,
 )
+
+pytestmark = pytest.mark.unit
 
 EXPECTED_INTERFACE = {
     FCT_TRANSACTIONS.full_name,
