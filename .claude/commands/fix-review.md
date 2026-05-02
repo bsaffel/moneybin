@@ -10,6 +10,8 @@ Fetch open code review comments on the current branch's PR and address them.
 - **Latest first.** A reviewer's most recent comment in a thread is the current ask — older comments in the same thread may already be superseded. Always process threads ordered by their latest activity, newest first, and treat the latest comment as authoritative.
 - **Resolution status comes from GraphQL.** REST's `/pulls/{n}/comments` cannot tell you if a thread is resolved. Use GraphQL `reviewThreads { isResolved }` — only address threads where `isResolved == false`.
 - **Three sources, all required.** Inline review threads, review-level summaries, AND top-level PR conversation comments (the `/issues/{n}/comments` endpoint). Skipping any one of these silently drops feedback.
+- **Read full review bodies, never excerpts.** A review's actionable item is often a "New finding" / "New issue" / "One new issue" section *after* a "Re-review complete" preamble. Truncating to the first N characters or printing only metadata (`state`, `submitted_at`) hides those findings. Process every non-`APPROVED` review by reading the entire `body` field, not a slice.
+- **Pending re-reviews mean not-yet-clean.** If the most recent activity in the PR is your own `@reviewer` ping requesting a re-review, the PR is not clean — it's waiting. Do not declare "0 unresolved" until at least one new review, thread, or conversation comment has landed *after* the timestamp of your ping. If nothing newer exists, report the wait state and stop without committing.
 
 ## Steps
 
@@ -60,6 +62,8 @@ Fetch open code review comments on the current branch's PR and address them.
      --jq '[.[] | select(.state != "APPROVED" and (.body // "") != "") | {id, state, body, user: .user.login, submitted_at}]'
    ```
 
+   **Read every `body` in full.** Do not slice, truncate, or print only metadata. A review whose first paragraph says "Re-review complete — N threads resolved" can still contain a "New finding" / "New issue" section below it. That section is the actionable item.
+
 4. **Fetch top-level PR conversation comments** (these are NOT in `/pulls/{n}/comments`):
    ```
    gh api --paginate /repos/{owner}/{repo}/issues/{number}/comments \
@@ -73,6 +77,8 @@ Fetch open code review comments on the current branch's PR and address them.
    - Issue comments: by `updated_at`
 
    Merge into a single list and process in that order. The most recent unresolved feedback gets read and addressed first.
+
+   **Pending re-review check.** Before declaring the PR clean, scan the merged list for the most recent conversation comment authored by you (the current user, from `gh api /user --jq .login`) that contains a reviewer mention (`@claude`, `@codex`, etc.) requesting a re-review. If such a ping exists *and* no review/thread/comment from anyone else has been posted after that ping's `updated_at`, the PR is **not** clean — it's waiting on the requested re-review. Report the wait state and stop. Do not commit or declare done.
 
 6. **In `--list` mode**: print the merged list (newest first), grouped by source (Thread / Review / Conversation), showing for each: reviewer, file:line (if applicable), latest-comment timestamp, body, and `[OUTDATED]` if `isOutdated` or if `originalCommit.oid != headRefOid`. Then stop.
 
