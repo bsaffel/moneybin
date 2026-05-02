@@ -225,8 +225,11 @@ class OFXExtractor:
             return results
 
         except Exception as e:
-            logger.error(f"Failed to parse OFX file {file_path}: {e}")
-            raise ValueError(f"Invalid OFX file format: {e}") from e
+            # Don't interpolate `e` into the log message: ofxparse exception
+            # strings can embed payee/amount/memo content from the file. The
+            # exception type name + file path is enough for diagnostics.
+            logger.error(f"Failed to parse OFX file {file_path}: {type(e).__name__}")
+            raise ValueError(f"Invalid OFX file format: {type(e).__name__}") from e
 
     def _extract_institutions(
         self,

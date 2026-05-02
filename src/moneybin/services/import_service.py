@@ -423,10 +423,15 @@ class ImportService:
         # them; otherwise PermissionError/OSError leak as internal tool errors.
         try:
             with open(canonical_path, "rb") as f:
-                content = f.read().decode("utf-8", errors="ignore")
+                content = f.read().decode("utf-8", errors="replace")
         except OSError as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
             raise ValueError(f"Could not read OFX file: {e}") from e
+        if "�" in content:
+            logger.warning(
+                f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
+                f"{canonical_path.name}"
+            )
         content = preprocess_ofx_content(content)
         try:
             parsed_ofx: Any = ofxparse.OfxParser.parse(  # type: ignore[reportUnknownMemberType]
@@ -515,11 +520,13 @@ class ImportService:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
             raise
 
-        # Total across all four OFX tables — balance-only or no-activity
-        # statements still count as a successful import.
+        # Total across all four OFX tables — balance-only statements still
+        # count as a successful import. Zero rows means nothing was written
+        # (e.g., empty statement period); record as 'failed' so the metric
+        # and import log accurately reflect that no data landed.
         total_rows = sum(rows_loaded.values())
-        finalize_status: Literal["complete", "partial"] = (
-            "complete" if total_rows > 0 else "partial"
+        finalize_status: Literal["complete", "partial", "failed"] = (
+            "complete" if total_rows > 0 else "failed"
         )
         # IMPORT_RECORDS_TOTAL stays scoped to transactions for cross-source
         # comparability with tabular/Plaid metrics.
@@ -562,7 +569,7 @@ class ImportService:
         from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
 
         for _aid in account_ids:
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="ofx_passthrough").inc()
+            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="not_attempted").inc()
 
     def _import_w2(
         self,
