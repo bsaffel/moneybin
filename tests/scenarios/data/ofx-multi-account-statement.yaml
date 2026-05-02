@@ -1,0 +1,48 @@
+scenario: ofx-multi-account-statement
+description: "Multi-account OFX import — single file with checking + savings sub-statements"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+  imports:
+    - path: ofx/multi_account_sample.ofx
+      apply_transforms: false
+
+pipeline:
+  - import_file
+  - transform
+
+# Fixture has 2 STMTTRNRS blocks, each with 1 STMTTRN.
+assertions:
+  - name: ofx_transactions_row_count
+    fn: assert_row_count_exact
+    args:
+      table: raw.ofx_transactions
+      expected: 2
+  - name: ofx_accounts_row_count
+    fn: assert_row_count_exact
+    args:
+      table: raw.ofx_accounts
+      expected: 2
+  - name: import_log_single_batch
+    fn: assert_row_count_exact
+    args:
+      table: raw.import_log
+      expected: 1
+  - name: dim_accounts_two_rows
+    fn: assert_row_count_exact
+    args:
+      table: core.dim_accounts
+      expected: 2
+  - name: source_system_populated
+    fn: assert_source_system_populated
+    args:
+      table: core.fct_transactions
+      expected_sources: [ofx]
+
+gates:
+  required_assertions: all
+  required_evaluations: all
+  required_expectations: all

@@ -38,6 +38,52 @@ def _step_load_fixtures(setup: SetupSpec, db: Database, env: dict[str, str]) -> 
         load_fixture_into_db(db, spec)
 
 
+def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
+    """Run real ``ImportService.import_file`` for each entry in setup.imports.
+
+    Each entry is processed in order so scenarios can stack the same path
+    twice (re-import). ``expect_failure=True`` inverts the success check
+    and may require ``expect_error_substring`` to appear in the raised
+    exception. ``apply_transforms`` defaults off here — scenarios group
+    transforms via the explicit ``transform`` step instead.
+    """
+    from moneybin.services.import_service import ImportService
+    from tests.scenarios._runner.loader import IMPORT_FIXTURES_ROOT
+
+    service = ImportService(db)
+    for spec in setup.imports:
+        path = (IMPORT_FIXTURES_ROOT / spec.path).resolve()
+        try:
+            service.import_file(
+                path,
+                apply_transforms=spec.apply_transforms,
+                institution=spec.institution,
+                force=spec.force,
+                interactive=False,
+                account_name=spec.account_name,
+            )
+        except Exception as exc:
+            if not spec.expect_failure:
+                raise
+            if spec.expect_error_substring and spec.expect_error_substring not in str(
+                exc
+            ):
+                raise AssertionError(
+                    f"import_file({spec.path}): expected error substring "
+                    f"{spec.expect_error_substring!r} but got "
+                    f"{type(exc).__name__}"
+                ) from exc
+            logger.info(
+                f"scenario_import.expected_failure path={spec.path} "
+                f"exc={type(exc).__name__}"
+            )
+            continue
+        if spec.expect_failure:
+            raise AssertionError(
+                f"import_file({spec.path}): expected failure but call succeeded"
+            )
+
+
 def _step_transform(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
     with sqlmesh_context() as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
@@ -101,6 +147,7 @@ def _step_transform_via_subprocess(
 STEP_REGISTRY: dict[str, StepCallable] = {
     "generate": _step_generate,
     "load_fixtures": _step_load_fixtures,
+    "import_file": _step_import_file,
     "transform": _step_transform,
     "match": _step_match,
     "seed_merchants": _step_seed_merchants,

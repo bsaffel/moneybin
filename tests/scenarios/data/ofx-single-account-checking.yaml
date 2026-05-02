@@ -1,0 +1,57 @@
+scenario: ofx-single-account-checking
+description: "Single-account OFX import — golden path through the new import_log pipeline"
+
+# `persona` is unused (no generate step) but the SetupSpec requires it.
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+  imports:
+    - path: ofx/sample_minimal.ofx
+      apply_transforms: false
+
+pipeline:
+  - import_file
+  - transform
+
+# Expected counts derive from the fixture itself: tests/fixtures/ofx/sample_minimal.ofx
+# contains 2 STMTTRN entries in 1 BANKACCTFROM.
+assertions:
+  - name: ofx_transactions_row_count
+    fn: assert_row_count_exact
+    args:
+      table: raw.ofx_transactions
+      expected: 2
+  - name: ofx_accounts_row_count
+    fn: assert_row_count_exact
+    args:
+      table: raw.ofx_accounts
+      expected: 1
+  - name: import_log_row_count
+    fn: assert_row_count_exact
+    args:
+      table: raw.import_log
+      expected: 1
+  - name: ofx_transactions_have_import_id
+    fn: assert_no_nulls
+    args:
+      table: raw.ofx_transactions
+      columns: [import_id, source_type, source_origin]
+  - name: fct_transactions_row_count
+    fn: assert_row_count_exact
+    args:
+      table: core.fct_transactions
+      expected: 2
+  - name: sign_convention
+    fn: assert_sign_convention
+  - name: source_system_populated
+    fn: assert_source_system_populated
+    args:
+      table: core.fct_transactions
+      expected_sources: [ofx]
+
+gates:
+  required_assertions: all
+  required_evaluations: all
+  required_expectations: all

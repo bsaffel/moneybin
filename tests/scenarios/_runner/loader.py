@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 VALID_STEP_NAMES = {
     "generate",
     "load_fixtures",
+    "import_file",
     "transform",
     "match",
     "seed_merchants",
@@ -26,6 +27,10 @@ VALID_STEP_NAMES = {
 _DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES_ROOT = (_DATA_ROOT / "fixtures").resolve()
+# Real-format fixtures (OFX/QFX/QBO/CSV files imported through the actual
+# ImportService pipeline) live under tests/fixtures/ — separate from the
+# CSV-shaped raw fixtures that load_fixtures uses.
+IMPORT_FIXTURES_ROOT = (REPO_ROOT / "tests" / "fixtures").resolve()
 
 
 class ScenarioValidationError(ValueError):
@@ -55,6 +60,37 @@ class FixtureSpec(BaseModel):
         return self
 
 
+class ImportFileSpec(BaseModel):
+    """A real-format file to import via ``ImportService.import_file``.
+
+    Resolved relative to ``IMPORT_FIXTURES_ROOT`` (``tests/fixtures/``). The
+    ``import_file`` pipeline step iterates ``setup.imports`` in order, so
+    re-import scenarios can declare the same path twice with different
+    expectations.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    account_name: str | None = None
+    institution: str | None = None
+    force: bool = False
+    apply_transforms: bool = False
+    expect_failure: bool = False
+    expect_error_substring: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_path(self) -> ImportFileSpec:
+        resolved = (IMPORT_FIXTURES_ROOT / self.path).resolve()
+        try:
+            resolved.relative_to(IMPORT_FIXTURES_ROOT)
+        except ValueError as exc:
+            raise ValueError(
+                f"import path {self.path!r} must resolve under "
+                f"{IMPORT_FIXTURES_ROOT.relative_to(REPO_ROOT)}"
+            ) from exc
+        return self
+
+
 class SetupSpec(BaseModel):
     """Scenario setup: persona, seed, year span, and fixtures."""
 
@@ -63,6 +99,7 @@ class SetupSpec(BaseModel):
     seed: int = 42
     years: int = 1
     fixtures: list[FixtureSpec] = Field(default_factory=list)
+    imports: list[ImportFileSpec] = Field(default_factory=list)
 
 
 class AssertionSpec(BaseModel):
