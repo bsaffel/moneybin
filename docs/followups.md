@@ -2,6 +2,33 @@
 
 Tracking deferred work and known limitations from shipped features.
 
+## Draft `account-management.md` spec (post-cli-restructure v2)
+
+The v2 CLI restructure places the `accounts` top-level entity namespace but no spec owns it. Net-worth.md owns balance/networth surfaces; asset-tracking.md owns assets; nothing owns the entity-management surface (`list`, `show`, `rename`, `archive`, `include`).
+
+Surfaces left without a home:
+- `accounts list / show / rename / archive / include` CLI commands
+- `accounts_list / accounts_get / accounts_rename / accounts_archive / accounts_include` MCP tools
+- `app.account_settings` table (currently specced inside `net-worth.md` but conceptually broader than net-worth inclusion)
+- Account merging workflow (when import discovers the same account from two sources)
+- Per-account display preferences (color, icon, display order) — future, not yet specced anywhere
+
+Plan:
+1. Write `docs/specs/account-management.md` covering the scope above.
+2. Move `app.account_settings` ownership from `net-worth.md` to the new spec; net-worth.md continues to read `include_in_net_worth` from it.
+3. Update INDEX.md status `planned` → `draft` once written.
+
+## Dynamic MCP server instructions for progressive disclosure (post-cli-restructure v2)
+
+The MCP `FastMCP(instructions=...)` text in `src/moneybin/mcp/server.py` is currently static. v1 advertised `moneybin_discover` for loading extended namespaces, but progressive disclosure (per-session tag-based tool visibility) is not honored by all MCP clients. v2 leaves the discover advertisement out of the instructions to keep the message correct across clients.
+
+When client support for FastMCP visibility transforms broadens — or when we identify the connecting client by name on `initialize` — revisit:
+
+- **Conditional injection.** Inspect the connecting client (FastMCP exposes the client name) and append a "Load extended namespaces via `moneybin_discover`" line only for clients that honor visibility transforms.
+- **Static re-add.** If the broader ecosystem catches up, just put the line back and drop the conditional.
+
+The `moneybin_discover` tool itself remains active and discoverable via `mcp list-tools`; this is purely about whether the instructions field calls it out at session start.
+
 ## Auto-rule splitting (post-PR #58)
 
 The current auto-rule generator proposes one `(merchant_pattern, category, subcategory)` per

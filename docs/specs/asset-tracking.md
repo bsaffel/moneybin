@@ -15,7 +15,7 @@ The dividing line between assets and investments: **if the value comes from a ma
 
 Related specs and docs:
 - [`net-worth.md`](net-worth.md) — balance tracking and `agg_net_worth`; this spec extends it to include physical assets
-- [`cli-restructure.md`](cli-restructure.md) — target CLI command tree; asset commands live under `track asset`
+- [`cli-restructure.md`](cli-restructure.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `core.agg_net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data encrypted at rest via `Database` class
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 - [`mcp-architecture.md`](mcp-architecture.md) — tool taxonomy and response envelope conventions
@@ -33,7 +33,7 @@ Related specs and docs:
 9. **Staleness warnings.** Each valuation in `fct_asset_valuations_daily` tracks days since the last real observation. Warnings surface in CLI output and MCP responses when a valuation exceeds its staleness threshold. Warnings are informational only — stale values are still included in net worth.
 10. **Staleness threshold resolution:** per-asset override → per-type default → global config default.
 11. **Asset disposal.** Assets can be marked as sold with a date and sale amount. Disposed assets stop contributing to net worth but their history is preserved.
-12. **CLI commands** under `track asset` (see CLI Interface section).
+12. **CLI commands** under `assets` (see CLI Interface section).
 13. **MCP tools:** `assets.list`, `assets.detail`, `assets.summary` (see MCP Interface section).
 14. **All commands support `--output json`** for non-interactive parity.
 15. **Source precedence within a day.** When multiple valuation sources exist for the same asset on the same date: manual (user assertion) > appraisal > automated estimate (Zillow/KBB).
@@ -42,7 +42,7 @@ Related specs and docs:
 
 ### New table: `app.assets`
 
-User-created asset registry. Managed via CLI (`track asset add/update/sell/remove`).
+User-created asset registry. Managed via CLI (`assets add/update/sell/remove`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS app.assets (
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS app.assets (
 
 ### New table: `app.asset_valuations`
 
-User-entered valuations. Managed via CLI (`track asset value set/unset`).
+User-entered valuations. Managed via CLI (`assets valuation set/unset`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS app.asset_valuations (
@@ -230,7 +230,7 @@ asset_staleness_default_days: int = (
 
 ### Where staleness surfaces
 
-- **`track asset list`** — warning indicator next to stale assets with days since last valuation
+- **`assets list`** — warning indicator next to stale assets with days since last valuation
 - **`track networth show`** — summary note: "N assets have stale valuations" with asset names
 - **MCP tools** — `summary.warnings` array includes stale asset notices
 
@@ -238,12 +238,12 @@ Staleness is informational only — never blocks queries or omits stale assets f
 
 ## CLI Interface
 
-All commands under `track asset`, following [`cli-restructure.md`](cli-restructure.md). All support `--output json` for non-interactive parity.
+All commands under `assets`, following [`cli-restructure.md`](cli-restructure.md). All support `--output json` for non-interactive parity.
 
 ### Asset management
 
 ```
-moneybin track asset add --name "123 Main St" --type real_estate \
+moneybin assets add --name "123 Main St" --type real_estate \
     [--description "Primary residence"] \
     [--acquisition-date 2020-03-15] [--acquisition-cost 450000] \
     [--liability-account-id <account_id>] [--staleness-days 180]
@@ -252,31 +252,31 @@ moneybin track asset add --name "123 Main St" --type real_estate \
 - `--type` validates against the four known types (`real_estate`, `vehicle`, `valuable`, `other`)
 
 ```
-moneybin track asset list [--type real_estate] [--include-disposed] [--output json|table]
+moneybin assets list [--type real_estate] [--include-disposed] [--output json|table]
 ```
 - Default: active assets only (no `disposal_date`)
 - Shows: name, type, latest valuation, days since valuation, staleness warning if applicable
 
 ```
-moneybin track asset show <asset_id> [--output json|table]
+moneybin assets show <asset_id> [--output json|table]
 ```
 - Detail view: all asset fields, valuation history, linked liability balance if present, gain/loss vs acquisition cost
 
 ```
-moneybin track asset update <asset_id> [--name "..."] [--description "..."] \
+moneybin assets update <asset_id> [--name "..."] [--description "..."] \
     [--liability-account-id <id>] [--staleness-days 90]
 ```
 - Updates any mutable field on the asset
 
 ```
-moneybin track asset sell <asset_id> --date 2025-06-01 --amount 35000 [--notes "Trade-in"] [--yes]
+moneybin assets sell <asset_id> --date 2025-06-01 --amount 35000 [--notes "Trade-in"] [--yes]
 ```
 - Sets `disposal_date` and `disposal_amount`
 - Asset stops contributing to net worth after disposal date
 - History preserved; asset visible with `--include-disposed`
 
 ```
-moneybin track asset remove <asset_id> [--yes]
+moneybin assets remove <asset_id> [--yes]
 ```
 - Hard delete of asset and all its valuations
 - Confirmation required
@@ -285,24 +285,24 @@ moneybin track asset remove <asset_id> [--yes]
 ### Valuation management
 
 ```
-moneybin track asset value set <asset_id> --date 2025-01-15 --value 475000 [--notes "Zillow estimate"]
+moneybin assets value set <asset_id> --date 2025-01-15 --value 475000 [--notes "Zillow estimate"]
 ```
 - Inserts or updates a row in `app.asset_valuations` (upsert on `asset_id + valuation_date`)
 
 ```
-moneybin track asset value history <asset_id> [--from DATE] [--to DATE] [--output json|table]
+moneybin assets value history <asset_id> [--from DATE] [--to DATE] [--output json|table]
 ```
 - Shows valuation history for an asset over time
 
 ```
-moneybin track asset value unset <asset_id> --date 2025-01-15 [--yes]
+moneybin assets value unset <asset_id> --date 2025-01-15 [--yes]
 ```
 - Removes a specific manual valuation
 
 ### Example output
 
 ```
-$ moneybin track asset list
+$ moneybin assets list
 
 Name                Type          Value        Last Valued    Status
 123 Main St         real_estate   $475,000     2025-01-15     ✅ Current
@@ -311,7 +311,7 @@ Grandma's Ring      valuable      $12,000      2024-03-01     ✅ Current
 ```
 
 ```
-$ moneybin track networth show
+$ moneybin reports networth show
 
 Net Worth: $347,250 as of 2025-04-23
 
@@ -354,13 +354,13 @@ Follows the standard envelope from [`mcp-architecture.md`](mcp-architecture.md):
     "warnings": ["1 asset has a stale valuation: 2021 Tesla Model 3 (234 days)"]
   },
   "data": [...],
-  "actions": ["Use assets.detail for full history", "Use 'track asset value set' to update stale valuations"]
+  "actions": ["Use assets.detail for full history", "Use 'assets value set' to update stale valuations"]
 }
 ```
 
 ### Write tools
 
-Deferred to v2, same as balance assertion write tools in the net worth spec. The `track asset` CLI handles the low-frequency asset management workflow for v1.
+Deferred to v2, same as balance assertion write tools in the net worth spec. The `assets` CLI handles the low-frequency asset management workflow for v1.
 
 ### Net worth tools (existing, extended)
 
@@ -390,17 +390,17 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ### Tier 3 — Integration
 
-- End-to-end: `track asset add` → `track asset value set` → `sqlmesh run` → `track networth show` → verify asset included in net worth.
-- Disposal flow: `track asset sell` → `sqlmesh run` → verify asset excluded from net worth after disposal date.
-- Liability linking: add asset with `--liability-account-id` → `track asset show` → verify equity display.
-- Staleness surfacing: set an old valuation → `track asset list` → verify warning appears.
+- End-to-end: `assets add` → `assets value set` → `sqlmesh run` → `track networth show` → verify asset included in net worth.
+- Disposal flow: `assets sell` → `sqlmesh run` → verify asset excluded from net worth after disposal date.
+- Liability linking: add asset with `--liability-account-id` → `assets show` → verify equity display.
+- Staleness surfacing: set an old valuation → `assets list` → verify warning appears.
 
 ## Dependencies
 
 - [`net-worth.md`](net-worth.md) — `agg_net_worth` view is extended; this spec cannot ship before or independently of net worth
 - [`database-migration.md`](database-migration.md) — new tables (`app.assets`, `app.asset_valuations`) require migration infrastructure
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data is sensitive; encrypted at rest via `Database` class
-- [`cli-restructure.md`](cli-restructure.md) — `track asset` namespace defined by the CLI structure spec
+- [`cli-restructure.md`](cli-restructure.md) — `assets` namespace defined by the CLI structure spec
 - `core.dim_accounts` — liability linking references existing dimension
 
 ## Out of Scope
@@ -422,13 +422,13 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 - `sqlmesh/models/core/fct_asset_valuations.sql` — VIEW unioning all valuation sources
 - `sqlmesh/models/core/fct_asset_valuations_daily.sql` — TABLE with daily carry-forward logic (may be Python model)
 - `src/moneybin/services/asset_service.py` — business logic for asset CRUD and valuation management
-- `src/moneybin/cli/commands/asset.py` — `track asset` command group
+- `src/moneybin/cli/commands/asset.py` — `assets` command group
 - `tests/test_asset_service.py` — unit tests for asset service
 - `tests/test_cli_asset.py` — CLI integration tests
 
 ### Files to Modify
 
-- `src/moneybin/cli/main.py` — register `track asset` command group
+- `src/moneybin/cli/main.py` — register `assets` command group
 - `src/moneybin/sql/schema.py` — register new DDL files for `app.assets` and `app.asset_valuations`
 - `src/moneybin/config.py` — add `asset_staleness_default_days` to `MoneyBinSettings`
 - `sqlmesh/models/core/agg_net_worth.sql` — extend to include asset valuations (created by net worth spec, modified here)

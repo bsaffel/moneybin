@@ -12,6 +12,7 @@ Documentation: https://modelcontextprotocol.github.io/python-sdk/
 from __future__ import annotations
 
 import logging
+import textwrap
 from pathlib import Path
 
 import duckdb
@@ -40,17 +41,32 @@ EXTENDED_DOMAINS: frozenset[str] = frozenset(EXTENDED_DOMAIN_DESCRIPTIONS)
 # Global server instance — tools/resources/prompts register against this
 mcp = FastMCP(
     "MoneyBin",
-    instructions=(
-        "MoneyBin is an AI-powered personal finance app. Tools use "
-        "underscore-joined namespaces (spending_summary, accounts_balances, etc.). "
-        "Core tools are available immediately. Extended namespaces "
-        "(categorize, budget, tax, privacy) can be loaded with "
-        "moneybin_discover. All data stays local in DuckDB.\n\n"
-        "IMPORTANT: Prefer bulk tools (categorize_bulk, categorize_create_rules) "
-        "over single-item operations. Fetch a batch, reason about all items, "
-        "then submit in one call.\n\n"
-        "Every tool returns {summary, data, actions}. Check summary.has_more "
-        "for pagination and actions[] for suggested next steps."
+    instructions=textwrap.dedent(
+        """\
+        MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
+
+        Top-level groups:
+        - accounts (balance) — financial accounts and per-account workflows
+        - transactions (matches, categorize) — transactions and workflows on them
+        - assets — physical assets (real estate, vehicles, valuables)
+        - categories, merchants — taxonomy reference data
+        - reports — cross-domain analytical and aggregation views (networth, spending, cashflow, financial health, budget vs actual)
+        - tax — tax forms, deductions, future capital gains
+        - system — data status
+        - import, sync — data ingestion (sync_pull/status/connect available; OAuth flows return URLs the client opens)
+        - privacy — consent and audit
+
+        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_accept, reports_networth_get, reports_spending_summary.
+
+        Getting oriented:
+        - system_status — what data exists, freshness, pending review queues
+        - reports_health — financial snapshot (net worth, income/expenses, savings rate)
+
+        Conventions:
+        - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
+        - Prefer bulk tools (transactions_categorize_bulk_apply, transactions_categorize_rules_create).
+        - Sensitivity tiers: low / medium / high. Without consent, tools degrade to aggregates — they never fail.
+        """
     ),
     # mask_error_details wraps unclassified exceptions in a generic ToolError.
     # Classified domain exceptions are caught by mcp_tool and returned as error

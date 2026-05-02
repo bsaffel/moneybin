@@ -31,10 +31,10 @@ Related specs and docs:
 5. **Aggregate to `core.agg_net_worth`** — a SQLMesh VIEW that sums `fct_balances_daily` across all included accounts per day.
 6. **Account inclusion/exclusion:** All accounts in `core.dim_accounts` are included by default. Users can exclude accounts via `app.account_settings` (new table with `include_in_net_worth BOOLEAN DEFAULT TRUE`). Excluded accounts still have daily balances computed but are omitted from `agg_net_worth`.
 7. **Reconciliation deltas:** When the transaction-derived balance at a given date doesn't match the next authoritative observation, compute and surface the delta. Deltas are informational (not blocking) and self-heal — they are recomputed on every `sqlmesh run`, so reimporting missing transactions resolves them naturally.
-8. **Manual balance assertions:** Users can assert a known balance via `moneybin balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
+8. **Manual balance assertions:** Users can assert a known balance via `moneybin accounts balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
 9. **No balance without an anchor:** Accounts with zero balance observations produce no `fct_balances_daily` rows. The system does not estimate an opening balance from transactions alone.
-10. **CLI commands:** `moneybin networth show`, `moneybin networth history`, `moneybin balance show`, `moneybin balance assert`, `moneybin balance list`, `moneybin balance delete`, `moneybin reconciliation show`.
-11. **MCP tools:** `get_net_worth`, `get_net_worth_history`, `get_balances`, `get_balance_assertions`.
+10. **CLI commands:** `moneybin reports networth show`, `moneybin reports networth history`, `moneybin accounts balance show`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance delete`, `moneybin accounts balance reconcile`.
+11. **MCP tools:** `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_assertions_list`.
 12. **All commands support `--output json`** for non-interactive parity.
 13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (Level 2 and Level 3 respectively). Net worth v1 covers cash accounts only.
 
@@ -42,7 +42,7 @@ Related specs and docs:
 
 ### New table: `app.balance_assertions`
 
-User-entered balance anchors. Managed via CLI (`moneybin balance assert/list/delete`).
+User-entered balance anchors. Managed via CLI (`moneybin accounts balance assert/list/delete`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS app.balance_assertions (
@@ -165,50 +165,50 @@ GROUP BY d.balance_date
 
 All commands support `--output json` for non-interactive parity.
 
-### `networth` command group
+### `accounts networth` / `reports networth` commands
 
 ```
-moneybin networth show [--as-of DATE] [--account ACCOUNT_ID] [--output json|table]
+moneybin reports networth show [--as-of DATE] [--account ACCOUNT_ID] [--output json|table]
 ```
 - Default: net worth as of today (latest available date)
 - `--as-of`: historical point-in-time lookup
 - `--account`: filter to specific account(s), repeatable
 
 ```
-moneybin networth history [--from DATE] [--to DATE] [--interval daily|weekly|monthly] [--output json|table]
+moneybin reports networth history [--from DATE] [--to DATE] [--interval daily|weekly|monthly] [--output json|table]
 ```
 - Default interval: monthly
 - Shows net worth over time with period-over-period change (absolute and percentage)
 
-### `balance` command group
+### `accounts balance` commands
 
 ```
-moneybin balance show [--account ACCOUNT_ID] [--as-of DATE] [--output json|table]
+moneybin accounts balance show [--account ACCOUNT_ID] [--as-of DATE] [--output json|table]
 ```
 - Default: latest known balance per account
 - Shows: account name, balance, date of last observation, source (OFX/CSV/Plaid/assertion)
 
 ```
-moneybin balance assert <account_id> <date> <amount> [--notes "reason"] [--yes]
+moneybin accounts balance assert <account_id> <date> <amount> [--notes "reason"] [--yes]
 ```
 - Inserts or updates a row in `app.balance_assertions`
 - Validates `account_id` exists in `dim_accounts`
 
 ```
-moneybin balance list [--account ACCOUNT_ID] [--output json|table]
+moneybin accounts balance list [--account ACCOUNT_ID] [--output json|table]
 ```
 - Shows all balance assertions, optionally filtered by account
 
 ```
-moneybin balance delete <account_id> <date> [--yes]
+moneybin accounts balance delete <account_id> <date> [--yes]
 ```
 - Removes a manual assertion
 - `--yes` for non-interactive confirmation
 
-### `reconciliation` command group
+### `accounts balance reconcile` command
 
 ```
-moneybin reconciliation show [--account ACCOUNT_ID] [--threshold AMOUNT] [--output json|table]
+moneybin accounts balance reconcile [--account ACCOUNT_ID] [--threshold AMOUNT] [--output json|table]
 ```
 - Shows all accounts with non-zero reconciliation deltas
 - `--threshold`: only show deltas exceeding this amount (default: $0.01)
@@ -217,19 +217,19 @@ moneybin reconciliation show [--account ACCOUNT_ID] [--threshold AMOUNT] [--outp
 
 ### Tools
 
-**`get_net_worth`** — Returns current or historical net worth.
+**`reports_networth_get`** — Returns current or historical net worth.
 - Params: `as_of_date` (optional DATE), `account_ids` (optional list of VARCHAR)
 - Returns: total net worth, per-account breakdown with balance and source, currency
 
-**`get_net_worth_history`** — Returns net worth time series.
+**`reports_networth_history`** — Returns net worth time series.
 - Params: `from_date` (DATE), `to_date` (DATE), `interval` (daily|weekly|monthly, default monthly)
 - Returns: time series with net worth, period-over-period change (absolute and percentage), account count
 
-**`get_balances`** — Returns current balance per account.
+**`accounts_balance_list`** — Returns current balance per account.
 - Params: `account_ids` (optional list), `as_of_date` (optional DATE)
 - Returns: per-account balance with date of last observation and source attribution
 
-**`get_balance_assertions`** — Returns manual balance assertions.
+**`accounts_balance_assertions_list`** — Returns manual balance assertions.
 - Params: `account_id` (optional VARCHAR)
 - Returns: list of assertions with dates, amounts, and notes
 
@@ -278,8 +278,8 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 
 ### Tier 3 — Integration
 
-- End-to-end: import OFX file → `sqlmesh run` → `moneybin networth show` → verify output matches expected values.
-- Manual assertion flow: `moneybin balance assert` → `sqlmesh run` → verify balance updated in `fct_balances_daily`.
+- End-to-end: import OFX file → `sqlmesh run` → `moneybin reports networth show` → verify output matches expected values.
+- Manual assertion flow: `moneybin accounts balance assert` → `sqlmesh run` → verify balance updated in `fct_balances_daily`.
 - Intra-day re-sync: import twice on the same day → verify latest observation wins in `fct_balances_daily`.
 - Reconciliation self-healing: import with gap → observe delta → reimport with missing data → verify delta resolves.
 
@@ -311,9 +311,8 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 - `sqlmesh/models/core/fct_balances.sql` — VIEW unioning all balance sources
 - `sqlmesh/models/core/fct_balances_daily.sql` — TABLE with daily carry-forward logic (may be Python model)
 - `sqlmesh/models/core/agg_net_worth.sql` — VIEW aggregating across accounts
-- `src/moneybin/cli/commands/networth.py` — `networth show`, `networth history`
-- `src/moneybin/cli/commands/balance.py` — `balance show`, `balance assert`, `balance list`, `balance delete`
-- `src/moneybin/cli/commands/reconciliation.py` — `reconciliation show`
+- `src/moneybin/cli/commands/reports/networth.py` — `reports networth show / history`
+- `src/moneybin/cli/commands/accounts/balance.py` — `accounts balance show / assert / list / delete / reconcile / history`
 - `src/moneybin/services/balance_service.py` — business logic for balance queries, assertions, reconciliation
 - `src/moneybin/services/networth_service.py` — business logic for net worth queries
 - `tests/test_balance_service.py` — unit tests for balance logic
@@ -325,7 +324,7 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 
 - `src/moneybin/cli/main.py` — register `networth`, `balance`, `reconciliation` command groups
 - `src/moneybin/sql/schema.py` — register new DDL files for `app.balance_assertions` and `app.account_settings`
-- `src/moneybin/mcp/tools/` — add `get_net_worth`, `get_net_worth_history`, `get_balances`, `get_balance_assertions` tools
+- `src/moneybin/mcp/tools/` — add `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_assertions_list` tools
 - `src/moneybin/mcp/resources/` — add `net-worth://summary` resource
 
 ### Key Decisions
