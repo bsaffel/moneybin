@@ -80,6 +80,13 @@ The prescribed recipe is in [`docs/guides/scenario-authoring.md`](docs/guides/sc
 4. Verify the scenario fails on the broken code, then passes on the fix.
 5. Cover Tier 1 invariants (always) plus relevant Tier 2–4 checks per [`docs/specs/testing-scenario-comprehensive.md`](docs/specs/testing-scenario-comprehensive.md).
 
+Every new scenario must declare its **tier coverage** (in the test
+docstring as `tiers: T1, T2-...`). The five-tier taxonomy is defined in
+[`docs/specs/testing-scenario-comprehensive.md`](docs/specs/testing-scenario-comprehensive.md):
+T1 (structural invariants) is required everywhere; T2 (semantic
+correctness), T3 (pipeline behavior), T4 (distribution / quality), and
+T5 (operational) apply where relevant.
+
 ## Working with synthetic data
 
 The synthetic data generator (see [`docs/guides/synthetic-data.md`](docs/guides/synthetic-data.md)) is the primary source of test data for development. Three personas (`basic`, `family`, `freelancer`), ~200 real merchants, deterministic seeds.

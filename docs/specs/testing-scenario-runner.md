@@ -1,5 +1,9 @@
 # Feature: Testing Scenario Runner
 
+> Scenario taxonomy and authoring recipe live in
+> [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md);
+> this doc covers the runner mechanics (loader, registries, harness) only.
+
 > **Status update (2026-04-30):** The scenario runner has moved from
 > `src/moneybin/testing/scenarios/` to `tests/scenarios/_runner/`, and
 > scenarios now run via `make test-scenarios` (which invokes

@@ -1,0 +1,15 @@
+scenario: idempotency-rerun
+description: "Running transform twice on the same DB must not duplicate rows"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+# Pipeline is empty — the test drives steps explicitly via scenario_env
+# so it can snapshot row counts between the first and second transform.
+pipeline: []
+assertions: []
+gates:
+  required_assertions: all

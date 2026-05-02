@@ -133,6 +133,11 @@ Scenarios are pinned, reproducible test plans that go from an empty encrypted Du
 
 The runner is the missing test layer above unit, integration, and E2E: those check their own slice in isolation; the runner asserts that whole-pipeline output is correct.
 
+Scenario authoring rules — taxonomy, independent-expectations rule, and
+contributor recipe — are the responsibility of
+[`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md),
+which is the architectural authority for all scenario work.
+
 ## Child Specs
 
 Four child specs under this umbrella. Each is independently useful, designed knowing how it feeds into the scenario format.

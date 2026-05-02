@@ -8,7 +8,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.validation.assertions.completeness import assert_no_nulls
+from moneybin.validation.assertions.completeness import (
+    assert_no_nulls,
+    assert_source_system_populated,
+)
 
 
 @pytest.fixture()
@@ -18,6 +21,16 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
         tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
     )
     database.execute("CREATE TABLE txn (id INT, amount DECIMAL(18,2), note VARCHAR)")
+    return database
+
+
+@pytest.fixture()
+def src_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
+    """Provide a test Database with a ``source_type`` column (the assertion default)."""
+    database = Database(
+        tmp_path / "src.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
+    database.execute("CREATE TABLE t (id INT, source_type VARCHAR)")
     return database
 
 
@@ -59,3 +72,58 @@ def test_no_nulls_passes_on_empty_table(db: Database) -> None:
     r = assert_no_nulls(db, table="txn", columns=["amount", "note"])
     assert r.passed
     assert r.details == {"null_counts": {"amount": 0, "note": 0}, "total": 0}
+
+
+def test_source_system_populated_passes_when_all_rows_have_value(
+    src_db: Database,
+) -> None:
+    src_db.execute("INSERT INTO t VALUES (1, 'csv'), (2, 'ofx')")
+    r = assert_source_system_populated(
+        src_db, table="t", expected_sources={"csv", "ofx"}
+    )
+    assert r.passed
+    assert r.details["null_count"] == 0
+    assert r.details["unexpected_values"] == []
+
+
+def test_source_system_populated_fails_on_null(src_db: Database) -> None:
+    src_db.execute("INSERT INTO t VALUES (1, 'csv'), (2, NULL)")
+    r = assert_source_system_populated(src_db, table="t", expected_sources={"csv"})
+    assert not r.passed
+    assert r.details["null_count"] == 1
+
+
+def test_source_system_populated_fails_on_unexpected_value(src_db: Database) -> None:
+    src_db.execute("INSERT INTO t VALUES (1, 'csv'), (2, 'plaid')")
+    r = assert_source_system_populated(
+        src_db, table="t", expected_sources={"csv", "ofx"}
+    )
+    assert not r.passed
+    assert "plaid" in r.details["unexpected_values"]
+
+
+def test_source_system_populated_fails_on_empty_table(src_db: Database) -> None:
+    """Empty table cannot satisfy 'all expected sources present' — must fail."""
+    r = assert_source_system_populated(src_db, table="t", expected_sources={"csv"})
+    assert not r.passed
+    assert r.details["missing_sources"] == ["csv"]
+
+
+def test_source_system_populated_fails_on_missing_expected_source(
+    src_db: Database,
+) -> None:
+    """If an expected source has no rows, surface it via missing_sources and fail."""
+    src_db.execute("INSERT INTO t VALUES (1, 'csv'), (2, 'csv')")
+    r = assert_source_system_populated(
+        src_db, table="t", expected_sources={"csv", "ofx"}
+    )
+    assert not r.passed
+    assert r.details["missing_sources"] == ["ofx"]
+
+
+def test_source_system_populated_raises_on_empty_expected_sources(
+    src_db: Database,
+) -> None:
+    """Empty expected_sources set raises ValueError."""
+    with pytest.raises(ValueError):
+        assert_source_system_populated(src_db, table="t", expected_sources=set())

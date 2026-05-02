@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.validation.assertions._helpers import quote_ident
+from moneybin.validation.assertions._helpers import quote_ident, split_table_ident
 from moneybin.validation.result import AssertionResult
-
-
-def _split(table: str) -> tuple[str | None, str]:
-    """Split an optional schema-qualified table name into (schema, table)."""
-    if "." in table:
-        s, t = table.split(".", 1)
-        return s, t
-    return None, table
 
 
 def _columns_with_types(db: Database, table: str) -> dict[str, str]:
     """Return a mapping of column_name -> data_type for the given table."""
-    schema, name = _split(table)
+    schema, name = split_table_ident(table)
     if schema is None:
         rows = db.execute(
             "SELECT column_name, data_type FROM information_schema.columns "
@@ -60,6 +52,29 @@ def assert_column_types(
         name="column_types",
         passed=not mismatched,
         details={"mismatched": mismatched},
+    )
+
+
+def assert_schema_snapshot(
+    db: Database, *, table: str, expected: dict[str, str]
+) -> AssertionResult:
+    """Assert table's columns match ``expected`` exactly — no missing, no extra, types match."""
+    actual = _columns_with_types(db, table)
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    mismatched = {
+        col: {"expected": exp_type, "actual": actual[col]}
+        for col, exp_type in expected.items()
+        if col in actual and actual[col] != exp_type
+    }
+    return AssertionResult(
+        name="schema_snapshot",
+        passed=not missing and not extra and not mismatched,
+        details={
+            "missing": missing,
+            "extra": extra,
+            "mismatched": mismatched,
+        },
     )
 
 
