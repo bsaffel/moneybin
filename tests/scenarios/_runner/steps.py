@@ -13,7 +13,7 @@ from moneybin.services.matching_service import MatchingService
 from moneybin.testing.synthetic.engine import GeneratorEngine
 from moneybin.testing.synthetic.models import load_persona
 from moneybin.testing.synthetic.writer import SyntheticWriter
-from tests.scenarios._runner.loader import SetupSpec
+from tests.scenarios._runner.loader import IMPORT_FIXTURES_ROOT, SetupSpec
 from tests.scenarios._runner.seed_merchants import seed_merchants_from_persona
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,6 @@ def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> No
     transforms via the explicit ``transform`` step instead.
     """
     from moneybin.services.import_service import ImportService
-    from tests.scenarios._runner.loader import IMPORT_FIXTURES_ROOT
 
     service = ImportService(db)
     for spec in setup.imports:
