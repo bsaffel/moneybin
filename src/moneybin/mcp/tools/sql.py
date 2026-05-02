@@ -26,6 +26,9 @@ def sql_query(query: str) -> ResponseEnvelope:
     Use this for ad-hoc analysis not covered by other tools. Results
     are limited to the configured maximum row count.
 
+    For schema, columns, and example queries, read resource
+    `moneybin://schema` before composing non-trivial queries.
+
     Args:
         query: The SQL query to execute.
     """
@@ -55,5 +58,6 @@ def register_sql_tools(mcp: FastMCP) -> None:
         sql_query,
         "sql_query",
         "Execute a read-only SQL query against the database. "
-        "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN.",
+        "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. "
+        "Read resource moneybin://schema for tables, columns, and example queries.",
     )
