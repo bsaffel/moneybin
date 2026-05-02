@@ -376,6 +376,99 @@ class TestSyncFailure:
         result = svc.sync(year_month="2026-05")
         assert result.failed[0]["error_code"] == "import_error"
 
+    def test_failed_entry_includes_message_and_class(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failed result entries surface error_class + message to MCP/CLI callers."""
+        from moneybin.services import inbox_service as mod
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise RuntimeError("something specific went wrong")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "x.csv").write_text("a\n1\n")
+
+        entry = svc.sync(year_month="2026-05").failed[0]
+        assert entry["error_class"] == "RuntimeError"
+        assert entry["message"] == "something specific went wrong"
+
+    def test_duckdb_binder_error_classified_as_schema_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DuckDB binder errors map to schema_mismatch with a migrate suggestion.
+
+        Covers the failure mode where a raw.* table is missing a column that
+        the loader writes (e.g. import_id pre-V003) — the user-visible error
+        should tell them to run db migrate, not surface as generic import_error.
+        """
+        import duckdb
+
+        from moneybin.services import inbox_service as mod
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise duckdb.BinderException(
+                    "Referenced update column import_id not found in table!"
+                )
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "x.qfx").write_text("not really qfx\n")
+
+        entry = svc.sync(year_month="2026-05").failed[0]
+        assert entry["error_code"] == "schema_mismatch"
+        assert entry["stage"] == "load"
+        assert entry["error_class"] == "BinderException"
+        assert "moneybin db migrate" in str(entry["suggestion"])
+
+    def test_suggestion_preserved_when_source_vanishes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Vanished-source early-exit path still surfaces the suggestion.
+
+        Regression: PR #93 originally hoisted error_class/message into the
+        early-exit dicts but left suggestion in the success-only branch, so
+        a schema_mismatch error during a flaky import would silently drop
+        the "run moneybin db migrate" hint.
+        """
+        import duckdb
+
+        from moneybin.services import inbox_service as mod
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                Path(path).unlink()
+                raise duckdb.BinderException("import_id not found")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "x.qfx").write_text("not really qfx\n")
+
+        entry = svc.sync(year_month="2026-05").failed[0]
+        assert entry["error_code"] == "schema_mismatch"
+        assert "moneybin db migrate" in str(entry["suggestion"])
+        assert "sidecar" not in entry  # vanished — no sidecar written
+
 
 class TestSyncBusy:
     """Concurrent sync returns inbox_busy in result instead of raising."""

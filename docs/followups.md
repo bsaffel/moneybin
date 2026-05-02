@@ -276,3 +276,28 @@ and extend the `schema_catalog_db` fixture to call it. The DDL exists in
 `src/moneybin/sql/schema/app_*.sql` and could be loaded directly via
 `schema.py:init_schemas()` if a non-private interface is exposed, or
 mirrored as Python constants like the core helpers do today.
+
+## Revisit migration auto-apply gate closer to MVP
+
+`Database.__init__` now applies pending migrations whenever
+`MigrationRunner(self).pending()` is non-empty, instead of gating on
+`stored_pkg_version != current_pkg_version`. The previous gate was
+silently broken — `pyproject.toml` `version` was static at `0.1.0`, so
+DBs created pre-V003 never re-entered the migration runner on subsequent
+opens, and the V003 column adds (e.g. `raw.ofx_institutions.import_id`)
+never landed on existing personal DBs. The pending-based gate fixes that
+without requiring a manual version bump.
+
+Trade-off to revisit before MVP / first non-author user: the new gate
+removes the implicit "migrations only run when I cut a release" boundary.
+For single-user personal MoneyBin that's a feature; for a packaged
+release where users may have read-only DB snapshots, copy on drag, or
+multiple processes opening the same DB, we may want migration application
+to be an explicit step (e.g. `moneybin db migrate` at install time, with
+the runtime gate being either advisory or off). Decide based on the
+deploy model we settle on for MVP — keeping pending-driven, switching to
+explicit-only, or some both/and (apply automatically if exactly one
+process owns the file, otherwise warn).
+
+Touchpoint: `src/moneybin/database.py` `__init__` migration block, around
+the `runner.pending()` check.

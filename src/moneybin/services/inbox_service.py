@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, unquote
 
+import duckdb
 import yaml
 
 from moneybin.config import MoneyBinSettings
@@ -388,16 +389,29 @@ class InboxService:
     ) -> None:
         """Move failed file to failed/ and write YAML sidecar."""
         error_code, stage = self._classify_error(error)
-        if not src.exists():
-            # File vanished between enumerate() and import — nothing to move.
-            # Record the failure but continue draining remaining files.
-            result.failed.append({
+        error_class = type(error).__name__
+        message = str(error)[:_SIDECAR_MESSAGE_MAX]
+        suggestion = self._suggestion_for(error_code)
+        log_line = f"Inbox import failed: {rel_filename} → {error_code} ({error_class})"
+
+        def _base_entry() -> dict[str, object]:
+            entry: dict[str, object] = {
                 "filename": rel_filename,
                 "error_code": error_code,
                 "stage": stage,
-            })
+                "error_class": error_class,
+                "message": message,
+            }
+            if suggestion is not None:
+                entry["suggestion"] = suggestion
+            return entry
+
+        if not src.exists():
+            # File vanished between enumerate() and import — nothing to move.
+            # Record the failure but continue draining remaining files.
+            result.failed.append(_base_entry())
             INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
-            logger.warning(f"Inbox import failed: {rel_filename} → {error_code}")
+            logger.warning(log_line)
             return
         try:
             moved = self.move_to_outcome(src, outcome="failed", year_month=year_month)
@@ -405,33 +419,25 @@ class InboxService:
             # Disk full, cross-device, permission, etc. Don't let a failed
             # move-to-failed/ abort the whole drain — record what we know and
             # continue to the next file.
-            result.failed.append({
-                "filename": rel_filename,
-                "error_code": error_code,
-                "stage": stage,
-            })
+            result.failed.append(_base_entry())
             INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
             logger.warning(
-                f"Inbox import failed: {rel_filename} → {error_code} "
-                f"(could not move to failed/: {move_err.__class__.__name__})"
+                f"{log_line} (could not move to failed/: {move_err.__class__.__name__})"
             )
             return
         sidecar = self.write_error_sidecar(
             moved,
             error_code=error_code,
             stage=stage,
-            message=str(error)[:_SIDECAR_MESSAGE_MAX],
-            suggestion=self._suggestion_for(error_code),
+            message=message,
+            suggestion=suggestion,
         )
-        result.failed.append({
-            "filename": rel_filename,
-            "error_code": error_code,
-            "stage": stage,
-            "moved_to": str(moved.relative_to(self.root)),
-            "sidecar": str(sidecar.relative_to(self.root)),
-        })
+        entry = _base_entry()
+        entry["moved_to"] = str(moved.relative_to(self.root))
+        entry["sidecar"] = str(sidecar.relative_to(self.root))
+        result.failed.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
-        logger.warning(f"Inbox import failed: {rel_filename} → {error_code}")
+        logger.warning(log_line)
 
     @staticmethod
     def _classify_error(error: Exception) -> tuple[str, str]:
@@ -446,6 +452,12 @@ class InboxService:
                 if needle in msg:
                     return (code, stage)
             return ("value_error", "import")
+        # DuckDB binder/catalog errors signal a stale schema (e.g. table
+        # missing a column the loader expects). Almost always means a
+        # migration hasn't been applied to this DB; the suggestion below
+        # tells the operator how to fix it.
+        if isinstance(error, duckdb.BinderException | duckdb.CatalogException):
+            return ("schema_mismatch", "load")
         return ("import_error", "import")
 
     @staticmethod
@@ -467,6 +479,11 @@ class InboxService:
             "permission_error": (
                 "Check file ownership and permissions "
                 "(e.g., chmod 644 or chown to your user)."
+            ),
+            "schema_mismatch": (
+                "Database schema is out of date. Run "
+                "'moneybin db migrate' to apply pending migrations, then "
+                "re-run sync."
             ),
         }.get(error_code)
 
