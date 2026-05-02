@@ -74,6 +74,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Architecture & Design](mcp-architecture.md) | Architecture | in-progress | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness. Supersedes archived `mcp-read-tools` and `mcp-write-tools` specs. |
 | [Tool Surface](mcp-tool-surface.md) | Architecture | ready | Concrete tool, prompt, resource, and service layer definitions for MCP. v2 (2026-05-02) aligns naming with `cli-restructure.md` v2 taxonomy (path-prefix-verb-suffix), adds `reports_*` namespace, exposes sync + transform to MCP under the v2 exposure principle. |
 | [SQL Schema Discoverability](mcp-sql-discoverability.md) | Feature | implemented | `moneybin://schema` resource exposes curated interface tables (core + select app) with columns, comments, and example queries; eliminates per-session schema reconnaissance |
+| [Tool Timeouts & Cancellation](mcp-tool-timeouts.md) | Feature | draft | Global 30s wall-clock cap on every tool dispatch with DuckDB `interrupt()` + connection close on timeout, so a hung call can't wedge the server's write lock |
 
 ## Sync
 
