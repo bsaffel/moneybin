@@ -1,8 +1,10 @@
 """MCP server commands for MoneyBin CLI.
 
-This module provides the `moneybin mcp serve` command that starts the
-Model Context Protocol server, exposing DuckDB financial data to AI
-assistants like Cursor, Claude Desktop, and ChatGPT Desktop.
+`moneybin mcp serve` starts the Model Context Protocol server that exposes
+DuckDB financial data to MCP-compatible clients. `moneybin mcp config
+generate --client <c>` produces install snippets for the supported clients
+(see `_SUPPORTED_CLIENTS`); `docs/guides/mcp-clients.md` documents per-client
+behavior, the concurrency model, and per-session opt-in for Claude Code.
 """
 
 import asyncio
@@ -210,7 +212,7 @@ def config_generate(
     if client not in _SUPPORTED_CLIENTS:
         supported = ", ".join(_SUPPORTED_CLIENTS)
         logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
-        raise typer.Exit(1)
+        raise typer.Exit(2)  # usage error — matches `mcp config path` convention
 
     resolved_profile = profile or get_current_profile()
 
@@ -336,33 +338,32 @@ def _build_snippet(
         snippet: dict[str, Any] = {"servers": {entry_name: vscode_entry}}
         return snippet, json.dumps(snippet, indent=2)
     if client == "codex":
-        text = _render_codex_toml(entry_name, server_entry)
-        # Codex never writes via _merge_client_config, but return a stable
-        # dict so the caller's contract holds.
-        return {"mcp_servers": {entry_name: server_entry}}, text
+        snippet = {"mcp_servers": {entry_name: server_entry}}
+        return snippet, _render_codex_toml(snippet)
     snippet = {"mcpServers": {entry_name: server_entry}}
     return snippet, json.dumps(snippet, indent=2)
 
 
-def _render_codex_toml(entry_name: str, server_entry: dict[str, Any]) -> str:
-    """Render an MCP server as a Codex `[mcp_servers.<name>]` TOML block.
+def _render_codex_toml(snippet: dict[str, Any]) -> str:
+    """Render the codex snippet via tomlkit so display matches what we install.
 
-    Hand-formatted to avoid pulling in a TOML-writer dependency for one block.
-    Quoting matches what `tomli`/`tomli_w` would produce for the field types we
-    emit (strings, lists of strings, flat string→string env tables).
+    Using the same TOML writer for both the printed snippet and the
+    `_merge_toml_config` write guarantees byte-identical output, eliminating
+    any divergence in quoting, escaping, or whitespace between what the user
+    sees and what lands in `config.toml`.
     """
-    safe_name = entry_name.replace('"', '\\"')
-    lines = [f'[mcp_servers."{safe_name}"]']
-    lines.append(f"command = {json.dumps(server_entry['command'])}")
-    args = server_entry.get("args", [])
-    if args:
-        rendered_args = ", ".join(json.dumps(a) for a in args)
-        lines.append(f"args = [{rendered_args}]")
-    env_pairs = server_entry.get("env", {})
-    if env_pairs:
-        rendered_env = ", ".join(f"{k} = {json.dumps(v)}" for k, v in env_pairs.items())
-        lines.append(f"env = {{ {rendered_env} }}")
-    return "\n".join(lines)
+    import tomlkit
+
+    doc = tomlkit.document()
+    for top_key, top_val in snippet.items():
+        if isinstance(top_val, dict):
+            section = tomlkit.table()
+            for entry_name, entry_val in top_val.items():
+                section[entry_name] = entry_val  # type: ignore[index]  # tomlkit table behaves as MutableMapping at runtime; stub omits __setitem__
+            doc[top_key] = section
+        else:
+            doc[top_key] = top_val
+    return tomlkit.dumps(doc).rstrip()  # pyright: ignore[reportUnknownMemberType]  # tomlkit.dumps stub returns Unknown
 
 
 def _confirm_and_merge(
@@ -417,11 +418,11 @@ def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
                 section = tomlkit.table()
                 doc[top_key] = section
             for entry_name, entry_val in top_val.items():
-                section[entry_name] = entry_val  # type: ignore[index]
+                section[entry_name] = entry_val  # type: ignore[index]  # tomlkit table behaves as MutableMapping at runtime; stub omits __setitem__
         else:
             doc[top_key] = top_val
 
-    config_path.write_text(tomlkit.dumps(doc))  # pyright: ignore[reportUnknownMemberType]
+    config_path.write_text(tomlkit.dumps(doc))  # pyright: ignore[reportUnknownMemberType]  # tomlkit.dumps stub returns Unknown
 
 
 def _get_client_config_path(client: str) -> Path:

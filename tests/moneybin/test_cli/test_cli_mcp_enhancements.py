@@ -200,9 +200,9 @@ class TestMCPConfigGenerate:
     def test_generate_unknown_client_errors(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Unknown clients exit non-zero with a helpful log message."""
+        """Unknown client → usage error (exit 2), matching `mcp config path`."""
         result = runner.invoke(app, ["config", "generate", "--client", "bogus"])
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "Unknown client" in caplog.text
 
     def test_generate_claude_code_prints_launch_hint(self, tmp_path: Path) -> None:
@@ -291,6 +291,16 @@ class TestMCPConfigPath:
         result = runner.invoke(app, ["config", "path", "--client", "bogus"])
         assert result.exit_code == 2
 
+    def test_path_fixed_path_client_returns_canonical_location(self) -> None:
+        """Fixed-path clients (e.g. cursor) resolve to their `_CLIENT_CONFIG_PATHS` entry."""
+        result = runner.invoke(
+            app, ["config", "path", "--client", "cursor", "--profile", "alice"]
+        )
+        assert result.exit_code == 0
+        # Cursor's canonical install path is ~/.cursor/mcp.json — independent of profile.
+        assert ".cursor" in result.output
+        assert "mcp.json" in result.output
+
 
 class TestMCPConfigGenerateCodex:
     """Codex emits a TOML [mcp_servers] block and installs via tomlkit round-trip."""
@@ -338,6 +348,8 @@ class TestMCPConfigGenerateCodex:
         entry = parsed["mcp_servers"]["MoneyBin (alice)"]
         assert entry["command"] == "uv"
         assert "moneybin" in entry["args"]
+        # Concurrency guardrail must fire on per-invocation client installs.
+        assert "auto-loads" in result.output
 
     def test_generate_codex_install_preserves_existing_keys_and_comments(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -471,3 +483,5 @@ class TestMCPConfigGenerateGeminiCLI:
 
         payload = _json.loads(target.read_text())
         assert "mcpServers" in payload
+        # Concurrency guardrail must fire on per-invocation client installs.
+        assert "auto-loads" in result.output

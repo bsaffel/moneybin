@@ -37,7 +37,7 @@ fi
 
 if [[ ! -f "$config_path" ]]; then
   echo "❌ MoneyBin MCP config not found at $config_path." >&2
-  echo "Run: moneybin mcp config generate --client claude-code --install --yes${profile:+ --profile $profile}" >&2
+  echo "Run: moneybin mcp config generate --client claude-code --install --yes${profile:+ --profile \"$profile\"}" >&2
   exit 1
 fi
 
