@@ -391,17 +391,25 @@ class InboxService:
         error_code, stage = self._classify_error(error)
         error_class = type(error).__name__
         message = str(error)[:_SIDECAR_MESSAGE_MAX]
+        suggestion = self._suggestion_for(error_code)
         log_line = f"Inbox import failed: {rel_filename} → {error_code} ({error_class})"
-        if not src.exists():
-            # File vanished between enumerate() and import — nothing to move.
-            # Record the failure but continue draining remaining files.
-            result.failed.append({
+
+        def _base_entry() -> dict[str, object]:
+            entry: dict[str, object] = {
                 "filename": rel_filename,
                 "error_code": error_code,
                 "stage": stage,
                 "error_class": error_class,
                 "message": message,
-            })
+            }
+            if suggestion is not None:
+                entry["suggestion"] = suggestion
+            return entry
+
+        if not src.exists():
+            # File vanished between enumerate() and import — nothing to move.
+            # Record the failure but continue draining remaining files.
+            result.failed.append(_base_entry())
             INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
             logger.warning(log_line)
             return
@@ -411,19 +419,12 @@ class InboxService:
             # Disk full, cross-device, permission, etc. Don't let a failed
             # move-to-failed/ abort the whole drain — record what we know and
             # continue to the next file.
-            result.failed.append({
-                "filename": rel_filename,
-                "error_code": error_code,
-                "stage": stage,
-                "error_class": error_class,
-                "message": message,
-            })
+            result.failed.append(_base_entry())
             INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
             logger.warning(
                 f"{log_line} (could not move to failed/: {move_err.__class__.__name__})"
             )
             return
-        suggestion = self._suggestion_for(error_code)
         sidecar = self.write_error_sidecar(
             moved,
             error_code=error_code,
@@ -431,17 +432,9 @@ class InboxService:
             message=message,
             suggestion=suggestion,
         )
-        entry: dict[str, object] = {
-            "filename": rel_filename,
-            "error_code": error_code,
-            "stage": stage,
-            "error_class": error_class,
-            "message": message,
-            "moved_to": str(moved.relative_to(self.root)),
-            "sidecar": str(sidecar.relative_to(self.root)),
-        }
-        if suggestion is not None:
-            entry["suggestion"] = suggestion
+        entry = _base_entry()
+        entry["moved_to"] = str(moved.relative_to(self.root))
+        entry["sidecar"] = str(sidecar.relative_to(self.root))
         result.failed.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
         logger.warning(log_line)

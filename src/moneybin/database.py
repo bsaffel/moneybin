@@ -182,14 +182,15 @@ class Database:
             runner = MigrationRunner(self)
             pending = runner.pending()
             if pending or stored_pkg_version != current_pkg_version:
-                if stored_pkg_version is not None and (
-                    stored_pkg_version != current_pkg_version
-                ):
+                if stored_pkg_version is None:
+                    # First-ever open of this DB — schema initialization.
+                    logger.info("⚙️  Initializing MoneyBin schema...")
+                elif stored_pkg_version != current_pkg_version:
                     logger.info(
                         f"⚙️  MoneyBin upgraded ({stored_pkg_version} → {current_pkg_version}). "
                         f"Applying updates..."
                     )
-                elif pending:
+                else:
                     logger.info(
                         f"⚙️  {len(pending)} pending migration(s) detected. Applying..."
                     )

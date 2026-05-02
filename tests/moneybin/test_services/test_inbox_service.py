@@ -435,6 +435,40 @@ class TestSyncFailure:
         assert entry["error_class"] == "BinderException"
         assert "moneybin db migrate" in str(entry["suggestion"])
 
+    def test_suggestion_preserved_when_source_vanishes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Vanished-source early-exit path still surfaces the suggestion.
+
+        Regression: PR #93 originally hoisted error_class/message into the
+        early-exit dicts but left suggestion in the success-only branch, so
+        a schema_mismatch error during a flaky import would silently drop
+        the "run moneybin db migrate" hint.
+        """
+        import duckdb
+
+        from moneybin.services import inbox_service as mod
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                Path(path).unlink()
+                raise duckdb.BinderException("import_id not found")
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "x.qfx").write_text("not really qfx\n")
+
+        entry = svc.sync(year_month="2026-05").failed[0]
+        assert entry["error_code"] == "schema_mismatch"
+        assert "moneybin db migrate" in str(entry["suggestion"])
+        assert "sidecar" not in entry  # vanished — no sidecar written
+
 
 class TestSyncBusy:
     """Concurrent sync returns inbox_busy in result instead of raising."""
