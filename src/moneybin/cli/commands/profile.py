@@ -1,6 +1,7 @@
 """Profile management commands for MoneyBin CLI."""
 
 import logging
+import sys
 from typing import Annotated
 
 import typer
@@ -24,12 +25,39 @@ app = typer.Typer(
 @app.command("create")
 def profile_create(
     name: Annotated[str, typer.Argument(help="Profile name (will be normalized)")],
+    init_inbox: Annotated[
+        bool | None,
+        typer.Option(
+            "--init-inbox/--no-init-inbox",
+            help=(
+                "Create the import-inbox layout (~/Documents/MoneyBin/<profile>/"
+                "{inbox,processed,failed}/). If unset, prompts when interactive "
+                "and skips when not."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Create a new profile with directory structure, config, and encrypted database."""
+    from moneybin.utils.user_config import normalize_profile_name
+
+    normalized = normalize_profile_name(name)
+    if init_inbox is None:
+        init_inbox = (
+            typer.confirm(
+                f"Set up the import inbox at ~/Documents/MoneyBin/{normalized}/?",
+                default=True,
+            )
+            if sys.stdin.isatty()
+            else False
+        )
     svc = ProfileService()
     try:
-        profile_dir = svc.create(name)
-        logger.info(f"✅ Created profile {name} at {profile_dir}")
+        profile_dir = svc.create(name, init_inbox=init_inbox)
+        logger.info(f"✅ Created profile {normalized} at {profile_dir}")
+        if init_inbox:
+            logger.info(
+                f"Import inbox ready at ~/Documents/MoneyBin/{normalized}/inbox/"
+            )
     except ProfileExistsError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e

@@ -199,6 +199,9 @@ def make_workflow_env(
     profile create.
     """
     env = base_env(e2e_home, profile_name)
+    # import_ field has a trailing underscore, so env_nested_delimiter="__" produces
+    # three underscores: MONEYBIN_ + IMPORT_ + __ + INBOX_ROOT.
+    env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(e2e_home / "inbox-root")
 
     result = run_cli("profile", "create", profile_name, env=env)
     if result.exit_code != 0 and "already exists" not in result.stderr:

@@ -50,3 +50,14 @@ _worker = os.environ.get("PYTEST_XDIST_WORKER", "gw-main")
 _worker_home = Path(tempfile.gettempdir()) / "moneybin-test-home" / _worker
 _worker_home.mkdir(parents=True, exist_ok=True)
 os.environ["MONEYBIN_HOME"] = str(_worker_home)
+
+# Defensive isolation for the import-inbox root. Without this, any test that
+# constructs ImportSettings() without an explicit inbox_root — or triggers
+# code that does (e.g. ProfileService._init_inbox) — falls through to
+# Path.home() / "Documents" / "MoneyBin", leaking test directories into the
+# user's real ~/Documents/MoneyBin/. The triple-underscore is intentional:
+# the field name is `import_` (trailing underscore) and pydantic-settings
+# joins with "__".
+_worker_inbox_root = _worker_home / "inbox-root"
+_worker_inbox_root.mkdir(parents=True, exist_ok=True)
+os.environ["MONEYBIN_IMPORT___INBOX_ROOT"] = str(_worker_inbox_root)

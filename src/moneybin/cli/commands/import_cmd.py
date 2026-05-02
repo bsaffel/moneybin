@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, get_args
 
 import typer
 
+from moneybin.cli.commands import import_inbox
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
@@ -38,6 +39,7 @@ formats_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(formats_app, name="formats")
+app.add_typer(import_inbox.app, name="inbox", help="Drain the watched import inbox")
 logger = logging.getLogger(__name__)
 
 _VALID_SIGN_CONVENTIONS = frozenset(get_args(SignConventionType))

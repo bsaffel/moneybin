@@ -83,7 +83,7 @@ class ProfileService:
             raise ValueError(f"Invalid profile name: {name!r}")
         return profile_dir
 
-    def create(self, name: str) -> Path:
+    def create(self, name: str, *, init_inbox: bool = False) -> Path:
         """Create a new profile with directory structure and config.
 
         Creates ``<base>/profiles/<normalized_name>/`` with subdirectories
@@ -91,6 +91,8 @@ class ProfileService:
 
         Args:
             name: Profile name (will be normalized to lowercase with hyphens).
+            init_inbox: When True, also create the import-inbox layout at
+                ``<inbox_root>/<normalized_name>/{inbox,processed,failed}/``.
 
         Returns:
             Path to the new profile directory.
@@ -110,6 +112,8 @@ class ProfileService:
             (profile_dir / "temp").mkdir()
             generate_profile_config(profile_dir, normalized)
             self._init_database(profile_dir, normalized)
+            if init_inbox:
+                self._init_inbox(normalized)
         except Exception:
             # Roll back the partially created profile so the user can retry
             # without hitting ProfileExistsError.
@@ -117,6 +121,20 @@ class ProfileService:
             raise
         logger.debug(f"Created profile: {normalized}")
         return profile_dir
+
+    @staticmethod
+    def _init_inbox(profile: str) -> Path:
+        """Create the import-inbox layout for ``profile`` and return its root."""
+        from moneybin.config import MoneyBinSettings
+        from moneybin.services.inbox_service import InboxService
+
+        # Don't pass import_= explicitly — let MoneyBinSettings build it via
+        # its default_factory so MONEYBIN_IMPORT___INBOX_ROOT env overrides
+        # apply (e.g. test isolation in tests/conftest.py).
+        settings = MoneyBinSettings(profile=profile)
+        service = InboxService(db=None, settings=settings)
+        service.ensure_layout()
+        return service.root
 
     def _init_database(self, profile_dir: Path, profile: str) -> None:
         """Initialize an encrypted database for the profile.

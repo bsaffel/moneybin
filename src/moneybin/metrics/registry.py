@@ -29,6 +29,17 @@ IMPORT_ERRORS_TOTAL = Counter(
     ["source_type", "error_type"],
 )
 
+INBOX_SYNC_TOTAL = Counter(
+    "moneybin_inbox_sync_total",
+    "Inbox file outcomes per sync",
+    ["outcome"],
+)
+
+INBOX_SYNC_DURATION_SECONDS = Histogram(
+    "moneybin_inbox_sync_duration_seconds",
+    "Duration of one inbox drain (seconds)",
+)
+
 # ── Tabular import ───────────────────────────────────────────────────────────
 
 TABULAR_FORMAT_MATCHES = Counter(

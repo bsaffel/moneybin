@@ -17,6 +17,9 @@ _HELP_COMMANDS: list[list[str]] = [
     [],  # moneybin --help
     ["profile"],
     ["import"],
+    ["import", "inbox"],
+    ["import", "inbox", "list"],
+    ["import", "inbox", "path"],
     ["import", "formats"],
     ["sync"],
     ["categorize"],
