@@ -119,10 +119,13 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                     f"COMMENT ON COLUMN {table_name}.{col_def.name} IS '{safe_comment}'"
                 )
                 logger.debug(f"Applied column comment to {table_name}.{col_def.name}")
-            except duckdb.CatalogException:
+            except (duckdb.CatalogException, duckdb.BinderException):
+                # Column may not exist yet — either the table is created later
+                # (e.g. SQLMesh-managed core tables) or a pending migration will
+                # add the column. Comments will reapply on the next startup.
                 logger.debug(
                     f"Skipping column comment for {table_name}.{col_def.name}"
-                    " — table does not exist yet"
+                    " — column or table does not exist yet"
                 )
 
 
