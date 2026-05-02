@@ -2,11 +2,13 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-implemented
+ready
+
+> **v2 revision (2026-05-02):** v1 of this spec is implemented. v2 (status: `ready`) supersedes the taxonomy decisions (dissolves the `track` group, introduces entity groups `accounts` and `transactions`, adds top-level `categories`, `merchants`, `assets`, `reports`, `system`, separates `tax`, unifies the rule across CLI / MCP / future HTTP). Profile system, pipeline orchestration, and infrastructure command groups are unchanged. Implementation pass moves status `ready` → `in-progress`. See [Revision History](#revision-history) and [Migration v1 → v2](#migration-v1--v2).
 
 ## Goal
 
-Redesign MoneyBin's CLI command tree to reflect the product's matured architecture: profiles as first-class entities, `import` as the magical golden path, domain commands (`matches`, `categorize`, `track`) as top-level citizens, and a structure that every future spec can reference for "where does my CLI surface go?"
+Define a single command taxonomy that holds across MoneyBin's three primary interfaces (CLI, MCP, future HTTP). Specifically: profiles as first-class entities, `import` as the magical golden path, **entity groups** (`accounts`, `transactions`) that own their per-instance workflows and aggregations, a **reports** group for cross-cutting analytical views, and infrastructure commands as top-level peers. Every future spec references this document for "where does my surface go?" — and the answer is the same shape regardless of which interface is being designed.
 
 ## Background
 
@@ -27,7 +29,7 @@ Related specs and docs:
 - [`sync-overview.md`](sync-overview.md) — `sync` subcommands
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) / [`matching-transfer-detection.md`](matching-transfer-detection.md) — `matches` commands
 - [`categorization-auto-rules.md`](categorization-auto-rules.md) — `categorize auto-*` commands
-- [`net-worth.md`](net-worth.md) — `track balance/networth` commands (updated from original `balance`/`reconciliation`/`networth` top-level placement)
+- [`net-worth.md`](net-worth.md) — `accounts balance` / `accounts networth` commands (v2)
 - [`observability.md`](observability.md) — `logs` and `stats` commands
 - [`database-migration.md`](database-migration.md) — `db migrate` commands
 - [`mcp-architecture.md`](mcp-architecture.md) / [`mcp-tool-surface.md`](mcp-tool-surface.md) — MCP tool/prompt enumeration
@@ -48,9 +50,21 @@ The global `--profile` flag provides ephemeral override without changing the def
 
 Individual commands (`matches run`, `categorize apply-rules`, `transform apply`) exist for configuration, troubleshooting, and power-user control — not as steps in a manual pipeline.
 
-### Domain commands are top-level
+### Entity groups own their workflows and aggregations
 
-Major feature domains that have user-facing review workflows and will grow across multiple specs deserve top-level placement: `matches`, `categorize`, `track`. Infrastructure commands (`db`, `transform`, `mcp`) are also top-level but are used less frequently.
+Top-level groups represent **entities** (`accounts`, `transactions`) or **cross-cutting concerns** (`reports`, `import`, `sync`, `export`, infrastructure). Per-instance workflows and aggregations live *under* their entity, not as siblings. This applies uniformly across CLI, MCP, and HTTP.
+
+Concretely:
+
+- `accounts` owns its per-account workflows (`balance`) and its aggregation (`networth`)
+- `transactions` owns its per-transaction workflows (`matches`, `categorize`) and entity ops (`list`, `show`, `search`)
+- `reports` holds analytical lenses on transaction-level data (spending, cashflow, tax, budget vs actual) — cross-cutting, read-only
+
+The rule replaces v1's "domain commands are top-level" principle, which produced a flat surface (`matches`, `categorize`, `track`) that hid the entity hierarchy and forced unrelated things (balance, budget, recurring) into one bucket.
+
+### Sub-group naming
+
+Sub-group names are the natural English name for the workflow or concept. Usually a noun (`balance`, `networth`, `matches`); a verb-form is fine when it names the workflow more clearly than the equivalent noun (`categorize` rather than `categorization`). Action verbs at the leaf are always imperative single-word: `list`, `show`, `assert`, `accept`, `reject`, `apply`, `delete`.
 
 ### Universal flags
 
@@ -109,50 +123,88 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |   +-- remove                 -- Uninstall scheduled job
 |   +-- rotate-key                 -- Rotate E2E encryption key pair
 |
-+-- matches
-|   +-- run [--type transfer|dedup] -- Run matcher + SQLMesh
-|   +-- review                     -- Interactive: accept/reject/skip/quit
-|   |     [--type transfer|dedup]    Filter by match type
-|   |     [--accept <match_id>]      Non-interactive: accept specific
-|   |     [--reject <match_id>]      Non-interactive: reject specific
-|   |     [--accept-all]             Non-interactive: accept all pending
-|   +-- log                        -- Show recent match decisions
-|   |     [--type transfer|dedup]    Filter by type
-|   |     [--status rejected]        Filter by status
-|   |     [--debug]                  Show below-threshold pairs
-|   +-- undo <match_id>            -- Reverse a match decision
-|   +-- backfill                   -- One-time scan of all existing transactions
-|
-+-- categorize
-|   +-- apply-rules                -- Run all rules against uncategorized txns
-|   +-- seed                       -- Initialize default categories
-|   +-- stats                      -- Coverage statistics
-|   +-- list-rules                 -- List all active rules (manual + auto)
-|   +-- auto-review                -- Table of pending proposals
-|   +-- auto-confirm               -- Act on proposals
-|   |     [--approve <id> ...]       Approve specific
-|   |     [--reject <id> ...]        Reject specific
-|   |     [--approve-all]            Approve all pending
-|   |     [--reject-all]             Reject all pending
-|   +-- auto-stats                 -- Auto-rule health metrics
-|   +-- auto-rules                 -- List active auto-generated rules
-|
-+-- track
-|   +-- balance
++-- accounts
+|   +-- list                       -- List accounts
+|   +-- show <account_id>          -- Show one account
+|   +-- rename <account_id> <name> -- Rename an account
+|   +-- include <account_id>       -- Toggle include_in_net_worth [--no]
+|   +-- balance                    -- Per-account balance workflow (net-worth.md)
 |   |   +-- show [--account ID] [--as-of DATE]
 |   |   +-- assert <account_id> <date> <amount> [--notes] [--yes]
 |   |   +-- list [--account ID]
 |   |   +-- delete <account_id> <date> [--yes]
 |   |   +-- reconcile [--account ID] [--threshold AMOUNT]
 |   |   +-- history [--from DATE] [--to DATE] [--interval]
-|   +-- networth
+|   +-- investments                -- (future spec, gated on investment-tracking.md)
+|
++-- assets                         -- (future spec) Physical assets (real estate, vehicles, valuables)
+|                                     Workflows defined in asset-tracking.md.
+|                                     Contributes to reports networth alongside accounts.
+|
++-- transactions
+|   +-- list                       -- List transactions [--account ID] [--from] [--to]
+|   +-- show <txn_id>              -- Show one transaction
+|   +-- search <query>             -- Full-text / structured search
+|   +-- review                     -- Unified review queue (matches + categorize)
+|   |     [--type matches|categorize|all]   Default all; walks matches first then categorize
+|   |     [--status]                        Counts only, no interactive loop
+|   |     [--confirm <id>]                  Non-interactive: confirm one (auto-detects type by ID)
+|   |     [--reject <id>]                   Non-interactive: reject one
+|   |     [--confirm-all]                   Non-interactive: confirm all in scope
+|   |     [--limit N]                       Cap items per session
+|   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
+|   |   +-- run [--type transfer|dedup]
+|   |   +-- log [--type] [--status] [--debug]
+|   |   +-- undo <match_id>
+|   |   +-- backfill
+|   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at transactions review)
+|   |   +-- bulk <category_id> --txn-ids ...
+|   |   +-- stats                  -- Coverage metrics
+|   |   +-- rules                  -- Rule management (list, create, apply, delete)
+|   |   |   +-- list
+|   |   |   +-- create <pattern> <category_id>
+|   |   |   +-- apply               -- Run rules against uncategorized
+|   |   |   +-- delete <rule_id>
+|   |   +-- auto                    -- Auto-rule proposals workflow
+|   |   |   +-- review
+|   |   |   +-- confirm [--approve ID ...] [--reject ID ...] [--approve-all] [--reject-all]
+|   |   |   +-- stats
+|   |   +-- ml                      -- ML-assisted categorization
+|   |       +-- status
+|   |       +-- train
+|   |       +-- apply
+|   +-- recurring                  -- (future spec) Recurring transaction detection
+|
++-- categories                     -- Category taxonomy (reference data)
+|   +-- list
+|   +-- create <name> [--parent] [--icon]
+|   +-- toggle <category_id>       -- Enable / disable
+|   +-- delete <category_id>
+|
++-- merchants                      -- Merchant mappings (reference data)
+|   +-- list
+|   +-- create <pattern> <canonical_name> [--default-category]
+|
++-- reports                        -- Cross-domain analytical and aggregation views (read-only)
+|   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets)
 |   |   +-- show [--as-of DATE]
 |   |   +-- history [--from DATE] [--to DATE] [--interval]
-|   +-- budget                     -- (CLI TBD when budget-tracking spec matures)
-|   +-- recurring                  -- (future spec)
-|   +-- investments                -- (future spec)
+|   +-- spending                   -- (future spec)
+|   +-- cashflow                   -- (future spec)
+|   +-- budget                     -- (future spec) Budget vs actual report
+|   +-- health                     -- Cross-domain financial snapshot (was overview health)
 |
-+-- export                         -- (future spec)
++-- tax                            -- Tax domain (forms, deductions, capital gains, estimates)
+|   +-- w2 <year>                  -- W-2 form data
+|   +-- deductions <year>          -- Categorized deductible expenses
+|                                     Future: 1099, capital_gains, estimate, carryforward
+|
++-- system                         -- System / data status meta-view
+|   +-- status                     -- What data exists, freshness, pending review queues
+|
++-- budget                         -- (future spec) Budget target management (mutation)
+|
++-- export                         -- (future spec) Export to CSV / Excel / Sheets
 |
 +-- logs
 |   +-- clean --older-than <duration> [--dry-run]
@@ -199,17 +251,71 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 ### Mental model
 
 ```
+Entity groups:  accounts (+ balance), transactions (+ matches, categorize), assets
+Reference data: categories, merchants (taxonomies that transactions reference)
+Reports:        reports (networth, spending, cashflow, financial health, budget vs actual — cross-domain read-only)
+Tax:            tax (forms, deductions, future capital gains)
+System:         system (data status meta-view)
 Data in:        import, sync
-Data quality:   matches, categorize
-Tracking:       track (balance, networth, budget, recurring, investments)
 Data out:       export
+Mutation:       budget (target management; vs-actual report lives under reports/budget)
 Operational:    logs, stats
 Infrastructure: profile, db, mcp, transform
 ```
 
-### Top-level command count: 12
+### Top-level command count: 18
 
-`profile`, `import`, `sync`, `matches`, `categorize`, `track`, `export`, `logs`, `stats`, `db`, `mcp`, `transform`
+`profile`, `import`, `sync`, `accounts`, `transactions`, `assets`, `categories`, `merchants`, `reports`, `tax`, `system`, `budget`, `export`, `logs`, `stats`, `db`, `mcp`, `transform`
+
+## Cross-Interface Taxonomy
+
+The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol encodes the hierarchy in its native idiom; the noun ordering is identical, only the verb position and separators differ.
+
+### The unified rule
+
+> Hierarchy is the entity path. Verb is the leaf action. Aggregations live with their entity. Workflows live with the entity they operate on. Reports are cross-cutting analytical views.
+
+### Encoding per protocol
+
+| Protocol | Hierarchy | Verb position | Example |
+|---|---|---|---|
+| CLI | space-separated path | trailing word | `accounts balance assert <id> <date> <amt>` |
+| MCP | underscore prefix | trailing token | `accounts_balance_assert` |
+| HTTP | URL path | HTTP method + sub-path for non-CRUD | `POST /accounts/{id}/balances` |
+
+### Naming examples
+
+| Concept | CLI | MCP | HTTP |
+|---|---|---|---|
+| List accounts | `accounts list` | `accounts_list` | `GET /accounts` |
+| Show one account | `accounts show <id>` | `accounts_get` | `GET /accounts/{id}` |
+| Show current balances | `accounts balance show` | `accounts_balance_list` | `GET /accounts/balances` |
+| Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
+| Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
+| Net worth now | `accounts networth show` | `accounts_networth_get` | `GET /accounts/networth` |
+| List matches | `transactions matches list` | `transactions_matches_list` | `GET /transactions/matches` |
+| Confirm a match | `transactions matches confirm <id>` | `transactions_matches_confirm` | `POST /transactions/matches/{id}/confirm` |
+| Spending report | `reports spending` | `reports_spending_get` | `GET /reports/spending` |
+
+### Pluralization
+
+Pluralization is the one place clean symmetry breaks down — each protocol uses its own idiom:
+
+| Protocol | Convention |
+|---|---|
+| CLI | Top-level groups plural (`accounts`, `transactions`, `reports`); sub-resource nouns named for the *concept* (singular for types: `balance`, `networth`; plural for relationship collections: `matches`); verbs always singular |
+| MCP | Mirrors CLI exactly (just swap spaces for underscores) |
+| HTTP | Standard REST: plural for collections (`/accounts/{id}/balances`), singular for single instances (`/accounts/{id}/balances/{date}`) |
+
+The structural symmetry (entity → sub-resource → action ordering) holds across all three. The asymmetry — `balance` (CLI/MCP) vs `balances` (REST sub-resource) — is documented and intentional. REST readers expect plural collection paths; CLI/MCP readers don't.
+
+### Why this rule
+
+Three justifications:
+
+1. **Learn-once-use-everywhere.** A user who knows `accounts balance list` already knows `accounts_balance_list` and `GET /accounts/balances`. Web UI navigation maps the same way. One mental model across four surfaces.
+2. **Discoverability scales with catalog.** As MoneyBin's MCP catalog grows beyond ~30 tools, prefix-clustered names (`accounts_balance_*`, `transactions_matches_*`) sort related operations together in `mcp list-tools` output, helping both humans and LLMs scan the surface.
+3. **Future HTTP is a free win.** When MoneyBin adds an HTTP layer (web UI backend, third-party integrations), the URL paths are already designed.
 
 ## Profile System
 
@@ -362,7 +468,52 @@ Interactive mode (no `--client` flag) prompts the user to select a client and pr
 
 Scope: generate and install only. Does not edit or remove existing entries — that's the user's responsibility.
 
-## Migration Table
+## Migration v1 → v2
+
+This is a hard cut. No aliases, no deprecation period. v1 paths break in the same release that ships v2. MoneyBin is pre-1.0 single-user; the cost of clean is small and one-time.
+
+### CLI moves
+
+| v1 path | v2 path | Notes |
+|---|---|---|
+| `track balance show` | `accounts balance show` | Same surface, new parent |
+| `track balance assert` | `accounts balance assert` | |
+| `track balance list` | `accounts balance list` | |
+| `track balance delete` | `accounts balance delete` | |
+| `track balance reconcile` | `accounts balance reconcile` | |
+| `track balance history` | `accounts balance history` | |
+| `track networth show` | `reports networth show` | Cross-domain rollup (accounts + assets) — moved out of `accounts` to honor that it aggregates more than accounts |
+| `track networth history` | `reports networth history` | |
+| `track budget *` | `budget *` | Top-level (mutation); reports → `reports budget` |
+| `track recurring *` | `transactions recurring *` | Pattern detection on transactions |
+| `track investments *` | `accounts investments *` | Holdings as account-typed entity |
+| `matches *` | `transactions matches *` | Workflow on transactions |
+| `categorize *` (workflow + rules + auto + ml) | `transactions categorize *` | Workflow on transactions |
+| `categorize categories / create-category / toggle-category` | `categories list / create / toggle / delete` | Reference-data taxonomy → top-level entity group |
+| `categorize merchants / create-merchants` | `merchants list / create` | Reference-data taxonomy → top-level entity group |
+| (none) | `accounts list / show / rename / include` | New entity ops |
+| (none) | `transactions list / show / search` | New entity ops |
+| (none) | `reports {spending, cashflow, tax, budget}` | New analytical group (subcommands future) |
+
+The `track` group is dissolved entirely.
+
+### MCP renames
+
+MCP tool names migrate to the path-prefix-verb-suffix convention. As with CLI, hard cut: rename in place, update tool registry, update any client configs that reference old names.
+
+| v1 tool name | v2 tool name |
+|---|---|
+| `get_net_worth` | `accounts_networth_get` |
+| `get_net_worth_history` | `accounts_networth_history` |
+| `get_balances` | `accounts_balance_list` |
+| `get_balance_assertions` | `accounts_balance_assertions_list` |
+| (existing transaction tools) | `transactions_*` prefix |
+| (existing match tools) | `transactions_matches_*` prefix |
+| (existing categorize tools) | `transactions_categorize_*` prefix |
+
+Specific existing-tool renames are enumerated in `mcp-tool-surface.md` as part of v2 implementation.
+
+## Migration Table (v0 → v1, historical)
 
 ### Removed commands
 
@@ -399,7 +550,42 @@ The `config` and `data` command groups are fully dissolved. `config` is replaced
 
 ## Implementation Phasing
 
-### Phase 1: Implement now (this spec)
+### v2 implementation pass (current)
+
+Restructure-only. Move and rename existing commands to the new tree; rename MCP tools to the new convention. **No new functionality** — that stays with the owning specs.
+
+| Change | Scope |
+|---|---|
+| Create `accounts` group with `list`, `show`, `rename`, `include` (thin entity ops) | New CLI module |
+| Move `track balance` → `accounts balance` (preserve subcommands as stubs where they were) | Rename + reparent |
+| Move `track networth` → `reports networth` (preserve subcommands as stubs) | Rename + reparent into reports group |
+| Add top-level `assets` group (placeholder; workflows owned by `asset-tracking.md`) | New CLI module, all stubs |
+| Keep `tax` top-level (not nested in `reports`) | Stub initially; tools added by `tax-*.md` specs |
+| Create `transactions` group with `list`, `show`, `search` (thin entity ops) | New CLI module |
+| Move `matches` → `transactions matches` (existing functionality preserved) | Reparent + update tests |
+| Move `categorize` → `transactions categorize` (workflow tools + rules + auto + ml) | Reparent + update tests |
+| Pull `categorize categories *` and `categorize create-category` / `categorize toggle-category` → top-level `categories` group | Promote to entity group |
+| Pull `categorize merchants *` and `categorize create-merchants` → top-level `merchants` group | Promote to entity group |
+| Move `track budget` → `budget` (top-level, still stub) | Rename + flatten |
+| Move `track recurring` → `transactions recurring` (still stub) | Reparent |
+| Move `track investments` → `accounts investments` (still stub) | Reparent |
+| Dissolve `track` group | Delete CLI module |
+| Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `tax`, `budget`) | New CLI module, all stubs |
+| Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs |
+| Collapse `transactions matches review` and `transactions categorize review` into unified `transactions review` (CLI). Add MCP `transactions_review_status` orientation tool | New CLI command + new MCP tool |
+| Rename `import_csv_preview` → `import_file_preview` (format-agnostic) | MCP tool rename + service method rename |
+| Expose `sync_*` to MCP (all except `sync_rotate_key`) — login, logout, connect, disconnect, pull, status, schedule_set/show/remove | New MCP tools wrapping existing CLI sync surface |
+| Expose `transform_*` to MCP (all except `transform_restate`) — status, plan, validate, audit, apply | New MCP tools wrapping existing CLI transform surface |
+| Update `mcp-tool-surface.md` with new names + new MCP exposures | Doc edit |
+| Update specs that reference v1 CLI paths | Doc edits across specs (see [Specs Requiring CLI Section Updates](#specs-requiring-cli-section-updates)) |
+
+Hard cut. v1 paths break in the same release. Tests, scripts, docs, and `mcp config generate` output all update together.
+
+### v1 phasing (historical, completed)
+
+The following phases describe the original v1 implementation (completed 2026-04-20). Retained for reference; the v2 implementation pass above supersedes Phase 2/3 entries that touched `track`, `matches`, `categorize`.
+
+#### Phase 1 (v1, historical)
 
 Structural changes, profile system, and thin wrappers around existing tools.
 
@@ -423,7 +609,7 @@ Structural changes, profile system, and thin wrappers around existing tools.
 | `transform restate` | Thin wrapper: `sqlmesh restate` (with confirmation) |
 | `logs clean` / `logs path` / `logs tail` | File system operations on log directory |
 
-### Phase 2: Stub now ("not implemented" message)
+#### Phase 2 (v1, historical) — Stub now ("not implemented" message)
 
 Reserve the namespace. Users see the command in `--help` but get a clear message directing them to the relevant spec or future release.
 
@@ -439,7 +625,7 @@ Reserve the namespace. Users see the command in `--help` but get a clear message
 | `stats` | `observability.md` (depends on metrics tables) |
 | `db migrate` | `database-migration.md` |
 
-### Phase 3: Defer to owning spec
+#### Phase 3 (v1, historical) — Defer to owning spec
 
 These commands are fully implemented when their owning spec is implemented. The owning spec should reference this document for command placement and flag conventions.
 
@@ -460,15 +646,20 @@ These commands are fully implemented when their owning spec is implemented. The 
 
 ## Specs Requiring CLI Section Updates
 
-These existing specs define CLI commands that should be updated to reflect the new command tree structure established by this spec:
+These existing specs define CLI commands that need updates to reflect v2's taxonomy:
 
-| Spec | CLI change needed |
-|---|---|
-| `net-worth.md` | Move `balance`, `reconciliation`, `networth` from top-level to `track balance` and `track networth`. `reconciliation show` becomes `track balance reconcile`. |
-| `observability.md` | No structural change needed — `logs` and `stats` are already top-level. Verify command signatures match. |
-| `privacy-data-protection.md` | `db lock`/`unlock`/`rotate-key` already match. Add `db ps`/`db kill` references. |
-| `database-migration.md` | Verify `db migrate apply/status` matches (currently specced as `data migrate apply/status`). |
-| `budget-tracking.md` | Update CLI to `track budget *` when spec is rewritten. |
+| Spec | CLI change needed (v2) | MCP change needed (v2) |
+|---|---|---|
+| `net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balance_list`, etc. `get_net_worth` → `reports_networth_get`. |
+| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `core.agg_net_worth` consumed by `reports networth`. | Asset MCP tools take `assets_*` prefix (path-prefix-verb-suffix per v2). |
+| `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `show`, `rename`, `archive`, `include`). Balance subcommands stay nested per `net-worth.md`. Drafted as a separate spec to give per-account configuration, merging, and archival their own design space. | Owns `accounts_list`, `accounts_get`, `accounts_rename`, `accounts_archive`, `accounts_include`. |
+| `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |
+| `categorization-overview.md` / `categorization-auto-rules.md` / `categorize-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
+| `budget-tracking.md` | `track budget *` → `budget *`; budget-vs-actual report goes under `reports budget` | When MCP tools are added, follow new naming |
+| `mcp-tool-surface.md` | n/a | Adopt path-prefix-verb-suffix convention; enumerate all existing tool renames |
+| `observability.md` | No structural change. Verify command signatures match. | n/a |
+| `privacy-data-protection.md` | `db lock`/`unlock`/`rotate-key` already match. | n/a |
+| `database-migration.md` | Verify `db migrate apply/status` matches. | n/a |
 
 ## Future Specs to Add
 
@@ -531,3 +722,12 @@ These were identified during design and should be added to the spec index:
 - **MCP UX standards** (tool naming, error surfaces, prompt design). Deferred to `mcp-ux-standards.md`.
 - **`stats` implementation.** Depends on `observability.md` metrics tables. Stubbed only.
 - **`db migrate` implementation.** Depends on `database-migration.md` migration framework. Stubbed only.
+- **MCP and HTTP UX standards.** Naming and hierarchy are settled here. Tool-level error surfaces, prompt design, response envelopes, content negotiation, auth, and rate limiting belong in `mcp-tool-surface.md`, `mcp-ux-standards.md`, and a future `http-api.md`. v2 only mandates the naming convention.
+- **Future HTTP layer.** No HTTP server is built or designed in v2. The cross-interface taxonomy reserves the URL paths and naming so future HTTP work inherits a coherent surface.
+
+## Revision History
+
+| Date | Version | Summary |
+|---|---|---|
+| 2026-05-02 | v2 | Dissolved `track`; introduced entity groups (`accounts`, `transactions`); added `reports` group; unified taxonomy across CLI / MCP / future HTTP; renamed MCP tools to path-prefix-verb-suffix convention. Hard cut, no aliases. |
+| 2026-04-20 (orig) | v1 | Initial restructure: profile system, dissolved `config`/`data`, top-level `matches`/`categorize`/`track`. Implemented. |

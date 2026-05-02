@@ -78,6 +78,32 @@ Tools without consent return **degraded responses** (aggregates instead of row-l
 
 The `detail` parameter (`summary`, `standard`, `full`) lets the AI self-select verbosity. `detail=summary` always returns aggregates without triggering consent.
 
+## When CLI-only is justified
+
+Default: every operation is MCP-exposed. CLI-only status requires a justified exception. Two acceptable justifications:
+
+1. **Secret material through the LLM context window.** Tools that accept passphrases or encryption keys (`db_unlock`, `db_rotate_key`, `sync_rotate_key`, `db_init`). Routing those through an LLM-mediated channel is a security model violation, not a capability gap.
+2. **Hands-on operator territory.** Bootstrapping, troubleshooting, and developer-tooling operations that require physical operator presence (`db_init/lock/ps/kill/migrate/shell/ui`, `mcp_serve`, `mcp_config_*`, `profile_*`, `transform_restate`). The MCP server can't even start when the database is locked, so exposing recovery/lifecycle tools to MCP would be meaningless.
+
+What is NOT a valid CLI-only justification:
+- "Long-running" — MCP supports progress notifications.
+- "Needs OAuth / browser" — tools can return redirect URLs; clients open them.
+- "Destructive" — use a `confirm` parameter or elicitation; the AI must obtain explicit user agreement.
+- "Interactive" — split into a list-tool (read) and act-tools (write); the AI orchestrates the loop.
+- "Writes to scheduler / filesystem" — server has filesystem access; routine.
+
+When adding a new operation, the default is "expose to MCP." Apply this filter at design time, not after the fact.
+
+## Server Instructions Field
+
+The `FastMCP(instructions=...)` argument in `src/moneybin/mcp/server.py` is the canonical onboarding text injected into the LLM's system prompt at session start. Treat it as a load-bearing surface, not a comment.
+
+- **Keep in sync with taxonomy.** Any rename, new top-level group, or change to orientation tools (`system_status`, `reports_health`) must update the instructions text in the same change.
+- **Required content:** one-line product description, top-level group enumeration, naming convention with examples, orientation pointers, response envelope shape, bulk-tool preference, sensitivity tiers / degraded-response behavior.
+- **Length budget:** ~150–300 tokens. Loaded once per session, but competes with conversation and tool descriptions for working memory.
+- **Style:** triple-quoted string via `textwrap.dedent(...)` — not concatenated string literals.
+- See [`docs/specs/mcp-tool-surface.md`](../../docs/specs/mcp-tool-surface.md) §1 for required-content rationale.
+
 ## Connection Model
 
 All tools use `get_database()` from `src/moneybin/database.py` — a single long-lived read-write connection per process. The `Database` class handles encryption, schema init, and migrations transparently. See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).

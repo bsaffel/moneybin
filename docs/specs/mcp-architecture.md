@@ -476,7 +476,7 @@ The `categorize_bulk` MCP tool has CLI parity via `moneybin categorize bulk`. Bo
 ### What symmetry does NOT mean
 
 - **Not identical UX.** The CLI uses tables, progress bars, and icons. MCP returns structured data. Same data, different presentation.
-- **Not identical invocation.** `moneybin spending summary --months 3` vs `spending_summary(months=3)`. The CLI uses Typer's conventions; MCP uses tool-call conventions.
+- **Not identical invocation.** `moneybin reports spending summary --months 3` vs `reports_spending_summary(months=3)`. The CLI uses Typer's conventions; MCP uses tool-call conventions.
 - **Not a generated surface.** The CLI is hand-crafted for human ergonomics. It's not auto-generated from MCP tool schemas. Both surfaces are independently authored but share the service layer.
 
 ### CLI command structure
@@ -537,7 +537,7 @@ Both surfaces carry enough metadata for AI tools (Claude Code, Codex) to use the
 - **Structured output flag** — `--output json` on any CLI command returns the same response envelope as the MCP tool, enabling AI tools that prefer CLI to parse results programmatically.
 - **Exit codes** are consistent and documented: 0 = success, 1 = error, 2 = consent required.
 
-`--output json` means an AI using Claude Code can call `moneybin spending summary --months 3 --output json` and get the exact same response envelope as the MCP tool. No parsing heuristics needed.
+`--output json` means an AI using Claude Code can call `moneybin reports spending summary --months 3 --output json` and get the exact same response envelope as the MCP tool. No parsing heuristics needed.
 
 ---
 

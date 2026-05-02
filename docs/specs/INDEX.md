@@ -72,7 +72,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Architecture & Design](mcp-architecture.md) | Architecture | in-progress | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness. Supersedes archived `mcp-read-tools` and `mcp-write-tools` specs. |
-| [Tool Surface](mcp-tool-surface.md) | Architecture | in-progress | Concrete tool, prompt, resource, and service layer definitions for MCP v1 (46 tools, 4 prompts, 4 resources) |
+| [Tool Surface](mcp-tool-surface.md) | Architecture | ready | Concrete tool, prompt, resource, and service layer definitions for MCP. v2 (2026-05-02) aligns naming with `cli-restructure.md` v2 taxonomy (path-prefix-verb-suffix), adds `reports_*` namespace, exposes sync + transform to MCP under the v2 exposure principle. |
 | [SQL Schema Discoverability](mcp-sql-discoverability.md) | Feature | implemented | `moneybin://schema` resource exposes curated interface tables (core + select app) with columns, comments, and example queries; eliminates per-session schema reconnaissance |
 
 ## Sync
@@ -103,7 +103,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [CLI Restructure](cli-restructure.md) | Architecture | implemented | Target CLI command tree: profiles as first-class, `import` as golden path, domain commands top-level. Reference spec for all other specs' CLI sections. |
+| [CLI Restructure](cli-restructure.md) | Architecture | ready | Target command taxonomy across CLI / MCP / future HTTP. v1 implemented; v2 (2026-05-02, status `ready`) dissolves `track`, introduces entity groups (`accounts`, `transactions`), adds `categories`, `merchants`, `assets`, `reports`, `system` top-level groups, separates `tax`, codifies MCP exposure principle, renames MCP tools. Reference spec for all other specs' surface placement. |
 | [Observability](observability.md) | Feature | implemented | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
 | [Database Migration](database-migration.md) | Feature | implemented | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
 | `export.md` | Feature | planned | Export analysis results to CSV, Excel, Google Sheets |
@@ -117,6 +117,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Data Pipeline Reconciliation](data-reconciliation.md) | Feature | draft | Automated pipeline integrity checks: raw→prep→core row accounting, import batch validation, temporal coverage gaps, orphan detection. Complements financial balance reconciliation in `net-worth.md`. |
 
 ## Standalone
-| [Net Worth & Balance Tracking](net-worth.md) | Feature | draft | Authoritative balance tracking per account, daily carry-forward interpolation, reconciliation deltas, `agg_net_worth` aggregation; cash-only v1. CLI updated by `cli-restructure.md`: `track balance` and `track networth` replace top-level `balance`/`networth`/`reconciliation`. |
-| [Asset Tracking](asset-tracking.md) | Feature | draft | Physical asset registry (real estate, vehicles, valuables) with periodic valuations, staleness warnings, liability linking, and net worth integration. CLI namespace: `track asset` per `cli-restructure.md`. |
-| [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers. CLI namespace: `track budget` per `cli-restructure.md`. |
+| `account-management.md` | Feature | planned | Owns the `accounts` entity namespace: list/show/rename/archive/include, account merging, per-account settings (`app.account_settings`), display preferences. CLI per `cli-restructure.md` v2: top-level `accounts` (entity ops; balance lives nested under `accounts balance` per `net-worth.md`). |
+| [Net Worth & Balance Tracking](net-worth.md) | Feature | draft | Authoritative balance tracking per account, daily carry-forward interpolation, reconciliation deltas, `agg_net_worth` aggregation; cash-only v1. CLI per `cli-restructure.md` v2: `accounts balance` (per-account workflow), `reports networth` (cross-domain rollup). |
+| [Asset Tracking](asset-tracking.md) | Feature | draft | Physical asset registry (real estate, vehicles, valuables) with periodic valuations, staleness warnings, liability linking, and net worth integration. CLI namespace: top-level `assets` per `cli-restructure.md` v2 (parallel to `accounts`). |
+| [Budget Tracking](budget-tracking.md) | Feature | draft | Monthly budgets with target-vs-actual and rollovers. CLI namespace: top-level `budget` (mutation) + `reports budget` (vs-actual) per `cli-restructure.md` v2. |
