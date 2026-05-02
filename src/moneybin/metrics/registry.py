@@ -49,6 +49,12 @@ TABULAR_IMPORT_BATCHES = Counter(
     ["status"],
 )
 
+OFX_IMPORT_BATCHES = Counter(
+    "moneybin_ofx_import_batches_total",
+    "OFX/QFX/QBO import batches by status (complete, partial, failed).",
+    labelnames=("status",),
+)
+
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
 
 SQLMESH_RUN_DURATION_SECONDS = Histogram(

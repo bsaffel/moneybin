@@ -9,8 +9,9 @@ import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Any, Literal, cast
 
 import duckdb
 
@@ -44,6 +45,9 @@ class ImportResult:
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
     core_tables_rebuilt: bool = False
+    import_id: str | None = None
+    """UUID of the raw.import_log row this import created. None for file types
+    that don't write to import_log (currently W-2/PDF)."""
 
     def summary(self) -> str:
         """Human-readable import summary."""
@@ -99,31 +103,68 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
-def _detect_file_type(file_path: Path) -> str:
-    """Detect file type from extension.
+# Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
+# (.txt / .dat are excluded because they're generic and may contain OFX content.)
+_UNAMBIGUOUS_TABULAR: frozenset[str] = frozenset({
+    ".csv",
+    ".tsv",
+    ".tab",
+    ".xlsx",
+    ".xls",
+    ".parquet",
+    ".pq",
+    ".feather",
+    ".arrow",
+    ".ipc",
+})
 
-    Args:
-        file_path: Path to the file.
+
+def _detect_file_type(file_path: Path) -> str:
+    """Detect file type from extension, falling back to magic-byte sniffing.
 
     Returns:
         File type string: 'ofx', 'w2', or 'tabular'.
 
     Raises:
-        ValueError: If extension is not recognized.
+        ValueError: If the file cannot be classified.
     """
     from moneybin.extractors.tabular.format_detector import TABULAR_EXTENSIONS
 
     suffix = file_path.suffix.lower()
-    if suffix in (".ofx", ".qfx"):
+    if suffix in (".ofx", ".qfx", ".qbo"):
         return "ofx"
     if suffix == ".pdf":
         return "w2"
+    if suffix in _UNAMBIGUOUS_TABULAR:
+        return "tabular"
+
+    # Try magic-byte sniffing before falling back to remaining tabular extensions
+    # (.txt, .dat) and the unknown-extension error path.
+    if _sniff_ofx_content(file_path):
+        return "ofx"
+
     if suffix in TABULAR_EXTENSIONS:
         return "tabular"
+
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
+        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
     )
+
+
+def _sniff_ofx_content(file_path: Path) -> bool:
+    """Return True if the file's first 1024 bytes look like OFX/QFX/QBO content."""
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(1024)
+    except OSError:
+        return False
+    head_lstripped = head.lstrip()
+    if head_lstripped.startswith(b"OFXHEADER:"):
+        return True
+    if head_lstripped.startswith(b"<?xml") and b"<OFX>" in head:
+        return True
+    return False
 
 
 class ImportService:
@@ -318,41 +359,217 @@ class ImportService:
         file_path: Path,
         *,
         institution: str | None = None,
+        force: bool = False,
+        interactive: bool = False,
     ) -> ImportResult:
-        """Import an OFX/QFX file.
+        """Import an OFX/QFX/QBO file via the shared import-batch pipeline.
 
         Args:
-            file_path: Path to the OFX/QFX file.
-            institution: Optional institution name override.
+            file_path: Path to the file.
+            institution: Override-when-missing flag — consulted only if the
+                resolution chain (FI/ORG → FID lookup → filename) yields nothing.
+            force: If True, allow re-importing a file that's already been imported.
+                The previous batch is left in place; this creates a new batch.
+            interactive: If True, prompt for institution when the chain yields
+                nothing. False for --yes, MCP, and scripts.
 
         Returns:
-            ImportResult with summary of imported data.
+            ImportResult with summary.
+
+        Raises:
+            ValueError: On re-import without force, or when institution can't be derived.
         """
-        from moneybin.extractors.ofx_extractor import OFXExtractor
-        from moneybin.loaders.ofx_loader import OFXLoader
+        import ofxparse  # type: ignore[import-untyped]
 
-        result = ImportResult(file_path=str(file_path), file_type="ofx")
+        from moneybin.extractors.institution_resolution import (
+            InstitutionResolutionError,
+            resolve_institution,
+        )
+        from moneybin.extractors.ofx_extractor import (
+            OFXExtractor,
+            preprocess_ofx_content,
+        )
+        from moneybin.loaders import import_log
+        from moneybin.metrics.registry import OFX_IMPORT_BATCHES
 
-        # Extract
+        # Canonicalize the path so relative + absolute + symlink-resolved
+        # variants of the same file are detected as the same source.
+        canonical_path = file_path.resolve()
+
+        result = ImportResult(file_path=str(canonical_path), file_type="ofx")
+        _t0 = time.monotonic()
+
+        # Re-import detection
+        if not force:
+            existing = import_log.find_existing_import(self._db, str(canonical_path))
+            if existing:
+                existing_id, existing_status = existing
+                if existing_status == "importing":
+                    raise ValueError(
+                        f"A prior import of this file is in-progress or was "
+                        f"interrupted (import_id {existing_id[:8]}..., "
+                        f"status=importing). If the previous run crashed, pass "
+                        f"--force to start a new batch."
+                    )
+                raise ValueError(
+                    f"File already imported (import_id {existing_id[:8]}...). "
+                    f"Use --force to re-import."
+                )
+
+        # Parse once for institution resolution; the extractor parses again
+        # internally. These files are small — the duplicate parse is fine and
+        # avoids leaking a parser-internal type into the extractor signature.
+        # Wrap read+parse failures as ValueError so MCP's error envelope catches
+        # them; otherwise PermissionError/OSError leak as internal tool errors.
+        try:
+            with open(canonical_path, "rb") as f:
+                content = f.read().decode("utf-8", errors="replace")
+        except OSError as e:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
+            raise ValueError(f"Could not read OFX file: {e}") from e
+        if "�" in content:
+            logger.warning(
+                f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
+                f"{canonical_path.name}"
+            )
+        content = preprocess_ofx_content(content)
+        try:
+            parsed_ofx: Any = ofxparse.OfxParser.parse(  # type: ignore[reportUnknownMemberType]
+                BytesIO(content.encode("utf-8"))
+            )
+        except Exception as e:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="parse").inc()
+            raise ValueError(f"Invalid OFX file format: {e}") from e
+
+        # Resolve institution (raises InstitutionResolutionError on non-interactive failure)
+        try:
+            source_origin = resolve_institution(
+                parsed_ofx,
+                file_path=canonical_path,
+                cli_override=institution,
+                interactive=interactive,
+            )
+        except InstitutionResolutionError as e:
+            IMPORT_ERRORS_TOTAL.labels(
+                source_type="ofx", error_type="institution_unresolved"
+            ).inc()
+            raise ValueError(str(e)) from e
+
+        # OFX <ACCTID> values are institution-assigned account numbers, not
+        # display names. We pass them through to import_log as-is — the
+        # naming asymmetry with tabular's account_names is intentional and
+        # documented at the begin_import() call site.
+        account_ids = [
+            a.account_id for a in parsed_ofx.accounts if a.account_id is not None
+        ]
+        import_id = import_log.begin_import(
+            self._db,
+            source_file=str(canonical_path),
+            source_type="ofx",
+            source_origin=source_origin,
+            account_names=account_ids,
+        )
+        result.import_id = import_id
+
         extractor = OFXExtractor()
-        data = extractor.extract_from_file(file_path, institution)
+        try:
+            data = extractor.extract_from_file(
+                canonical_path,
+                import_id=import_id,
+                source_origin=source_origin,
+            )
+        except Exception:
+            import_log.finalize_import(
+                self._db,
+                import_id,
+                status="failed",
+                rows_total=0,
+                rows_imported=0,
+            )
+            OFX_IMPORT_BATCHES.labels(status="failed").inc()
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="extract").inc()
+            raise
 
-        # Load using OFXLoader (which manages its own connection)
-        loader = OFXLoader(self._db)
-        row_counts = loader.load_data(data)
+        # Best-effort account matching for OFX (passthrough today; emits metrics).
+        self._match_ofx_accounts(account_ids)
 
-        result.institutions = row_counts.get("institutions", 0)
-        result.accounts = row_counts.get("accounts", 0)
-        result.transactions = row_counts.get("transactions", 0)
-        result.balances = row_counts.get("balances", 0)
-        result.details = row_counts
+        # Write all four DataFrames through the encrypted ingest path. Wrapped
+        # in try/except so a load failure marks the batch as failed instead of
+        # leaving raw.import_log.status='importing' and blocking re-imports.
+        rows_loaded: dict[str, int] = {}
+        try:
+            for table_key, qualified in (
+                ("institutions", "raw.ofx_institutions"),
+                ("accounts", "raw.ofx_accounts"),
+                ("transactions", "raw.ofx_transactions"),
+                ("balances", "raw.ofx_balances"),
+            ):
+                df = data[table_key]
+                if len(df) > 0:
+                    self._db.ingest_dataframe(qualified, df, on_conflict="upsert")
+                rows_loaded[table_key] = len(df)
+        except Exception:
+            import_log.finalize_import(
+                self._db,
+                import_id,
+                status="failed",
+                rows_total=sum(rows_loaded.values()),
+                rows_imported=sum(rows_loaded.values()),
+            )
+            OFX_IMPORT_BATCHES.labels(status="failed").inc()
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
+            raise
 
-        if result.transactions > 0:
+        # Total across all four OFX tables — balance-only statements still
+        # count as a successful import. Zero rows means nothing was written
+        # (e.g., empty statement period); record as 'failed' so the metric
+        # and import log accurately reflect that no data landed.
+        total_rows = sum(rows_loaded.values())
+        finalize_status: Literal["complete", "partial", "failed"] = (
+            "complete" if total_rows > 0 else "failed"
+        )
+        # IMPORT_RECORDS_TOTAL stays scoped to transactions for cross-source
+        # comparability with tabular/Plaid metrics.
+        transactions_imported = rows_loaded["transactions"]
+
+        import_log.finalize_import(
+            self._db,
+            import_id,
+            status=finalize_status,
+            rows_total=total_rows,
+            rows_imported=total_rows,
+        )
+        OFX_IMPORT_BATCHES.labels(status=finalize_status).inc()
+        IMPORT_RECORDS_TOTAL.labels(source_type="ofx").inc(transactions_imported)
+        IMPORT_DURATION_SECONDS.labels(source_type="ofx").observe(
+            time.monotonic() - _t0
+        )
+
+        result.institutions = rows_loaded["institutions"]
+        result.accounts = rows_loaded["accounts"]
+        result.transactions = rows_loaded["transactions"]
+        result.balances = rows_loaded["balances"]
+        result.details = rows_loaded
+
+        if transactions_imported > 0:
             result.date_range = self._query_date_range(
-                "raw.ofx_transactions", "CAST(date_posted AS DATE)", file_path
+                "raw.ofx_transactions", "CAST(date_posted AS DATE)", canonical_path
             )
 
         return result
+
+    def _match_ofx_accounts(self, account_ids: list[str]) -> None:
+        """Best-effort account matching for OFX. Emits metrics; doesn't mutate data.
+
+        Today's behavior (carried forward): the OFX file's account_id IS the
+        matching key downstream. This method exists so future improvements have
+        a single place to live and so account-match metrics are emitted for
+        OFX too.
+        """
+        from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
+
+        for _aid in account_ids:
+            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="not_attempted").inc()
 
     def _import_w2(
         self,
@@ -615,6 +832,7 @@ class ImportService:
             format_name=matched_format.name if matched_format else None,
             format_source=format_source,
         )
+        result.import_id = import_id
 
         # Stage 4: Transform
         from moneybin.config import get_settings
@@ -736,6 +954,8 @@ class ImportService:
         *,
         apply_transforms: bool = True,
         institution: str | None = None,
+        force: bool = False,
+        interactive: bool = False,
         account_id: str | None = None,
         account_name: str | None = None,
         format_name: str | None = None,
@@ -760,8 +980,10 @@ class ImportService:
             file_path: Path to the file to import.
             apply_transforms: Whether to run SQLMesh transforms after loading.
                 Defaults to True.
-            institution: Institution name (OFX only). Auto-detected for OFX if
+            institution: Institution name override (OFX only). Auto-detected if
                 omitted.
+            force: Re-import even if the file has been imported before (OFX only).
+            interactive: Prompt for institution when resolution fails (OFX only).
             account_id: Explicit account ID for tabular imports (bypasses name
                 matching).
             account_name: Account name for single-account tabular files.
@@ -796,7 +1018,9 @@ class ImportService:
         logger.info(f"Importing {_display_label(file_type, path)} file: {path}")
 
         if file_type == "ofx":
-            result = self._import_ofx(path, institution=institution)
+            result = self._import_ofx(
+                path, institution=institution, force=force, interactive=interactive
+            )
         elif file_type == "w2":
             result = self._import_w2(path)
         elif file_type == "tabular":

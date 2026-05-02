@@ -124,11 +124,19 @@ class TestRevertImport:
             call_count += 1
             m = MagicMock()
             if call_count == 1:
-                # import_log lookup
-                m.fetchone.return_value = ("test-123", "complete")
+                # import_log lookup — (source_type, status, source_file, started_at)
+                m.fetchone.return_value = (
+                    "csv",
+                    "complete",
+                    "/tmp/f.csv",  # noqa: S108  # mock value, not a real temp file
+                    "2024-01-01",
+                )
             elif call_count == 2:
-                # COUNT(*) = 5 rows
-                m.fetchone.return_value = (5,)
+                # COUNT(*) raw.tabular_transactions = 3
+                m.fetchone.return_value = (3,)
+            elif call_count == 3:
+                # COUNT(*) raw.tabular_accounts = 2 — total 5 across both tables
+                m.fetchone.return_value = (2,)
             return m
 
         mock_db.execute.side_effect = side_effect
@@ -138,7 +146,12 @@ class TestRevertImport:
         assert result["rows_deleted"] == 5
 
     def test_revert_already_reverted(self, mock_db: MagicMock) -> None:
-        mock_db.execute.return_value.fetchone.return_value = ("test-123", "reverted")
+        mock_db.execute.return_value.fetchone.return_value = (
+            "csv",
+            "reverted",
+            "/tmp/f.csv",  # noqa: S108  # mock value, not a real temp file
+            "2024-01-01",
+        )
         loader = TabularLoader(mock_db)
         result = loader.revert_import("test-123")
         assert result["status"] == "already_reverted"
@@ -161,12 +174,20 @@ class TestRevertImport:
             call_count += 1
             result = MagicMock()
             if call_count == 1:
-                # import_log lookup
-                result.fetchone.return_value = ("old-import-id", "complete")
+                # import_log lookup — (source_type, status, source_file, started_at)
+                result.fetchone.return_value = (
+                    "csv",
+                    "complete",
+                    "/tmp/f.csv",  # noqa: S108  # mock value, not a real temp file
+                    "2024-01-01",
+                )
             elif call_count == 2:
-                # COUNT(*) — no rows with old import_id
+                # COUNT(*) raw.tabular_transactions — no rows
                 result.fetchone.return_value = (0,)
             elif call_count == 3:
+                # COUNT(*) raw.tabular_accounts — no rows
+                result.fetchone.return_value = (0,)
+            elif call_count == 4:
                 # re-import check — found a newer import
                 result.fetchone.return_value = ("new-import-id-1234",)
             return result

@@ -13,7 +13,10 @@ WITH matched_ids AS (
     account_id,
     MAX(transaction_id) AS transaction_id
   FROM prep.int_transactions__matched
-  GROUP BY source_transaction_id, source_type, account_id
+  GROUP BY
+    source_transaction_id,
+    source_type,
+    account_id
 )
 SELECT
   md.match_id AS transfer_id, /* UUID identifying this transfer pair; also FK to app.match_decisions */

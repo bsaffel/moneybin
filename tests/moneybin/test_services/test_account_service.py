@@ -46,11 +46,15 @@ def account_db(tmp_path: Path) -> Generator[Database, None, None]:
 
     # Insert test balances
     conn.execute("""
-        INSERT INTO raw.ofx_balances VALUES
+        INSERT INTO raw.ofx_balances
+            (account_id, statement_start_date, statement_end_date, ledger_balance,
+             ledger_balance_date, available_balance, source_file,
+             extracted_at, loaded_at, import_id, source_type)
+        VALUES
         ('ACC001', '2025-06-01', '2025-06-30', 5000.00, '2025-06-30',
-         4800.00, 'test.qfx', '2025-01-24', CURRENT_TIMESTAMP),
+         4800.00, 'test.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx'),
         ('ACC002', '2025-06-01', '2025-06-30', 15000.00, '2025-06-30',
-         15000.00, 'other.qfx', '2025-01-24', CURRENT_TIMESTAMP)
+         15000.00, 'other.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
     """)  # noqa: S608  # test input, not executing SQL
 
     db_module._database_instance = database  # type: ignore[attr-defined]

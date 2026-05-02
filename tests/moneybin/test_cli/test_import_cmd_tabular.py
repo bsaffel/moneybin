@@ -71,6 +71,8 @@ class TestImportFileAccountName:
             file_path=csv_file,
             apply_transforms=True,
             institution=None,
+            force=False,
+            interactive=False,
             account_id=None,
             account_name="Chase Checking",
             format_name=None,

@@ -47,9 +47,11 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
 
     # -- Base reference data: institutions --
     conn.execute("""
-        INSERT INTO raw.ofx_institutions VALUES
-        ('Test Bank', '1234', 'test.qfx', '2025-01-01', CURRENT_TIMESTAMP),
-        ('Other Bank', '5678', 'other.qfx', '2025-01-01', CURRENT_TIMESTAMP)
+        INSERT INTO raw.ofx_institutions
+            (organization, fid, source_file, extracted_at, loaded_at, import_id, source_type)
+        VALUES
+        ('Test Bank', '1234', 'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, NULL, 'ofx'),
+        ('Other Bank', '5678', 'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, NULL, 'ofx')
     """)
 
     # -- Base reference data: accounts --
@@ -63,13 +65,17 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
 
     # -- Base reference data: account balances --
     conn.execute("""
-        INSERT INTO raw.ofx_balances VALUES
+        INSERT INTO raw.ofx_balances
+            (account_id, statement_start_date, statement_end_date, ledger_balance,
+             ledger_balance_date, available_balance, source_file,
+             extracted_at, loaded_at, import_id, source_type)
+        VALUES
         ('ACC001', '2025-06-01', '2025-06-30', 5000.00,
          '2025-06-30', 4800.00, 'test.qfx',
-         '2025-01-24', CURRENT_TIMESTAMP),
+         '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx'),
         ('ACC002', '2025-06-01', '2025-06-30', 15000.00,
          '2025-06-30', 15000.00, 'other.qfx',
-         '2025-01-24', CURRENT_TIMESTAMP)
+         '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
     """)
 
     # Inject the Database singleton so all MCP server functions use this DB

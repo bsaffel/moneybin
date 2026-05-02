@@ -43,9 +43,9 @@ def copy_to_raw(
         raise FileNotFoundError(f"Source file not found: {source_path}")
 
     # Normalize file type and determine target directory
-    # OFX and QFX files go to the same directory
+    # OFX, QFX, and QBO files go to the same directory
     normalized_type = file_type.lower()
-    if normalized_type in ("qfx", "ofx"):
+    if normalized_type in ("qfx", "ofx", "qbo"):
         target_dir = base_path / "ofx"
     else:
         target_dir = base_path / normalized_type

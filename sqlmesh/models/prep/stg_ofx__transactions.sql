@@ -16,8 +16,9 @@ WITH ranked AS (
     t.source_file,
     t.extracted_at,
     t.loaded_at,
+    t.import_id,
     'ofx' AS source_type,
-    COALESCE(a.institution_org, 'ofx_unknown') AS source_origin,
+    COALESCE(t.source_origin, a.institution_org, 'ofx_unknown') AS source_origin,
     ROW_NUMBER() OVER (PARTITION BY t.source_transaction_id, t.account_id ORDER BY t.loaded_at DESC) AS _row_num
   FROM raw.ofx_transactions AS t
   LEFT JOIN raw.ofx_accounts AS a
@@ -35,6 +36,7 @@ SELECT
   source_file,
   extracted_at,
   loaded_at,
+  import_id,
   source_type,
   source_origin
 FROM ranked
