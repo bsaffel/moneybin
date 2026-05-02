@@ -1,5 +1,4 @@
 /* Category assignments for transactions; written by the rules engine, AI model, or user; one record per transaction */
--- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
 CREATE TABLE IF NOT EXISTS app.transaction_categories (
     transaction_id VARCHAR PRIMARY KEY, -- Foreign key to core.fct_transactions; one categorization record per transaction
     category VARCHAR NOT NULL, -- Assigned spending category
