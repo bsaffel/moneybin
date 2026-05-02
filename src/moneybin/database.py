@@ -174,16 +174,26 @@ class Database:
             stored_versions = get_current_versions(self)
             stored_pkg_version = stored_versions.get("moneybin")
 
-            # Check MoneyBin schema migrations
-            if stored_pkg_version != current_pkg_version:
-                if stored_pkg_version is not None:
+            # Gate on pending migrations, not pkg version. The version string in
+            # pyproject.toml is bumped by hand and was previously the only
+            # trigger — so a DB opened pre-V003 stayed pre-V003 forever if the
+            # version hadn't moved between releases. Any unapplied migration
+            # (or a version mismatch) drives the runner.
+            runner = MigrationRunner(self)
+            pending = runner.pending()
+            if pending or stored_pkg_version != current_pkg_version:
+                if stored_pkg_version is not None and (
+                    stored_pkg_version != current_pkg_version
+                ):
                     logger.info(
                         f"⚙️  MoneyBin upgraded ({stored_pkg_version} → {current_pkg_version}). "
                         f"Applying updates..."
                     )
+                elif pending:
+                    logger.info(
+                        f"⚙️  {len(pending)} pending migration(s) detected. Applying..."
+                    )
 
-                # Run pending schema migrations
-                runner = MigrationRunner(self)
                 result = runner.apply_all()
 
                 if result.failed:

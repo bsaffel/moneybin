@@ -580,6 +580,55 @@ class TestAutoUpgrade:
         finally:
             db2.close()
 
+    def test_pending_migrations_apply_without_version_change(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """Pending migrations apply on reopen even when pkg version is unchanged.
+
+        Regression: the gate was previously `stored_pkg != current_pkg`, so a DB
+        opened before a migration was added stayed un-migrated forever unless
+        someone bumped pyproject.toml. The fix gates on `runner.pending()`.
+        """
+        db_path = tmp_path / "test.duckdb"
+
+        # First open at 1.0.0 — records version, applies any baseline migrations.
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="1.0.0"
+        ):
+            db1 = Database(db_path, secret_store=mock_secret_store)
+            # Simulate "a migration was never recorded" by deleting one applied
+            # row from schema_migrations. On next open the runner.pending()
+            # check should re-apply it without any version bump.
+            row = db1.execute(
+                "SELECT version FROM app.schema_migrations "
+                "ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+            assert row is not None, "expected at least one applied migration"
+            removed_version = row[0]
+            db1.execute(
+                "DELETE FROM app.schema_migrations WHERE version = ?",
+                [removed_version],
+            )
+            db1.close()
+
+        # Second open at the *same* version. Pre-fix this was a no-op.
+        with patch(
+            "moneybin.database.importlib.metadata.version", return_value="1.0.0"
+        ):
+            db2 = Database(db_path, secret_store=mock_secret_store)
+        try:
+            count = db2.execute(
+                "SELECT COUNT(*) FROM app.schema_migrations WHERE version = ?",
+                [removed_version],
+            ).fetchone()
+            assert count is not None
+            assert count[0] == 1, (
+                "pending migration should have been re-applied on reopen "
+                "even though the package version did not change"
+            )
+        finally:
+            db2.close()
+
     def test_no_auto_upgrade_skips_migrations(
         self,
         tmp_path: Path,
