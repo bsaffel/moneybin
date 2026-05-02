@@ -209,7 +209,7 @@ def import_revert(import_id: str) -> ResponseEnvelope:
 
     Args:
         import_id: UUID of the import batch to revert. Get it from
-            import.file's response or from import.status.
+            import_file's response or from import_status.
     """
     from moneybin.loaders import import_log
 
@@ -222,7 +222,7 @@ def import_revert(import_id: str) -> ResponseEnvelope:
             data=result,
             sensitivity="low",
             actions=[
-                "Use import.status to confirm the batch shows status='reverted'",
+                "Use import_status to confirm the batch shows status='reverted'",
             ],
         )
     return build_error_envelope(
