@@ -165,12 +165,14 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.merchants import register_merchants_tools
     from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.mcp.tools.sql import register_sql_tools
+    from moneybin.mcp.tools.system import register_system_tools
     from moneybin.mcp.tools.tax import register_tax_tools
     from moneybin.mcp.tools.transactions import register_transactions_tools
     from moneybin.mcp.tools.transactions_categorize import (
         register_transactions_categorize_tools,
     )
 
+    register_system_tools(mcp)
     register_reports_tools(mcp)
     register_accounts_tools(mcp)
     register_transactions_tools(mcp)
