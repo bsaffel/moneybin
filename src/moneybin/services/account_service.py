@@ -7,12 +7,13 @@ both MCP tools and CLI commands.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from dataclasses import dataclass
 from decimal import Decimal
 from difflib import get_close_matches
-from typing import Any
+from typing import Any, cast
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -135,22 +136,6 @@ def suggest_holder_category(value: str) -> str | None:
         value.lower(), PLAID_CANONICAL_HOLDER_CATEGORIES, n=1, cutoff=0.75
     )
     return matches[0] if matches else None
-
-
-def _settings_to_dict(s: AccountSettings) -> dict[str, object]:
-    """Materialize an AccountSettings into a dict for diff-based reconstruction."""
-    return {
-        "account_id": s.account_id,
-        "display_name": s.display_name,
-        "official_name": s.official_name,
-        "last_four": s.last_four,
-        "account_subtype": s.account_subtype,
-        "holder_category": s.holder_category,
-        "iso_currency_code": s.iso_currency_code,
-        "credit_limit": s.credit_limit,
-        "archived": s.archived,
-        "include_in_net_worth": s.include_in_net_worth,
-    }
 
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
@@ -376,6 +361,7 @@ class AccountService:
     def __init__(self, db: Database) -> None:
         """Initialize AccountService with an open Database connection."""
         self._db = db
+        self._settings_repo = AccountSettingsRepository(db)
 
     def list_accounts(self) -> AccountListResult:
         """List all accounts.
@@ -476,13 +462,9 @@ class AccountService:
         logger.info(f"Retrieved balances for {len(balances)} accounts")
         return BalanceListResult(balances=balances)
 
-    def _settings_repo(self) -> AccountSettingsRepository:
-        """Return a repository bound to this service's database connection."""
-        return AccountSettingsRepository(self._db)
-
     def _load_or_default(self, account_id: str) -> AccountSettings:
         """Load existing settings or construct a default for the given account."""
-        return self._settings_repo().load(account_id) or AccountSettings(
+        return self._settings_repo.load(account_id) or AccountSettings(
             account_id=account_id
         )
 
@@ -490,11 +472,12 @@ class AccountService:
         """Set or clear display_name. Empty string clears the override."""
         current = self._load_or_default(account_id)
         new_name: str | None = display_name if display_name else None
-        updated = AccountSettings(**{
-            **_settings_to_dict(current),
-            "display_name": new_name,
-        })
-        self._settings_repo().upsert(updated)
+        updated = dataclasses.replace(current, display_name=new_name)
+        self._settings_repo.upsert(updated)
+        logger.info(
+            f"Renamed account {account_id}: display_name "
+            f"{'cleared' if new_name is None else 'set'}"
+        )
         return updated
 
     def set_include_in_net_worth(
@@ -502,29 +485,29 @@ class AccountService:
     ) -> AccountSettings:
         """Toggle include_in_net_worth flag. Idempotent."""
         current = self._load_or_default(account_id)
-        updated = AccountSettings(**{
-            **_settings_to_dict(current),
-            "include_in_net_worth": include,
-        })
-        self._settings_repo().upsert(updated)
+        updated = dataclasses.replace(current, include_in_net_worth=include)
+        self._settings_repo.upsert(updated)
+        logger.info(f"Updated account {account_id}: include_in_net_worth={include}")
         return updated
 
     def archive(self, account_id: str) -> AccountSettings:
         """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write."""
         current = self._load_or_default(account_id)
-        updated = AccountSettings(**{
-            **_settings_to_dict(current),
-            "archived": True,
-            "include_in_net_worth": False,
-        })
-        self._settings_repo().upsert(updated)
+        updated = dataclasses.replace(
+            current, archived=True, include_in_net_worth=False
+        )
+        self._settings_repo.upsert(updated)
+        logger.info(
+            f"Archived account {account_id} (cascaded include_in_net_worth=False)"
+        )
         return updated
 
     def unarchive(self, account_id: str) -> AccountSettings:
         """Set archived=FALSE; does NOT restore include_in_net_worth (per spec)."""
         current = self._load_or_default(account_id)
-        updated = AccountSettings(**{**_settings_to_dict(current), "archived": False})
-        self._settings_repo().upsert(updated)
+        updated = dataclasses.replace(current, archived=False)
+        self._settings_repo.upsert(updated)
+        logger.info(f"Unarchived account {account_id}")
         return updated
 
     def settings_update(
@@ -578,6 +561,9 @@ class AccountService:
                 "suggestion": suggest_holder_category(holder) or "",
             })
 
-        updated = AccountSettings(**{**_settings_to_dict(current), **diff})
-        self._settings_repo().upsert(updated)
+        updated = dataclasses.replace(current, **cast(dict[str, Any], diff))
+        self._settings_repo.upsert(updated)
+        logger.info(
+            f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
+        )
         return updated, warnings

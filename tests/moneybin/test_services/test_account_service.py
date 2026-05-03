@@ -414,6 +414,11 @@ class TestAccountServiceMutators:
         assert updated.account_subtype == "checking"
         assert updated.credit_limit == Decimal("5000.00")
         assert warnings == []  # canonical subtype, no warning
+        # Verify persisted, not just returned
+        loaded = AccountSettingsRepository(test_db).load("acct_a")
+        assert loaded is not None
+        assert loaded.account_subtype == "checking"
+        assert loaded.credit_limit == Decimal("5000.00")
 
     @pytest.mark.unit
     def test_settings_update_clears_with_clear_sentinel(
