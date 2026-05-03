@@ -462,3 +462,78 @@ class TestCreateCategory:
 
         assert exc_info.value.code == "CATEGORY_ALREADY_EXISTS"
         assert "Hobbies" in exc_info.value.message
+
+
+def _seed_categories_view(db: Database) -> None:
+    """Seed seeds.categories + the app.categories view for toggle tests."""
+    from moneybin.seeds import refresh_views
+
+    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+    db.execute("""
+        CREATE TABLE seeds.categories (
+            category_id VARCHAR,
+            category VARCHAR,
+            subcategory VARCHAR,
+            description VARCHAR,
+            plaid_detailed VARCHAR
+        )
+    """)
+    db.execute("""
+        INSERT INTO seeds.categories VALUES
+        ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')
+    """)
+    refresh_views(db)
+
+
+class TestToggleCategory:
+    """CategorizationService.toggle_category — branches by category origin."""
+
+    @pytest.mark.unit
+    def test_default_category_writes_override(self, db: Database) -> None:
+        _seed_categories_view(db)
+        CategorizationService(db).toggle_category("FND", is_active=False)
+
+        rows = db.execute(
+            "SELECT category_id, is_active FROM app.category_overrides"
+        ).fetchall()
+        assert rows == [("FND", False)]
+
+    @pytest.mark.unit
+    def test_default_category_upserts_override(self, db: Database) -> None:
+        """Toggling twice updates the existing override row, not appending."""
+        _seed_categories_view(db)
+        svc = CategorizationService(db)
+        svc.toggle_category("FND", is_active=False)
+        svc.toggle_category("FND", is_active=True)
+
+        rows = db.execute(
+            "SELECT category_id, is_active FROM app.category_overrides"
+        ).fetchall()
+        assert rows == [("FND", True)]
+
+    @pytest.mark.unit
+    def test_user_category_updates_user_categories(self, db: Database) -> None:
+        _seed_categories_view(db)
+        db.execute("""
+            INSERT INTO app.user_categories
+            (category_id, category, subcategory, is_active)
+            VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
+        """)
+
+        CategorizationService(db).toggle_category("CUSTOM1", is_active=False)
+
+        row = db.execute(
+            "SELECT is_active FROM app.user_categories WHERE category_id = ?",
+            ["CUSTOM1"],
+        ).fetchone()
+        assert row == (False,)
+        # User toggles must NOT touch the override table.
+        count = db.execute("SELECT COUNT(*) FROM app.category_overrides").fetchone()
+        assert count == (0,)
+
+    @pytest.mark.unit
+    def test_missing_category_raises_user_error(self, db: Database) -> None:
+        _seed_categories_view(db)
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).toggle_category("NOPE", is_active=False)
+        assert exc_info.value.code == "CATEGORY_NOT_FOUND"

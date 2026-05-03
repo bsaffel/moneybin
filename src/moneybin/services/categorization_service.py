@@ -35,6 +35,7 @@ from moneybin.services._text import normalize_description
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
+    CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
     MERCHANTS,
     TRANSACTION_CATEGORIES,
@@ -559,6 +560,45 @@ class CategorizationService:
                 code="CATEGORY_ALREADY_EXISTS",
             ) from None
         return category_id
+
+    def toggle_category(self, category_id: str, *, is_active: bool) -> None:
+        """Enable or disable a category. Existing categorizations are preserved.
+
+        Default categories (is_default=true) write to ``app.category_overrides``;
+        user-created categories update ``app.user_categories.is_active`` directly.
+
+        Raises:
+            UserError(code="CATEGORY_NOT_FOUND"): no category with this ID
+                exists in either ``app.user_categories`` or the seeded defaults.
+        """
+        cat = self._db.execute(
+            f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
+            [category_id],
+        ).fetchone()
+        if not cat:
+            raise UserError(
+                f"Category {category_id} not found",
+                code="CATEGORY_NOT_FOUND",
+            )
+
+        if cat[0]:  # default category — record/upsert the override
+            self._db.execute(
+                f"""
+                INSERT INTO {CATEGORY_OVERRIDES.full_name}
+                    (category_id, is_active, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (category_id) DO UPDATE
+                    SET is_active = excluded.is_active,
+                        updated_at = excluded.updated_at
+                """,  # noqa: S608  # TableRef constant
+                [category_id, is_active],
+            )
+        else:
+            self._db.execute(
+                f"UPDATE {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"SET is_active = ? WHERE category_id = ?",
+                [is_active, category_id],
+            )
 
     # -- Categorization core --
 
