@@ -20,15 +20,12 @@ import typer
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json
 
-from .migrate import app as _migrate_app
-
 app = typer.Typer(help="Database management commands", no_args_is_help=True)
 key_app = typer.Typer(
     help="Manage the encryption key for the active profile's database",
     no_args_is_help=True,
 )
 app.add_typer(key_app, name="key")
-app.add_typer(_migrate_app, name="migrate", help="Database migration management")
 logger = logging.getLogger(__name__)
 
 

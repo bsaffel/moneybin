@@ -45,8 +45,6 @@ When a command modifies multiple persistent stores in sequence (e.g., file move 
 
 - **Workflow ordering**: Top-level commands in `main.py` are registered in workflow order: setup → ingest → enrich → pipeline → analyze → output → integrations → ops. New commands should be inserted at the appropriate workflow stage.
 - **`no_args_is_help=True`**: Every `typer.Typer()` *group* must set this flag so bare invocation shows help text consistently. Leaf commands (registered via `app.command()` directly on the root app, like `stats` and `logs`) follow a different convention — see "Leaf Commands vs Sub-Groups" below. Do not use `invoke_without_command=True` callbacks as a substitute — that flag runs the callback even when a subcommand is provided, causing confusing side effects like duplicate setup or output.
-- **Lazy-load via `_add_lazy_typer`**: New command groups must be registered with `_add_lazy_typer(app, f"{_COMMANDS_PKG}.<module>", name=..., help_text=...)` in `cli/main.py`, **not** eager `app.add_typer(<module>.app, ...)`. Eager registration imports the module (and all its transitive deps) at every CLI startup, including `moneybin --help`. The lazy wrapper hardcodes `no_args_is_help=True` and the default `rich_markup_mode` and does not merge per-module Typer kwargs — modules must construct their root `typer.Typer` with these same defaults. Light leaves (`logs`, `stats`, `stubs`) stay eagerly imported because they have no heavy transitive cost.
-
 ## Cold-Start Hygiene
 
 Every E2E test, every shell autocomplete, and every CLI invocation pays the full module-import cost for `moneybin.cli.main`. Keep that path light.
