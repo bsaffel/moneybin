@@ -24,7 +24,7 @@ from moneybin.tables import MERCHANTS
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
+@mcp_tool(sensitivity="low")
 def merchants_list() -> ResponseEnvelope:
     """List all merchant name mappings.
 
@@ -67,7 +67,7 @@ def merchants_list() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
+@mcp_tool(sensitivity="low")
 def merchants_create(
     merchants: list[dict[str, str | None]],
 ) -> ResponseEnvelope:

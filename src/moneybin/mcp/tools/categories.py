@@ -16,7 +16,7 @@ from moneybin.services.categorization_service import CategorizationService
 from moneybin.tables import CATEGORIES, CATEGORY_OVERRIDES, USER_CATEGORIES
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
+@mcp_tool(sensitivity="low")
 def categories_list(include_inactive: bool = False) -> ResponseEnvelope:
     """List all categories in the taxonomy."""
     data = CategorizationService(get_database()).get_all_categories(
@@ -33,7 +33,7 @@ def categories_list(include_inactive: bool = False) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
+@mcp_tool(sensitivity="low")
 def categories_create(
     category: str,
     subcategory: str | None = None,
@@ -74,7 +74,7 @@ def categories_create(
     )
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
+@mcp_tool(sensitivity="low")
 def categories_toggle(
     category_id: str,
     is_active: bool,

@@ -222,7 +222,16 @@ def transactions_categorize_rules_create(
         min_amount = item.get("min_amount")
         max_amount = item.get("max_amount")
         account_id = item.get("account_id")
-        priority = int(item.get("priority", 100) or 100)
+        raw_priority = item.get("priority", 100)
+        try:
+            priority = int(raw_priority or 100)
+        except (TypeError, ValueError):
+            skipped += 1
+            error_details.append({
+                "name": name,
+                "reason": f"Invalid priority: {raw_priority!r}",
+            })
+            continue
 
         rule_id = uuid.uuid4().hex[:12]
         try:
