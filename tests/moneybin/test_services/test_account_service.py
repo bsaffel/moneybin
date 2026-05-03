@@ -28,7 +28,7 @@ from moneybin.services.account_service import (
     suggest_holder_category,
     suggest_subtype,
 )
-from tests.moneybin.db_helpers import create_core_tables_raw
+from tests.moneybin.db_helpers import create_core_tables, create_core_tables_raw
 
 
 def _make_settings(**overrides: object) -> AccountSettings:
@@ -109,9 +109,14 @@ def account_db(tmp_path: Path) -> Generator[Database, None, None]:
     conn = database.conn
     create_core_tables_raw(conn)
 
-    # Insert test accounts
+    # Insert test accounts — use named columns so DDL-added defaults apply to
+    # Phase-2 columns (display_name, archived, etc.) without breaking this fixture.
     conn.execute("""
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts
+            (account_id, routing_number, account_type, institution_name,
+             institution_fid, source_type, source_file, extracted_at,
+             loaded_at, updated_at)
+        VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
@@ -151,7 +156,8 @@ class TestListAccounts:
     def test_accounts_ordered_by_institution(self, account_db: Database) -> None:
         service = AccountService(account_db)
         result = service.list_accounts()
-        names = [a.institution_name for a in result.accounts]
+        # accounts are now dicts after the AccountListResult shape change
+        names = [a["institution_name"] for a in result.accounts]
         assert names == sorted(names)
 
     @pytest.mark.unit
@@ -159,17 +165,18 @@ class TestListAccounts:
         service = AccountService(account_db)
         result = service.list_accounts()
         acct = result.accounts[0]
-        assert acct.account_id in ("ACC001", "ACC002")
-        assert acct.account_type in ("CHECKING", "SAVINGS")
-        assert acct.source_type == "ofx"
+        assert acct["account_id"] in ("ACC001", "ACC002")
+        assert acct["account_type"] in ("CHECKING", "SAVINGS")
 
     @pytest.mark.unit
-    def test_to_envelope_sensitivity_low(self, account_db: Database) -> None:
+    def test_to_envelope_sensitivity_medium(self, account_db: Database) -> None:
+        # Default (non-redacted) list returns medium sensitivity since it
+        # includes institution names and account metadata.
         service = AccountService(account_db)
         result = service.list_accounts()
         envelope = result.to_envelope()
         d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "low"
+        assert d["summary"]["sensitivity"] == "medium"
         data: list[dict[str, Any]] = d["data"]
         assert len(data) == 2
         actions: list[str] = d["actions"]
@@ -446,3 +453,245 @@ class TestAccountServiceMutators:
         assert updated.holder_category == "corporate"
         assert len(warnings) == 1
         assert warnings[0]["field"] == "holder_category"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for new extended-read tests
+# ---------------------------------------------------------------------------
+
+
+def _insert_dim_account(
+    db: Database,
+    account_id: str,
+    account_type: str = "CHECKING",
+    institution_name: str = "Test Bank",
+    source_type: str = "ofx",
+    display_name: str | None = None,
+    last_four: str | None = None,
+    account_subtype: str | None = None,
+    holder_category: str | None = None,
+    iso_currency_code: str = "USD",
+    credit_limit: Decimal | None = None,
+    archived: bool = False,
+    include_in_net_worth: bool = True,
+) -> None:
+    """Insert a row directly into core.dim_accounts for unit testing.
+
+    Bypasses SQLMesh (which is not run in unit tests) and inserts a fully
+    resolved row with both source-derived and settings-derived columns.
+    Setting archived=TRUE directly here is intentional — it lets tests that
+    need to verify archive filtering do so without running the LEFT JOIN
+    through app.account_settings.
+    """
+    db.execute(
+        """
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            institution_fid, source_type, source_file, extracted_at,
+            loaded_at, updated_at,
+            display_name, official_name, last_four, account_subtype,
+            holder_category, iso_currency_code, credit_limit,
+            archived, include_in_net_worth
+        ) VALUES (?, NULL, ?, ?, NULL, ?, 'test.qfx', '2025-01-01',
+                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            account_id,
+            account_type,
+            institution_name,
+            source_type,
+            display_name,
+            last_four,
+            account_subtype,
+            holder_category,
+            iso_currency_code,
+            credit_limit,
+            archived,
+            include_in_net_worth,
+        ],
+    )
+
+
+@pytest.fixture()
+def extended_db(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> Generator[Database, None, None]:
+    """Database with full Phase-2 dim_accounts DDL for extended-read tests."""
+    database = Database(
+        tmp_path / "extended_test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    create_core_tables(database)
+    try:
+        yield database
+    finally:
+        database.close()
+
+
+class TestAccountServiceListExtended:
+    """Extended list_accounts tests: new columns, archiving, redaction, type filter."""
+
+    @pytest.mark.unit
+    def test_list_includes_new_columns(self, extended_db: Database) -> None:
+        _insert_dim_account(
+            extended_db,
+            "acct_ext1",
+            display_name="My Checking",
+            account_subtype="checking",
+            holder_category="personal",
+            last_four="9999",
+            credit_limit=None,
+        )
+        svc = AccountService(extended_db)
+        result = svc.list_accounts()
+        assert len(result.accounts) == 1
+        acct = result.accounts[0]
+        assert acct["account_id"] == "acct_ext1"
+        assert acct["display_name"] == "My Checking"
+        assert acct["account_subtype"] == "checking"
+        assert acct["holder_category"] == "personal"
+        assert acct["archived"] is False
+        assert acct["include_in_net_worth"] is True
+
+    @pytest.mark.unit
+    def test_list_hides_archived_by_default(self, extended_db: Database) -> None:
+        _insert_dim_account(extended_db, "acct_active", institution_name="Alpha Bank")
+        _insert_dim_account(
+            extended_db, "acct_archived", institution_name="Beta Bank", archived=True
+        )
+        svc = AccountService(extended_db)
+        result = svc.list_accounts()  # default: include_archived=False
+        ids = [a["account_id"] for a in result.accounts]
+        assert "acct_active" in ids
+        assert "acct_archived" not in ids
+
+    @pytest.mark.unit
+    def test_list_include_archived_returns_all(self, extended_db: Database) -> None:
+        _insert_dim_account(extended_db, "acct_active", institution_name="Alpha Bank")
+        _insert_dim_account(
+            extended_db, "acct_archived", institution_name="Beta Bank", archived=True
+        )
+        svc = AccountService(extended_db)
+        result = svc.list_accounts(include_archived=True)
+        ids = [a["account_id"] for a in result.accounts]
+        assert "acct_active" in ids
+        assert "acct_archived" in ids
+        assert len(ids) == 2
+
+    @pytest.mark.unit
+    def test_list_redacted_omits_pii_fields(self, extended_db: Database) -> None:
+        _insert_dim_account(
+            extended_db,
+            "acct_pii",
+            last_four="1234",
+            credit_limit=Decimal("5000.00"),
+        )
+        svc = AccountService(extended_db)
+        result = svc.list_accounts(redacted=True)
+        acct = result.accounts[0]
+        assert "last_four" not in acct
+        assert "credit_limit" not in acct
+        # Sensitivity downgrades to low when redacted
+        envelope = result.to_envelope()
+        d = envelope.to_dict()
+        assert d["summary"]["sensitivity"] == "low"
+
+    @pytest.mark.unit
+    def test_list_type_filter(self, extended_db: Database) -> None:
+        _insert_dim_account(
+            extended_db,
+            "acct_checking",
+            account_type="CHECKING",
+            institution_name="Alpha Bank",
+        )
+        _insert_dim_account(
+            extended_db,
+            "acct_savings",
+            account_type="SAVINGS",
+            institution_name="Alpha Bank",
+        )
+        svc = AccountService(extended_db)
+        result = svc.list_accounts(type_filter="CHECKING")
+        ids = [a["account_id"] for a in result.accounts]
+        assert "acct_checking" in ids
+        assert "acct_savings" not in ids
+        assert len(ids) == 1
+
+
+class TestAccountServiceGetAccount:
+    """Tests for AccountService.get_account()."""
+
+    @pytest.mark.unit
+    def test_get_returns_full_record(self, extended_db: Database) -> None:
+        _insert_dim_account(
+            extended_db,
+            "acct_get1",
+            display_name="Premium Checking",
+            last_four="4321",
+            account_subtype="checking",
+            institution_name="First National",
+        )
+        svc = AccountService(extended_db)
+        result = svc.get_account("acct_get1")
+        assert result is not None
+        assert result["account_id"] == "acct_get1"
+        assert result["display_name"] == "Premium Checking"
+        assert result["last_four"] == "4321"
+        assert result["account_subtype"] == "checking"
+        assert result["institution_name"] == "First National"
+        assert result["archived"] is False
+        assert result["include_in_net_worth"] is True
+
+    @pytest.mark.unit
+    def test_get_returns_none_for_missing(self, extended_db: Database) -> None:
+        svc = AccountService(extended_db)
+        assert svc.get_account("acct_missing") is None
+
+
+class TestAccountServiceSummary:
+    """Tests for AccountService.summary()."""
+
+    @pytest.mark.unit
+    def test_summary_aggregates_by_type_and_subtype(
+        self, extended_db: Database
+    ) -> None:
+        # 2 checking (one archived), 1 savings
+        _insert_dim_account(
+            extended_db,
+            "acct_chk1",
+            account_type="CHECKING",
+            institution_name="Alpha Bank",
+        )
+        _insert_dim_account(
+            extended_db,
+            "acct_chk2",
+            account_type="CHECKING",
+            institution_name="Beta Bank",
+            archived=True,
+        )
+        _insert_dim_account(
+            extended_db,
+            "acct_sav1",
+            account_type="SAVINGS",
+            institution_name="Gamma Bank",
+            include_in_net_worth=False,
+        )
+        svc = AccountService(extended_db)
+        result = svc.summary()
+        # total_accounts counts all rows including archived
+        assert result["total_accounts"] == 3
+        # count_by_type excludes archived
+        assert result["count_by_type"] == {"CHECKING": 1, "SAVINGS": 1}
+        assert result["count_archived"] == 1
+        assert result["count_excluded_from_net_worth"] == 1
+        # recent activity is 0 (no transactions seeded)
+        assert result["count_with_recent_activity"] == 0
+
+    @pytest.mark.unit
+    def test_summary_empty(self, extended_db: Database) -> None:
+        svc = AccountService(extended_db)
+        result = svc.summary()
+        assert result["total_accounts"] == 0
+        assert result["count_by_type"] == {}

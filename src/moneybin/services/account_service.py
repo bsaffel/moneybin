@@ -13,11 +13,16 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from difflib import get_close_matches
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.tables import ACCOUNT_SETTINGS, DIM_ACCOUNTS, OFX_BALANCES
+from moneybin.tables import (
+    ACCOUNT_SETTINGS,
+    DIM_ACCOUNTS,
+    FCT_TRANSACTIONS,
+    OFX_BALANCES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -273,36 +278,24 @@ class AccountSettingsRepository:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class Account:
-    """Single account record."""
-
-    account_id: str
-    account_type: str
-    institution_name: str
-    source_type: str
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        return {
-            "account_id": self.account_id,
-            "account_type": self.account_type,
-            "institution_name": self.institution_name,
-            "source_type": self.source_type,
-        }
-
-
 @dataclass(slots=True)
 class AccountListResult:
-    """Result of account listing query."""
+    """Result of account listing query.
 
-    accounts: list[Account]
+    ``accounts`` is a list of plain dicts matching the wire format the
+    MCP envelope expects — one key per queried column. ``sensitivity``
+    is ``"medium"`` by default; ``"low"`` when the caller requested
+    ``redacted=True`` (last_four and credit_limit omitted).
+    """
+
+    accounts: list[dict[str, object]]
+    sensitivity: Literal["low", "medium", "high"] = "medium"
 
     def to_envelope(self) -> ResponseEnvelope:
         """Build a ResponseEnvelope for MCP/CLI output."""
         return build_envelope(
-            data=[a.to_dict() for a in self.accounts],
-            sensitivity="low",
+            data=list(self.accounts),
+            sensitivity=self.sensitivity,
             actions=[
                 "Use accounts_balances for current balances",
                 "Use spending_summary with account_id to filter by account",
@@ -363,38 +356,137 @@ class AccountService:
         self._db = db
         self._settings_repo = AccountSettingsRepository(db)
 
-    def list_accounts(self) -> AccountListResult:
-        """List all accounts.
+    def list_accounts(
+        self,
+        *,
+        include_archived: bool = False,
+        type_filter: str | None = None,
+        redacted: bool = False,
+    ) -> AccountListResult:
+        """List accounts. Hides archived by default. Redacted mode omits PII-adjacent fields."""
+        where_clauses: list[str] = []
+        params: list[object] = []
+        if not include_archived:
+            where_clauses.append("archived = FALSE")
+        if type_filter is not None:
+            where_clauses.append("(account_type = ? OR account_subtype = ?)")
+            params.extend([type_filter, type_filter])
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        Returns:
-            AccountListResult with all accounts ordered by institution
-            and type.
-        """
-        sql = f"""
-            SELECT
-                account_id,
-                account_type,
-                institution_name,
-                source_type
-            FROM {DIM_ACCOUNTS.full_name}
-            ORDER BY institution_name, account_type
-        """
-
-        result = self._db.execute(sql)
-        rows = result.fetchall()
-
-        accounts = [
-            Account(
-                account_id=str(row[0]),
-                account_type=str(row[1]),
-                institution_name=str(row[2]),
-                source_type=str(row[3]),
-            )
-            for row in rows
+        # Field list is constructed from literal strings (not user input).
+        fields = [
+            "account_id",
+            "display_name",
+            "institution_name",
+            "account_type",
+            "account_subtype",
+            "holder_category",
+            "iso_currency_code",
+            "archived",
+            "include_in_net_worth",
         ]
+        if not redacted:
+            fields.extend(["last_four", "credit_limit"])
 
+        field_list = ", ".join(fields)
+        sql = f"""
+            SELECT {field_list}
+            FROM {DIM_ACCOUNTS.full_name}
+            {where_sql}
+            ORDER BY institution_name, account_type, account_id
+        """  # noqa: S608  # field list is allowlisted above (literal strings)
+        rows = self._db.execute(sql, params).fetchall()
+        accounts: list[dict[str, object]] = [
+            dict(zip(fields, row, strict=True)) for row in rows
+        ]
+        sensitivity: Literal["low", "medium"] = "low" if redacted else "medium"
         logger.info(f"Listed {len(accounts)} accounts")
-        return AccountListResult(accounts=accounts)
+        return AccountListResult(accounts=accounts, sensitivity=sensitivity)
+
+    def get_account(self, account_id: str) -> dict[str, object] | None:
+        """Single account record with full settings + dim record. None if not found."""
+        fields = [
+            "account_id",
+            "display_name",
+            "institution_name",
+            "account_type",
+            "account_subtype",
+            "holder_category",
+            "iso_currency_code",
+            "last_four",
+            "credit_limit",
+            "archived",
+            "include_in_net_worth",
+            "source_type",
+            "routing_number",
+            "official_name",
+        ]
+        field_list = ", ".join(fields)
+        row = self._db.execute(
+            f"""
+            SELECT {field_list}
+            FROM {DIM_ACCOUNTS.full_name}
+            WHERE account_id = ?
+            """,  # noqa: S608  # field list is allowlisted above (literal strings)
+            [account_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(fields, row, strict=True))
+
+    def summary(self) -> dict[str, object]:
+        """Aggregate snapshot for accounts_summary tool / accounts://summary resource."""
+
+        def _count(sql: str, params: list[object] | None = None) -> int:
+            row = self._db.execute(sql, params or []).fetchone()
+            # COUNT(*) always returns one row; guard for type narrowing only.
+            if row is None:  # pragma: no cover
+                return 0
+            return int(row[0])
+
+        total = _count(f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}")
+        by_type: dict[str, int] = dict(
+            self._db.execute(
+                f"""
+                SELECT account_type, COUNT(*)
+                FROM {DIM_ACCOUNTS.full_name}
+                WHERE NOT archived
+                GROUP BY account_type
+                """
+            ).fetchall()
+        )
+        by_subtype: dict[str, int] = dict(
+            self._db.execute(
+                f"""
+                SELECT COALESCE(account_subtype, '<unset>'), COUNT(*)
+                FROM {DIM_ACCOUNTS.full_name}
+                WHERE NOT archived
+                GROUP BY 1
+                """
+            ).fetchall()
+        )
+        archived = _count(
+            f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name} WHERE archived"
+        )
+        excluded = _count(
+            f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name} WHERE NOT include_in_net_worth"
+        )
+        recent = _count(
+            f"""
+            SELECT COUNT(DISTINCT account_id)
+            FROM {FCT_TRANSACTIONS.full_name}
+            WHERE transaction_date >= CURRENT_DATE - INTERVAL '30' DAY
+            """
+        )
+        logger.info(f"Summary: {total} total accounts, {archived} archived")
+        return {
+            "total_accounts": total,
+            "count_by_type": by_type,
+            "count_by_subtype": by_subtype,
+            "count_archived": archived,
+            "count_excluded_from_net_worth": excluded,
+            "count_with_recent_activity": recent,
+        }
 
     def balances(self, account_id: str | None = None) -> BalanceListResult:
         """Get latest balance for each account.
