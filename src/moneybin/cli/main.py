@@ -14,6 +14,7 @@ import typer
 from ..config import register_profile_resolver, set_current_profile
 from ..observability import setup_observability
 from .commands import (
+    accounts,
     categorize,
     db,
     import_cmd,
@@ -27,10 +28,7 @@ from .commands import (
     synthetic,
     transform,
 )
-from .commands.stubs import (
-    export_app,
-    track_app,
-)
+from .commands.stubs import export_app
 from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
@@ -121,6 +119,11 @@ app.add_typer(
 )
 app.add_typer(matches.app, name="matches", help="Review and manage transaction matches")
 app.add_typer(
+    accounts.app,
+    name="accounts",
+    help="Account listing, settings, and lifecycle ops",
+)
+app.add_typer(
     transform.app,
     name="transform",
     help="Run SQLMesh data transformations",
@@ -130,7 +133,6 @@ app.add_typer(
     name="synthetic",
     help="Generate and manage synthetic financial data for testing",
 )
-app.add_typer(track_app, name="track", help="Balance tracking and net worth")
 app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(
