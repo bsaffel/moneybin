@@ -641,6 +641,10 @@ def test_service_exposes_consolidated_methods(real_db: Database) -> None:
         "get_active_categories",
         "categorization_stats",
         "find_matching_rule",
+        "create_rules",
+        "deactivate_rule",
+        "create_category",
+        "toggle_category",
     }
     missing = expected - set(dir(CategorizationService))
     assert not missing, f"Missing methods: {missing}"
