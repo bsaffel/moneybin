@@ -131,6 +131,22 @@ class RuleCreationResult:
     error_details: list[dict[str, str]]
     rule_ids: list[str]
 
+    def to_envelope(self, input_count: int) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this rule-creation result."""
+        return build_envelope(
+            data={
+                "created": self.created,
+                "skipped": self.skipped,
+                "rule_ids": self.rule_ids,
+                "error_details": self.error_details,
+            },
+            sensitivity="low",
+            total_count=input_count,
+            actions=[
+                "Use transactions_categorize_rules_list to review all rules",
+            ],
+        )
+
     def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
         """Prepend boundary-validation errors and reflect them in the skipped count."""
         if not parse_errors:

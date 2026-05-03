@@ -183,29 +183,10 @@ def transactions_categorize_rules_create(
     Args:
         rules: List of rule dicts.
     """
-    if not rules:
-        return build_envelope(
-            data={"created": 0, "skipped": 0, "rule_ids": [], "error_details": []},
-            sensitivity="low",
-        )
-
     validated, parse_errors = validate_rule_items(rules)
     result = CategorizationService(get_database()).create_rules(validated)
     result.merge_parse_errors(parse_errors)
-
-    return build_envelope(
-        data={
-            "created": result.created,
-            "skipped": result.skipped,
-            "rule_ids": result.rule_ids,
-            "error_details": result.error_details,
-        },
-        sensitivity="low",
-        total_count=len(rules),
-        actions=[
-            "Use transactions_categorize_rules_list to review all rules",
-        ],
-    )
+    return result.to_envelope(len(rules))
 
 
 @mcp_tool(sensitivity="low", domain="categorize")

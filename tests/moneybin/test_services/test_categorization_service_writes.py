@@ -335,11 +335,14 @@ class TestCreateRules:
         original_execute = db.execute
 
         def fail_on_r1(sql: str, params: object = None) -> object:
+            # The INSERT in create_rules binds params in column order:
+            # rule_id, name, merchant_pattern, ... — name is index 1.
             if (
                 "INSERT INTO" in sql
                 and "categorization_rules" in sql
                 and isinstance(params, list)
-                and "R1" in params
+                and len(params) > 1  # pyright: ignore[reportUnknownArgumentType]  # params is object narrowed to list
+                and params[1] == "R1"  # pyright: ignore[reportUnknownArgumentType]  # see above
             ):
                 raise RuntimeError("injected failure for test")
             return original_execute(sql, params)  # type: ignore[arg-type]

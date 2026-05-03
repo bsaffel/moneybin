@@ -157,7 +157,7 @@ def seed_categories_view(db: Database) -> None:
 
     db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
     db.execute("""
-        CREATE TABLE seeds.categories (
+        CREATE TABLE IF NOT EXISTS seeds.categories (
             category_id VARCHAR,
             category VARCHAR,
             subcategory VARCHAR,
