@@ -108,8 +108,9 @@ def mcp_tool(
             # downstream HTTP timeout). Without this, both surface as
             # TimeoutError and would be misclassified as cap-fired, causing
             # spurious DB resets and misleading "timed_out" envelopes.
+            cm = asyncio.timeout(timeout_s)
             try:
-                async with asyncio.timeout(timeout_s) as cm:
+                async with cm:
                     if is_coro:
                         result = await fn(*args, **kwargs)
                     else:
