@@ -862,25 +862,27 @@ class CategorizationService:
         if not uncategorized:
             return 0
 
-        categorized_count = 0
+        rows_to_insert: list[list[object]] = []
         for txn_id, description in uncategorized:
             merchant = _match_description(description, merchants)
             if merchant and merchant.get("category"):
-                self._db.execute(
-                    f"""
-                    INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                    (transaction_id, category, subcategory, categorized_at,
-                     categorized_by, merchant_id, confidence)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
-                    """,
-                    [
-                        txn_id,
-                        merchant["category"],
-                        merchant["subcategory"],
-                        merchant["merchant_id"],
-                    ],
-                )
-                categorized_count += 1
+                rows_to_insert.append([
+                    txn_id,
+                    merchant["category"],
+                    merchant["subcategory"],
+                    merchant["merchant_id"],
+                ])
+        if rows_to_insert:
+            self._db.executemany(
+                f"""
+                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
+                (transaction_id, category, subcategory, categorized_at,
+                 categorized_by, merchant_id, confidence)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
+                """,
+                rows_to_insert,
+            )
+        categorized_count = len(rows_to_insert)
 
         if categorized_count:
             logger.info(
@@ -1039,7 +1041,7 @@ class CategorizationService:
         if not uncategorized:
             return 0
 
-        categorized_count = 0
+        rows_to_insert: list[list[object]] = []
         for txn_id, description, amount, account_id in uncategorized:
             match = self.match_first_rule(
                 rules,
@@ -1051,16 +1053,24 @@ class CategorizationService:
                 continue
             rule_id, category, subcategory, created_by = match
             categorized_by = "auto_rule" if created_by == "auto_rule" else "rule"
-            self._db.execute(
+            rows_to_insert.append([
+                txn_id,
+                category,
+                subcategory,
+                categorized_by,
+                rule_id,
+            ])
+        if rows_to_insert:
+            self._db.executemany(
                 f"""
                 INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
                 (transaction_id, category, subcategory, categorized_at,
                  categorized_by, rule_id, confidence)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, 1.0)
                 """,
-                [txn_id, category, subcategory, categorized_by, rule_id],
+                rows_to_insert,
             )
-            categorized_count += 1
+        categorized_count = len(rows_to_insert)
 
         if categorized_count:
             logger.info(f"Rule engine categorized {categorized_count} transactions")

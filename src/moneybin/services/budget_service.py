@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -27,7 +27,7 @@ class BudgetSetResult:
 
     category: str
     monthly_amount: Decimal
-    action: str  # "created" or "updated"
+    action: Literal["created", "updated"]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""
@@ -57,7 +57,7 @@ class BudgetCategoryStatus:
     budget: Decimal
     spent: Decimal
     remaining: Decimal
-    status: str  # "OK", "WARNING", "OVER"
+    status: Literal["OK", "WARNING", "OVER"]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""
