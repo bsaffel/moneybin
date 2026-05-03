@@ -22,12 +22,9 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import duckdb
-
-if TYPE_CHECKING:
-    from sqlmesh import Context  # type: ignore[import-untyped]
 
 from moneybin.config import get_settings
 from moneybin.secrets import (
@@ -122,11 +119,6 @@ class Database:
         self._db_path = db_path
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._closed = False
-
-        # Evict any cached SQLMesh Context for this path.  A new Database
-        # instance means a new connection, so the previous Context's
-        # engine_adapter lambda would reference a closed connection.
-        _SQLMESH_CONTEXT_CACHE.pop((str(_SQLMESH_ROOT), str(db_path)), None)
 
         store = secret_store or SecretStore()
 
@@ -275,11 +267,15 @@ class Database:
             return True
 
         try:
+            from sqlmesh.core.config import Config, GatewayConfig
             from sqlmesh.core.config.connection import (
                 BaseDuckDBConnectionConfig,
+                DuckDBConnectionConfig,
             )
             from sqlmesh.core.console import NoopConsole, set_console
             from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
+
+            from sqlmesh import Context  # type: ignore[import-untyped]
         except ImportError:
             logger.debug("sqlmesh not installed, skipping migrate")
             return True
@@ -306,12 +302,19 @@ class Database:
             )
             BaseDuckDBConnectionConfig._data_file_to_adapter[adapter_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
 
-            # _get_or_build_sqlmesh_context returns a cached Context on repeat
-            # calls for the same (sqlmesh_root, db_path) within this Database
-            # instance's lifetime.  The adapter injection above ensures the
-            # Context's engine_adapter is connected to this encrypted DB whether
-            # the Context is newly built or retrieved from cache.
-            ctx = _get_or_build_sqlmesh_context(sqlmesh_root, self._db_path)
+            config = Config(
+                default_gateway="moneybin",
+                gateways={
+                    "moneybin": GatewayConfig(
+                        connection=DuckDBConnectionConfig(database=str(self._db_path)),
+                    ),
+                },
+            )
+            ctx = Context(
+                paths=str(sqlmesh_root),
+                config=config,
+                gateway="moneybin",
+            )
             ctx.migrate()
             logger.debug("sqlmesh migrate completed successfully")
             return True
@@ -485,8 +488,6 @@ class Database:
             except Exception:  # noqa: BLE001 S110  # intentional broad catch on close; pass is correct here
                 pass
             self._conn = None
-        # Drop the cached Context so the next Database for this path starts fresh.
-        _SQLMESH_CONTEXT_CACHE.pop((str(_SQLMESH_ROOT), str(self._db_path)), None)
         self._closed = True
         logger.debug(f"Database connection closed: {self._db_path}")
 
@@ -613,62 +614,6 @@ def _temporary_singleton(db: Database) -> Generator[None, None, None]:
 # ---------------------------------------------------------------------------
 
 _SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
-
-# Process-level cache for SQLMesh Context objects.  Building a Context is
-# expensive (parses every model, builds the DAG, validates macros).  The
-# cache is keyed by (sqlmesh_root, db_path) so each physical database gets
-# one Context per project root.
-#
-# Safety: the cache is invalidated in Database.__init__ and Database.close()
-# so a new Database instance for the same path always gets a fresh Context.
-# This prevents a cached Context from holding a lambda reference to a closed
-# connection from a previous Database lifetime.
-#
-# Only _run_sqlmesh_migrate() uses this cache.  sqlmesh_context() builds a
-# different adapter (cursor_init pins cursors to the moneybin catalog), so
-# sharing a cache entry would silently drop cursor_init on cache hits.
-_SQLMESH_CONTEXT_CACHE: dict[tuple[str, str], "Context"] = {}
-
-
-def _get_or_build_sqlmesh_context(sqlmesh_root: Path, db_path: Path) -> "Context":
-    """Return a cached SQLMesh Context for the migrate path, building it if needed.
-
-    The caller is responsible for injecting the adapter into
-    BaseDuckDBConnectionConfig._data_file_to_adapter *before* calling this
-    function.  On a cache miss the Context is constructed (which triggers
-    create_engine_adapter() → finds the pre-injected adapter).  On a cache
-    hit the adapter injection still runs (keeping _data_file_to_adapter
-    current for any other consumers) but the cached Context's internal
-    engine_adapter is the one built during its first construction — the
-    freshly injected adapter does *not* flow into the cached Context.  This
-    is safe because the cached Context's engine_adapter holds a
-    ``lambda: self._conn`` closure and ``self._conn`` is stable within a
-    single Database lifetime; ``Database.__init__`` evicts the cache before
-    a new lifetime begins.
-    """
-    cache_key = (str(sqlmesh_root), str(db_path))
-    ctx = _SQLMESH_CONTEXT_CACHE.get(cache_key)
-    if ctx is None:
-        from sqlmesh.core.config import Config, GatewayConfig
-        from sqlmesh.core.config.connection import DuckDBConnectionConfig
-
-        from sqlmesh import Context  # type: ignore[import-untyped]
-
-        config = Config(
-            default_gateway="moneybin",
-            gateways={
-                "moneybin": GatewayConfig(
-                    connection=DuckDBConnectionConfig(database=str(db_path)),
-                ),
-            },
-        )
-        ctx = Context(
-            paths=str(sqlmesh_root),
-            config=config,
-            gateway="moneybin",
-        )
-        _SQLMESH_CONTEXT_CACHE[cache_key] = ctx
-    return ctx
 
 
 @contextmanager
