@@ -9,6 +9,7 @@ not_implemented envelope shape — not real sync behavior.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
 from fastmcp import FastMCP
@@ -25,6 +26,7 @@ from moneybin.mcp.tools.sync import (
     sync_schedule_show,
     sync_status,
 )
+from moneybin.protocol.envelope import ResponseEnvelope
 
 _EXPECTED_TOOLS = {
     "sync_login",
@@ -65,7 +67,9 @@ def test_register_sync_tools_registers_all_nine() -> None:
         lambda: sync_schedule_remove(),
     ],
 )
-def test_sync_tool_returns_not_implemented_envelope(fn) -> None:  # noqa: ANN001
+def test_sync_tool_returns_not_implemented_envelope(
+    fn: Callable[[], ResponseEnvelope],
+) -> None:
     """Every sync tool returns a stub envelope pointing at the spec."""
     parsed = fn().to_dict()
     assert parsed["summary"]["sensitivity"] == "low"

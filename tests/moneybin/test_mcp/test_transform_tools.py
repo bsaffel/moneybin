@@ -9,6 +9,7 @@ and envelope shape, not real SQLMesh behavior.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
 from fastmcp import FastMCP
@@ -21,6 +22,7 @@ from moneybin.mcp.tools.transform import (
     transform_status,
     transform_validate,
 )
+from moneybin.protocol.envelope import ResponseEnvelope
 
 _EXPECTED_TOOLS = {
     "transform_status",
@@ -52,7 +54,9 @@ def test_register_transform_tools_registers_all_five() -> None:
         lambda: transform_apply(),
     ],
 )
-def test_transform_tool_returns_not_implemented_envelope(fn) -> None:  # noqa: ANN001
+def test_transform_tool_returns_not_implemented_envelope(
+    fn: Callable[[], ResponseEnvelope],
+) -> None:
     """Every transform tool returns a stub envelope referencing the spec."""
     parsed = fn().to_dict()
     assert parsed["summary"]["sensitivity"] == "low"
