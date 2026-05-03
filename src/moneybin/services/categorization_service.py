@@ -206,7 +206,7 @@ def validate_rule_items(
 
     items: list[CategorizationRuleInput] = []
     errors: list[dict[str, str]] = []
-    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]
+    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]  # raw is intentionally `object`; isinstance check below narrows the type
         if not isinstance(row, dict):
             errors.append({
                 "name": "(missing)",
@@ -214,8 +214,8 @@ def validate_rule_items(
             })
             continue
         row_dict: dict[str, object] = {
-            str(k): v  # pyright: ignore[reportUnknownArgumentType]
-            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]
+            str(k): v  # pyright: ignore[reportUnknownArgumentType]  # dict keys from untyped JSON input
+            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]  # dict from untyped JSON input
         }
         try:
             items.append(CategorizationRuleInput.model_validate(row_dict))
@@ -225,7 +225,7 @@ def validate_rule_items(
             if not name:
                 name = "(missing)"
             reason = "; ".join(
-                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]  # Pydantic error loc is Sequence[int | str]
                 for err in e.errors()
             )
             errors.append({"name": name, "reason": reason})

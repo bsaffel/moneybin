@@ -16,7 +16,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.errors import UserError  # noqa: F401  # used by Tasks 2–5
 from moneybin.services.categorization_service import (
-    CategorizationRuleInput,  # noqa: F401  # used by Tasks 2–5
+    CategorizationRuleInput,
     CategorizationService,  # noqa: F401  # used by Tasks 2–5
     validate_rule_items,
 )
@@ -32,6 +32,115 @@ def db(tmp_path: Path) -> Database:
     )
     create_core_tables(database)
     return database
+
+
+# --- CategorizationRuleInput model contract --------------------------------
+
+
+class TestCategorizationRuleInput:
+    """Direct model contract for the typed rule-creation input."""
+
+    @pytest.mark.unit
+    def test_strips_whitespace_on_string_fields(self) -> None:
+        item = CategorizationRuleInput(
+            name="  Starbucks  ",
+            merchant_pattern="  STARBUCKS  ",
+            category="  Food & Drink  ",
+        )
+        assert item.name == "Starbucks"
+        assert item.merchant_pattern == "STARBUCKS"
+        assert item.category == "Food & Drink"
+
+    @pytest.mark.unit
+    def test_extra_fields_forbidden(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(
+                name="x",
+                merchant_pattern="x",
+                category="x",
+                surprise="not allowed",  # type: ignore[call-arg]
+            )
+
+    @pytest.mark.unit
+    def test_empty_name_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(name="", merchant_pattern="x", category="y")
+
+    @pytest.mark.unit
+    def test_empty_merchant_pattern_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(name="x", merchant_pattern="", category="y")
+
+    @pytest.mark.unit
+    def test_empty_category_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(name="x", merchant_pattern="y", category="")
+
+    @pytest.mark.unit
+    def test_name_max_length_enforced(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(
+                name="x" * 201,
+                merchant_pattern="y",
+                category="z",
+            )
+
+    @pytest.mark.unit
+    def test_merchant_pattern_max_length_enforced(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(
+                name="x",
+                merchant_pattern="y" * 501,
+                category="z",
+            )
+
+    @pytest.mark.unit
+    def test_priority_negative_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(
+                name="x",
+                merchant_pattern="y",
+                category="z",
+                priority=-1,
+            )
+
+    @pytest.mark.unit
+    def test_priority_above_ceiling_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(
+                name="x",
+                merchant_pattern="y",
+                category="z",
+                priority=10_001,
+            )
+
+    @pytest.mark.unit
+    def test_match_type_invalid_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            CategorizationRuleInput(
+                name="x",
+                merchant_pattern="y",
+                category="z",
+                match_type="fuzzy",  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.unit
+    def test_default_priority_is_100(self) -> None:
+        item = CategorizationRuleInput(
+            name="x",
+            merchant_pattern="y",
+            category="z",
+        )
+        assert item.priority == 100
+
+    @pytest.mark.unit
+    def test_default_match_type_is_contains(self) -> None:
+        item = CategorizationRuleInput(
+            name="x",
+            merchant_pattern="y",
+            category="z",
+        )
+        assert item.match_type == "contains"
 
 
 # --- validate_rule_items ---------------------------------------------------
