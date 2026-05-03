@@ -1134,6 +1134,14 @@ Active consent grants, configured AI backend (name, type, is_local), consent mod
 
 Core and app table schemas with column names, types, and descriptions. Lets the AI write accurate SQL for `sql_query` without calling a discovery tool first.
 
+### `accounts://summary`
+
+Cross-account summary: list of accounts with display name, type, institution, currency, include_in_net_worth flag, archived status, and last known balance. Mirrors the `accounts_summary` tool response — available as ambient context so the AI can reference accounts without an extra tool call.
+
+### `net-worth://summary`
+
+Current net worth snapshot: total net worth, assets vs liabilities breakdown, and per-account balance contributions. Refreshed on each connection. Lets the AI answer "what's my net worth?" from ambient context without calling `reports_networth_get`.
+
 ### `moneybin://tools`
 
 Available tool namespaces with one-line descriptions, tool counts, and loaded/unloaded status. Lets the AI know what capabilities exist without seeing every tool schema. Example:
@@ -1263,6 +1271,12 @@ Per [`cli-restructure.md`](cli-restructure.md) v2. Hard cut: rename in place, no
 | (new) | `accounts_balance_assertions_list` | |
 | (new) | `accounts_balance_assertion_delete` | |
 | (new) | `reports_networth_history` | Moved out of `accounts_*` |
+| (new — `account-management.md`) | `accounts_summary` | Cross-account summary view |
+| (new) | `accounts_rename` | Rename an account |
+| (new) | `accounts_include` | Toggle include_in_net_worth |
+| (new) | `accounts_archive` | Mark archived; cascades exclude from net worth |
+| (new) | `accounts_unarchive` | Clear archived flag |
+| (new) | `accounts_settings_update` | Bulk metadata update (subtype, holder category, currency, credit limit, last four, official name) |
 
 ### `transactions_*` (entity ops)
 

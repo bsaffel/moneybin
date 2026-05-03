@@ -92,6 +92,8 @@ Once connected, ask things like:
 | AES-256-GCM encryption at rest, key management, automatic schema migrations | [Database & Security](docs/guides/database-security.md) |
 | Multi-profile isolation (per-profile DB, config, logs) | [Profiles](docs/guides/profiles.md) |
 | MCP server: 9 tool domains, prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
+| Account management: `accounts list/show/rename/include/archive/unarchive/set` — display preferences, lifecycle, and Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). Archive cascades to net worth exclusion; soft-validation on subtype with TTY prompt. | [Account Management](docs/specs/account-management.md) |
+| Net worth & balance tracking: `accounts balance show/history/assert/list/delete/reconcile` for per-account balance workflow; `reports networth show/history` for cross-account aggregation with period-over-period change. Authoritative observations from OFX, tabular running balances, and user assertions. Daily carry-forward interpolation; reconciliation deltas self-heal on reimport. | [Net Worth](docs/specs/net-worth.md) |
 | Direct SQL: shell, DuckDB UI, key tables documented | [SQL Access](docs/guides/sql-access.md) |
 | Synthetic data generator (3 personas, ~200 merchants, ground-truth labels) | [Synthetic Data](docs/guides/synthetic-data.md) |
 | Scenario test suite (10 scenarios, five-tier taxonomy, bug-report recipe) | [Scenario Authoring](docs/guides/scenario-authoring.md) |
@@ -121,7 +123,9 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 | ML-powered categorization, merchant entity resolution | 🗓️ |
 | Plaid Transactions sync (via `moneybin-server`) | 📐 |
 | SimpleFIN sync, Plaid Investments | 🗓️ |
-| Net worth & balance tracking, budget tracking | 📐 |
+| Account management: rename, archive/unarchive, include/exclude from net worth, Plaid-parity metadata (subtype, holder category, currency, credit limit) | ✅ |
+| Net worth & balance tracking: per-account balance workflow, daily carry-forward, reconciliation, cross-account aggregation with period-over-period change | ✅ |
+| Budget tracking | 🗓️ |
 | Investment tracking (holdings, cost basis) | 🗓️ |
 | Privacy tiers & consent model | 📐 |
 | MCP SQL schema discoverability (curated `moneybin://schema` resource) | ✅ |

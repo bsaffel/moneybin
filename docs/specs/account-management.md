@@ -1,7 +1,7 @@
 # Feature: Account Management
 
 ## Status
-in-progress
+implemented
 
 ## Goal
 
