@@ -42,7 +42,7 @@ def merchants_list() -> ResponseEnvelope:
                    canonical_name, category, subcategory
             FROM {MERCHANTS.full_name}
             ORDER BY canonical_name
-            """
+            """  # noqa: S608  # TableRef constant, no user input
         ).fetchall()
     except duckdb.CatalogException:
         rows = []
@@ -128,7 +128,7 @@ def merchants_create(
             created += 1
         except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
             skipped += 1
-            logger.exception(f"create_merchants failed for {canonical_name!r}")
+            logger.exception("create_merchants failed")
             error_details.append({
                 "canonical_name": canonical_name,
                 "reason": "Failed to create merchant — check logs for details.",

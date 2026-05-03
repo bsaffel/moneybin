@@ -51,7 +51,7 @@ def transactions_categorize_rules_list() -> ResponseEnvelope:
                    category, subcategory, priority, is_active
             FROM {CATEGORIZATION_RULES.full_name}
             ORDER BY priority ASC, created_at ASC
-            """
+            """  # noqa: S608  # TableRef constant, no user input
         ).fetchall()
     except duckdb.CatalogException:
         rows = []
@@ -121,7 +121,7 @@ def transactions_categorize_pending_list(
             WHERE c.transaction_id IS NULL
             ORDER BY t.transaction_date DESC
             LIMIT ?
-            """,
+            """,  # noqa: S608  # TableRef constants, no user input
             [clamped_limit],
         )
         columns = [desc[0] for desc in result.description]
@@ -252,7 +252,7 @@ def transactions_categorize_rules_create(
             created += 1
         except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
             skipped += 1
-            logger.exception(f"create_rules failed for {name!r}")
+            logger.exception("create_rules failed")
             error_details.append({
                 "name": name,
                 "reason": "Failed to create rule — check logs for details.",

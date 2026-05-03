@@ -41,7 +41,8 @@ def test_system_status_json_output(mock_get_db: MagicMock) -> None:
 
     result = runner.invoke(app, ["system", "status", "--output", "json"])
     assert result.exit_code == 0
-    payload = json.loads(result.stdout)
+    envelope = json.loads(result.stdout)
+    payload = envelope["status"]
     assert "accounts_count" in payload
     assert "transactions_count" in payload
     assert "matches_pending" in payload

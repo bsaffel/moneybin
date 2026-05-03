@@ -1,5 +1,6 @@
 """Tests for the unified `transactions review` command."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -83,3 +84,49 @@ def test_review_type_filter_categorize(
     out = result.output.lower()
     assert "categori" in out
     assert "match" not in out
+
+
+@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_status_json_output(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """--status --output json emits a structured envelope."""
+    mock_db = MagicMock()
+    mock_get_db.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(
+        app, ["transactions", "review", "--status", "--output", "json"]
+    )
+    assert result.exit_code == 0
+    envelope = json.loads(result.stdout)
+    payload = envelope["status"]
+    assert payload == {
+        "matches_pending": 0,
+        "categorize_pending": 0,
+        "total": 0,
+    }
+
+
+@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_status_json_type_filter(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """--type matches --output json includes only the matches key."""
+    mock_db = MagicMock()
+    mock_get_db.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(
+        app,
+        ["transactions", "review", "--type", "matches", "--status", "--output", "json"],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)["status"]
+    assert "matches_pending" in payload
+    assert "categorize_pending" not in payload
+    assert "total" not in payload

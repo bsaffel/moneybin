@@ -1,12 +1,11 @@
 """system — system and data status meta-view."""
 
-import json
 import logging
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import emit_json, handle_cli_errors
 
 app = typer.Typer(
     help="System and data status",
@@ -29,24 +28,21 @@ def system_status(
 
     min_d, max_d = s.transactions_date_range
     if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps(
-                {
-                    "accounts_count": s.accounts_count,
-                    "transactions_count": s.transactions_count,
-                    "transactions_date_range": [
-                        min_d.isoformat() if min_d else None,
-                        max_d.isoformat() if max_d else None,
-                    ],
-                    "last_import_at": s.last_import_at.isoformat()
-                    if s.last_import_at
-                    else None,
-                    "matches_pending": s.matches_pending,
-                    "categorize_pending": s.categorize_pending,
-                },
-                indent=2,
-                default=str,
-            )
+        emit_json(
+            "status",
+            {
+                "accounts_count": s.accounts_count,
+                "transactions_count": s.transactions_count,
+                "transactions_date_range": [
+                    min_d.isoformat() if min_d else None,
+                    max_d.isoformat() if max_d else None,
+                ],
+                "last_import_at": s.last_import_at.isoformat()
+                if s.last_import_at
+                else None,
+                "matches_pending": s.matches_pending,
+                "categorize_pending": s.categorize_pending,
+            },
         )
         return
 

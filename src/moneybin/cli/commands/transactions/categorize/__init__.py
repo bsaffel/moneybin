@@ -140,7 +140,7 @@ def stats(
     with handle_cli_errors() as db:
         coverage = CategorizationService(db).categorization_stats()
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         emit_json("summary", coverage)
         return
 
