@@ -22,9 +22,12 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import duckdb
+
+if TYPE_CHECKING:
+    from sqlmesh import Context  # type: ignore[import-untyped]
 
 from moneybin.config import get_settings
 from moneybin.secrets import (
@@ -301,7 +304,7 @@ class Database:
             # Context's engine_adapter is connected to this encrypted DB whether
             # the Context is newly built or retrieved from cache.
             ctx = _get_or_build_sqlmesh_context(sqlmesh_root, self._db_path)
-            ctx.migrate()  # type: ignore[union-attr]
+            ctx.migrate()
             logger.debug("sqlmesh migrate completed successfully")
             return True
         except Exception:  # noqa: BLE001 — sqlmesh migration failures are non-fatal
@@ -616,10 +619,10 @@ _SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
 # Only _run_sqlmesh_migrate() uses this cache.  sqlmesh_context() builds a
 # different adapter (cursor_init pins cursors to the moneybin catalog), so
 # sharing a cache entry would silently drop cursor_init on cache hits.
-_SQLMESH_CONTEXT_CACHE: dict[tuple[str, str], object] = {}
+_SQLMESH_CONTEXT_CACHE: dict[tuple[str, str], "Context"] = {}
 
 
-def _get_or_build_sqlmesh_context(sqlmesh_root: Path, db_path: Path) -> object:
+def _get_or_build_sqlmesh_context(sqlmesh_root: Path, db_path: Path) -> "Context":
     """Return a cached SQLMesh Context for the migrate path, building it if needed.
 
     The caller is responsible for injecting the adapter into

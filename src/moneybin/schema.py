@@ -42,14 +42,25 @@ CREATE TABLE IF NOT EXISTS {_SCHEMA_VERSION_TABLE} (
 """
 
 
+_ddl_hash_cache: str | None = None
+
+
 def _compute_ddl_hash() -> str:
-    """SHA-256 (truncated 16 hex) of concatenated schema DDL file contents."""
+    """SHA-256 (truncated 16 hex) of concatenated schema DDL file contents.
+
+    Cached for the process lifetime — DDL files don't change at runtime, so
+    re-reading them on every Database open wastes ~26 file reads per call.
+    """
+    global _ddl_hash_cache  # noqa: PLW0603 — module-level cache, set once
+    if _ddl_hash_cache is not None:
+        return _ddl_hash_cache
     h = hashlib.sha256()
     for sql_file in _SCHEMA_FILES:
         sql_path = _SQL_DIR / sql_file
         if sql_path.exists():
             h.update(sql_path.read_bytes())
-    return h.hexdigest()[:16]
+    _ddl_hash_cache = h.hexdigest()[:16]
+    return _ddl_hash_cache
 
 
 _SCHEMA_FILES: list[str] = [

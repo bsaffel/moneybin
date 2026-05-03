@@ -471,7 +471,7 @@ def test_sqlmesh_context_cache_reuses_built_context(
     db_path = tmp_path / "test.duckdb"
     database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
 
-    sentinel = object()
+    sentinel = MagicMock()
     cache_key = (str(db_mod._SQLMESH_ROOT), str(db_path))  # pyright: ignore[reportPrivateUsage]  # test-only
     db_mod._SQLMESH_CONTEXT_CACHE[cache_key] = sentinel  # pyright: ignore[reportPrivateUsage]  # test-only
 

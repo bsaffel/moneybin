@@ -9,7 +9,7 @@ from __future__ import annotations
 import atexit
 import os
 import shutil
-import subprocess  # noqa: S404 — subprocess is intentional; we invoke uv as a test harness
+import subprocess  # noqa: S404 — subprocess is intentional; we invoke the moneybin entrypoint directly
 import sys
 import tempfile
 from dataclasses import dataclass

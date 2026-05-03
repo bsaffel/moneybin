@@ -24,7 +24,7 @@ import moneybin.database as db_module
 from moneybin.database import Database
 from tests.moneybin.db_helpers import create_core_tables_raw
 
-_MOCK_KEY = "test-encryption-key-256bit-placeholder"
+_MOCK_KEY = "test-encryption-key-for-unit-tests"
 
 
 def _make_mock_store() -> MagicMock:

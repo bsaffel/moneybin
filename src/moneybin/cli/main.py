@@ -30,10 +30,6 @@ logger = logging.getLogger(__name__)
 
 _COMMANDS_PKG = "moneybin.cli.commands"
 
-# Attributes that Typer's get_group_from_info reads from a typer_instance.
-# Accessing any of these on the proxy triggers the real module import.
-_LAZY_TRIGGER_ATTRS = frozenset({"registered_commands", "registered_groups"})
-
 
 class _LazyTyper(typer.Typer):
     """A Typer subclass whose commands load from a module on first dispatch.
