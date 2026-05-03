@@ -197,7 +197,7 @@ class TestDBReadOnlyCommands:
     # ── matches ─────────────────────────────────────────────────────────
 
     def test_matches_history(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("matches", "history", env=e2e_profile)
+        result = run_cli("transactions", "matches", "history", env=e2e_profile)
         result.assert_success()
 
     # ── mcp ─────────────────────────────────────────────────────────────

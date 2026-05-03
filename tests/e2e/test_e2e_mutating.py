@@ -333,24 +333,26 @@ class TestMatchesMutating:
 
     def test_matches_run(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "matchrun")
-        result = run_cli("matches", "run", env=env)
+        result = run_cli("transactions", "matches", "run", env=env)
         # May exit non-zero if no transforms have been run — no Python crash is the bar
         assert "Traceback (most recent call last)" not in result.output
 
     def test_matches_review_accept_all(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "matchreview")
-        result = run_cli("matches", "review", "--accept-all", env=env)
+        result = run_cli("transactions", "matches", "review", "--accept-all", env=env)
         result.assert_success()
 
     def test_matches_backfill(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "matchbf")
-        result = run_cli("matches", "backfill", env=env)
+        result = run_cli("transactions", "matches", "backfill", env=env)
         # May exit non-zero if no transforms have been run — no Python crash is the bar
         assert "Traceback (most recent call last)" not in result.output
 
     def test_matches_undo_nonexistent(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "matchundo")
-        result = run_cli("matches", "undo", "nonexistent-id", "--yes", env=env)
+        result = run_cli(
+            "transactions", "matches", "undo", "nonexistent-id", "--yes", env=env
+        )
         # Should fail gracefully with "not found", not crash
         assert "Traceback (most recent call last)" not in result.output
 

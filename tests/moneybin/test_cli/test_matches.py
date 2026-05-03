@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.matches import app
+from moneybin.cli.commands.transactions.matches import app
 
 runner = CliRunner()
 
@@ -13,7 +13,7 @@ class TestMatchesRun:
     """Tests for the matches run command."""
 
     @patch("moneybin.cli.utils.get_database")
-    @patch("moneybin.cli.commands.matches.TransactionMatcher")
+    @patch("moneybin.cli.commands.transactions.matches.TransactionMatcher")
     @patch("moneybin.matching.priority.seed_source_priority")
     @patch("moneybin.config.get_settings")
     def test_run_succeeds(
@@ -171,7 +171,7 @@ class TestMatchesHistory:
     """Tests for the matches history command."""
 
     @patch("moneybin.cli.utils.get_database")
-    @patch("moneybin.cli.commands.matches.get_match_log")
+    @patch("moneybin.cli.commands.transactions.matches.get_match_log")
     def test_history_empty(self, mock_log: MagicMock, mock_get_db: MagicMock) -> None:
         mock_get_db.return_value = MagicMock()
         mock_log.return_value = []
@@ -183,7 +183,7 @@ class TestMatchesUndo:
     """Tests for the matches undo command."""
 
     @patch("moneybin.cli.utils.get_database")
-    @patch("moneybin.cli.commands.matches.undo_match")
+    @patch("moneybin.cli.commands.transactions.matches.undo_match")
     def test_undo_calls_persistence(
         self, mock_undo: MagicMock, mock_get_db: MagicMock
     ) -> None:

@@ -28,7 +28,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["categorize", "auto", "confirm"],
     ["categorize", "auto", "stats"],
     ["categorize", "auto", "rules"],
-    ["matches"],
+    ["transactions", "matches"],
     ["transform"],
     ["synthetic"],
     ["db"],

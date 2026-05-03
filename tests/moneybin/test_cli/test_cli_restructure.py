@@ -102,8 +102,8 @@ class TestStubbedCommands:
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
     def test_matches_stubbed(self, mock_profile: MagicMock) -> None:
-        """Matches group exists but shows not-implemented."""
-        result = runner.invoke(app, ["matches", "--help"])
+        """Matches group exists under transactions."""
+        result = runner.invoke(app, ["transactions", "matches", "--help"])
         assert result.exit_code == 0
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")

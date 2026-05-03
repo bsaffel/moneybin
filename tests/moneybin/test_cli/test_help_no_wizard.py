@@ -30,7 +30,7 @@ _GROUPS = [
     ["import"],
     ["sync"],
     ["categorize"],
-    ["matches"],
+    ["transactions", "matches"],
     ["transform"],
     ["synthetic"],
     ["track"],

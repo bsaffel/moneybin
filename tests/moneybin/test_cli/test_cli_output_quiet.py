@@ -31,7 +31,7 @@ _READ_ONLY_HELP_PATHS: list[list[str]] = [
     ["sync", "status", "--help"],
     ["profile", "list", "--help"],
     ["profile", "show", "--help"],
-    ["matches", "history", "--help"],
+    ["transactions", "matches", "history", "--help"],
     ["mcp", "list-tools", "--help"],
     ["mcp", "list-prompts", "--help"],
     ["db", "migrate", "status", "--help"],

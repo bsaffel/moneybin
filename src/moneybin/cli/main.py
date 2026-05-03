@@ -21,7 +21,6 @@ from .commands import (
     db,
     import_cmd,
     logs,
-    matches,
     mcp,
     merchants,
     migrate,
@@ -130,7 +129,6 @@ app.add_typer(
     name="categorize",
     help="Manage transaction categories, rules, and merchants",
 )
-app.add_typer(matches.app, name="matches", help="Review and manage transaction matches")
 app.add_typer(
     transform.app,
     name="transform",
