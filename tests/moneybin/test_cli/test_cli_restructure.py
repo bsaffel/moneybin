@@ -124,12 +124,6 @@ class TestStubbedCommands:
         assert result.exit_code == 0
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
-    def test_track_stubbed(self, mock_profile: MagicMock) -> None:
-        """Track group exists but shows not-implemented."""
-        result = runner.invoke(app, ["track", "--help"])
-        assert result.exit_code == 0
-
-    @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
     def test_export_stubbed(self, mock_profile: MagicMock) -> None:
         """Export group exists."""
         result = runner.invoke(app, ["export", "--help"])

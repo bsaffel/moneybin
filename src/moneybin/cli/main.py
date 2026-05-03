@@ -38,7 +38,6 @@ from .commands import (
 )
 from .commands.stubs import (
     export_app,
-    track_app,
 )
 from .utils import resolve_profile, stash_cli_flags
 
@@ -133,7 +132,6 @@ app.add_typer(
     name="synthetic",
     help="Generate and manage synthetic financial data for testing",
 )
-app.add_typer(track_app, name="track", help="Balance tracking and net worth")
 app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(

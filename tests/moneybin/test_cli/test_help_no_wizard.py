@@ -39,7 +39,6 @@ _GROUPS = [
     ["merchants"],
     ["transform"],
     ["synthetic"],
-    ["track"],
     ["stats"],
     ["export"],
     ["mcp"],
