@@ -9,6 +9,7 @@ implementation.
 import typer
 
 from ..stubs import _not_implemented
+from . import balance, investments
 
 app = typer.Typer(
     help="Accounts and per-account workflows (balance, investments)",
@@ -43,3 +44,7 @@ def accounts_include(
 ) -> None:
     """Toggle include_in_net_worth for an account."""
     _not_implemented("account-management.md")
+
+
+app.add_typer(balance.app, name="balance")
+app.add_typer(investments.app, name="investments")

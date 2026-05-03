@@ -11,6 +11,8 @@ import typer
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["_not_implemented"]
+
 
 def _not_implemented(owning_spec: str) -> None:
     """Print a not-implemented message and exit cleanly.
