@@ -7,9 +7,9 @@ a fresh one, releasing any held write lock. Classified domain exceptions
 become error envelopes here; anything else propagates to the server's
 ``mask_error_details`` boundary.
 
-Known limitation — sync tool body continues after timeout: ``asyncio.wait_for``
-cancels the future, but the OS thread running the sync body keeps going
-until it naturally returns. A tool that mutates filesystem or DB state
+Known limitation — sync tool body continues after timeout: ``asyncio.timeout()``
+cancels the awaited task, but the OS thread running the sync body keeps
+going until it naturally returns. A tool that mutates filesystem or DB state
 (e.g., ``import_inbox_sync``) may finish that work in the background after
 the client has already received a ``timed_out`` envelope. Clients that
 retry can produce duplicate or conflicting writes. The contract here is
