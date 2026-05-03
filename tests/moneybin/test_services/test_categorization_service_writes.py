@@ -17,7 +17,8 @@ from moneybin.database import Database
 from moneybin.errors import UserError  # noqa: F401  # used by Tasks 2–5
 from moneybin.services.categorization_service import (
     CategorizationRuleInput,
-    CategorizationService,  # noqa: F401  # used by Tasks 2–5
+    CategorizationService,
+    RuleCreationResult,  # noqa: F401  # used by Tasks 2–5
     validate_rule_items,
 )
 from tests.moneybin.db_helpers import create_core_tables
@@ -229,4 +230,90 @@ class TestValidateRuleItems:
             validate_rule_items("not a list")  # type: ignore[arg-type]
 
 
-# Placeholder sections — Tasks 2/3/4/5 add tests below this line.
+class TestCreateRules:
+    """CategorizationService.create_rules — bulk INSERT into app.categorization_rules."""
+
+    @pytest.mark.unit
+    def test_empty_input_returns_zero_counts(self, db: Database) -> None:
+        result = CategorizationService(db).create_rules([])
+        assert result.created == 0
+        assert result.skipped == 0
+        assert result.error_details == []
+        assert result.rule_ids == []
+
+    @pytest.mark.unit
+    def test_writes_rule_row_with_defaults(self, db: Database) -> None:
+        items = [
+            CategorizationRuleInput(
+                name="Starbucks",
+                merchant_pattern="STARBUCKS",
+                category="Food & Drink",
+            )
+        ]
+        result = CategorizationService(db).create_rules(items)
+
+        assert result.created == 1
+        assert len(result.rule_ids) == 1
+        rule_id = result.rule_ids[0]
+        assert len(rule_id) == 12  # 12-char UUID hex per identifiers.md
+
+        row = db.execute(
+            "SELECT name, merchant_pattern, match_type, category, subcategory, "
+            "min_amount, max_amount, account_id, priority, is_active, created_by "
+            "FROM app.categorization_rules WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row is not None
+        (name, pattern, mt, cat, sub, min_a, max_a, acct, prio, active, by) = row
+        assert (name, pattern, mt, cat, sub) == (
+            "Starbucks",
+            "STARBUCKS",
+            "contains",
+            "Food & Drink",
+            None,
+        )
+        assert (min_a, max_a, acct, prio) == (None, None, None, 100)
+        assert active is True
+        assert by == "ai"
+
+    @pytest.mark.unit
+    def test_writes_full_rule_row(self, db: Database) -> None:
+        items = [
+            CategorizationRuleInput(
+                name="Big Amazon",
+                merchant_pattern="AMZN",
+                category="Shopping",
+                subcategory="Online",
+                match_type="contains",
+                min_amount=100,
+                max_amount=1000,
+                account_id="ACC001",
+                priority=50,
+            )
+        ]
+        result = CategorizationService(db).create_rules(items)
+        assert result.created == 1
+
+        row = db.execute(
+            "SELECT min_amount, max_amount, account_id, priority, subcategory "
+            "FROM app.categorization_rules WHERE rule_id = ?",
+            [result.rule_ids[0]],
+        ).fetchone()
+        assert row == (100, 1000, "ACC001", 50, "Online")
+
+    @pytest.mark.unit
+    def test_writes_multiple_rules(self, db: Database) -> None:
+        items = [
+            CategorizationRuleInput(
+                name=f"R{i}",
+                merchant_pattern=f"P{i}",
+                category="Cat",
+            )
+            for i in range(3)
+        ]
+        result = CategorizationService(db).create_rules(items)
+        assert result.created == 3
+        assert len(set(result.rule_ids)) == 3  # all unique
+
+        row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
+        assert row == (3,)

@@ -119,6 +119,23 @@ class BulkCategorizationResult:
         self.errors += len(parse_errors)
 
 
+@dataclass(slots=True)
+class RuleCreationResult:
+    """Typed result for CategorizationService.create_rules."""
+
+    created: int
+    skipped: int
+    error_details: list[dict[str, str]]
+    rule_ids: list[str]
+
+    def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
+        """Prepend boundary-validation errors and reflect them in the skipped count."""
+        if not parse_errors:
+            return
+        self.error_details = parse_errors + self.error_details
+        self.skipped += len(parse_errors)
+
+
 class BulkCategorizationItem(BaseModel):
     """One row of input for ``CategorizationService.bulk_categorize``.
 
@@ -404,6 +421,67 @@ class CategorizationService:
         )
         logger.info(f"Created merchant mapping {merchant_id}")
         return merchant_id
+
+    # -- Rule management --
+
+    def create_rules(
+        self, items: Sequence[CategorizationRuleInput]
+    ) -> RuleCreationResult:
+        """Create multiple categorization rules in one call.
+
+        Each item is INSERTed into ``app.categorization_rules`` with a fresh
+        12-char UUID hex ``rule_id``, ``is_active=true``, and
+        ``created_by='ai'``. Per-row insertion failures are caught so a
+        single bad row does not abort the batch — they appear in
+        ``error_details``.
+        """
+        created = 0
+        skipped = 0
+        error_details: list[dict[str, str]] = []
+        rule_ids: list[str] = []
+
+        for item in items:
+            rule_id = uuid.uuid4().hex[:12]
+            try:
+                self._db.execute(
+                    f"""
+                    INSERT INTO {CATEGORIZATION_RULES.full_name}
+                    (rule_id, name, merchant_pattern, match_type,
+                     min_amount, max_amount, account_id,
+                     category, subcategory, priority, is_active,
+                     created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
+                            'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    [
+                        rule_id,
+                        item.name,
+                        item.merchant_pattern,
+                        item.match_type,
+                        item.min_amount,
+                        item.max_amount,
+                        item.account_id,
+                        item.category,
+                        item.subcategory,
+                        item.priority,
+                    ],
+                )
+                created += 1
+                rule_ids.append(rule_id)
+            except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+                skipped += 1
+                logger.exception("create_rules failed")
+                error_details.append({
+                    "name": item.name,
+                    "reason": "Failed to create rule — check logs for details.",
+                })
+
+        return RuleCreationResult(
+            created=created,
+            skipped=skipped,
+            error_details=error_details,
+            rule_ids=rule_ids,
+        )
 
     # -- Categorization core --
 
