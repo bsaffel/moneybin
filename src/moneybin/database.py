@@ -569,7 +569,7 @@ def interrupt_and_reset_database() -> None:
     tool actually touched the DB).
 
     Known limitation — thread-survivor race: when this is called from the
-    MCP timeout path, ``asyncio.wait_for`` cancels the awaited future but
+    MCP timeout path, ``asyncio.timeout()`` cancels the awaited task but
     the underlying ``asyncio.to_thread`` worker keeps running until the
     sync tool body returns. If that surviving thread later touches the DB,
     it will see the closed connection and raise — that exception surfaces
