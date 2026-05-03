@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Mapping, Sequence
 
 import duckdb
@@ -24,7 +23,7 @@ from moneybin.services.categorization_service import (
     BulkCategorizationResult,
     CategorizationService,
     validate_bulk_items,
-    validate_match_type,
+    validate_rule_items,
 )
 from moneybin.tables import (
     CATEGORIZATION_RULES,
@@ -190,88 +189,15 @@ def transactions_categorize_rules_create(
             sensitivity="low",
         )
 
-    db = get_database()
-    created = 0
-    skipped = 0
-    error_details: list[dict[str, str]] = []
-
-    for item in rules:
-        name = str(item.get("name", "")).strip()
-        pattern = str(item.get("merchant_pattern", "")).strip()
-        category = str(item.get("category", "")).strip()
-        if not name or not pattern or not category:
-            skipped += 1
-            error_details.append({
-                "name": name or "(missing)",
-                "reason": "Missing name, merchant_pattern, or category",
-            })
-            continue
-
-        subcategory = str(item.get("subcategory", "")).strip() or None
-        raw_match_type = str(item.get("match_type", "contains")).strip()
-        try:
-            match_type = validate_match_type(raw_match_type)
-        except ValueError:
-            skipped += 1
-            error_details.append({
-                "name": name,
-                "reason": f"Invalid match_type: {raw_match_type}",
-            })
-            continue
-
-        min_amount = item.get("min_amount")
-        max_amount = item.get("max_amount")
-        account_id = item.get("account_id")
-        raw_priority = item.get("priority", 100)
-        try:
-            priority = int(raw_priority or 100)
-        except (TypeError, ValueError):
-            skipped += 1
-            error_details.append({
-                "name": name,
-                "reason": f"Invalid priority: {raw_priority!r}",
-            })
-            continue
-
-        rule_id = uuid.uuid4().hex[:12]
-        try:
-            db.execute(
-                f"""
-                INSERT INTO {CATEGORIZATION_RULES.full_name}
-                (rule_id, name, merchant_pattern, match_type,
-                 min_amount, max_amount, account_id,
-                 category, subcategory, priority, is_active,
-                 created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
-                        'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,
-                [
-                    rule_id,
-                    name,
-                    pattern,
-                    match_type,
-                    min_amount,
-                    max_amount,
-                    account_id,
-                    category,
-                    subcategory,
-                    priority,
-                ],
-            )
-            created += 1
-        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
-            skipped += 1
-            logger.exception("create_rules failed")
-            error_details.append({
-                "name": name,
-                "reason": "Failed to create rule — check logs for details.",
-            })
+    validated, parse_errors = validate_rule_items(rules)
+    result = CategorizationService(get_database()).create_rules(validated)
+    result.merge_parse_errors(parse_errors)
 
     return build_envelope(
         data={
-            "created": created,
-            "skipped": skipped,
-            "error_details": error_details,
+            "created": result.created,
+            "skipped": result.skipped,
+            "error_details": result.error_details,
         },
         sensitivity="low",
         total_count=len(rules),
