@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.main import app  # noqa: F401  # ensures module is imported
-
-# `from moneybin.cli import main` resolves to the re-exported function rather
-# than the submodule (the CLI package re-exports `main` in its __init__).
-# Look the module up via sys.modules to monkeypatch its attributes.
-cli_main = sys.modules["moneybin.cli.main"]
-cli_utils = sys.modules["moneybin.cli.utils"]
+from moneybin.cli import utils as cli_utils
+from moneybin.cli.main import app
 
 
 @pytest.fixture()
