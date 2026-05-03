@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -68,13 +68,13 @@ class BalanceObservationListResult:
     """Result of a balance-observation query."""
 
     observations: list[BalanceObservation]
-    sensitivity: str = "medium"
+    sensitivity: Literal["low", "medium", "high"] = "medium"
 
     def to_envelope(self) -> ResponseEnvelope:
         """Wrap observations in the standard MCP response envelope."""
         return build_envelope(
             data=[o.to_dict() for o in self.observations],
-            sensitivity=self.sensitivity,  # pyright: ignore[reportArgumentType]  # str → Literal at the boundary
+            sensitivity=self.sensitivity,
         )
 
 
@@ -83,13 +83,13 @@ class BalanceAssertionListResult:
     """Result of a balance-assertion query."""
 
     assertions: list[BalanceAssertion]
-    sensitivity: str = "medium"
+    sensitivity: Literal["low", "medium", "high"] = "medium"
 
     def to_envelope(self) -> ResponseEnvelope:
         """Wrap assertions in the standard MCP response envelope."""
         return build_envelope(
             data=[a.to_dict() for a in self.assertions],
-            sensitivity=self.sensitivity,  # pyright: ignore[reportArgumentType]
+            sensitivity=self.sensitivity,
         )
 
 
@@ -109,7 +109,12 @@ class BalanceService:
         balance: Decimal,
         notes: str | None = None,
     ) -> BalanceAssertion:
-        """Insert or update a balance assertion. Refreshes created_at on conflict."""
+        """Insert or update a balance assertion.
+
+        Uses NOW() instead of CURRENT_TIMESTAMP — DuckDB treats CURRENT_TIMESTAMP
+        as an identifier (not a function call) inside ON CONFLICT DO UPDATE clauses.
+        On the INSERT path, created_at is populated from the column DEFAULT.
+        """
         self._db.execute(
             f"""
             INSERT INTO {BALANCE_ASSERTIONS.full_name}
