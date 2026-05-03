@@ -113,11 +113,22 @@ class TestStubCommands:
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],
             ["sync", "schedule", "remove"],
-            ["track", "balance", "show"],
-            ["track", "networth", "show"],
-            ["track", "budget", "show"],
-            ["track", "recurring", "show"],
-            ["track", "investments", "show"],
+            ["accounts", "list"],
+            ["accounts", "show", "ACC1"],
+            ["accounts", "rename", "ACC1", "newname"],
+            ["accounts", "include", "ACC1"],
+            ["accounts", "balance", "show"],
+            ["accounts", "investments", "show"],
+            ["reports", "networth", "show"],
+            ["reports", "spending"],
+            ["reports", "cashflow"],
+            ["reports", "budget"],
+            ["reports", "health"],
+            ["budget", "set", "Food", "500"],
+            ["budget", "delete", "Food"],
+            ["tax", "w2", "2024"],
+            ["tax", "deductions", "2024"],
+            ["system", "status"],
             ["export", "run"],
         ],
         ids=lambda c: " ".join(c),
@@ -184,14 +195,14 @@ class TestDBReadOnlyCommands:
         # May exit 1 if format not found — no crash is the bar
         assert "Traceback" not in result.stderr
 
-    # ── categorize ──────────────────────────────────────────────────────
+    # ── transactions categorize ──────────────────────────────────────────
 
-    def test_categorize_summary(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("categorize", "summary", env=e2e_profile)
+    def test_categorize_stats(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("transactions", "categorize", "stats", env=e2e_profile)
         result.assert_success()
 
-    def test_categorize_list_rules(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("categorize", "list-rules", env=e2e_profile)
+    def test_categorize_rules_list(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("transactions", "categorize", "rules", "list", env=e2e_profile)
         result.assert_success()
 
     # ── matches ─────────────────────────────────────────────────────────

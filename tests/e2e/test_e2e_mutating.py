@@ -271,7 +271,7 @@ class TestCategorizeMutating:
 
     def test_categorize_apply_rules(self, tmp_path: Path) -> None:
         env = make_workflow_env(tmp_path, "catrules")
-        result = run_cli("categorize", "apply-rules", env=env)
+        result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
 
     @pytest.mark.skipif(not _has_duckdb_cli, reason="DuckDB CLI not installed")
@@ -300,18 +300,20 @@ class TestCategorizeMutating:
         result.assert_success()
 
         # auto-review lists the pending proposal
-        result = run_cli("categorize", "auto", "review", env=env)
+        result = run_cli("transactions", "categorize", "auto", "review", env=env)
         result.assert_success()
         assert "autoe2e0001" in result.output, (
             f"auto-review did not surface proposal: {result.output}"
         )
 
         # auto-stats reports the pending proposal
-        result = run_cli("categorize", "auto", "stats", env=env)
+        result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
 
         # auto-confirm --approve-all promotes it
-        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
+        result = run_cli(
+            "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
+        )
         result.assert_success()
         assert "Approved" in result.output, (
             f"auto-confirm missing approval message: {result.output}"
@@ -319,11 +321,11 @@ class TestCategorizeMutating:
 
         # auto-rules now lists at least one active rule, and auto-stats
         # reflects the promotion
-        result = run_cli("categorize", "auto", "rules", env=env)
+        result = run_cli("transactions", "categorize", "auto", "rules", env=env)
         result.assert_success()
         assert "autoe2e0001" not in result.output  # listed by rule_id, not proposal_id
 
-        result = run_cli("categorize", "auto", "stats", env=env)
+        result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 
@@ -337,9 +339,17 @@ class TestMatchesMutating:
         # May exit non-zero if no transforms have been run — no Python crash is the bar
         assert "Traceback (most recent call last)" not in result.output
 
-    def test_matches_review_accept_all(self, tmp_path: Path) -> None:
+    def test_matches_review_confirm_all(self, tmp_path: Path) -> None:
+        """Unified review with --type matches --confirm-all (v2 replacement for `matches review --accept-all`)."""
         env = make_workflow_env(tmp_path, "matchreview")
-        result = run_cli("transactions", "matches", "review", "--accept-all", env=env)
+        result = run_cli(
+            "transactions",
+            "review",
+            "--type",
+            "matches",
+            "--confirm-all",
+            env=env,
+        )
         result.assert_success()
 
     def test_matches_backfill(self, tmp_path: Path) -> None:
