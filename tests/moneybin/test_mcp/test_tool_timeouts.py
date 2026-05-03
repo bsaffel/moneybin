@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -137,7 +138,7 @@ def test_async_generator_tool_rejected_at_decoration() -> None:
 
 @pytest.mark.integration
 def test_back_to_back_call_after_timeout_succeeds(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A call that times out must release the DB lock so the next call works."""
