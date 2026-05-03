@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -40,36 +39,42 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
 class TestInboxSyncTool:
     """import_inbox_sync envelope shape and actions."""
 
-    def test_returns_low_sensitivity_envelope(self, patch_service: MagicMock) -> None:
+    async def test_returns_low_sensitivity_envelope(
+        self, patch_service: MagicMock
+    ) -> None:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 3}],
         )
-        envelope = asyncio.run(inbox_sync_tool())
+        envelope = await inbox_sync_tool()
         assert envelope.summary.sensitivity == "low"
         assert envelope.data["processed"][0]["filename"] == "a.csv"
 
-    def test_failure_includes_actions_hint(self, patch_service: MagicMock) -> None:
+    async def test_failure_includes_actions_hint(
+        self, patch_service: MagicMock
+    ) -> None:
         patch_service.sync.return_value = InboxSyncResult(
             failed=[{"filename": "x.csv", "error_code": "needs_account_name"}],
         )
-        envelope = asyncio.run(inbox_sync_tool())
+        envelope = await inbox_sync_tool()
         assert any("inbox/<account-slug>" in a for a in envelope.actions)
 
-    def test_no_failure_no_resolution_hint(self, patch_service: MagicMock) -> None:
+    async def test_no_failure_no_resolution_hint(
+        self, patch_service: MagicMock
+    ) -> None:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 1}],
         )
-        envelope = asyncio.run(inbox_sync_tool())
+        envelope = await inbox_sync_tool()
         assert not any("inbox/<account-slug>" in a for a in envelope.actions)
 
 
 class TestInboxListTool:
     """import_inbox_list envelope shape."""
 
-    def test_returns_would_process_shape(self, patch_service: MagicMock) -> None:
+    async def test_returns_would_process_shape(self, patch_service: MagicMock) -> None:
         patch_service.enumerate.return_value = InboxListResult(
             would_process=[{"filename": "a.csv", "account_hint": None}],
         )
-        envelope = asyncio.run(inbox_list_tool())
+        envelope = await inbox_list_tool()
         assert envelope.summary.sensitivity == "low"
         assert envelope.data["would_process"][0]["filename"] == "a.csv"
