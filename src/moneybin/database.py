@@ -637,9 +637,14 @@ def _get_or_build_sqlmesh_context(sqlmesh_root: Path, db_path: Path) -> "Context
     BaseDuckDBConnectionConfig._data_file_to_adapter *before* calling this
     function.  On a cache miss the Context is constructed (which triggers
     create_engine_adapter() → finds the pre-injected adapter).  On a cache
-    hit the stored Context is returned directly; the adapter field inside it
-    is already set from the first call, so the inject/cleanup in the caller
-    is a no-op for the connection state — but still correct to run.
+    hit the adapter injection still runs (keeping _data_file_to_adapter
+    current for any other consumers) but the cached Context's internal
+    engine_adapter is the one built during its first construction — the
+    freshly injected adapter does *not* flow into the cached Context.  This
+    is safe because the cached Context's engine_adapter holds a
+    ``lambda: self._conn`` closure and ``self._conn`` is stable within a
+    single Database lifetime; ``Database.__init__`` evicts the cache before
+    a new lifetime begins.
     """
     cache_key = (str(sqlmesh_root), str(db_path))
     ctx = _SQLMESH_CONTEXT_CACHE.get(cache_key)

@@ -21,15 +21,11 @@ import pytest
 # `uv run pytest`, which prepends `.venv/bin` to PATH and sets sys.executable
 # to the venv's python — so its sibling `moneybin` is what we want. Calling
 # the script directly skips uv's per-invocation project-resolve overhead
-# (~100-200ms × 100+ calls in the E2E suite).
+# (~100-200ms × 100+ calls in the E2E suite). The existence check fires
+# inside `run_cli` (not at module-top) so a fresh checkout without `uv sync`
+# can still collect non-E2E tests without a confusing collection-time error.
 _VENV_BIN = Path(sys.executable).parent
 _MONEYBIN_BIN = _VENV_BIN / "moneybin"
-if not _MONEYBIN_BIN.exists():
-    msg = (
-        f"moneybin entrypoint not found at {_MONEYBIN_BIN}. "
-        f"Run `uv sync` to populate the venv before running E2E tests."
-    )
-    raise RuntimeError(msg)
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -117,6 +113,11 @@ def run_cli(
     Returns:
         CLIResult with exit_code, stdout, stderr.
     """
+    if not _MONEYBIN_BIN.exists():
+        pytest.fail(
+            f"moneybin entrypoint not found at {_MONEYBIN_BIN}. "
+            "Run `uv sync` to populate the venv before running E2E tests."
+        )
     cmd = [str(_MONEYBIN_BIN), *args]
     # When no env is provided, override MONEYBIN_PROFILE and MONEYBIN_HOME
     # to prevent the first-run setup wizard and isolate from the user's
