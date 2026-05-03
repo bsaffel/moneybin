@@ -29,6 +29,7 @@ SignConventionType = Literal[
     "negative_is_expense", "negative_is_income", "split_debit_credit"
 ]
 NumberFormatType = Literal["us", "european", "swiss_french", "zero_decimal"]
+ConfidenceType = Literal["high", "medium", "low"]
 
 
 class TabularFormat(BaseModel, frozen=True):

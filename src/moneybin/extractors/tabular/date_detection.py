@@ -11,7 +11,10 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from moneybin.extractors.tabular.formats import NumberFormatType
+    from moneybin.extractors.tabular.formats import (
+        ConfidenceType,
+        NumberFormatType,
+    )
 
 _CURRENCY_SYMBOLS = re.compile(
     r"[$€£¥₩₹₽₺₫kr\s]|CHF|R\$|kr\b|SEK|NOK|DKK", re.IGNORECASE
@@ -44,7 +47,7 @@ def _max_year() -> int:
 
 def detect_date_format(
     values: list[str | None],
-) -> tuple[str | None, str]:
+) -> tuple[str | None, "ConfidenceType"]:
     """Detect the date format from sample values.
 
     Tries each candidate format and scores on parse rate and date range
@@ -108,7 +111,7 @@ def detect_date_format(
 def _disambiguate_dd_mm(
     values: list[str],
     scores: list[tuple[str, float, float]],
-) -> tuple[str | None, str]:
+) -> tuple[str | None, "ConfidenceType"]:
     """Disambiguate DD/MM vs MM/DD using positional value analysis."""
     sep_pattern = re.compile(r"[/\-.]")
     pos1_max = 0
