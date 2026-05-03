@@ -30,6 +30,9 @@ class TableRef(NamedTuple):
 DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
+FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
+FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
+AGG_NET_WORTH = TableRef("core", "agg_net_worth", audience="interface")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
@@ -44,6 +47,8 @@ TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
 IMPORT_LOG = TableRef("raw", "import_log")
 
 # -- App tables (application-managed data) --
+ACCOUNT_SETTINGS = TableRef("app", "account_settings", audience="interface")
+BALANCE_ASSERTIONS = TableRef("app", "balance_assertions", audience="interface")
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")
 BUDGETS = TableRef("app", "budgets", audience="interface")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
