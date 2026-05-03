@@ -152,47 +152,6 @@ class BulkCategorizationItem(BaseModel):
     subcategory: str | None = Field(default=None, min_length=1, max_length=100)
 
 
-def validate_bulk_items(
-    raw: object,
-) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
-    """Validate a raw decoded JSON array into typed items + per-row errors.
-
-    Per-item validation: a malformed row contributes an ``error_details`` entry
-    but does not abort the batch. Callers merge ``parse_errors`` into the
-    final ``BulkCategorizationResult.error_details`` so the response envelope
-    surfaces every failure together.
-    """
-    if not isinstance(raw, list):
-        raise ValueError("Input must be a JSON array of categorization items")
-
-    items: list[BulkCategorizationItem] = []
-    errors: list[dict[str, str]] = []
-    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]  # raw is intentionally `object`; isinstance check below narrows the type
-        if not isinstance(row, dict):
-            errors.append({
-                "transaction_id": "(missing)",
-                "reason": f"Row {index} is not an object",
-            })
-            continue
-        row_dict: dict[str, object] = {
-            str(k): v  # pyright: ignore[reportUnknownArgumentType]  # dict keys from untyped JSON input
-            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]  # dict from untyped JSON input
-        }
-        try:
-            items.append(BulkCategorizationItem.model_validate(row_dict))
-        except ValidationError as e:
-            txn_id_val = row_dict.get("transaction_id")
-            txn_id = str(txn_id_val).strip() if isinstance(txn_id_val, str) else ""
-            if not txn_id:
-                txn_id = "(missing)"
-            reason = "; ".join(
-                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]  # Pydantic error loc is Sequence[int | str]
-                for err in e.errors()
-            )
-            errors.append({"transaction_id": txn_id, "reason": reason})
-    return items, errors
-
-
 class CategorizationRuleInput(BaseModel):
     """One rule for ``CategorizationService.create_rules``.
 
@@ -213,23 +172,30 @@ class CategorizationRuleInput(BaseModel):
     priority: int = Field(default=100, ge=0, le=10_000)
 
 
-def validate_rule_items(
+def _validate_items[T: BaseModel](
     raw: object,
-) -> tuple[list[CategorizationRuleInput], list[dict[str, str]]]:
-    """Validate raw rule dicts into typed inputs + per-row errors.
+    model_cls: type[T],
+    *,
+    id_field: str,
+    list_error_msg: str,
+) -> tuple[list[T], list[dict[str, str]]]:
+    """Validate raw decoded JSON dicts into typed Pydantic items + per-row errors.
 
-    Mirrors ``validate_bulk_items``: malformed rows contribute an
-    ``error_details`` entry but do not abort the batch.
+    Shared by ``validate_bulk_items`` and ``validate_rule_items``: per-item
+    failures contribute an ``error_details`` entry but do not abort the batch.
+    The ``id_field`` is the per-row identity surfaced in error dicts so callers
+    can correlate failures (e.g., ``transaction_id`` for bulk_categorize,
+    ``name`` for rule creation).
     """
     if not isinstance(raw, list):
-        raise ValueError("Input must be a JSON array of rule items")
+        raise ValueError(list_error_msg)
 
-    items: list[CategorizationRuleInput] = []
+    items: list[T] = []
     errors: list[dict[str, str]] = []
     for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]  # raw is intentionally `object`; isinstance check below narrows the type
         if not isinstance(row, dict):
             errors.append({
-                "name": "(missing)",
+                id_field: "(missing)",
                 "reason": f"Row {index} is not an object",
             })
             continue
@@ -238,18 +204,52 @@ def validate_rule_items(
             for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]  # dict from untyped JSON input
         }
         try:
-            items.append(CategorizationRuleInput.model_validate(row_dict))
+            items.append(model_cls.model_validate(row_dict))
         except ValidationError as e:
-            name_val = row_dict.get("name")
-            name = str(name_val).strip() if isinstance(name_val, str) else ""
-            if not name:
-                name = "(missing)"
+            id_val = row_dict.get(id_field)
+            id_str = str(id_val).strip() if isinstance(id_val, str) else ""
+            if not id_str:
+                id_str = "(missing)"
             reason = "; ".join(
                 f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]  # Pydantic error loc is Sequence[int | str]
                 for err in e.errors()
             )
-            errors.append({"name": name, "reason": reason})
+            errors.append({id_field: id_str, "reason": reason})
     return items, errors
+
+
+def validate_bulk_items(
+    raw: object,
+) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
+    """Validate a raw decoded JSON array into typed items + per-row errors.
+
+    Per-item validation: a malformed row contributes an ``error_details`` entry
+    but does not abort the batch. Callers merge ``parse_errors`` into the
+    final ``BulkCategorizationResult.error_details`` so the response envelope
+    surfaces every failure together.
+    """
+    return _validate_items(
+        raw,
+        BulkCategorizationItem,
+        id_field="transaction_id",
+        list_error_msg="Input must be a JSON array of categorization items",
+    )
+
+
+def validate_rule_items(
+    raw: object,
+) -> tuple[list[CategorizationRuleInput], list[dict[str, str]]]:
+    """Validate raw rule dicts into typed inputs + per-row errors.
+
+    Mirrors ``validate_bulk_items``: malformed rows contribute an
+    ``error_details`` entry but do not abort the batch.
+    """
+    return _validate_items(
+        raw,
+        CategorizationRuleInput,
+        id_field="name",
+        list_error_msg="Input must be a JSON array of rule items",
+    )
 
 
 @lru_cache(maxsize=512)
@@ -455,7 +455,7 @@ class CategorizationService:
                      created_by, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
                             'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
+                    """,  # noqa: S608  # TableRef constant, no user input interpolated
                     [
                         rule_id,
                         item.name,
@@ -498,7 +498,7 @@ class CategorizationService:
             SET is_active = false, updated_at = CURRENT_TIMESTAMP
             WHERE rule_id = ?
             RETURNING rule_id
-            """,
+            """,  # noqa: S608  # TableRef constant, no user input interpolated
             [rule_id],
         ).fetchone()
         return row is not None
@@ -533,7 +533,7 @@ class CategorizationService:
                 SELECT 1 FROM {USER_CATEGORIES.full_name}
                 WHERE category = ? AND subcategory IS NULL
                 LIMIT 1
-                """,
+                """,  # noqa: S608  # TableRef constant, no user input interpolated
                 [category],
             ).fetchone()
             if existing:
@@ -550,7 +550,7 @@ class CategorizationService:
                 (category_id, category, subcategory, description,
                  is_active, created_at)
                 VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP)
-                """,
+                """,  # noqa: S608  # TableRef constant, no user input interpolated
                 [category_id, category, subcategory, description],
             )
         except duckdb.ConstraintException:

@@ -20,7 +20,7 @@ from moneybin.mcp.tools.transactions_categorize import (
     register_transactions_categorize_tools,
     transactions_categorize_stats,
 )
-from moneybin.seeds import refresh_views
+from tests.moneybin.db_helpers import seed_categories_view
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -76,28 +76,6 @@ class TestCategorizeToolRegistration:
         } <= names
 
 
-def _seed_categories_view(db: object) -> None:
-    """Populate seeds.categories + the app.categories view for write-path tests."""
-    from moneybin.database import Database
-
-    assert isinstance(db, Database)
-    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
-    db.execute("""
-        CREATE TABLE seeds.categories (
-            category_id VARCHAR,
-            category VARCHAR,
-            subcategory VARCHAR,
-            description VARCHAR,
-            plaid_detailed VARCHAR
-        )
-    """)
-    db.execute("""
-        INSERT INTO seeds.categories VALUES
-        ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')
-    """)
-    refresh_views(db)
-
-
 class TestToggleCategoryWritePath:
     """categories_toggle routes writes to the right backing table."""
 
@@ -106,7 +84,7 @@ class TestToggleCategoryWritePath:
         from moneybin.database import Database
 
         assert isinstance(mcp_db, Database)
-        _seed_categories_view(mcp_db)
+        seed_categories_view(mcp_db)
 
         asyncio.run(categories_toggle(category_id="FND", is_active=False))
 
@@ -120,7 +98,7 @@ class TestToggleCategoryWritePath:
         from moneybin.database import Database
 
         assert isinstance(mcp_db, Database)
-        _seed_categories_view(mcp_db)
+        seed_categories_view(mcp_db)
         mcp_db.execute("""
             INSERT INTO app.user_categories
             (category_id, category, subcategory, is_active)

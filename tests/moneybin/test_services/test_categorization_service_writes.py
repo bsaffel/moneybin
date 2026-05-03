@@ -20,7 +20,7 @@ from moneybin.services.categorization_service import (
     CategorizationService,
     validate_rule_items,
 )
-from tests.moneybin.db_helpers import create_core_tables
+from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
 @pytest.fixture()
@@ -333,15 +333,18 @@ class TestCreateRules:
         ]
 
         original_execute = db.execute
-        call_count = {"n": 0}
 
-        def fail_second(sql: str, params: object = None) -> object:
-            call_count["n"] += 1
-            if call_count["n"] == 2:
+        def fail_on_r1(sql: str, params: object = None) -> object:
+            if (
+                "INSERT INTO" in sql
+                and "categorization_rules" in sql
+                and isinstance(params, list)
+                and "R1" in params
+            ):
                 raise RuntimeError("injected failure for test")
             return original_execute(sql, params)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(db, "execute", fail_second)
+        monkeypatch.setattr(db, "execute", fail_on_r1)
 
         result = svc.create_rules(items)
 
@@ -464,33 +467,12 @@ class TestCreateCategory:
         assert "Hobbies" in exc_info.value.message
 
 
-def _seed_categories_view(db: Database) -> None:
-    """Seed seeds.categories + the app.categories view for toggle tests."""
-    from moneybin.seeds import refresh_views
-
-    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
-    db.execute("""
-        CREATE TABLE seeds.categories (
-            category_id VARCHAR,
-            category VARCHAR,
-            subcategory VARCHAR,
-            description VARCHAR,
-            plaid_detailed VARCHAR
-        )
-    """)
-    db.execute("""
-        INSERT INTO seeds.categories VALUES
-        ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')
-    """)
-    refresh_views(db)
-
-
 class TestToggleCategory:
     """CategorizationService.toggle_category — branches by category origin."""
 
     @pytest.mark.unit
     def test_default_category_writes_override(self, db: Database) -> None:
-        _seed_categories_view(db)
+        seed_categories_view(db)
         CategorizationService(db).toggle_category("FND", is_active=False)
 
         rows = db.execute(
@@ -501,7 +483,7 @@ class TestToggleCategory:
     @pytest.mark.unit
     def test_default_category_upserts_override(self, db: Database) -> None:
         """Toggling twice updates the existing override row, not appending."""
-        _seed_categories_view(db)
+        seed_categories_view(db)
         svc = CategorizationService(db)
         svc.toggle_category("FND", is_active=False)
         svc.toggle_category("FND", is_active=True)
@@ -513,7 +495,7 @@ class TestToggleCategory:
 
     @pytest.mark.unit
     def test_user_category_updates_user_categories(self, db: Database) -> None:
-        _seed_categories_view(db)
+        seed_categories_view(db)
         db.execute("""
             INSERT INTO app.user_categories
             (category_id, category, subcategory, is_active)
@@ -533,7 +515,7 @@ class TestToggleCategory:
 
     @pytest.mark.unit
     def test_missing_category_raises_user_error(self, db: Database) -> None:
-        _seed_categories_view(db)
+        seed_categories_view(db)
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).toggle_category("NOPE", is_active=False)
         assert exc_info.value.code == "CATEGORY_NOT_FOUND"

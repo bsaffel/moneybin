@@ -185,7 +185,7 @@ def transactions_categorize_rules_create(
     """
     if not rules:
         return build_envelope(
-            data={"created": 0, "skipped": 0, "error_details": []},
+            data={"created": 0, "skipped": 0, "rule_ids": [], "error_details": []},
             sensitivity="low",
         )
 
@@ -197,6 +197,7 @@ def transactions_categorize_rules_create(
         data={
             "created": result.created,
             "skipped": result.skipped,
+            "rule_ids": result.rule_ids,
             "error_details": result.error_details,
         },
         sensitivity="low",
