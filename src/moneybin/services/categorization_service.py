@@ -24,6 +24,7 @@ import duckdb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.metrics.registry import (
     CATEGORIZE_BULK_DURATION_SECONDS,
     CATEGORIZE_BULK_ERRORS_TOTAL,
@@ -37,6 +38,7 @@ from moneybin.tables import (
     FCT_TRANSACTIONS,
     MERCHANTS,
     TRANSACTION_CATEGORIES,
+    USER_CATEGORIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -499,6 +501,59 @@ class CategorizationService:
             [rule_id],
         ).fetchone()
         return row is not None
+
+    # -- Category management --
+
+    def create_category(
+        self,
+        category: str,
+        *,
+        subcategory: str | None = None,
+        description: str | None = None,
+    ) -> str:
+        """Create a custom user category (active by default).
+
+        Raises:
+            UserError(code="CATEGORY_ALREADY_EXISTS"): the
+                ``(category, subcategory)`` pair is already present in
+                ``app.user_categories``.
+        """
+        # DuckDB treats NULL != NULL in UNIQUE constraints, so a top-level
+        # category (subcategory IS NULL) can be inserted multiple times without
+        # raising ConstraintException. Guard explicitly for that case.
+        if subcategory is None:
+            existing = self._db.execute(
+                f"""
+                SELECT 1 FROM {USER_CATEGORIES.full_name}
+                WHERE category = ? AND subcategory IS NULL
+                LIMIT 1
+                """,
+                [category],
+            ).fetchone()
+            if existing:
+                raise UserError(
+                    f"Category already exists: {category}",
+                    code="CATEGORY_ALREADY_EXISTS",
+                )
+
+        category_id = uuid.uuid4().hex[:12]
+        try:
+            self._db.execute(
+                f"""
+                INSERT INTO {USER_CATEGORIES.full_name}
+                (category_id, category, subcategory, description,
+                 is_active, created_at)
+                VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP)
+                """,
+                [category_id, category, subcategory, description],
+            )
+        except duckdb.ConstraintException:
+            sub = f" / {subcategory}" if subcategory else ""
+            raise UserError(
+                f"Category already exists: {category}{sub}",
+                code="CATEGORY_ALREADY_EXISTS",
+            ) from None
+        return category_id
 
     # -- Categorization core --
 

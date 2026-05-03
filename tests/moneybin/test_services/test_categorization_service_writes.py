@@ -14,9 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.errors import (
-    UserError,  # noqa: F401  # pyright: ignore[reportUnusedImport]  # used by Tasks 4–5
-)
+from moneybin.errors import UserError
 from moneybin.services.categorization_service import (
     CategorizationRuleInput,
     CategorizationService,
@@ -411,3 +409,56 @@ class TestDeactivateRule:
         assert active_states[ids[0]] is True
         assert active_states[ids[1]] is False
         assert active_states[ids[2]] is True
+
+
+class TestCreateCategory:
+    """CategorizationService.create_category — INSERT into app.user_categories."""
+
+    @pytest.mark.unit
+    def test_writes_user_category_and_returns_id(self, db: Database) -> None:
+        cat_id = CategorizationService(db).create_category(
+            "Childcare",
+            subcategory="Daycare",
+            description="Kids daycare",
+        )
+        assert len(cat_id) == 12
+
+        row = db.execute(
+            "SELECT category, subcategory, description, is_active "
+            "FROM app.user_categories WHERE category_id = ?",
+            [cat_id],
+        ).fetchone()
+        assert row == ("Childcare", "Daycare", "Kids daycare", True)
+
+    @pytest.mark.unit
+    def test_top_level_only_category(self, db: Database) -> None:
+        cat_id = CategorizationService(db).create_category("Hobbies")
+        row = db.execute(
+            "SELECT subcategory, description FROM app.user_categories "
+            "WHERE category_id = ?",
+            [cat_id],
+        ).fetchone()
+        assert row == (None, None)
+
+    @pytest.mark.unit
+    def test_duplicate_raises_user_error(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        svc.create_category("Childcare", subcategory="Daycare")
+
+        with pytest.raises(UserError) as exc_info:
+            svc.create_category("Childcare", subcategory="Daycare")
+
+        assert exc_info.value.code == "CATEGORY_ALREADY_EXISTS"
+        assert "Childcare" in exc_info.value.message
+        assert "Daycare" in exc_info.value.message
+
+    @pytest.mark.unit
+    def test_duplicate_top_level_raises_user_error(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        svc.create_category("Hobbies")
+
+        with pytest.raises(UserError) as exc_info:
+            svc.create_category("Hobbies")
+
+        assert exc_info.value.code == "CATEGORY_ALREADY_EXISTS"
+        assert "Hobbies" in exc_info.value.message
