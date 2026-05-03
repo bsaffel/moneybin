@@ -1,10 +1,4 @@
-"""Categories namespace tools — taxonomy reference data.
-
-Tools:
-    - categories_list — List all categories in the taxonomy (low sensitivity)
-    - categories_create — Create a custom category or subcategory (low sensitivity)
-    - categories_toggle — Enable or disable a category (low sensitivity)
-"""
+"""Categories namespace tools — taxonomy reference data."""
 
 from __future__ import annotations
 
@@ -23,46 +17,11 @@ from moneybin.tables import CATEGORIES, CATEGORY_OVERRIDES, USER_CATEGORIES
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def categories_list(
-    include_inactive: bool = False,
-) -> ResponseEnvelope:
-    """List all categories in the taxonomy.
-
-    Returns category ID, name, subcategory, description, and active
-    status. By default only active categories are returned.
-
-    Args:
-        include_inactive: Include disabled categories (default False).
-    """
-    db = get_database()
-    if include_inactive:
-        try:
-            rows = db.execute(
-                f"""
-                SELECT category_id, category, subcategory, description,
-                       is_default, is_active, plaid_detailed
-                FROM {CATEGORIES.full_name}
-                ORDER BY category, subcategory
-                """
-            ).fetchall()
-        except duckdb.CatalogException:
-            rows = []
-
-        data = [
-            {
-                "category_id": r[0],
-                "category": r[1],
-                "subcategory": r[2],
-                "description": r[3],
-                "is_default": r[4],
-                "is_active": r[5],
-                "plaid_detailed": r[6],
-            }
-            for r in rows
-        ]
-    else:
-        data = CategorizationService(db).get_active_categories()
-
+def categories_list(include_inactive: bool = False) -> ResponseEnvelope:
+    """List all categories in the taxonomy."""
+    data = CategorizationService(get_database()).get_all_categories(
+        include_inactive=include_inactive
+    )
     return build_envelope(
         data=data,
         sensitivity="low",
@@ -80,16 +39,7 @@ def categories_create(
     subcategory: str | None = None,
     description: str | None = None,
 ) -> ResponseEnvelope:
-    """Create a custom category or subcategory.
-
-    Categories created this way are marked as non-default and active.
-    They can be toggled on/off with ``categories_toggle``.
-
-    Args:
-        category: Primary category name (e.g. 'Childcare').
-        subcategory: Optional subcategory (e.g. 'Daycare').
-        description: Optional description of this category.
-    """
+    """Create a custom category or subcategory (non-default, active by default)."""
     cat_id = uuid.uuid4().hex[:12]
     db = get_database()
 
@@ -129,15 +79,7 @@ def categories_toggle(
     category_id: str,
     is_active: bool,
 ) -> ResponseEnvelope:
-    """Enable or disable a category.
-
-    Disabled categories are hidden from the taxonomy but existing
-    categorizations using them are preserved.
-
-    Args:
-        category_id: The category ID to toggle (e.g. 'FND-COF').
-        is_active: True to enable, False to disable.
-    """
+    """Enable or disable a category. Existing categorizations are preserved."""
     db = get_database()
     cat = db.execute(
         f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",

@@ -1,7 +1,4 @@
-"""System-status service: data inventory + queue counts.
-
-v2: Replaces OverviewService.status() under the new system_* namespace.
-"""
+"""System-status service: data inventory + queue counts."""
 
 from __future__ import annotations
 
@@ -12,6 +9,7 @@ from datetime import date
 from moneybin.database import Database
 from moneybin.services.categorization_service import CategorizationService
 from moneybin.services.matching_service import MatchingService
+from moneybin.services.review_service import ReviewService
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -41,20 +39,21 @@ class SystemService:
         accounts_count = self._count_accounts()
         transactions_count, min_date, max_date = self._query_transactions()
         last_import_at = self._last_import_at()
-        matches_pending = MatchingService(self._db).count_pending()
-        categorize_pending = CategorizationService(self._db).count_uncategorized()
+        review = ReviewService(
+            MatchingService(self._db), CategorizationService(self._db)
+        ).status()
 
         logger.info(
             f"System status: {accounts_count} accounts, {transactions_count} transactions, "
-            f"{matches_pending} matches pending, {categorize_pending} uncategorized"
+            f"{review.matches_pending} matches pending, {review.categorize_pending} uncategorized"
         )
         return SystemStatus(
             accounts_count=accounts_count,
             transactions_count=transactions_count,
             transactions_date_range=(min_date, max_date),
             last_import_at=last_import_at,
-            matches_pending=matches_pending,
-            categorize_pending=categorize_pending,
+            matches_pending=review.matches_pending,
+            categorize_pending=review.categorize_pending,
         )
 
     def _count_accounts(self) -> int:

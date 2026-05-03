@@ -8,7 +8,6 @@ Tools:
 from __future__ import annotations
 
 import logging
-import typing
 
 from fastmcp import FastMCP
 
@@ -16,22 +15,13 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.categorization_service import CategorizationService, MatchType
+from moneybin.services.categorization_service import (
+    CategorizationService,
+    validate_match_type,
+)
 from moneybin.tables import MERCHANTS
 
 logger = logging.getLogger(__name__)
-
-_VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
-
-
-def _validate_match_type(match_type: str) -> MatchType:
-    """Validate and narrow a match_type string at the MCP boundary."""
-    if match_type not in _VALID_MATCH_TYPES:
-        raise ValueError(
-            f"Invalid match_type: '{match_type}'. "
-            f"Must be one of: {', '.join(sorted(_VALID_MATCH_TYPES))}"
-        )
-    return match_type  # type: ignore[return-value]  # validated above
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
@@ -114,7 +104,7 @@ def merchants_create(
 
         raw_match_type = str(item.get("match_type", "contains")).strip()
         try:
-            match_type = _validate_match_type(raw_match_type)
+            match_type = validate_match_type(raw_match_type)
         except ValueError:
             skipped += 1
             error_details.append({

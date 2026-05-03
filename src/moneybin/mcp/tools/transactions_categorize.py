@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import typing
 import uuid
 from collections.abc import Mapping, Sequence
 
@@ -24,8 +23,8 @@ from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
     BulkCategorizationResult,
     CategorizationService,
-    MatchType,
     validate_bulk_items,
+    validate_match_type,
 )
 from moneybin.tables import (
     CATEGORIZATION_RULES,
@@ -34,18 +33,6 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
-
-_VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
-
-
-def _validate_match_type(match_type: str) -> MatchType:
-    """Validate and narrow a match_type string at the MCP boundary."""
-    if match_type not in _VALID_MATCH_TYPES:
-        raise ValueError(
-            f"Invalid match_type: '{match_type}'. "
-            f"Must be one of: {', '.join(sorted(_VALID_MATCH_TYPES))}"
-        )
-    return match_type  # type: ignore[return-value]  # validated above
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
@@ -223,7 +210,7 @@ def transactions_categorize_rules_create(
         subcategory = str(item.get("subcategory", "")).strip() or None
         raw_match_type = str(item.get("match_type", "contains")).strip()
         try:
-            match_type = _validate_match_type(raw_match_type)
+            match_type = validate_match_type(raw_match_type)
         except ValueError:
             skipped += 1
             error_details.append({

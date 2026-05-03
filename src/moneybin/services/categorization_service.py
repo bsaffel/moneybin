@@ -12,6 +12,7 @@ proposal/approval/deactivation lifecycle and depends on this module's
 
 import logging
 import re
+import typing
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -41,6 +42,17 @@ from moneybin.tables import (
 logger = logging.getLogger(__name__)
 
 MatchType = Literal["exact", "contains", "regex"]
+_VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
+
+
+def validate_match_type(match_type: str) -> MatchType:
+    """Validate and narrow a match_type string at a service-boundary call site."""
+    if match_type not in _VALID_MATCH_TYPES:
+        raise ValueError(
+            f"Invalid match_type: '{match_type}'. "
+            f"Must be one of: {', '.join(sorted(_VALID_MATCH_TYPES))}"
+        )
+    return match_type  # type: ignore[return-value]  # validated above
 
 
 @dataclass(slots=True)
@@ -811,11 +823,7 @@ class CategorizationService:
         }
 
     def get_active_categories(self) -> list[dict[str, str | bool | None]]:
-        """Get all active categories.
-
-        Returns:
-            List of category dicts.
-        """
+        """Get all active categories."""
         try:
             rows = self._db.execute(
                 f"""
@@ -837,6 +845,42 @@ class CategorizationService:
                 "description": r[3],
                 "is_default": r[4],
                 "plaid_detailed": r[5],
+            }
+            for r in rows
+        ]
+
+    def get_all_categories(
+        self, *, include_inactive: bool
+    ) -> list[dict[str, str | bool | None]]:
+        """Get categories with consistent field shape including is_active.
+
+        Active-only views can use ``get_active_categories()`` to omit
+        ``is_active`` from each row; this method always includes it so the
+        MCP tool surface is consumer-friendly when toggling the include flag.
+        """
+        where = "" if include_inactive else "WHERE is_active = true"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT category_id, category, subcategory, description,
+                       is_default, is_active, plaid_detailed
+                FROM {CATEGORIES.full_name}
+                {where}
+                ORDER BY category, subcategory
+                """  # noqa: S608  # constant clause, not user input
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+
+        return [
+            {
+                "category_id": r[0],
+                "category": r[1],
+                "subcategory": r[2],
+                "description": r[3],
+                "is_default": r[4],
+                "is_active": r[5],
+                "plaid_detailed": r[6],
             }
             for r in rows
         ]
