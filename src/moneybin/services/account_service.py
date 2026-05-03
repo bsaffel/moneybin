@@ -20,6 +20,11 @@ from moneybin.tables import ACCOUNT_SETTINGS, DIM_ACCOUNTS, OFX_BALANCES
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for explicit field-clearing in settings_update.
+# Distinct from None ("no change") and from a real value ("write this value").
+CLEAR: object = object()
+
+
 # Plaid's documented account subtype list (https://plaid.com/docs/api/accounts/).
 # Open vocabulary in this project — soft-validated, never blocking.
 PLAID_CANONICAL_SUBTYPES: frozenset[str] = frozenset({
@@ -130,6 +135,22 @@ def suggest_holder_category(value: str) -> str | None:
         value.lower(), PLAID_CANONICAL_HOLDER_CATEGORIES, n=1, cutoff=0.75
     )
     return matches[0] if matches else None
+
+
+def _settings_to_dict(s: AccountSettings) -> dict[str, object]:
+    """Materialize an AccountSettings into a dict for diff-based reconstruction."""
+    return {
+        "account_id": s.account_id,
+        "display_name": s.display_name,
+        "official_name": s.official_name,
+        "last_four": s.last_four,
+        "account_subtype": s.account_subtype,
+        "holder_category": s.holder_category,
+        "iso_currency_code": s.iso_currency_code,
+        "credit_limit": s.credit_limit,
+        "archived": s.archived,
+        "include_in_net_worth": s.include_in_net_worth,
+    }
 
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
@@ -454,3 +475,109 @@ class AccountService:
 
         logger.info(f"Retrieved balances for {len(balances)} accounts")
         return BalanceListResult(balances=balances)
+
+    def _settings_repo(self) -> AccountSettingsRepository:
+        """Return a repository bound to this service's database connection."""
+        return AccountSettingsRepository(self._db)
+
+    def _load_or_default(self, account_id: str) -> AccountSettings:
+        """Load existing settings or construct a default for the given account."""
+        return self._settings_repo().load(account_id) or AccountSettings(
+            account_id=account_id
+        )
+
+    def rename(self, account_id: str, display_name: str) -> AccountSettings:
+        """Set or clear display_name. Empty string clears the override."""
+        current = self._load_or_default(account_id)
+        new_name: str | None = display_name if display_name else None
+        updated = AccountSettings(**{
+            **_settings_to_dict(current),
+            "display_name": new_name,
+        })
+        self._settings_repo().upsert(updated)
+        return updated
+
+    def set_include_in_net_worth(
+        self, account_id: str, include: bool
+    ) -> AccountSettings:
+        """Toggle include_in_net_worth flag. Idempotent."""
+        current = self._load_or_default(account_id)
+        updated = AccountSettings(**{
+            **_settings_to_dict(current),
+            "include_in_net_worth": include,
+        })
+        self._settings_repo().upsert(updated)
+        return updated
+
+    def archive(self, account_id: str) -> AccountSettings:
+        """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write."""
+        current = self._load_or_default(account_id)
+        updated = AccountSettings(**{
+            **_settings_to_dict(current),
+            "archived": True,
+            "include_in_net_worth": False,
+        })
+        self._settings_repo().upsert(updated)
+        return updated
+
+    def unarchive(self, account_id: str) -> AccountSettings:
+        """Set archived=FALSE; does NOT restore include_in_net_worth (per spec)."""
+        current = self._load_or_default(account_id)
+        updated = AccountSettings(**{**_settings_to_dict(current), "archived": False})
+        self._settings_repo().upsert(updated)
+        return updated
+
+    def settings_update(
+        self,
+        account_id: str,
+        *,
+        official_name: str | None | object = None,
+        last_four: str | None | object = None,
+        account_subtype: str | None | object = None,
+        holder_category: str | None | object = None,
+        iso_currency_code: str | None | object = None,
+        credit_limit: Decimal | None | object = None,
+    ) -> tuple[AccountSettings, list[dict[str, str]]]:
+        """Partial update of structural metadata.
+
+        None means "no change", CLEAR sentinel means "set to NULL", any other
+        value writes that value. Returns the updated settings and a list of
+        soft-validation warnings (empty if all values are canonical).
+        """
+        current = self._load_or_default(account_id)
+        diff: dict[str, object] = {}
+        warnings: list[dict[str, str]] = []
+
+        def _resolve(field_name: str, new: object) -> None:
+            if new is None:
+                return
+            if new is CLEAR:
+                diff[field_name] = None
+                return
+            diff[field_name] = new
+
+        _resolve("official_name", official_name)
+        _resolve("last_four", last_four)
+        _resolve("account_subtype", account_subtype)
+        _resolve("holder_category", holder_category)
+        _resolve("iso_currency_code", iso_currency_code)
+        _resolve("credit_limit", credit_limit)
+
+        subtype = diff.get("account_subtype")
+        if isinstance(subtype, str) and not is_canonical_subtype(subtype):
+            warnings.append({
+                "field": "account_subtype",
+                "message": f"'{subtype}' is not a known Plaid subtype",
+                "suggestion": suggest_subtype(subtype) or "",
+            })
+        holder = diff.get("holder_category")
+        if isinstance(holder, str) and not is_canonical_holder_category(holder):
+            warnings.append({
+                "field": "holder_category",
+                "message": f"'{holder}' is not a known holder category",
+                "suggestion": suggest_holder_category(holder) or "",
+            })
+
+        updated = AccountSettings(**{**_settings_to_dict(current), **diff})
+        self._settings_repo().upsert(updated)
+        return updated, warnings

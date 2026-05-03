@@ -14,6 +14,7 @@ import pytest
 import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.account_service import (
+    CLEAR,
     PLAID_CANONICAL_HOLDER_CATEGORIES,
     PLAID_CANONICAL_SUBTYPES,
     AccountBalance,
@@ -362,3 +363,81 @@ class TestEmptyResults:
         result = service.balances()
         assert isinstance(result, BalanceListResult)
         assert result.balances == []
+
+
+class TestAccountServiceMutators:
+    """Tests for AccountService mutator methods."""
+
+    @pytest.mark.unit
+    def test_rename_inserts(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        result = svc.rename("acct_a", "Checking")
+        assert result.display_name == "Checking"
+
+    @pytest.mark.unit
+    def test_rename_clears_with_empty_string(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        svc.rename("acct_a", "Checking")
+        result = svc.rename("acct_a", "")
+        assert result.display_name is None
+
+    @pytest.mark.unit
+    def test_include_idempotent(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        svc.set_include_in_net_worth("acct_a", True)
+        svc.set_include_in_net_worth("acct_a", True)
+        loaded = AccountSettingsRepository(test_db).load("acct_a")
+        assert loaded is not None
+        assert loaded.include_in_net_worth is True
+
+    @pytest.mark.unit
+    def test_archive_cascades_to_include(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        result = svc.archive("acct_a")
+        assert result.archived is True
+        assert result.include_in_net_worth is False
+
+    @pytest.mark.unit
+    def test_unarchive_does_not_restore_include(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        svc.archive("acct_a")
+        result = svc.unarchive("acct_a")
+        assert result.archived is False
+        assert result.include_in_net_worth is False  # NOT restored
+
+    @pytest.mark.unit
+    def test_settings_update_partial(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        updated, warnings = svc.settings_update(
+            "acct_a", account_subtype="checking", credit_limit=Decimal("5000.00")
+        )
+        assert updated.account_subtype == "checking"
+        assert updated.credit_limit == Decimal("5000.00")
+        assert warnings == []  # canonical subtype, no warning
+
+    @pytest.mark.unit
+    def test_settings_update_clears_with_clear_sentinel(
+        self, test_db: Database
+    ) -> None:
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", credit_limit=Decimal("5000.00"))
+        updated, _ = svc.settings_update("acct_a", credit_limit=CLEAR)
+        assert updated.credit_limit is None
+
+    @pytest.mark.unit
+    def test_settings_update_soft_validation_warning(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        updated, warnings = svc.settings_update("acct_a", account_subtype="chequing")
+        assert updated.account_subtype == "chequing"  # write succeeded
+        assert len(warnings) == 1
+        assert warnings[0]["field"] == "account_subtype"
+        assert "chequing" in warnings[0]["message"]
+        assert warnings[0]["suggestion"] == "checking"
+
+    @pytest.mark.unit
+    def test_settings_update_holder_category_warning(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        updated, warnings = svc.settings_update("acct_a", holder_category="corporate")
+        assert updated.holder_category == "corporate"
+        assert len(warnings) == 1
+        assert warnings[0]["field"] == "holder_category"
