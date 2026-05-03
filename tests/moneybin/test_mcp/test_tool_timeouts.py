@@ -128,6 +128,36 @@ def test_classified_user_error_still_returned(
 
 
 @pytest.mark.unit
+def test_tool_raised_timeout_error_not_classified_as_cap_fired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TimeoutError raised by the tool body must not be reported as a cap-fired timeout.
+
+    Without the asyncio.timeout()/.expired() distinction, an unrelated
+    TimeoutError (e.g., a downstream HTTP call) would be miscaught as the
+    wall-clock cap firing, producing a misleading ``timed_out`` envelope
+    AND tearing down the DuckDB connection unnecessarily.
+    """
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
+    reset_mock = MagicMock()
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
+    )
+
+    @mcp_tool(sensitivity="low")
+    def inner_timeout_tool() -> ResponseEnvelope:
+        raise TimeoutError("downstream HTTP timeout")
+
+    # TimeoutError is not a classified UserError, so the decorator re-raises
+    # it (matching pre-existing behavior for unclassified exceptions). The
+    # critical assertions are the side effects: no DB reset, no cap-fired log.
+    with pytest.raises(TimeoutError, match="downstream HTTP timeout"):
+        asyncio.run(inner_timeout_tool())
+
+    reset_mock.assert_not_called()
+
+
+@pytest.mark.unit
 def test_async_generator_tool_rejected_at_decoration() -> None:
     with pytest.raises(TypeError, match="async generator"):
 

@@ -103,13 +103,20 @@ def mcp_tool(
             log_tool_call(fn.__name__, tier)
             timeout_s = _get_timeout_seconds()
             started = time.monotonic()
+            # asyncio.timeout()'s .expired() lets us distinguish a cap-fired
+            # TimeoutError from one the tool body raised itself (e.g., a
+            # downstream HTTP timeout). Without this, both surface as
+            # TimeoutError and would be misclassified as cap-fired, causing
+            # spurious DB resets and misleading "timed_out" envelopes.
             try:
-                if is_coro:
-                    coro = fn(*args, **kwargs)
-                else:
-                    coro = asyncio.to_thread(fn, *args, **kwargs)
-                result = await asyncio.wait_for(coro, timeout=timeout_s)
-            except TimeoutError:
+                async with asyncio.timeout(timeout_s) as cm:
+                    if is_coro:
+                        result = await fn(*args, **kwargs)
+                    else:
+                        result = await asyncio.to_thread(fn, *args, **kwargs)
+            except TimeoutError as exc:
+                if not cm.expired():
+                    return _classify_or_raise(fn.__name__, exc)
                 elapsed = time.monotonic() - started
                 logger.warning(
                     f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
@@ -117,10 +124,10 @@ def mcp_tool(
                 )
                 try:
                     interrupt_and_reset_database()
-                except Exception as exc:  # noqa: BLE001 — cleanup must not raise
+                except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
                     logger.error(
                         f"interrupt_and_reset_database failed during {fn.__name__} "
-                        f"timeout cleanup: {type(exc).__name__}"
+                        f"timeout cleanup: {type(cleanup_exc).__name__}"
                     )
                 return _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
             except Exception as exc:
