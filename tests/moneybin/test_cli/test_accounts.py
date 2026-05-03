@@ -253,6 +253,10 @@ class TestAccountsRename:
         assert result.exit_code == 0
         # Service called with empty string — service handles the clearing
         mock_service.rename.assert_called_once_with("acct_a", "")
+        # Verify the output shows the cleared state
+        assert (
+            "<cleared>" in result.stderr.lower() or "cleared" in result.stderr.lower()
+        )
 
 
 class TestAccountsInclude:
@@ -315,9 +319,10 @@ class TestAccountsArchive:
         result = runner.invoke(app, ["accounts", "archive", "acct_a"])
         assert result.exit_code == 0
         mock_service.archive.assert_called_once_with("acct_a")
-        # Either stdout or stderr should explicitly mention the cascade
-        combined = (result.stdout + result.stderr).lower()
-        assert "net worth" in combined or "exclude" in combined
+        # Cascade message should appear in stderr
+        assert (
+            "net worth" in result.stderr.lower() or "exclude" in result.stderr.lower()
+        )
 
 
 class TestAccountsUnarchive:
@@ -360,3 +365,5 @@ class TestAccountsUnarchive:
         )
         result = runner.invoke(app, ["accounts", "unarchive", "acct_a"])
         assert result.exit_code == 0
+        # When include_in_net_worth is restored, no remediation hint should appear
+        assert "still excluded" not in result.stderr.lower()

@@ -92,7 +92,7 @@ def rename_cmd(
 def include_cmd(
     account_id: str = typer.Argument(..., help="Account ID"),
     no: bool = typer.Option(False, "--no", help="Set include_in_net_worth=FALSE"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
 ) -> None:
     """Toggle account inclusion in net worth (default TRUE; --no to exclude)."""
     include = not no
@@ -105,7 +105,7 @@ def include_cmd(
 @app.command("archive")
 def archive_cmd(
     account_id: str = typer.Argument(..., help="Account ID"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
 ) -> None:
     """Archive an account. Cascades exclude_from_net_worth in the same write."""
     with handle_cli_errors() as db:
@@ -119,7 +119,7 @@ def archive_cmd(
 @app.command("unarchive")
 def unarchive_cmd(
     account_id: str = typer.Argument(..., help="Account ID"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
 ) -> None:
     """Unarchive an account. Does NOT restore include_in_net_worth."""
     with handle_cli_errors() as db:
