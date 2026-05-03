@@ -2,7 +2,7 @@
 
 import typer
 
-from moneybin.cli.commands.stubs import _not_implemented
+from ...stubs import _not_implemented
 
 app = typer.Typer(
     help="ML-assisted categorization",
