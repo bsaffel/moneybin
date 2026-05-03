@@ -179,12 +179,26 @@ def _maybe_prompt_soft_validation(
 @app.command("set")
 def set_cmd(
     account_id: str = typer.Argument(..., help="Account ID"),
-    official_name: str | None = typer.Option(None, "--official-name"),
-    last_four: str | None = typer.Option(None, "--last-four"),
-    subtype: str | None = typer.Option(None, "--subtype"),
-    holder_category: str | None = typer.Option(None, "--holder-category"),
-    currency: str | None = typer.Option(None, "--currency"),
-    credit_limit: float | None = typer.Option(None, "--credit-limit"),
+    official_name: str | None = typer.Option(
+        None, "--official-name", help="Institution's formal account name"
+    ),
+    last_four: str | None = typer.Option(
+        None, "--last-four", help="Last 4 digits of account number"
+    ),
+    subtype: str | None = typer.Option(
+        None,
+        "--subtype",
+        help="Plaid-style account subtype (e.g., checking, savings, credit card)",
+    ),
+    holder_category: str | None = typer.Option(
+        None, "--holder-category", help="Account holder type (personal/business/joint)"
+    ),
+    currency: str | None = typer.Option(
+        None, "--currency", help="ISO-4217 currency code (e.g., USD)"
+    ),
+    credit_limit: float | None = typer.Option(
+        None, "--credit-limit", help="Credit limit (for credit cards / lines)"
+    ),
     clear_official_name: bool = typer.Option(False, "--clear-official-name"),
     clear_last_four: bool = typer.Option(False, "--clear-last-four"),
     clear_subtype: bool = typer.Option(False, "--clear-subtype"),

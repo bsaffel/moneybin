@@ -533,3 +533,54 @@ class TestAccountsSet:
             )
         assert result.exit_code == 0, result.stderr
         mock_service.settings_update.assert_called_once()
+
+    @pytest.mark.unit
+    def test_set_unknown_subtype_tty_confirm_yes(self, runner: CliRunner) -> None:
+        from unittest.mock import MagicMock, patch
+
+        # Patch at the module level where sys is imported
+        with patch("moneybin.cli.commands.accounts.sys") as mock_sys:
+            mock_sys.stdin.isatty.return_value = True
+            with (
+                patch("moneybin.cli.utils.get_database"),
+                patch(
+                    "moneybin.cli.commands.accounts.AccountService"
+                ) as mock_service_class,
+            ):
+                mock_service = mock_service_class.return_value
+                mock_service.settings_update.return_value = (
+                    MagicMock(account_subtype="chequing"),
+                    [
+                        {
+                            "field": "account_subtype",
+                            "message": "...",
+                            "suggestion": "checking",
+                        }
+                    ],
+                )
+                result = runner.invoke(
+                    app,
+                    ["accounts", "set", "acct_a", "--subtype", "chequing"],
+                    input="y\n",
+                )
+        assert result.exit_code == 0, result.stderr
+        mock_service.settings_update.assert_called_once()
+        assert "chequing" in result.stderr.lower()
+
+    @pytest.mark.unit
+    def test_set_unknown_subtype_tty_confirm_no(self, runner: CliRunner) -> None:
+        from unittest.mock import patch
+
+        # Patch at the module level where sys is imported
+        with patch("moneybin.cli.commands.accounts.sys") as mock_sys:
+            mock_sys.stdin.isatty.return_value = True
+            with patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class:
+                result = runner.invoke(
+                    app,
+                    ["accounts", "set", "acct_a", "--subtype", "chequing"],
+                    input="n\n",
+                )
+        assert result.exit_code == 2
+        mock_service_class.return_value.settings_update.assert_not_called()
