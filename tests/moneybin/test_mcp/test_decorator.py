@@ -67,6 +67,8 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_calls_log_tool_call(self) -> None:
+        import asyncio
+
         @mcp_tool(sensitivity="medium")
         def my_tool() -> ResponseEnvelope:
             return ResponseEnvelope(
@@ -75,7 +77,7 @@ class TestMCPToolDecorator:
             )
 
         with patch("moneybin.mcp.decorator.log_tool_call") as mock_log:
-            my_tool()
+            asyncio.run(my_tool())
             mock_log.assert_called_once()
             args = mock_log.call_args[0]
             assert args[0] == "my_tool"
@@ -104,6 +106,7 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     def test_decorator_returns_response_envelope(self) -> None:
         """When a tool returns a ResponseEnvelope, the decorator returns it directly."""
+        import asyncio
 
         @mcp_tool(sensitivity="low")
         def my_tool() -> ResponseEnvelope:
@@ -112,7 +115,7 @@ class TestMCPToolDecorator:
                 data=[{"value": 42}],
             )
 
-        result = my_tool()
+        result = asyncio.run(my_tool())
         assert isinstance(result, ResponseEnvelope)
         assert result.summary.total_count == 1
         assert result.data == [{"value": 42}]
@@ -120,6 +123,8 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     def test_decorator_raises_type_error_for_non_envelope(self) -> None:
         """Tools that return non-ResponseEnvelope raise TypeError."""
+        import asyncio
+
         import pytest
 
         @mcp_tool(sensitivity="low")
@@ -127,4 +132,4 @@ class TestMCPToolDecorator:
             return "plain string result"  # type: ignore[return-value]
 
         with pytest.raises(TypeError, match="expected ResponseEnvelope"):
-            my_tool()
+            asyncio.run(my_tool())
