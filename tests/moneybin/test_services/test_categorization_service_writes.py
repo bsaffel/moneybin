@@ -14,7 +14,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.errors import UserError  # noqa: F401  # pyright: ignore[reportUnusedImport]  # used by Tasks 4–5
+from moneybin.errors import (
+    UserError,  # noqa: F401  # pyright: ignore[reportUnusedImport]  # used by Tasks 4–5
+)
 from moneybin.services.categorization_service import (
     CategorizationRuleInput,
     CategorizationService,
