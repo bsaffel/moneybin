@@ -61,6 +61,7 @@ _SCHEMA_FILES: list[str] = [
     "app_proposed_rules.sql",
     "app_rule_deactivations.sql",
     "app_account_settings.sql",
+    "app_balance_assertions.sql",
 ]
 
 
