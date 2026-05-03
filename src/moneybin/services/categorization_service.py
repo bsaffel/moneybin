@@ -839,6 +839,21 @@ class CategorizationService:
             for r in rows
         ]
 
+    def count_uncategorized(self) -> int:
+        """Return the number of transactions without a category assignment."""
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
+                    ON t.transaction_id = c.transaction_id
+                WHERE c.transaction_id IS NULL
+                """
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:  # noqa: BLE001 — tables may not exist before first import
+            return 0
+
     # -- Stats --
 
     def categorization_stats(self) -> dict[str, int | float]:

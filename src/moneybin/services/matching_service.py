@@ -28,6 +28,19 @@ class MatchingService:
         self._db = db
         self._settings = settings or get_settings().matching
 
+    def count_pending(self) -> int:
+        """Return the number of match decisions awaiting user review."""
+        try:
+            row = self._db.execute(
+                """
+                SELECT COUNT(*) FROM app.match_decisions
+                WHERE match_status = 'pending' AND reversed_at IS NULL
+                """
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:  # noqa: BLE001 — table may not exist before first run
+            return 0
+
     def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
         """Run same-record dedup (Tier 2b/3) and transfer detection (Tier 4).
 

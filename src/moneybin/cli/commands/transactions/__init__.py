@@ -6,7 +6,7 @@ Owns transaction entity operations and workflows on transactions
 
 import typer
 
-from . import categorize, matches
+from . import categorize, matches, review
 
 app = typer.Typer(
     help="Transactions and workflows on them (matches, categorize, review)",
@@ -15,3 +15,4 @@ app = typer.Typer(
 
 app.add_typer(categorize.app, name="categorize")
 app.add_typer(matches.app, name="matches")
+app.add_typer(review.app, name="review")
