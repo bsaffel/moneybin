@@ -91,7 +91,8 @@ Once connected, ask things like:
 | Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits | [Categorization](docs/guides/categorization.md) |
 | AES-256-GCM encryption at rest, key management, automatic schema migrations | [Database & Security](docs/guides/database-security.md) |
 | Multi-profile isolation (per-profile DB, config, logs) | [Profiles](docs/guides/profiles.md) |
-| MCP server: 9 tool domains, prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
+| MCP server: ~15 tool domains under the v2 path-prefix taxonomy (accounts, transactions, reports, categories, merchants, system, budget, tax, sync, transform, import, …), prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
+| MCP tool timeouts: every tool returns within a configurable wall-clock cap (default 30 s); timeouts release the DuckDB lock so the next call succeeds | [Spec](docs/specs/mcp-tool-timeouts.md) |
 | Account management: `accounts list/show/rename/include/archive/unarchive/set` — display preferences, lifecycle, and Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). Archive cascades to net worth exclusion; soft-validation on subtype with TTY prompt. | [Account Management](docs/specs/account-management.md) |
 | Net worth & balance tracking: `accounts balance show/history/assert/list/delete/reconcile` for per-account balance workflow; `reports networth show/history` for cross-account aggregation with period-over-period change. Authoritative observations from OFX, tabular running balances, and user assertions. Daily carry-forward interpolation; reconciliation deltas self-heal on reimport. | [Net Worth](docs/specs/net-worth.md) |
 | Direct SQL: shell, DuckDB UI, key tables documented | [SQL Access](docs/guides/sql-access.md) |
@@ -129,6 +130,7 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 | Investment tracking (holdings, cost basis) | 🗓️ |
 | Privacy tiers & consent model | 📐 |
 | MCP SQL schema discoverability (curated `moneybin://schema` resource) | ✅ |
+| MCP tool timeouts (configurable 30 s cap, DuckDB lock released on timeout) | ✅ |
 | Export (CSV, Excel, Google Sheets) | 🗓️ |
 
 Per-feature design specs live in [`docs/specs/`](docs/specs/INDEX.md).

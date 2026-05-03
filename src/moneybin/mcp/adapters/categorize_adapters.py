@@ -19,19 +19,19 @@ if TYPE_CHECKING:
 
 
 def auto_review_envelope(result: AutoReviewResult) -> ResponseEnvelope:
-    """Build a ResponseEnvelope for the categorize_auto_review tool."""
+    """Build a ResponseEnvelope for the transactions_categorize_auto_review tool."""
     return build_envelope(
         data=result.proposals,
         sensitivity="medium",
         total_count=result.total_count,
         actions=[
-            "Use categorize_auto_confirm to approve or reject proposals",
+            "Use transactions_categorize_auto_confirm to approve or reject proposals",
         ],
     )
 
 
 def auto_confirm_envelope(result: AutoConfirmResult) -> ResponseEnvelope:
-    """Build a ResponseEnvelope for the categorize_auto_confirm tool."""
+    """Build a ResponseEnvelope for the transactions_categorize_auto_confirm tool."""
     return build_envelope(
         data={
             "approved": result.approved,
@@ -45,7 +45,7 @@ def auto_confirm_envelope(result: AutoConfirmResult) -> ResponseEnvelope:
 
 
 def auto_stats_envelope(result: AutoStatsResult) -> ResponseEnvelope:
-    """Build a ResponseEnvelope for the categorize_auto_stats tool."""
+    """Build a ResponseEnvelope for the transactions_categorize_auto_stats tool."""
     return build_envelope(
         data={
             "active_auto_rules": result.active_auto_rules,

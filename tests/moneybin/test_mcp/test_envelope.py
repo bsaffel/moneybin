@@ -64,7 +64,7 @@ class TestResponseEnvelope:
         envelope = ResponseEnvelope(
             summary=SummaryMeta(total_count=3, returned_count=3),
             data=[{"period": "2026-04", "income": 5200.00}],
-            actions=["Use spending_by_category for breakdown"],
+            actions=["Use reports_spending_by_category for breakdown"],
         )
         d = envelope.to_dict()
         assert set(d.keys()) == {"summary", "data", "actions"}
@@ -154,9 +154,9 @@ class TestBuildEnvelope:
         envelope = build_envelope(
             data=[],
             sensitivity="low",
-            actions=["Try spending_by_category"],
+            actions=["Try reports_spending_by_category"],
         )
-        assert envelope.actions == ["Try spending_by_category"]
+        assert envelope.actions == ["Try reports_spending_by_category"]
 
     @pytest.mark.unit
     def test_build_write_result(self) -> None:
@@ -169,3 +169,19 @@ class TestBuildEnvelope:
         )
         assert envelope.summary.total_count == 50
         assert envelope.data == result
+
+
+@pytest.mark.unit
+def test_user_error_carries_structured_details() -> None:
+    from moneybin.errors import UserError
+
+    err = UserError(
+        "Tool exceeded 30.0s cap",
+        code="timed_out",
+        hint=None,
+        details={"tool": "import_inbox_sync", "elapsed_s": 30.1, "timeout_s": 30.0},
+    )
+    d = err.to_dict()
+    assert d["code"] == "timed_out"
+    assert d["details"]["tool"] == "import_inbox_sync"
+    assert d["details"]["timeout_s"] == 30.0

@@ -1,9 +1,10 @@
 # src/moneybin/mcp/tools/transactions.py
-"""Transactions namespace tools — search and recurring pattern detection.
+"""Transactions namespace tools — search, recurring patterns, review orientation.
 
 Tools:
     - transactions_search — Search transactions with filters (medium sensitivity)
-    - transactions_recurring — Detect recurring transaction patterns (medium sensitivity)
+    - transactions_recurring_list — Detect recurring transaction patterns (medium sensitivity)
+    - transactions_review_status — Pending counts across matches and categorize queues (low)
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.protocol.envelope import ResponseEnvelope
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.transaction_service import TransactionService
 
 
@@ -67,7 +68,7 @@ def transactions_search(
 
 
 @mcp_tool(sensitivity="medium")
-def transactions_recurring(
+def transactions_recurring_list(
     min_occurrences: int = 3,
 ) -> ResponseEnvelope:
     """Detect recurring transaction patterns like subscriptions.
@@ -85,6 +86,39 @@ def transactions_recurring(
     return result.to_envelope()
 
 
+@mcp_tool(sensitivity="low")
+def transactions_review_status() -> ResponseEnvelope:
+    """Return counts of pending reviews across both queues.
+
+    Orientation tool: call this to decide which queue to drain first.
+    For categorize, fetch items via ``transactions_categorize_pending_list``.
+    Match review is CLI-only today (``moneybin transactions review --type
+    matches``); a ``transactions_matches_pending`` MCP tool is planned.
+    """
+    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.matching_service import MatchingService
+    from moneybin.services.review_service import ReviewService
+
+    db = get_database()
+    status = ReviewService(
+        match_service=MatchingService(db=db),
+        categorize_service=CategorizationService(db=db),
+    ).status()
+
+    return build_envelope(
+        data={
+            "matches_pending": status.matches_pending,
+            "categorize_pending": status.categorize_pending,
+            "total": status.total,
+        },
+        sensitivity="low",
+        actions=[
+            "Use transactions_categorize_pending_list to fetch the categorize queue",
+            "For matches, run `moneybin transactions review --type matches` (CLI-only today)",
+        ],
+    )
+
+
 def register_transactions_tools(mcp: FastMCP) -> None:
     """Register all transactions namespace tools with the FastMCP server."""
     register(
@@ -96,7 +130,14 @@ def register_transactions_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_recurring,
-        "transactions_recurring",
+        transactions_recurring_list,
+        "transactions_recurring_list",
         "Detect recurring transaction patterns like subscriptions and regular charges.",
+    )
+    register(
+        mcp,
+        transactions_review_status,
+        "transactions_review_status",
+        "Return pending counts for matches and categorize queues. "
+        "Call this to orient before fetching specific queue contents.",
     )

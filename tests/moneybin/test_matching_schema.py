@@ -1,11 +1,5 @@
 """Tests for matching schema initialization."""
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
-
 from moneybin.database import Database
 from moneybin.tables import MATCH_DECISIONS, SEED_SOURCE_PRIORITY
 
@@ -13,28 +7,16 @@ from moneybin.tables import MATCH_DECISIONS, SEED_SOURCE_PRIORITY
 class TestMatchingSchema:
     """Tests for app.match_decisions and app.seed_source_priority schema initialization."""
 
-    @pytest.fixture()
-    def db(
-        self, tmp_path: Path, mock_secret_store: MagicMock
-    ) -> Generator[Database, None, None]:
-        database = Database(
-            tmp_path / "test.duckdb",
-            secret_store=mock_secret_store,
-            no_auto_upgrade=True,
-        )
-        yield database
-        database.close()
-
-    def test_match_decisions_table_exists(self, db: Database) -> None:
-        result = db.execute(
+    def test_match_decisions_table_exists(self, module_db: Database) -> None:
+        result = module_db.execute(
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema = 'app' AND table_name = 'match_decisions'"
         ).fetchone()
         assert result is not None
         assert result[0] == 1
 
-    def test_match_decisions_columns(self, db: Database) -> None:
-        cols = db.execute(
+    def test_match_decisions_columns(self, module_db: Database) -> None:
+        cols = module_db.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'app' AND table_name = 'match_decisions' "
             "ORDER BY ordinal_position"
@@ -49,8 +31,8 @@ class TestMatchingSchema:
         assert "match_tier" in col_names
         assert "reversed_at" in col_names
 
-    def test_seed_source_priority_table_exists(self, db: Database) -> None:
-        result = db.execute(
+    def test_seed_source_priority_table_exists(self, module_db: Database) -> None:
+        result = module_db.execute(
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema = 'app' AND table_name = 'seed_source_priority'"
         ).fetchone()

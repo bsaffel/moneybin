@@ -25,13 +25,13 @@ Rules can be further scoped with:
 
 ```bash
 # Apply all active rules to uncategorized transactions
-moneybin categorize apply-rules
+moneybin transactions categorize rules apply
 
 # List all active rules
-moneybin categorize list-rules
+moneybin transactions categorize rules list
 
 # View categorization coverage statistics
-moneybin categorize stats
+moneybin transactions categorize stats
 ```
 
 ## Merchant Normalization
@@ -58,16 +58,16 @@ Each merchant mapping specifies:
 All categorization operations support batch mode for efficient processing. These are designed for AI assistants that review and categorize many transactions in a single interaction turn.
 
 **Via MCP tools** (all batch-capable — single or many records per call):
-- `categorize_bulk` — categorize one or many transactions (auto-creates merchant mappings)
-- `categorize_create_rules` — create one or many categorization rules
-- `categorize_create_merchants` — create one or many merchant mappings
-- `categorize_delete_rule` — remove a rule
+- `transactions_categorize_bulk_apply` — categorize one or many transactions (auto-creates merchant mappings)
+- `transactions_categorize_rules_create` — create one or many categorization rules
+- `merchants_create` — create one or many merchant mappings
+- `transactions_categorize_rule_delete` — remove a rule
 
-**Via CLI** — the `categorize_bulk` tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
+**Via CLI** — the bulk-apply tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
 
 ```bash
-moneybin categorize bulk --input cats.json
-cat cats.json | moneybin categorize bulk -
+moneybin transactions categorize bulk --input cats.json
+cat cats.json | moneybin transactions categorize bulk -
 ```
 
 Both surfaces share the same response envelope; pass `--output json` to get the structured result.
@@ -79,7 +79,7 @@ MoneyBin ships with the Plaid Personal Finance Category v2 (PFCv2) taxonomy — 
 **Top-level categories include:** Food & Drink, Shopping, Travel, Transportation, Entertainment, Bills & Utilities, Health & Fitness, Personal Care, Education, Income, Transfer, and more.
 
 You can also:
-- **Create custom categories** via the `categorize_create_category` MCP tool
+- **Create custom categories** via the `categories_create` MCP tool
 - **Toggle categories on/off** — disabled categories are hidden from the taxonomy but existing categorizations are preserved
 
 ## Auto-Rules
@@ -88,7 +88,7 @@ MoneyBin learns categorization patterns from how you (or your AI assistant) cate
 
 ### How learning works
 
-Every time `categorize_bulk` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
+Every time `transactions_categorize_bulk_apply` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
 
 | Term | Meaning |
 |---|---|
@@ -102,24 +102,24 @@ Every time `categorize_bulk` writes a categorization (CLI, MCP, or AI agent), Mo
 
 ```bash
 # List pending auto-rule proposals (table or JSON)
-moneybin categorize auto review
-moneybin categorize auto review --output json
+moneybin transactions categorize auto review
+moneybin transactions categorize auto review --output json
 
 # Approve / reject specific proposals
-moneybin categorize auto confirm --approve abc123 --approve def456
-moneybin categorize auto confirm --reject abc123
+moneybin transactions categorize auto confirm --approve abc123 --approve def456
+moneybin transactions categorize auto confirm --reject abc123
 
 # Approve all pending — except the ones you reject explicitly
-moneybin categorize auto confirm --approve-all --reject abc123
+moneybin transactions categorize auto confirm --approve-all --reject abc123
 
 # Reject everything pending
-moneybin categorize auto confirm --reject-all
+moneybin transactions categorize auto confirm --reject-all
 
 # List active auto-rules
-moneybin categorize auto rules
+moneybin transactions categorize auto rules
 
 # Show health: active auto-rules, pending proposals, transactions auto-ruled
-moneybin categorize auto stats
+moneybin transactions categorize auto stats
 ```
 
 ### Tunables
@@ -159,9 +159,9 @@ A proposal is suppressed when an active rule or merchant mapping already produce
 ## Typical Workflow
 
 1. **Import data** — `moneybin import file transactions.csv` (defaults are already seeded by `db init`)
-2. **Apply existing rules** — `moneybin categorize apply-rules`
+2. **Apply existing rules** — `moneybin transactions categorize rules apply`
 3. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions"*
-4. **Review auto-rule proposals** — `moneybin categorize auto review`, then approve the ones that look right
+4. **Review auto-rule proposals** — `moneybin transactions categorize auto review`, then approve the ones that look right
 5. **Rules build up** — each categorization creates merchant mappings and feeds auto-rule learning, so the next import has fewer uncategorized transactions
 
 Over time, the rule engine, merchant mappings, and auto-rules handle most categorization automatically. Each import requires less manual work.

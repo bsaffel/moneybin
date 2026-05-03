@@ -20,7 +20,6 @@ import typer
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json
 from moneybin.config import find_repo_root, get_base_dir
-from moneybin.mcp.server import mcp as mcp_server
 
 app = typer.Typer(help="MCP server for AI assistant integration", no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -625,13 +624,17 @@ def list_prompts(
     Examples:
         moneybin mcp list-prompts
     """
+    from moneybin.mcp.server import (
+        mcp,  # noqa: PLC0415 — defer fastmcp import to subcommand body
+    )
+
     for module in (
         "moneybin.mcp.prompts",
         "moneybin.mcp.resources",
     ):
         importlib.import_module(module)
 
-    prompts = asyncio.run(mcp_server.list_prompts(run_middleware=False))
+    prompts = asyncio.run(mcp.list_prompts(run_middleware=False))
 
     sorted_prompts = sorted(prompts, key=lambda p: p.name)
 

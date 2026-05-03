@@ -23,10 +23,12 @@ class TestGetDb:
         """Connection allows writes (single r/w connection via Database class)."""
         conn = server.get_db()
         # Should be able to write — no InvalidInputException
-        conn.execute(
+        conn.execute(  # noqa: S608  # building test input string, not executing SQL
             "INSERT INTO core.dim_accounts VALUES "
-            "('RWTEST', 'X', 'X', 'X', 'X', 'X', 'X', "
-            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "('RWTEST', NULL, 'CHECKING', 'Test Bank', NULL, 'ofx', 'test.ofx', "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+            "'Test Bank CHECKING ...TEST', NULL, NULL, NULL, NULL, 'USD', "
+            "NULL, FALSE, TRUE)"
         )
         result = conn.execute(
             "SELECT COUNT(*) FROM core.dim_accounts WHERE account_id = 'RWTEST'"

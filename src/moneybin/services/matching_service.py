@@ -13,6 +13,7 @@ from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.priority import seed_source_priority
+from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
     from moneybin.matching.engine import MatchResult
@@ -27,6 +28,19 @@ class MatchingService:
         """Initialize MatchingService with a Database and optional MatchingSettings."""
         self._db = db
         self._settings = settings or get_settings().matching
+
+    def count_pending(self) -> int:
+        """Return the number of match decisions awaiting user review."""
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
+                WHERE match_status = 'pending' AND reversed_at IS NULL
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:  # noqa: BLE001 — table may not exist before first run
+            return 0
 
     def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
         """Run same-record dedup (Tier 2b/3) and transfer detection (Tier 4).

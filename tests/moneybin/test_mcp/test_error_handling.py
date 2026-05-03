@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from moneybin.database import DatabaseKeyError
@@ -17,7 +19,7 @@ def test_mcp_tool_converts_user_error_to_envelope() -> None:
     def failing_tool() -> ResponseEnvelope:
         raise UserError("not found", code="NOT_FOUND")
 
-    result = failing_tool()
+    result = asyncio.run(failing_tool())
     assert isinstance(result, ResponseEnvelope)
     assert result.error is not None
     assert result.error.code == "NOT_FOUND"
@@ -31,7 +33,7 @@ def test_mcp_tool_converts_database_key_error_to_envelope() -> None:
     def failing_tool() -> ResponseEnvelope:
         raise DatabaseKeyError("missing key")
 
-    result = failing_tool()
+    result = asyncio.run(failing_tool())
     assert isinstance(result, ResponseEnvelope)
     assert result.error is not None
     assert result.error.code == "database_locked"
@@ -49,7 +51,7 @@ def test_mcp_tool_lets_unclassified_exceptions_propagate() -> None:
         raise RuntimeError("internal detail leak")
 
     with pytest.raises(RuntimeError):
-        failing_tool()
+        asyncio.run(failing_tool())
 
 
 def test_mcp_tool_returns_response_envelope_directly() -> None:
@@ -63,6 +65,6 @@ def test_mcp_tool_returns_response_envelope_directly() -> None:
     def ok_tool() -> ResponseEnvelope:
         return build_envelope(data=[{"x": 1}], sensitivity="low")
 
-    result = ok_tool()
+    result = asyncio.run(ok_tool())
     assert isinstance(result, ResponseEnvelope)  # NOT a str
     assert result.data == [{"x": 1}]

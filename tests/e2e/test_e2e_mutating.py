@@ -19,6 +19,7 @@ from tests.e2e.conftest import (
     TEST_PASSPHRASE,
     base_env,
     make_workflow_env,
+    make_workflow_env_fast,
     run_cli,
 )
 
@@ -157,8 +158,10 @@ class TestDBInit:
 class TestDBOperations:
     """Backup, restore, lock/unlock, and key rotation."""
 
-    def test_db_backup_and_restore(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "backup")
+    def test_db_backup_and_restore(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "backup", _mutating_profile_template)
         backup_dir = tmp_path / "backups"
         backup_dir.mkdir()
 
@@ -174,32 +177,42 @@ class TestDBOperations:
         result = run_cli("db", "restore", "--from", str(backup_file), "--yes", env=env)
         result.assert_success()
 
-    def test_db_lock(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "locktest")
+    def test_db_lock(self, _mutating_profile_template: Path, tmp_path: Path) -> None:
+        env = make_workflow_env_fast(tmp_path, "locktest", _mutating_profile_template)
         result = run_cli("db", "lock", env=env)
         result.assert_success()
 
-    def test_db_unlock_no_salt(self, tmp_path: Path) -> None:
+    def test_db_unlock_no_salt(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """Unlock without a passphrase salt should fail gracefully."""
-        env = make_workflow_env(tmp_path, "unlocktest")
+        env = make_workflow_env_fast(tmp_path, "unlocktest", _mutating_profile_template)
         result = run_cli("db", "unlock", env=env, input_text=f"{TEST_PASSPHRASE}\n")
         # With null keyring, no passphrase salt is stored → exit 1
         assert result.exit_code == 1
         assert "Traceback (most recent call last)" not in result.output
 
-    def test_db_rotate_key(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "rotatetest")
+    def test_db_rotate_key(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "rotatetest", _mutating_profile_template)
         result = run_cli("db", "key", "rotate", "--yes", env=env)
         result.assert_success()
 
-    def test_db_migrate_apply(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "migrateapply")
+    def test_db_migrate_apply(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "migrateapply", _mutating_profile_template
+        )
         result = run_cli("db", "migrate", "apply", env=env)
         result.assert_success()
 
-    def test_db_kill_no_processes(self, tmp_path: Path) -> None:
+    def test_db_kill_no_processes(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """Db kill with no matching processes exits cleanly."""
-        env = make_workflow_env(tmp_path, "killtest")
+        env = make_workflow_env_fast(tmp_path, "killtest", _mutating_profile_template)
         result = run_cli("db", "kill", env=env)
         result.assert_success()
 
@@ -207,12 +220,16 @@ class TestDBOperations:
 class TestTransformMutating:
     """Transform commands that modify the database."""
 
-    def test_transform_apply(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "xformapply")
+    def test_transform_apply(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "xformapply", _mutating_profile_template)
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-    def test_transform_state_persists_across_processes(self, tmp_path: Path) -> None:
+    def test_transform_state_persists_across_processes(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """SQLMesh state must land in the encrypted moneybin catalog, not memory.
 
         Regression: DuckDB cursors default to the `memory` catalog regardless
@@ -221,15 +238,17 @@ class TestTransformMutating:
         memory.sqlmesh.* and they evaporate on process exit — leaving `status`
         to report "No SQLMesh environment initialized" right after `apply`.
         """
-        env = make_workflow_env(tmp_path, "xformstate")
+        env = make_workflow_env_fast(tmp_path, "xformstate", _mutating_profile_template)
         run_cli("transform", "apply", env=env, timeout=180).assert_success()
         result = run_cli("transform", "status", env=env, timeout=60)
         result.assert_success()
         assert "Environment: prod" in result.output
         assert "No SQLMesh environment initialized" not in result.output
 
-    def test_transform_audit(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "xformaudit")
+    def test_transform_audit(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "xformaudit", _mutating_profile_template)
         result = run_cli(
             "transform",
             "audit",
@@ -243,8 +262,12 @@ class TestTransformMutating:
         # May exit non-zero if no models have audits — no Python crash is the bar
         assert "Traceback (most recent call last)" not in result.output
 
-    def test_transform_restate(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "xformrestate")
+    def test_transform_restate(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "xformrestate", _mutating_profile_template
+        )
         result = run_cli(
             "transform",
             "restate",
@@ -263,21 +286,29 @@ class TestTransformMutating:
 class TestCategorizeMutating:
     """Categorization commands that write to the database."""
 
-    def test_transform_seed(self, tmp_path: Path) -> None:
+    def test_transform_seed(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """Seeds materialize via the transform command, not categorize."""
-        env = make_workflow_env(tmp_path, "transformseed")
+        env = make_workflow_env_fast(
+            tmp_path, "transformseed", _mutating_profile_template
+        )
         result = run_cli("transform", "seed", env=env, timeout=180)
         result.assert_success()
 
-    def test_categorize_apply_rules(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "catrules")
-        result = run_cli("categorize", "apply-rules", env=env)
+    def test_categorize_apply_rules(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "catrules", _mutating_profile_template)
+        result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
 
     @pytest.mark.skipif(not _has_duckdb_cli, reason="DuckDB CLI not installed")
-    def test_categorize_auto_review_and_confirm(self, tmp_path: Path) -> None:
+    def test_categorize_auto_review_and_confirm(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """auto-review surfaces a pending proposal; auto-confirm promotes it."""
-        env = make_workflow_env(tmp_path, "catauto")
+        env = make_workflow_env_fast(tmp_path, "catauto", _mutating_profile_template)
 
         # auto-confirm's promotion path joins core.fct_transactions to
         # backfill matches, so transforms must materialize the (empty)
@@ -300,18 +331,20 @@ class TestCategorizeMutating:
         result.assert_success()
 
         # auto-review lists the pending proposal
-        result = run_cli("categorize", "auto", "review", env=env)
+        result = run_cli("transactions", "categorize", "auto", "review", env=env)
         result.assert_success()
         assert "autoe2e0001" in result.output, (
             f"auto-review did not surface proposal: {result.output}"
         )
 
         # auto-stats reports the pending proposal
-        result = run_cli("categorize", "auto", "stats", env=env)
+        result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
 
         # auto-confirm --approve-all promotes it
-        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
+        result = run_cli(
+            "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
+        )
         result.assert_success()
         assert "Approved" in result.output, (
             f"auto-confirm missing approval message: {result.output}"
@@ -319,11 +352,11 @@ class TestCategorizeMutating:
 
         # auto-rules now lists at least one active rule, and auto-stats
         # reflects the promotion
-        result = run_cli("categorize", "auto", "rules", env=env)
+        result = run_cli("transactions", "categorize", "auto", "rules", env=env)
         result.assert_success()
         assert "autoe2e0001" not in result.output  # listed by rule_id, not proposal_id
 
-        result = run_cli("categorize", "auto", "stats", env=env)
+        result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 
@@ -331,26 +364,54 @@ class TestCategorizeMutating:
 class TestMatchesMutating:
     """Matching commands that modify match state."""
 
-    def test_matches_run(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "matchrun")
-        result = run_cli("matches", "run", env=env)
+    def test_matches_run(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "matchrun", _mutating_profile_template)
+        result = run_cli("transactions", "matches", "run", env=env)
         # May exit non-zero if no transforms have been run — no Python crash is the bar
         assert "Traceback (most recent call last)" not in result.output
 
-    def test_matches_review_accept_all(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "matchreview")
-        result = run_cli("matches", "review", "--accept-all", env=env)
+    def test_matches_review_confirm_all(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Unified review with --type matches --confirm-all (v2 replacement for `matches review --accept-all`).
+
+        STUB PLACEHOLDER: --confirm-all currently routes to _not_implemented()
+        and exits 0 without mutating the match queue. This test only guards
+        that the stub does not crash. Replace with a behavioral assertion
+        (e.g., pending matches consumed, decisions recorded) once the
+        non-interactive review loop lands. See cli-restructure.md (review
+        collapse — non-interactive flags pending).
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "matchreview", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "review",
+            "--type",
+            "matches",
+            "--confirm-all",
+            env=env,
+        )
         result.assert_success()
 
-    def test_matches_backfill(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "matchbf")
-        result = run_cli("matches", "backfill", env=env)
+    def test_matches_backfill(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "matchbf", _mutating_profile_template)
+        result = run_cli("transactions", "matches", "backfill", env=env)
         # May exit non-zero if no transforms have been run — no Python crash is the bar
         assert "Traceback (most recent call last)" not in result.output
 
-    def test_matches_undo_nonexistent(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "matchundo")
-        result = run_cli("matches", "undo", "nonexistent-id", "--yes", env=env)
+    def test_matches_undo_nonexistent(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "matchundo", _mutating_profile_template)
+        result = run_cli(
+            "transactions", "matches", "undo", "nonexistent-id", "--yes", env=env
+        )
         # Should fail gracefully with "not found", not crash
         assert "Traceback (most recent call last)" not in result.output
 
@@ -358,8 +419,10 @@ class TestMatchesMutating:
 class TestImportMutating:
     """Import commands that write data or modify formats."""
 
-    def test_import_file_and_revert(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "importrev")
+    def test_import_file_and_revert(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "importrev", _mutating_profile_template)
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
         # Import
@@ -378,8 +441,10 @@ class TestImportMutating:
         result = run_cli("import", "revert", "nonexistent-id", "--yes", env=env)
         assert "Traceback (most recent call last)" not in result.output
 
-    def test_import_delete_format(self, tmp_path: Path) -> None:
-        env = make_workflow_env(tmp_path, "delfmt")
+    def test_import_delete_format(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "delfmt", _mutating_profile_template)
         result = run_cli(
             "import", "formats", "delete", "nonexistent-format", "--yes", env=env
         )

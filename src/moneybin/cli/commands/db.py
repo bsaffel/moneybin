@@ -757,7 +757,7 @@ def db_key_export(
     """Export the encryption key to an encrypted envelope (not yet implemented)."""
     del out
     typer.echo(
-        "db key export is not yet implemented. Tracked in docs/followups.md.",
+        "db key export is not yet implemented. Tracked in private/followups.md.",
         err=True,
     )
     raise typer.Exit(1)
@@ -773,7 +773,7 @@ def db_key_import(
     """Import an encryption key from an envelope (not yet implemented)."""
     del envelope
     typer.echo(
-        "db key import is not yet implemented. Tracked in docs/followups.md.",
+        "db key import is not yet implemented. Tracked in private/followups.md.",
         err=True,
     )
     raise typer.Exit(1)
@@ -783,7 +783,7 @@ def db_key_import(
 def db_key_verify() -> None:
     """Verify the encryption key matches the database (not yet implemented)."""
     typer.echo(
-        "db key verify is not yet implemented. Tracked in docs/followups.md.",
+        "db key verify is not yet implemented. Tracked in private/followups.md.",
         err=True,
     )
     raise typer.Exit(1)

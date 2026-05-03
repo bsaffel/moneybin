@@ -1,8 +1,12 @@
 """Main CLI application for MoneyBin.
 
-This module provides the unified entry point for all MoneyBin CLI operations,
-organizing commands into groups: profile, import, sync, categorize, transform,
-db, mcp.
+Unified entry point for MoneyBin CLI operations. Commands are organized into
+top-level groups for entity management, workflows, reports, and infrastructure
+per `docs/specs/cli-restructure.md` v2.
+
+Cold-start cost is kept down by deferring heavy transitive imports
+(``fastmcp``, ``sqlmesh``, ``polars``) inside the command function bodies
+that need them — see `.claude/rules/cli.md` → "Cold-Start Hygiene".
 """
 
 import logging
@@ -15,21 +19,30 @@ from ..config import register_profile_resolver, set_current_profile
 from ..observability import setup_observability
 from .commands import (
     accounts,
-    categorize,
+    assets,
+    categories,
     db,
     import_cmd,
     logs,
-    matches,
     mcp,
+    merchants,
     migrate,
     profile,
     reports,
     stats,
     sync,
     synthetic,
+    system,
+    tax,
+    transactions,
     transform,
 )
-from .commands.stubs import export_app
+from .commands import (
+    budget as budget_cmd,
+)
+from .commands.stubs import (
+    export_app,
+)
 from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
@@ -114,12 +127,6 @@ app.add_typer(
     help="Sync transactions from external services",
 )
 app.add_typer(
-    categorize.app,
-    name="categorize",
-    help="Manage transaction categories, rules, and merchants",
-)
-app.add_typer(matches.app, name="matches", help="Review and manage transaction matches")
-app.add_typer(
     accounts.app,
     name="accounts",
     help="Account listing, settings, and lifecycle ops",
@@ -129,6 +136,13 @@ app.add_typer(
     name="reports",
     help="Cross-domain analytical reports",
 )
+app.add_typer(transactions.app, name="transactions")
+app.add_typer(assets.app, name="assets")
+app.add_typer(categories.app, name="categories")
+app.add_typer(merchants.app, name="merchants")
+app.add_typer(budget_cmd.app, name="budget")
+app.add_typer(tax.app, name="tax")
+app.add_typer(system.app, name="system")
 app.add_typer(
     transform.app,
     name="transform",

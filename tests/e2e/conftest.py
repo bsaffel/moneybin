@@ -9,12 +9,23 @@ from __future__ import annotations
 import atexit
 import os
 import shutil
-import subprocess  # noqa: S404 — subprocess is intentional; we invoke uv as a test harness
+import subprocess  # noqa: S404 — subprocess is intentional; we invoke the moneybin entrypoint directly
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+# Resolve the moneybin entrypoint inside the active venv. Tests run under
+# `uv run pytest`, which prepends `.venv/bin` to PATH and sets sys.executable
+# to the venv's python — so its sibling `moneybin` is what we want. Calling
+# the script directly skips uv's per-invocation project-resolve overhead
+# (~100-200ms × 100+ calls in the E2E suite). The existence check fires
+# inside `run_cli` (not at module-top) so a fresh checkout without `uv sync`
+# can still collect non-E2E tests without a confusing collection-time error.
+_VENV_BIN = Path(sys.executable).parent
+_MONEYBIN_BIN = _VENV_BIN / "moneybin"
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -102,7 +113,12 @@ def run_cli(
     Returns:
         CLIResult with exit_code, stdout, stderr.
     """
-    cmd = ["uv", "run", "moneybin", *args]  # noqa: S607 — uv is on PATH in dev environments
+    if not _MONEYBIN_BIN.exists():
+        pytest.fail(
+            f"moneybin entrypoint not found at {_MONEYBIN_BIN}. "
+            "Run `uv sync` to populate the venv before running E2E tests."
+        )
+    cmd = [str(_MONEYBIN_BIN), *args]
     # When no env is provided, override MONEYBIN_PROFILE and MONEYBIN_HOME
     # to prevent the first-run setup wizard and isolate from the user's
     # real profile. The fallback profile dir is created on first use.
@@ -212,3 +228,61 @@ def make_workflow_env(
 
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+
+# ---------------------------------------------------------------------------
+# Snapshot-based fast workflow fixture
+# ---------------------------------------------------------------------------
+
+# A fixed profile name used inside the template snapshot. Each mutating test
+# copies the entire MONEYBIN_HOME tree into its own isolated tmp_path, so
+# they never collide on this name despite sharing it.
+_TEMPLATE_PROFILE_NAME = "e2e-template"
+
+
+@pytest.fixture(scope="session")
+def _mutating_profile_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by parameter name
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    """One-shot MONEYBIN_HOME with `e2e-template` profile created and DB initialized.
+
+    Built once per pytest session by running `moneybin profile create` against
+    a temp home. `make_workflow_env_fast` then copies this tree into each
+    mutating test's tmp_path — skipping the per-test `profile create` cost
+    (Argon2 key derivation + encrypted DB init + profile config write).
+    """
+    template_home = tmp_path_factory.mktemp("e2e_profile_template")
+    env = base_env(template_home, _TEMPLATE_PROFILE_NAME)
+    env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(template_home / "inbox-root")
+
+    result = run_cli("profile", "create", _TEMPLATE_PROFILE_NAME, env=env)
+    if result.exit_code != 0:
+        msg = f"Failed to build profile snapshot: {result.stderr}"
+        raise AssertionError(msg)
+
+    return template_home
+
+
+def make_workflow_env_fast(
+    e2e_home: Path,
+    subdir: str,
+    template: Path,
+) -> dict[str, str]:
+    """Faster equivalent of `make_workflow_env()`.
+
+    Copies the session-built profile template into `e2e_home / <subdir>`
+    instead of running `profile create`. ``subdir`` only names the
+    isolation directory under ``e2e_home`` — the active ``MONEYBIN_PROFILE``
+    is always ``_TEMPLATE_PROFILE_NAME`` (``"e2e-template"``) regardless of
+    what's passed here. Tests that need a specific active profile name in
+    CLI output or arguments must use ``make_workflow_env()``.
+
+    Returns the env dict (same shape as `make_workflow_env`).
+    """
+    target_home = e2e_home / subdir
+    if target_home.exists():
+        shutil.rmtree(target_home)
+    shutil.copytree(template, target_home)
+
+    env = base_env(target_home, _TEMPLATE_PROFILE_NAME)
+    env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(target_home / "inbox-root")
+    return env

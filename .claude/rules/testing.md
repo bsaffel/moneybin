@@ -59,6 +59,7 @@ When a function delegates to an external system (SQLMesh, DuckDB CLI, keyring, s
 - **Always pass `no_auto_upgrade=True`** when creating `Database` instances in tests, unless the test is specifically verifying migration behavior. Without this, each test creates a SQLMesh `Context` and runs migration checks — slow (~1.5s per test) and requires the full sqlmesh project directory to be resolvable.
 - **Use `mock_secret_store`** from the root `conftest.py` (or create a local `MagicMock` with `get_key.return_value = "test-key"`) — never hit the real keyring.
 - **Avoid `autouse=True` on expensive fixtures.** Use `pytestmark = pytest.mark.usefixtures("fixture_name")` at module level, and add the fixture as an explicit parameter to any inner fixtures that depend on it (e.g., `_insert_data(self, mcp_db: object)`).
+- **Use `module_db` for read-only modules.** `tests/moneybin/conftest.py` exposes a module-scoped `module_db` fixture that amortizes one `Database()` open across every test in the module. Eligible if **every** test in the module is read-only against `db` — no `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, no `db.ingest_dataframe()`, no helper that mutates the DB. A single mutating test in the module disqualifies it. When in doubt, stay on the function-scoped `db` fixture.
 
 ```python
 # CORRECT — fast test database
@@ -67,6 +68,28 @@ Database(tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
 # WRONG — spawns sqlmesh subprocess, runs migrations on every test
 Database(tmp_path / "test.duckdb", secret_store=mock_store)
 ```
+
+## Performance Patterns
+
+When fixture build cost × test count adds up to seconds of suite time, prefer **snapshot-and-copy** over re-building per test:
+
+1. Build the baseline once in a session-scoped fixture (template DB file, template MONEYBIN_HOME tree, etc.) and return its path.
+2. Per-test fixture does `shutil.copy` (single file) or `shutil.copytree` (directory) into `tmp_path`, then opens it.
+
+Existing examples:
+- `tests/moneybin/test_mcp/conftest.py:_mcp_db_template` — encrypted DuckDB with core tables + base reference data, copied into each MCP test's `tmp_path`.
+- `tests/e2e/conftest.py:_mutating_profile_template` — initialized profile dir built once via `moneybin profile create`, copytree'd into each mutating E2E test's `tmp_path`.
+
+Caveats:
+- Each xdist worker rebuilds the template once per session. Wins are largest when the per-test cost dominates the per-worker build cost.
+- Copying an actively-attached encrypted DuckDB file is unsafe. Close the template `Database` before returning the path (or run `CHECKPOINT` before close) so the WAL is flushed.
+- `os.link` (hardlink) is faster than `shutil.copy` but corrupts the template — DuckDB writes through the inode. Always use `shutil.copy`.
+
+For mutating E2E tests, prefer **`make_workflow_env_fast(e2e_home, subdir, _mutating_profile_template)`** over `make_workflow_env()`. Stay on `make_workflow_env()` when the test:
+- Passes `--profile <name>` directly to a CLI command (the fast path's active profile is always `e2e-template`)
+- Asserts on the profile-name string in CLI output
+- Creates additional profiles via subsequent `profile create` calls
+- Otherwise needs a fresh profile state the snapshot doesn't preserve
 
 ## Test Fixture Factories
 
@@ -127,9 +150,9 @@ E2E tests are organized into tiers by what they need:
 
 | Tier | File | Scope | Fixture |
 |---|---|---|---|
-| Help | `test_e2e_help.py` | `--help` for every command group | None (no profile/DB) |
+| Help | `test_e2e_help.py` | `--help` for every command group — **in-process via `CliRunner`** plus one subprocess boot smoke | None (no profile/DB) |
 | Read-only | `test_e2e_readonly.py` | Commands that query but don't mutate | `e2e_env` or `e2e_profile` (shared) |
-| Mutating | `test_e2e_mutating.py` | Commands that write state | `tmp_path` + `make_workflow_env()` (isolated) |
+| Mutating | `test_e2e_mutating.py` | Commands that write state | `tmp_path` + `make_workflow_env_fast()` (snapshot-copy) or `make_workflow_env()` (fresh `profile create`) |
 | Workflows | `test_e2e_workflows.py` | Multi-step user flows | `e2e_home` + `make_workflow_env()` |
 | MCP | `test_e2e_mcp.py` | MCP server boot, tool invocation | `make_workflow_env()` |
 | Stubs | `test_e2e_readonly.py::TestStubCommands` | Placeholder commands | None |

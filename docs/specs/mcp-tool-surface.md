@@ -23,9 +23,9 @@ Together they replace the prototype-era MCP specs (read tools, write tools) with
 
 ## Status
 
-ready
+in-progress
 
-> **v2 revision (2026-05-02):** Aligns MCP tool naming with the unified taxonomy in [`cli-restructure.md`](cli-restructure.md) v2. The convention is path-prefix-verb-suffix (`accounts_balance_list`), with cross-domain reports moving under a new `reports_*` namespace. v1 tool names existed before the cross-interface rule was settled and used noun-collection-as-list (`accounts_balances`) and standalone analytical domains (`spending_*`, `cashflow_*`, `tax_*`). v2 makes the verb explicit and groups analytical lenses under `reports`. Sync (9 tools) and transform (5 tools) gain MCP exposure under the v2 exposure principle. See [§16b. Rename Map (v1 → v2)](#16b-rename-map-v1--v2). Hard cut: no aliases. Implementation pass moves status `ready` → `in-progress`.
+> **v2 revision (2026-05-02, in-progress):** Aligns MCP tool naming with the unified taxonomy in [`cli-restructure.md`](cli-restructure.md) v2. The convention is path-prefix-verb-suffix (`accounts_balance_list`), with cross-domain reports moving under a new `reports_*` namespace. v1 tool names existed before the cross-interface rule was settled and used noun-collection-as-list (`accounts_balances`) and standalone analytical domains (`spending_*`, `cashflow_*`, `tax_*`). v2 makes the verb explicit and groups analytical lenses under `reports`. Sync (9 tools) and transform (5 tools) gain MCP exposure under the v2 exposure principle. See [§16b. Rename Map (v1 → v2)](#16b-rename-map-v1--v2). Hard cut: no aliases. Implementation pass moves status `ready` → `in-progress`.
 
 ---
 

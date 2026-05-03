@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
 
+
 _SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
     "core_schema.sql",

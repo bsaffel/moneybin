@@ -113,6 +113,15 @@ class TestStubCommands:
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],
             ["sync", "schedule", "remove"],
+            ["accounts", "investments", "show"],
+            ["reports", "spending"],
+            ["reports", "cashflow"],
+            ["reports", "budget"],
+            ["reports", "health"],
+            ["budget", "set", "Food", "500"],
+            ["budget", "delete", "Food"],
+            ["tax", "w2", "2024"],
+            ["tax", "deductions", "2024"],
             ["export", "run"],
         ],
         ids=lambda c: " ".join(c),
@@ -179,20 +188,30 @@ class TestDBReadOnlyCommands:
         # May exit 1 if format not found — no crash is the bar
         assert "Traceback" not in result.stderr
 
-    # ── categorize ──────────────────────────────────────────────────────
+    # ── transactions categorize ──────────────────────────────────────────
 
-    def test_categorize_summary(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("categorize", "summary", env=e2e_profile)
+    def test_categorize_stats(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("transactions", "categorize", "stats", env=e2e_profile)
         result.assert_success()
 
-    def test_categorize_list_rules(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("categorize", "list-rules", env=e2e_profile)
+    def test_categorize_rules_list(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("transactions", "categorize", "rules", "list", env=e2e_profile)
         result.assert_success()
 
     # ── matches ─────────────────────────────────────────────────────────
 
     def test_matches_history(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("matches", "history", env=e2e_profile)
+        result = run_cli("transactions", "matches", "history", env=e2e_profile)
+        result.assert_success()
+
+    # ── system ──────────────────────────────────────────────────────────
+
+    def test_system_status(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("system", "status", env=e2e_profile)
+        result.assert_success()
+
+    def test_system_status_json(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("system", "status", "--output", "json", env=e2e_profile)
         result.assert_success()
 
     # ── mcp ─────────────────────────────────────────────────────────────

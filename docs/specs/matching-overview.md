@@ -1,7 +1,7 @@
 # Transaction Matching — Overview
 
-> Last updated: 2026-04-19 — promoted to ready
-> Status: Ready — umbrella doc for the transaction-matching initiative. Child specs listed in [Pillars](#the-three-pillars) are written separately.
+> Last updated: 2026-05-02 — promoted to implemented (v1)
+> Status: Implemented — both v1 pillars shipped (same-record dedup PR #43/#46, transfer detection PR #47). Umbrella doc for the transaction-matching initiative. Child specs listed in [Pillars](#the-three-pillars) are written separately.
 > Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative), [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (audit log shared), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose

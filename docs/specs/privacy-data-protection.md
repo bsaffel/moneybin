@@ -19,7 +19,7 @@ account numbers, or spending patterns.
   encryption (this spec).
 - [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md) — threat model
   for the sync tier.
-- [ADR-013: Encryption Key Management](../decisions/013-encryption-key-management.md) —
+- [ADR-009: Encryption Key Management](../decisions/009-encryption-key-management.md) —
   Argon2id KDF for passphrase mode, key retrieval chain, key rotation design.
 - [DuckDB Encryption Extension](https://duckdb.org/2025/11/19/encryption-in-duckdb) —
   AES-256-GCM encryption at rest, introduced in DuckDB v1.4.
@@ -79,7 +79,7 @@ duration of the shell session.
    - **Auto-key (default):** Random 256-bit key generated and stored in OS keychain.
      Zero daily friction. Protects against device theft and cloud sync exposure.
    - **Passphrase:** User provides a passphrase, key derived via Argon2id
-     ([ADR-013](../decisions/013-encryption-key-management.md)). Derived key cached in
+     ([ADR-009](../decisions/009-encryption-key-management.md)). Derived key cached in
      OS keychain until explicitly locked. Stronger posture for shared machines.
 
 ### Key Management
@@ -504,7 +504,7 @@ this spec — the CLI is the primary interface for infrastructure concerns.
 - `keyring` — OS keychain abstraction (macOS Keychain, Linux Secret Service, Windows
   Credential Manager)
 - `duckdb` — encryption extension (built-in since v1.4)
-- `argon2-cffi` — Argon2id passphrase key derivation (ADR-013)
+- `argon2-cffi` — Argon2id passphrase key derivation (ADR-009)
 - `secrets` (stdlib) — random key generation
 - `re` (stdlib) — PII pattern matching in log formatter
 

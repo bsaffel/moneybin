@@ -50,9 +50,13 @@ def test_every_interface_table_has_at_least_one_example() -> None:
 
 
 def _present_tables(db: Database) -> set[str]:
-    """Return fully-qualified names of all tables in the test DB."""
+    """Return fully-qualified names of all tables and views in the test DB."""
     rows = db.execute(
-        "SELECT schema_name || '.' || table_name FROM duckdb_tables()"
+        """
+        SELECT schema_name || '.' || table_name FROM duckdb_tables()
+        UNION ALL
+        SELECT schema_name || '.' || view_name FROM duckdb_views() WHERE NOT internal
+        """  # noqa: S608  # static query, not user input
     ).fetchall()
     return {r[0] for r in rows}
 

@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.conftest import FIXTURES_DIR, make_workflow_env, run_cli
+from tests.e2e.conftest import (
+    FIXTURES_DIR,
+    make_workflow_env,
+    make_workflow_env_fast,
+    run_cli,
+)
 
 _has_duckdb_cli = shutil.which("duckdb") is not None
 
@@ -60,8 +65,10 @@ class TestSyntheticPipeline:
 class TestCSVImportPipeline:
     """Workflow 2: profile create → db init → import CSV → transform → query."""
 
-    def test_csv_import_and_transform(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-csv")
+    def test_csv_import_and_transform(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(e2e_home, "wf-csv", _mutating_profile_template)
 
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
@@ -99,8 +106,10 @@ class TestCSVImportPipeline:
 class TestOFXImportPipeline:
     """Workflow 3: profile create → db init → import OFX → transform → query."""
 
-    def test_ofx_import_and_transform(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-ofx")
+    def test_ofx_import_and_transform(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(e2e_home, "wf-ofx", _mutating_profile_template)
 
         fixture = FIXTURES_DIR / "sample_statement.qfx"
 
@@ -143,10 +152,12 @@ class TestLockUnlockCycle:
     succeed — but it must fail gracefully.
     """
 
-    def test_lock_unlock_graceful(self, e2e_home: Path) -> None:
+    def test_lock_unlock_graceful(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
         from tests.e2e.conftest import TEST_PASSPHRASE
 
-        env = make_workflow_env(e2e_home, "wf-lock")
+        env = make_workflow_env_fast(e2e_home, "wf-lock", _mutating_profile_template)
 
         # Verify DB works before locking
         result = run_cli("db", "info", env=env)
@@ -179,8 +190,12 @@ class TestCategorizationPipeline:
     underlying `db init`, so no explicit seed step is needed.
     """
 
-    def test_categorize_after_import(self, e2e_home: Path) -> None:
-        env = make_workflow_env(e2e_home, "wf-categorize")
+    def test_categorize_after_import(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-categorize", _mutating_profile_template
+        )
 
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
@@ -201,11 +216,11 @@ class TestCategorizationPipeline:
         result.assert_success()
 
         # Apply rules
-        result = run_cli("categorize", "apply-rules", env=env)
+        result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
 
-        # Summary should work
-        result = run_cli("categorize", "summary", env=env)
+        # Stats should work
+        result = run_cli("transactions", "categorize", "stats", env=env)
         result.assert_success()
 
 
@@ -220,11 +235,15 @@ class TestAutoRulePipeline:
     remains active for future categorization runs.
     """
 
-    def test_import_then_promote_proposal(self, e2e_home: Path) -> None:
+    def test_import_then_promote_proposal(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
         if not _has_duckdb_cli:
             pytest.skip("DuckDB CLI required to verify rule promotion")
 
-        env = make_workflow_env(e2e_home, "wf-autorule")
+        env = make_workflow_env_fast(
+            e2e_home, "wf-autorule", _mutating_profile_template
+        )
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
         # Import the fixture twice under different account IDs so the same
@@ -295,18 +314,27 @@ class TestAutoRulePipeline:
 
         # bulk categorize — this records a user categorization and triggers the
         # auto-rule pipeline to create a pending proposal (threshold default = 1).
-        result = run_cli("categorize", "bulk", "--input", str(json_path), env=env)
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "bulk",
+            "--input",
+            str(json_path),
+            env=env,
+        )
         result.assert_success()
 
         # auto-review surfaces the seeded proposal
-        result = run_cli("categorize", "auto", "review", env=env)
+        result = run_cli("transactions", "categorize", "auto", "review", env=env)
         result.assert_success()
         assert "COFFEE SHOP" in result.output, (
             f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
         )
 
         # auto-confirm promotes the proposal to an active rule
-        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
+        result = run_cli(
+            "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
+        )
         result.assert_success()
         assert "Approved 1" in result.output, (
             f"auto-confirm did not approve the proposal: {result.output}"
@@ -331,7 +359,7 @@ class TestAutoRulePipeline:
         )
 
         # auto-stats reflects the promotion
-        result = run_cli("categorize", "auto", "stats", env=env)
+        result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 
@@ -358,5 +386,5 @@ class TestAutoRulePipeline:
 
         # Re-running apply-rules after promotion must succeed and not crash —
         # this exercises the path future imports will hit.
-        result = run_cli("categorize", "apply-rules", env=env)
+        result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()

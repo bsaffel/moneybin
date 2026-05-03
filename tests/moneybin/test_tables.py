@@ -5,11 +5,16 @@ from __future__ import annotations
 import pytest
 
 from moneybin.tables import (
+    ACCOUNT_SETTINGS,
+    AGG_NET_WORTH,
+    BALANCE_ASSERTIONS,
     BRIDGE_TRANSFERS,
     BUDGETS,
     CATEGORIES,
     CATEGORIZATION_RULES,
     DIM_ACCOUNTS,
+    FCT_BALANCES,
+    FCT_BALANCES_DAILY,
     FCT_TRANSACTIONS,
     INTERFACE_TABLES,
     MERCHANTS,
@@ -31,6 +36,11 @@ EXPECTED_INTERFACE = {
     MERCHANTS.full_name,
     CATEGORIZATION_RULES.full_name,
     TRANSACTION_CATEGORIES.full_name,
+    FCT_BALANCES.full_name,
+    FCT_BALANCES_DAILY.full_name,
+    AGG_NET_WORTH.full_name,
+    ACCOUNT_SETTINGS.full_name,
+    BALANCE_ASSERTIONS.full_name,
 }
 
 

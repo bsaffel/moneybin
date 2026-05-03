@@ -2,6 +2,20 @@
 
 import pytest
 
+from moneybin.config import MCPConfig
+
+
+@pytest.mark.unit
+def test_mcp_tool_timeout_default() -> None:
+    cfg = MCPConfig()
+    assert cfg.tool_timeout_seconds == 30.0
+
+
+@pytest.mark.unit
+def test_mcp_tool_timeout_must_be_positive() -> None:
+    with pytest.raises(ValueError):
+        MCPConfig(tool_timeout_seconds=0.0)
+
 
 def test_categorization_settings_defaults() -> None:
     """Test CategorizationSettings default values."""

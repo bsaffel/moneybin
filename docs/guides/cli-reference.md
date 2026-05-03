@@ -41,24 +41,50 @@ moneybin
 │   ├── rotate-key
 │   └── schedule {set,show,remove}
 │
-├── categorize       Categorization management
-│   ├── apply-rules  Run rules + merchants on uncategorized transactions
-│   ├── bulk         Bulk-assign categories from a JSON file or stdin
-│   ├── seed         Initialize default categories (Plaid PFCv2)
-│   ├── summary      Coverage statistics
-│   ├── list-rules   Display active manual rules
-│   └── auto         Auto-rule sub-group
-│       ├── review   List pending auto-rule proposals
-│       ├── confirm  Approve/reject auto-rule proposals
-│       ├── rules    List active auto-generated rules
-│       └── stats    Auto-rule health (active, pending, categorized)
+├── accounts         Financial account entities + per-account workflows
+│   ├── list / show / rename / include  Entity ops (🗓️ account-management.md)
+│   ├── balance      Per-account balance tracking (📐 net-worth.md)
+│   │   ├── show / list / history
+│   │   ├── assert   Assert balance at a point in time
+│   │   ├── delete / reconcile
+│   └── investments  Holdings, cost basis (🗓️ investment-tracking.md)
+│       ├── show / list / holdings
 │
-├── matches          Dedup + transfer review
-│   ├── run          Run matcher against existing transactions
-│   ├── review       Review pending match proposals (interactive or flagged)
-│   ├── history      Show recent match decisions
-│   ├── undo         Reverse a match decision
-│   └── backfill     One-time scan of existing data for latent matches
+├── transactions     Transactions + workflows on them
+│   ├── review       Unified review queue
+│   │   --status                         Counts pending matches + categorize
+│   │   --type {matches,categorize,all}  Pick a queue
+│   │   --confirm <id> / --reject <id>   Non-interactive item action
+│   │   --confirm-all / --limit N
+│   ├── matches      Dedup + transfer matching
+│   │   ├── run / history / undo / backfill
+│   └── categorize   Categorization workflow
+│       ├── bulk     Bulk-assign categories from JSON
+│       ├── stats    Coverage statistics
+│       ├── rules    Manual rule sub-group {list, apply, create, delete}
+│       ├── auto     Auto-rule sub-group {review, confirm, rules, stats}
+│       └── ml       ML-suggested categorization (📐)
+│
+├── categories       Taxonomy reference data (top-level)
+│   └── list / create / toggle / delete
+│
+├── merchants        Merchant name mappings (top-level)
+│   └── list / create
+│
+├── reports          Cross-domain analytical views
+│   ├── networth     Replaces v1 `track networth` — show / history (📐)
+│   ├── spending / cashflow / budget / health (📐 owning specs)
+│
+├── assets           Physical assets (🗓️ asset-tracking.md)
+│
+├── tax              W-2 forms, deductions (🗓️ owning specs)
+│   └── w2 / deductions
+│
+├── budget           Budget mutation (🗓️ budget-tracking.md)
+│   └── set / delete    (read views live under `reports budget`)
+│
+├── system           System-level orientation
+│   └── status       Data inventory + pending review queues
 │
 ├── transform        SQLMesh pipeline
 │   ├── apply        Apply pending changes
@@ -67,13 +93,6 @@ moneybin
 │   ├── validate     Check model SQL parses correctly
 │   ├── audit        Run data quality audits
 │   └── restate      Force recompute a model for a date range
-│
-├── track            Balance, net worth, budgets, recurring (🗓️/📐)
-│   ├── balance show
-│   ├── networth show
-│   ├── budget show
-│   ├── recurring show
-│   └── investments show
 │
 ├── stats            Lifetime metric aggregates (leaf)
 │
@@ -124,11 +143,12 @@ moneybin import file ~/Downloads/checking.qfx
 
 ```bash
 moneybin import file ~/Downloads/chase_may.csv --account-name "Chase Checking"
-moneybin matches review                # Review any pending dedup/transfer proposals
-moneybin categorize apply-rules        # Apply rules + merchants
-moneybin categorize auto review        # Inspect auto-rule proposals
-moneybin categorize auto confirm --approve-all
-moneybin categorize summary
+moneybin transactions review --status              # Counts pending matches + categorize
+moneybin transactions review --type matches        # Review pending dedup/transfer proposals
+moneybin transactions categorize rules apply       # Apply rules + merchants
+moneybin transactions categorize auto review       # Inspect auto-rule proposals
+moneybin transactions categorize auto confirm --approve-all
+moneybin transactions categorize stats
 ```
 
 `import file` runs the matcher and rule-based categorization automatically. The explicit commands above are useful when reviewing pending work or tuning behavior.

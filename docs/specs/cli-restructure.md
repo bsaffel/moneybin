@@ -2,9 +2,9 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+in-progress
 
-> **v2 revision (2026-05-02):** v1 of this spec is implemented. v2 (status: `ready`) supersedes the taxonomy decisions (dissolves the `track` group, introduces entity groups `accounts` and `transactions`, adds top-level `categories`, `merchants`, `assets`, `reports`, `system`, separates `tax`, unifies the rule across CLI / MCP / future HTTP). Profile system, pipeline orchestration, and infrastructure command groups are unchanged. Implementation pass moves status `ready` → `in-progress`. See [Revision History](#revision-history) and [Migration v1 → v2](#migration-v1--v2).
+> **v2 revision (2026-05-02, in-progress):** v1 of this spec is implemented. v2 supersedes the taxonomy decisions (dissolves the `track` group, introduces entity groups `accounts` and `transactions`, adds top-level `categories`, `merchants`, `assets`, `reports`, `system`, separates `tax`, unifies the rule across CLI / MCP / future HTTP). Profile system, pipeline orchestration, and infrastructure command groups are unchanged. Implementation pass moves status `ready` → `in-progress`. See [Revision History](#revision-history) and [Migration v1 → v2](#migration-v1--v2).
 
 ## Goal
 

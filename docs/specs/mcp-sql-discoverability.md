@@ -131,7 +131,7 @@ Key choices:
 - `src/moneybin/mcp/tools/sql.py` — append a single line to `sql_query`'s docstring and the registration description: *"For schema, columns, and example queries, read resource `moneybin://schema`."*
 - `sqlmesh/models/core/fct_transactions.sql`, `sqlmesh/models/core/dim_accounts.sql`, `sqlmesh/models/core/bridge_transfers.sql` — add a one-line pointer comment near the top: `/* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */`.
 - `src/moneybin/sql/schema/app_*.sql` files for each interface app table (e.g. `app_budgets.sql`, `app_categories.sql`, `app_merchants.sql`, `app_categorization_rules.sql`, `app_transaction_categories.sql`, `app_transaction_notes.sql`) — same pointer comment.
-- `docs/followups.md` — append a section noting that examples could move to sibling `.examples.sql` files if drift becomes a real problem (see "Out of Scope" below).
+- `private/followups.md` — append a section noting that examples could move to sibling `.examples.sql` files if drift becomes a real problem (see "Out of Scope" below).
 - `docs/specs/INDEX.md` — add this spec to the **MCP** section.
 
 ### Key Decisions
@@ -179,7 +179,7 @@ None. All required machinery (DuckDB catalog tables, FastMCP resources, `Databas
 
 ## Out of Scope
 
-- **Sibling `.examples.sql` files per model.** Considered and deferred; tracked in `docs/followups.md`. If example drift becomes a real maintenance problem (examples that reference dropped columns, examples that contradict model logic), revisit by parsing per-table sibling files at startup.
+- **Sibling `.examples.sql` files per model.** Considered and deferred; tracked in `private/followups.md`. If example drift becomes a real maintenance problem (examples that reference dropped columns, examples that contradict model logic), revisit by parsing per-table sibling files at startup.
 - **Per-table resources** (`moneybin://schema/<table>`). Not needed at current size; revisit if `INTERFACE_TABLES` grows past ~20 tables or column count past ~300.
 - **`moneybin://schema/all`** (uncurated view). Power users get this via `sql_query` against the DuckDB catalog. Add only if real demand emerges.
 - **Caching the schema doc.** Catalog reads are sub-millisecond; not worth the invalidation cost in v1.

@@ -55,7 +55,7 @@ class TestAccountsBalanceShow:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService"
+                "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.current_balances.return_value = [mock_obs]
@@ -90,7 +90,7 @@ class TestAccountsBalanceHistory:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService"
+                "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.history.return_value = [mock_obs]
@@ -126,7 +126,7 @@ class TestAccountsBalanceAssert:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService",
+                "moneybin.cli.commands.accounts.balance.BalanceService",
                 return_value=mock_service,
             ),
         ):
@@ -157,7 +157,7 @@ class TestAccountsBalanceAssert:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService",
+                "moneybin.cli.commands.accounts.balance.BalanceService",
                 return_value=mock_service,
             ),
         ):
@@ -194,7 +194,7 @@ class TestAccountsBalanceList:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService"
+                "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.list_assertions.return_value = [
@@ -216,7 +216,7 @@ class TestAccountsBalanceDelete:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService"
+                "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
             result = runner.invoke(
@@ -244,7 +244,7 @@ class TestAccountsBalanceReconcile:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService"
+                "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.reconcile.return_value = [mock_obs]
@@ -259,7 +259,7 @@ class TestAccountsBalanceReconcile:
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.BalanceService"
+                "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.reconcile.return_value = []

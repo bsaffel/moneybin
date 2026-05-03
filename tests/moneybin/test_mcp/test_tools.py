@@ -5,11 +5,13 @@ These tests exercise the underlying tool functions directly. Registration
 with the FastMCP server is covered by tests/mcp/test_visibility.py.
 """
 
+import asyncio
+
 import pytest
 from fastmcp import FastMCP
 
 from moneybin.mcp.tools.accounts import accounts_list, register_accounts_tools
-from moneybin.mcp.tools.spending import register_spending_tools
+from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -38,17 +40,15 @@ class TestToolRegistration:
     @pytest.mark.unit
     def test_spending_tools_register(self) -> None:
         srv = FastMCP("test")
-        register_spending_tools(srv)
+        register_reports_tools(srv)
         # Synchronous accessor surface differs by version; resolve via asyncio.
-        import asyncio
 
         names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert "spending_summary" in names
-        assert "spending_by_category" in names
+        assert "reports_spending_summary" in names
+        assert "reports_spending_by_category" in names
 
     @pytest.mark.unit
     def test_accounts_tools_register(self) -> None:
-        import asyncio
 
         srv = FastMCP("test")
         register_accounts_tools(srv)
@@ -72,7 +72,8 @@ class TestToolRegistration:
 
     @pytest.mark.unit
     def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
-        result = accounts_list()
+
+        result = asyncio.run(accounts_list())
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
@@ -84,7 +85,7 @@ class TestToolRegistration:
     def test_accounts_list_redacted_returns_low_sensitivity(
         self, mcp_db: object
     ) -> None:
-        result = accounts_list(redacted=True)
+        result = asyncio.run(accounts_list(redacted=True))
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         # Redacted mode omits last_four and credit_limit
@@ -94,6 +95,7 @@ class TestToolRegistration:
 
     @pytest.mark.unit
     def test_sql_query_returns_envelope(self, mcp_db: object) -> None:
+
         from moneybin.mcp.server import get_db
 
         get_db().execute(_INSERT_TRANSACTIONS)
@@ -101,14 +103,17 @@ class TestToolRegistration:
         # Also exercise registration to ensure no smoke errors.
         register_sql_tools(FastMCP("test"))
 
-        result = sql_query(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
+        result = asyncio.run(
+            sql_query(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
+        )
         parsed = result.to_dict()
         assert "summary" in parsed
         assert parsed["data"][0]["cnt"] == 2
 
     @pytest.mark.unit
     def test_sql_schema_returns_envelope(self, mcp_db: object) -> None:
-        result = sql_schema()
+
+        result = asyncio.run(sql_schema())
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         data = parsed["data"]
