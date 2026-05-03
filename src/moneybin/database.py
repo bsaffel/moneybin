@@ -495,7 +495,7 @@ class Database:
         if self._conn is not None:
             try:
                 self._conn.interrupt()
-            except Exception:  # noqa: BLE001 S110 — interrupt is best-effort; pass is correct here
+            except Exception:  # noqa: BLE001, S110 — interrupt is best-effort; pass is correct here
                 pass
         self.close()
 
@@ -567,6 +567,16 @@ def interrupt_and_reset_database() -> None:
     The next ``get_database()`` call will reopen a fresh connection. No-op
     if no Database has been initialized yet (e.g., timeout before any
     tool actually touched the DB).
+
+    Known limitation — thread-survivor race: when this is called from the
+    MCP timeout path, ``asyncio.wait_for`` cancels the awaited future but
+    the underlying ``asyncio.to_thread`` worker keeps running until the
+    sync tool body returns. If that surviving thread later touches the DB,
+    it will see the closed connection and raise — that exception surfaces
+    via ``ThreadPoolExecutor``'s unhandled-exception path (stderr), not
+    the MCP envelope. Occasional stderr noise after a timeout is expected.
+    Forcing termination would require cooperative cancellation in tool
+    bodies; out of scope for this iteration.
     """
     global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
 
