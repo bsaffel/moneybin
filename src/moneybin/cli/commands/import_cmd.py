@@ -283,7 +283,7 @@ def import_history(
         loader = TabularLoader(db)
         records = loader.get_import_history(limit=limit, import_id=import_id)
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         emit_json("imports", records)
         return
 
@@ -518,7 +518,7 @@ def list_formats(
 
     all_formats, builtin = _load_all_formats(db)
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         formats_payload = [
             {
                 "name": fmt.name,
@@ -583,7 +583,7 @@ def show_format(
         logger.info(f"💡 Available formats: {available}")
         raise typer.Exit(1)
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         payload = {
             "name": fmt.name,
             "institution": fmt.institution_name,
@@ -685,7 +685,7 @@ def import_status(
     db_path = get_settings().database.path
 
     if not db_path.exists():
-        if output == "json":
+        if output == OutputFormat.JSON:
             typer.echo(
                 json.dumps(
                     {
@@ -713,7 +713,7 @@ def import_status(
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         typer.echo(
             json.dumps(
                 {

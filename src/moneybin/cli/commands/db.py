@@ -338,7 +338,7 @@ def db_info(
         payload["lock_state"] = "unlocked"
     except SecretNotFoundError:
         payload["lock_state"] = "locked"
-        if output == "json":
+        if output == OutputFormat.JSON:
             typer.echo(json.dumps(payload, indent=2, default=str))
             return
         _render_db_info_header(payload)
@@ -387,7 +387,7 @@ def db_info(
             if version:
                 payload["duckdb_version"] = version[0]
 
-            if output == "json":
+            if output == OutputFormat.JSON:
                 typer.echo(json.dumps(payload, indent=2, default=str))
                 return
 
@@ -469,9 +469,9 @@ def db_restore(
 
     settings = get_settings()
     db_path = settings.database.path
+    backup_dir = settings.database.backup_path or db_path.parent / "backups"
 
     if from_path is None:
-        backup_dir = settings.database.backup_path or db_path.parent / "backups"
         if not backup_dir.exists():
             logger.error(f"❌ No backup directory found: {backup_dir}")
             raise typer.Exit(1)
@@ -510,7 +510,6 @@ def db_restore(
 
     # Auto-backup current database
     if db_path.exists():
-        backup_dir = settings.database.backup_path or db_path.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         auto_backup = backup_dir / f"moneybin_{timestamp}_pre_restore.duckdb"
@@ -657,7 +656,7 @@ def db_key_show(
         "database. Do not share it or store it in plain text."
     )
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         emit_json("encryption_key", key)
         return
 
@@ -884,7 +883,7 @@ def db_ps(
 
     db_path = database or get_settings().database.path
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         processes: list[dict[str, str | int]] = (
             _find_db_processes(db_path) if db_path.exists() else []
         )

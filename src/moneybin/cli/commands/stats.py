@@ -88,7 +88,7 @@ def stats_command(
             logger.debug("Failed to query app.metrics", exc_info=True)
             rows = []
 
-        if output == "json":
+        if output == OutputFormat.JSON:
             result = {
                 "metrics": [
                     {

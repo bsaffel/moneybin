@@ -76,7 +76,7 @@ def profile_list(
     svc = ProfileService()
     profiles = svc.list()
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         emit_json("profiles", profiles)
         return
 
@@ -151,7 +151,7 @@ def profile_show(
             name = None
     try:
         info = svc.show(name)
-        if output == "json":
+        if output == OutputFormat.JSON:
             emit_json("profile", info)
             return
         marker = " (active)" if info["active"] else ""
