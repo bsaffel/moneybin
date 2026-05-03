@@ -92,6 +92,7 @@ Once connected, ask things like:
 | AES-256-GCM encryption at rest, key management, automatic schema migrations | [Database & Security](docs/guides/database-security.md) |
 | Multi-profile isolation (per-profile DB, config, logs) | [Profiles](docs/guides/profiles.md) |
 | MCP server: 9 tool domains, prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
+| MCP tool timeouts: every tool returns within a configurable wall-clock cap (default 30 s); timeouts release the DuckDB lock so the next call succeeds | [Spec](docs/specs/mcp-tool-timeouts.md) |
 | Direct SQL: shell, DuckDB UI, key tables documented | [SQL Access](docs/guides/sql-access.md) |
 | Synthetic data generator (3 personas, ~200 merchants, ground-truth labels) | [Synthetic Data](docs/guides/synthetic-data.md) |
 | Scenario test suite (10 scenarios, five-tier taxonomy, bug-report recipe) | [Scenario Authoring](docs/guides/scenario-authoring.md) |
@@ -125,6 +126,7 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 | Investment tracking (holdings, cost basis) | 🗓️ |
 | Privacy tiers & consent model | 📐 |
 | MCP SQL schema discoverability (curated `moneybin://schema` resource) | ✅ |
+| MCP tool timeouts (configurable 30 s cap, DuckDB lock released on timeout) | ✅ |
 | Export (CSV, Excel, Google Sheets) | 🗓️ |
 
 Per-feature design specs live in [`docs/specs/`](docs/specs/INDEX.md).

@@ -253,6 +253,15 @@ class MCPConfig(BaseModel):
             "visible at connect."
         ),
     )
+    tool_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0.0,
+        description=(
+            "Hard wall-clock cap for any single MCP tool dispatch. On timeout, "
+            "the active DuckDB statement is interrupted and the connection is "
+            "reset so subsequent calls aren't wedged behind a stale write lock."
+        ),
+    )
 
 
 class SyncConfig(BaseModel):

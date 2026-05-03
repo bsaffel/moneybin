@@ -32,18 +32,28 @@ class UserError(Exception):
     ``ResponseEnvelope`` automatically.
     """
 
-    def __init__(self, message: str, *, code: str, hint: str | None = None) -> None:
-        """Construct a UserError with a user-safe message, stable code, and optional hint."""
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        hint: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize with a user-safe message and optional metadata."""
         super().__init__(message)
         self.message = message
         self.code = code
         self.hint = hint
+        self.details = details
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for envelope serialization."""
         d: dict[str, Any] = {"message": self.message, "code": self.code}
         if self.hint is not None:
             d["hint"] = self.hint
+        if self.details is not None:
+            d["details"] = self.details
         return d
 
 
