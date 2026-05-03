@@ -513,6 +513,11 @@ class CategorizationService:
     ) -> str:
         """Create a custom user category (active by default).
 
+        Top-level duplicate detection uses an explicit pre-check because
+        DuckDB's UNIQUE constraint treats NULL as distinct. The
+        check-then-insert shape is safe under MoneyBin's single-process,
+        single-writer connection model — see ``database.py`` for the rationale.
+
         Raises:
             UserError(code="CATEGORY_ALREADY_EXISTS"): the
                 ``(category, subcategory)`` pair is already present in
