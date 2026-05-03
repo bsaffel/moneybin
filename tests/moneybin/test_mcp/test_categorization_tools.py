@@ -10,10 +10,14 @@ import asyncio
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.mcp.tools.categorize import (
+from moneybin.mcp.tools.categories import (
     categories_list,
     categories_toggle,
-    register_categorize_tools,
+    register_categories_tools,
+)
+from moneybin.mcp.tools.merchants import register_merchants_tools
+from moneybin.mcp.tools.transactions_categorize import (
+    register_transactions_categorize_tools,
     transactions_categorize_stats,
 )
 from moneybin.seeds import refresh_views
@@ -23,7 +27,9 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 
 def _registered_names() -> set[str]:
     srv = FastMCP("test")
-    register_categorize_tools(srv)
+    register_categories_tools(srv)
+    register_merchants_tools(srv)
+    register_transactions_categorize_tools(srv)
     return {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 

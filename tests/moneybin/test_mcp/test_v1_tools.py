@@ -7,7 +7,7 @@ with the FastMCP server is covered by tests/mcp/test_visibility.py.
 
 import pytest
 
-from moneybin.mcp.tools.spending import reports_spending_summary
+from moneybin.mcp.tools.reports import reports_spending_summary
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 

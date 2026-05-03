@@ -106,8 +106,3 @@ def register_reports_tools(mcp: FastMCP) -> None:
         "Get budget vs actual spending comparison for a month. "
         "Shows target, spent, remaining, and status for each category.",
     )
-
-
-# Keep a deprecated shim so any code that still imports from spending.py
-# (e.g. tests importing by name) finds the symbols. Remove after Task 11.
-register_spending_tools = register_reports_tools

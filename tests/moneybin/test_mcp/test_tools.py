@@ -9,7 +9,7 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.mcp.tools.accounts import accounts_list, register_accounts_tools
-from moneybin.mcp.tools.spending import register_spending_tools
+from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -38,7 +38,7 @@ class TestV1ToolRegistration:
     @pytest.mark.unit
     def test_spending_tools_register(self) -> None:
         srv = FastMCP("test")
-        register_spending_tools(srv)
+        register_reports_tools(srv)
         # Synchronous accessor surface differs by version; resolve via asyncio.
         import asyncio
 
