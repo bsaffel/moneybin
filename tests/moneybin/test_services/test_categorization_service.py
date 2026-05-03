@@ -18,7 +18,7 @@ from moneybin.services.categorization_service import (
     BulkCategorizationItem,
     CategorizationService,
 )
-from tests.moneybin.db_helpers import create_core_tables
+from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
 def create_merchant(db: Database, *args: object, **kwargs: object) -> str:
@@ -495,24 +495,11 @@ class TestCategoriesView:
 
     @staticmethod
     def _setup_seeds_and_view(db: Database) -> None:
-        from moneybin.seeds import refresh_views
-
-        db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
-        db.execute("""
-            CREATE TABLE seeds.categories (
-                category_id VARCHAR,
-                category VARCHAR,
-                subcategory VARCHAR,
-                description VARCHAR,
-                plaid_detailed VARCHAR
-            )
-        """)
+        seed_categories_view(db)
         db.execute("""
             INSERT INTO seeds.categories VALUES
-            ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK'),
             ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'FOOD_AND_DRINK_COFFEE')
         """)
-        refresh_views(db)
 
     @pytest.mark.unit
     def test_view_exposes_seeds_as_defaults(self, db: Database) -> None:
