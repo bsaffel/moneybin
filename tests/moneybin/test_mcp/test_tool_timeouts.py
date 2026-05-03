@@ -174,12 +174,11 @@ def test_back_to_back_call_after_timeout_succeeds(
     first = asyncio.run(hang_tool())
     assert first.error is not None and first.error.code == "timed_out"
 
-    # The timeout path cleared _database_instance.  In production the next
-    # get_database() call reopens via settings.  In tests we reinstall a fresh
-    # instance with the same mock store so quick_tool can connect successfully.
-    db2 = Database(
-        tmp_path / "t2.duckdb", secret_store=mock_store, no_auto_upgrade=True
-    )
+    # The timeout path cleared _database_instance and force-closed the original
+    # connection, releasing its write lock.  Reopening the same DB file proves
+    # the lock was actually dropped — if interrupt_and_reset() had failed to
+    # release it, this Database() construction would hang or fail.
+    db2 = Database(tmp_path / "t.duckdb", secret_store=mock_store, no_auto_upgrade=True)
     monkeypatch.setattr(db_module, "_database_instance", db2)
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
