@@ -3,30 +3,23 @@
 This module provides the unified entry point for all MoneyBin CLI operations,
 organizing commands into groups: profile, import, sync, categorize, transform,
 db, mcp.
+
+Command modules are lazy-loaded: each group's module (and its transitive
+imports) loads only when that group is first invoked, not at ``moneybin
+--help`` time. This keeps the cold-start cost proportional to what the user
+actually runs.
 """
 
 import logging
 import os
-from typing import Annotated
+from importlib import import_module
+from typing import Annotated, Any
 
 import typer
 
 from ..config import register_profile_resolver, set_current_profile
 from ..observability import setup_observability
-from .commands import (
-    categorize,
-    db,
-    import_cmd,
-    logs,
-    matches,
-    mcp,
-    migrate,
-    profile,
-    stats,
-    sync,
-    synthetic,
-    transform,
-)
+from .commands import logs, stats
 from .commands.stubs import (
     export_app,
     track_app,
@@ -34,6 +27,90 @@ from .commands.stubs import (
 from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
+
+_COMMANDS_PKG = "moneybin.cli.commands"
+
+# Attributes that Typer's get_group_from_info reads from a typer_instance.
+# Accessing any of these on the proxy triggers the real module import.
+_LAZY_TRIGGER_ATTRS = frozenset({"registered_commands", "registered_groups"})
+
+
+class _LazyTyper(typer.Typer):
+    """A Typer subclass whose commands load from a module on first dispatch.
+
+    Typer's get_group_from_info accesses ``registered_commands`` and
+    ``registered_groups`` when building the Click command tree — exactly at
+    the moment a subcommand is about to be invoked. Overriding those two
+    properties to trigger a module import on first access defers all of the
+    module's transitive imports until the group is actually used.
+    """
+
+    def __init__(
+        self,
+        module_path: str,
+        attr: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._lazy_module_path = module_path
+        self._lazy_attr = attr
+        self._lazy_loaded = False
+
+    def _load(self) -> None:
+        if self._lazy_loaded:
+            return
+        self._lazy_loaded = True
+        module = import_module(self._lazy_module_path)
+        real: typer.Typer = getattr(module, self._lazy_attr)
+        # Copy over the real app's registered commands and groups so that
+        # Typer/Click sees the full command tree from this point forward.
+        self.registered_commands = real.registered_commands  # type: ignore[assignment]
+        self.registered_groups = real.registered_groups  # type: ignore[assignment]
+        if real.registered_callback is not None and self.registered_callback is None:
+            self.registered_callback = real.registered_callback  # type: ignore[assignment]
+
+    @property  # type: ignore[override]
+    def registered_commands(self) -> list[Any]:  # type: ignore[override]
+        self._load()
+        return self.__dict__["registered_commands"]
+
+    @registered_commands.setter
+    def registered_commands(self, value: list[Any]) -> None:
+        self.__dict__["registered_commands"] = value
+
+    @property  # type: ignore[override]
+    def registered_groups(self) -> list[Any]:  # type: ignore[override]
+        self._load()
+        return self.__dict__["registered_groups"]
+
+    @registered_groups.setter
+    def registered_groups(self, value: list[Any]) -> None:
+        self.__dict__["registered_groups"] = value
+
+
+def _add_lazy_typer(
+    parent: typer.Typer,
+    module_path: str,
+    name: str,
+    help_text: str,
+    *,
+    attr: str = "app",
+) -> None:
+    """Register a lazy-loaded command group on *parent*.
+
+    The real module at *module_path* is imported only when Typer/Click first
+    inspects ``registered_commands`` or ``registered_groups`` — which happens
+    at subcommand dispatch time, not at ``moneybin --help`` time.
+    """
+    lazy = _LazyTyper(
+        module_path=module_path,
+        attr=attr,
+        name=name,
+        help=help_text,
+        no_args_is_help=True,
+        rich_markup_mode=None,
+    )
+    parent.add_typer(lazy, name=name, help=help_text)
 
 
 app = typer.Typer(
@@ -99,57 +176,67 @@ def main_callback(
 
 
 # Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops
-app.add_typer(
-    profile.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.profile",
     name="profile",
-    help="Manage user profiles (create, list, switch, delete, show, set)",
+    help_text="Manage user profiles (create, list, switch, delete, show, set)",
 )
-app.add_typer(
-    import_cmd.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.import_cmd",
     name="import",
-    help="Import financial files into MoneyBin",
+    help_text="Import financial files into MoneyBin",
 )
-app.add_typer(
-    sync.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.sync",
     name="sync",
-    help="Sync transactions from external services",
+    help_text="Sync transactions from external services",
 )
-app.add_typer(
-    categorize.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.categorize",
     name="categorize",
-    help="Manage transaction categories, rules, and merchants",
+    help_text="Manage transaction categories, rules, and merchants",
 )
-app.add_typer(matches.app, name="matches", help="Review and manage transaction matches")
-app.add_typer(
-    transform.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.matches",
+    name="matches",
+    help_text="Review and manage transaction matches",
+)
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.transform",
     name="transform",
-    help="Run SQLMesh data transformations",
+    help_text="Run SQLMesh data transformations",
 )
-app.add_typer(
-    synthetic.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.synthetic",
     name="synthetic",
-    help="Generate and manage synthetic financial data for testing",
+    help_text="Generate and manage synthetic financial data for testing",
 )
 app.add_typer(track_app, name="track", help="Balance tracking and net worth")
 app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
 app.add_typer(export_app, name="export", help="Export data to external formats")
-app.add_typer(
-    mcp.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.mcp",
     name="mcp",
-    help="MCP server for AI assistant integration",
+    help_text="MCP server for AI assistant integration",
 )
-app.add_typer(
-    db.app,
+_add_lazy_typer(
+    app,
+    f"{_COMMANDS_PKG}.db",
     name="db",
-    help="Database management and exploration",
+    help_text="Database management and exploration",
 )
 app.command(
     name="logs",
     help="View, prune, or locate MoneyBin log files for the active profile.",
 )(logs.logs_command)
-
-# Add db migrate as a sub-typer of db
-db.app.add_typer(migrate.app, name="migrate", help="Database migration management")
 
 
 def main() -> None:
