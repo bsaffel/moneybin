@@ -21,7 +21,6 @@ A trailing ``-- text`` on a column definition line is attached by sqlglot to
 the ``ColumnDef`` expression and applied as ``COMMENT ON COLUMN``.
 """
 
-import hashlib
 import logging
 from pathlib import Path
 
@@ -32,14 +31,6 @@ import sqlglot.expressions as exp
 logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
-
-_SCHEMA_VERSION_TABLE = "app.schema_init_state"
-_SCHEMA_VERSION_DDL = f"""
-CREATE TABLE IF NOT EXISTS {_SCHEMA_VERSION_TABLE} (
-    ddl_hash VARCHAR PRIMARY KEY,
-    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
 
 
 _SCHEMA_FILES: list[str] = [
@@ -71,27 +62,6 @@ _SCHEMA_FILES: list[str] = [
     "app_proposed_rules.sql",
     "app_rule_deactivations.sql",
 ]
-
-
-_ddl_hash_cache: str | None = None
-
-
-def _compute_ddl_hash() -> str:
-    """SHA-256 (truncated 16 hex) of concatenated schema DDL file contents.
-
-    Cached for the process lifetime — DDL files don't change at runtime, so
-    re-reading them on every Database open wastes ~26 file reads per call.
-    """
-    global _ddl_hash_cache  # noqa: PLW0603 — module-level cache, set once
-    if _ddl_hash_cache is not None:
-        return _ddl_hash_cache
-    h = hashlib.sha256()
-    for sql_file in _SCHEMA_FILES:
-        sql_path = _SQL_DIR / sql_file
-        if sql_path.exists():
-            h.update(sql_path.read_bytes())
-    _ddl_hash_cache = h.hexdigest()[:16]
-    return _ddl_hash_cache
 
 
 def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
@@ -153,10 +123,7 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
             except (duckdb.CatalogException, duckdb.BinderException):
                 # Column may not exist yet — either the table is created later
                 # (e.g. SQLMesh-managed core tables) or a pending migration will
-                # add the column. Comments retry whenever a future init_schemas
-                # pass runs through _apply_comments — that happens on a DDL
-                # hash change, or via reapply_after_migration() (which the
-                # Database init path invokes after migrations apply).
+                # add the column. Comments will reapply on the next startup.
                 logger.debug(
                     f"Skipping column comment for {table_name}.{col_def.name}"
                     " — column or table does not exist yet"
@@ -166,28 +133,9 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
 def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     """Create all database schemas and tables, then apply inline comments.
 
-    Idempotent ``CREATE … IF NOT EXISTS`` DDL always runs so a database that
-    previously initialized but later lost a baseline table (manual cleanup,
-    partial repair) self-heals on the next open.
-
-    The expensive part — sqlglot parsing of every schema file plus
-    ``COMMENT ON`` statements per column — is memoized against a hash of the
-    DDL file contents stored in ``app.schema_init_state``. When the hash
-    matches a prior successful apply, comments are skipped.
-
     Args:
         conn: An active read-write DuckDB connection.
     """
-    # Need the app schema before we can read/write the state table.
-    conn.execute("CREATE SCHEMA IF NOT EXISTS app;")
-    conn.execute(_SCHEMA_VERSION_DDL)
-
-    expected_hash = _compute_ddl_hash()
-    cached = conn.execute(
-        f"SELECT ddl_hash FROM {_SCHEMA_VERSION_TABLE} LIMIT 1"  # noqa: S608  # constant table name
-    ).fetchone()
-    hash_matches = cached is not None and cached[0] == expected_hash
-
     for sql_file in _SCHEMA_FILES:
         sql_path = _SQL_DIR / sql_file
         if not sql_path.exists():
@@ -195,44 +143,7 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
-        if not hash_matches:
-            _apply_comments(conn, sql)
+        _apply_comments(conn, sql)
         logger.debug(f"Executed {sql_file}")
 
-    if hash_matches:
-        logger.debug(
-            f"Schema DDL hash matches ({expected_hash}); skipped comment apply"
-        )
-        return
-
-    conn.execute(f"DELETE FROM {_SCHEMA_VERSION_TABLE}")  # noqa: S608  # constant table name
-    conn.execute(
-        f"INSERT INTO {_SCHEMA_VERSION_TABLE} (ddl_hash) VALUES (?)",  # noqa: S608  # constant table name
-        [expected_hash],
-    )
-    logger.debug(
-        f"Executed {len(_SCHEMA_FILES)} schema files; recorded hash {expected_hash}"
-    )
-
-
-def reapply_after_migration(conn: duckdb.DuckDBPyConnection) -> None:
-    """Re-run init_schemas after migrations to attach comments to new columns.
-
-    init_schemas runs in Database.__init__ *before* versioned migrations.
-    During that pre-migration pass, _apply_comments silently skips column
-    comments for columns the migration is about to create. Without this
-    function, the recorded DDL hash would then cause every subsequent open
-    to skip _apply_comments entirely — those columns would never get
-    comments unless the schema DDL files themselves changed.
-
-    Call this from Database.__init__ when a migration round actually
-    applied something. It clears the recorded hash so the immediate
-    follow-up init_schemas does a full apply (DDL is idempotent
-    ``CREATE IF NOT EXISTS``; the work is the comment pass) and records
-    the hash again.
-
-    Args:
-        conn: An active read-write DuckDB connection.
-    """
-    conn.execute(f"DELETE FROM {_SCHEMA_VERSION_TABLE}")  # noqa: S608  # constant table name
-    init_schemas(conn)
+    logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
