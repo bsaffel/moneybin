@@ -35,7 +35,7 @@
 
 ## Task 1: Add `ImportService` class wrapping existing module functions
 
-The strategy is one-shot conversion in a single commit per caller, but we start by introducing the class alongside the existing module functions. New shape lives, old shape stays so callers can migrate one at a time. Module-level public functions become two-line shims that instantiate `ImportService` and delegate.
+The strategy is a hard cut in Task 1 — the class is added and the module-level public functions (`import_file`, `run_transforms`) and `_db`-using private helpers are deleted in the same commit. Callers are then migrated task-by-task in Tasks 2–5, so there is a known-broken intermediate state between tasks. Pure helpers (`_detect_file_type`, `_display_label`) and the `ImportResult` / `ResolvedMapping` dataclasses stay module-level so existing imports keep working.
 
 **Files:**
 - Modify: `src/moneybin/services/import_service.py`

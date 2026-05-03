@@ -1,7 +1,7 @@
 # ADR-009: Encryption Key Management
 
 ## Status
-proposed
+accepted
 
 ## Context
 
