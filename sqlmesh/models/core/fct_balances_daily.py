@@ -114,11 +114,14 @@ def execute(
             pd.date_range(first_date, last_date, freq="D").date  # type: ignore[reportUnknownMemberType, reportAttributeAccessIssue] — .date exists at runtime
         )
 
-        acct_txns: pd.Series = (  # type: ignore[type-arg] — pd.Series[T] not supported by pandas stubs
-            txns[txns["account_id"] == account_id].set_index("d")["net_amount"]  # type: ignore[reportUnknownMemberType]  # type: ignore[reportUnknownMemberType]
-            if not txns.empty
-            else pd.Series(dtype=object)
-        )
+        # fetchdf() returns DATE columns as datetime64[us] Timestamps, not Python
+        # date objects. Normalise to date so .get(d) matches spine elements.
+        acct_txns_df = txns[txns["account_id"] == account_id].copy()  # type: ignore[reportUnknownMemberType]
+        if not acct_txns_df.empty:  # type: ignore[reportUnknownMemberType]
+            acct_txns_df["d"] = pd.to_datetime(acct_txns_df["d"]).dt.date  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            acct_txns: pd.Series = acct_txns_df.set_index("d")["net_amount"]  # type: ignore[type-arg,reportUnknownMemberType]
+        else:
+            acct_txns = pd.Series(dtype=object)
 
         # Normalise balance_date to Python date objects so lookups match spine elements
         # regardless of whether fetchdf returns date or Timestamp.
@@ -135,6 +138,9 @@ def execute(
             txn_adj = Decimal(str(txn_raw)) if txn_raw is not None else Decimal("0")  # type: ignore[reportUnknownArgumentType] — txn_raw type unknown from pandas stubs
 
             if d in observed_lookup.index:  # type: ignore[reportUnknownMemberType]
+                # fetchdf() returns DECIMAL columns as float64; Decimal(str()) recovers the value
+                # faithfully for personal-finance-scale amounts (float64 precision is adequate
+                # below ~$10B per the project's amount range).
                 obs_balance = Decimal(str(observed_lookup.loc[d, "balance"]))  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — pandas .loc stubs return Unknown; safe at runtime
                 obs_source: str = str(observed_lookup.loc[d, "source_type"])  # type: ignore[reportUnknownMemberType]
                 delta: Decimal | None
@@ -153,7 +159,11 @@ def execute(
                 })
                 carry = obs_balance
             else:
-                carry = (carry if carry is not None else Decimal("0")) + txn_adj
+                assert carry is not None, (  # noqa: S101 — invariant, not user input
+                    "interpolated branch reached before first observation — "
+                    "spine should always start at the first observed date"
+                )
+                carry = carry + txn_adj
                 rows.append({
                     "account_id": account_id,
                     "balance_date": d,
