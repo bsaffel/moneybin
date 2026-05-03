@@ -40,6 +40,11 @@ _EMPTY_COLUMNS = [
 @model(
     "core.fct_balances_daily",
     kind="FULL",
+    # context.fetchdf() SQL strings are opaque to SQLMesh's dependency scanner
+    # — it cannot infer these from the string literals. Declaring them here
+    # ensures SQLMesh materialises core.fct_balances and core.fct_transactions
+    # before this model executes.
+    depends_on={"core.fct_balances", "core.fct_transactions"},
     columns={
         "account_id": "VARCHAR",
         "balance_date": "DATE",
@@ -71,22 +76,28 @@ def execute(
     **kwargs: t.Any,  # noqa: ARG001
 ) -> pd.DataFrame:
     """Build the per-account daily balance spine with carry-forward and reconciliation deltas."""
+    # context.table() resolves the internal versioned name (e.g.
+    # sqlmesh__core.core__fct_balances__<hash>) for the current plan execution.
+    # Plain "core.fct_balances" only exists after promotion, not during backfill.
+    fct_balances_table = context.table("core.fct_balances")
+    fct_transactions_table = context.table("core.fct_transactions")
+
     obs: pd.DataFrame = context.fetchdf(
-        """
+        f"""
         SELECT account_id, balance_date, balance, source_type
-        FROM core.fct_balances
+        FROM {fct_balances_table}
         ORDER BY account_id, balance_date
-        """
+        """  # noqa: S608  # table name from context.table(), not user input
     )
     if obs.empty:
         return pd.DataFrame(columns=_EMPTY_COLUMNS)  # type: ignore[reportArgumentType] — list[str] is valid for DataFrame(columns=)
 
     txns: pd.DataFrame = context.fetchdf(
-        """
+        f"""
         SELECT account_id, transaction_date AS d, SUM(amount) AS net_amount
-        FROM core.fct_transactions
+        FROM {fct_transactions_table}
         GROUP BY account_id, transaction_date
-        """
+        """  # noqa: S608  # table name from context.table(), not user input
     )
 
     rows: list[dict[str, t.Any]] = []
