@@ -97,6 +97,7 @@ PLAID_CANONICAL_SUBTYPES: frozenset[str] = frozenset({
     "variable annuity",
 })
 
+# "business" also appears in PLAID_CANONICAL_SUBTYPES (loan category) — overlap is intentional.
 PLAID_CANONICAL_HOLDER_CATEGORIES: frozenset[str] = frozenset({
     "personal",
     "business",

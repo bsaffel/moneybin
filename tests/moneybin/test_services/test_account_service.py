@@ -31,24 +31,30 @@ from tests.moneybin.db_helpers import create_core_tables_raw
 class TestSubtypeClassifier:
     """Tests for Plaid subtype canonical list and soft-validation helpers."""
 
+    @pytest.mark.unit
     def test_canonical_subtypes_present(self) -> None:
         assert "checking" in PLAID_CANONICAL_SUBTYPES
         assert "savings" in PLAID_CANONICAL_SUBTYPES
         assert "credit card" in PLAID_CANONICAL_SUBTYPES
         assert "mortgage" in PLAID_CANONICAL_SUBTYPES
 
+    @pytest.mark.unit
     def test_is_canonical_true_for_known(self) -> None:
         assert is_canonical_subtype("checking") is True
 
+    @pytest.mark.unit
     def test_is_canonical_false_for_unknown(self) -> None:
         assert is_canonical_subtype("chequing") is False
 
+    @pytest.mark.unit
     def test_is_canonical_case_insensitive(self) -> None:
         assert is_canonical_subtype("CHECKING") is True
 
+    @pytest.mark.unit
     def test_suggest_near_miss(self) -> None:
         assert suggest_subtype("chequing") == "checking"
 
+    @pytest.mark.unit
     def test_suggest_returns_none_for_far_miss(self) -> None:
         assert suggest_subtype("xyz_garbage") is None
 
@@ -56,6 +62,7 @@ class TestSubtypeClassifier:
 class TestHolderCategoryClassifier:
     """Tests for holder-category canonical set and soft-validation helpers."""
 
+    @pytest.mark.unit
     def test_canonical_set(self) -> None:
         assert PLAID_CANONICAL_HOLDER_CATEGORIES == frozenset({
             "personal",
@@ -63,10 +70,12 @@ class TestHolderCategoryClassifier:
             "joint",
         })
 
+    @pytest.mark.unit
     def test_is_canonical(self) -> None:
         assert is_canonical_holder_category("personal") is True
         assert is_canonical_holder_category("corporate") is False
 
+    @pytest.mark.unit
     def test_suggest_near_miss(self) -> None:
         assert suggest_holder_category("persoanl") == "personal"
 
