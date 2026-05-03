@@ -1,10 +1,19 @@
 """Shared fixtures for MCP tests.
 
-Provides a single database setup method used across all MCP test modules.
-Base reference data (institutions, accounts, balances) is pre-populated;
-individual test classes insert their own specific fixture data.
+`_mcp_db_template` builds the baseline encrypted DuckDB once per session
+(core tables + base reference data). `mcp_db` then copies the file into
+each test's tmp_path so every test gets an isolated database without
+re-running the schema DDL or 6 baseline INSERTs.
+
+Base reference data:
+- 2 institutions (Test Bank, Other Bank)
+- 2 accounts (ACC001 CHECKING, ACC002 SAVINGS)
+- 2 account balances
 """
 
+from __future__ import annotations
+
+import shutil
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -15,37 +24,29 @@ import moneybin.database as db_module
 from moneybin.database import Database
 from tests.moneybin.db_helpers import create_core_tables_raw
 
+_MOCK_KEY = "test-encryption-key-for-unit-tests"
 
-@pytest.fixture()
-def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
-    """Create a Database instance with schemas and base reference data for MCP tests.
 
-    Creates all table schemas from canonical SQL files and populates
-    base reference data that most tests need:
+def _make_mock_store() -> MagicMock:
+    store = MagicMock()
+    store.get_key.return_value = _MOCK_KEY
+    return store
 
-    - 2 institutions (Test Bank, Other Bank)
-    - 2 accounts (ACC001 CHECKING, ACC002 SAVINGS)
-    - 2 account balances
 
-    Injects the Database instance into the moneybin.database singleton so
-    all MCP server functions (get_db, get_db_path, table_exists) resolve
-    against this test database automatically.
-    """
-    db_path = tmp_path / "test.duckdb"
+@pytest.fixture(scope="session")
+def _mcp_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by parameter name
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    """Build the baseline encrypted DB once per session and return its path."""
+    template_dir = tmp_path_factory.mktemp("mcp_db_template")
+    template_path = template_dir / "template.duckdb"
 
-    # Build a mock SecretStore that returns a fixed key so we can open
-    # the encrypted database in tests.
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-
-    database = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
+    database = Database(
+        template_path, secret_store=_make_mock_store(), no_auto_upgrade=True
+    )
     conn = database.conn
-
-    # Core tables are managed by SQLMesh in production; create test-only
-    # concrete tables so we can INSERT fixture data directly.
     create_core_tables_raw(conn)
 
-    # -- Base reference data: institutions --
     conn.execute("""
         INSERT INTO raw.ofx_institutions
             (organization, fid, source_file, extracted_at, loaded_at, import_id, source_type)
@@ -54,7 +55,6 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
         ('Other Bank', '5678', 'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, NULL, 'ofx')
     """)
 
-    # -- Base reference data: accounts --
     conn.execute("""
         INSERT INTO core.dim_accounts VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
@@ -63,7 +63,6 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
 
-    # -- Base reference data: account balances --
     conn.execute("""
         INSERT INTO raw.ofx_balances
             (account_id, statement_start_date, statement_end_date, ledger_balance,
@@ -78,11 +77,26 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
          '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
     """)
 
-    # Inject the Database singleton so all MCP server functions use this DB
-    db_module._database_instance = database  # type: ignore[reportPrivateUsage] — test fixture
-
-    yield database
-
-    # Teardown: close and clear the singleton so subsequent tests get a fresh one
-    db_module._database_instance = None  # type: ignore[reportPrivateUsage] — test fixture
     database.close()
+    return template_path
+
+
+@pytest.fixture()
+def mcp_db(tmp_path: Path, _mcp_db_template: Path) -> Generator[Database, None, None]:
+    """Per-test Database initialized from a snapshot of the session template.
+
+    Copies the baseline encrypted DuckDB file into the test's tmp_path,
+    opens it, and injects the singleton so MCP server functions resolve
+    against this DB. Restores the singleton on teardown.
+    """
+    db_path = tmp_path / "test.duckdb"
+    shutil.copy(_mcp_db_template, db_path)
+
+    database = Database(db_path, secret_store=_make_mock_store(), no_auto_upgrade=True)
+
+    db_module._database_instance = database  # type: ignore[reportPrivateUsage] — test fixture
+    try:
+        yield database
+    finally:
+        db_module._database_instance = None  # type: ignore[reportPrivateUsage] — test fixture
+        database.close()

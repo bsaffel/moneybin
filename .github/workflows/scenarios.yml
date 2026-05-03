@@ -45,7 +45,8 @@ jobs:
         run: |
           set -o pipefail
           uv run pytest tests/scenarios/ -m scenarios -v \
-            --json-report --json-report-file=scenarios.json
+            --json-report --json-report-file=scenarios.json \
+            --durations=25
 
       - name: Per-scenario summary
         if: always()

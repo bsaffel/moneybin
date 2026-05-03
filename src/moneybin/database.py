@@ -280,7 +280,7 @@ class Database:
         # so that failures degrade gracefully instead of breaking DB init.
         # Note: _data_file_to_adapter is a class-level dict — not thread-safe
         # for concurrent init with the same db_path. Acceptable for single-user.
-        cache_key = str(self._db_path)
+        adapter_key = str(self._db_path)
         try:
             conn = self._conn
             if conn is None:
@@ -292,7 +292,7 @@ class Database:
                 default_catalog=_DATABASE_ALIAS,
                 register_comments=True,
             )
-            BaseDuckDBConnectionConfig._data_file_to_adapter[cache_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
+            BaseDuckDBConnectionConfig._data_file_to_adapter[adapter_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
 
             config = Config(
                 default_gateway="moneybin",
@@ -318,7 +318,7 @@ class Database:
             logger.warning("⚠️  sqlmesh migrate failed — see logs for details")
             return False
         finally:
-            BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
+            BaseDuckDBConnectionConfig._data_file_to_adapter.pop(adapter_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
