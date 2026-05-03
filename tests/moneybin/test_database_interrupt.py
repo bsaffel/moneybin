@@ -11,11 +11,11 @@ from moneybin.database import Database, interrupt_and_reset_database
 
 @pytest.mark.unit
 def test_interrupt_and_reset_calls_interrupt_then_closes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key-32-bytes-padding-padding-pad"
-    db = Database(tmp_path / "t.duckdb", secret_store=mock_store, no_auto_upgrade=True)
+    db = Database(
+        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
 
     # DuckDB's C-extension connection is read-only, so we swap in a MagicMock
     # that wraps the real connection; interrupt() and close() are tracked on the
@@ -34,13 +34,14 @@ def test_interrupt_and_reset_calls_interrupt_then_closes(
 
 @pytest.mark.unit
 def test_module_helper_clears_singleton(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    mock_secret_store: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key-32-bytes-padding-padding-pad"
-
     monkeypatch.setattr(db_module, "_database_instance", None)
-    db = Database(tmp_path / "t.duckdb", secret_store=mock_store, no_auto_upgrade=True)
+    db = Database(
+        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
     monkeypatch.setattr(db_module, "_database_instance", db)
 
     interrupt_and_reset_database()

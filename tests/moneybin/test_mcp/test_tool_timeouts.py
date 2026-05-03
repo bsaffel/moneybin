@@ -139,16 +139,16 @@ def test_async_generator_tool_rejected_at_decoration() -> None:
 @pytest.mark.integration
 def test_back_to_back_call_after_timeout_succeeds(
     tmp_path: Path,
+    mock_secret_store: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A call that times out must release the DB lock so the next call works."""
     import moneybin.database as db_module
     from moneybin.database import Database
 
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key-32-bytes-padding-padding-pad"
-
-    db = Database(tmp_path / "t.duckdb", secret_store=mock_store, no_auto_upgrade=True)
+    db = Database(
+        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
     monkeypatch.setattr(db_module, "_database_instance", db)
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.1)
@@ -179,7 +179,9 @@ def test_back_to_back_call_after_timeout_succeeds(
     # connection, releasing its write lock.  Reopening the same DB file proves
     # the lock was actually dropped — if interrupt_and_reset() had failed to
     # release it, this Database() construction would hang or fail.
-    db2 = Database(tmp_path / "t.duckdb", secret_store=mock_store, no_auto_upgrade=True)
+    db2 = Database(
+        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
     monkeypatch.setattr(db_module, "_database_instance", db2)
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)

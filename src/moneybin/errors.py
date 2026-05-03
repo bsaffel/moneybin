@@ -40,7 +40,7 @@ class UserError(Exception):
         hint: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        """Construct a UserError with a user-safe message, stable code, optional hint, and optional structured details."""
+        """Initialize with a user-safe message and optional metadata."""
         super().__init__(message)
         self.message = message
         self.code = code

@@ -1,18 +1,11 @@
 """MCP tool decorator: sensitivity logging, timeout guard, error classification, envelope guard.
 
-Every decorated tool is exposed as an async coroutine — FastMCP awaits it
-in its dispatch loop. Sync tool bodies are dispatched to a worker thread
-via ``asyncio.to_thread`` so they share the same timeout machinery.
-
-On timeout we (a) cancel the awaited future, (b) call
-``interrupt_and_reset_database()`` to drop the singleton DuckDB
-connection — releasing any held write lock — and (c) return a structured
-``timed_out`` error envelope. The next tool call will lazily reopen a
-fresh connection.
-
-Classified domain exceptions (``UserError``, ``DatabaseKeyError``,
-``FileNotFoundError``) become error envelopes here; anything else
-propagates to the server's ``mask_error_details`` boundary.
+Every decorated tool is exposed as an async coroutine — FastMCP awaits it,
+and sync tool bodies run via ``asyncio.to_thread``. On timeout the
+decorator drops the singleton DuckDB connection so the next call reopens
+a fresh one, releasing any held write lock. Classified domain exceptions
+become error envelopes here; anything else propagates to the server's
+``mask_error_details`` boundary.
 """
 
 from __future__ import annotations
