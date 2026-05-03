@@ -71,3 +71,64 @@ def show_cmd(
         return
     for k, v in record.items():
         typer.echo(f"  {k}: {v}")
+
+
+@app.command("rename")
+def rename_cmd(
+    account_id: str = typer.Argument(..., help="Account ID"),
+    display_name: str = typer.Argument(
+        ..., help="New display name (empty string clears)"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),  # noqa: ARG001 — reserved for future confirmation prompt
+) -> None:
+    """Rename an account. Empty string clears the override."""
+    with handle_cli_errors() as db:
+        result = AccountService(db).rename(account_id, display_name)
+    name = result.display_name or "<cleared>"
+    typer.echo(f"✅ Renamed {account_id} → {name}", err=True)
+
+
+@app.command("include")
+def include_cmd(
+    account_id: str = typer.Argument(..., help="Account ID"),
+    no: bool = typer.Option(False, "--no", help="Set include_in_net_worth=FALSE"),
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved
+) -> None:
+    """Toggle account inclusion in net worth (default TRUE; --no to exclude)."""
+    include = not no
+    with handle_cli_errors() as db:
+        result = AccountService(db).set_include_in_net_worth(account_id, include)
+    state = "included in" if result.include_in_net_worth else "excluded from"
+    typer.echo(f"✅ Account {account_id} {state} net worth", err=True)
+
+
+@app.command("archive")
+def archive_cmd(
+    account_id: str = typer.Argument(..., help="Account ID"),
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001
+) -> None:
+    """Archive an account. Cascades exclude_from_net_worth in the same write."""
+    with handle_cli_errors() as db:
+        AccountService(db).archive(account_id)
+    typer.echo(
+        f"✅ Archived account {account_id} (also excluded from net worth)",
+        err=True,
+    )
+
+
+@app.command("unarchive")
+def unarchive_cmd(
+    account_id: str = typer.Argument(..., help="Account ID"),
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001
+) -> None:
+    """Unarchive an account. Does NOT restore include_in_net_worth."""
+    with handle_cli_errors() as db:
+        result = AccountService(db).unarchive(account_id)
+    if not result.include_in_net_worth:
+        typer.echo(
+            f"✅ Unarchived account {account_id} "
+            f"(still excluded from net worth — use 'moneybin accounts include' to re-enable)",
+            err=True,
+        )
+    else:
+        typer.echo(f"✅ Unarchived account {account_id}", err=True)

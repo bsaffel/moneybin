@@ -209,3 +209,154 @@ class TestAccountsShow:
         assert (
             "missing" in result.stderr.lower() or "not found" in result.stderr.lower()
         )
+
+
+class TestAccountsRename:
+    """Tests for the accounts rename command."""
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_rename_writes_display_name(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.rename.return_value = MagicMock(
+            display_name="Checking", account_id="acct_a"
+        )
+        result = runner.invoke(
+            app, ["accounts", "rename", "acct_a", "Checking", "--yes"]
+        )
+        assert result.exit_code == 0, result.stderr
+        mock_service.rename.assert_called_once_with("acct_a", "Checking")
+        assert "Checking" in result.stderr or "Renamed" in result.stderr
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_rename_with_empty_string(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.rename.return_value = MagicMock(
+            display_name=None, account_id="acct_a"
+        )
+        result = runner.invoke(app, ["accounts", "rename", "acct_a", "", "--yes"])
+        assert result.exit_code == 0
+        # Service called with empty string — service handles the clearing
+        mock_service.rename.assert_called_once_with("acct_a", "")
+
+
+class TestAccountsInclude:
+    """Tests for the accounts include command."""
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_include_default_true(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.set_include_in_net_worth.return_value = MagicMock(
+            include_in_net_worth=True
+        )
+        result = runner.invoke(app, ["accounts", "include", "acct_a"])
+        assert result.exit_code == 0
+        mock_service.set_include_in_net_worth.assert_called_once_with("acct_a", True)
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_include_no_flag_sets_false(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.set_include_in_net_worth.return_value = MagicMock(
+            include_in_net_worth=False
+        )
+        result = runner.invoke(app, ["accounts", "include", "acct_a", "--no"])
+        assert result.exit_code == 0
+        mock_service.set_include_in_net_worth.assert_called_once_with("acct_a", False)
+
+
+class TestAccountsArchive:
+    """Tests for the accounts archive command."""
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_archive_announces_cascade(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.archive.return_value = MagicMock(
+            archived=True, include_in_net_worth=False
+        )
+        result = runner.invoke(app, ["accounts", "archive", "acct_a"])
+        assert result.exit_code == 0
+        mock_service.archive.assert_called_once_with("acct_a")
+        # Either stdout or stderr should explicitly mention the cascade
+        combined = (result.stdout + result.stderr).lower()
+        assert "net worth" in combined or "exclude" in combined
+
+
+class TestAccountsUnarchive:
+    """Tests for the accounts unarchive command."""
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_unarchive_warns_if_include_still_false(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.unarchive.return_value = MagicMock(
+            archived=False, include_in_net_worth=False
+        )
+        result = runner.invoke(app, ["accounts", "unarchive", "acct_a"])
+        assert result.exit_code == 0
+        mock_service.unarchive.assert_called_once_with("acct_a")
+        combined = (result.stdout + result.stderr).lower()
+        # Hint should mention how to re-include
+        assert "include" in combined
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_unarchive_no_warning_if_include_true(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.unarchive.return_value = MagicMock(
+            archived=False, include_in_net_worth=True
+        )
+        result = runner.invoke(app, ["accounts", "unarchive", "acct_a"])
+        assert result.exit_code == 0
