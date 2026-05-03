@@ -156,23 +156,23 @@ class AccountSettings:
     include_in_net_worth: bool = True
 
     def __post_init__(self) -> None:
-        """Validate fields at construction time."""
+        """Validate string lengths and formats at construction."""
         if not self.account_id:
             raise ValueError("account_id is required")
         if self.display_name is not None:
             if not 1 <= len(self.display_name) <= 80:
-                raise ValueError("display_name must be 1-80 chars")
+                raise ValueError("display_name must be 1-80 characters")
         if self.official_name is not None:
             if not 1 <= len(self.official_name) <= 200:
-                raise ValueError("official_name must be 1-200 chars")
+                raise ValueError("official_name must be 1-200 characters")
         if self.last_four is not None and not _LAST_FOUR_RE.match(self.last_four):
             raise ValueError("last_four must be exactly 4 digits")
         if self.account_subtype is not None:
             if not 1 <= len(self.account_subtype) <= 32:
-                raise ValueError("account_subtype must be 1-32 chars")
+                raise ValueError("account_subtype must be 1-32 characters")
         if self.holder_category is not None:
             if not 1 <= len(self.holder_category) <= 32:
-                raise ValueError("holder_category must be 1-32 chars")
+                raise ValueError("holder_category must be 1-32 characters")
         if self.iso_currency_code is not None and not _ISO_CURRENCY_RE.match(
             self.iso_currency_code
         ):

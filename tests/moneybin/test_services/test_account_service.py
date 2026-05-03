@@ -29,6 +29,19 @@ from moneybin.services.account_service import (
 from tests.moneybin.db_helpers import create_core_tables_raw
 
 
+def _make_settings(**overrides: object) -> AccountSettings:
+    """Construct an AccountSettings with sensible defaults; override fields as needed."""
+    defaults: dict[str, object] = {
+        "account_id": "acct_abc",
+        "display_name": "Checking",
+        "last_four": "1234",
+        "iso_currency_code": "USD",
+        "archived": False,
+        "include_in_net_worth": True,
+    }
+    return AccountSettings(**{**defaults, **overrides})  # type: ignore[arg-type]
+
+
 class TestSubtypeClassifier:
     """Tests for Plaid subtype canonical list and soft-validation helpers."""
 
@@ -217,6 +230,8 @@ class TestAccountSettingsModel:
             include_in_net_worth=True,
         )
         assert s.display_name == "Checking"
+        assert s.credit_limit == Decimal("5000.00")
+        assert s.account_subtype == "checking"
 
     @pytest.mark.unit
     def test_display_name_too_long(self) -> None:
