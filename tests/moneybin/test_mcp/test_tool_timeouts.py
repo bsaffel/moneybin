@@ -124,3 +124,12 @@ def test_classified_user_error_still_returned(
     result = asyncio.run(bad_tool())
     assert result.error is not None
     assert result.error.code == "not_found"
+
+
+@pytest.mark.unit
+def test_async_generator_tool_rejected_at_decoration() -> None:
+    with pytest.raises(TypeError, match="async generator"):
+
+        @mcp_tool(sensitivity="low")
+        async def gen_tool() -> ResponseEnvelope:  # type: ignore[misc]
+            yield  # type: ignore[misc]

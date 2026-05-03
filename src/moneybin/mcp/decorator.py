@@ -89,6 +89,10 @@ def mcp_tool(
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         is_coro = inspect.iscoroutinefunction(fn)
+        if inspect.isasyncgenfunction(fn):
+            raise TypeError(
+                f"{fn.__name__} is an async generator — MCP tools must be regular coroutines or sync functions"
+            )
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
