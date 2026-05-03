@@ -60,7 +60,7 @@ mcp = FastMCP(
 
         Getting oriented:
         - system_status — what data exists, freshness, pending review queues
-        - reports_health — financial snapshot (net worth, income/expenses, savings rate)
+        - reports_spending_summary — income vs expenses snapshot by month
 
         Conventions:
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.

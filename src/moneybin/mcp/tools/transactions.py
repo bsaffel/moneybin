@@ -90,9 +90,10 @@ def transactions_recurring_list(
 def transactions_review_status() -> ResponseEnvelope:
     """Return counts of pending reviews across both queues.
 
-    Orientation tool: call this to know whether to fetch matches first
-    (transactions_matches_pending) or categorize items first
-    (transactions_categorize_pending_list).
+    Orientation tool: call this to decide which queue to drain first.
+    For categorize, fetch items via ``transactions_categorize_pending_list``.
+    Match review is CLI-only today (``moneybin transactions review --type
+    matches``); a ``transactions_matches_pending`` MCP tool is planned.
     """
     from moneybin.services.categorization_service import CategorizationService
     from moneybin.services.matching_service import MatchingService
@@ -112,8 +113,8 @@ def transactions_review_status() -> ResponseEnvelope:
         },
         sensitivity="low",
         actions=[
-            "Use transactions_matches_pending to fetch the match queue",
             "Use transactions_categorize_pending_list to fetch the categorize queue",
+            "For matches, run `moneybin transactions review --type matches` (CLI-only today)",
         ],
     )
 

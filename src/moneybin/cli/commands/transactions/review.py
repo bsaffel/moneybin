@@ -15,6 +15,8 @@ import logging
 import typer
 
 from moneybin.cli.commands.stubs import _not_implemented
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ def transactions_review(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
     ),
     limit: int = typer.Option(50, "--limit", help="Cap items per session"),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — --status emits data only; nothing to suppress
 ) -> None:
     """Walk pending matches first, then uncategorized transactions."""
     if type_ not in _VALID_TYPES:
@@ -44,7 +48,7 @@ def transactions_review(
         )
 
     if status:
-        _print_status(type_)
+        _print_status(type_, output)
         return
 
     if confirm_id or reject_id or confirm_all:
@@ -56,7 +60,7 @@ def transactions_review(
     _not_implemented("cli-restructure.md (review collapse — interactive loop pending)")
 
 
-def _print_status(type_: str) -> None:
+def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_settings
     from moneybin.services.categorization_service import CategorizationService
@@ -69,6 +73,17 @@ def _print_status(type_: str) -> None:
             categorize_service=CategorizationService(db),
         )
         s = review_svc.status()
+
+    if output == OutputFormat.JSON:
+        payload: dict[str, int] = {}
+        if type_ in ("matches", "all"):
+            payload["matches_pending"] = s.matches_pending
+        if type_ in ("categorize", "all"):
+            payload["categorize_pending"] = s.categorize_pending
+        if type_ == "all":
+            payload["total"] = s.total
+        emit_json("status", payload)
+        return
 
     if type_ == "matches":
         typer.echo(f"Matches pending: {s.matches_pending}")

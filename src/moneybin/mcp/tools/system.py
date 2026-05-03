@@ -45,7 +45,7 @@ def system_status() -> ResponseEnvelope:
         sensitivity="low",
         actions=[
             "Use transactions_review_status for per-queue review counts",
-            "Use reports_health for a financial snapshot",
+            "Use reports_spending_summary for an income vs expenses snapshot",
         ],
     )
 
