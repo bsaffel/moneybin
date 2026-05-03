@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
+from difflib import get_close_matches
 from typing import Any
 
 from moneybin.database import Database
@@ -17,6 +18,116 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import DIM_ACCOUNTS, OFX_BALANCES
 
 logger = logging.getLogger(__name__)
+
+# Plaid's documented account subtype list (https://plaid.com/docs/api/accounts/).
+# Open vocabulary in this project — soft-validated, never blocking.
+PLAID_CANONICAL_SUBTYPES: frozenset[str] = frozenset({
+    # depository
+    "checking",
+    "savings",
+    "hsa",
+    "cd",
+    "money market",
+    "paypal",
+    "prepaid",
+    "cash management",
+    "ebt",
+    # credit
+    "credit card",
+    "paypal credit",
+    # loan
+    "auto",
+    "business",
+    "commercial",
+    "construction",
+    "consumer",
+    "home equity",
+    "loan",
+    "mortgage",
+    "overdraft",
+    "line of credit",
+    "student",
+    # investment
+    "401a",
+    "401k",
+    "403b",
+    "457b",
+    "529",
+    "brokerage",
+    "cash isa",
+    "education savings account",
+    "fixed annuity",
+    "gic",
+    "health reimbursement arrangement",
+    "ira",
+    "isa",
+    "keogh",
+    "lif",
+    "life insurance",
+    "lira",
+    "lrif",
+    "lrsp",
+    "mutual fund",
+    "non-taxable brokerage account",
+    "other",
+    "other annuity",
+    "other insurance",
+    "pension",
+    "plan",
+    "prif",
+    "profit sharing plan",
+    "qshr",
+    "rdsp",
+    "resp",
+    "retirement",
+    "rlif",
+    "roth",
+    "roth 401k",
+    "rrif",
+    "rrsp",
+    "sarsep",
+    "sep ira",
+    "simple ira",
+    "sipp",
+    "stock plan",
+    "tfsa",
+    "trust",
+    "ugma",
+    "utma",
+    "variable annuity",
+})
+
+PLAID_CANONICAL_HOLDER_CATEGORIES: frozenset[str] = frozenset({
+    "personal",
+    "business",
+    "joint",
+})
+
+
+def is_canonical_subtype(value: str) -> bool:
+    """Whether the value matches Plaid's documented subtype list (case-insensitive)."""
+    return value.lower() in PLAID_CANONICAL_SUBTYPES
+
+
+def is_canonical_holder_category(value: str) -> bool:
+    """Whether the value matches the canonical holder-category set."""
+    return value.lower() in PLAID_CANONICAL_HOLDER_CATEGORIES
+
+
+def suggest_subtype(value: str) -> str | None:
+    """Suggest a canonical subtype near-match; None if no close match."""
+    matches = get_close_matches(
+        value.lower(), PLAID_CANONICAL_SUBTYPES, n=1, cutoff=0.75
+    )
+    return matches[0] if matches else None
+
+
+def suggest_holder_category(value: str) -> str | None:
+    """Suggest a canonical holder-category near-match; None if no close match."""
+    matches = get_close_matches(
+        value.lower(), PLAID_CANONICAL_HOLDER_CATEGORIES, n=1, cutoff=0.75
+    )
+    return matches[0] if matches else None
 
 
 @dataclass(frozen=True, slots=True)

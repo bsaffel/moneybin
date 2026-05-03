@@ -1,5 +1,5 @@
 # tests/moneybin/test_services/test_account_service.py
-"""Tests for AccountService."""
+"""Tests for AccountService, soft-validation classifier, and canonical lists."""
 
 from __future__ import annotations
 
@@ -14,12 +14,61 @@ import pytest
 import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.account_service import (
+    PLAID_CANONICAL_HOLDER_CATEGORIES,
+    PLAID_CANONICAL_SUBTYPES,
     AccountBalance,
     AccountListResult,
     AccountService,
     BalanceListResult,
+    is_canonical_holder_category,
+    is_canonical_subtype,
+    suggest_holder_category,
+    suggest_subtype,
 )
 from tests.moneybin.db_helpers import create_core_tables_raw
+
+
+class TestSubtypeClassifier:
+    """Tests for Plaid subtype canonical list and soft-validation helpers."""
+
+    def test_canonical_subtypes_present(self) -> None:
+        assert "checking" in PLAID_CANONICAL_SUBTYPES
+        assert "savings" in PLAID_CANONICAL_SUBTYPES
+        assert "credit card" in PLAID_CANONICAL_SUBTYPES
+        assert "mortgage" in PLAID_CANONICAL_SUBTYPES
+
+    def test_is_canonical_true_for_known(self) -> None:
+        assert is_canonical_subtype("checking") is True
+
+    def test_is_canonical_false_for_unknown(self) -> None:
+        assert is_canonical_subtype("chequing") is False
+
+    def test_is_canonical_case_insensitive(self) -> None:
+        assert is_canonical_subtype("CHECKING") is True
+
+    def test_suggest_near_miss(self) -> None:
+        assert suggest_subtype("chequing") == "checking"
+
+    def test_suggest_returns_none_for_far_miss(self) -> None:
+        assert suggest_subtype("xyz_garbage") is None
+
+
+class TestHolderCategoryClassifier:
+    """Tests for holder-category canonical set and soft-validation helpers."""
+
+    def test_canonical_set(self) -> None:
+        assert PLAID_CANONICAL_HOLDER_CATEGORIES == frozenset({
+            "personal",
+            "business",
+            "joint",
+        })
+
+    def test_is_canonical(self) -> None:
+        assert is_canonical_holder_category("personal") is True
+        assert is_canonical_holder_category("corporate") is False
+
+    def test_suggest_near_miss(self) -> None:
+        assert suggest_holder_category("persoanl") == "personal"
 
 
 @pytest.fixture()
