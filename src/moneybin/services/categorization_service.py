@@ -173,6 +173,65 @@ def validate_bulk_items(
     return items, errors
 
 
+class CategorizationRuleInput(BaseModel):
+    """One rule for ``CategorizationService.create_rules``.
+
+    Validated at the CLI/MCP boundary by ``validate_rule_items``. The
+    service refuses untyped dicts.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    merchant_pattern: str = Field(min_length=1, max_length=500)
+    category: str = Field(min_length=1, max_length=100)
+    subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+    match_type: MatchType = "contains"
+    min_amount: float | None = None
+    max_amount: float | None = None
+    account_id: str | None = Field(default=None, min_length=1, max_length=64)
+    priority: int = Field(default=100, ge=0, le=10_000)
+
+
+def validate_rule_items(
+    raw: object,
+) -> tuple[list[CategorizationRuleInput], list[dict[str, str]]]:
+    """Validate raw rule dicts into typed inputs + per-row errors.
+
+    Mirrors ``validate_bulk_items``: malformed rows contribute an
+    ``error_details`` entry but do not abort the batch.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("Input must be a JSON array of rule items")
+
+    items: list[CategorizationRuleInput] = []
+    errors: list[dict[str, str]] = []
+    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]
+        if not isinstance(row, dict):
+            errors.append({
+                "name": "(missing)",
+                "reason": f"Row {index} is not an object",
+            })
+            continue
+        row_dict: dict[str, object] = {
+            str(k): v  # pyright: ignore[reportUnknownArgumentType]
+            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]
+        }
+        try:
+            items.append(CategorizationRuleInput.model_validate(row_dict))
+        except ValidationError as e:
+            name_val = row_dict.get("name")
+            name = str(name_val).strip() if isinstance(name_val, str) else ""
+            if not name:
+                name = "(missing)"
+            reason = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]
+                for err in e.errors()
+            )
+            errors.append({"name": name, "reason": reason})
+    return items, errors
+
+
 @lru_cache(maxsize=512)
 def _compile_regex(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
