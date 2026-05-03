@@ -11,12 +11,12 @@ app = typer.Typer(
 
 
 @app.command("w2")
-def w2(year: str) -> None:
+def tax_w2(year: str) -> None:
     """Show W-2 form data for a tax year."""
     _not_implemented("tax-w2.md")
 
 
 @app.command("deductions")
-def deductions(year: str) -> None:
+def tax_deductions(year: str) -> None:
     """Show categorized deductible expenses for a tax year."""
     _not_implemented("tax-deductions.md")

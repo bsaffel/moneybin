@@ -15,7 +15,7 @@ app = typer.Typer(
 
 
 @app.command("show")
-def show(
+def accounts_balance_show(
     account: str | None = typer.Option(None, "--account"),
     as_of: str | None = typer.Option(None, "--as-of"),
 ) -> None:
@@ -24,7 +24,7 @@ def show(
 
 
 @app.command("assert")
-def assert_balance(
+def accounts_balance_assert(
     account_id: str,
     date: str,
     amount: str,
@@ -36,7 +36,7 @@ def assert_balance(
 
 
 @app.command("list")
-def list_assertions(
+def accounts_balance_list(
     account: str | None = typer.Option(None, "--account"),
 ) -> None:
     """List balance assertions, optionally filtered by account."""
@@ -44,7 +44,7 @@ def list_assertions(
 
 
 @app.command("delete")
-def delete_assertion(
+def accounts_balance_delete(
     account_id: str,
     date: str,
     yes: bool = typer.Option(False, "--yes"),
@@ -54,7 +54,7 @@ def delete_assertion(
 
 
 @app.command("reconcile")
-def reconcile(
+def accounts_balance_reconcile(
     account: str | None = typer.Option(None, "--account"),
     threshold: float | None = typer.Option(None, "--threshold"),
 ) -> None:
@@ -63,7 +63,7 @@ def reconcile(
 
 
 @app.command("history")
-def history(
+def accounts_balance_history(
     account: str | None = typer.Option(None, "--account"),
     from_: str | None = typer.Option(None, "--from"),
     to: str | None = typer.Option(None, "--to"),

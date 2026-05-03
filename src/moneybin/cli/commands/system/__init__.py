@@ -11,6 +11,6 @@ app = typer.Typer(
 
 
 @app.command("status")
-def status() -> None:
+def system_status() -> None:
     """Show data freshness and pending review queue counts."""
     _not_implemented("net-worth.md")

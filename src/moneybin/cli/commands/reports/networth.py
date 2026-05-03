@@ -11,13 +11,13 @@ app = typer.Typer(
 
 
 @app.command("show")
-def show(as_of: str | None = typer.Option(None, "--as-of")) -> None:
+def reports_networth_show(as_of: str | None = typer.Option(None, "--as-of")) -> None:
     """Show current net worth."""
     _not_implemented("net-worth.md")
 
 
 @app.command("history")
-def history(
+def reports_networth_history(
     from_: str | None = typer.Option(None, "--from"),
     to: str | None = typer.Option(None, "--to"),
     interval: str = typer.Option("monthly", "--interval"),

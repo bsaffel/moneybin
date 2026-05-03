@@ -11,6 +11,6 @@ app = typer.Typer(
 
 
 @app.command("show")
-def show() -> None:
+def accounts_investments_show() -> None:
     """Show investment portfolio."""
     _not_implemented("investment-tracking.md")

@@ -19,24 +19,24 @@ app.add_typer(networth.app, name="networth")
 
 
 @app.command("spending")
-def spending() -> None:
+def reports_spending() -> None:
     """Spending analysis report."""
     _not_implemented("spending-reports.md")
 
 
 @app.command("cashflow")
-def cashflow() -> None:
+def reports_cashflow() -> None:
     """Cash flow report."""
     _not_implemented("cashflow-reports.md")
 
 
 @app.command("budget")
-def budget() -> None:
+def reports_budget() -> None:
     """Budget vs actual report."""
     _not_implemented("budget-tracking.md")
 
 
 @app.command("health")
-def health(months: int = typer.Option(1, "--months")) -> None:
+def reports_health(months: int = typer.Option(1, "--months")) -> None:
     """Cross-domain financial health snapshot."""
     _not_implemented("net-worth.md")
