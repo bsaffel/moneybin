@@ -134,6 +134,25 @@ def schema_catalog_db(
         database.close()
 
 
+@pytest.fixture(scope="module")
+def module_db(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[Database, None, None]:
+    """Module-scoped read-only Database. Tests must NOT mutate this fixture.
+
+    Shared across every test in a module to amortize Database() + init_schemas
+    cost. Only safe for modules that exclusively read — any INSERT/UPDATE/DELETE
+    will pollute downstream tests in the same module.
+    """
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-for-unit-tests"
+
+    db_path = tmp_path_factory.mktemp("module_db") / "test.duckdb"
+    database = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
+    yield database
+    database.close()
+
+
 @pytest.fixture()
 def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
     """Provide a test Database instance with encryption.
