@@ -18,6 +18,8 @@ import ofxparse
 import polars as pl
 from pydantic import BaseModel, Field, field_validator
 
+from moneybin.utils.parsing import coerce_to_decimal
+
 logger = logging.getLogger(__name__)
 
 _DECIMAL_AMOUNT = pl.Decimal(precision=18, scale=2)
@@ -65,12 +67,11 @@ class OFXTransactionSchema(BaseModel):
     @field_validator("amount", mode="before")
     @classmethod
     def validate_amount(cls, v: Any) -> Decimal:
-        """Coerce numeric input to Decimal."""
-        if isinstance(v, Decimal):
-            return v
-        if isinstance(v, (int, float, str)):
-            return Decimal(str(v))
-        raise ValueError(f"Cannot convert {type(v)} to Decimal")
+        """Coerce numeric input to Decimal (required field — None rejected)."""
+        result = coerce_to_decimal(v)
+        if result is None:
+            raise ValueError("amount is required")
+        return result
 
     model_config = {"extra": "allow"}
 
@@ -90,13 +91,7 @@ class OFXStatementSchema(BaseModel):
     @classmethod
     def validate_decimal(cls, v: Any) -> Decimal | None:
         """Convert balance to Decimal for precision."""
-        if v is None:
-            return None
-        if isinstance(v, Decimal):
-            return v
-        if isinstance(v, (int, float, str)):
-            return Decimal(str(v))
-        raise ValueError(f"Cannot convert {type(v)} to Decimal")
+        return coerce_to_decimal(v)
 
     model_config = {"extra": "allow"}
 
