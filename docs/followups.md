@@ -328,3 +328,54 @@ process owns the file, otherwise warn).
 
 Touchpoint: `src/moneybin/database.py` `__init__` migration block, around
 the `runner.pending()` check.
+
+## CLI-restructure v2 simplify-pass deferrals
+
+Findings surfaced during the post-implementation `/simplify` review on PR
+#96 that were skipped to keep the PR scoped. Each is a real cleanup with
+a documented reason for deferring.
+
+- **Lift `mcp_db` fixture from `tests/moneybin/test_mcp/conftest.py` up
+  to `tests/moneybin/conftest.py`.** `test_system_service.py` re-implements
+  ~25 lines of the same encrypted-DB / singleton-injection setup that
+  `mcp_db` already provides. Lifting the fixture lets the service test
+  reuse it. Skipped because moving a shared fixture has blast-radius across
+  every `test_mcp/*.py` file and benefits from a focused PR.
+
+- **Drop deferred imports inside `system_status` and
+  `transactions_review_status` tool bodies.** Both functions defer
+  `get_database` and service imports inside the function body even though
+  every other tool in the same files imports at module scope. There is no
+  documented circular-import reason. Skipped on the suspicion that the
+  pattern may have been introduced to keep MCP server boot fast; verify
+  there's no real cycle and lift to module scope.
+
+- **Consolidate `SystemService.status()` queries into one CTE.** Currently
+  fires 5 sequential DuckDB queries (accounts count, txn aggregate, last
+  import, matches pending, categorize uncategorized). For a local in-process
+  DuckDB the absolute cost is microseconds; not worth it today. Worth
+  revisiting if `system_status` ever becomes a hot path or if we add more
+  inventory dimensions.
+
+- **Decide whether `transactions_review_status` should remain a separate
+  tool from `system_status`.** Both surface `matches_pending` /
+  `categorize_pending`. They were intentionally split during the v2
+  brainstorm — `system_status` for full data inventory, `transactions_review_status`
+  as a lighter orientation tool — but the duplication means the two paths
+  could silently diverge. Either consolidate (call `SystemService` and
+  project) or formalize the split with a comment.
+
+- **Bulk-insert in `merchants_create` and `transactions_categorize_rules_create`.**
+  Both iterate one INSERT per item (N+1). For 50-item batches that's
+  ~10-100 ms locally; the bigger risk is partial-state on mid-batch
+  failure (current code counts and continues, no rollback). Switch to
+  `executemany` or a single VALUES insert wrapped in BEGIN/COMMIT.
+  Pre-existing pattern, not introduced by the restructure.
+
+- **Reconcile `count_uncategorized` vs `categorization_stats` query
+  shapes.** `count_uncategorized` uses a LEFT JOIN; `categorization_stats`
+  uses subtraction from `COUNT(*)` — which over- or undercounts if any
+  transaction has multiple category rows. They should produce the same
+  number in well-formed data; the LEFT JOIN shape is more correct. Audit
+  for actual divergence and unify, or document why the subtraction shape
+  is acceptable.
