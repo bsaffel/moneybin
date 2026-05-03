@@ -317,3 +317,38 @@ class TestCreateRules:
 
         row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
         assert row == (3,)
+
+    @pytest.mark.unit
+    def test_partial_failure_isolates_bad_row(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed INSERT in the middle of a batch must not abort earlier or later rows."""
+        svc = CategorizationService(db)
+        items = [
+            CategorizationRuleInput(
+                name=f"R{i}",
+                merchant_pattern=f"P{i}",
+                category="Cat",
+            )
+            for i in range(3)
+        ]
+
+        original_execute = db.execute
+        call_count = {"n": 0}
+
+        def fail_second(sql: str, params: object = None) -> object:
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RuntimeError("injected failure for test")
+            return original_execute(sql, params)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(db, "execute", fail_second)
+
+        result = svc.create_rules(items)
+
+        assert result.created == 2
+        assert result.skipped == 1
+        assert len(result.rule_ids) == 2
+        assert len(result.error_details) == 1
+        assert result.error_details[0]["name"] == "R1"
+        assert "Failed to create rule" in result.error_details[0]["reason"]

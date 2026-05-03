@@ -470,7 +470,7 @@ class CategorizationService:
                 rule_ids.append(rule_id)
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 skipped += 1
-                logger.exception("create_rules failed")
+                logger.exception(f"create_rules failed for rule {item.name!r}")
                 error_details.append({
                     "name": item.name,
                     "reason": "Failed to create rule — check logs for details.",
