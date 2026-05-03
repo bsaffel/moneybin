@@ -15,6 +15,7 @@ but which would be harder to read and test than the equivalent Python walk.
 from __future__ import annotations
 
 import typing as t
+from collections.abc import Iterator
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -38,16 +39,6 @@ def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
     if value is None:
         return default
     return Decimal(str(value))
-
-
-_EMPTY_COLUMNS = [
-    "account_id",
-    "balance_date",
-    "balance",
-    "is_observed",
-    "observation_source",
-    "reconciliation_delta",
-]
 
 
 @model(
@@ -87,30 +78,34 @@ def execute(
     end: datetime,  # noqa: ARG001
     execution_time: datetime,  # noqa: ARG001
     **kwargs: t.Any,  # noqa: ARG001
-) -> pd.DataFrame:
+) -> Iterator[pd.DataFrame]:
     """Build the per-account daily balance spine with carry-forward and reconciliation deltas."""
-    # context.table() resolves the internal versioned name (e.g.
+    # context.resolve_table() resolves the internal versioned name (e.g.
     # sqlmesh__core.core__fct_balances__<hash>) for the current plan execution.
     # Plain "core.fct_balances" only exists after promotion, not during backfill.
-    fct_balances_table = context.table("core.fct_balances")
-    fct_transactions_table = context.table("core.fct_transactions")
+    fct_balances_table = context.resolve_table("core.fct_balances")
+    fct_transactions_table = context.resolve_table("core.fct_transactions")
 
     obs: pd.DataFrame = context.fetchdf(
         f"""
         SELECT account_id, balance_date, balance, source_type
         FROM {fct_balances_table}
         ORDER BY account_id, balance_date
-        """  # noqa: S608  # table name from context.table(), not user input
+        """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
     if obs.empty:
-        return pd.DataFrame(columns=_EMPTY_COLUMNS)  # type: ignore[reportArgumentType] — list[str] is valid for DataFrame(columns=)
+        # SQLMesh rejects empty DataFrames from Python models — use the
+        # generator protocol instead: yield from () signals "no rows" without
+        # triggering the "Cannot construct source query" error.
+        yield from ()
+        return
 
     txns: pd.DataFrame = context.fetchdf(
         f"""
         SELECT account_id, transaction_date AS d, SUM(amount) AS net_amount
         FROM {fct_transactions_table}
         GROUP BY account_id, transaction_date
-        """  # noqa: S608  # table name from context.table(), not user input
+        """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
 
     rows: list[dict[str, t.Any]] = []
@@ -194,4 +189,4 @@ def execute(
                     "reconciliation_delta": None,
                 })
 
-    return pd.DataFrame(rows)
+    yield pd.DataFrame(rows)
