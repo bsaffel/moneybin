@@ -162,6 +162,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.discover import register_discover_tool
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
+    from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.mcp.tools.spending import register_spending_tools
     from moneybin.mcp.tools.sql import register_sql_tools
     from moneybin.mcp.tools.tax import register_tax_tools
@@ -169,6 +170,7 @@ def register_core_tools() -> None:
 
     register_spending_tools(mcp)
     register_accounts_tools(mcp)
+    register_reports_tools(mcp)
     register_transactions_tools(mcp)
     register_import_tools(mcp)
     register_inbox_tools(mcp)

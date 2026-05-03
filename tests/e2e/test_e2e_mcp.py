@@ -169,3 +169,29 @@ class TestMCPServerBoot:
                 assert envelope["summary"]["sensitivity"] == "medium"
                 # Fresh DB has no assertions — empty list is correct
                 assert isinstance(envelope["data"], list)
+
+
+class TestReportsNetworthTools:
+    """v2 reports_networth_* tool smoke tests."""
+
+    async def test_reports_networth_tools_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """Both reports_networth_* tools are registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                tool_names = {t.name for t in tools_result.tools}
+
+                assert "reports_networth_get" in tool_names
+                assert "reports_networth_history" in tool_names
