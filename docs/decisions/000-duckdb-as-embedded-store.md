@@ -101,7 +101,7 @@ DataFusion is a credible alternative we'd revisit if SQLMesh added a first-class
 - **Single-writer.** DuckDB does not support concurrent writers to the same file. Acceptable: the import pipeline is the sole writer. Read-only connections from the MCP server are safe.
 - **Younger ecosystem.** Smaller community than Postgres/SQLite, fewer third-party tools, occasional rough edges in the Python client. Mitigated by DuckDB's rapid release cadence and Motherduck-funded development.
 - **Format stability.** DuckDB's storage format has changed across major versions; database files require migration on upgrade. Mitigated by pinning the `duckdb` version and exercising upgrade paths in CI.
-- **Encryption is app-level.** DuckDB does not natively encrypt the storage file; we wrap it via AES-256-GCM at the file layer. See [ADR-004](004-e2e-encryption.md) and [ADR-013](013-encryption-key-management.md).
+- **Encryption is app-level.** DuckDB does not natively encrypt the storage file; we wrap it via AES-256-GCM at the file layer. See [ADR-004](004-e2e-encryption.md) and [ADR-009](009-encryption-key-management.md).
 - **No row-level concurrency for an eventual multi-user mode.** If MoneyBin ever grows beyond a single-user local app, the storage layer would need to be revisited. The `Database` abstraction keeps this swap localized.
 
 ## References
@@ -109,5 +109,5 @@ DataFusion is a credible alternative we'd revisit if SQLMesh added a first-class
 - [ADR-001: Medallion Data Layers](001-medallion-data-layers.md)
 - [ADR-004: End-to-End Encryption](004-e2e-encryption.md)
 - [ADR-006: SQLMesh Replaces dbt](006-sqlmesh-replaces-dbt.md)
-- [ADR-013: Encryption Key Management](013-encryption-key-management.md)
+- [ADR-009: Encryption Key Management](009-encryption-key-management.md)
 - [DuckDB vs SQLite (DuckDB docs)](https://duckdb.org/why_duckdb)

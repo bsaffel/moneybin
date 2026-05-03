@@ -3,7 +3,7 @@
 > Purpose: Validate key technical assumptions in the data-protection spec before
 > promoting to `ready` status. Run by an agent in a fresh session.
 > Spec: `docs/specs/privacy-data-protection.md`
-> ADR: `docs/decisions/013-encryption-key-management.md`
+> ADR: `docs/decisions/009-encryption-key-management.md`
 
 ## Prerequisites
 
