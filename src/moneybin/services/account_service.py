@@ -146,6 +146,10 @@ def suggest_holder_category(value: str) -> str | None:
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
 _ISO_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
+# Sentinel used in summary() count_by_subtype to represent accounts with
+# NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
+_UNSET_SUBTYPE_LABEL = "<unset>"
+
 
 @dataclass(frozen=True, slots=True)
 class AccountSettings:
@@ -278,7 +282,7 @@ class AccountSettingsRepository:
         )
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class AccountListResult:
     """Result of account listing query.
 
@@ -369,7 +373,9 @@ class AccountService:
         if not include_archived:
             where_clauses.append("archived = FALSE")
         if type_filter is not None:
-            where_clauses.append("(account_type = ? OR account_subtype = ?)")
+            where_clauses.append(
+                "(UPPER(account_type) = UPPER(?) OR LOWER(account_subtype) = LOWER(?))"
+            )
             params.extend([type_filter, type_filter])
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -404,7 +410,13 @@ class AccountService:
         return AccountListResult(accounts=accounts, sensitivity=sensitivity)
 
     def get_account(self, account_id: str) -> dict[str, object] | None:
-        """Single account record with full settings + dim record. None if not found."""
+        """Single account record with full settings + dim record. None if not found.
+
+        Always returns full fields including PII-adjacent values (last_four,
+        credit_limit, routing_number). Sensitivity is always medium; there is no
+        redacted variant. Callers requiring a redacted view should use
+        list_accounts(redacted=True) instead and filter to the desired account.
+        """
         fields = [
             "account_id",
             "display_name",
@@ -436,15 +448,21 @@ class AccountService:
 
     def summary(self) -> dict[str, object]:
         """Aggregate snapshot for accounts_summary tool / accounts://summary resource."""
+        row = self._db.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE archived) AS archived,
+                COUNT(*) FILTER (WHERE NOT include_in_net_worth) AS excluded
+            FROM {DIM_ACCOUNTS.full_name}
+            """
+        ).fetchone()
+        # COUNT(*) always returns one row; guard is for type narrowing only.
+        if row is None:  # pragma: no cover
+            total, archived, excluded = 0, 0, 0
+        else:
+            total, archived, excluded = row[0], row[1], row[2]
 
-        def _count(sql: str, params: list[object] | None = None) -> int:
-            row = self._db.execute(sql, params or []).fetchone()
-            # COUNT(*) always returns one row; guard for type narrowing only.
-            if row is None:  # pragma: no cover
-                return 0
-            return int(row[0])
-
-        total = _count(f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}")
         by_type: dict[str, int] = dict(
             self._db.execute(
                 f"""
@@ -458,26 +476,23 @@ class AccountService:
         by_subtype: dict[str, int] = dict(
             self._db.execute(
                 f"""
-                SELECT COALESCE(account_subtype, '<unset>'), COUNT(*)
+                SELECT COALESCE(account_subtype, ?), COUNT(*)
                 FROM {DIM_ACCOUNTS.full_name}
                 WHERE NOT archived
                 GROUP BY 1
-                """
+                """,
+                [_UNSET_SUBTYPE_LABEL],
             ).fetchall()
         )
-        archived = _count(
-            f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name} WHERE archived"
-        )
-        excluded = _count(
-            f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name} WHERE NOT include_in_net_worth"
-        )
-        recent = _count(
+        recent_row = self._db.execute(
             f"""
             SELECT COUNT(DISTINCT account_id)
             FROM {FCT_TRANSACTIONS.full_name}
             WHERE transaction_date >= CURRENT_DATE - INTERVAL '30' DAY
             """
-        )
+        ).fetchone()
+        recent = recent_row[0] if recent_row is not None else 0  # pragma: no cover
+
         logger.info(f"Summary: {total} total accounts, {archived} archived")
         return {
             "total_accounts": total,

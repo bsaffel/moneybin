@@ -2,7 +2,7 @@
 """Accounts namespace tools — account listing and balances.
 
 Tools:
-    - accounts_list — List all accounts (low sensitivity)
+    - accounts_list — List all accounts (medium sensitivity)
     - accounts_balances — Get latest account balances (medium sensitivity)
 """
 
@@ -17,13 +17,17 @@ from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.account_service import AccountService
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="medium")
 def accounts_list() -> ResponseEnvelope:
-    """List all accounts in MoneyBin.
+    """List all accounts in MoneyBin (default sensitivity: medium).
 
-    Returns account ID, type, institution name, and source type for
-    each account. Use this to discover available accounts before
-    querying balances or filtering transactions.
+    Returns the canonical resolved view including display_name, account_type,
+    institution_name, last_four, credit_limit, archived flag, and net-worth
+    inclusion flag. Default response carries last_four and credit_limit, which
+    require the medium tier.
+
+    Phase 8 will add include_archived, type_filter, and redacted parameters
+    plus the full v2 tool surface.
     """
     service = AccountService(get_database())
     result = service.list_accounts()

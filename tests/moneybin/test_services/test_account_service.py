@@ -474,6 +474,8 @@ def _insert_dim_account(
     credit_limit: Decimal | None = None,
     archived: bool = False,
     include_in_net_worth: bool = True,
+    routing_number: str | None = None,
+    official_name: str | None = None,
 ) -> None:
     """Insert a row directly into core.dim_accounts for unit testing.
 
@@ -492,16 +494,18 @@ def _insert_dim_account(
             display_name, official_name, last_four, account_subtype,
             holder_category, iso_currency_code, credit_limit,
             archived, include_in_net_worth
-        ) VALUES (?, NULL, ?, ?, NULL, ?, 'test.qfx', '2025-01-01',
+        ) VALUES (?, ?, ?, ?, NULL, ?, 'test.qfx', '2025-01-01',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-                  ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             account_id,
+            routing_number,
             account_type,
             institution_name,
             source_type,
             display_name,
+            official_name,
             last_four,
             account_subtype,
             holder_category,
@@ -618,6 +622,24 @@ class TestAccountServiceListExtended:
         assert "acct_checking" in ids
         assert "acct_savings" not in ids
         assert len(ids) == 1
+
+    @pytest.mark.unit
+    def test_list_type_filter_case_insensitive(self, extended_db: Database) -> None:
+        # Seed an OFX-style account (uppercase account_type) and a user-set subtype
+        # (lowercase). Filter with mixed casing should match.
+        _insert_dim_account(
+            extended_db,
+            "acct_a",
+            account_type="CHECKING",
+            account_subtype="checking",
+        )
+        svc = AccountService(extended_db)
+        # User filter "checking" should match account_type "CHECKING"
+        result = svc.list_accounts(type_filter="checking")
+        assert len(result.accounts) == 1
+        # User filter "CHECKING" should also match
+        result_upper = svc.list_accounts(type_filter="CHECKING")
+        assert len(result_upper.accounts) == 1
 
 
 class TestAccountServiceGetAccount:
