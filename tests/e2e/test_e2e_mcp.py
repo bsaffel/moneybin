@@ -59,9 +59,10 @@ class TestMCPServerBoot:
 
                 assert len(tool_names) > 0, "No tools registered"
 
-                # Core tools that should always be present
-                assert "spending_summary" in tool_names
+                # Core tools that should always be present (v2 names)
+                assert "reports_spending_summary" in tool_names
                 assert "accounts_list" in tool_names
+                assert "system_status" in tool_names
                 assert "moneybin_discover" in tool_names
 
     async def test_server_invokes_tool(self, mcp_env: dict[str, str]) -> None:

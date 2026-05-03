@@ -11,73 +11,27 @@ import typer
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["_not_implemented"]
+
 
 def _not_implemented(owning_spec: str) -> None:
     """Print a not-implemented message and exit cleanly.
 
     Args:
         owning_spec: The spec filename under docs/specs/ that owns this feature.
+
+    Exit code policy: stubs return 0, not 1. Per `.claude/rules/cli.md`,
+    exit code 1 means "runtime error" (operation ran and failed) — using
+    it for "intentional no-op pending implementation" would collide with
+    that meaning and force scripts to distinguish stubs from real
+    failures via stderr text. The "ran but unimplemented" signal is
+    delivered via the logged message (which `setup_logging(cli_mode=True)`
+    routes to stderr) rather than the exit code. Revisit if a project-
+    wide stub-exit-code policy lands; not changed here to keep the v2
+    restructure scoped.
     """
     logger.info("This command is not yet implemented.")
     logger.info(f"💡 See docs/specs/{owning_spec} for the design")
-
-
-# --- track ---
-track_app = typer.Typer(
-    help="Balance tracking, net worth, and financial monitoring",
-    no_args_is_help=True,
-)
-
-track_balance_app = typer.Typer(help="Balance assertions and tracking")
-track_app.add_typer(track_balance_app, name="balance")
-
-
-@track_balance_app.command("show")
-def track_balance_show() -> None:
-    """Show current balance for an account."""
-    _not_implemented("net-worth.md")
-
-
-track_networth_app = typer.Typer(help="Net worth tracking")
-track_app.add_typer(track_networth_app, name="networth")
-
-
-@track_networth_app.command("show")
-def track_networth_show() -> None:
-    """Show current net worth."""
-    _not_implemented("net-worth.md")
-
-
-track_budget_app = typer.Typer(help="Budget tracking", no_args_is_help=True)
-track_app.add_typer(track_budget_app, name="budget")
-
-
-@track_budget_app.command("show")
-def track_budget_show() -> None:
-    """Show budget status."""
-    _not_implemented("budget-tracking.md")
-
-
-track_recurring_app = typer.Typer(
-    help="Recurring transaction detection", no_args_is_help=True
-)
-track_app.add_typer(track_recurring_app, name="recurring")
-
-
-@track_recurring_app.command("show")
-def track_recurring_show() -> None:
-    """Show detected recurring transactions."""
-    _not_implemented("recurring-transactions.md")
-
-
-track_investments_app = typer.Typer(help="Investment tracking", no_args_is_help=True)
-track_app.add_typer(track_investments_app, name="investments")
-
-
-@track_investments_app.command("show")
-def track_investments_show() -> None:
-    """Show investment portfolio."""
-    _not_implemented("investment-tracking.md")
 
 
 # --- export ---

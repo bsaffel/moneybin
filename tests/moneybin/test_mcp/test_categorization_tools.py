@@ -10,11 +10,15 @@ import asyncio
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.mcp.tools.categorize import (
-    categorize_categories,
-    categorize_stats,
-    categorize_toggle_category,
-    register_categorize_tools,
+from moneybin.mcp.tools.categories import (
+    categories_list,
+    categories_toggle,
+    register_categories_tools,
+)
+from moneybin.mcp.tools.merchants import register_merchants_tools
+from moneybin.mcp.tools.transactions_categorize import (
+    register_transactions_categorize_tools,
+    transactions_categorize_stats,
 )
 from moneybin.seeds import refresh_views
 
@@ -23,7 +27,9 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 
 def _registered_names() -> set[str]:
     srv = FastMCP("test")
-    register_categorize_tools(srv)
+    register_categories_tools(srv)
+    register_merchants_tools(srv)
+    register_transactions_categorize_tools(srv)
     return {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 
@@ -33,21 +39,21 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     def test_all_categorize_tools_register(self) -> None:
         names = _registered_names()
-        assert "categorize_categories" in names
-        assert "categorize_rules" in names
-        assert "categorize_merchants" in names
-        assert "categorize_stats" in names
-        assert "categorize_uncategorized" in names
-        assert "categorize_bulk" in names
-        assert "categorize_create_rules" in names
-        assert "categorize_delete_rule" in names
-        assert "categorize_create_merchants" in names
-        assert "categorize_create_category" in names
-        assert "categorize_toggle_category" in names
+        assert "categories_list" in names
+        assert "transactions_categorize_rules_list" in names
+        assert "merchants_list" in names
+        assert "transactions_categorize_stats" in names
+        assert "transactions_categorize_pending_list" in names
+        assert "transactions_categorize_bulk_apply" in names
+        assert "transactions_categorize_rules_create" in names
+        assert "transactions_categorize_rule_delete" in names
+        assert "merchants_create" in names
+        assert "categories_create" in names
+        assert "categories_toggle" in names
 
     @pytest.mark.unit
     def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
-        parsed = asyncio.run(categorize_stats()).to_dict()
+        parsed = asyncio.run(transactions_categorize_stats()).to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
@@ -55,7 +61,7 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:
         """List categories returns a valid envelope (empty when no data)."""
-        cat_result = asyncio.run(categorize_categories()).to_dict()
+        cat_result = asyncio.run(categories_list()).to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
         assert isinstance(cat_result["data"], list)
@@ -64,9 +70,9 @@ class TestCategorizeToolRegistration:
     def test_register_includes_auto_rule_tools(self) -> None:
         names = _registered_names()
         assert {
-            "categorize_auto_review",
-            "categorize_auto_confirm",
-            "categorize_auto_stats",
+            "transactions_categorize_auto_review",
+            "transactions_categorize_auto_confirm",
+            "transactions_categorize_auto_stats",
         } <= names
 
 
@@ -93,7 +99,7 @@ def _seed_categories_view(db: object) -> None:
 
 
 class TestToggleCategoryWritePath:
-    """categorize_toggle_category routes writes to the right backing table."""
+    """categories_toggle routes writes to the right backing table."""
 
     @pytest.mark.unit
     def test_toggle_default_category_writes_override(self, mcp_db: object) -> None:
@@ -102,7 +108,7 @@ class TestToggleCategoryWritePath:
         assert isinstance(mcp_db, Database)
         _seed_categories_view(mcp_db)
 
-        asyncio.run(categorize_toggle_category(category_id="FND", is_active=False))
+        asyncio.run(categories_toggle(category_id="FND", is_active=False))
 
         rows = mcp_db.execute(
             "SELECT category_id, is_active FROM app.category_overrides"
@@ -121,7 +127,7 @@ class TestToggleCategoryWritePath:
             VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
         """)
 
-        asyncio.run(categorize_toggle_category(category_id="CUSTOM1", is_active=False))
+        asyncio.run(categories_toggle(category_id="CUSTOM1", is_active=False))
 
         rows = mcp_db.execute(
             "SELECT is_active FROM app.user_categories WHERE category_id = ?",

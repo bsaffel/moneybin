@@ -26,52 +26,58 @@ After connecting, you can ask your AI assistant things like:
 
 Tools are organized into domain namespaces. Names are stable — AI clients call `<domain>.<action>`.
 
+Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_balance_list`, `transactions_categorize_bulk_apply`).
+
+### system / orientation
+
+| Tool | Description |
+|------|-------------|
+| `system_status` | Data inventory (accounts, transactions, freshness) + pending review queue counts |
+| `transactions_review_status` | Lighter orientation tool: just the queue counts |
+
 ### accounts
 
 | Tool | Description |
 |------|-------------|
 | `accounts_list` | All financial accounts with type and institution |
-| `accounts_balances` | Most recent balance for each account |
+| `accounts_balance_list` | Most recent balance for each account |
 
 ### transactions
 
 | Tool | Description |
 |------|-------------|
 | `transactions_search` | Search with date, amount, payee, account, and category filters |
-| `transactions_recurring` | Detect subscriptions and regular charges |
+| `transactions_recurring_list` | Detect subscriptions and regular charges |
+| `transactions_categorize_pending_list` | Find transactions needing categorization |
+| `transactions_categorize_bulk_apply` | Categorize many transactions in one call (auto-creates merchant mapping) |
+| `transactions_categorize_stats` | Categorization coverage statistics |
+| `transactions_categorize_rules_list` / `_create` / `_rule_delete` | Manage categorization rules |
+| `transactions_categorize_auto_review` / `_auto_confirm` / `_auto_stats` | Auto-rule learning workflow |
 
-### spending
-
-| Tool | Description |
-|------|-------------|
-| `spending_summary` | Income vs expenses summary by month |
-| `spending_by_category` | Spending breakdown by category for a period |
-
-### categorize
+### categories / merchants
 
 | Tool | Description |
 |------|-------------|
-| `categorize_categories` | List active category taxonomy |
-| `categorize_rules` | List active categorization rules |
-| `categorize_merchants` | List merchant name mappings |
-| `categorize_stats` | Categorization coverage statistics |
-| `categorize_uncategorized` | Find transactions needing categorization |
-| `categorize_bulk` | Categorize many transactions in one call (auto-creates merchant mapping) |
-| `categorize_create_rules` | Create one or many categorization rules |
-| `categorize_delete_rule` | Remove a rule |
-| `categorize_create_merchants` | Create one or many merchant mappings |
-| `categorize_create_category` | Create a custom category or subcategory |
-| `categorize_toggle_category` | Enable or disable a category |
-| `categorize_auto_review` | List pending auto-rule proposals |
-| `categorize_auto_confirm` | Approve or reject auto-rule proposals |
-| `categorize_auto_stats` | Auto-rule health (active, pending, transactions covered) |
+| `categories_list` | List the category taxonomy (use `include_inactive=True` to see disabled) |
+| `categories_create` | Create a custom category or subcategory |
+| `categories_toggle` | Enable or disable a category |
+| `merchants_list` | List merchant name mappings |
+| `merchants_create` | Create one or many merchant mappings |
+
+### reports
+
+| Tool | Description |
+|------|-------------|
+| `reports_spending_summary` | Income vs expenses summary by month |
+| `reports_spending_by_category` | Spending breakdown by category for a period |
+| `reports_budget_status` | Budget vs actual spending comparison |
 
 ### import
 
 | Tool | Description |
 |------|-------------|
 | `import_file` | Import a financial data file (auto-detects format) |
-| `import_csv_preview` | Preview structure and column mapping (dry run) |
+| `import_preview` | Preview structure and column mapping (dry run) |
 | `import_list_formats` | Available tabular import formats and saved profiles |
 | `import_status` | Summary of all imported data |
 
@@ -79,14 +85,17 @@ Tools are organized into domain namespaces. Names are stable — AI clients call
 
 | Tool | Description |
 |------|-------------|
-| `budget_set` | Create or update a monthly budget for a category |
-| `budget_status` | Budget vs actual spending comparison |
+| `budget_set` | Create or update a monthly budget for a category (read views: `reports_budget_status`) |
 
 ### tax
 
 | Tool | Description |
 |------|-------------|
 | `tax_w2` | W-2 summary (wages, withholding, employer info) for a year |
+
+### sync, transform (taxonomy stubs)
+
+`sync_*` (9 tools: login/logout/connect/disconnect/pull/status/schedule_set/show/remove) and `transform_*` (5 tools: status/plan/validate/audit/apply) are registered but currently return `not_implemented` envelopes pointing at their owning specs (`sync-overview.md`, `mcp-tool-surface.md` §transform_*). They become real once the corresponding service layers land.
 
 ### sql
 

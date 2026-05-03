@@ -29,18 +29,18 @@ def monthly_review() -> str:
         that needs attention.
 
         **Relevant tools:**
-        - spending_summary — income vs expenses by month
-        - spending_by_category — category breakdown
-        - budget_status — budget vs actual comparison
-        - accounts_balances — current account balances
-        - transactions_recurring — subscription/recurring charge review
+        - reports_spending_summary — income vs expenses by month
+        - reports_spending_by_category — category breakdown
+        - reports_budget_status — budget vs actual comparison
+        - accounts_balance_list — current account balances
+        - transactions_recurring_list — subscription/recurring charge review
 
         **Workflow:**
-        1. Start with spending_summary for the last 1-2 months
-        2. If spending is above average, drill into spending_by_category
-        3. Check budget_status for any categories over budget
-        4. Review accounts_balances for current position
-        5. Optionally check transactions_recurring for subscription review
+        1. Start with reports_spending_summary for the last 1-2 months
+        2. If spending is above average, drill into reports_spending_by_category
+        3. Check reports_budget_status for any categories over budget
+        4. Review accounts_balance_list for current position
+        5. Optionally check transactions_recurring_list for subscription review
 
         **Guardrails:**
         - Present totals and trends, not individual transaction details unless asked
@@ -60,19 +60,19 @@ def categorization_organize() -> str:
         using a mix of rules and direct categorization.
 
         **Relevant tools:**
-        - categorize_stats — check current categorization coverage
-        - categorize_uncategorized — fetch uncategorized transactions
-        - categorize_categories — see available categories
-        - categorize_bulk — apply categories to transactions
-        - categorize_create_rules — create rules for recurring patterns
-        - categorize_create_merchants — map merchant names to categories
+        - transactions_categorize_stats — check current categorization coverage
+        - transactions_categorize_pending_list — fetch uncategorized transactions
+        - categories_list — see available categories
+        - transactions_categorize_bulk_apply — apply categories to transactions
+        - transactions_categorize_rules_create — create rules for recurring patterns
+        - merchants_create — map merchant names to categories
 
         **Workflow:**
-        1. Check categorize_stats to see how many are uncategorized
-        2. Fetch a batch with categorize_uncategorized (limit ~20)
+        1. Check transactions_categorize_stats to see how many are uncategorized
+        2. Fetch a batch with transactions_categorize_pending_list (limit ~20)
         3. Group similar transactions by description pattern
-        4. For repeating patterns, suggest a rule (categorize_create_rules)
-        5. For one-offs, use categorize_bulk directly
+        4. For repeating patterns, suggest a rule (transactions_categorize_rules_create)
+        5. For one-offs, use transactions_categorize_bulk_apply directly
         6. Repeat until coverage is acceptable
 
         **Guardrails:**
@@ -95,17 +95,17 @@ def review_auto_rules() -> str:
         they can promote useful rules to active and reject noisy ones.
 
         **Relevant tools:**
-        - categorize_auto_stats — pending proposal count and rule health
-        - categorize_auto_review — list pending proposals with samples
-        - categorize_auto_confirm — batch approve/reject proposals by ID
-        - categorize_rules — review currently active rules
+        - transactions_categorize_auto_stats — pending proposal count and rule health
+        - transactions_categorize_auto_review — list pending proposals with samples
+        - transactions_categorize_auto_confirm — batch approve/reject proposals by ID
+        - transactions_categorize_rules_list — review currently active rules
 
         **Workflow:**
-        1. Check categorize_auto_stats for pending proposal count
-        2. Fetch proposals with categorize_auto_review
+        1. Check transactions_categorize_auto_stats for pending proposal count
+        2. Fetch proposals with transactions_categorize_auto_review
         3. For each proposal, show the merchant pattern, suggested
            category, sample matching transactions, and trigger count
-        4. Group user decisions and submit them with categorize_auto_confirm
+        4. Group user decisions and submit them with transactions_categorize_auto_confirm
 
         **Guardrails:**
         - Always show sample transactions before asking for approval
@@ -128,15 +128,15 @@ def onboarding() -> str:
         - import_file — import financial data files
         - import_list_formats — see supported formats
         - accounts_list — verify imported accounts
-        - categorize_stats — check categorization coverage
-        - spending_summary — first look at their data
+        - transactions_categorize_stats — check categorization coverage
+        - reports_spending_summary — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
         2. Import files one at a time with import_file
         3. Verify with accounts_list that accounts were created
-        4. Check categorize_stats — if many uncategorized, offer to help
-        5. Show spending_summary as their first financial snapshot
+        4. Check transactions_categorize_stats — if many uncategorized, offer to help
+        5. Show reports_spending_summary as their first financial snapshot
 
         Default categories are seeded automatically by `moneybin db init`
         and `moneybin transform apply`.
@@ -160,14 +160,14 @@ def tax_prep() -> str:
 
         **Relevant tools:**
         - tax_w2 — retrieve W-2 wage and tax data
-        - spending_by_category — find deduction-eligible categories
+        - reports_spending_by_category — find deduction-eligible categories
         - transactions_search — search for specific deductible expenses
-        - categorize_categories — review tax-relevant categories
+        - categories_list — review tax-relevant categories
 
         **Workflow:**
         1. Ask for the tax year
         2. Pull W-2 data with tax_w2 for that year
-        3. Review spending_by_category for deduction-eligible categories
+        3. Review reports_spending_by_category for deduction-eligible categories
            (charitable, medical, business expenses, etc.)
         4. If needed, search for specific transactions with transactions_search
         5. Summarize totals by deduction category

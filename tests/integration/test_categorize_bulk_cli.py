@@ -1,4 +1,4 @@
-"""Integration tests for `moneybin categorize bulk` CLI command."""
+"""Integration tests for `moneybin transactions categorize bulk` CLI command."""
 
 # ruff: noqa: S101
 
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.categorize import app
+from moneybin.cli.commands.transactions.categorize import app
 from moneybin.database import Database
 
 pytestmark = pytest.mark.integration

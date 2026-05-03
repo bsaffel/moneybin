@@ -3,7 +3,7 @@
 
 Tools:
     - accounts_list — List all accounts (low sensitivity)
-    - accounts_balances — Get latest account balances (medium sensitivity)
+    - accounts_balance_list — Get latest account balances (medium sensitivity)
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def accounts_list() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium")
-def accounts_balances(
+def accounts_balance_list(
     account_id: str | None = None,
 ) -> ResponseEnvelope:
     """Get the latest balance snapshot for each account.
@@ -57,8 +57,8 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        accounts_balances,
-        "accounts_balances",
+        accounts_balance_list,
+        "accounts_balance_list",
         "Get latest balance snapshot for each account. "
         "Optionally filter by account ID.",
     )

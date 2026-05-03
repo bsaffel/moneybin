@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.categorize import app
+from moneybin.cli.commands.transactions.categorize import app
 from moneybin.services.auto_rule_service import AutoConfirmResult
 
 runner = CliRunner()
@@ -25,14 +25,14 @@ def _plain(s: str) -> str:
 
 
 def test_auto_review_help():
-    """auto-review --help mentions pending proposals."""
+    """Auto review --help mentions pending proposals."""
     result = runner.invoke(app, ["auto", "review", "--help"])
     assert result.exit_code == 0
     assert "pending" in _plain(result.stdout).lower()
 
 
 def test_auto_confirm_help_lists_approve_and_reject_flags():
-    """auto-confirm --help exposes batch approve/reject flags."""
+    """Auto confirm --help exposes batch approve/reject flags."""
     result = runner.invoke(app, ["auto", "confirm", "--help"])
     assert result.exit_code == 0
     out = _plain(result.stdout)
@@ -43,13 +43,13 @@ def test_auto_confirm_help_lists_approve_and_reject_flags():
 
 
 def test_auto_stats_help():
-    """auto-stats --help renders without error."""
+    """Auto stats --help renders without error."""
     result = runner.invoke(app, ["auto", "stats", "--help"])
     assert result.exit_code == 0
 
 
 def test_auto_rules_help():
-    """auto-rules --help renders without error."""
+    """Auto rules --help renders without error."""
     result = runner.invoke(app, ["auto", "rules", "--help"])
     assert result.exit_code == 0
 
@@ -57,7 +57,7 @@ def test_auto_rules_help():
 @pytest.mark.unit
 def test_auto_subgroup_help_lists_all_actions() -> None:
     """Auto --help lists each sub-action."""
-    from moneybin.cli.commands.categorize import app as categorize_app
+    from moneybin.cli.commands.transactions.categorize import app as categorize_app
 
     result = runner.invoke(categorize_app, ["auto", "--help"])
     assert result.exit_code == 0
@@ -78,7 +78,7 @@ def _confirm_result(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_cli_errors")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_confirm_explicit_approve(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -95,7 +95,7 @@ def test_auto_confirm_explicit_approve(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_cli_errors")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_confirm_explicit_reject(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -110,7 +110,7 @@ def test_auto_confirm_explicit_reject(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_cli_errors")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_confirm_approve_all_expands_pending(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -129,7 +129,7 @@ def test_auto_confirm_approve_all_expands_pending(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_cli_errors")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_confirm_reject_all_expands_pending(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
@@ -148,7 +148,7 @@ def test_auto_confirm_reject_all_expands_pending(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
-@patch("moneybin.cli.commands.categorize.handle_cli_errors")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_confirm_approve_all_with_explicit_reject_excludes_id(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:

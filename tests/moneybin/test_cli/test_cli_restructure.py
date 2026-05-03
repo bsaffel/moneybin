@@ -42,14 +42,31 @@ class TestRemovedCommands:
         result = runner.invoke(app, ["data", "--help"])
         assert result.exit_code != 0
 
+    def test_top_level_categorize_removed(self) -> None:
+        """Top-level categorize group no longer exists (moved under transactions)."""
+        result = runner.invoke(app, ["categorize", "--help"])
+        assert result.exit_code != 0
+
 
 class TestPromotedCommands:
     """Commands promoted from data subgroup to top-level."""
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
-    def test_categorize_at_top_level(self, mock_profile: MagicMock) -> None:
-        """Categorize is a top-level command group."""
-        result = runner.invoke(app, ["categorize", "--help"])
+    def test_transactions_categorize_exists(self, mock_profile: MagicMock) -> None:
+        """Categorize workflow is under transactions categorize."""
+        result = runner.invoke(app, ["transactions", "categorize", "--help"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
+    def test_categories_at_top_level(self, mock_profile: MagicMock) -> None:
+        """Categories is a top-level command group."""
+        result = runner.invoke(app, ["categories", "--help"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
+    def test_merchants_at_top_level(self, mock_profile: MagicMock) -> None:
+        """Merchants is a top-level command group."""
+        result = runner.invoke(app, ["merchants", "--help"])
         assert result.exit_code == 0
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
@@ -102,14 +119,8 @@ class TestStubbedCommands:
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
     def test_matches_stubbed(self, mock_profile: MagicMock) -> None:
-        """Matches group exists but shows not-implemented."""
-        result = runner.invoke(app, ["matches", "--help"])
-        assert result.exit_code == 0
-
-    @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
-    def test_track_stubbed(self, mock_profile: MagicMock) -> None:
-        """Track group exists but shows not-implemented."""
-        result = runner.invoke(app, ["track", "--help"])
+        """Matches group exists under transactions."""
+        result = runner.invoke(app, ["transactions", "matches", "--help"])
         assert result.exit_code == 0
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
