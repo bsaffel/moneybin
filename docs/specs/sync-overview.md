@@ -391,7 +391,7 @@ stateDiagram-v2
 ```
 
 1. **Generation.** Client generates an asymmetric key pair on first `moneybin sync login` if no key exists. v1 uses age/X25519 (see [Cryptographic algorithm selection](#cryptographic-algorithm-selection)). Future versions swap to hybrid post-quantum via the `EncryptionBackend` abstraction.
-2. **Storage.** Private key stored in OS keychain (`keyring`), same storage path as the DB encryption key (`privacy-data-protection.md`). Never written to disk in plaintext. If the user opts for passphrase-based storage, the private key is encrypted with an Argon2id-derived key from the passphrase — same pattern as DB passphrase mode (ADR-013).
+2. **Storage.** Private key stored in OS keychain (`keyring`), same storage path as the DB encryption key (`privacy-data-protection.md`). Never written to disk in plaintext. If the user opts for passphrase-based storage, the private key is encrypted with an Argon2id-derived key from the passphrase — same pattern as DB passphrase mode (ADR-009).
 3. **Registration.** Client sends public key to server via `POST /auth/register-key`. Server stores it alongside the user record. The server uses this key to encrypt all sync payloads before returning them.
 4. **Encryption.** Server encrypts sync payloads to the client's registered public key before returning from `GET /sync/data`. Response body is an encrypted blob instead of raw JSON.
 5. **Decryption.** Client decrypts with its private key. The JSON inside is identical to the unencrypted format — loaders, staging views, and core models are all unchanged.
