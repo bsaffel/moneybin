@@ -227,3 +227,58 @@ def make_workflow_env(
 
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+
+# ---------------------------------------------------------------------------
+# Snapshot-based fast workflow fixture
+# ---------------------------------------------------------------------------
+
+# A fixed profile name used inside the template snapshot. Each mutating test
+# copies the entire MONEYBIN_HOME tree into its own isolated tmp_path, so
+# they never collide on this name despite sharing it.
+_TEMPLATE_PROFILE_NAME = "e2e-template"
+
+
+@pytest.fixture(scope="session")
+def _mutating_profile_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One-shot MONEYBIN_HOME with `e2e-template` profile created and DB initialized.
+
+    Built once per pytest session by running `moneybin profile create` against
+    a temp home. `make_workflow_env_fast` then copies this tree into each
+    mutating test's tmp_path — skipping the per-test `profile create` cost
+    (Argon2 key derivation + encrypted DB init + profile config write).
+    """
+    template_home = tmp_path_factory.mktemp("e2e_profile_template")
+    env = base_env(template_home, _TEMPLATE_PROFILE_NAME)
+    env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(template_home / "inbox-root")
+
+    result = run_cli("profile", "create", _TEMPLATE_PROFILE_NAME, env=env)
+    if result.exit_code != 0:
+        msg = f"Failed to build profile snapshot: {result.stderr}"
+        raise AssertionError(msg)
+
+    return template_home
+
+
+def make_workflow_env_fast(
+    e2e_home: Path,
+    profile_name: str,
+    template: Path,
+) -> dict[str, str]:
+    """Faster equivalent of `make_workflow_env()`.
+
+    Copies the session-built profile template into `e2e_home / <profile_name>`
+    instead of running `profile create`. The profile keeps its template name
+    inside the copied tree (`profiles/e2e-template/`), and the env dict points
+    `MONEYBIN_PROFILE` at that name — tests that hard-coded a different
+    profile name should keep using `make_workflow_env()`.
+
+    Returns the env dict (same shape as `make_workflow_env`).
+    """
+    target_home = e2e_home / profile_name
+    if target_home.exists():
+        shutil.rmtree(target_home)
+    shutil.copytree(template, target_home)
+
+    env = base_env(target_home, _TEMPLATE_PROFILE_NAME)
+    env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(target_home / "inbox-root")
+    return env
