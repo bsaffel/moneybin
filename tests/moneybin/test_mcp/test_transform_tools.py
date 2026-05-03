@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 from fastmcp import FastMCP
@@ -22,7 +23,6 @@ from moneybin.mcp.tools.transform import (
     transform_status,
     transform_validate,
 )
-from moneybin.protocol.envelope import ResponseEnvelope
 
 _EXPECTED_TOOLS = {
     "transform_status",
@@ -47,18 +47,18 @@ def test_register_transform_tools_registers_all_five() -> None:
 @pytest.mark.parametrize(
     "fn",
     [
-        lambda: transform_status(),
-        lambda: transform_plan(),
-        lambda: transform_validate(),
+        transform_status,
+        transform_plan,
+        transform_validate,
         lambda: transform_audit(start="2026-01-01", end="2026-04-30"),
-        lambda: transform_apply(),
+        transform_apply,
     ],
 )
 def test_transform_tool_returns_not_implemented_envelope(
-    fn: Callable[[], ResponseEnvelope],
+    fn: Callable[..., Any],
 ) -> None:
     """Every transform tool returns a stub envelope referencing the spec."""
-    parsed = fn().to_dict()
+    parsed = asyncio.run(fn()).to_dict()
     assert parsed["summary"]["sensitivity"] == "low"
     assert parsed["data"]["status"] == "not_implemented"
     assert parsed["data"]["spec"] == "docs/specs/mcp-tool-surface.md"

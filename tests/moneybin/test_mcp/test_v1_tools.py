@@ -5,6 +5,8 @@ These tests exercise the underlying tool functions directly. Registration
 with the FastMCP server is covered by tests/mcp/test_visibility.py.
 """
 
+import asyncio
+
 import pytest
 
 from moneybin.mcp.tools.reports import reports_spending_summary
@@ -35,8 +37,9 @@ class TestSpendingSummaryTool:
 
     @pytest.mark.unit
     def test_returns_envelope(self, mcp_db: object) -> None:
+
         self._insert_data(mcp_db)
-        result = reports_spending_summary(months=3)
+        result = asyncio.run(reports_spending_summary(months=3))
         from moneybin.protocol.envelope import ResponseEnvelope
 
         assert isinstance(result, ResponseEnvelope)
@@ -48,8 +51,9 @@ class TestSpendingSummaryTool:
 
     @pytest.mark.unit
     def test_data_shape(self, mcp_db: object) -> None:
+
         self._insert_data(mcp_db)
-        parsed = reports_spending_summary(months=3).to_dict()
+        parsed = asyncio.run(reports_spending_summary(months=3)).to_dict()
         data = parsed["data"]
         assert len(data) >= 1
         assert "period" in data[0]

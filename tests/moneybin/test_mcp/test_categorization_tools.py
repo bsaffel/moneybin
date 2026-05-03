@@ -53,7 +53,7 @@ class TestCategorizeToolRegistration:
 
     @pytest.mark.unit
     def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
-        parsed = transactions_categorize_stats().to_dict()
+        parsed = asyncio.run(transactions_categorize_stats()).to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
@@ -61,7 +61,7 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:
         """List categories returns a valid envelope (empty when no data)."""
-        cat_result = categories_list().to_dict()
+        cat_result = asyncio.run(categories_list()).to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
         assert isinstance(cat_result["data"], list)
@@ -108,7 +108,7 @@ class TestToggleCategoryWritePath:
         assert isinstance(mcp_db, Database)
         _seed_categories_view(mcp_db)
 
-        categories_toggle(category_id="FND", is_active=False)
+        asyncio.run(categories_toggle(category_id="FND", is_active=False))
 
         rows = mcp_db.execute(
             "SELECT category_id, is_active FROM app.category_overrides"
@@ -127,7 +127,7 @@ class TestToggleCategoryWritePath:
             VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
         """)
 
-        categories_toggle(category_id="CUSTOM1", is_active=False)
+        asyncio.run(categories_toggle(category_id="CUSTOM1", is_active=False))
 
         rows = mcp_db.execute(
             "SELECT is_active FROM app.user_categories WHERE category_id = ?",

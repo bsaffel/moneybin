@@ -18,7 +18,7 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 @pytest.mark.unit
 def test_review_status_returns_envelope(mcp_db: object) -> None:
     """transactions_review_status returns a valid ResponseEnvelope."""
-    parsed = transactions_review_status().to_dict()
+    parsed = asyncio.run(transactions_review_status()).to_dict()
     assert "summary" in parsed
     assert "data" in parsed
     assert "actions" in parsed
@@ -28,7 +28,7 @@ def test_review_status_returns_envelope(mcp_db: object) -> None:
 @pytest.mark.unit
 def test_review_status_data_shape(mcp_db: object) -> None:
     """Data dict carries matches_pending, categorize_pending, and total."""
-    data = transactions_review_status().to_dict()["data"]
+    data = asyncio.run(transactions_review_status()).to_dict()["data"]
     assert "matches_pending" in data
     assert "categorize_pending" in data
     assert "total" in data
@@ -40,7 +40,7 @@ def test_review_status_data_shape(mcp_db: object) -> None:
 @pytest.mark.unit
 def test_review_status_actions_non_empty(mcp_db: object) -> None:
     """Tool provides next-step action hints."""
-    parsed = transactions_review_status().to_dict()
+    parsed = asyncio.run(transactions_review_status()).to_dict()
     assert len(parsed["actions"]) >= 1
 
 

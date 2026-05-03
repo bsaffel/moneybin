@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -43,7 +44,7 @@ class TestInboxSyncTool:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 3}],
         )
-        envelope = inbox_sync_tool()
+        envelope = asyncio.run(inbox_sync_tool())
         assert envelope.summary.sensitivity == "low"
         assert envelope.data["processed"][0]["filename"] == "a.csv"
 
@@ -51,14 +52,14 @@ class TestInboxSyncTool:
         patch_service.sync.return_value = InboxSyncResult(
             failed=[{"filename": "x.csv", "error_code": "needs_account_name"}],
         )
-        envelope = inbox_sync_tool()
+        envelope = asyncio.run(inbox_sync_tool())
         assert any("inbox/<account-slug>" in a for a in envelope.actions)
 
     def test_no_failure_no_resolution_hint(self, patch_service: MagicMock) -> None:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 1}],
         )
-        envelope = inbox_sync_tool()
+        envelope = asyncio.run(inbox_sync_tool())
         assert not any("inbox/<account-slug>" in a for a in envelope.actions)
 
 
@@ -69,6 +70,6 @@ class TestInboxListTool:
         patch_service.enumerate.return_value = InboxListResult(
             would_process=[{"filename": "a.csv", "account_hint": None}],
         )
-        envelope = inbox_list_tool()
+        envelope = asyncio.run(inbox_list_tool())
         assert envelope.summary.sensitivity == "low"
         assert envelope.data["would_process"][0]["filename"] == "a.csv"

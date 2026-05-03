@@ -5,6 +5,8 @@ These tests exercise the underlying tool functions directly. Registration
 with the FastMCP server is covered by tests/mcp/test_visibility.py.
 """
 
+import asyncio
+
 import pytest
 from fastmcp import FastMCP
 
@@ -40,7 +42,6 @@ class TestV1ToolRegistration:
         srv = FastMCP("test")
         register_reports_tools(srv)
         # Synchronous accessor surface differs by version; resolve via asyncio.
-        import asyncio
 
         names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "reports_spending_summary" in names
@@ -48,7 +49,6 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_accounts_tools_register(self) -> None:
-        import asyncio
 
         srv = FastMCP("test")
         register_accounts_tools(srv)
@@ -58,7 +58,8 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
-        result = accounts_list()
+
+        result = asyncio.run(accounts_list())
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
@@ -67,6 +68,7 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_sql_query_returns_envelope(self, mcp_db: object) -> None:
+
         from moneybin.mcp.server import get_db
 
         get_db().execute(_INSERT_TRANSACTIONS)
@@ -74,14 +76,17 @@ class TestV1ToolRegistration:
         # Also exercise registration to ensure no smoke errors.
         register_sql_tools(FastMCP("test"))
 
-        result = sql_query(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
+        result = asyncio.run(
+            sql_query(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
+        )
         parsed = result.to_dict()
         assert "summary" in parsed
         assert parsed["data"][0]["cnt"] == 2
 
     @pytest.mark.unit
     def test_sql_schema_returns_envelope(self, mcp_db: object) -> None:
-        result = sql_schema()
+
+        result = asyncio.run(sql_schema())
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         data = parsed["data"]

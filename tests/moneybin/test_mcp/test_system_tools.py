@@ -15,7 +15,7 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 @pytest.mark.unit
 def test_system_status_returns_response_envelope(mcp_db: object) -> None:
     """system_status returns a valid ResponseEnvelope."""
-    result = system_status()
+    result = asyncio.run(system_status())
     parsed = result.to_dict()
     assert "summary" in parsed
     assert "data" in parsed
@@ -26,7 +26,7 @@ def test_system_status_returns_response_envelope(mcp_db: object) -> None:
 @pytest.mark.unit
 def test_system_status_data_keys(mcp_db: object) -> None:
     """system_status data dict has all required domain keys."""
-    result = system_status()
+    result = asyncio.run(system_status())
     parsed = result.to_dict()
     data = parsed["data"]
     assert "accounts" in data
@@ -38,7 +38,7 @@ def test_system_status_data_keys(mcp_db: object) -> None:
 @pytest.mark.unit
 def test_system_status_accounts_count(mcp_db: object) -> None:
     """Accounts count reflects the mcp_db fixture's 2 accounts."""
-    result = system_status()
+    result = asyncio.run(system_status())
     parsed = result.to_dict()
     assert parsed["data"]["accounts"]["count"] == 2
 
@@ -46,7 +46,7 @@ def test_system_status_accounts_count(mcp_db: object) -> None:
 @pytest.mark.unit
 def test_system_status_transactions_empty(mcp_db: object) -> None:
     """Transactions count is 0 when no transactions are inserted."""
-    result = system_status()
+    result = asyncio.run(system_status())
     parsed = result.to_dict()
     txn = parsed["data"]["transactions"]
     assert txn["count"] == 0
@@ -57,7 +57,7 @@ def test_system_status_transactions_empty(mcp_db: object) -> None:
 @pytest.mark.unit
 def test_system_status_queue_counts_are_integers(mcp_db: object) -> None:
     """matches.pending_review and categorization.uncategorized are integers."""
-    result = system_status()
+    result = asyncio.run(system_status())
     parsed = result.to_dict()
     assert isinstance(parsed["data"]["matches"]["pending_review"], int)
     assert isinstance(parsed["data"]["categorization"]["uncategorized"], int)
@@ -66,7 +66,7 @@ def test_system_status_queue_counts_are_integers(mcp_db: object) -> None:
 @pytest.mark.unit
 def test_system_status_actions_non_empty(mcp_db: object) -> None:
     """system_status provides at least one action hint."""
-    result = system_status()
+    result = asyncio.run(system_status())
     parsed = result.to_dict()
     assert len(parsed["actions"]) >= 1
 

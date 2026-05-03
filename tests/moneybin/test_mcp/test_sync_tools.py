@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 from fastmcp import FastMCP
@@ -26,7 +27,6 @@ from moneybin.mcp.tools.sync import (
     sync_schedule_show,
     sync_status,
 )
-from moneybin.protocol.envelope import ResponseEnvelope
 
 _EXPECTED_TOOLS = {
     "sync_login",
@@ -56,22 +56,20 @@ def test_register_sync_tools_registers_all_nine() -> None:
 @pytest.mark.parametrize(
     "fn",
     [
-        lambda: sync_login(),
-        lambda: sync_logout(),
-        lambda: sync_connect(),
+        sync_login,
+        sync_logout,
+        sync_connect,
         lambda: sync_disconnect(institution="chase"),
-        lambda: sync_pull(),
-        lambda: sync_status(),
+        sync_pull,
+        sync_status,
         lambda: sync_schedule_set(time="09:00"),
-        lambda: sync_schedule_show(),
-        lambda: sync_schedule_remove(),
+        sync_schedule_show,
+        sync_schedule_remove,
     ],
 )
-def test_sync_tool_returns_not_implemented_envelope(
-    fn: Callable[[], ResponseEnvelope],
-) -> None:
+def test_sync_tool_returns_not_implemented_envelope(fn: Callable[..., Any]) -> None:
     """Every sync tool returns a stub envelope pointing at the spec."""
-    parsed = fn().to_dict()
+    parsed = asyncio.run(fn()).to_dict()
     assert parsed["summary"]["sensitivity"] == "low"
     assert parsed["data"]["status"] == "not_implemented"
     assert parsed["data"]["spec"] == "docs/specs/sync-overview.md"

@@ -1,6 +1,7 @@
 # tests/moneybin/test_mcp/test_decorator.py
 """Tests for MCP tool decorator and sensitivity middleware."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -67,6 +68,7 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_calls_log_tool_call(self) -> None:
+
         @mcp_tool(sensitivity="medium")
         def my_tool() -> ResponseEnvelope:
             return ResponseEnvelope(
@@ -75,7 +77,7 @@ class TestMCPToolDecorator:
             )
 
         with patch("moneybin.mcp.decorator.log_tool_call") as mock_log:
-            my_tool()
+            asyncio.run(my_tool())
             mock_log.assert_called_once()
             args = mock_log.call_args[0]
             assert args[0] == "my_tool"
@@ -112,7 +114,7 @@ class TestMCPToolDecorator:
                 data=[{"value": 42}],
             )
 
-        result = my_tool()
+        result = asyncio.run(my_tool())
         assert isinstance(result, ResponseEnvelope)
         assert result.summary.total_count == 1
         assert result.data == [{"value": 42}]
@@ -127,4 +129,4 @@ class TestMCPToolDecorator:
             return "plain string result"  # type: ignore[return-value]
 
         with pytest.raises(TypeError, match="expected ResponseEnvelope"):
-            my_tool()
+            asyncio.run(my_tool())
