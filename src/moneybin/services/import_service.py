@@ -24,6 +24,7 @@ from moneybin.metrics.registry import (
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
     IMPORT_RECORDS_TOTAL,
+    SQLMESH_RUN_DURATION_SECONDS,
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
@@ -345,13 +346,18 @@ class ImportService:
 
         seed_source_priority(self._db, get_settings().matching)
 
-        with sqlmesh_context() as ctx:
-            ctx.plan(auto_apply=True, no_prompts=True)
-
-        # Full plan rebuilds seeds.* too, so refresh the views that read them.
-        refresh_views(self._db)
-
-        logger.info("SQLMesh transforms completed")
+        t0 = time.monotonic()
+        try:
+            with sqlmesh_context() as ctx:
+                ctx.plan(auto_apply=True, no_prompts=True)
+            # Full plan rebuilds seeds.* too, so refresh the views that read them.
+            refresh_views(self._db)
+            elapsed = time.monotonic() - t0
+            logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
+        finally:
+            SQLMESH_RUN_DURATION_SECONDS.labels(model="import_plan_apply").observe(
+                time.monotonic() - t0
+            )
         return True
 
     def _import_ofx(

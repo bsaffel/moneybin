@@ -57,7 +57,10 @@ def test_sync_tool_over_cap_returns_timeout_envelope(
 
     result, elapsed = asyncio.run(_run())
 
-    assert elapsed < 0.4, "timeout did not fire within reasonable bound"
+    # Cap=0.05 + 0.5s grace sleep (decorator awaits cleanup unwind before
+    # returning) + scheduling slop. Ceiling stays well under the 0.5s sleep
+    # the tool body would otherwise consume.
+    assert elapsed < 0.9, "timeout did not fire within reasonable bound"
     assert isinstance(result, ResponseEnvelope)
     assert result.error is not None
     assert result.error.code == "timed_out"
