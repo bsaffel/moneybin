@@ -51,7 +51,7 @@ def list_cmd(
         display = acct.get("display_name") or acct.get("account_id")
         institution = acct.get("institution_name", "")
         acct_type = acct.get("account_type", "")
-        logger.info(f"  {display}  [{institution}]  {acct_type}")
+        typer.echo(f"  {display}  [{institution}]  {acct_type}")
 
 
 @app.command("show")
@@ -67,9 +67,7 @@ def show_cmd(
         logger.error(f"❌ Account not found: {account_id}")
         raise typer.Exit(1)
     if output == OutputFormat.JSON:
-        import json
-
-        typer.echo(json.dumps(record, indent=2, default=str))
+        emit_json("account", record)
         return
     for k, v in record.items():
-        logger.info(f"  {k}: {v}")
+        typer.echo(f"  {k}: {v}")

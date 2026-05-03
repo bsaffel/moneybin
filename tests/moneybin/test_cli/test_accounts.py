@@ -189,7 +189,7 @@ class TestAccountsShow:
         result = runner.invoke(app, ["accounts", "show", "acct_a", "--output", "json"])
         assert result.exit_code == 0, result.stderr
         data = json.loads(result.stdout)
-        assert data["account_id"] == "acct_a"
+        assert data["account"]["account_id"] == "acct_a"
 
     @pytest.mark.unit
     @patch("moneybin.cli.utils.get_database")

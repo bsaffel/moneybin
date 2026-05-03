@@ -113,11 +113,6 @@ class TestStubCommands:
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],
             ["sync", "schedule", "remove"],
-            ["track", "balance", "show"],
-            ["track", "networth", "show"],
-            ["track", "budget", "show"],
-            ["track", "recurring", "show"],
-            ["track", "investments", "show"],
             ["export", "run"],
         ],
         ids=lambda c: " ".join(c),
@@ -205,6 +200,22 @@ class TestDBReadOnlyCommands:
     def test_mcp_list_tools(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("mcp", "list-tools", env=e2e_profile)
         result.assert_success()
+
+    # ── accounts ─────────────────────────────────────────────────────────
+    # Subprocess-level boot tests: verify the commands wire and parse flags
+    # correctly. The shared e2e_profile has no transforms run yet so
+    # core.dim_accounts does not exist; full data-path coverage is deferred
+    # to Phase 9 mutating/workflow tests that seed the core schema.
+
+    def test_accounts_list_help(self) -> None:
+        result = run_cli("accounts", "list", "--help")
+        result.assert_success()
+        assert "--output" in result.stdout
+
+    def test_accounts_show_help(self) -> None:
+        result = run_cli("accounts", "show", "--help")
+        result.assert_success()
+        assert "account_id" in result.stdout.lower() or "ACCOUNT_ID" in result.stdout
 
     # ── stats ───────────────────────────────────────────────────────────
 
