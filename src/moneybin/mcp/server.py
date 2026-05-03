@@ -172,6 +172,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.transactions_categorize import (
         register_transactions_categorize_tools,
     )
+    from moneybin.mcp.tools.transform import register_transform_tools
 
     register_system_tools(mcp)
     register_reports_tools(mcp)
@@ -185,6 +186,7 @@ def register_core_tools() -> None:
     register_budget_tools(mcp)
     register_tax_tools(mcp)
     register_sync_tools(mcp)
+    register_transform_tools(mcp)
     register_sql_tools(mcp)
     register_discover_tool(mcp)
 
