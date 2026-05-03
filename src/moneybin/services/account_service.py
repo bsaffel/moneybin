@@ -181,6 +181,91 @@ class AccountSettings:
             raise ValueError("credit_limit must be non-negative")
 
 
+class AccountSettingsRepository:
+    """SQL-layer access to app.account_settings.
+
+    All methods use parameterized queries — no string interpolation.
+    Per .claude/rules/database.md, this is the only place that touches
+    the app.account_settings table directly.
+    """
+
+    def __init__(self, db: Database) -> None:
+        """Initialize with an open Database connection."""
+        self._db = db
+
+    def load(self, account_id: str) -> AccountSettings | None:
+        """Load settings for an account; None if no row exists."""
+        row = self._db.execute(
+            """
+            SELECT account_id, display_name, official_name, last_four,
+                   account_subtype, holder_category, iso_currency_code,
+                   credit_limit, archived, include_in_net_worth
+            FROM app.account_settings
+            WHERE account_id = ?
+            """,
+            [account_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return AccountSettings(
+            account_id=row[0],
+            display_name=row[1],
+            official_name=row[2],
+            last_four=row[3],
+            account_subtype=row[4],
+            holder_category=row[5],
+            iso_currency_code=row[6],
+            credit_limit=row[7],
+            archived=row[8],
+            include_in_net_worth=row[9],
+        )
+
+    def upsert(self, settings: AccountSettings) -> None:
+        """Insert or update by account_id; refreshes updated_at.
+
+        Uses NOW() instead of CURRENT_TIMESTAMP — DuckDB treats CURRENT_TIMESTAMP
+        as an identifier (not a function call) inside ON CONFLICT DO UPDATE clauses.
+        """
+        self._db.execute(
+            """
+            INSERT INTO app.account_settings (
+                account_id, display_name, official_name, last_four,
+                account_subtype, holder_category, iso_currency_code,
+                credit_limit, archived, include_in_net_worth
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (account_id) DO UPDATE SET
+                display_name         = excluded.display_name,
+                official_name        = excluded.official_name,
+                last_four            = excluded.last_four,
+                account_subtype      = excluded.account_subtype,
+                holder_category      = excluded.holder_category,
+                iso_currency_code    = excluded.iso_currency_code,
+                credit_limit         = excluded.credit_limit,
+                archived             = excluded.archived,
+                include_in_net_worth = excluded.include_in_net_worth,
+                updated_at           = NOW()
+            """,
+            [
+                settings.account_id,
+                settings.display_name,
+                settings.official_name,
+                settings.last_four,
+                settings.account_subtype,
+                settings.holder_category,
+                settings.iso_currency_code,
+                settings.credit_limit,
+                settings.archived,
+                settings.include_in_net_worth,
+            ],
+        )
+
+    def delete(self, account_id: str) -> None:
+        """Delete the settings row for an account."""
+        self._db.execute(
+            "DELETE FROM app.account_settings WHERE account_id = ?", [account_id]
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Account:
     """Single account record."""

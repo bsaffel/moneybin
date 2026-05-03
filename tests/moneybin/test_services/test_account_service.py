@@ -268,6 +268,72 @@ class TestAccountSettingsModel:
             AccountSettings(account_id="a", account_subtype="x" * 33)
 
 
+@pytest.fixture()
+def test_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
+    """In-memory test database with all schemas initialized, no SQLMesh upgrade."""
+    return Database(
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+
+
+class TestAccountSettingsRepository:
+    """Tests for AccountSettingsRepository SQL operations."""
+
+    @pytest.mark.unit
+    def test_load_returns_none_when_absent(self, test_db: Database) -> None:
+        from moneybin.services.account_service import AccountSettingsRepository
+
+        repo = AccountSettingsRepository(test_db)
+        assert repo.load("acct_missing") is None
+
+    @pytest.mark.unit
+    def test_upsert_then_load(self, test_db: Database) -> None:
+        from moneybin.services.account_service import AccountSettingsRepository
+
+        repo = AccountSettingsRepository(test_db)
+        s = _make_settings(account_id="acct_a", display_name="Checking")
+        repo.upsert(s)
+        loaded = repo.load("acct_a")
+        assert loaded is not None
+        assert loaded.display_name == "Checking"
+
+    @pytest.mark.unit
+    def test_upsert_is_idempotent(self, test_db: Database) -> None:
+        from moneybin.services.account_service import AccountSettingsRepository
+
+        repo = AccountSettingsRepository(test_db)
+        s = _make_settings(account_id="acct_a", display_name="Checking")
+        repo.upsert(s)
+        repo.upsert(s)  # second write
+        rows = test_db.execute(
+            "SELECT COUNT(*) FROM app.account_settings WHERE account_id = ?",
+            ["acct_a"],
+        ).fetchone()
+        assert rows[0] == 1  # type: ignore[index]
+
+    @pytest.mark.unit
+    def test_upsert_updates_changed_fields(self, test_db: Database) -> None:
+        from moneybin.services.account_service import AccountSettingsRepository
+
+        repo = AccountSettingsRepository(test_db)
+        repo.upsert(_make_settings(account_id="acct_a", display_name="A"))
+        repo.upsert(_make_settings(account_id="acct_a", display_name="B"))
+        loaded = repo.load("acct_a")
+        assert loaded is not None
+        assert loaded.display_name == "B"
+
+    @pytest.mark.unit
+    def test_delete(self, test_db: Database) -> None:
+        from moneybin.services.account_service import AccountSettingsRepository
+
+        repo = AccountSettingsRepository(test_db)
+        repo.upsert(_make_settings(account_id="acct_a", display_name="A"))
+        repo.delete("acct_a")
+        assert repo.load("acct_a") is None
+
+
 class TestEmptyResults:
     """Tests for service behavior with no data in tables."""
 
