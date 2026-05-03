@@ -40,7 +40,7 @@ def review(
         result = AutoRuleService(db).review(limit=limit)
 
     proposals = result.proposals
-    if output == "json":
+    if output == OutputFormat.JSON:
         typer.echo(json.dumps(auto_review_envelope(result).to_dict(), indent=2))
         return
 
@@ -124,7 +124,7 @@ def stats(
     with handle_cli_errors() as db:
         result = AutoRuleService(db).stats()
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         emit_json(
             "stats",
             {
@@ -160,7 +160,7 @@ def rules(
         active_rules = svc.list_active_rules(limit=limit)
         total = svc.count_active_rules()
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         emit_json("rules", {"rules": active_rules, "total": total})
         return
 

@@ -38,7 +38,7 @@ def list_rules(
             """  # noqa: S608  # TableRef compile-time constant, not user input
         ).fetchall()
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         rules = [
             {
                 "rule_id": r[0],

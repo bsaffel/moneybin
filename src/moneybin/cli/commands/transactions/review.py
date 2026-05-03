@@ -16,18 +16,12 @@ import typer
 
 from moneybin.cli.commands.stubs import _not_implemented
 
-app = typer.Typer(
-    help="Unified review queue (matches + categorize)",
-    invoke_without_command=True,
-    no_args_is_help=False,
-)
 logger = logging.getLogger(__name__)
 
 _VALID_TYPES = {"all", "matches", "categorize"}
 
 
-@app.callback(invoke_without_command=True)
-def review(
+def transactions_review(
     type_: str = typer.Option("all", "--type", help="all | matches | categorize"),
     status: bool = typer.Option(
         False, "--status", help="Show queue counts only, no interactive loop"
