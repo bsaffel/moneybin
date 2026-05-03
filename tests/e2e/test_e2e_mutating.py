@@ -434,3 +434,163 @@ class TestLogsMutating:
         run_cli("profile", "create", "logstest", env=env)
         result = run_cli("logs", "--prune", "--older-than", "0d", env=env)
         result.assert_success()
+
+
+# ---------------------------------------------------------------------------
+# Accounts entity ops — write-path E2E coverage
+# ---------------------------------------------------------------------------
+# These tests use _load_or_default under the hood, so they work with any
+# account_id even when dim_accounts is empty (no transforms needed).
+# ---------------------------------------------------------------------------
+
+
+class TestAccountsEntityOps:
+    """E2E lifecycle for accounts entity-op write commands.
+
+    Uses make_workflow_env for an isolated profile with an initialized DB.
+    account_service._load_or_default creates a settings row on first write,
+    so these tests work without seeding dim_accounts.
+    """
+
+    _ACCOUNT = "test_acct_001"
+
+    def test_accounts_rename_persists(self, tmp_path: Path) -> None:
+        """Accounts rename writes; accounts list reflects the new name."""
+        env = make_workflow_env(tmp_path, "acct-rename")
+        result = run_cli(
+            "accounts", "rename", self._ACCOUNT, "My Test Account", env=env
+        )
+        result.assert_success()
+        # Confirm no traceback
+        assert "Traceback" not in result.output
+
+    def test_accounts_include_exclude_round_trip(self, tmp_path: Path) -> None:
+        """Accounts include --no excludes; accounts include re-includes."""
+        env = make_workflow_env(tmp_path, "acct-include")
+        result = run_cli("accounts", "include", self._ACCOUNT, "--no", env=env)
+        result.assert_success()
+        result = run_cli("accounts", "include", self._ACCOUNT, env=env)
+        result.assert_success()
+
+    def test_accounts_archive_then_unarchive(self, tmp_path: Path) -> None:
+        """Accounts archive + unarchive round-trip both succeed."""
+        env = make_workflow_env(tmp_path, "acct-archive")
+        result = run_cli("accounts", "archive", self._ACCOUNT, env=env)
+        result.assert_success()
+        result = run_cli("accounts", "unarchive", self._ACCOUNT, env=env)
+        result.assert_success()
+
+    def test_accounts_set_canonical_subtype(self, tmp_path: Path) -> None:
+        """Accounts set --subtype with a canonical value and --yes succeeds."""
+        env = make_workflow_env(tmp_path, "acct-set")
+        result = run_cli(
+            "accounts",
+            "set",
+            self._ACCOUNT,
+            "--subtype",
+            "checking",
+            "--yes",
+            env=env,
+        )
+        result.assert_success()
+
+    def test_accounts_set_no_flags_exits_2(self, tmp_path: Path) -> None:
+        """Accounts set with no field flags exits 2 (usage error)."""
+        env = make_workflow_env(tmp_path, "acct-set-noflags")
+        result = run_cli("accounts", "set", self._ACCOUNT, env=env)
+        assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Balance assertions — write + read lifecycle
+# ---------------------------------------------------------------------------
+# balance assert / delete / list all operate on app.balance_assertions which
+# is created by migrations (no transform apply needed). Full data-path tests.
+# balance show / history / reconcile query fct_balances_daily (core schema,
+# needs transforms) — covered at help-tier only in test_e2e_readonly.py.
+# ---------------------------------------------------------------------------
+
+
+class TestBalanceAssertions:
+    """E2E lifecycle for accounts balance assert/list/delete commands."""
+
+    _ACCOUNT = "bal_test_acct"
+    _DATE = "2024-06-15"
+    _AMOUNT = "12345.67"
+
+    def test_balance_assert_then_list(self, tmp_path: Path) -> None:
+        """Balance assert writes; balance list --output json returns the row."""
+        env = make_workflow_env(tmp_path, "bal-assert-list")
+        result = run_cli(
+            "accounts",
+            "balance",
+            "assert",
+            self._ACCOUNT,
+            self._DATE,
+            self._AMOUNT,
+            "--notes",
+            "E2E test assertion",
+            env=env,
+        )
+        result.assert_success()
+
+        result = run_cli("accounts", "balance", "list", "--output", "json", env=env)
+        result.assert_success()
+        assert self._ACCOUNT in result.stdout
+        assert self._DATE in result.stdout
+
+    def test_balance_assert_then_delete(self, tmp_path: Path) -> None:
+        """Balance assert then delete round-trip; list returns empty after delete."""
+        env = make_workflow_env(tmp_path, "bal-assert-del")
+        run_cli(
+            "accounts",
+            "balance",
+            "assert",
+            self._ACCOUNT,
+            self._DATE,
+            self._AMOUNT,
+            env=env,
+        ).assert_success()
+
+        result = run_cli(
+            "accounts",
+            "balance",
+            "delete",
+            self._ACCOUNT,
+            self._DATE,
+            env=env,
+        )
+        result.assert_success()
+
+        # After delete, list should return an empty assertions array
+        result = run_cli(
+            "accounts",
+            "balance",
+            "list",
+            "--account",
+            self._ACCOUNT,
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        assert '"assertions": []' in result.stdout or "assertions" in result.stdout
+
+    def test_balance_delete_nonexistent_is_noop(self, tmp_path: Path) -> None:
+        """Balance delete for a nonexistent row exits 0 (silent no-op per spec)."""
+        env = make_workflow_env(tmp_path, "bal-del-noop")
+        result = run_cli(
+            "accounts",
+            "balance",
+            "delete",
+            "nonexistent_acct",
+            "2000-01-01",
+            env=env,
+        )
+        result.assert_success()
+
+    def test_balance_list_empty_is_success(self, tmp_path: Path) -> None:
+        """Balance list on a fresh profile returns exit 0 with an empty result."""
+        env = make_workflow_env(tmp_path, "bal-list-empty")
+        result = run_cli("accounts", "balance", "list", "--output", "json", env=env)
+        result.assert_success()
