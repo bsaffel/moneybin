@@ -483,6 +483,22 @@ class Database:
         self._closed = True
         logger.debug(f"Database connection closed: {self._db_path}")
 
+    def interrupt_and_reset(self) -> None:
+        """Interrupt any active statement and force-close the connection.
+
+        Called from the MCP timeout path so a stuck tool releases its
+        DuckDB write lock before the dispatcher returns. Best-effort:
+        DuckDB's interrupt() is a no-op for some statement types (e.g.,
+        mid-COPY), so we always follow with close() to guarantee the
+        lock drops.
+        """
+        if self._conn is not None:
+            try:
+                self._conn.interrupt()
+            except Exception:  # noqa: BLE001 S110 — interrupt is best-effort; pass is correct here
+                pass
+        self.close()
+
 
 def database_key_error_hint() -> str:
     """Return the appropriate hint for a DatabaseKeyError.
@@ -542,6 +558,20 @@ def close_database() -> None:
 
     if _database_instance is not None:
         _database_instance.close()
+        _database_instance = None
+
+
+def interrupt_and_reset_database() -> None:
+    """Interrupt and clear the singleton Database, if one exists.
+
+    The next ``get_database()`` call will reopen a fresh connection. No-op
+    if no Database has been initialized yet (e.g., timeout before any
+    tool actually touched the DB).
+    """
+    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
+
+    if _database_instance is not None:
+        _database_instance.interrupt_and_reset()
         _database_instance = None
 
 
