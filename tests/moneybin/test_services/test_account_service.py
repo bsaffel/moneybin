@@ -20,6 +20,7 @@ from moneybin.services.account_service import (
     AccountListResult,
     AccountService,
     AccountSettings,
+    AccountSettingsRepository,
     BalanceListResult,
     is_canonical_holder_category,
     is_canonical_subtype,
@@ -269,13 +270,19 @@ class TestAccountSettingsModel:
 
 
 @pytest.fixture()
-def test_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
-    """In-memory test database with all schemas initialized, no SQLMesh upgrade."""
-    return Database(
+def test_db(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> Generator[Database, None, None]:
+    """In-memory test database with all schemas initialized; closed on teardown."""
+    database = Database(
         tmp_path / "test.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
     )
+    try:
+        yield database
+    finally:
+        database.close()
 
 
 class TestAccountSettingsRepository:
@@ -283,15 +290,11 @@ class TestAccountSettingsRepository:
 
     @pytest.mark.unit
     def test_load_returns_none_when_absent(self, test_db: Database) -> None:
-        from moneybin.services.account_service import AccountSettingsRepository
-
         repo = AccountSettingsRepository(test_db)
         assert repo.load("acct_missing") is None
 
     @pytest.mark.unit
     def test_upsert_then_load(self, test_db: Database) -> None:
-        from moneybin.services.account_service import AccountSettingsRepository
-
         repo = AccountSettingsRepository(test_db)
         s = _make_settings(account_id="acct_a", display_name="Checking")
         repo.upsert(s)
@@ -301,8 +304,6 @@ class TestAccountSettingsRepository:
 
     @pytest.mark.unit
     def test_upsert_is_idempotent(self, test_db: Database) -> None:
-        from moneybin.services.account_service import AccountSettingsRepository
-
         repo = AccountSettingsRepository(test_db)
         s = _make_settings(account_id="acct_a", display_name="Checking")
         repo.upsert(s)
@@ -315,8 +316,6 @@ class TestAccountSettingsRepository:
 
     @pytest.mark.unit
     def test_upsert_updates_changed_fields(self, test_db: Database) -> None:
-        from moneybin.services.account_service import AccountSettingsRepository
-
         repo = AccountSettingsRepository(test_db)
         repo.upsert(_make_settings(account_id="acct_a", display_name="A"))
         repo.upsert(_make_settings(account_id="acct_a", display_name="B"))
@@ -326,8 +325,6 @@ class TestAccountSettingsRepository:
 
     @pytest.mark.unit
     def test_delete(self, test_db: Database) -> None:
-        from moneybin.services.account_service import AccountSettingsRepository
-
         repo = AccountSettingsRepository(test_db)
         repo.upsert(_make_settings(account_id="acct_a", display_name="A"))
         repo.delete("acct_a")

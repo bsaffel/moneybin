@@ -16,7 +16,7 @@ from typing import Any
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.tables import DIM_ACCOUNTS, OFX_BALANCES
+from moneybin.tables import ACCOUNT_SETTINGS, DIM_ACCOUNTS, OFX_BALANCES
 
 logger = logging.getLogger(__name__)
 
@@ -196,11 +196,11 @@ class AccountSettingsRepository:
     def load(self, account_id: str) -> AccountSettings | None:
         """Load settings for an account; None if no row exists."""
         row = self._db.execute(
-            """
+            f"""
             SELECT account_id, display_name, official_name, last_four,
                    account_subtype, holder_category, iso_currency_code,
                    credit_limit, archived, include_in_net_worth
-            FROM app.account_settings
+            FROM {ACCOUNT_SETTINGS.full_name}
             WHERE account_id = ?
             """,
             [account_id],
@@ -227,8 +227,8 @@ class AccountSettingsRepository:
         as an identifier (not a function call) inside ON CONFLICT DO UPDATE clauses.
         """
         self._db.execute(
-            """
-            INSERT INTO app.account_settings (
+            f"""
+            INSERT INTO {ACCOUNT_SETTINGS.full_name} (
                 account_id, display_name, official_name, last_four,
                 account_subtype, holder_category, iso_currency_code,
                 credit_limit, archived, include_in_net_worth
@@ -262,7 +262,8 @@ class AccountSettingsRepository:
     def delete(self, account_id: str) -> None:
         """Delete the settings row for an account."""
         self._db.execute(
-            "DELETE FROM app.account_settings WHERE account_id = ?", [account_id]
+            f"DELETE FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",
+            [account_id],
         )
 
 
