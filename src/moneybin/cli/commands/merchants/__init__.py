@@ -11,13 +11,13 @@ app = typer.Typer(
 
 
 @app.command("list")
-def list_merchants() -> None:
+def merchants_list() -> None:
     """List all merchant mappings."""
     _not_implemented("categorization-overview.md")
 
 
 @app.command("create")
-def create(
+def merchants_create(
     pattern: str = typer.Argument(..., help="Merchant name pattern"),
     canonical_name: str = typer.Argument(..., help="Canonical merchant name"),
     default_category: str | None = typer.Option(

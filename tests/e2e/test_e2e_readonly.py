@@ -128,7 +128,6 @@ class TestStubCommands:
             ["budget", "delete", "Food"],
             ["tax", "w2", "2024"],
             ["tax", "deductions", "2024"],
-            ["system", "status"],
             ["export", "run"],
         ],
         ids=lambda c: " ".join(c),
@@ -209,6 +208,16 @@ class TestDBReadOnlyCommands:
 
     def test_matches_history(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("transactions", "matches", "history", env=e2e_profile)
+        result.assert_success()
+
+    # ── system ──────────────────────────────────────────────────────────
+
+    def test_system_status(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("system", "status", env=e2e_profile)
+        result.assert_success()
+
+    def test_system_status_json(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("system", "status", "--output", "json", env=e2e_profile)
         result.assert_success()
 
     # ── mcp ─────────────────────────────────────────────────────────────

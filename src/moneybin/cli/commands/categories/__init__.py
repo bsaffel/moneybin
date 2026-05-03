@@ -11,13 +11,13 @@ app = typer.Typer(
 
 
 @app.command("list")
-def list_categories() -> None:
+def categories_list() -> None:
     """List all categories."""
     _not_implemented("categorization-overview.md")
 
 
 @app.command("create")
-def create(
+def categories_create(
     name: str = typer.Argument(..., help="Category name"),
     parent: str | None = typer.Option(None, "--parent", help="Parent category name"),
 ) -> None:
@@ -26,7 +26,7 @@ def create(
 
 
 @app.command("toggle")
-def toggle(
+def categories_toggle(
     category_id: str = typer.Argument(..., help="Category ID to enable/disable"),
 ) -> None:
     """Enable or disable a category."""
@@ -34,7 +34,7 @@ def toggle(
 
 
 @app.command("delete")
-def delete(
+def categories_delete(
     category_id: str = typer.Argument(..., help="Category ID to delete"),
 ) -> None:
     """Delete a category."""

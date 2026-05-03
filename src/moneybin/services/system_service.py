@@ -57,21 +57,27 @@ class SystemService:
         )
 
     def _count_accounts(self) -> int:
-        row = self._db.execute(
-            f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant, not user input
-        ).fetchone()
-        return int(row[0]) if row else 0
+        try:
+            row = self._db.execute(
+                f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant, not user input
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+            return 0
 
     def _query_transactions(self) -> tuple[int, date | None, date | None]:
-        row = self._db.execute(
-            f"""
-            SELECT
-                COUNT(*),
-                MIN(transaction_date),
-                MAX(transaction_date)
-            FROM {FCT_TRANSACTIONS.full_name}
-            """  # noqa: S608  # TableRef constant, not user input
-        ).fetchone()
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT
+                    COUNT(*),
+                    MIN(transaction_date),
+                    MAX(transaction_date)
+                FROM {FCT_TRANSACTIONS.full_name}
+                """  # noqa: S608  # TableRef constant, not user input
+            ).fetchone()
+        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+            return 0, None, None
         if not row:
             return 0, None, None
         count = int(row[0])

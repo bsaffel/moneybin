@@ -50,7 +50,7 @@ def categories_create(
             (category_id, category, subcategory, description,
              is_active, created_at)
             VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP)
-            """,
+            """,  # noqa: S608  # TableRef constant, no user input interpolated
             [cat_id, category, subcategory, description],
         )
     except duckdb.ConstraintException:
@@ -82,7 +82,7 @@ def categories_toggle(
     """Enable or disable a category. Existing categorizations are preserved."""
     db = get_database()
     cat = db.execute(
-        f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",
+        f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
         [category_id],
     ).fetchone()
     if not cat:
@@ -96,12 +96,12 @@ def categories_toggle(
             ON CONFLICT (category_id) DO UPDATE
                 SET is_active = excluded.is_active,
                     updated_at = excluded.updated_at
-            """,
+            """,  # noqa: S608  # TableRef constant, no user input
             [category_id, is_active],
         )
     else:
         db.execute(
-            f"UPDATE {USER_CATEGORIES.full_name} SET is_active = ? WHERE category_id = ?",
+            f"UPDATE {USER_CATEGORIES.full_name} SET is_active = ? WHERE category_id = ?",  # noqa: S608  # TableRef constant
             [is_active, category_id],
         )
     action = "enabled" if is_active else "disabled"

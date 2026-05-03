@@ -340,7 +340,15 @@ class TestMatchesMutating:
         assert "Traceback (most recent call last)" not in result.output
 
     def test_matches_review_confirm_all(self, tmp_path: Path) -> None:
-        """Unified review with --type matches --confirm-all (v2 replacement for `matches review --accept-all`)."""
+        """Unified review with --type matches --confirm-all (v2 replacement for `matches review --accept-all`).
+
+        STUB PLACEHOLDER: --confirm-all currently routes to _not_implemented()
+        and exits 0 without mutating the match queue. This test only guards
+        that the stub does not crash. Replace with a behavioral assertion
+        (e.g., pending matches consumed, decisions recorded) once the
+        non-interactive review loop lands. See cli-restructure.md (review
+        collapse — non-interactive flags pending).
+        """
         env = make_workflow_env(tmp_path, "matchreview")
         result = run_cli(
             "transactions",
