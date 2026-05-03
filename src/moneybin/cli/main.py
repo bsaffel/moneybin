@@ -56,10 +56,11 @@ class _LazyTyper(typer.Typer):
             return
         module = import_module(self._lazy_module_path)
         real: typer.Typer = getattr(module, self._lazy_attr)
-        # Copy over the real app's registered commands and groups so that
-        # Typer/Click sees the full command tree from this point forward.
-        self.registered_commands = real.registered_commands  # type: ignore[assignment]
-        self.registered_groups = real.registered_groups  # type: ignore[assignment]
+        # Shallow-copy the lists so any future Typer/Click mutation of the
+        # wrapper's view (sorting, filtering, etc.) doesn't leak back into
+        # the real module's registered_commands/groups.
+        self.registered_commands = list(real.registered_commands)  # type: ignore[assignment]
+        self.registered_groups = list(real.registered_groups)  # type: ignore[assignment]
         if real.registered_callback is not None and self.registered_callback is None:
             self.registered_callback = real.registered_callback  # type: ignore[assignment]
         # Set the flag last: if any of the above raises, a subsequent access

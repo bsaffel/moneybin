@@ -263,20 +263,21 @@ def _mutating_profile_template(  # pyright: ignore[reportUnusedFunction]  # pyte
 
 def make_workflow_env_fast(
     e2e_home: Path,
-    profile_name: str,
+    subdir: str,
     template: Path,
 ) -> dict[str, str]:
     """Faster equivalent of `make_workflow_env()`.
 
-    Copies the session-built profile template into `e2e_home / <profile_name>`
-    instead of running `profile create`. The profile keeps its template name
-    inside the copied tree (`profiles/e2e-template/`), and the env dict points
-    `MONEYBIN_PROFILE` at that name — tests that hard-coded a different
-    profile name should keep using `make_workflow_env()`.
+    Copies the session-built profile template into `e2e_home / <subdir>`
+    instead of running `profile create`. ``subdir`` only names the
+    isolation directory under ``e2e_home`` — the active ``MONEYBIN_PROFILE``
+    is always ``_TEMPLATE_PROFILE_NAME`` (``"e2e-template"``) regardless of
+    what's passed here. Tests that need a specific active profile name in
+    CLI output or arguments must use ``make_workflow_env()``.
 
     Returns the env dict (same shape as `make_workflow_env`).
     """
-    target_home = e2e_home / profile_name
+    target_home = e2e_home / subdir
     if target_home.exists():
         shutil.rmtree(target_home)
     shutil.copytree(template, target_home)
