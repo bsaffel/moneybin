@@ -1,7 +1,7 @@
 # Feature: Net Worth & Balance Tracking
 
 ## Status
-ready
+in-progress
 
 ## Goal
 
