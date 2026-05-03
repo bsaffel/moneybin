@@ -133,3 +133,56 @@ def test_async_generator_tool_rejected_at_decoration() -> None:
         @mcp_tool(sensitivity="low")
         async def gen_tool() -> ResponseEnvelope:  # type: ignore[misc]
             yield  # type: ignore[misc]
+
+
+@pytest.mark.integration
+def test_back_to_back_call_after_timeout_succeeds(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A call that times out must release the DB lock so the next call works."""
+    import moneybin.database as db_module
+    from moneybin.database import Database
+
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-key-32-bytes-padding-padding-pad"
+
+    db = Database(tmp_path / "t.duckdb", secret_store=mock_store, no_auto_upgrade=True)
+    monkeypatch.setattr(db_module, "_database_instance", db)
+
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.1)
+
+    @mcp_tool(sensitivity="low")
+    def hang_tool() -> ResponseEnvelope:
+        # Spin without releasing GIL frequently to mimic a stuck native call.
+        time.sleep(2.0)
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=0, returned_count=0), data=[]
+        )
+
+    @mcp_tool(sensitivity="low")
+    def quick_tool() -> ResponseEnvelope:
+        # Touch the DB to prove the singleton is healthy after reset.
+        from moneybin.database import get_database
+
+        rows = get_database().execute("SELECT 42 AS x").fetchall()
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=len(rows), returned_count=len(rows)),
+            data=[{"x": rows[0][0]}],
+        )
+
+    first = asyncio.run(hang_tool())
+    assert first.error is not None and first.error.code == "timed_out"
+
+    # The timeout path cleared _database_instance.  In production the next
+    # get_database() call reopens via settings.  In tests we reinstall a fresh
+    # instance with the same mock store so quick_tool can connect successfully.
+    db2 = Database(
+        tmp_path / "t2.duckdb", secret_store=mock_store, no_auto_upgrade=True
+    )
+    monkeypatch.setattr(db_module, "_database_instance", db2)
+
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
+    second = asyncio.run(quick_tool())
+    assert second.error is None
+    assert second.data == [{"x": 42}]
