@@ -37,7 +37,7 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.account_service import AccountService, AccountSettings
+from moneybin.services.account_service import AccountService
 from moneybin.services.balance_service import BalanceService
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
@@ -111,7 +111,7 @@ def accounts_rename(account_id: str, display_name: str) -> ResponseEnvelope:
     Returns the updated settings record.
     """
     settings = AccountService(get_database()).rename(account_id, display_name)
-    return build_envelope(data=_settings_to_dict(settings), sensitivity="medium")
+    return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
@@ -127,7 +127,7 @@ def accounts_include(account_id: str, include: bool = True) -> ResponseEnvelope:
     settings = AccountService(get_database()).set_include_in_net_worth(
         account_id, include
     )
-    return build_envelope(data=_settings_to_dict(settings), sensitivity="medium")
+    return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
@@ -141,7 +141,7 @@ def accounts_archive(account_id: str) -> ResponseEnvelope:
     cascaded_include_in_net_worth: false to surface the cascade.
     """
     settings = AccountService(get_database()).archive(account_id)
-    data = _settings_to_dict(settings)
+    data = settings.to_dict()
     data["cascaded_include_in_net_worth"] = False
     return build_envelope(data=data, sensitivity="medium")
 
@@ -156,7 +156,7 @@ def accounts_unarchive(account_id: str) -> ResponseEnvelope:
     Returns the updated settings record.
     """
     settings = AccountService(get_database()).unarchive(account_id)
-    return build_envelope(data=_settings_to_dict(settings), sensitivity="medium")
+    return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
@@ -171,38 +171,20 @@ def accounts_settings_update(
 ) -> ResponseEnvelope:
     """Partial update of structural metadata fields.
 
-    Pass None for any field to leave it unchanged. All fields are upserted
-    into app.account_settings. Soft-validation warnings (for non-canonical
-    account_subtype or holder_category values) are embedded in data.warnings.
-
-    Args:
-        account_id: The account ID
-        official_name: Institution's formal name
-        last_four: Last 4 digits (must match ^[0-9]{4}$)
-        account_subtype: Plaid-style subtype (open vocabulary)
-        holder_category: 'personal' / 'business' / 'joint' (open vocabulary)
-        iso_currency_code: ISO-4217 (e.g., USD)
-        credit_limit: Decimal value as float (converted to Decimal internally)
+    Pass None for any field to leave it unchanged. Soft-validation warnings
+    (for non-canonical account_subtype or holder_category values) are embedded
+    in the response data['warnings'] field.
     """
-    diff: dict[str, object] = {}
-    if official_name is not None:
-        diff["official_name"] = official_name
-    if last_four is not None:
-        diff["last_four"] = last_four
-    if account_subtype is not None:
-        diff["account_subtype"] = account_subtype
-    if holder_category is not None:
-        diff["holder_category"] = holder_category
-    if iso_currency_code is not None:
-        diff["iso_currency_code"] = iso_currency_code
-    if credit_limit is not None:
-        diff["credit_limit"] = Decimal(str(credit_limit))
-
     settings, warnings = AccountService(get_database()).settings_update(
         account_id,
-        **diff,  # type: ignore[arg-type]  # dynamic partial-update kwargs
+        official_name=official_name,
+        last_four=last_four,
+        account_subtype=account_subtype,
+        holder_category=holder_category,
+        iso_currency_code=iso_currency_code,
+        credit_limit=Decimal(str(credit_limit)) if credit_limit is not None else None,
     )
-    data = _settings_to_dict(settings)
+    data = settings.to_dict()
     if warnings:
         data["warnings"] = warnings
     return build_envelope(data=data, sensitivity="medium")
@@ -333,25 +315,6 @@ def accounts_balance_assertion_delete(
         data={"account_id": account_id, "assertion_date": parsed_date.isoformat()},
         sensitivity="medium",
     )
-
-
-# ─── Helpers ──────────────────────────────────────────────────────────────
-
-
-def _settings_to_dict(settings: AccountSettings) -> dict[str, object]:
-    """Serialize an AccountSettings dataclass to a plain dict for envelope data."""
-    return {
-        "account_id": settings.account_id,
-        "display_name": settings.display_name,
-        "official_name": settings.official_name,
-        "last_four": settings.last_four,
-        "account_subtype": settings.account_subtype,
-        "holder_category": settings.holder_category,
-        "iso_currency_code": settings.iso_currency_code,
-        "credit_limit": settings.credit_limit,
-        "archived": settings.archived,
-        "include_in_net_worth": settings.include_in_net_worth,
-    }
 
 
 # ─── Registration ──────────────────────────────────────────────────────────

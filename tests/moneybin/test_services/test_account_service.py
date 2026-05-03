@@ -17,12 +17,10 @@ from moneybin.services.account_service import (
     CLEAR,
     PLAID_CANONICAL_HOLDER_CATEGORIES,
     PLAID_CANONICAL_SUBTYPES,
-    AccountBalance,
     AccountListResult,
     AccountService,
     AccountSettings,
     AccountSettingsRepository,
-    BalanceListResult,
     is_canonical_holder_category,
     is_canonical_subtype,
     suggest_holder_category,
@@ -183,44 +181,6 @@ class TestListAccounts:
         assert len(actions) > 0
 
 
-class TestBalances:
-    """Tests for AccountService.balances()."""
-
-    @pytest.mark.unit
-    def test_returns_balance_list_result(self, account_db: Database) -> None:
-        service = AccountService(account_db)
-        result = service.balances()
-        assert isinstance(result, BalanceListResult)
-        assert len(result.balances) == 2
-
-    @pytest.mark.unit
-    def test_balance_fields(self, account_db: Database) -> None:
-        service = AccountService(account_db)
-        result = service.balances()
-        bal = next(b for b in result.balances if b.account_id == "ACC001")
-        assert isinstance(bal, AccountBalance)
-        assert bal.ledger_balance == Decimal("5000.00")
-        assert bal.available_balance == Decimal("4800.00")
-        assert bal.institution_name == "Test Bank"
-
-    @pytest.mark.unit
-    def test_filter_by_account_id(self, account_db: Database) -> None:
-        service = AccountService(account_db)
-        result = service.balances(account_id="ACC001")
-        assert len(result.balances) == 1
-        assert result.balances[0].account_id == "ACC001"
-
-    @pytest.mark.unit
-    def test_to_envelope_sensitivity_medium(self, account_db: Database) -> None:
-        service = AccountService(account_db)
-        result = service.balances()
-        envelope = result.to_envelope()
-        d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "medium"
-        data: list[dict[str, Any]] = d["data"]
-        assert len(data) == 2
-
-
 class TestAccountSettingsModel:
     """Tests for AccountSettings dataclass construction and validation."""
 
@@ -363,13 +323,6 @@ class TestEmptyResults:
         result = service.list_accounts()
         assert isinstance(result, AccountListResult)
         assert result.accounts == []
-
-    @pytest.mark.unit
-    def test_balances_empty_db(self, empty_db: Database) -> None:
-        service = AccountService(empty_db)
-        result = service.balances()
-        assert isinstance(result, BalanceListResult)
-        assert result.balances == []
 
 
 class TestAccountServiceMutators:

@@ -27,6 +27,19 @@ from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type st
 
 _SOURCE_PRECEDENCE = {"assertion": 3, "ofx": 2, "plaid": 2, "tabular": 1}
 
+
+def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
+    """Convert pandas float64 (from fetchdf) to Decimal.
+
+    fetchdf() returns DECIMAL columns as float64; Decimal(str()) recovers the
+    value faithfully for personal-finance-scale amounts (float64 precision is
+    adequate below ~$10B per the project's amount range).
+    """
+    if value is None:
+        return default
+    return Decimal(str(value))
+
+
 _EMPTY_COLUMNS = [
     "account_id",
     "balance_date",
@@ -146,13 +159,10 @@ def execute(
         carry: Decimal | None = None
         for d in spine:
             txn_raw = acct_txns.get(d) if not acct_txns.empty else None  # type: ignore[call-overload] — Series.get accepts date keys at runtime
-            txn_adj = Decimal(str(txn_raw)) if txn_raw is not None else Decimal("0")  # type: ignore[reportUnknownArgumentType] — txn_raw type unknown from pandas stubs
+            txn_adj = _to_decimal(txn_raw)  # type: ignore[reportUnknownArgumentType] — txn_raw type unknown from pandas stubs
 
             if d in observed_lookup.index:  # type: ignore[reportUnknownMemberType]
-                # fetchdf() returns DECIMAL columns as float64; Decimal(str()) recovers the value
-                # faithfully for personal-finance-scale amounts (float64 precision is adequate
-                # below ~$10B per the project's amount range).
-                obs_balance = Decimal(str(observed_lookup.loc[d, "balance"]))  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — pandas .loc stubs return Unknown; safe at runtime
+                obs_balance = _to_decimal(observed_lookup.loc[d, "balance"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — pandas .loc stubs return Unknown; safe at runtime
                 obs_source: str = str(observed_lookup.loc[d, "source_type"])  # type: ignore[reportUnknownMemberType]
                 delta: Decimal | None
                 if carry is not None:

@@ -30,6 +30,19 @@ class NetWorthSnapshot:
     account_count: int
     per_account: list[dict[str, Any]] = field(default_factory=list)
 
+    def to_dict(self, *, include_per_account: bool = True) -> dict[str, Any]:
+        """Serialize snapshot for JSON / envelope transport."""
+        payload: dict[str, Any] = {
+            "balance_date": self.balance_date.isoformat(),
+            "net_worth": self.net_worth,
+            "total_assets": self.total_assets,
+            "total_liabilities": self.total_liabilities,
+            "account_count": self.account_count,
+        }
+        if include_per_account:
+            payload["per_account"] = self.per_account
+        return payload
+
 
 class NetworthService:
     """Net worth queries: current snapshot + history."""

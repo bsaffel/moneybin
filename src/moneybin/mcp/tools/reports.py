@@ -44,17 +44,7 @@ def reports_networth_get(
     snapshot = NetworthService(get_database()).current(
         as_of_date=parsed_date, account_ids=account_ids
     )
-    return build_envelope(
-        data={
-            "balance_date": snapshot.balance_date.isoformat(),
-            "net_worth": snapshot.net_worth,
-            "total_assets": snapshot.total_assets,
-            "total_liabilities": snapshot.total_liabilities,
-            "account_count": snapshot.account_count,
-            "per_account": snapshot.per_account,
-        },
-        sensitivity="medium",
-    )
+    return build_envelope(data=snapshot.to_dict(), sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")

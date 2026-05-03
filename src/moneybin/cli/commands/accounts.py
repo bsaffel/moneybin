@@ -1,17 +1,10 @@
-"""CLI commands for the v2 accounts namespace.
-
-Owns:
-  - Entity ops (list/show) — this spec
-  - Balance subcommands (balance show/history/assert/list/delete/reconcile) —
-    contributed by net-worth.md, also live in this module (added in Phase 7)
-
-Per-spec ownership: see docs/specs/account-management.md and docs/specs/net-worth.md.
-"""
+"""CLI commands for the accounts group: listing, settings, and balance assertions."""
 
 from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
 from datetime import date as _date
 from decimal import Decimal
 
@@ -90,7 +83,7 @@ def rename_cmd(
     display_name: str = typer.Argument(
         ..., help="New display name (empty string clears)"
     ),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),  # noqa: ARG001 — reserved for future confirmation prompt
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Rename an account. Empty string clears the override."""
     with handle_cli_errors() as db:
@@ -103,7 +96,7 @@ def rename_cmd(
 def include_cmd(
     account_id: str = typer.Argument(..., help="Account ID"),
     no: bool = typer.Option(False, "--no", help="Set include_in_net_worth=FALSE"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Toggle account inclusion in net worth (default TRUE; --no to exclude)."""
     include = not no
@@ -116,7 +109,7 @@ def include_cmd(
 @app.command("archive")
 def archive_cmd(
     account_id: str = typer.Argument(..., help="Account ID"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Archive an account. Cascades exclude_from_net_worth in the same write."""
     with handle_cli_errors() as db:
@@ -130,7 +123,7 @@ def archive_cmd(
 @app.command("unarchive")
 def unarchive_cmd(
     account_id: str = typer.Argument(..., help="Account ID"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Unarchive an account. Does NOT restore include_in_net_worth."""
     with handle_cli_errors() as db:
@@ -176,6 +169,18 @@ def _maybe_prompt_soft_validation(
         err=True,
     )
     return False
+
+
+_SOFT_VALIDATED_FIELDS: dict[
+    str, tuple[str, Callable[[str], bool], Callable[[str], str | None]]
+] = {
+    "account_subtype": ("Plaid subtype", is_canonical_subtype, suggest_subtype),
+    "holder_category": (
+        "holder category",
+        is_canonical_holder_category,
+        suggest_holder_category,
+    ),
+}
 
 
 @app.command("set")
@@ -242,26 +247,18 @@ def set_cmd(
         raise typer.Exit(2)
 
     # Soft-validation BEFORE writing
-    if "account_subtype" in diff and isinstance(diff["account_subtype"], str):
-        ok = _maybe_prompt_soft_validation(
-            "Plaid subtype",
-            diff["account_subtype"],
-            is_canonical_subtype(diff["account_subtype"]),
-            suggest_subtype(diff["account_subtype"]),
-            yes,
-        )
-        if not ok:
-            raise typer.Exit(2)
-    if "holder_category" in diff and isinstance(diff["holder_category"], str):
-        ok = _maybe_prompt_soft_validation(
-            "holder category",
-            diff["holder_category"],
-            is_canonical_holder_category(diff["holder_category"]),
-            suggest_holder_category(diff["holder_category"]),
-            yes,
-        )
-        if not ok:
-            raise typer.Exit(2)
+    for field_key, (
+        label,
+        is_canonical_fn,
+        suggest_fn,
+    ) in _SOFT_VALIDATED_FIELDS.items():
+        value = diff.get(field_key)
+        if isinstance(value, str):
+            ok = _maybe_prompt_soft_validation(
+                label, value, is_canonical_fn(value), suggest_fn(value), yes
+            )
+            if not ok:
+                raise typer.Exit(2)
 
     with handle_cli_errors() as db:
         AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
@@ -345,7 +342,7 @@ def balance_assert_cmd(
     assertion_date: str = typer.Argument(..., help="ISO date (YYYY-MM-DD)"),
     amount: str = typer.Argument(..., help="Balance amount as decimal"),
     notes: str | None = typer.Option(None, "--notes"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Assert a balance for an account on a specific date."""
     parsed_date = _date.fromisoformat(assertion_date)
@@ -386,7 +383,7 @@ def balance_list_cmd(
 def balance_delete_cmd(
     account_id: str = typer.Argument(...),
     assertion_date: str = typer.Argument(..., help="ISO date (YYYY-MM-DD)"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — reserved for future confirmation prompt
+    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Delete a balance assertion. Silent no-op if no row exists."""
     parsed_date = _date.fromisoformat(assertion_date)

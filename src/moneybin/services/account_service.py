@@ -21,7 +21,6 @@ from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
-    OFX_BALANCES,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,6 +169,21 @@ class AccountSettings:
     archived: bool = False
     include_in_net_worth: bool = True
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict for JSON / envelope transport."""
+        return {
+            "account_id": self.account_id,
+            "display_name": self.display_name,
+            "official_name": self.official_name,
+            "last_four": self.last_four,
+            "account_subtype": self.account_subtype,
+            "holder_category": self.holder_category,
+            "iso_currency_code": self.iso_currency_code,
+            "credit_limit": self.credit_limit,
+            "archived": self.archived,
+            "include_in_net_worth": self.include_in_net_worth,
+        }
+
     def __post_init__(self) -> None:
         """Validate string lengths and formats at construction."""
         if not self.account_id:
@@ -303,48 +317,6 @@ class AccountListResult:
             actions=[
                 "Use accounts_balance_list for current balances",
                 "Use spending_summary with account_id to filter by account",
-            ],
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class AccountBalance:
-    """Balance snapshot for a single account."""
-
-    account_id: str
-    institution_name: str | None
-    account_type: str | None
-    ledger_balance: Decimal
-    available_balance: Decimal | None
-    as_of_date: str
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        d: dict[str, Any] = {
-            "account_id": self.account_id,
-            "institution_name": self.institution_name,
-            "account_type": self.account_type,
-            "ledger_balance": self.ledger_balance,
-            "available_balance": self.available_balance,
-            "as_of_date": self.as_of_date,
-        }
-        return d
-
-
-@dataclass(slots=True)
-class BalanceListResult:
-    """Result of balance query."""
-
-    balances: list[AccountBalance]
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=[b.to_dict() for b in self.balances],
-            sensitivity="medium",
-            actions=[
-                "Use spending_summary for spending trends",
-                "Use transactions_search with account_id for recent activity",
             ],
         )
 
@@ -502,72 +474,6 @@ class AccountService:
             "count_excluded_from_net_worth": excluded,
             "count_with_recent_activity": recent,
         }
-
-    def balances(self, account_id: str | None = None) -> BalanceListResult:
-        """Get latest balance for each account.
-
-        Uses ROW_NUMBER() to pick the most recent balance snapshot per
-        account, then LEFT JOINs dim_accounts for institution info.
-
-        Args:
-            account_id: Filter to a specific account.
-
-        Returns:
-            BalanceListResult with latest balances.
-        """
-        conditions: list[str] = ["b.rn = 1"]
-        params: list[object] = []
-
-        if account_id:
-            conditions.append("b.account_id = ?")
-            params.append(account_id)
-
-        where = "WHERE " + " AND ".join(conditions)
-
-        sql = f"""
-            WITH latest AS (
-                SELECT
-                    account_id,
-                    ledger_balance,
-                    available_balance,
-                    ledger_balance_date,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY account_id
-                        ORDER BY ledger_balance_date DESC
-                    ) AS rn
-                FROM {OFX_BALANCES.full_name}
-            )
-            SELECT
-                b.account_id,
-                a.institution_name,
-                a.account_type,
-                b.ledger_balance,
-                b.available_balance,
-                b.ledger_balance_date
-            FROM latest b
-            LEFT JOIN {DIM_ACCOUNTS.full_name} a
-                ON b.account_id = a.account_id
-            {where}
-            ORDER BY a.institution_name, a.account_type
-        """
-
-        result = self._db.execute(sql, params)
-        rows = result.fetchall()
-
-        balances = [
-            AccountBalance(
-                account_id=str(row[0]),
-                institution_name=str(row[1]) if row[1] else None,
-                account_type=str(row[2]) if row[2] else None,
-                ledger_balance=Decimal(str(row[3])),
-                available_balance=Decimal(str(row[4])) if row[4] is not None else None,
-                as_of_date=str(row[5]),
-            )
-            for row in rows
-        ]
-
-        logger.info(f"Retrieved balances for {len(balances)} accounts")
-        return BalanceListResult(balances=balances)
 
     def _load_or_default(self, account_id: str) -> AccountSettings:
         """Load existing settings or construct a default for the given account."""

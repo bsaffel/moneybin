@@ -39,6 +39,17 @@ class BalanceAssertion:
             "created_at": self.created_at,
         }
 
+    @classmethod
+    def from_row(cls, row: tuple[object, ...]) -> BalanceAssertion:
+        """Construct from a SELECT (account_id, assertion_date, balance, notes, created_at) row."""
+        return cls(
+            account_id=row[0],  # type: ignore[arg-type]
+            assertion_date=row[1],  # type: ignore[arg-type]
+            balance=row[2],  # type: ignore[arg-type]
+            notes=row[3],  # type: ignore[arg-type]
+            created_at=str(row[4]),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class BalanceObservation:
@@ -61,6 +72,18 @@ class BalanceObservation:
             "observation_source": self.observation_source,
             "reconciliation_delta": self.reconciliation_delta,
         }
+
+    @classmethod
+    def from_row(cls, row: tuple[object, ...]) -> BalanceObservation:
+        """Construct from a SELECT (account_id, balance_date, balance, is_observed, observation_source, reconciliation_delta) row."""
+        return cls(
+            account_id=row[0],  # type: ignore[arg-type]
+            balance_date=row[1],  # type: ignore[arg-type]
+            balance=row[2],  # type: ignore[arg-type]
+            is_observed=row[3],  # type: ignore[arg-type]
+            observation_source=row[4],  # type: ignore[arg-type]
+            reconciliation_delta=row[5],  # type: ignore[arg-type]
+        )
 
 
 @dataclass(slots=True)
@@ -153,13 +176,7 @@ class BalanceService:
             params.append(account_id)
         sql += " ORDER BY account_id, assertion_date DESC"
         return [
-            BalanceAssertion(
-                account_id=row[0],
-                assertion_date=row[1],
-                balance=row[2],
-                notes=row[3],
-                created_at=str(row[4]),
-            )
+            BalanceAssertion.from_row(row)
             for row in self._db.execute(sql, params).fetchall()
         ]
 
@@ -178,13 +195,7 @@ class BalanceService:
             raise RuntimeError(
                 f"assertion not found after upsert: {account_id} {assertion_date}"
             )
-        return BalanceAssertion(
-            account_id=row[0],
-            assertion_date=row[1],
-            balance=row[2],
-            notes=row[3],
-            created_at=str(row[4]),
-        )
+        return BalanceAssertion.from_row(row)
 
     # --- Reads ---
 
@@ -221,14 +232,7 @@ class BalanceService:
             ORDER BY account_id
         """  # noqa: S608  # placeholders parameterized via params list above
         return [
-            BalanceObservation(
-                account_id=row[0],
-                balance_date=row[1],
-                balance=row[2],
-                is_observed=row[3],
-                observation_source=row[4],
-                reconciliation_delta=row[5],
-            )
+            BalanceObservation.from_row(row)
             for row in self._db.execute(sql, params).fetchall()
         ]
 
@@ -254,14 +258,7 @@ class BalanceService:
             params.append(to_date)
         sql += " ORDER BY balance_date"
         return [
-            BalanceObservation(
-                account_id=row[0],
-                balance_date=row[1],
-                balance=row[2],
-                is_observed=row[3],
-                observation_source=row[4],
-                reconciliation_delta=row[5],
-            )
+            BalanceObservation.from_row(row)
             for row in self._db.execute(sql, params).fetchall()
         ]
 
@@ -286,13 +283,6 @@ class BalanceService:
             ORDER BY account_id, balance_date DESC
         """  # noqa: S608  # placeholders parameterized
         return [
-            BalanceObservation(
-                account_id=row[0],
-                balance_date=row[1],
-                balance=row[2],
-                is_observed=row[3],
-                observation_source=row[4],
-                reconciliation_delta=row[5],
-            )
+            BalanceObservation.from_row(row)
             for row in self._db.execute(sql, params).fetchall()
         ]

@@ -204,13 +204,4 @@ def resource_networth_summary() -> str:
     """
     logger.info("Resource read: net-worth://summary")
     snapshot = NetworthService(get_database()).current()
-    return json.dumps(
-        {
-            "balance_date": snapshot.balance_date.isoformat(),
-            "net_worth": snapshot.net_worth,
-            "total_assets": snapshot.total_assets,
-            "total_liabilities": snapshot.total_liabilities,
-            "account_count": snapshot.account_count,
-        },
-        default=str,
-    )
+    return json.dumps(snapshot.to_dict(include_per_account=False), default=str)

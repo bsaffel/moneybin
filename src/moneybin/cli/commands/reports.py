@@ -43,14 +43,7 @@ def networth_show_cmd(
         snapshot = NetworthService(db).current(
             as_of_date=as_of_date, account_ids=account
         )
-    payload = {
-        "balance_date": snapshot.balance_date.isoformat(),
-        "net_worth": snapshot.net_worth,
-        "total_assets": snapshot.total_assets,
-        "total_liabilities": snapshot.total_liabilities,
-        "account_count": snapshot.account_count,
-        "per_account": snapshot.per_account,
-    }
+    payload = snapshot.to_dict()
     if output == OutputFormat.JSON:
         emit_json("networth", payload)
         return

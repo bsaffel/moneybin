@@ -41,21 +41,30 @@ class TestReportsNetworthShow:
 
     @pytest.mark.unit
     def test_show_returns_snapshot(self, runner: CliRunner) -> None:
+        per_account = [
+            {
+                "account_id": "acct_a",
+                "display_name": "Checking",
+                "balance": Decimal("5000.00"),
+                "observation_source": "ofx",
+            },
+        ]
         mock_snapshot = MagicMock(
             balance_date=date(2026, 1, 31),
             net_worth=Decimal("12500.00"),
             total_assets=Decimal("15000.00"),
             total_liabilities=Decimal("-2500.00"),
             account_count=3,
-            per_account=[
-                {
-                    "account_id": "acct_a",
-                    "display_name": "Checking",
-                    "balance": Decimal("5000.00"),
-                    "observation_source": "ofx",
-                },
-            ],
+            per_account=per_account,
         )
+        mock_snapshot.to_dict.return_value = {
+            "balance_date": "2026-01-31",
+            "net_worth": Decimal("12500.00"),
+            "total_assets": Decimal("15000.00"),
+            "total_liabilities": Decimal("-2500.00"),
+            "account_count": 3,
+            "per_account": per_account,
+        }
         with (
             patch("moneybin.cli.utils.get_database"),
             patch(
@@ -79,7 +88,7 @@ class TestReportsNetworthShow:
                 "moneybin.cli.commands.reports.NetworthService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.current.return_value = MagicMock(
+            mock_snap = MagicMock(
                 balance_date=date(2026, 1, 1),
                 net_worth=Decimal("0"),
                 total_assets=Decimal("0"),
@@ -87,6 +96,15 @@ class TestReportsNetworthShow:
                 account_count=0,
                 per_account=[],
             )
+            mock_snap.to_dict.return_value = {
+                "balance_date": "2026-01-01",
+                "net_worth": Decimal("0"),
+                "total_assets": Decimal("0"),
+                "total_liabilities": Decimal("0"),
+                "account_count": 0,
+                "per_account": [],
+            }
+            mock_service_class.return_value.current.return_value = mock_snap
             result = runner.invoke(
                 app,
                 [
