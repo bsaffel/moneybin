@@ -12,6 +12,7 @@ import importlib
 import json
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
@@ -703,12 +704,12 @@ def serve(
 
     db_path = get_database_path()
 
-    from moneybin.cli.utils import _flags
+    from moneybin.cli.utils import get_verbose_flag
     from moneybin.config import get_current_profile
     from moneybin.observability import setup_observability
 
     setup_observability(
-        stream="mcp", verbose=_flags.verbose, profile=get_current_profile()
+        stream="mcp", verbose=get_verbose_flag(), profile=get_current_profile()
     )
 
     logger.info(f"Starting MCP server with database: {db_path}")
@@ -726,8 +727,6 @@ def serve(
     # the DuckDB connection cleanly. Without this, parent-driven shutdowns
     # (Claude Desktop/Code disconnecting via `kill <pid>`) leak the DB FD
     # until OS process teardown.
-    import signal
-
     def _on_sigterm(_signum: int, _frame: Any) -> None:
         logger.info("MCP server received SIGTERM; shutting down")
         raise SystemExit(0)
