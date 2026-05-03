@@ -97,6 +97,10 @@ def mcp_tool(
             raise TypeError(
                 f"{fn.__name__} is an async generator — MCP tools must be regular coroutines or sync functions"
             )
+        if inspect.isgeneratorfunction(fn):
+            raise TypeError(
+                f"{fn.__name__} is a sync generator — MCP tools must return ResponseEnvelope directly"
+            )
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:

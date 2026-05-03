@@ -1,6 +1,7 @@
 # tests/moneybin/test_mcp/test_decorator.py
 """Tests for MCP tool decorator and sensitivity middleware."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -67,7 +68,6 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_calls_log_tool_call(self) -> None:
-        import asyncio
 
         @mcp_tool(sensitivity="medium")
         def my_tool() -> ResponseEnvelope:
@@ -106,7 +106,6 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     def test_decorator_returns_response_envelope(self) -> None:
         """When a tool returns a ResponseEnvelope, the decorator returns it directly."""
-        import asyncio
 
         @mcp_tool(sensitivity="low")
         def my_tool() -> ResponseEnvelope:
@@ -123,8 +122,6 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     def test_decorator_raises_type_error_for_non_envelope(self) -> None:
         """Tools that return non-ResponseEnvelope raise TypeError."""
-        import asyncio
-
         import pytest
 
         @mcp_tool(sensitivity="low")

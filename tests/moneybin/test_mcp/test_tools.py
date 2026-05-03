@@ -5,6 +5,8 @@ These tests exercise the underlying tool functions directly. Registration
 with the FastMCP server is covered by tests/mcp/test_visibility.py.
 """
 
+import asyncio
+
 import pytest
 from fastmcp import FastMCP
 
@@ -40,7 +42,6 @@ class TestV1ToolRegistration:
         srv = FastMCP("test")
         register_spending_tools(srv)
         # Synchronous accessor surface differs by version; resolve via asyncio.
-        import asyncio
 
         names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "spending_summary" in names
@@ -48,7 +49,6 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_accounts_tools_register(self) -> None:
-        import asyncio
 
         srv = FastMCP("test")
         register_accounts_tools(srv)
@@ -58,7 +58,6 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
-        import asyncio
 
         result = asyncio.run(accounts_list())
         parsed = result.to_dict()
@@ -69,7 +68,6 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_sql_query_returns_envelope(self, mcp_db: object) -> None:
-        import asyncio
 
         from moneybin.mcp.server import get_db
 
@@ -87,7 +85,6 @@ class TestV1ToolRegistration:
 
     @pytest.mark.unit
     def test_sql_schema_returns_envelope(self, mcp_db: object) -> None:
-        import asyncio
 
         result = asyncio.run(sql_schema())
         parsed = result.to_dict()

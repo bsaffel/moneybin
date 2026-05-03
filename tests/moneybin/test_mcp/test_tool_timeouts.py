@@ -166,6 +166,15 @@ def test_async_generator_tool_rejected_at_decoration() -> None:
             yield  # type: ignore[misc]
 
 
+@pytest.mark.unit
+def test_sync_generator_tool_rejected_at_decoration() -> None:
+    with pytest.raises(TypeError, match="sync generator"):
+
+        @mcp_tool(sensitivity="low")
+        def gen_tool() -> ResponseEnvelope:  # type: ignore[misc]
+            yield  # type: ignore[misc]
+
+
 @pytest.mark.integration
 def test_back_to_back_call_after_timeout_succeeds(
     tmp_path: Path,
