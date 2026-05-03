@@ -457,3 +457,27 @@ class TestTemporarySingleton:
             assert db_module._database_instance is local  # type: ignore[reportPrivateUsage]  # test-only
 
         assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only
+
+
+def test_sqlmesh_context_cache_reuses_built_context(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second call with same (root, db_path) returns the cached Context."""
+    from moneybin import database as db_mod
+
+    # Reset the cache so prior tests don't pollute this assertion.
+    monkeypatch.setattr(db_mod, "_SQLMESH_CONTEXT_CACHE", {})  # pyright: ignore[reportPrivateUsage]  # test-only
+
+    db_path = tmp_path / "test.duckdb"
+    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+
+    sentinel = object()
+    cache_key = (str(db_mod._SQLMESH_ROOT), str(db_path))  # pyright: ignore[reportPrivateUsage]  # test-only
+    db_mod._SQLMESH_CONTEXT_CACHE[cache_key] = sentinel  # pyright: ignore[reportPrivateUsage]  # test-only
+
+    result = db_mod._get_or_build_sqlmesh_context(  # pyright: ignore[reportPrivateUsage]  # test-only
+        db_mod._SQLMESH_ROOT,  # pyright: ignore[reportPrivateUsage]  # test-only
+        db_path,
+    )
+    assert result is sentinel
+    database.close()
