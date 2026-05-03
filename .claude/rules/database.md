@@ -43,6 +43,20 @@ A column name — especially identifiers — must contain the same logical value
 
 `stg_` models use double-underscore to separate source system from entity: `stg_ofx__transactions`. `int_` models use it to separate domain from transformation: `int_transactions__merged`.
 
+## Core Dimensions Are the Single Source of Truth
+
+When app-layer metadata refines or overrides a `core.dim_*` entity (e.g.,
+`app.account_settings.display_name` overriding `dim_accounts.account_id`-derived
+display), join the metadata into the dim model itself — do NOT duplicate the
+join in every consumer (CLI, MCP, agg models, services).
+
+The dim's job is to present one canonical resolved view per entity. Consumers
+read the dim and trust it. This keeps the resolution chain in exactly one place
+and prevents inconsistent overrides between surfaces.
+
+Precedent: `core.dim_accounts` joins `app.account_settings` (per
+`docs/specs/account-management.md`).
+
 ## SQLMesh Invocation
 
 **Always use `sqlmesh_context()`** from `database.py`, never subprocess or raw `sqlmesh.Context()`. Subprocess calls break profile isolation — child processes read `~/.moneybin/config.yaml` and connect to the wrong database. Since SQLMesh's DuckDB config doesn't support `ENCRYPTION_KEY`, `sqlmesh_context()` injects a pre-connected encrypted adapter into `BaseDuckDBConnectionConfig._data_file_to_adapter` keyed by db path — SQLMesh reuses it instead of opening its own unencrypted connection. See `sqlmesh_context()` in `database.py` and `_run_sqlmesh_migrate()` in `database.py`.
