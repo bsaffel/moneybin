@@ -89,3 +89,33 @@ def test_init_schemas_runs_when_hash_changes(
         )
         database.close()
         mock_apply.assert_called()
+
+
+def test_reapply_after_migration_runs_apply_comments_despite_hash_match(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> None:
+    """reapply_after_migration forces a comment re-apply even when hash matches.
+
+    Regression guard: without this hash invalidation, comments for columns
+    that migrations create after the first init_schemas pass would be
+    permanently skipped on subsequent opens (the recorded hash would still
+    match the unchanged DDL files).
+    """
+    db_path = tmp_path / "test.duckdb"
+
+    # First open: records the DDL hash.
+    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+
+    # Sanity check: the hash row is present.
+    cached = database.execute(
+        f"SELECT ddl_hash FROM {schema_mod._SCHEMA_VERSION_TABLE} LIMIT 1"  # noqa: S608  # constant table name  # type: ignore[reportPrivateUsage]
+    ).fetchone()
+    assert cached is not None, "DDL hash should have been recorded on first open"
+
+    # Without invalidation, a subsequent init_schemas would skip _apply_comments.
+    # reapply_after_migration must force the apply pass.
+    with patch("moneybin.schema._apply_comments") as mock_apply:
+        schema_mod.reapply_after_migration(database.conn)
+        mock_apply.assert_called()
+
+    database.close()

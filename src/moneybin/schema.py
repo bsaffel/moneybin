@@ -153,7 +153,10 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
             except (duckdb.CatalogException, duckdb.BinderException):
                 # Column may not exist yet — either the table is created later
                 # (e.g. SQLMesh-managed core tables) or a pending migration will
-                # add the column. Comments will reapply on the next startup.
+                # add the column. Comments retry whenever a future init_schemas
+                # pass runs through _apply_comments — that happens on a DDL
+                # hash change, or via reapply_after_migration() (which the
+                # Database init path invokes after migrations apply).
                 logger.debug(
                     f"Skipping column comment for {table_name}.{col_def.name}"
                     " — column or table does not exist yet"
@@ -210,3 +213,26 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     logger.debug(
         f"Executed {len(_SCHEMA_FILES)} schema files; recorded hash {expected_hash}"
     )
+
+
+def reapply_after_migration(conn: duckdb.DuckDBPyConnection) -> None:
+    """Re-run init_schemas after migrations to attach comments to new columns.
+
+    init_schemas runs in Database.__init__ *before* versioned migrations.
+    During that pre-migration pass, _apply_comments silently skips column
+    comments for columns the migration is about to create. Without this
+    function, the recorded DDL hash would then cause every subsequent open
+    to skip _apply_comments entirely — those columns would never get
+    comments unless the schema DDL files themselves changed.
+
+    Call this from Database.__init__ when a migration round actually
+    applied something. It clears the recorded hash so the immediate
+    follow-up init_schemas does a full apply (DDL is idempotent
+    ``CREATE IF NOT EXISTS``; the work is the comment pass) and records
+    the hash again.
+
+    Args:
+        conn: An active read-write DuckDB connection.
+    """
+    conn.execute(f"DELETE FROM {_SCHEMA_VERSION_TABLE}")  # noqa: S608  # constant table name
+    init_schemas(conn)

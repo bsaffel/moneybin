@@ -214,6 +214,14 @@ class Database:
 
                 if result.applied_count > 0:
                     logger.info(f"  ✅ {result.applied_count} migration(s) applied")
+                    # Migrations may have added columns whose comments couldn't
+                    # apply during the pre-migration init_schemas pass (the
+                    # column didn't exist yet). Force a re-apply so those
+                    # comments land in DuckDB's catalog instead of being
+                    # permanently skipped by hash memoization.
+                    from moneybin.schema import reapply_after_migration
+
+                    reapply_after_migration(self._conn)
 
                 # Record MoneyBin version
                 record_version(self, "moneybin", current_pkg_version)
