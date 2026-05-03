@@ -84,7 +84,7 @@ class TestMCPListPrompts:
             mock_prompt.description = "A test prompt"
             return [mock_prompt]
 
-        with patch("moneybin.cli.commands.mcp.mcp_server") as mock_server:
+        with patch("moneybin.mcp.server.mcp") as mock_server:
             mock_server.list_prompts = fake_list_prompts
             result = runner.invoke(app, ["list-prompts"])
 
@@ -98,7 +98,7 @@ class TestMCPListPrompts:
         async def fake_list_prompts(*, run_middleware: bool = True) -> list[object]:
             return []
 
-        with patch("moneybin.cli.commands.mcp.mcp_server") as mock_server:
+        with patch("moneybin.mcp.server.mcp") as mock_server:
             mock_server.list_prompts = fake_list_prompts
             result = runner.invoke(app, ["list-prompts"])
 
