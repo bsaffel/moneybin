@@ -703,10 +703,13 @@ def serve(
 
     db_path = get_database_path()
 
+    from moneybin.cli.utils import _flags
     from moneybin.config import get_current_profile
     from moneybin.observability import setup_observability
 
-    setup_observability(stream="mcp", profile=get_current_profile())
+    setup_observability(
+        stream="mcp", verbose=_flags.verbose, profile=get_current_profile()
+    )
 
     logger.info(f"Starting MCP server with database: {db_path}")
 
@@ -718,6 +721,18 @@ def serve(
 
     # Cast validated string to the literal type
     validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
+
+    # Convert SIGTERM to SystemExit so the finally block runs and we close
+    # the DuckDB connection cleanly. Without this, parent-driven shutdowns
+    # (Claude Desktop/Code disconnecting via `kill <pid>`) leak the DB FD
+    # until OS process teardown.
+    import signal
+
+    def _on_sigterm(_signum: int, _frame: Any) -> None:
+        logger.info("MCP server received SIGTERM; shutting down")
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     try:
         with handle_cli_errors():

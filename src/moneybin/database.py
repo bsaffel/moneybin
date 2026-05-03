@@ -17,6 +17,7 @@ Never call ``duckdb.connect()`` directly. See the data-protection spec
 
 import importlib.metadata
 import logging
+import os
 import stat
 import sys
 from collections.abc import Generator
@@ -25,6 +26,17 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+
+# SQLMesh resolves MAX_FORK_WORKERS at import via os.sched_getaffinity, which
+# does not exist on macOS — falling through to ProcessPoolExecutor's default
+# (os.cpu_count(), e.g. 12). Each forked worker inherits our encrypted DuckDB
+# FD and the `BaseDuckDBConnectionConfig._data_file_to_adapter` injection,
+# competing with the parent for the file's single-writer lock and leaking as
+# orphans (re-parented to PID 1, still holding FDs) when a sync is interrupted
+# mid-load. Forcing MAX_FORK_WORKERS=1 selects sqlmesh's SynchronousPoolExecutor
+# (no fork). Sequential load of the project's ~14 models is faster than fork
+# overhead anyway. Must be set before sqlmesh is first imported.
+os.environ.setdefault("MAX_FORK_WORKERS", "1")
 
 from moneybin.config import get_settings
 from moneybin.secrets import (

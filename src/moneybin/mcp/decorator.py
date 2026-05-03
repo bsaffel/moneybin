@@ -134,6 +134,12 @@ def mcp_tool(
                         f"interrupt_and_reset_database failed during {fn.__name__} "
                         f"timeout cleanup: {type(cleanup_exc).__name__}"
                     )
+                # Brief grace period: the surviving sync-tool thread needs a
+                # tick to see the closed DuckDB connection, raise, and unwind
+                # any per-tool resources (e.g. InboxService.acquire_lock's
+                # flock). Without this, an immediate retry hits inbox_busy
+                # while the previous thread is still in its finally block.
+                await asyncio.sleep(0.5)
                 return _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
             except Exception as exc:
                 return _classify_or_raise(fn.__name__, exc)
