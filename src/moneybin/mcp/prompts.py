@@ -32,14 +32,14 @@ def monthly_review() -> str:
         - spending_summary — income vs expenses by month
         - spending_by_category — category breakdown
         - budget_status — budget vs actual comparison
-        - accounts_balances — current account balances
+        - accounts_balance_list — current account balances
         - transactions_recurring — subscription/recurring charge review
 
         **Workflow:**
         1. Start with spending_summary for the last 1-2 months
         2. If spending is above average, drill into spending_by_category
         3. Check budget_status for any categories over budget
-        4. Review accounts_balances for current position
+        4. Review accounts_balance_list for current position
         5. Optionally check transactions_recurring for subscription review
 
         **Guardrails:**

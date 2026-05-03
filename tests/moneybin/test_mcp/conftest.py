@@ -56,7 +56,10 @@ def mcp_db(tmp_path: Path) -> Generator[Database, None, None]:
 
     # -- Base reference data: accounts --
     conn.execute("""
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts
+            (account_id, routing_number, account_type, institution_name, institution_fid,
+             source_type, source_file, extracted_at, loaded_at, updated_at)
+        VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
