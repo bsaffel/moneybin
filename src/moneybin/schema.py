@@ -21,6 +21,7 @@ A trailing ``-- text`` on a column definition line is attached by sqlglot to
 the ``ColumnDef`` expression and applied as ``COMMENT ON COLUMN``.
 """
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -31,6 +32,25 @@ import sqlglot.expressions as exp
 logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
+
+_SCHEMA_VERSION_TABLE = "app.schema_init_state"
+_SCHEMA_VERSION_DDL = f"""
+CREATE TABLE IF NOT EXISTS {_SCHEMA_VERSION_TABLE} (
+    ddl_hash VARCHAR PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
+def _compute_ddl_hash() -> str:
+    """SHA-256 (truncated 16 hex) of concatenated schema DDL file contents."""
+    h = hashlib.sha256()
+    for sql_file in _SCHEMA_FILES:
+        sql_path = _SQL_DIR / sql_file
+        if sql_path.exists():
+            h.update(sql_path.read_bytes())
+    return h.hexdigest()[:16]
+
 
 _SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
@@ -132,9 +152,28 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
 def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     """Create all database schemas and tables, then apply inline comments.
 
+    Memoizes against a hash of the DDL file contents stored in
+    ``app.schema_init_state``. If the hash matches a prior successful
+    apply, schema initialization is a no-op — the DDL files are unchanged
+    from the last successful run.
+
     Args:
         conn: An active read-write DuckDB connection.
     """
+    # Need the app schema before we can read/write the state table.
+    conn.execute("CREATE SCHEMA IF NOT EXISTS app;")
+    conn.execute(_SCHEMA_VERSION_DDL)
+
+    expected_hash = _compute_ddl_hash()
+    cached = conn.execute(
+        f"SELECT ddl_hash FROM {_SCHEMA_VERSION_TABLE} LIMIT 1"  # noqa: S608  # constant table name
+    ).fetchone()
+    if cached and cached[0] == expected_hash:
+        logger.debug(
+            f"Schema DDL hash matches ({expected_hash}); skipping init_schemas"
+        )
+        return
+
     for sql_file in _SCHEMA_FILES:
         sql_path = _SQL_DIR / sql_file
         if not sql_path.exists():
@@ -145,4 +184,11 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
         _apply_comments(conn, sql)
         logger.debug(f"Executed {sql_file}")
 
-    logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
+    conn.execute(f"DELETE FROM {_SCHEMA_VERSION_TABLE}")  # noqa: S608  # constant table name
+    conn.execute(
+        f"INSERT INTO {_SCHEMA_VERSION_TABLE} (ddl_hash) VALUES (?)",  # noqa: S608  # constant table name
+        [expected_hash],
+    )
+    logger.debug(
+        f"Executed {len(_SCHEMA_FILES)} schema files; recorded hash {expected_hash}"
+    )

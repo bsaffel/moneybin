@@ -1,8 +1,11 @@
 """Tests for schema initialization and inline-comment application."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from moneybin import schema as schema_mod
 from moneybin.database import Database
 
 
@@ -43,3 +46,46 @@ def test_init_does_not_fail_when_existing_table_missing_new_columns(
         assert "source_type" in cols
     finally:
         db2.close()
+
+
+def test_init_schemas_skips_when_hash_matches(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> None:
+    """Reopening a DB with unchanged DDL skips re-applying schema."""
+    db_path = tmp_path / "test.duckdb"
+
+    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+    database.close()
+
+    # Reopen — the second init should hit the memoized hash and skip
+    # _apply_comments. Patch _apply_comments to assert it isn't called.
+    with patch("moneybin.schema._apply_comments") as mock_apply:
+        database = Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        )
+        database.close()
+        mock_apply.assert_not_called()
+
+
+def test_init_schemas_runs_when_hash_changes(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the recorded hash differs, full schema init runs."""
+    db_path = tmp_path / "test.duckdb"
+
+    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+    database.close()
+
+    # Tamper with the recorded hash to simulate a DDL change since the last open
+    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+    database.execute(
+        f"UPDATE {schema_mod._SCHEMA_VERSION_TABLE} SET ddl_hash = 'stale'"  # noqa: S608  # test-only literal  # type: ignore[reportPrivateUsage]
+    )
+    database.close()
+
+    with patch("moneybin.schema._apply_comments") as mock_apply:
+        database = Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        )
+        database.close()
+        mock_apply.assert_called()
