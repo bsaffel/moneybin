@@ -11,6 +11,7 @@ import polars as pl
 from moneybin.database import Database
 from moneybin.loaders import import_log
 from moneybin.metrics.registry import TABULAR_IMPORT_BATCHES
+from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,9 @@ class TabularLoader:
         """Write transactions to raw.tabular_transactions; return count loaded."""
         if len(df) == 0:
             return 0
-        self.db.ingest_dataframe("raw.tabular_transactions", df, on_conflict="upsert")
+        self.db.ingest_dataframe(
+            TABULAR_TRANSACTIONS.full_name, df, on_conflict="upsert"
+        )
         logger.info(f"Loaded {len(df)} transactions")
         return len(df)
 
@@ -55,7 +58,7 @@ class TabularLoader:
         """Write accounts to raw.tabular_accounts; return count loaded."""
         if len(df) == 0:
             return 0
-        self.db.ingest_dataframe("raw.tabular_accounts", df, on_conflict="upsert")
+        self.db.ingest_dataframe(TABULAR_ACCOUNTS.full_name, df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} accounts")
         return len(df)
 

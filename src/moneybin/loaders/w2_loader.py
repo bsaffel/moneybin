@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from moneybin.database import Database
+from moneybin.tables import W2_FORMS
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,8 @@ class W2Loader:
         # Load W2 forms (use INSERT OR REPLACE for idempotency)
         if len(data) > 0:
             df = data
-            conn.execute("""
-                INSERT OR REPLACE INTO raw.w2_forms
+            conn.execute(f"""
+                INSERT OR REPLACE INTO {W2_FORMS.full_name}
                 (
                     tax_year, employee_ssn, employer_ein, control_number,
                     employee_first_name, employee_last_name, employee_address,
@@ -118,14 +119,14 @@ class W2Loader:
             pl.DataFrame: Query results
         """
         if limit is not None:
-            query = """
-                SELECT * FROM raw.w2_forms
+            query = f"""
+                SELECT * FROM {W2_FORMS.full_name}
                 ORDER BY loaded_at DESC LIMIT ?
             """
             return self.db.execute(query, [limit]).pl()
         else:
-            query = """
-                SELECT * FROM raw.w2_forms
+            query = f"""
+                SELECT * FROM {W2_FORMS.full_name}
                 ORDER BY loaded_at DESC
             """
             return self.db.execute(query).pl()

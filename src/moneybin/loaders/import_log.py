@@ -12,9 +12,17 @@ import logging
 import uuid
 from typing import Literal
 
-from sqlglot import exp
-
 from moneybin.database import Database
+from moneybin.tables import (
+    IMPORT_LOG,
+    OFX_ACCOUNTS,
+    OFX_BALANCES,
+    OFX_INSTITUTIONS,
+    OFX_TRANSACTIONS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
+    TableRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,19 +33,15 @@ _SourceType = Literal["csv", "tsv", "excel", "parquet", "feather", "pipe", "ofx"
 # Allowlist mapping source_type → raw tables that carry rows for that type.
 # revert_import() uses this to know what to delete. Adding a new format means
 # adding an entry here AND ensuring those tables have an import_id column.
-_REVERT_TABLES: dict[str, list[str]] = {
-    "csv": ["raw.tabular_transactions", "raw.tabular_accounts"],
-    "tsv": ["raw.tabular_transactions", "raw.tabular_accounts"],
-    "excel": ["raw.tabular_transactions", "raw.tabular_accounts"],
-    "parquet": ["raw.tabular_transactions", "raw.tabular_accounts"],
-    "feather": ["raw.tabular_transactions", "raw.tabular_accounts"],
-    "pipe": ["raw.tabular_transactions", "raw.tabular_accounts"],
-    "ofx": [
-        "raw.ofx_transactions",
-        "raw.ofx_accounts",
-        "raw.ofx_balances",
-        "raw.ofx_institutions",
-    ],
+_TABULAR_RAW_TABLES = [TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS]
+_REVERT_TABLES: dict[str, list[TableRef]] = {
+    "csv": _TABULAR_RAW_TABLES,
+    "tsv": _TABULAR_RAW_TABLES,
+    "excel": _TABULAR_RAW_TABLES,
+    "parquet": _TABULAR_RAW_TABLES,
+    "feather": _TABULAR_RAW_TABLES,
+    "pipe": _TABULAR_RAW_TABLES,
+    "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES, OFX_INSTITUTIONS],
 }
 
 
@@ -77,8 +81,8 @@ def begin_import(
         )
     import_id = str(uuid.uuid4())
     db.execute(
-        """
-        INSERT INTO raw.import_log (
+        f"""
+        INSERT INTO {IMPORT_LOG.full_name} (
             import_id, source_file, source_type, source_origin,
             format_name, format_source, account_names, status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'importing')
@@ -119,8 +123,8 @@ def finalize_import(
     metadata. OFX callers leave them at their defaults (all None / not supplied).
     """
     db.execute(
-        """
-        UPDATE raw.import_log SET
+        f"""
+        UPDATE {IMPORT_LOG.full_name} SET
             status = ?,
             rows_total = ?,
             rows_imported = ?,
@@ -169,8 +173,8 @@ def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
         {'status': 'superseded', ...} if a later import overwrote the rows.
     """
     row = db.execute(
-        "SELECT source_type, status, source_file, started_at "
-        "FROM raw.import_log WHERE import_id = ?",
+        f"SELECT source_type, status, source_file, started_at "
+        f"FROM {IMPORT_LOG.full_name} WHERE import_id = ?",
         [import_id],
     ).fetchone()
 
@@ -196,7 +200,7 @@ def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
     rows_to_delete = 0
     for table in tables:
         result = db.execute(
-            f"SELECT COUNT(*) FROM {_quote_table(table)} WHERE import_id = ?",  # noqa: S608 — table from allowlist
+            f"SELECT COUNT(*) FROM {table.full_name} WHERE import_id = ?",
             [import_id],
         ).fetchone()
         if result:
@@ -206,9 +210,9 @@ def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
         # Same superseded check as the original tabular_loader: if a later
         # import upserted over this one's rows, surface that.
         reimport_row = db.execute(
-            """
+            f"""
             SELECT import_id
-            FROM raw.import_log
+            FROM {IMPORT_LOG.full_name}
             WHERE source_file = ?
               AND import_id != ?
               AND started_at > ?
@@ -232,12 +236,12 @@ def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
     try:
         for table in tables:
             db.execute(
-                f"DELETE FROM {_quote_table(table)} WHERE import_id = ?",  # noqa: S608 — table from allowlist
+                f"DELETE FROM {table.full_name} WHERE import_id = ?",
                 [import_id],
             )
         db.execute(
-            """
-            UPDATE raw.import_log SET
+            f"""
+            UPDATE {IMPORT_LOG.full_name} SET
                 status = 'reverted',
                 reverted_at = CURRENT_TIMESTAMP
             WHERE import_id = ?
@@ -262,22 +266,22 @@ def get_import_history(
     """Query the import_log. If import_id is given, returns at most one row."""
     if import_id:
         rows = db.execute(
-            """
+            f"""
             SELECT import_id, source_file, source_type, source_origin,
                    format_name, status, rows_imported, rows_rejected,
                    detection_confidence, started_at, completed_at
-            FROM raw.import_log
+            FROM {IMPORT_LOG.full_name}
             WHERE import_id = ?
             """,
             [import_id],
         ).fetchall()
     else:
         rows = db.execute(
-            """
+            f"""
             SELECT import_id, source_file, source_type, source_origin,
                    format_name, status, rows_imported, rows_rejected,
                    detection_confidence, started_at, completed_at
-            FROM raw.import_log
+            FROM {IMPORT_LOG.full_name}
             ORDER BY started_at DESC
             LIMIT ?
             """,
@@ -300,16 +304,6 @@ def get_import_history(
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-def _quote_table(qualified: str) -> str:
-    """Double-quote each component of a `schema.table` identifier per security.md."""
-    schema, name = qualified.split(".", 1)
-    return (
-        exp.to_identifier(schema, quoted=True).sql("duckdb")
-        + "."
-        + exp.to_identifier(name, quoted=True).sql("duckdb")
-    )
-
-
 def find_existing_import(
     db: Database,
     source_file: str,
@@ -321,9 +315,9 @@ def find_existing_import(
     in-progress one in their error messages.
     """
     row = db.execute(
-        """
+        f"""
         SELECT import_id, status
-        FROM raw.import_log
+        FROM {IMPORT_LOG.full_name}
         WHERE source_file = ?
           AND status NOT IN ('reverted', 'failed')
         ORDER BY started_at DESC
