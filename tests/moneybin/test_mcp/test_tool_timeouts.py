@@ -21,7 +21,7 @@ def _ok_envelope() -> ResponseEnvelope:
 
 
 @pytest.mark.unit
-def test_sync_tool_under_cap_passes_through(
+async def test_sync_tool_under_cap_passes_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
@@ -30,13 +30,13 @@ def test_sync_tool_under_cap_passes_through(
     def fast_tool() -> ResponseEnvelope:
         return _ok_envelope()
 
-    result = asyncio.run(fast_tool())
+    result = await fast_tool()
     assert isinstance(result, ResponseEnvelope)
     assert result.error is None
 
 
 @pytest.mark.unit
-def test_sync_tool_over_cap_returns_timeout_envelope(
+async def test_sync_tool_over_cap_returns_timeout_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
@@ -55,7 +55,7 @@ def test_sync_tool_over_cap_returns_timeout_envelope(
         r = await slow_tool()
         return r, time.monotonic() - started
 
-    result, elapsed = asyncio.run(_run())
+    result, elapsed = await _run()
 
     # Cap=0.05 + 0.5s grace sleep (decorator awaits cleanup unwind before
     # returning) + scheduling slop. Ceiling stays well under the 0.5s sleep
@@ -72,7 +72,7 @@ def test_sync_tool_over_cap_returns_timeout_envelope(
 
 
 @pytest.mark.unit
-def test_async_tool_over_cap_returns_timeout_envelope(
+async def test_async_tool_over_cap_returns_timeout_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
@@ -85,13 +85,13 @@ def test_async_tool_over_cap_returns_timeout_envelope(
         await asyncio.sleep(0.5)
         return _ok_envelope()
 
-    result = asyncio.run(slow_tool())
+    result = await slow_tool()
     assert result.error is not None
     assert result.error.code == "timed_out"
 
 
 @pytest.mark.unit
-def test_timeout_logs_low_cardinality_line(
+async def test_timeout_logs_low_cardinality_line(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -106,7 +106,7 @@ def test_timeout_logs_low_cardinality_line(
         return _ok_envelope()
 
     with caplog.at_level("WARNING"):
-        asyncio.run(slow_tool(account_number="acct-redacted-do-not-log"))
+        await slow_tool(account_number="acct-redacted-do-not-log")
 
     relevant = [r for r in caplog.records if "timed out" in r.getMessage().lower()]
     assert len(relevant) == 1
@@ -115,7 +115,7 @@ def test_timeout_logs_low_cardinality_line(
 
 
 @pytest.mark.unit
-def test_classified_user_error_still_returned(
+async def test_classified_user_error_still_returned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
@@ -125,13 +125,13 @@ def test_classified_user_error_still_returned(
     def bad_tool() -> ResponseEnvelope:
         raise UserError("nope", code="not_found")
 
-    result = asyncio.run(bad_tool())
+    result = await bad_tool()
     assert result.error is not None
     assert result.error.code == "not_found"
 
 
 @pytest.mark.unit
-def test_tool_raised_timeout_error_not_classified_as_cap_fired(
+async def test_tool_raised_timeout_error_not_classified_as_cap_fired(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A TimeoutError raised by the tool body must not be reported as a cap-fired timeout.
@@ -155,7 +155,7 @@ def test_tool_raised_timeout_error_not_classified_as_cap_fired(
     # it (matching pre-existing behavior for unclassified exceptions). The
     # critical assertions are the side effects: no DB reset, no cap-fired log.
     with pytest.raises(TimeoutError, match="downstream HTTP timeout"):
-        asyncio.run(inner_timeout_tool())
+        await inner_timeout_tool()
 
     reset_mock.assert_not_called()
 
@@ -179,7 +179,7 @@ def test_sync_generator_tool_rejected_at_decoration() -> None:
 
 
 @pytest.mark.integration
-def test_back_to_back_call_after_timeout_succeeds(
+async def test_back_to_back_call_after_timeout_succeeds(
     tmp_path: Path,
     mock_secret_store: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
@@ -214,7 +214,7 @@ def test_back_to_back_call_after_timeout_succeeds(
             data=[{"x": rows[0][0]}],
         )
 
-    first = asyncio.run(hang_tool())
+    first = await hang_tool()
     assert first.error is not None and first.error.code == "timed_out"
 
     # The timeout path cleared _database_instance and force-closed the original
@@ -227,6 +227,6 @@ def test_back_to_back_call_after_timeout_succeeds(
     monkeypatch.setattr(db_module, "_database_instance", db2)
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
-    second = asyncio.run(quick_tool())
+    second = await quick_tool()
     assert second.error is None
     assert second.data == [{"x": 42}]
