@@ -56,7 +56,7 @@ mcp = FastMCP(
         - import, sync — data ingestion (sync_pull/status/connect available; OAuth flows return URLs the client opens)
         - privacy — consent and audit
 
-        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_accept, reports_networth_get, reports_spending_summary.
+        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_summary.
 
         Getting oriented:
         - system_status — what data exists, freshness, pending review queues
