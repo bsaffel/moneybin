@@ -14,11 +14,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.errors import UserError  # noqa: F401  # used by Tasks 2–5
+from moneybin.errors import UserError  # noqa: F401  # pyright: ignore[reportUnusedImport]  # used by Tasks 4–5
 from moneybin.services.categorization_service import (
     CategorizationRuleInput,
     CategorizationService,
-    RuleCreationResult,  # noqa: F401  # used by Tasks 2–5
     validate_rule_items,
 )
 from tests.moneybin.db_helpers import create_core_tables
