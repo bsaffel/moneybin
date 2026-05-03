@@ -163,6 +163,24 @@ def build_envelope(
     )
 
 
+def not_implemented_envelope(
+    *,
+    action: str,
+    spec: str,
+    actions: list[str] | None = None,
+) -> ResponseEnvelope:
+    """Build a stub envelope for taxonomy tools whose body isn't implemented yet.
+
+    Used by tool surfaces (e.g., sync_*, transform_*) that exist for v2
+    discoverability but whose business logic is owned by a downstream spec.
+    """
+    return build_envelope(
+        data={"status": "not_implemented", "action": action, "spec": spec},
+        sensitivity="low",
+        actions=actions or [f"See {spec} for the design"],
+    )
+
+
 def build_error_envelope(
     *,
     error: UserError,

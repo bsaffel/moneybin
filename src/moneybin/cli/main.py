@@ -1,8 +1,8 @@
 """Main CLI application for MoneyBin.
 
-This module provides the unified entry point for all MoneyBin CLI operations,
-organizing commands into groups: profile, import, sync, categorize, transform,
-db, mcp.
+Unified entry point for MoneyBin CLI operations. Commands are organized into
+top-level groups for entity management, workflows, reports, and infrastructure
+per `docs/specs/cli-restructure.md` v2.
 
 Command modules are lazy-loaded: each group's module (and its transitive
 imports) loads only when that group is first invoked, not at ``moneybin
@@ -22,7 +22,6 @@ from ..observability import setup_observability
 from .commands import logs, stats
 from .commands.stubs import (
     export_app,
-    track_app,
 )
 from .utils import resolve_profile, stash_cli_flags
 
@@ -91,7 +90,7 @@ def _add_lazy_typer(
     parent: typer.Typer,
     module_path: str,
     name: str,
-    help_text: str,
+    help_text: str | None = None,
     *,
     attr: str = "app",
 ) -> None:
@@ -105,7 +104,7 @@ def _add_lazy_typer(
     ``rich_markup_mode=None`` and does not merge per-module Typer kwargs.
     Lazy-loaded command modules must construct their root ``typer.Typer``
     with these same defaults — otherwise the wrapped settings will diverge
-    from the underlying module's intent. The current 13 modules all comply.
+    from the underlying module's intent.
     """
     lazy = _LazyTyper(
         module_path=module_path,
@@ -201,18 +200,6 @@ _add_lazy_typer(
 )
 _add_lazy_typer(
     app,
-    f"{_COMMANDS_PKG}.categorize",
-    name="categorize",
-    help_text="Manage transaction categories, rules, and merchants",
-)
-_add_lazy_typer(
-    app,
-    f"{_COMMANDS_PKG}.matches",
-    name="matches",
-    help_text="Review and manage transaction matches",
-)
-_add_lazy_typer(
-    app,
     f"{_COMMANDS_PKG}.transform",
     name="transform",
     help_text="Run SQLMesh data transformations",
@@ -223,7 +210,6 @@ _add_lazy_typer(
     name="synthetic",
     help_text="Generate and manage synthetic financial data for testing",
 )
-app.add_typer(track_app, name="track", help="Balance tracking and net worth")
 app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
 app.add_typer(export_app, name="export", help="Export data to external formats")
 _add_lazy_typer(
@@ -232,6 +218,15 @@ _add_lazy_typer(
     name="mcp",
     help_text="MCP server for AI assistant integration",
 )
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.accounts", name="accounts")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.transactions", name="transactions")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.assets", name="assets")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.categories", name="categories")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.merchants", name="merchants")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.reports", name="reports")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.tax", name="tax")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.system", name="system")
+_add_lazy_typer(app, f"{_COMMANDS_PKG}.budget", name="budget")
 _add_lazy_typer(
     app,
     f"{_COMMANDS_PKG}.db",

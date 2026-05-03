@@ -1,9 +1,9 @@
-# src/moneybin/mcp/tools/spending.py
-"""Spending namespace tools — expense analysis, trends, category breakdowns.
+"""Reports namespace tools — spending analysis, budget vs actual, and financial summaries.
 
 Tools:
-    - spending_summary — Income vs expense totals by month (low sensitivity)
-    - spending_by_category — Spending by category for a period (low sensitivity)
+    - reports_spending_summary — Income vs expense totals by month (low sensitivity)
+    - reports_spending_by_category — Spending breakdown by category (low sensitivity)
+    - reports_budget_status — Budget vs actual spending comparison (low sensitivity)
 """
 
 from __future__ import annotations
@@ -14,11 +14,12 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope
+from moneybin.services.budget_service import BudgetService
 from moneybin.services.spending_service import SpendingService
 
 
 @mcp_tool(sensitivity="low")
-def spending_summary(
+def reports_spending_summary(
     months: int = 3,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -40,7 +41,7 @@ def spending_summary(
 
 
 @mcp_tool(sensitivity="low")
-def spending_by_category(
+def reports_spending_by_category(
     months: int = 3,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -50,8 +51,8 @@ def spending_by_category(
 ) -> ResponseEnvelope:
     """Get spending breakdown by category for a period.
 
-    Requires transactions to be categorized. Use ``categorize_uncategorized``
-    and ``categorize_bulk`` to categorize transactions first.
+    Requires transactions to be categorized. Use ``transactions_categorize_pending_list``
+    and ``transactions_categorize_bulk_apply`` to categorize transactions first.
     """
     service = SpendingService(get_database())
     result = service.by_category(
@@ -65,19 +66,43 @@ def spending_by_category(
     return result.to_envelope()
 
 
-def register_spending_tools(mcp: FastMCP) -> None:
-    """Register all spending namespace tools with the FastMCP server."""
+@mcp_tool(sensitivity="low", domain="budget")
+def reports_budget_status(
+    month: str | None = None,
+) -> ResponseEnvelope:
+    """Get budget vs actual spending comparison for a month.
+
+    Shows each budgeted category with its target, actual spending,
+    remaining amount, and status (OK / WARNING / OVER).
+
+    Args:
+        month: Month to check (YYYY-MM). Defaults to current month.
+    """
+    service = BudgetService(get_database())
+    result = service.status(month=month)
+    return result.to_envelope()
+
+
+def register_reports_tools(mcp: FastMCP) -> None:
+    """Register all reports namespace tools with the FastMCP server."""
     register(
         mcp,
-        spending_summary,
-        "spending_summary",
+        reports_spending_summary,
+        "reports_spending_summary",
         "Get income vs expense totals by month. Returns time-series "
         "data suitable for charting.",
     )
     register(
         mcp,
-        spending_by_category,
-        "spending_by_category",
+        reports_spending_by_category,
+        "reports_spending_by_category",
         "Get spending breakdown by category for a period. "
         "Requires transactions to be categorized.",
+    )
+    register(
+        mcp,
+        reports_budget_status,
+        "reports_budget_status",
+        "Get budget vs actual spending comparison for a month. "
+        "Shows target, spent, remaining, and status for each category.",
     )

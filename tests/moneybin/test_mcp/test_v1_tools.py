@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from moneybin.mcp.tools.spending import spending_summary
+from moneybin.mcp.tools.reports import reports_spending_summary
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -28,7 +28,7 @@ _INSERT_TRANSACTIONS = """
 
 
 class TestSpendingSummaryTool:
-    """Tests for spending_summary v1 tool."""
+    """Tests for reports_spending_summary v1 tool."""
 
     def _insert_data(self, mcp_db: object) -> None:
         from moneybin.mcp.server import get_db
@@ -39,7 +39,7 @@ class TestSpendingSummaryTool:
     def test_returns_envelope(self, mcp_db: object) -> None:
 
         self._insert_data(mcp_db)
-        result = asyncio.run(spending_summary(months=3))
+        result = asyncio.run(reports_spending_summary(months=3))
         from moneybin.protocol.envelope import ResponseEnvelope
 
         assert isinstance(result, ResponseEnvelope)
@@ -53,7 +53,7 @@ class TestSpendingSummaryTool:
     def test_data_shape(self, mcp_db: object) -> None:
 
         self._insert_data(mcp_db)
-        parsed = asyncio.run(spending_summary(months=3)).to_dict()
+        parsed = asyncio.run(reports_spending_summary(months=3)).to_dict()
         data = parsed["data"]
         assert len(data) >= 1
         assert "period" in data[0]

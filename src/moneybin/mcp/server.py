@@ -56,11 +56,11 @@ mcp = FastMCP(
         - import, sync — data ingestion (sync_pull/status/connect available; OAuth flows return URLs the client opens)
         - privacy — consent and audit
 
-        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_accept, reports_networth_get, reports_spending_summary.
+        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_summary.
 
         Getting oriented:
         - system_status — what data exists, freshness, pending review queues
-        - reports_health — financial snapshot (net worth, income/expenses, savings rate)
+        - reports_spending_summary — income vs expenses snapshot by month
 
         Conventions:
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
@@ -158,23 +158,35 @@ def register_core_tools() -> None:
 
     from moneybin.mcp.tools.accounts import register_accounts_tools
     from moneybin.mcp.tools.budget import register_budget_tools
-    from moneybin.mcp.tools.categorize import register_categorize_tools
+    from moneybin.mcp.tools.categories import register_categories_tools
     from moneybin.mcp.tools.discover import register_discover_tool
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
-    from moneybin.mcp.tools.spending import register_spending_tools
+    from moneybin.mcp.tools.merchants import register_merchants_tools
+    from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.mcp.tools.sql import register_sql_tools
+    from moneybin.mcp.tools.sync import register_sync_tools
+    from moneybin.mcp.tools.system import register_system_tools
     from moneybin.mcp.tools.tax import register_tax_tools
     from moneybin.mcp.tools.transactions import register_transactions_tools
+    from moneybin.mcp.tools.transactions_categorize import (
+        register_transactions_categorize_tools,
+    )
+    from moneybin.mcp.tools.transform import register_transform_tools
 
-    register_spending_tools(mcp)
+    register_system_tools(mcp)
+    register_reports_tools(mcp)
     register_accounts_tools(mcp)
     register_transactions_tools(mcp)
+    register_transactions_categorize_tools(mcp)
+    register_categories_tools(mcp)
+    register_merchants_tools(mcp)
     register_import_tools(mcp)
     register_inbox_tools(mcp)
-    register_categorize_tools(mcp)
     register_budget_tools(mcp)
     register_tax_tools(mcp)
+    register_sync_tools(mcp)
+    register_transform_tools(mcp)
     register_sql_tools(mcp)
     register_discover_tool(mcp)
 

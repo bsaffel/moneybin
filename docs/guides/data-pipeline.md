@@ -68,12 +68,12 @@ The matching engine runs after staging and before core materialization. It ident
 Both go through a review/accept/reject workflow with full undo. See the [matching specs](../specs/matching-overview.md) for the four-tier scoring model.
 
 ```bash
-moneybin matches run                   # Run matcher against existing data
-moneybin matches review                # Interactive review of pending proposals
-moneybin matches review --accept-all   # Non-interactive bulk accept
-moneybin matches history               # Recent decisions
-moneybin matches undo <match-id>       # Reverse a decision
-moneybin matches backfill              # One-time scan of all existing data
+moneybin transactions matches run                  # Run matcher against existing data
+moneybin transactions review --type matches        # Interactive review of pending proposals
+moneybin transactions review --type matches --confirm-all   # Non-interactive bulk confirm
+moneybin transactions matches history              # Recent decisions
+moneybin transactions matches undo <match-id>      # Reverse a decision
+moneybin transactions matches backfill             # One-time scan of all existing data
 ```
 
 `moneybin import file` runs the matcher automatically; the standalone commands are for reviewing pending work or tuning thresholds.

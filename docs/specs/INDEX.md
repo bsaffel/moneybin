@@ -72,7 +72,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Architecture & Design](mcp-architecture.md) | Architecture | in-progress | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness. Supersedes archived `mcp-read-tools` and `mcp-write-tools` specs. |
-| [Tool Surface](mcp-tool-surface.md) | Architecture | ready | Concrete tool, prompt, resource, and service layer definitions for MCP. v2 (2026-05-02) aligns naming with `cli-restructure.md` v2 taxonomy (path-prefix-verb-suffix), adds `reports_*` namespace, exposes sync + transform to MCP under the v2 exposure principle. |
+| [Tool Surface](mcp-tool-surface.md) | Architecture | in-progress | Concrete tool, prompt, resource, and service layer definitions for MCP. v2 (2026-05-02, in-progress) aligns naming with `cli-restructure.md` v2 taxonomy (path-prefix-verb-suffix), adds `reports_*` namespace, exposes sync + transform to MCP under the v2 exposure principle. |
 | [SQL Schema Discoverability](mcp-sql-discoverability.md) | Feature | implemented | `moneybin://schema` resource exposes curated interface tables (core + select app) with columns, comments, and example queries; eliminates per-session schema reconnaissance |
 | [Tool Timeouts & Cancellation](mcp-tool-timeouts.md) | Feature | implemented | Global 30s wall-clock cap on every tool dispatch with DuckDB `interrupt()` + connection close on timeout, so a hung call can't wedge the server's write lock |
 
@@ -104,7 +104,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [CLI Restructure](cli-restructure.md) | Architecture | ready | Target command taxonomy across CLI / MCP / future HTTP. v1 implemented; v2 (2026-05-02, status `ready`) dissolves `track`, introduces entity groups (`accounts`, `transactions`), adds `categories`, `merchants`, `assets`, `reports`, `system` top-level groups, separates `tax`, codifies MCP exposure principle, renames MCP tools. Reference spec for all other specs' surface placement. |
+| [CLI Restructure](cli-restructure.md) | Architecture | in-progress | Target command taxonomy across CLI / MCP / future HTTP. v1 implemented; v2 (2026-05-02, in-progress) dissolves `track`, introduces entity groups (`accounts`, `transactions`), adds `categories`, `merchants`, `assets`, `reports`, `system` top-level groups, separates `tax`, codifies MCP exposure principle, renames MCP tools. Reference spec for all other specs' surface placement. |
 | [Observability](observability.md) | Feature | implemented | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
 | [Database Migration](database-migration.md) | Feature | implemented | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
 | `export.md` | Feature | planned | Export analysis results to CSV, Excel, Google Sheets |

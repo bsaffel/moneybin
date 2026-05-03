@@ -216,11 +216,11 @@ class TestCategorizationPipeline:
         result.assert_success()
 
         # Apply rules
-        result = run_cli("categorize", "apply-rules", env=env)
+        result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
 
-        # Summary should work
-        result = run_cli("categorize", "summary", env=env)
+        # Stats should work
+        result = run_cli("transactions", "categorize", "stats", env=env)
         result.assert_success()
 
 
@@ -275,7 +275,7 @@ class TestAutoRulePipeline:
         result.assert_success()
 
         # Seed categories so the app schema has reference data.
-        result = run_cli("categorize", "seed", env=env)
+        result = run_cli("transform", "seed", env=env)
         result.assert_success()
 
         # Find the COFFEE SHOP transaction ID for account-a only — categorizing
@@ -314,18 +314,27 @@ class TestAutoRulePipeline:
 
         # bulk categorize — this records a user categorization and triggers the
         # auto-rule pipeline to create a pending proposal (threshold default = 1).
-        result = run_cli("categorize", "bulk", "--input", str(json_path), env=env)
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "bulk",
+            "--input",
+            str(json_path),
+            env=env,
+        )
         result.assert_success()
 
         # auto-review surfaces the seeded proposal
-        result = run_cli("categorize", "auto", "review", env=env)
+        result = run_cli("transactions", "categorize", "auto", "review", env=env)
         result.assert_success()
         assert "COFFEE SHOP" in result.output, (
             f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
         )
 
         # auto-confirm promotes the proposal to an active rule
-        result = run_cli("categorize", "auto", "confirm", "--approve-all", env=env)
+        result = run_cli(
+            "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
+        )
         result.assert_success()
         assert "Approved 1" in result.output, (
             f"auto-confirm did not approve the proposal: {result.output}"
@@ -350,7 +359,7 @@ class TestAutoRulePipeline:
         )
 
         # auto-stats reflects the promotion
-        result = run_cli("categorize", "auto", "stats", env=env)
+        result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
         assert "Active auto-rules" in result.output
 
@@ -377,5 +386,5 @@ class TestAutoRulePipeline:
 
         # Re-running apply-rules after promotion must succeed and not crash —
         # this exercises the path future imports will hit.
-        result = run_cli("categorize", "apply-rules", env=env)
+        result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()

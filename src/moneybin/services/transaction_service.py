@@ -66,8 +66,8 @@ class TransactionSearchResult:
             sensitivity="medium",
             total_count=self.total_count,
             actions=[
-                "Use transactions_recurring to find subscription patterns",
-                "Use categorize_bulk to categorize uncategorized transactions",
+                "Use transactions_recurring_list to find subscription patterns",
+                "Use transactions_categorize_bulk_apply to categorize uncategorized transactions",
             ],
         )
 
