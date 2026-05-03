@@ -239,7 +239,9 @@ _TEMPLATE_PROFILE_NAME = "e2e-template"
 
 
 @pytest.fixture(scope="session")
-def _mutating_profile_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def _mutating_profile_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by parameter name
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
     """One-shot MONEYBIN_HOME with `e2e-template` profile created and DB initialized.
 
     Built once per pytest session by running `moneybin profile create` against

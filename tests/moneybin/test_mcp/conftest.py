@@ -34,7 +34,9 @@ def _make_mock_store() -> MagicMock:
 
 
 @pytest.fixture(scope="session")
-def _mcp_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def _mcp_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by parameter name
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
     """Build the baseline encrypted DB once per session and return its path."""
     template_dir = tmp_path_factory.mktemp("mcp_db_template")
     template_path = template_dir / "template.duckdb"
