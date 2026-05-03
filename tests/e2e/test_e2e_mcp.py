@@ -195,3 +195,47 @@ class TestReportsNetworthTools:
 
                 assert "reports_networth_get" in tool_names
                 assert "reports_networth_history" in tool_names
+
+
+class TestNamespaceResources:
+    """MCP resource registration smoke tests."""
+
+    async def test_accounts_summary_resource_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """accounts://summary resource is registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resources_result = await session.list_resources()
+                resource_uris = {str(r.uri) for r in resources_result.resources}
+                assert "accounts://summary" in resource_uris
+
+    async def test_networth_summary_resource_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """net-worth://summary resource is registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resources_result = await session.list_resources()
+                resource_uris = {str(r.uri) for r in resources_result.resources}
+                assert "net-worth://summary" in resource_uris

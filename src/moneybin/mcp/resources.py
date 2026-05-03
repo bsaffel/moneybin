@@ -14,6 +14,9 @@ import json
 import logging
 from typing import Any
 
+from moneybin.database import get_database
+from moneybin.services.account_service import AccountService
+from moneybin.services.networth_service import NetworthService
 from moneybin.services.schema_catalog import build_schema_doc
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS
 
@@ -177,3 +180,37 @@ async def resource_tools() -> str:
         "discover_tool": "moneybin_discover",
     }
     return json.dumps(data, indent=2)
+
+
+@mcp.resource("accounts://summary")
+def resource_accounts_summary() -> str:
+    """High-level account snapshot for AI conversation context.
+
+    Returns total counts, counts by type and subtype, count archived,
+    count excluded from net worth, count with recent activity (30 days).
+    No per-account data, no balances, no PII.
+    """
+    logger.info("Resource read: accounts://summary")
+    return json.dumps(AccountService(get_database()).summary(), default=str)
+
+
+@mcp.resource("net-worth://summary")
+def resource_networth_summary() -> str:
+    """Current net worth snapshot for AI conversation context.
+
+    Returns total net worth, total assets, total liabilities, account count,
+    and as-of date. Does not include per-account breakdown; use the
+    reports_networth_get tool for that.
+    """
+    logger.info("Resource read: net-worth://summary")
+    snapshot = NetworthService(get_database()).current()
+    return json.dumps(
+        {
+            "balance_date": snapshot.balance_date.isoformat(),
+            "net_worth": snapshot.net_worth,
+            "total_assets": snapshot.total_assets,
+            "total_liabilities": snapshot.total_liabilities,
+            "account_count": snapshot.account_count,
+        },
+        default=str,
+    )
