@@ -23,7 +23,7 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 
@@ -73,13 +73,24 @@ def build_attach_sql(
     """
     from sqlglot import exp
 
-    safe_path = str(db_path).replace("'", "''")
-    safe_key = encryption_key.replace("'", "''")
+    safe_path = escape_sql_literal(str(db_path))
+    safe_key = escape_sql_literal(encryption_key)
     safe_alias = exp.to_identifier(alias, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
     return (
         f"ATTACH '{safe_path}' AS {safe_alias} "  # noqa: S608 — trusted internal values, single-quote escaped, alias sqlglot-quoted
         f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"
     )
+
+
+def escape_sql_literal(value: str) -> str:
+    """Escape single quotes for safe interpolation into a SQL string literal.
+
+    DuckDB statements like ``ATTACH 'path'`` and ``COMMENT ON … IS 'text'``
+    require an inline string literal — they cannot be parameterized with ``?``.
+    Use this helper for those cases; prefer parameterized queries everywhere
+    else.
+    """
+    return value.replace("'", "''")
 
 
 class DatabaseKeyError(Exception):
@@ -354,7 +365,7 @@ class Database:
         table: str,
         df: Any,
         *,
-        on_conflict: str = "insert",
+        on_conflict: Literal["insert", "replace", "upsert"] = "insert",
     ) -> None:
         """Load a Polars (or Arrow-compatible) DataFrame into the database.
 
