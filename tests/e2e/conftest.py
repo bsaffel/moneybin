@@ -10,11 +10,26 @@ import atexit
 import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is intentional; we invoke uv as a test harness
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+# Resolve the moneybin entrypoint inside the active venv. Tests run under
+# `uv run pytest`, which prepends `.venv/bin` to PATH and sets sys.executable
+# to the venv's python — so its sibling `moneybin` is what we want. Calling
+# the script directly skips uv's per-invocation project-resolve overhead
+# (~100-200ms × 100+ calls in the E2E suite).
+_VENV_BIN = Path(sys.executable).parent
+_MONEYBIN_BIN = _VENV_BIN / "moneybin"
+if not _MONEYBIN_BIN.exists():
+    msg = (
+        f"moneybin entrypoint not found at {_MONEYBIN_BIN}. "
+        f"Run `uv sync` to populate the venv before running E2E tests."
+    )
+    raise RuntimeError(msg)
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -102,7 +117,7 @@ def run_cli(
     Returns:
         CLIResult with exit_code, stdout, stderr.
     """
-    cmd = ["uv", "run", "moneybin", *args]  # noqa: S607 — uv is on PATH in dev environments
+    cmd = [str(_MONEYBIN_BIN), *args]
     # When no env is provided, override MONEYBIN_PROFILE and MONEYBIN_HOME
     # to prevent the first-run setup wizard and isolate from the user's
     # real profile. The fallback profile dir is created on first use.
