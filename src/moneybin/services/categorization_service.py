@@ -483,6 +483,23 @@ class CategorizationService:
             rule_ids=rule_ids,
         )
 
+    def deactivate_rule(self, rule_id: str) -> bool:
+        """Soft-delete a rule by setting ``is_active=false``.
+
+        Returns ``True`` if the rule existed (and is now inactive),
+        ``False`` if no rule with that ID was found.
+        """
+        row = self._db.execute(
+            f"""
+            UPDATE {CATEGORIZATION_RULES.full_name}
+            SET is_active = false, updated_at = CURRENT_TIMESTAMP
+            WHERE rule_id = ?
+            RETURNING rule_id
+            """,
+            [rule_id],
+        ).fetchone()
+        return row is not None
+
     # -- Categorization core --
 
     def bulk_categorize(

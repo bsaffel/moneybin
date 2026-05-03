@@ -353,3 +353,61 @@ class TestCreateRules:
         assert len(result.error_details) == 1
         assert result.error_details[0]["name"] == "R1"
         assert "Failed to create rule" in result.error_details[0]["reason"]
+
+
+class TestDeactivateRule:
+    """CategorizationService.deactivate_rule — soft-delete a rule."""
+
+    @pytest.mark.unit
+    def test_returns_true_and_sets_inactive(self, db: Database) -> None:
+        # Seed an active rule
+        svc = CategorizationService(db)
+        items = [
+            CategorizationRuleInput(
+                name="R1",
+                merchant_pattern="P1",
+                category="C",
+            )
+        ]
+        rule_id = svc.create_rules(items).rule_ids[0]
+
+        result = svc.deactivate_rule(rule_id)
+        assert result is True
+
+        row = db.execute(
+            "SELECT is_active FROM app.categorization_rules WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row == (False,)
+
+    @pytest.mark.unit
+    def test_returns_false_for_missing_rule(self, db: Database) -> None:
+        # Ensure table exists by creating one rule, then ask for a different id.
+        svc = CategorizationService(db)
+        svc.create_rules([
+            CategorizationRuleInput(name="x", merchant_pattern="x", category="x"),
+        ])
+        assert svc.deactivate_rule("does-not-exist") is False
+
+    @pytest.mark.unit
+    def test_does_not_affect_other_rules(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        items = [
+            CategorizationRuleInput(
+                name=f"R{i}",
+                merchant_pattern=f"P{i}",
+                category="C",
+            )
+            for i in range(3)
+        ]
+        ids = svc.create_rules(items).rule_ids
+
+        svc.deactivate_rule(ids[1])
+
+        rows = db.execute(
+            "SELECT rule_id, is_active FROM app.categorization_rules ORDER BY rule_id"
+        ).fetchall()
+        active_states = dict(rows)
+        assert active_states[ids[0]] is True
+        assert active_states[ids[1]] is False
+        assert active_states[ids[2]] is True
