@@ -132,30 +132,30 @@ pre-commit: venv ## Setup & Installation: Install pre-commit hooks
 
 test-unit: venv ## Development: Run unit tests only (excludes integration and e2e tests)
 	@echo "$(BLUE)🧪 Running unit tests (use 'make test-all' for all tests)...$(RESET)"
-	@uv run pytest tests/ -m "not integration and not e2e"
+	@uv run pytest tests/ -m "not integration and not e2e" --durations=25
 
 test: test-unit ## Development: Run unit tests (alias for test-unit)
 
 test-all: venv ## Development: Run all tests (unit, integration, e2e) with verbose output
 	@echo "$(BLUE)🧪 Running all tests (unit, integration, e2e)...$(RESET)"
-	@uv run pytest tests/ -v
+	@uv run pytest tests/ -v --durations=25
 
 test-cov: venv ## Development: Run tests with coverage report
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
-	@uv run pytest --cov=src tests/ -m "not integration and not e2e"
+	@uv run pytest --cov=src tests/ -m "not integration and not e2e" --durations=25
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"
 
 test-integration: venv ## Development: Run integration tests only
 	@echo "$(BLUE)🧪 Running integration tests...$(RESET)"
-	@uv run pytest tests/ -m "integration"
+	@uv run pytest tests/ -m "integration" --durations=25
 
 test-e2e: venv ## Development: Run end-to-end subprocess tests
 	@echo "$(BLUE)🧪 Running end-to-end tests...$(RESET)"
-	@uv run pytest tests/e2e/ -m "e2e" -v
+	@uv run pytest tests/e2e/ -m "e2e" -v --durations=25
 
 test-scenarios: venv ## Development: Run all whole-pipeline scenarios via pytest
 	@echo "$(BLUE)🧪 Running all scenarios...$(RESET)"
-	@uv run pytest tests/scenarios/ -m scenarios -v
+	@uv run pytest tests/scenarios/ -m scenarios -v --durations=25
 
 format: venv ## Development: Format code with ruff
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"
