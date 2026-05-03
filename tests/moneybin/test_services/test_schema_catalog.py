@@ -52,11 +52,10 @@ def test_every_interface_table_has_at_least_one_example() -> None:
 def _present_tables(db: Database) -> set[str]:
     """Return fully-qualified names of all tables and views in the test DB."""
     rows = db.execute(
-        """
-        SELECT schema_name || '.' || table_name FROM duckdb_tables()
-        UNION ALL
-        SELECT schema_name || '.' || view_name FROM duckdb_views() WHERE NOT internal
-        """  # noqa: S608  # static query, not user input
+        "SELECT schema_name || '.' || table_name FROM duckdb_tables() "
+        "UNION ALL "
+        "SELECT schema_name || '.' || view_name FROM duckdb_views() "
+        "WHERE NOT internal"
     ).fetchall()
     return {r[0] for r in rows}
 
@@ -92,15 +91,9 @@ def test_build_schema_doc_includes_interface_views(
 
     Regression test: `duckdb_tables()` excludes views, so the catalog
     query must union it with `duckdb_views()` to surface objects like
-    `app.categories` (created via CREATE OR REPLACE VIEW in seeds.py).
+    `app.categories` (a view normally created via SQLMesh seeds; stubbed
+    in the fixture for tests).
     """
-    schema_catalog_db.execute("CREATE SCHEMA IF NOT EXISTS app")
-    schema_catalog_db.execute(
-        "CREATE OR REPLACE VIEW app.categories AS "
-        "SELECT 'X' AS category_id, 'X' AS category, "
-        "NULL::VARCHAR AS subcategory, NULL::VARCHAR AS description, "
-        "true AS is_active"
-    )
     doc = build_schema_doc()
     names = {t["name"] for t in doc["tables"]}
     assert "app.categories" in names
@@ -145,35 +138,25 @@ def test_build_schema_doc_includes_examples_for_present_tables(
 
 
 def test_interface_tables_present_in_catalog(schema_catalog_db: Database) -> None:
-    """Stale-entry drift: an interface-tagged table is missing from the DB.
+    """Stale-entry drift: every interface-tagged table must exist in the DB.
 
-    Coverage gap: filters to core.* because the fixture only seeds core
-    tables — the six app.* interface tables (categories, budgets, notes,
-    merchants, categorization_rules, transaction_categories) are not
-    presence-checked or example-executed here. See docs/followups.md
-    "MCP schema discoverability — app.* drift coverage".
+    Catches removals or renames of any INTERFACE_TABLES entry — including the
+    six app.* interface tables (categories, budgets, merchants,
+    categorization_rules, transaction_categories, transaction_notes), which
+    were previously skipped because the fixture did not seed them.
     """
     present = _present_tables(schema_catalog_db)
-    missing_core = [
-        t.full_name
-        for t in INTERFACE_TABLES
-        if t.schema == "core" and t.full_name not in present
-    ]
-    assert not missing_core, (
-        f"INTERFACE_TABLES core entries missing from catalog: {missing_core}"
-    )
+    missing = [t.full_name for t in INTERFACE_TABLES if t.full_name not in present]
+    assert not missing, f"INTERFACE_TABLES entries missing from test DB: {missing}"
 
 
 def test_examples_parse_and_execute(schema_catalog_db: Database) -> None:
     """Examples must parse and execute against the live schema.
 
-    Catches column-renamed-but-example-not-updated drift. Skips examples
-    for tables not present in the test DB (app.* tables — see the
-    coverage-gap note on test_interface_tables_present_in_catalog).
+    Catches column-renamed-but-example-not-updated drift. Now exercises
+    examples for app.* interface tables (previously skipped when the
+    fixture did not seed them).
     """
-    present = _present_tables(schema_catalog_db)
-    for table_name, examples in EXAMPLES.items():
-        if table_name not in present:
-            continue
+    for examples in EXAMPLES.values():
         for ex in examples:
             schema_catalog_db.execute(ex.sql).fetchall()

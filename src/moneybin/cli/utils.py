@@ -70,6 +70,11 @@ def stash_cli_flags(profile: str | None, verbose: bool) -> None:
     _flags.verbose = verbose
 
 
+def get_verbose_flag() -> bool:
+    """Return whether --verbose was passed on the top-level CLI."""
+    return _flags.verbose
+
+
 def resolve_profile() -> None:
     """Resolve the active profile and finish CLI setup.
 
