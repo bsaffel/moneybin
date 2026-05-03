@@ -187,5 +187,5 @@ class TestResourceTools:
     def test_known_namespaces_present(self) -> None:
         data = self._read()
         namespaces = {e["namespace"] for e in data["core"]}
-        assert "spending" in namespaces
+        assert "reports" in namespaces
         assert "accounts" in namespaces

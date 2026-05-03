@@ -7,7 +7,7 @@ with the FastMCP server is covered by tests/mcp/test_visibility.py.
 
 import pytest
 
-from moneybin.mcp.tools.spending import spending_summary
+from moneybin.mcp.tools.spending import reports_spending_summary
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -26,7 +26,7 @@ _INSERT_TRANSACTIONS = """
 
 
 class TestSpendingSummaryTool:
-    """Tests for spending_summary v1 tool."""
+    """Tests for reports_spending_summary v1 tool."""
 
     def _insert_data(self, mcp_db: object) -> None:
         from moneybin.mcp.server import get_db
@@ -36,7 +36,7 @@ class TestSpendingSummaryTool:
     @pytest.mark.unit
     def test_returns_envelope(self, mcp_db: object) -> None:
         self._insert_data(mcp_db)
-        result = spending_summary(months=3)
+        result = reports_spending_summary(months=3)
         from moneybin.protocol.envelope import ResponseEnvelope
 
         assert isinstance(result, ResponseEnvelope)
@@ -49,7 +49,7 @@ class TestSpendingSummaryTool:
     @pytest.mark.unit
     def test_data_shape(self, mcp_db: object) -> None:
         self._insert_data(mcp_db)
-        parsed = spending_summary(months=3).to_dict()
+        parsed = reports_spending_summary(months=3).to_dict()
         data = parsed["data"]
         assert len(data) >= 1
         assert "period" in data[0]

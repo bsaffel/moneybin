@@ -65,7 +65,9 @@ class CategorizationStats:
         return build_envelope(
             data=data,
             sensitivity="low",
-            actions=["Use categorize_uncategorized to see uncategorized transactions"],
+            actions=[
+                "Use transactions_categorize_pending_list to see uncategorized transactions"
+            ],
         )
 
 
@@ -92,8 +94,8 @@ class BulkCategorizationResult:
             sensitivity="medium",
             total_count=input_count,
             actions=[
-                "Use categorize_rules to review auto-created rules",
-                "Use categorize_uncategorized to fetch the next batch",
+                "Use transactions_categorize_rules_list to review auto-created rules",
+                "Use transactions_categorize_pending_list to fetch the next batch",
             ],
         )
 

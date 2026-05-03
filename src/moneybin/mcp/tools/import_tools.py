@@ -3,7 +3,7 @@
 
 Tools:
     - import_file — Import a financial data file (low sensitivity)
-    - import_csv_preview — Preview a tabular file without importing (low sensitivity)
+    - import_preview — Preview a tabular file without importing (low sensitivity)
     - import_status — List past import batches (low sensitivity)
     - import_revert — Undo an import batch by import_id (low sensitivity)
     - import_list_formats — List available tabular import formats (low sensitivity)
@@ -108,13 +108,13 @@ def import_file(
             if import_id
             else "Use import_status to view recent imports",
             "Use transactions_search to view imported transactions",
-            "Use categorize_uncategorized to categorize new transactions",
+            "Use transactions_categorize_pending_list to categorize new transactions",
         ],
     )
 
 
 @mcp_tool(sensitivity="low")
-def import_csv_preview(file_path: str) -> ResponseEnvelope:
+def import_preview(file_path: str) -> ResponseEnvelope:
     """Preview a tabular file's structure and detected column mapping.
 
     Runs the first 3 stages of the tabular pipeline (detect, read, map)
@@ -239,7 +239,7 @@ def import_list_formats() -> ResponseEnvelope:
     """List all available tabular import formats (built-in and user-saved).
 
     Returns format name, institution, sign convention, date format, and
-    header signature for each format. Use ``import_csv_preview`` to test
+    header signature for each format. Use ``import_preview`` to test
     a format against a specific file.
     """
     from moneybin.extractors.tabular.formats import (
@@ -272,7 +272,7 @@ def import_list_formats() -> ResponseEnvelope:
         data=format_list,
         sensitivity="low",
         actions=[
-            "Use import_csv_preview to test a format against a file",
+            "Use import_preview to test a format against a file",
             "Use import_file with format_name to import using a specific format",
         ],
     )
@@ -289,8 +289,8 @@ def register_import_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        import_csv_preview,
-        "import_csv_preview",
+        import_preview,
+        "import_preview",
         "Preview a tabular file's structure and detected column "
         "mapping without importing.",
     )

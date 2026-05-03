@@ -43,8 +43,8 @@ class TestV1ToolRegistration:
         import asyncio
 
         names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert "spending_summary" in names
-        assert "spending_by_category" in names
+        assert "reports_spending_summary" in names
+        assert "reports_spending_by_category" in names
 
     @pytest.mark.unit
     def test_accounts_tools_register(self) -> None:
@@ -54,7 +54,7 @@ class TestV1ToolRegistration:
         register_accounts_tools(srv)
         names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "accounts_list" in names
-        assert "accounts_balances" in names
+        assert "accounts_balance_list" in names
 
     @pytest.mark.unit
     def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:

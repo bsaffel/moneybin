@@ -92,13 +92,13 @@ def resource_schema() -> str:
 
 
 _CORE_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
-    "overview": "Data status and financial health snapshot",
-    "spending": "Expense analysis, trends, category breakdowns",
-    "cashflow": "Income vs outflows, net cash position",
     "accounts": "Account listing, balances, net worth",
-    "transactions": "Search, corrections, annotations, recurring",
+    "categories": "Category taxonomy reference data",
     "import": "File import, status, format management",
+    "merchants": "Merchant name mapping reference data",
+    "reports": "Spending analysis, budget vs actual, financial summaries",
     "sql": "Direct read-only SQL queries",
+    "transactions": "Search, corrections, annotations, recurring",
 }
 
 
@@ -113,11 +113,10 @@ def _description_for(ns: str) -> str:
 def _namespace_for(tool_name: str) -> str:
     """Extract the namespace prefix from an underscore-joined tool name.
 
-    Most namespaces are a single word, so a first-underscore split works:
-    ``spending_by_category`` → ``spending``, ``categorize_auto_confirm`` →
-    ``categorize``. Multi-segment namespaces (e.g. ``transactions_matches``)
-    are matched explicitly via longest-prefix lookup so tools like
-    ``transactions_matches_pending`` group correctly.
+    First-underscore split: ``reports_spending_by_category`` → ``reports``,
+    ``accounts_balance_list`` → ``accounts``. Multi-segment namespaces
+    (e.g. ``transactions_matches``) are matched explicitly via longest-prefix
+    lookup so tools like ``transactions_matches_pending`` group correctly.
     """
     from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS
 

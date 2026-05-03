@@ -3,7 +3,7 @@
 
 Tools:
     - transactions_search — Search transactions with filters (medium sensitivity)
-    - transactions_recurring — Detect recurring transaction patterns (medium sensitivity)
+    - transactions_recurring_list — Detect recurring transaction patterns (medium sensitivity)
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def transactions_search(
 
 
 @mcp_tool(sensitivity="medium")
-def transactions_recurring(
+def transactions_recurring_list(
     min_occurrences: int = 3,
 ) -> ResponseEnvelope:
     """Detect recurring transaction patterns like subscriptions.
@@ -96,7 +96,7 @@ def register_transactions_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_recurring,
-        "transactions_recurring",
+        transactions_recurring_list,
+        "transactions_recurring_list",
         "Detect recurring transaction patterns like subscriptions and regular charges.",
     )

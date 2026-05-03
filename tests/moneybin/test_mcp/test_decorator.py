@@ -33,7 +33,7 @@ class TestLogToolCall:
     def test_log_tool_call_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
         """log_tool_call is a stub — it logs but doesn't block."""
         with caplog.at_level("DEBUG"):
-            result = log_tool_call("spending_summary", Sensitivity.LOW)
+            result = log_tool_call("reports_spending_summary", Sensitivity.LOW)
         assert result is None
 
     @pytest.mark.unit
@@ -60,10 +60,10 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     def test_decorator_preserves_function_name(self) -> None:
         @mcp_tool(sensitivity="medium")
-        def spending_summary() -> str:
+        def reports_spending_summary() -> str:
             return "data"
 
-        assert spending_summary.__name__ == "spending_summary"
+        assert reports_spending_summary.__name__ == "reports_spending_summary"
 
     @pytest.mark.unit
     def test_decorator_calls_log_tool_call(self) -> None:

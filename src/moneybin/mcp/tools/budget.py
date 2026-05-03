@@ -1,9 +1,9 @@
-# src/moneybin/mcp/tools/budget.py
-"""Budget namespace tools — budget targets and spending status.
+"""Budget namespace tools — budget mutation.
 
 Tools:
     - budget_set — Create or update a budget target (low sensitivity)
-    - budget_status — Budget vs actual spending comparison (low sensitivity)
+
+Note: reports_budget_status (read) lives in reports.py per the v2 read/write split.
 """
 
 from __future__ import annotations
@@ -44,23 +44,6 @@ def budget_set(
     return result.to_envelope()
 
 
-@mcp_tool(sensitivity="low", domain="budget")
-def budget_status(
-    month: str | None = None,
-) -> ResponseEnvelope:
-    """Get budget vs actual spending comparison for a month.
-
-    Shows each budgeted category with its target, actual spending,
-    remaining amount, and status (OK / WARNING / OVER).
-
-    Args:
-        month: Month to check (YYYY-MM). Defaults to current month.
-    """
-    service = BudgetService(get_database())
-    result = service.status(month=month)
-    return result.to_envelope()
-
-
 def register_budget_tools(mcp: FastMCP) -> None:
     """Register all budget namespace tools with the FastMCP server."""
     register(
@@ -68,11 +51,4 @@ def register_budget_tools(mcp: FastMCP) -> None:
         budget_set,
         "budget_set",
         "Create or update a monthly budget target for a spending category.",
-    )
-    register(
-        mcp,
-        budget_status,
-        "budget_status",
-        "Get budget vs actual spending comparison for a month. "
-        "Shows target, spent, remaining, and status for each category.",
     )
