@@ -894,7 +894,7 @@ class CategorizationService:
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                     ON t.transaction_id = c.transaction_id
                 WHERE c.transaction_id IS NULL
-                """
+                """  # noqa: S608  # TableRef constants, no user input interpolated
             ).fetchone()
             return int(row[0]) if row else 0
         except Exception:  # noqa: BLE001 — tables may not exist before first import
