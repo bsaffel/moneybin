@@ -56,6 +56,10 @@ _HELP_COMMANDS: list[list[str]] = [
     ["export"],
     ["sync", "schedule"],
     ["sync", "key"],
+    ["reports"],
+    ["reports", "networth"],
+    ["reports", "networth", "show"],
+    ["reports", "networth", "history"],
 ]
 
 

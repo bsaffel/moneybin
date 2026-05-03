@@ -23,6 +23,7 @@ from .commands import (
     mcp,
     migrate,
     profile,
+    reports,
     stats,
     sync,
     synthetic,
@@ -122,6 +123,11 @@ app.add_typer(
     accounts.app,
     name="accounts",
     help="Account listing, settings, and lifecycle ops",
+)
+app.add_typer(
+    reports.app,
+    name="reports",
+    help="Cross-domain analytical reports",
 )
 app.add_typer(
     transform.app,
