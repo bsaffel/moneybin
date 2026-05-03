@@ -42,27 +42,6 @@ CREATE TABLE IF NOT EXISTS {_SCHEMA_VERSION_TABLE} (
 """
 
 
-_ddl_hash_cache: str | None = None
-
-
-def _compute_ddl_hash() -> str:
-    """SHA-256 (truncated 16 hex) of concatenated schema DDL file contents.
-
-    Cached for the process lifetime — DDL files don't change at runtime, so
-    re-reading them on every Database open wastes ~26 file reads per call.
-    """
-    global _ddl_hash_cache  # noqa: PLW0603 — module-level cache, set once
-    if _ddl_hash_cache is not None:
-        return _ddl_hash_cache
-    h = hashlib.sha256()
-    for sql_file in _SCHEMA_FILES:
-        sql_path = _SQL_DIR / sql_file
-        if sql_path.exists():
-            h.update(sql_path.read_bytes())
-    _ddl_hash_cache = h.hexdigest()[:16]
-    return _ddl_hash_cache
-
-
 _SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
     "core_schema.sql",
@@ -92,6 +71,27 @@ _SCHEMA_FILES: list[str] = [
     "app_proposed_rules.sql",
     "app_rule_deactivations.sql",
 ]
+
+
+_ddl_hash_cache: str | None = None
+
+
+def _compute_ddl_hash() -> str:
+    """SHA-256 (truncated 16 hex) of concatenated schema DDL file contents.
+
+    Cached for the process lifetime — DDL files don't change at runtime, so
+    re-reading them on every Database open wastes ~26 file reads per call.
+    """
+    global _ddl_hash_cache  # noqa: PLW0603 — module-level cache, set once
+    if _ddl_hash_cache is not None:
+        return _ddl_hash_cache
+    h = hashlib.sha256()
+    for sql_file in _SCHEMA_FILES:
+        sql_path = _SQL_DIR / sql_file
+        if sql_path.exists():
+            h.update(sql_path.read_bytes())
+    _ddl_hash_cache = h.hexdigest()[:16]
+    return _ddl_hash_cache
 
 
 def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
@@ -163,10 +163,14 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
 def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     """Create all database schemas and tables, then apply inline comments.
 
-    Memoizes against a hash of the DDL file contents stored in
-    ``app.schema_init_state``. If the hash matches a prior successful
-    apply, schema initialization is a no-op — the DDL files are unchanged
-    from the last successful run.
+    Idempotent ``CREATE … IF NOT EXISTS`` DDL always runs so a database that
+    previously initialized but later lost a baseline table (manual cleanup,
+    partial repair) self-heals on the next open.
+
+    The expensive part — sqlglot parsing of every schema file plus
+    ``COMMENT ON`` statements per column — is memoized against a hash of the
+    DDL file contents stored in ``app.schema_init_state``. When the hash
+    matches a prior successful apply, comments are skipped.
 
     Args:
         conn: An active read-write DuckDB connection.
@@ -179,11 +183,7 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     cached = conn.execute(
         f"SELECT ddl_hash FROM {_SCHEMA_VERSION_TABLE} LIMIT 1"  # noqa: S608  # constant table name
     ).fetchone()
-    if cached and cached[0] == expected_hash:
-        logger.debug(
-            f"Schema DDL hash matches ({expected_hash}); skipping init_schemas"
-        )
-        return
+    hash_matches = cached is not None and cached[0] == expected_hash
 
     for sql_file in _SCHEMA_FILES:
         sql_path = _SQL_DIR / sql_file
@@ -192,8 +192,15 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
-        _apply_comments(conn, sql)
+        if not hash_matches:
+            _apply_comments(conn, sql)
         logger.debug(f"Executed {sql_file}")
+
+    if hash_matches:
+        logger.debug(
+            f"Schema DDL hash matches ({expected_hash}); skipped comment apply"
+        )
+        return
 
     conn.execute(f"DELETE FROM {_SCHEMA_VERSION_TABLE}")  # noqa: S608  # constant table name
     conn.execute(

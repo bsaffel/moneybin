@@ -55,7 +55,6 @@ class _LazyTyper(typer.Typer):
     def _load(self) -> None:
         if self._lazy_loaded:
             return
-        self._lazy_loaded = True
         module = import_module(self._lazy_module_path)
         real: typer.Typer = getattr(module, self._lazy_attr)
         # Copy over the real app's registered commands and groups so that
@@ -64,6 +63,10 @@ class _LazyTyper(typer.Typer):
         self.registered_groups = real.registered_groups  # type: ignore[assignment]
         if real.registered_callback is not None and self.registered_callback is None:
             self.registered_callback = real.registered_callback  # type: ignore[assignment]
+        # Set the flag last: if any of the above raises, a subsequent access
+        # re-enters _load() and surfaces the original ImportError/etc instead
+        # of masking it with a KeyError on __dict__["registered_commands"].
+        self._lazy_loaded = True
 
     @property  # type: ignore[override]
     def registered_commands(self) -> list[Any]:  # type: ignore[override]
@@ -97,6 +100,12 @@ def _add_lazy_typer(
     The real module at *module_path* is imported only when Typer/Click first
     inspects ``registered_commands`` or ``registered_groups`` — which happens
     at subcommand dispatch time, not at ``moneybin --help`` time.
+
+    Contract: the lazy wrapper hardcodes ``no_args_is_help=True`` and
+    ``rich_markup_mode=None`` and does not merge per-module Typer kwargs.
+    Lazy-loaded command modules must construct their root ``typer.Typer``
+    with these same defaults — otherwise the wrapped settings will diverge
+    from the underlying module's intent. The current 13 modules all comply.
     """
     lazy = _LazyTyper(
         module_path=module_path,
