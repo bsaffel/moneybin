@@ -8,6 +8,7 @@ both MCP tools and CLI commands.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from difflib import get_close_matches
@@ -129,6 +130,55 @@ def suggest_holder_category(value: str) -> str | None:
         value.lower(), PLAID_CANONICAL_HOLDER_CATEGORIES, n=1, cutoff=0.75
     )
     return matches[0] if matches else None
+
+
+_LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
+_ISO_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+
+
+@dataclass(frozen=True, slots=True)
+class AccountSettings:
+    """Per-account settings record. Validated at construction.
+
+    Validation lives here (not in SQL CHECK constraints) so historical rows
+    written before tighter rules can still be read.
+    """
+
+    account_id: str
+    display_name: str | None = None
+    official_name: str | None = None
+    last_four: str | None = None
+    account_subtype: str | None = None
+    holder_category: str | None = None
+    iso_currency_code: str | None = None
+    credit_limit: Decimal | None = None
+    archived: bool = False
+    include_in_net_worth: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate fields at construction time."""
+        if not self.account_id:
+            raise ValueError("account_id is required")
+        if self.display_name is not None:
+            if not 1 <= len(self.display_name) <= 80:
+                raise ValueError("display_name must be 1-80 chars")
+        if self.official_name is not None:
+            if not 1 <= len(self.official_name) <= 200:
+                raise ValueError("official_name must be 1-200 chars")
+        if self.last_four is not None and not _LAST_FOUR_RE.match(self.last_four):
+            raise ValueError("last_four must be exactly 4 digits")
+        if self.account_subtype is not None:
+            if not 1 <= len(self.account_subtype) <= 32:
+                raise ValueError("account_subtype must be 1-32 chars")
+        if self.holder_category is not None:
+            if not 1 <= len(self.holder_category) <= 32:
+                raise ValueError("holder_category must be 1-32 chars")
+        if self.iso_currency_code is not None and not _ISO_CURRENCY_RE.match(
+            self.iso_currency_code
+        ):
+            raise ValueError("iso_currency_code must be exactly 3 uppercase letters")
+        if self.credit_limit is not None and self.credit_limit < Decimal("0"):
+            raise ValueError("credit_limit must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,6 +19,7 @@ from moneybin.services.account_service import (
     AccountBalance,
     AccountListResult,
     AccountService,
+    AccountSettings,
     BalanceListResult,
     is_canonical_holder_category,
     is_canonical_subtype,
@@ -196,6 +197,60 @@ class TestBalances:
         assert d["summary"]["sensitivity"] == "medium"
         data: list[dict[str, Any]] = d["data"]
         assert len(data) == 2
+
+
+class TestAccountSettingsModel:
+    """Tests for AccountSettings dataclass construction and validation."""
+
+    @pytest.mark.unit
+    def test_full_construction(self) -> None:
+        s = AccountSettings(
+            account_id="acct_abc",
+            display_name="Checking",
+            official_name="PLATINUM CHECKING ACCOUNT",
+            last_four="1234",
+            account_subtype="checking",
+            holder_category="personal",
+            iso_currency_code="USD",
+            credit_limit=Decimal("5000.00"),
+            archived=False,
+            include_in_net_worth=True,
+        )
+        assert s.display_name == "Checking"
+
+    @pytest.mark.unit
+    def test_display_name_too_long(self) -> None:
+        with pytest.raises(ValueError, match="display_name"):
+            AccountSettings(account_id="a", display_name="x" * 81)
+
+    @pytest.mark.unit
+    def test_last_four_format(self) -> None:
+        with pytest.raises(ValueError, match="last_four"):
+            AccountSettings(account_id="a", last_four="abcd")
+        with pytest.raises(ValueError, match="last_four"):
+            AccountSettings(account_id="a", last_four="123")
+
+    @pytest.mark.unit
+    def test_iso_currency_code_format(self) -> None:
+        with pytest.raises(ValueError, match="iso_currency_code"):
+            AccountSettings(account_id="a", iso_currency_code="usd")  # lowercase
+        with pytest.raises(ValueError, match="iso_currency_code"):
+            AccountSettings(account_id="a", iso_currency_code="USDD")
+
+    @pytest.mark.unit
+    def test_credit_limit_non_negative(self) -> None:
+        with pytest.raises(ValueError, match="credit_limit"):
+            AccountSettings(account_id="a", credit_limit=Decimal("-1.00"))
+
+    @pytest.mark.unit
+    def test_official_name_too_long(self) -> None:
+        with pytest.raises(ValueError, match="official_name"):
+            AccountSettings(account_id="a", official_name="x" * 201)
+
+    @pytest.mark.unit
+    def test_subtype_too_long(self) -> None:
+        with pytest.raises(ValueError, match="account_subtype"):
+            AccountSettings(account_id="a", account_subtype="x" * 33)
 
 
 class TestEmptyResults:
