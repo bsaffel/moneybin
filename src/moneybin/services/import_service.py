@@ -1078,7 +1078,9 @@ class ImportService:
         if result.has_matches:
             logger.info(f"Matching: {result.summary()}")
             if result.has_pending:
-                logger.info("Run 'moneybin matches review' when ready")
+                logger.info(
+                    "Run 'moneybin transactions review --type matches' when ready"
+                )
 
     def _apply_categorization(self) -> None:
         """Run deterministic categorization on uncategorized transactions.
@@ -1101,7 +1103,7 @@ class ImportService:
             if pending:
                 logger.info(f"  {pending} new auto-rule proposals")
                 logger.info(
-                    "  💡 Run 'moneybin categorize auto review' to review proposed rules"
+                    "  💡 Run 'moneybin transactions categorize auto review' to review proposed rules"
                 )
         except Exception:  # noqa: BLE001 — categorization is best-effort; failure skips without aborting import
             logger.debug(
