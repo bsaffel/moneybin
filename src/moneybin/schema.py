@@ -60,6 +60,7 @@ _SCHEMA_FILES: list[str] = [
     "app_seed_source_priority.sql",
     "app_proposed_rules.sql",
     "app_rule_deactivations.sql",
+    "app_account_settings.sql",
 ]
 
 
