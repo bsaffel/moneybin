@@ -217,17 +217,7 @@ def transactions_categorize_rule_delete(rule_id: str) -> ResponseEnvelope:
     Args:
         rule_id: The rule ID to deactivate.
     """
-    db = get_database()
-    row = db.execute(
-        f"""
-        UPDATE {CATEGORIZATION_RULES.full_name}
-        SET is_active = false, updated_at = CURRENT_TIMESTAMP
-        WHERE rule_id = ?
-        RETURNING rule_id
-        """,
-        [rule_id],
-    ).fetchone()
-    if not row:
+    if not CategorizationService(get_database()).deactivate_rule(rule_id):
         raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
     return build_envelope(
         data={"rule_id": rule_id, "action": "deactivated"},
