@@ -1,9 +1,10 @@
 # src/moneybin/mcp/tools/transactions.py
-"""Transactions namespace tools — search and recurring pattern detection.
+"""Transactions namespace tools — search, recurring patterns, review orientation.
 
 Tools:
     - transactions_search — Search transactions with filters (medium sensitivity)
     - transactions_recurring_list — Detect recurring transaction patterns (medium sensitivity)
+    - transactions_review_status — Pending counts across matches and categorize queues (low)
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.protocol.envelope import ResponseEnvelope
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.transaction_service import TransactionService
 
 
@@ -85,6 +86,38 @@ def transactions_recurring_list(
     return result.to_envelope()
 
 
+@mcp_tool(sensitivity="low")
+def transactions_review_status() -> ResponseEnvelope:
+    """Return counts of pending reviews across both queues.
+
+    Orientation tool: call this to know whether to fetch matches first
+    (transactions_matches_pending) or categorize items first
+    (transactions_categorize_pending_list).
+    """
+    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.matching_service import MatchingService
+    from moneybin.services.review_service import ReviewService
+
+    db = get_database()
+    status = ReviewService(
+        match_service=MatchingService(db=db),
+        categorize_service=CategorizationService(db=db),
+    ).status()
+
+    return build_envelope(
+        data={
+            "matches_pending": status.matches_pending,
+            "categorize_pending": status.categorize_pending,
+            "total": status.total,
+        },
+        sensitivity="low",
+        actions=[
+            "Use transactions_matches_pending to fetch the match queue",
+            "Use transactions_categorize_pending_list to fetch the categorize queue",
+        ],
+    )
+
+
 def register_transactions_tools(mcp: FastMCP) -> None:
     """Register all transactions namespace tools with the FastMCP server."""
     register(
@@ -99,4 +132,11 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         transactions_recurring_list,
         "transactions_recurring_list",
         "Detect recurring transaction patterns like subscriptions and regular charges.",
+    )
+    register(
+        mcp,
+        transactions_review_status,
+        "transactions_review_status",
+        "Return pending counts for matches and categorize queues. "
+        "Call this to orient before fetching specific queue contents.",
     )
