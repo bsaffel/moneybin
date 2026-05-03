@@ -45,6 +45,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["accounts", "include"],
     ["accounts", "archive"],
     ["accounts", "unarchive"],
+    ["accounts", "set"],
     ["export"],
     ["sync", "schedule"],
     ["sync", "key"],
