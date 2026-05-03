@@ -17,7 +17,6 @@ from .commands import (
     accounts,
     assets,
     categories,
-    categorize,
     db,
     import_cmd,
     logs,
@@ -123,11 +122,6 @@ app.add_typer(
     sync.app,
     name="sync",
     help="Sync transactions from external services",
-)
-app.add_typer(
-    categorize.app,
-    name="categorize",
-    help="Manage transaction categories, rules, and merchants",
 )
 app.add_typer(
     transform.app,

@@ -6,11 +6,12 @@ Owns transaction entity operations and workflows on transactions
 
 import typer
 
-from . import matches
+from . import categorize, matches
 
 app = typer.Typer(
     help="Transactions and workflows on them (matches, categorize, review)",
     no_args_is_help=True,
 )
 
+app.add_typer(categorize.app, name="categorize")
 app.add_typer(matches.app, name="matches")
