@@ -1,7 +1,7 @@
 # Feature: Net Worth & Balance Tracking
 
 ## Status
-draft
+ready
 
 ## Goal
 
@@ -24,7 +24,7 @@ Related specs and docs:
 
 ## Requirements
 
-1. **Balance observations from four v1 sources:** OFX statement balances (`raw.ofx_balances`), CSV/tabular running balance columns (`raw.csv_transactions.balance`, `raw.tabular_transactions.balance`), Plaid balance snapshots (future, when `sync-plaid.md` ships), and user manual assertions (`app.balance_assertions`).
+1. **Balance observations from three v1 sources:** OFX statement balances (`raw.ofx_balances` → `prep.stg_ofx__balances`), tabular running balances (`raw.tabular_transactions.balance` → `prep.stg_tabular__transactions.balance`; CSV/TSV/Excel/Parquet all flow through the unified tabular pipeline), and user manual assertions (`app.balance_assertions`). Plaid balance snapshots are a future extension (gated on `sync-plaid.md`).
 2. **Union all sources into `core.fct_balances`** — a SQLMesh VIEW that normalizes every balance observation to a common shape: `(account_id, balance_date, balance, source_type, source_ref)`.
 3. **Materialize `core.fct_balances_daily`** — a SQLMesh TABLE with one row per account per day. For days with an authoritative observation, use it. For days between observations, carry forward the last known balance adjusted by intervening transactions from `core.fct_transactions`.
 4. **Intra-day updates:** When multiple syncs or imports occur on the same day, the latest observation wins. `fct_balances_daily` reflects the most recent data after each `sqlmesh run`.
@@ -33,8 +33,8 @@ Related specs and docs:
 7. **Reconciliation deltas:** When the transaction-derived balance at a given date doesn't match the next authoritative observation, compute and surface the delta. Deltas are informational (not blocking) and self-heal — they are recomputed on every `sqlmesh run`, so reimporting missing transactions resolves them naturally.
 8. **Manual balance assertions:** Users can assert a known balance via `moneybin accounts balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
 9. **No balance without an anchor:** Accounts with zero balance observations produce no `fct_balances_daily` rows. The system does not estimate an opening balance from transactions alone.
-10. **CLI commands:** `moneybin reports networth show`, `moneybin reports networth history`, `moneybin accounts balance show`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance delete`, `moneybin accounts balance reconcile`.
-11. **MCP tools:** `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_assertions_list`.
+10. **CLI commands:** `moneybin reports networth show`, `moneybin reports networth history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
+11. **MCP tools** (per [`mcp-tool-surface.md`](mcp-tool-surface.md) v2): `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions_list`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
 12. **All commands support `--output json`** for non-interactive parity.
 13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (Level 2 and Level 3 respectively). Net worth v1 covers cash accounts only.
 
@@ -86,15 +86,16 @@ WITH ofx_balances AS (
     source_file AS source_ref
   FROM prep.stg_ofx__balances
 ),
-csv_balances AS (
-  -- CSV running balances: one observation per transaction row that has a non-NULL balance
+tabular_balances AS (
+  -- Running balances on tabular (CSV/TSV/Excel/Parquet) transaction rows that
+  -- carry a non-NULL balance column. One observation per such row.
   SELECT
     account_id,
     transaction_date AS balance_date,
     balance,
-    'csv' AS source_type,
+    'tabular' AS source_type,
     source_file AS source_ref
-  FROM prep.stg_csv__transactions
+  FROM prep.stg_tabular__transactions
   WHERE balance IS NOT NULL
 ),
 user_assertions AS (
@@ -108,14 +109,14 @@ user_assertions AS (
 )
 SELECT account_id, balance_date, balance, source_type, source_ref FROM ofx_balances
 UNION ALL
-SELECT account_id, balance_date, balance, source_type, source_ref FROM csv_balances
+SELECT account_id, balance_date, balance, source_type, source_ref FROM tabular_balances
 UNION ALL
 SELECT account_id, balance_date, balance, source_type, source_ref FROM user_assertions
 ```
 
-**Future extensions:** Add CTEs for `tabular_balances` (from `raw.tabular_transactions`) and `plaid_balances` (from Plaid sync) as those sources ship.
+**Future extensions:** Add a `plaid_balances` CTE when [`sync-plaid.md`](sync-plaid.md) ships balance snapshots.
 
-**Source precedence within a day:** When multiple observations exist for the same account on the same date, `fct_balances_daily` uses the latest/most authoritative. Precedence: user assertion > institution snapshot (OFX/Plaid) > running balance (CSV/tabular).
+**Source precedence within a day:** When multiple observations exist for the same account on the same date, `fct_balances_daily` uses the most authoritative source. Precedence (highest first): user assertion > institution snapshot (OFX/Plaid) > tabular running balance.
 
 ### SQLMesh model: `core.fct_balances_daily` (TABLE)
 
@@ -132,7 +133,7 @@ Columns:
   balance_date      DATE        -- Calendar date
   balance           DECIMAL(18,2) -- Balance as of end of this day
   is_observed       BOOLEAN     -- TRUE if an authoritative observation exists for this date
-  observation_source VARCHAR    -- source_type of the observation (ofx, csv, assertion, plaid); NULL if interpolated
+  observation_source VARCHAR    -- source_type of the observation (ofx, tabular, assertion, plaid); NULL if interpolated
   reconciliation_delta DECIMAL(18,2) -- Difference between observed and transaction-derived balance; NULL on interpolated days
 ```
 
@@ -186,7 +187,13 @@ moneybin reports networth history [--from DATE] [--to DATE] [--interval daily|we
 moneybin accounts balance show [--account ACCOUNT_ID] [--as-of DATE] [--output json|table]
 ```
 - Default: latest known balance per account
-- Shows: account name, balance, date of last observation, source (OFX/CSV/Plaid/assertion)
+- Shows: account name, balance, date of last observation, source (OFX/tabular/Plaid/assertion)
+
+```
+moneybin accounts balance history --account ACCOUNT_ID [--from DATE] [--to DATE] [--interval daily|weekly|monthly] [--output json|table]
+```
+- Per-account balance time series with source attribution per observed day
+- Default interval: daily; default range: full available history for the account
 
 ```
 moneybin accounts balance assert <account_id> <date> <amount> [--notes "reason"] [--yes]
@@ -215,31 +222,49 @@ moneybin accounts balance reconcile [--account ACCOUNT_ID] [--threshold AMOUNT] 
 
 ## MCP Interface
 
-### Tools
+Tool naming follows [`mcp-tool-surface.md`](mcp-tool-surface.md) v2 (path-prefix-verb-suffix). Cross-domain rollups live under `reports_*`; per-account workflows live under `accounts_balance_*`.
 
-**`reports_networth_get`** — Returns current or historical net worth.
+### Read tools
+
+**`reports_networth_get`** — Current or historical net worth.
 - Params: `as_of_date` (optional DATE), `account_ids` (optional list of VARCHAR)
-- Returns: total net worth, per-account breakdown with balance and source, currency
+- Returns: total net worth, total assets, total liabilities, per-account breakdown with balance and source, as-of date
 
-**`reports_networth_history`** — Returns net worth time series.
+**`reports_networth_history`** — Net worth time series.
 - Params: `from_date` (DATE), `to_date` (DATE), `interval` (daily|weekly|monthly, default monthly)
 - Returns: time series with net worth, period-over-period change (absolute and percentage), account count
 
-**`accounts_balance_list`** — Returns current balance per account.
+**`accounts_balance_list`** — Current balance per account.
 - Params: `account_ids` (optional list), `as_of_date` (optional DATE)
 - Returns: per-account balance with date of last observation and source attribution
 
-**`accounts_balance_assertions_list`** — Returns manual balance assertions.
+**`accounts_balance_history`** — Per-account balance time series.
+- Params: `account_id` (VARCHAR, required), `from_date` (optional DATE), `to_date` (optional DATE), `interval` (daily|weekly|monthly, default daily)
+- Returns: time series of `{date, balance, is_observed, observation_source, reconciliation_delta}`
+
+**`accounts_balance_reconcile`** — Accounts with non-zero reconciliation deltas.
+- Params: `account_ids` (optional list), `threshold` (optional DECIMAL, default 0.01)
+- Returns: list of `{account_id, balance_date, observed_balance, transaction_derived_balance, delta, source_type}` for days where the delta exceeds the threshold
+
+**`accounts_balance_assertions_list`** — Manual balance assertions.
 - Params: `account_id` (optional VARCHAR)
 - Returns: list of assertions with dates, amounts, and notes
+
+### Write tools
+
+**`accounts_balance_assert`** — Insert or update a manual balance assertion.
+- Params: `account_id` (VARCHAR, required), `assertion_date` (DATE, required), `balance` (DECIMAL, required), `notes` (optional VARCHAR)
+- Returns: the upserted assertion row
+- Sensitivity: `medium` (writes financial data); requires confirmation per MCP write-tool conventions
+
+**`accounts_balance_assertion_delete`** — Remove a manual balance assertion.
+- Params: `account_id` (VARCHAR, required), `assertion_date` (DATE, required)
+- Returns: status + the deleted row's previous values
+- Sensitivity: `medium`; requires confirmation
 
 ### Resources
 
 **`net-worth://summary`** — Current net worth snapshot. Useful as context for AI conversations about finances. Returns: total net worth, total assets, total liabilities, account count, as-of date.
-
-### Write tools
-
-Write tools for balance assertions deferred to v2. The `balance assert` CLI command handles the low-frequency assertion workflow for v1.
 
 ## Synthetic Data Requirements
 
@@ -302,36 +327,69 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 - **Plaid balance sync scheduling** — The polling/scheduling mechanism for Plaid balance snapshots belongs in `sync-plaid.md`, not here. This spec consumes whatever Plaid provides.
 - **Net worth trend analysis and reporting** — Cash flow statements, trend charts, and category breakdowns belong in `net-worth-reporting.md` (Wave 3). This spec provides the data model they consume.
 
+## Coordination with `account-management.md`
+
+This spec ships bundled with [`account-management.md`](account-management.md) — they share the `accounts` CLI/MCP namespace and one of them must own each shared artifact. Boundaries:
+
+| Artifact | Owner |
+|---|---|
+| `app.balance_assertions` table + migration | **net-worth.md** |
+| `app.account_settings` table + migration | **account-management.md** (consumed here for `include_in_net_worth`) |
+| `accounts` CLI parent group registration (`src/moneybin/cli/commands/accounts.py`) | **account-management.md** (this spec contributes the `balance` sub-group inside it) |
+| `reports` CLI parent group registration (`src/moneybin/cli/commands/reports.py`) | **net-worth.md** (this spec creates it; future report specs add subcommands) |
+| `AccountService` extensions (entity ops: list/show/rename/archive/include) | **account-management.md** |
+| `BalanceService` (balance queries, assertions, reconciliation) | **net-worth.md** |
+| `NetworthService` (cross-account aggregation) | **net-worth.md** |
+| Account merge → balance assertion fan-in invariants | **account-management.md** (must reassign assertion rows on merge; this spec verifies the post-merge invariant in scenarios) |
+
+When implementing: land both specs' schema migrations in the same migration window so `agg_net_worth`'s `LEFT JOIN app.account_settings` is never against a missing table.
+
 ## Implementation Plan
 
 ### Files to Create
 
-- `src/moneybin/sql/schema/app_balance_assertions.sql` — DDL for `app.balance_assertions`
-- `src/moneybin/sql/schema/app_account_settings.sql` — DDL for `app.account_settings`
+Schema + migrations:
+- `src/moneybin/sql/schema/app_balance_assertions.sql` — DDL for `app.balance_assertions` (idempotent re-init)
+- `src/moneybin/sql/migrations/V00N__create_app_balance_assertions.sql` — first-time creation in existing databases (next available version)
+
+SQLMesh models (under existing `sqlmesh/models/core/` — no new subdirs):
 - `sqlmesh/models/core/fct_balances.sql` — VIEW unioning all balance sources
-- `sqlmesh/models/core/fct_balances_daily.sql` — TABLE with daily carry-forward logic (may be Python model)
+- `sqlmesh/models/core/fct_balances_daily.sql` — TABLE (FULL kind) with daily carry-forward logic (may be a Python model — see Implementation note in §`fct_balances_daily`)
 - `sqlmesh/models/core/agg_net_worth.sql` — VIEW aggregating across accounts
-- `src/moneybin/cli/commands/reports/networth.py` — `reports networth show / history`
-- `src/moneybin/cli/commands/accounts/balance.py` — `accounts balance show / assert / list / delete / reconcile / history`
-- `src/moneybin/services/balance_service.py` — business logic for balance queries, assertions, reconciliation
-- `src/moneybin/services/networth_service.py` — business logic for net worth queries
-- `tests/test_balance_service.py` — unit tests for balance logic
-- `tests/test_networth_service.py` — unit tests for net worth logic
-- `tests/test_cli_networth.py` — CLI integration tests
-- `tests/test_cli_balance.py` — CLI integration tests
+
+Services (flat module layout — matches existing `src/moneybin/services/`):
+- `src/moneybin/services/balance_service.py` — `BalanceService`: balance queries, assertion CRUD, reconciliation
+- `src/moneybin/services/networth_service.py` — `NetworthService`: cross-account aggregation, history series
+
+CLI commands (flat module layout — matches existing `src/moneybin/cli/commands/`):
+- `src/moneybin/cli/commands/reports.py` — top-level `reports` group (created by this spec) with `networth show / history`
+- Balance subcommands live inside `src/moneybin/cli/commands/accounts.py` (created by `account-management.md`); this spec adds the `balance` `Typer` sub-app and its commands to that module
+
+Tests:
+- `tests/moneybin/test_services/test_balance_service.py` — unit tests for balance logic
+- `tests/moneybin/test_services/test_networth_service.py` — unit tests for net worth logic
+- `tests/moneybin/test_cli/test_reports_networth.py` — CLI tests for `reports networth`
+- `tests/moneybin/test_cli/test_accounts_balance.py` — CLI tests for `accounts balance` subcommands
+- `tests/e2e/test_e2e_readonly.py` / `test_e2e_mutating.py` — E2E entries for every new command (per `.claude/rules/testing.md` "E2E Test Coverage Requirement")
+- `tests/e2e/test_e2e_help.py` — `--help` entries for `reports`, `reports networth`, `accounts balance`
+- `tests/scenarios/scenario_networth_correctness.yaml` (+ pytest entry) — synthetic ground-truth comparison
+- `tests/scenarios/scenario_reconciliation_self_heal.yaml` — reimport resolves delta
 
 ### Files to Modify
 
-- `src/moneybin/cli/main.py` — register `networth`, `balance`, `reconciliation` command groups
-- `src/moneybin/sql/schema.py` — register new DDL files for `app.balance_assertions` and `app.account_settings`
-- `src/moneybin/mcp/tools/` — add `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_assertions_list` tools
+- `src/moneybin/sql/schema.py` — register `app_balance_assertions.sql` in the schema init list (account-management.md registers `app_account_settings.sql`)
+- `src/moneybin/cli/main.py` — register the new top-level `reports` group; remove the `track networth` / `track balance` stubs from `commands/stubs.py` (they migrate to their v2 homes)
+- `src/moneybin/mcp/tools/__init__.py` (and the per-tool registry) — add tools listed in §MCP Interface
 - `src/moneybin/mcp/resources/` — add `net-worth://summary` resource
+- `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers per `mcp-tool-surface.md`
+- `docs/specs/INDEX.md` — flip status to `in-progress` on entry; flip to `implemented` when shipped
 
 ### Key Decisions
 
 1. **Accurate or absent.** No balance is computed without an authoritative observation anchor. This is the foundational invariant.
 2. **Reconciliation deltas are computed, not stored.** They self-heal as data quality improves. No manual cleanup needed.
 3. **`fct_balances_daily` is FULL materialized.** Recomputed on every `sqlmesh run`. Ensures consistency after any data change.
-4. **Source precedence:** user assertion > institution snapshot > running balance. Most authoritative source wins within a day.
+4. **Source precedence:** user assertion > institution snapshot > tabular running balance. Most authoritative source wins within a day.
 5. **Cash-only v1.** Investment and multi-currency extensions are designed to slot in without breaking changes.
-6. **Three command groups** (`networth`, `balance`, `reconciliation`) — single-word, no hyphens, consistent with existing CLI conventions.
+6. **CLI taxonomy follows `cli-restructure.md` v2.** Per-account workflows live under `accounts balance *`; cross-domain aggregation lives under `reports networth *`. The `track` group is dissolved by the v2 restructure — net-worth ships against the v2 surface, not v1.
+7. **Bundled landing with `account-management.md`.** Shared `accounts` namespace and `app.account_settings` cross-reference make a single PR cycle the only sane shape. See §Coordination.

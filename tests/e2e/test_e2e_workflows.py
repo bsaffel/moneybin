@@ -256,7 +256,7 @@ class TestAutoRulePipeline:
         result.assert_success()
 
         # Seed categories so the app schema has reference data.
-        result = run_cli("categorize", "seed", env=env)
+        result = run_cli("transform", "seed", env=env)
         result.assert_success()
 
         # Find the COFFEE SHOP transaction ID for account-a only — categorizing
