@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
-
-import duckdb
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
@@ -40,31 +37,15 @@ def categories_create(
     description: str | None = None,
 ) -> ResponseEnvelope:
     """Create a custom category or subcategory (non-default, active by default)."""
-    cat_id = uuid.uuid4().hex[:12]
-    db = get_database()
-
-    try:
-        db.execute(
-            f"""
-            INSERT INTO {USER_CATEGORIES.full_name}
-            (category_id, category, subcategory, description,
-             is_active, created_at)
-            VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # TableRef constant, no user input interpolated
-            [cat_id, category, subcategory, description],
-        )
-    except duckdb.ConstraintException:
-        sub = f" / {subcategory}" if subcategory else ""
-        raise UserError(
-            f"Category already exists: {category}{sub}",
-            code="CATEGORY_ALREADY_EXISTS",
-        ) from None
-    # Other DuckDB errors propagate to fastmcp's mask_error_details.
-
+    category_id = CategorizationService(get_database()).create_category(
+        category,
+        subcategory=subcategory,
+        description=description,
+    )
     sub = f" / {subcategory}" if subcategory else ""
     return build_envelope(
         data={
-            "category_id": cat_id,
+            "category_id": category_id,
             "category": category,
             "subcategory": subcategory,
             "action": "created",
