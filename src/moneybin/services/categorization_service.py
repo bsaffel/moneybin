@@ -1165,6 +1165,94 @@ class CategorizationService:
             for r in rows
         ]
 
+    def list_rules(self) -> list[dict[str, Any]]:
+        """List all categorization rules (active and inactive) ordered by priority."""
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT rule_id, name, merchant_pattern, match_type,
+                       min_amount, max_amount, account_id,
+                       category, subcategory, priority, is_active
+                FROM {CATEGORIZATION_RULES.full_name}
+                ORDER BY priority ASC, created_at ASC
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+
+        return [
+            {
+                "rule_id": r[0],
+                "name": r[1],
+                "merchant_pattern": r[2],
+                "match_type": r[3],
+                "min_amount": r[4],
+                "max_amount": r[5],
+                "account_id": r[6],
+                "category": r[7],
+                "subcategory": r[8],
+                "priority": r[9],
+                "is_active": r[10],
+            }
+            for r in rows
+        ]
+
+    def list_merchants(self) -> list[dict[str, str | None]]:
+        """List all merchant name mappings ordered by canonical name."""
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT merchant_id, raw_pattern, match_type,
+                       canonical_name, category, subcategory
+                FROM {MERCHANTS.full_name}
+                ORDER BY canonical_name
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+
+        return [
+            {
+                "merchant_id": r[0],
+                "raw_pattern": r[1],
+                "match_type": r[2],
+                "canonical_name": r[3],
+                "category": r[4],
+                "subcategory": r[5],
+            }
+            for r in rows
+        ]
+
+    def list_uncategorized_transactions(
+        self, *, limit: int
+    ) -> list[dict[str, Any]] | None:
+        """List uncategorized transactions ordered by date descending.
+
+        Returns ``None`` (rather than ``[]``) when the underlying tables don't
+        exist yet — callers can distinguish "no transactions" from "no schema"
+        and surface a more useful action hint.
+        """
+        try:
+            result = self._db.execute(
+                f"""
+                SELECT t.transaction_id, t.transaction_date, t.amount,
+                       t.description, t.memo, t.account_id
+                FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
+                    ON t.transaction_id = c.transaction_id
+                WHERE c.transaction_id IS NULL
+                ORDER BY t.transaction_date DESC
+                LIMIT ?
+                """,
+                [limit],
+            )
+            columns = [desc[0] for desc in result.description]
+            rows = result.fetchall()
+        except duckdb.CatalogException:
+            return None
+
+        return [dict(zip(columns, row, strict=False)) for row in rows]
+
     def count_uncategorized(self) -> int:
         """Return the number of transactions without a category assignment."""
         try:
