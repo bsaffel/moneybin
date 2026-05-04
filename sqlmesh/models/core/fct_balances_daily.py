@@ -20,6 +20,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pandas as pd
+import pyarrow as pa
 
 from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
     ExecutionContext,
@@ -189,4 +190,19 @@ def execute(
                     "reconciliation_delta": None,
                 })
 
-    yield pd.DataFrame(rows)
+    # Build with an explicit pyarrow schema so DuckDB receives DECIMAL(18, 2)
+    # columns end-to-end. Without this, DuckDB infers DECIMAL precision from
+    # sample values (e.g., DECIMAL(6, 2) from a few small balances) and then
+    # fails to cast larger values (a $15k savings balance overflows).
+    # Per .claude/rules/database.md: no float for financial quantities — keep
+    # Decimal precision through to the engine.
+    schema = pa.schema([
+        pa.field("account_id", pa.string()),
+        pa.field("balance_date", pa.date32()),
+        pa.field("balance", pa.decimal128(18, 2)),
+        pa.field("is_observed", pa.bool_()),
+        pa.field("observation_source", pa.string()),
+        pa.field("reconciliation_delta", pa.decimal128(18, 2)),
+    ])
+    table = pa.Table.from_pylist(rows, schema=schema)
+    yield table.to_pandas(types_mapper=pd.ArrowDtype)

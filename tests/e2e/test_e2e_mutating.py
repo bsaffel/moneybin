@@ -504,24 +504,57 @@ class TestLogsMutating:
 # ---------------------------------------------------------------------------
 # Accounts entity ops — write-path E2E coverage
 # ---------------------------------------------------------------------------
-# These tests use _load_or_default under the hood, so they work with any
-# account_id even when dim_accounts is empty (no transforms needed).
+# After Fix 3/4 (account-existence validation), mutators require the
+# account_id to be present in core.dim_accounts. We seed dim_accounts by
+# importing the sample OFX fixture and running transforms once in a
+# session-scoped template; tests copy that template via make_workflow_env_fast.
+# The imported account_id is 9876543210 (from tests/fixtures/sample_statement.qfx).
 # ---------------------------------------------------------------------------
+
+_SAMPLE_OFX = FIXTURES_DIR / "sample_statement.qfx"
+_OFX_ACCOUNT_ID = "9876543210"  # ACCTID from sample_statement.qfx
+
+
+@pytest.fixture(scope="module")
+def _accounts_with_data_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    """Module template: profile with sample OFX imported and transforms applied.
+
+    Provides a MONEYBIN_HOME where core.dim_accounts has at least one row
+    (account_id=9876543210). Account mutation tests copy this template via
+    make_workflow_env_fast so they can call rename/archive/etc. without
+    failing the _assert_account_exists check.
+
+    Uses _TEMPLATE_PROFILE_NAME ("e2e-template") so make_workflow_env_fast
+    resolves the correct active profile when copying.
+    """
+    e2e_home = tmp_path_factory.mktemp("acct_data_template")
+    # Use the same profile name that make_workflow_env_fast resolves as active.
+    env = make_workflow_env(e2e_home, "e2e-template")
+    run_cli(
+        "import", "file", str(_SAMPLE_OFX), "--skip-transform", env=env
+    ).assert_success()
+    run_cli("transform", "apply", env=env, timeout=180).assert_success()
+    return e2e_home
 
 
 class TestAccountsEntityOps:
     """E2E lifecycle for accounts entity-op write commands.
 
-    Uses make_workflow_env for an isolated profile with an initialized DB.
-    account_service._load_or_default creates a settings row on first write,
-    so these tests work without seeding dim_accounts.
+    Uses a pre-populated template (sample OFX imported + transforms applied)
+    so that core.dim_accounts is populated and _assert_account_exists passes.
     """
 
-    _ACCOUNT = "test_acct_001"
+    _ACCOUNT = _OFX_ACCOUNT_ID
 
-    def test_accounts_rename_persists(self, tmp_path: Path) -> None:
+    def test_accounts_rename_persists(
+        self, _accounts_with_data_template: Path, tmp_path: Path
+    ) -> None:
         """Accounts rename writes; accounts list reflects the new name."""
-        env = make_workflow_env(tmp_path, "acct-rename")
+        env = make_workflow_env_fast(
+            tmp_path, "acct-rename", _accounts_with_data_template
+        )
         result = run_cli(
             "accounts", "rename", self._ACCOUNT, "My Test Account", env=env
         )
@@ -529,25 +562,35 @@ class TestAccountsEntityOps:
         # Confirm no traceback
         assert "Traceback" not in result.output
 
-    def test_accounts_include_exclude_round_trip(self, tmp_path: Path) -> None:
+    def test_accounts_include_exclude_round_trip(
+        self, _accounts_with_data_template: Path, tmp_path: Path
+    ) -> None:
         """Accounts include --no excludes; accounts include re-includes."""
-        env = make_workflow_env(tmp_path, "acct-include")
+        env = make_workflow_env_fast(
+            tmp_path, "acct-include", _accounts_with_data_template
+        )
         result = run_cli("accounts", "include", self._ACCOUNT, "--no", env=env)
         result.assert_success()
         result = run_cli("accounts", "include", self._ACCOUNT, env=env)
         result.assert_success()
 
-    def test_accounts_archive_then_unarchive(self, tmp_path: Path) -> None:
+    def test_accounts_archive_then_unarchive(
+        self, _accounts_with_data_template: Path, tmp_path: Path
+    ) -> None:
         """Accounts archive + unarchive round-trip both succeed."""
-        env = make_workflow_env(tmp_path, "acct-archive")
+        env = make_workflow_env_fast(
+            tmp_path, "acct-archive", _accounts_with_data_template
+        )
         result = run_cli("accounts", "archive", self._ACCOUNT, env=env)
         result.assert_success()
         result = run_cli("accounts", "unarchive", self._ACCOUNT, env=env)
         result.assert_success()
 
-    def test_accounts_set_canonical_subtype(self, tmp_path: Path) -> None:
+    def test_accounts_set_canonical_subtype(
+        self, _accounts_with_data_template: Path, tmp_path: Path
+    ) -> None:
         """Accounts set --subtype with a canonical value and --yes succeeds."""
-        env = make_workflow_env(tmp_path, "acct-set")
+        env = make_workflow_env_fast(tmp_path, "acct-set", _accounts_with_data_template)
         result = run_cli(
             "accounts",
             "set",
@@ -577,15 +620,23 @@ class TestAccountsEntityOps:
 
 
 class TestBalanceAssertions:
-    """E2E lifecycle for accounts balance assert/list/delete commands."""
+    """E2E lifecycle for accounts balance assert/list/delete commands.
 
-    _ACCOUNT = "bal_test_acct"
+    Uses a pre-populated template (sample OFX imported + transforms applied)
+    so that core.dim_accounts is populated and _assert_account_exists passes.
+    """
+
+    _ACCOUNT = _OFX_ACCOUNT_ID  # must exist in dim_accounts
     _DATE = "2024-06-15"
     _AMOUNT = "12345.67"
 
-    def test_balance_assert_then_list(self, tmp_path: Path) -> None:
+    def test_balance_assert_then_list(
+        self, _accounts_with_data_template: Path, tmp_path: Path
+    ) -> None:
         """Balance assert writes; balance list --output json returns the row."""
-        env = make_workflow_env(tmp_path, "bal-assert-list")
+        env = make_workflow_env_fast(
+            tmp_path, "bal-assert-list", _accounts_with_data_template
+        )
         result = run_cli(
             "accounts",
             "balance",
@@ -604,9 +655,13 @@ class TestBalanceAssertions:
         assert self._ACCOUNT in result.stdout
         assert self._DATE in result.stdout
 
-    def test_balance_assert_then_delete(self, tmp_path: Path) -> None:
+    def test_balance_assert_then_delete(
+        self, _accounts_with_data_template: Path, tmp_path: Path
+    ) -> None:
         """Balance assert then delete round-trip; list returns empty after delete."""
-        env = make_workflow_env(tmp_path, "bal-assert-del")
+        env = make_workflow_env_fast(
+            tmp_path, "bal-assert-del", _accounts_with_data_template
+        )
         run_cli(
             "accounts",
             "balance",

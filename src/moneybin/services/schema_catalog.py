@@ -190,10 +190,9 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Latest balance assertion per account",
             sql="""
-                SELECT account_id, MAX(assertion_date) AS latest_date, balance
+                SELECT DISTINCT ON (account_id) account_id, assertion_date AS latest_date, balance
                 FROM app.balance_assertions
-                GROUP BY account_id, balance
-                ORDER BY account_id
+                ORDER BY account_id, assertion_date DESC
             """,
         ),
     ],

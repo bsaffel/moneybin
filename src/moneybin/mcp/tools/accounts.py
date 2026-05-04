@@ -34,10 +34,11 @@ from decimal import Decimal
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.account_service import AccountService
+from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.balance_service import BalanceService
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
@@ -79,10 +80,15 @@ def accounts_get(account_id: str) -> ResponseEnvelope:
     Args:
         account_id: The account ID to look up
 
-    Returns None in the data field if the account is not found.
+    Returns {"found": true, ...fields} if found, {"found": false, "account_id": ...} if not.
     """
     record = AccountService(get_database()).get_account(account_id)
-    return build_envelope(data=record or {}, sensitivity="medium")
+    if record is None:
+        return build_envelope(
+            data={"found": False, "account_id": account_id},
+            sensitivity="medium",
+        )
+    return build_envelope(data={"found": True, **record}, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="low")
@@ -159,6 +165,16 @@ def accounts_unarchive(account_id: str) -> ResponseEnvelope:
     return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
+_CLEARABLE_FIELDS: frozenset[str] = frozenset({
+    "official_name",
+    "last_four",
+    "account_subtype",
+    "holder_category",
+    "iso_currency_code",
+    "credit_limit",
+})
+
+
 @mcp_tool(sensitivity="medium")
 def accounts_settings_update(
     account_id: str,
@@ -168,21 +184,40 @@ def accounts_settings_update(
     holder_category: str | None = None,
     iso_currency_code: str | None = None,
     credit_limit: float | None = None,
+    clear_fields: list[str] | None = None,
 ) -> ResponseEnvelope:
     """Partial update of structural metadata fields.
 
-    Pass None for any field to leave it unchanged. Soft-validation warnings
-    (for non-canonical account_subtype or holder_category values) are embedded
-    in the response data['warnings'] field.
+    Pass None for any field to leave it unchanged. To explicitly clear a field,
+    include its name in the `clear_fields` list. Valid clearable field names:
+    "official_name", "last_four", "account_subtype", "holder_category",
+    "iso_currency_code", "credit_limit".
+
+    Soft-validation warnings (for non-canonical account_subtype or holder_category
+    values) are embedded in the response data['warnings'] field.
     """
+    kwargs: dict[str, object] = {
+        "official_name": official_name,
+        "last_four": last_four,
+        "account_subtype": account_subtype,
+        "holder_category": holder_category,
+        "iso_currency_code": iso_currency_code,
+        "credit_limit": Decimal(str(credit_limit))
+        if credit_limit is not None
+        else None,
+    }
+    if clear_fields:
+        unknown = set(clear_fields) - _CLEARABLE_FIELDS
+        if unknown:
+            raise UserError(
+                f"Unknown clearable fields: {sorted(unknown)}",
+                code="invalid_field",
+            )
+        for field in clear_fields:
+            kwargs[field] = CLEAR
     settings, warnings = AccountService(get_database()).settings_update(
         account_id,
-        official_name=official_name,
-        last_four=last_four,
-        account_subtype=account_subtype,
-        holder_category=holder_category,
-        iso_currency_code=iso_currency_code,
-        credit_limit=Decimal(str(credit_limit)) if credit_limit is not None else None,
+        **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
     )
     data = settings.to_dict()
     if warnings:
@@ -332,7 +367,7 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_get,
         "accounts_get",
-        "Get one account's full settings + dim record. Returns empty dict if not found.",
+        "Get one account's full settings + dim record. Returns {found: false} if not found.",
     )
     register(
         mcp,

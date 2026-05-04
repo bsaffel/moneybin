@@ -13,8 +13,9 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
+from moneybin.tables import BALANCE_ASSERTIONS, DIM_ACCOUNTS, FCT_BALANCES_DAILY
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,15 @@ class BalanceService:
         """Initialize with an open Database connection."""
         self._db = db
 
+    def _assert_account_exists(self, account_id: str) -> None:
+        """Raise UserError if account_id is not in core.dim_accounts."""
+        row = self._db.execute(
+            f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
+            [account_id],
+        ).fetchone()
+        if row is None:
+            raise UserError(f"Account not found: {account_id}", code="not_found")
+
     # --- Assertion CRUD ---
 
     def assert_balance(
@@ -138,6 +148,7 @@ class BalanceService:
         as an identifier (not a function call) inside ON CONFLICT DO UPDATE clauses.
         On the INSERT path, created_at is populated from the column DEFAULT.
         """
+        self._assert_account_exists(account_id)
         self._db.execute(
             f"""
             INSERT INTO {BALANCE_ASSERTIONS.full_name}

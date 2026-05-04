@@ -36,9 +36,9 @@ def accounts_balance_show(
     ),
 ) -> None:
     """Show current or as-of balances per account."""
-    as_of_date = _date.fromisoformat(as_of) if as_of else None
     account_ids = [account] if account else None
     with handle_cli_errors() as db:
+        as_of_date = _date.fromisoformat(as_of) if as_of else None
         observations = BalanceService(db).current_balances(
             account_ids=account_ids, as_of_date=as_of_date
         )
@@ -63,9 +63,9 @@ def accounts_balance_history(
     quiet: bool = quiet_option,  # noqa: ARG001 — history has no informational chatter
 ) -> None:
     """Per-account balance history (daily series)."""
-    from_d = _date.fromisoformat(from_date) if from_date else None
-    to_d = _date.fromisoformat(to_date) if to_date else None
     with handle_cli_errors() as db:
+        from_d = _date.fromisoformat(from_date) if from_date else None
+        to_d = _date.fromisoformat(to_date) if to_date else None
         observations = BalanceService(db).history(
             account, from_date=from_d, to_date=to_d
         )
@@ -90,9 +90,11 @@ def accounts_balance_assert(
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Assert a balance for an account on a specific date."""
-    parsed_date = _date.fromisoformat(assertion_date)
-    parsed_amount = Decimal(amount)
+    parsed_date: _date
+    result: object
     with handle_cli_errors() as db:
+        parsed_date = _date.fromisoformat(assertion_date)
+        parsed_amount = Decimal(amount)
         result = BalanceService(db).assert_balance(
             account_id=account_id,
             assertion_date=parsed_date,
@@ -100,7 +102,7 @@ def accounts_balance_assert(
             notes=notes,
         )
     typer.echo(
-        f"✅ Asserted balance for {account_id} on {parsed_date}: {result.balance}",
+        f"✅ Asserted balance for {account_id} on {parsed_date}: {result.balance}",  # type: ignore[union-attr]
         err=True,
     )
 
@@ -131,8 +133,9 @@ def accounts_balance_delete(
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Delete a balance assertion. Silent no-op if no row exists."""
-    parsed_date = _date.fromisoformat(assertion_date)
+    parsed_date: _date
     with handle_cli_errors() as db:
+        parsed_date = _date.fromisoformat(assertion_date)
         BalanceService(db).delete_assertion(account_id, parsed_date)
     typer.echo(
         f"✅ Deleted balance assertion for {account_id} on {parsed_date}",

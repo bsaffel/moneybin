@@ -550,9 +550,11 @@ class TestSubtypeClassifier:
 
 class TestHolderCategoryClassifier:
     def test_canonical_set(self) -> None:
-        assert PLAID_CANONICAL_HOLDER_CATEGORIES == frozenset(
-            {"personal", "business", "joint"}
-        )
+        assert PLAID_CANONICAL_HOLDER_CATEGORIES == frozenset({
+            "personal",
+            "business",
+            "joint",
+        })
 
     def test_is_canonical(self) -> None:
         assert is_canonical_holder_category("personal") is True
@@ -581,26 +583,85 @@ from difflib import get_close_matches
 # Open vocabulary in this project — soft-validated, never blocking.
 PLAID_CANONICAL_SUBTYPES: frozenset[str] = frozenset({
     # depository
-    "checking", "savings", "hsa", "cd", "money market", "paypal", "prepaid",
-    "cash management", "ebt",
+    "checking",
+    "savings",
+    "hsa",
+    "cd",
+    "money market",
+    "paypal",
+    "prepaid",
+    "cash management",
+    "ebt",
     # credit
-    "credit card", "paypal credit",
+    "credit card",
+    "paypal credit",
     # loan
-    "auto", "business", "commercial", "construction", "consumer", "home equity",
-    "loan", "mortgage", "overdraft", "line of credit", "student",
+    "auto",
+    "business",
+    "commercial",
+    "construction",
+    "consumer",
+    "home equity",
+    "loan",
+    "mortgage",
+    "overdraft",
+    "line of credit",
+    "student",
     # investment
-    "401a", "401k", "403b", "457b", "529", "brokerage", "cash isa",
-    "education savings account", "fixed annuity", "gic", "health reimbursement arrangement",
-    "hsa", "ira", "isa", "keogh", "lif", "life insurance", "lira", "lrif", "lrsp",
-    "mutual fund", "non-taxable brokerage account", "other", "other annuity",
-    "other insurance", "pension", "plan", "prif", "profit sharing plan", "qshr",
-    "rdsp", "resp", "retirement", "rlif", "roth", "roth 401k", "rrif", "rrsp",
-    "sarsep", "sep ira", "simple ira", "sipp", "stock plan", "tfsa",
-    "trust", "ugma", "utma", "variable annuity",
+    "401a",
+    "401k",
+    "403b",
+    "457b",
+    "529",
+    "brokerage",
+    "cash isa",
+    "education savings account",
+    "fixed annuity",
+    "gic",
+    "health reimbursement arrangement",
+    "hsa",
+    "ira",
+    "isa",
+    "keogh",
+    "lif",
+    "life insurance",
+    "lira",
+    "lrif",
+    "lrsp",
+    "mutual fund",
+    "non-taxable brokerage account",
+    "other",
+    "other annuity",
+    "other insurance",
+    "pension",
+    "plan",
+    "prif",
+    "profit sharing plan",
+    "qshr",
+    "rdsp",
+    "resp",
+    "retirement",
+    "rlif",
+    "roth",
+    "roth 401k",
+    "rrif",
+    "rrsp",
+    "sarsep",
+    "sep ira",
+    "simple ira",
+    "sipp",
+    "stock plan",
+    "tfsa",
+    "trust",
+    "ugma",
+    "utma",
+    "variable annuity",
 })
 
 PLAID_CANONICAL_HOLDER_CATEGORIES: frozenset[str] = frozenset({
-    "personal", "business", "joint",
+    "personal",
+    "business",
+    "joint",
 })
 
 
@@ -1009,7 +1070,9 @@ class TestAccountServiceMutators:
         assert loaded.account_subtype == "checking"
         assert loaded.credit_limit == Decimal("5000.00")
 
-    def test_settings_update_clears_with_clear_sentinel(self, test_db: Database) -> None:
+    def test_settings_update_clears_with_clear_sentinel(
+        self, test_db: Database
+    ) -> None:
         from moneybin.services.account_service import CLEAR
 
         svc = AccountService(test_db)
@@ -1051,9 +1114,7 @@ class AccountService:
         """Set or clear display_name. Empty string clears."""
         current = self._load_or_default(account_id)
         new_name: str | None = display_name if display_name else None
-        updated = AccountSettings(
-            **{**_to_dict(current), "display_name": new_name}
-        )
+        updated = AccountSettings(**{**_to_dict(current), "display_name": new_name})
         self._settings_repo().upsert(updated)
         return updated
 
@@ -1061,31 +1122,28 @@ class AccountService:
         self, account_id: str, include: bool
     ) -> AccountSettings:
         current = self._load_or_default(account_id)
-        updated = AccountSettings(
-            **{**_to_dict(current), "include_in_net_worth": include}
-        )
+        updated = AccountSettings(**{
+            **_to_dict(current),
+            "include_in_net_worth": include,
+        })
         self._settings_repo().upsert(updated)
         return updated
 
     def archive(self, account_id: str) -> AccountSettings:
         """Set archived=TRUE; cascades include_in_net_worth=FALSE."""
         current = self._load_or_default(account_id)
-        updated = AccountSettings(
-            **{
-                **_to_dict(current),
-                "archived": True,
-                "include_in_net_worth": False,
-            }
-        )
+        updated = AccountSettings(**{
+            **_to_dict(current),
+            "archived": True,
+            "include_in_net_worth": False,
+        })
         self._settings_repo().upsert(updated)
         return updated
 
     def unarchive(self, account_id: str) -> AccountSettings:
         """Set archived=FALSE; does NOT restore include_in_net_worth."""
         current = self._load_or_default(account_id)
-        updated = AccountSettings(
-            **{**_to_dict(current), "archived": False}
-        )
+        updated = AccountSettings(**{**_to_dict(current), "archived": False})
         self._settings_repo().upsert(updated)
         return updated
 
@@ -1243,9 +1301,15 @@ def list_accounts(
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
     fields = [
-        "account_id", "display_name", "institution_name", "account_type",
-        "account_subtype", "holder_category", "iso_currency_code",
-        "archived", "include_in_net_worth",
+        "account_id",
+        "display_name",
+        "institution_name",
+        "account_type",
+        "account_subtype",
+        "holder_category",
+        "iso_currency_code",
+        "archived",
+        "include_in_net_worth",
     ]
     if not redacted:
         fields.extend(["last_four", "credit_limit"])
@@ -1277,35 +1341,53 @@ def get_account(self, account_id: str) -> dict | None:
     ).fetchone()
     if row is None:
         return None
-    return dict(zip([
-        "account_id", "display_name", "institution_name", "account_type",
-        "account_subtype", "holder_category", "iso_currency_code",
-        "last_four", "credit_limit", "archived", "include_in_net_worth",
-        "source_type", "routing_number", "official_name",
-    ], row, strict=True))
+    return dict(
+        zip(
+            [
+                "account_id",
+                "display_name",
+                "institution_name",
+                "account_type",
+                "account_subtype",
+                "holder_category",
+                "iso_currency_code",
+                "last_four",
+                "credit_limit",
+                "archived",
+                "include_in_net_worth",
+                "source_type",
+                "routing_number",
+                "official_name",
+            ],
+            row,
+            strict=True,
+        )
+    )
 
 
 def summary(self) -> dict:
     """Aggregate snapshot for accounts_summary tool / accounts://summary resource."""
-    total = self._db.execute(
-        "SELECT COUNT(*) FROM core.dim_accounts"
-    ).fetchone()[0]
-    by_type = dict(self._db.execute(
-        """
+    total = self._db.execute("SELECT COUNT(*) FROM core.dim_accounts").fetchone()[0]
+    by_type = dict(
+        self._db.execute(
+            """
         SELECT account_type, COUNT(*)
         FROM core.dim_accounts
         WHERE NOT archived
         GROUP BY account_type
         """
-    ).fetchall())
-    by_subtype = dict(self._db.execute(
-        """
+        ).fetchall()
+    )
+    by_subtype = dict(
+        self._db.execute(
+            """
         SELECT COALESCE(account_subtype, '<unset>'), COUNT(*)
         FROM core.dim_accounts
         WHERE NOT archived
         GROUP BY 1
         """
-    ).fetchall())
+        ).fetchall()
+    )
     archived = self._db.execute(
         "SELECT COUNT(*) FROM core.dim_accounts WHERE archived"
     ).fetchone()[0]
@@ -1431,7 +1513,9 @@ class TestAccountsList:
         self, runner: CliRunner, seeded_profile_with_archived
     ) -> None:
         result = runner.invoke(
-            app, ["accounts", "list", "--output", "json"], env=seeded_profile_with_archived.env
+            app,
+            ["accounts", "list", "--output", "json"],
+            env=seeded_profile_with_archived.env,
         )
         ids = [a["account_id"] for a in json.loads(result.stdout)["data"]]
         assert "archived_account" not in ids
@@ -1481,7 +1565,12 @@ from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option, render_or_json
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.services.account_service import (
     CLEAR,
@@ -1494,7 +1583,9 @@ from moneybin.services.account_service import (
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="Account listing, settings, and lifecycle ops", no_args_is_help=True)
+app = typer.Typer(
+    help="Account listing, settings, and lifecycle ops", no_args_is_help=True
+)
 
 
 @app.command("list")
@@ -1519,9 +1610,14 @@ def list_cmd(
     render_or_json(
         result.accounts,
         columns=[
-            "display_name", "account_id", "institution_name",
-            "account_type", "account_subtype", "last_four",
-            "include_in_net_worth", "archived",
+            "display_name",
+            "account_id",
+            "institution_name",
+            "account_type",
+            "account_subtype",
+            "last_four",
+            "include_in_net_worth",
+            "archived",
         ],
     )
 
@@ -1551,8 +1647,13 @@ In `src/moneybin/cli/main.py`, find the `track_app` registration and replace:
 
 ```python
 from moneybin.cli.commands import accounts as accounts_cmd
+
 # ... (later in the registrations) ...
-app.add_typer(accounts_cmd.app, name="accounts", help="Account listing, settings, and lifecycle ops")
+app.add_typer(
+    accounts_cmd.app,
+    name="accounts",
+    help="Account listing, settings, and lifecycle ops",
+)
 ```
 
 Remove `app.add_typer(track_app, name="track", ...)` (the stub) and the stub import.
@@ -1600,15 +1701,19 @@ Add to `test_accounts.py`:
 
 ```python
 class TestAccountsMutators:
-    def test_rename_writes_display_name(self, runner: CliRunner, seeded_profile) -> None:
+    def test_rename_writes_display_name(
+        self, runner: CliRunner, seeded_profile
+    ) -> None:
         result = runner.invoke(
-            app, ["accounts", "rename", "acct_a", "Checking", "--yes"],
+            app,
+            ["accounts", "rename", "acct_a", "Checking", "--yes"],
             env=seeded_profile.env,
         )
         assert result.exit_code == 0
         # Verify via show
         show = runner.invoke(
-            app, ["accounts", "show", "acct_a", "--output", "json"],
+            app,
+            ["accounts", "show", "acct_a", "--output", "json"],
             env=seeded_profile.env,
         )
         assert json.loads(show.stdout)["display_name"] == "Checking"
@@ -1618,18 +1723,24 @@ class TestAccountsMutators:
             app, ["accounts", "archive", "acct_a", "--yes"], env=seeded_profile.env
         )
         assert result.exit_code == 0
-        assert "also excluded from net worth" in result.stderr.lower() or "also excluded from net worth" in result.stdout.lower()
+        assert (
+            "also excluded from net worth" in result.stderr.lower()
+            or "also excluded from net worth" in result.stdout.lower()
+        )
 
     def test_unarchive_does_not_restore_include(
         self, runner: CliRunner, seeded_profile
     ) -> None:
-        runner.invoke(app, ["accounts", "archive", "acct_a", "--yes"], env=seeded_profile.env)
+        runner.invoke(
+            app, ["accounts", "archive", "acct_a", "--yes"], env=seeded_profile.env
+        )
         result = runner.invoke(
             app, ["accounts", "unarchive", "acct_a", "--yes"], env=seeded_profile.env
         )
         assert result.exit_code == 0
         show = runner.invoke(
-            app, ["accounts", "show", "acct_a", "--output", "json"],
+            app,
+            ["accounts", "show", "acct_a", "--output", "json"],
             env=seeded_profile.env,
         )
         rec = json.loads(show.stdout)
@@ -1645,7 +1756,9 @@ Append to `accounts.py`:
 @app.command("rename")
 def rename_cmd(
     account_id: str = typer.Argument(...),
-    display_name: str = typer.Argument(..., help="New display name (empty string clears)"),
+    display_name: str = typer.Argument(
+        ..., help="New display name (empty string clears)"
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Rename an account (empty string clears the override)."""
@@ -1723,33 +1836,40 @@ Add to `test_accounts.py`:
 ```python
 class TestAccountsSet:
     def test_set_requires_at_least_one_flag(self, runner, seeded_profile) -> None:
-        result = runner.invoke(app, ["accounts", "set", "acct_a"], env=seeded_profile.env)
+        result = runner.invoke(
+            app, ["accounts", "set", "acct_a"], env=seeded_profile.env
+        )
         assert result.exit_code == 2
 
     def test_set_writes_subtype(self, runner, seeded_profile) -> None:
         result = runner.invoke(
-            app, ["accounts", "set", "acct_a", "--subtype", "checking", "--yes"],
+            app,
+            ["accounts", "set", "acct_a", "--subtype", "checking", "--yes"],
             env=seeded_profile.env,
         )
         assert result.exit_code == 0
         show = runner.invoke(
-            app, ["accounts", "show", "acct_a", "--output", "json"],
+            app,
+            ["accounts", "show", "acct_a", "--output", "json"],
             env=seeded_profile.env,
         )
         assert json.loads(show.stdout)["account_subtype"] == "checking"
 
     def test_set_clear_credit_limit(self, runner, seeded_profile) -> None:
         runner.invoke(
-            app, ["accounts", "set", "acct_a", "--credit-limit", "5000", "--yes"],
+            app,
+            ["accounts", "set", "acct_a", "--credit-limit", "5000", "--yes"],
             env=seeded_profile.env,
         )
         result = runner.invoke(
-            app, ["accounts", "set", "acct_a", "--clear-credit-limit", "--yes"],
+            app,
+            ["accounts", "set", "acct_a", "--clear-credit-limit", "--yes"],
             env=seeded_profile.env,
         )
         assert result.exit_code == 0
         show = runner.invoke(
-            app, ["accounts", "show", "acct_a", "--output", "json"],
+            app,
+            ["accounts", "show", "acct_a", "--output", "json"],
             env=seeded_profile.env,
         )
         assert json.loads(show.stdout)["credit_limit"] is None
@@ -1758,19 +1878,21 @@ class TestAccountsSet:
         self, runner, seeded_profile
     ) -> None:
         result = runner.invoke(
-            app, ["accounts", "set", "acct_a", "--subtype", "chequing"],
+            app,
+            ["accounts", "set", "acct_a", "--subtype", "chequing"],
             env=seeded_profile.env,
         )
         # Typer's CliRunner doesn't simulate TTY, so this is non-TTY.
         # Without --yes, the command should warn + exit 2.
         assert result.exit_code == 2
-        assert "chequing" in result.stderr.lower() or "chequing" in result.stdout.lower()
+        assert (
+            "chequing" in result.stderr.lower() or "chequing" in result.stdout.lower()
+        )
 
-    def test_set_unknown_subtype_with_yes_writes(
-        self, runner, seeded_profile
-    ) -> None:
+    def test_set_unknown_subtype_with_yes_writes(self, runner, seeded_profile) -> None:
         result = runner.invoke(
-            app, ["accounts", "set", "acct_a", "--subtype", "chequing", "--yes"],
+            app,
+            ["accounts", "set", "acct_a", "--subtype", "chequing", "--yes"],
             env=seeded_profile.env,
         )
         assert result.exit_code == 0
@@ -1802,7 +1924,10 @@ def _maybe_prompt_soft_validation(
         return typer.confirm("Proceed anyway?", default=False)
     # Non-TTY without --yes: refuse with the warning (per spec Q5 v2 decision).
     typer.echo(msg, err=True)
-    typer.echo("Refusing to write a non-canonical value in non-interactive mode without --yes.", err=True)
+    typer.echo(
+        "Refusing to write a non-canonical value in non-interactive mode without --yes.",
+        err=True,
+    )
     return False
 
 
@@ -2019,7 +2144,7 @@ _SOURCE_PRECEDENCE = {"assertion": 3, "ofx": 2, "plaid": 2, "tabular": 1}
 def execute(
     context: ExecutionContext,
     start: date,  # noqa: ARG001 — FULL kind ignores start/end
-    end: date,    # noqa: ARG001
+    end: date,  # noqa: ARG001
     execution_time: date,  # noqa: ARG001
     **kwargs: t.Any,
 ) -> pd.DataFrame:
@@ -2033,8 +2158,12 @@ def execute(
     if obs.empty:
         return pd.DataFrame(
             columns=[
-                "account_id", "balance_date", "balance",
-                "is_observed", "observation_source", "reconciliation_delta",
+                "account_id",
+                "balance_date",
+                "balance",
+                "is_observed",
+                "observation_source",
+                "reconciliation_delta",
             ]
         )
 
@@ -2052,7 +2181,8 @@ def execute(
         group = group.copy()
         group["_priority"] = group["source_type"].map(_SOURCE_PRECEDENCE).fillna(0)
         winners = (
-            group.sort_values(["balance_date", "_priority"], ascending=[True, False])
+            group
+            .sort_values(["balance_date", "_priority"], ascending=[True, False])
             .drop_duplicates(subset=["balance_date"], keep="first")
             .reset_index(drop=True)
         )
@@ -2381,7 +2511,9 @@ class BalanceService:
             FROM ranked WHERE _rn = 1
             ORDER BY account_id
         """  # noqa: S608  # placeholders parameterized above
-        return [BalanceObservation(*row) for row in self._db.execute(sql, params).fetchall()]
+        return [
+            BalanceObservation(*row) for row in self._db.execute(sql, params).fetchall()
+        ]
 
     def history(
         self,
@@ -2403,7 +2535,9 @@ class BalanceService:
             sql += " AND balance_date <= ?"
             params.append(to_date)
         sql += " ORDER BY balance_date"
-        return [BalanceObservation(*row) for row in self._db.execute(sql, params).fetchall()]
+        return [
+            BalanceObservation(*row) for row in self._db.execute(sql, params).fetchall()
+        ]
 
     def reconcile(
         self, account_ids: list[str] | None = None, threshold: Decimal = Decimal("0.01")
@@ -2423,7 +2557,9 @@ class BalanceService:
               AND ABS(reconciliation_delta) > ? {where}
             ORDER BY account_id, balance_date DESC
         """  # noqa: S608  # placeholders parameterized
-        return [BalanceObservation(*row) for row in self._db.execute(sql, params).fetchall()]
+        return [
+            BalanceObservation(*row) for row in self._db.execute(sql, params).fetchall()
+        ]
 ```
 
 - [ ] **Step 6.1.4: Run tests**
@@ -2533,10 +2669,13 @@ class NetworthService:
             ORDER BY a.display_name
         """  # noqa: S608
         return [
-            dict(zip(
-                ["account_id", "display_name", "balance", "observation_source"],
-                row, strict=True,
-            ))
+            dict(
+                zip(
+                    ["account_id", "display_name", "balance", "observation_source"],
+                    row,
+                    strict=True,
+                )
+            )
             for row in self._db.execute(sql, params).fetchall()
         ]
 
@@ -2647,7 +2786,12 @@ from datetime import date
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option, render_or_json
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.services.networth_service import NetworthService
 
@@ -2661,23 +2805,30 @@ app.add_typer(networth_app, name="networth")
 @networth_app.command("show")
 def networth_show(
     as_of: str | None = typer.Option(None, "--as-of", help="ISO date (YYYY-MM-DD)"),
-    account: list[str] | None = typer.Option(None, "--account", help="Filter to account(s)"),
+    account: list[str] | None = typer.Option(
+        None, "--account", help="Filter to account(s)"
+    ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001
 ) -> None:
     """Show current or as-of net worth + per-account breakdown."""
     as_of_date = date.fromisoformat(as_of) if as_of else None
     with handle_cli_errors() as db:
-        snapshot = NetworthService(db).current(as_of_date=as_of_date, account_ids=account)
+        snapshot = NetworthService(db).current(
+            as_of_date=as_of_date, account_ids=account
+        )
     if output == "json":
-        emit_json("networth", {
-            "balance_date": snapshot.balance_date.isoformat(),
-            "net_worth": snapshot.net_worth,
-            "total_assets": snapshot.total_assets,
-            "total_liabilities": snapshot.total_liabilities,
-            "account_count": snapshot.account_count,
-            "per_account": snapshot.per_account,
-        })
+        emit_json(
+            "networth",
+            {
+                "balance_date": snapshot.balance_date.isoformat(),
+                "net_worth": snapshot.net_worth,
+                "total_assets": snapshot.total_assets,
+                "total_liabilities": snapshot.total_liabilities,
+                "account_count": snapshot.account_count,
+                "per_account": snapshot.per_account,
+            },
+        )
         return
     logger.info(f"Net worth as of {snapshot.balance_date}: {snapshot.net_worth}")
     logger.info(f"  Assets:      {snapshot.total_assets}")
@@ -2702,7 +2853,9 @@ def networth_history(
     """Net worth time series with period-over-period change."""
     with handle_cli_errors() as db:
         rows = NetworthService(db).history(
-            date.fromisoformat(from_date), date.fromisoformat(to_date), interval=interval
+            date.fromisoformat(from_date),
+            date.fromisoformat(to_date),
+            interval=interval,
         )
     if output == "json":
         emit_json("networth_history", rows)
@@ -2714,6 +2867,7 @@ def networth_history(
 
 ```python
 from moneybin.cli.commands import reports as reports_cmd
+
 # ...
 app.add_typer(reports_cmd.app, name="reports", help="Cross-domain analytical reports")
 ```
@@ -2872,10 +3026,18 @@ def reports_networth_history(
 
 
 def register_reports_tools(mcp: FastMCP) -> None:
-    register(mcp, reports_networth_get, "reports_networth_get",
-             "Current or historical net worth snapshot with per-account breakdown.")
-    register(mcp, reports_networth_history, "reports_networth_history",
-             "Net worth time series with period-over-period change.")
+    register(
+        mcp,
+        reports_networth_get,
+        "reports_networth_get",
+        "Current or historical net worth snapshot with per-account breakdown.",
+    )
+    register(
+        mcp,
+        reports_networth_history,
+        "reports_networth_history",
+        "Net worth time series with period-over-period change.",
+    )
 ```
 
 - [ ] **Step 8.2.2: Wire registration**
@@ -2931,25 +3093,25 @@ Per `.claude/rules/testing.md` "E2E Test Coverage Requirement", every CLI comman
 Find the `_HELP_COMMANDS` list and append:
 
 ```python
-    ("accounts",),
-    ("accounts", "list"),
-    ("accounts", "show"),
-    ("accounts", "rename"),
-    ("accounts", "include"),
-    ("accounts", "archive"),
-    ("accounts", "unarchive"),
-    ("accounts", "set"),
-    ("accounts", "balance"),
-    ("accounts", "balance", "show"),
-    ("accounts", "balance", "history"),
-    ("accounts", "balance", "assert"),
-    ("accounts", "balance", "list"),
-    ("accounts", "balance", "delete"),
-    ("accounts", "balance", "reconcile"),
-    ("reports",),
-    ("reports", "networth"),
-    ("reports", "networth", "show"),
-    ("reports", "networth", "history"),
+(("accounts",),)
+(("accounts", "list"),)
+(("accounts", "show"),)
+(("accounts", "rename"),)
+(("accounts", "include"),)
+(("accounts", "archive"),)
+(("accounts", "unarchive"),)
+(("accounts", "set"),)
+(("accounts", "balance"),)
+(("accounts", "balance", "show"),)
+(("accounts", "balance", "history"),)
+(("accounts", "balance", "assert"),)
+(("accounts", "balance", "list"),)
+(("accounts", "balance", "delete"),)
+(("accounts", "balance", "reconcile"),)
+(("reports",),)
+(("reports", "networth"),)
+(("reports", "networth", "show"),)
+(("reports", "networth", "history"),)
 ```
 
 - [ ] **Step 9.1.2: Run + commit**

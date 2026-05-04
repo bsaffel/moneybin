@@ -77,4 +77,6 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         # end users don't need the errno number.
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
         return UserError(msg, code="file_not_found")
+    if isinstance(exc, ValueError):
+        return UserError(str(exc), code="invalid_input")
     return None

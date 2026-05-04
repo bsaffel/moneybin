@@ -13,6 +13,7 @@ import pytest
 
 import moneybin.database as db_module
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.services.account_service import (
     CLEAR,
     PLAID_CANONICAL_HOLDER_CATEGORIES,
@@ -241,11 +242,23 @@ class TestAccountSettingsModel:
 def test_db(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> Generator[Database, None, None]:
-    """In-memory test database with all schemas initialized; closed on teardown."""
+    """Test database with all schemas + a seeded dim_accounts row for mutator tests.
+
+    Seeds account_id='acct_a' so mutator tests (rename, archive, etc.) can call
+    _assert_account_exists without failing on a missing row.
+    """
     database = Database(
         tmp_path / "test.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+    )
+    create_core_tables(database)
+    database.execute(
+        """
+        INSERT INTO core.dim_accounts
+            (account_id, account_type, institution_name, source_type)
+        VALUES ('acct_a', 'CHECKING', 'Test Bank', 'ofx')
+        """
     )
     try:
         yield database
@@ -670,3 +683,39 @@ class TestAccountServiceSummary:
         result = svc.summary()
         assert result["total_accounts"] == 0
         assert result["count_by_type"] == {}
+
+
+class TestMutatorAccountValidation:
+    """Tests that mutators reject unknown account_ids."""
+
+    @pytest.mark.unit
+    def test_rename_rejects_unknown_account(self, extended_db: Database) -> None:
+        svc = AccountService(extended_db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.rename("ACCTO1_typo", "new name")
+
+    @pytest.mark.unit
+    def test_set_include_rejects_unknown_account(self, extended_db: Database) -> None:
+        svc = AccountService(extended_db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.set_include_in_net_worth("ACCTO1_typo", False)
+
+    @pytest.mark.unit
+    def test_archive_rejects_unknown_account(self, extended_db: Database) -> None:
+        svc = AccountService(extended_db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.archive("ACCTO1_typo")
+
+    @pytest.mark.unit
+    def test_unarchive_rejects_unknown_account(self, extended_db: Database) -> None:
+        svc = AccountService(extended_db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.unarchive("ACCTO1_typo")
+
+    @pytest.mark.unit
+    def test_settings_update_rejects_unknown_account(
+        self, extended_db: Database
+    ) -> None:
+        svc = AccountService(extended_db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.settings_update("ACCTO1_typo", official_name="New Name")

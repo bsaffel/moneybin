@@ -16,6 +16,7 @@ from difflib import get_close_matches
 from typing import Any, Literal, cast
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
@@ -332,6 +333,15 @@ class AccountService:
         self._db = db
         self._settings_repo = AccountSettingsRepository(db)
 
+    def _assert_account_exists(self, account_id: str) -> None:
+        """Raise UserError if account_id is not in core.dim_accounts."""
+        row = self._db.execute(
+            f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
+            [account_id],
+        ).fetchone()
+        if row is None:
+            raise UserError(f"Account not found: {account_id}", code="not_found")
+
     def list_accounts(
         self,
         *,
@@ -483,6 +493,7 @@ class AccountService:
 
     def rename(self, account_id: str, display_name: str) -> AccountSettings:
         """Set or clear display_name. Empty string clears the override."""
+        self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
         new_name: str | None = display_name if display_name else None
         updated = dataclasses.replace(current, display_name=new_name)
@@ -497,6 +508,7 @@ class AccountService:
         self, account_id: str, include: bool
     ) -> AccountSettings:
         """Toggle include_in_net_worth flag. Idempotent."""
+        self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
         updated = dataclasses.replace(current, include_in_net_worth=include)
         self._settings_repo.upsert(updated)
@@ -505,6 +517,7 @@ class AccountService:
 
     def archive(self, account_id: str) -> AccountSettings:
         """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write."""
+        self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
         updated = dataclasses.replace(
             current, archived=True, include_in_net_worth=False
@@ -517,6 +530,7 @@ class AccountService:
 
     def unarchive(self, account_id: str) -> AccountSettings:
         """Set archived=FALSE; does NOT restore include_in_net_worth (per spec)."""
+        self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
         updated = dataclasses.replace(current, archived=False)
         self._settings_repo.upsert(updated)
@@ -540,6 +554,7 @@ class AccountService:
         value writes that value. Returns the updated settings and a list of
         soft-validation warnings (empty if all values are canonical).
         """
+        self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
         diff: dict[str, object] = {}
         warnings: list[dict[str, str]] = []

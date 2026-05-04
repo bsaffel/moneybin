@@ -2,18 +2,45 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.services.balance_service import (
     BalanceAssertionListResult,
     BalanceObservationListResult,
     BalanceService,
 )
+from tests.moneybin.db_helpers import create_core_tables
+
+
+@pytest.fixture()
+def assertion_db(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> Generator[Database, None, None]:
+    """Database with core tables + seeded dim_accounts rows for assertion CRUD tests."""
+    database = Database(
+        tmp_path / "assertion_test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    create_core_tables(database)
+    database.execute(
+        """
+        INSERT INTO core.dim_accounts (account_id, account_type, institution_name, source_type)
+        VALUES ('acct_a', 'CHECKING', 'Test Bank', 'ofx'),
+               ('acct_b', 'SAVINGS', 'Other Bank', 'ofx')
+        """
+    )
+    yield database
+    database.close()
 
 
 def _seed_fct_balances_daily(
@@ -60,8 +87,8 @@ class TestAssertionsCRUD:
     """Tests for assert_balance, delete_assertion, and list_assertions."""
 
     @pytest.mark.unit
-    def test_assert_inserts(self, db: Database) -> None:
-        svc = BalanceService(db)
+    def test_assert_inserts(self, assertion_db: Database) -> None:
+        svc = BalanceService(assertion_db)
         result = svc.assert_balance(
             "acct_a", date(2026, 1, 31), Decimal("1234.56"), notes="from statement"
         )
@@ -69,8 +96,8 @@ class TestAssertionsCRUD:
         assert result.notes == "from statement"
 
     @pytest.mark.unit
-    def test_assert_upserts_same_date(self, db: Database) -> None:
-        svc = BalanceService(db)
+    def test_assert_upserts_same_date(self, assertion_db: Database) -> None:
+        svc = BalanceService(assertion_db)
         svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
         svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("200.00"))
         listed = svc.list_assertions("acct_a")
@@ -78,20 +105,20 @@ class TestAssertionsCRUD:
         assert listed[0].balance == Decimal("200.00")
 
     @pytest.mark.unit
-    def test_delete_removes(self, db: Database) -> None:
-        svc = BalanceService(db)
+    def test_delete_removes(self, assertion_db: Database) -> None:
+        svc = BalanceService(assertion_db)
         svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
         svc.delete_assertion("acct_a", date(2026, 1, 31))
         assert svc.list_assertions("acct_a") == []
 
     @pytest.mark.unit
-    def test_delete_silent_on_missing(self, db: Database) -> None:
-        svc = BalanceService(db)
+    def test_delete_silent_on_missing(self, assertion_db: Database) -> None:
+        svc = BalanceService(assertion_db)
         svc.delete_assertion("acct_a", date(2099, 1, 1))  # no error
 
     @pytest.mark.unit
-    def test_list_filters_by_account(self, db: Database) -> None:
-        svc = BalanceService(db)
+    def test_list_filters_by_account(self, assertion_db: Database) -> None:
+        svc = BalanceService(assertion_db)
         svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
         svc.assert_balance("acct_b", date(2026, 1, 31), Decimal("200.00"))
         a_only = svc.list_assertions("acct_a")
@@ -99,8 +126,8 @@ class TestAssertionsCRUD:
         assert a_only[0].account_id == "acct_a"
 
     @pytest.mark.unit
-    def test_list_all_assertions(self, db: Database) -> None:
-        svc = BalanceService(db)
+    def test_list_all_assertions(self, assertion_db: Database) -> None:
+        svc = BalanceService(assertion_db)
         svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
         svc.assert_balance("acct_b", date(2026, 1, 31), Decimal("200.00"))
         all_rows = svc.list_assertions(None)
@@ -376,3 +403,30 @@ class TestEnvelopes:
         envelope = result.to_envelope()
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "medium"
+
+
+class TestAccountValidation:
+    """Tests for assert_balance account_id existence check."""
+
+    @pytest.mark.unit
+    def test_assert_balance_rejects_unknown_account(self, db: Database) -> None:
+        """assert_balance must raise UserError for account_id not in dim_accounts."""
+        create_core_tables(db)
+        svc = BalanceService(db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.assert_balance("ACCTO1_typo", date(2026, 1, 31), Decimal("1234.56"))
+
+    @pytest.mark.unit
+    def test_assert_balance_accepts_known_account(self, db: Database) -> None:
+        """assert_balance must succeed when account_id is in dim_accounts."""
+        create_core_tables(db)
+        db.execute(
+            """
+            INSERT INTO core.dim_accounts
+                (account_id, account_type, institution_name, source_type)
+            VALUES ('REAL_ACCT', 'CHECKING', 'Test Bank', 'ofx')
+            """
+        )
+        svc = BalanceService(db)
+        result = svc.assert_balance("REAL_ACCT", date(2026, 1, 31), Decimal("500.00"))
+        assert result.balance == Decimal("500.00")
