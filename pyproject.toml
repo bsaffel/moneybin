@@ -247,6 +247,7 @@ reportUnusedExpression = true
 # Documentation: https://docs.pytest.org/en/stable/reference/reference.html#configuration-options
 minversion = "7.0"
 addopts = "-ra -q --strict-markers --strict-config -n auto"
+asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

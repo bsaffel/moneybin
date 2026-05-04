@@ -39,7 +39,6 @@ def monkeypatch_module() -> Generator[pytest.MonkeyPatch, None, None]:
     mp.undo()
 
 
-@pytest.mark.asyncio
 async def test_core_tools_visible_at_connect() -> None:
     """Tools without a domain are listed by default."""
     from moneybin.mcp.server import mcp
@@ -50,7 +49,6 @@ async def test_core_tools_visible_at_connect() -> None:
         assert "accounts_list" in names
 
 
-@pytest.mark.asyncio
 async def test_extended_tools_hidden_at_connect() -> None:
     """Tools with a domain are not listed by default — Visibility transforms hide them."""
     from moneybin.mcp.server import mcp
@@ -61,7 +59,6 @@ async def test_extended_tools_hidden_at_connect() -> None:
         assert "budget_set" not in names
 
 
-@pytest.mark.asyncio
 async def test_discover_reveals_namespace_tools() -> None:
     """Discover reveals namespace tools for the calling session.
 
@@ -76,7 +73,6 @@ async def test_discover_reveals_namespace_tools() -> None:
         assert "transactions_categorize_bulk_apply" in names
 
 
-@pytest.mark.asyncio
 async def test_unknown_domain_returns_error_envelope() -> None:
     """Calling discover('not-a-real-namespace') returns an error envelope."""
     import json
@@ -91,7 +87,6 @@ async def test_unknown_domain_returns_error_envelope() -> None:
         assert "Unknown domain" in str(envelope["error"])
 
 
-@pytest.mark.asyncio
 async def test_per_session_discover_isolated() -> None:
     """Two clients connected to the same server have independent visibility.
 
@@ -117,7 +112,6 @@ async def test_per_session_discover_isolated() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_visibility_or_match_semantics() -> None:
     """A tool tagged with one extended domain stays hidden when only a different domain is enabled.
 
@@ -141,7 +135,6 @@ async def test_visibility_or_match_semantics() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_full_discover_reveals_every_extended_tool() -> None:
     """After discovering every extended domain, total visible tool count matches the unfiltered registry.
 
@@ -166,7 +159,6 @@ async def test_full_discover_reveals_every_extended_tool() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_every_tool_name_matches_anthropic_openai_pattern() -> None:
     """Every registered tool name must match ``^[a-zA-Z0-9_-]{1,64}$``.
 
@@ -189,7 +181,6 @@ async def test_every_tool_name_matches_anthropic_openai_pattern() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_hidden_tool_is_uncallable_via_tools_call() -> None:
     """Hidden tools must be uncallable.
 
