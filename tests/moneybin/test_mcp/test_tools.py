@@ -5,8 +5,6 @@ These tests exercise the underlying tool functions directly. Registration
 with the FastMCP server is covered by tests/mcp/test_visibility.py.
 """
 
-import asyncio
-
 import pytest
 from fastmcp import FastMCP
 
@@ -38,21 +36,19 @@ class TestToolRegistration:
     """Verify tools register correctly and produce envelope responses."""
 
     @pytest.mark.unit
-    def test_spending_tools_register(self) -> None:
+    async def test_spending_tools_register(self) -> None:
         srv = FastMCP("test")
         register_reports_tools(srv)
-        # Synchronous accessor surface differs by version; resolve via asyncio.
-
-        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "reports_spending_summary" in names
         assert "reports_spending_by_category" in names
 
     @pytest.mark.unit
-    def test_accounts_tools_register(self) -> None:
+    async def test_accounts_tools_register(self) -> None:
 
         srv = FastMCP("test")
         register_accounts_tools(srv)
-        names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         # v2 entity tools
         assert "accounts_list" in names
         assert "accounts_get" in names
@@ -71,9 +67,9 @@ class TestToolRegistration:
         assert "accounts_balance_assertion_delete" in names
 
     @pytest.mark.unit
-    def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
+    async def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
 
-        result = asyncio.run(accounts_list())
+        result = await accounts_list()
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
@@ -81,11 +77,10 @@ class TestToolRegistration:
         assert parsed["summary"]["sensitivity"] == "medium"
         assert len(parsed["data"]) == 2  # 2 accounts from mcp_db fixture
 
-    @pytest.mark.unit
-    def test_accounts_list_redacted_returns_low_sensitivity(
+    async def test_accounts_list_redacted_returns_low_sensitivity(
         self, mcp_db: object
     ) -> None:
-        result = asyncio.run(accounts_list(redacted=True))
+        result = await accounts_list(redacted=True)
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         # Redacted mode omits last_four and credit_limit
@@ -94,7 +89,7 @@ class TestToolRegistration:
             assert "credit_limit" not in account
 
     @pytest.mark.unit
-    def test_sql_query_returns_envelope(self, mcp_db: object) -> None:
+    async def test_sql_query_returns_envelope(self, mcp_db: object) -> None:
 
         from moneybin.mcp.server import get_db
 
@@ -103,17 +98,17 @@ class TestToolRegistration:
         # Also exercise registration to ensure no smoke errors.
         register_sql_tools(FastMCP("test"))
 
-        result = asyncio.run(
-            sql_query(query="SELECT COUNT(*) AS cnt FROM core.fct_transactions")
+        result = await sql_query(
+            query="SELECT COUNT(*) AS cnt FROM core.fct_transactions"
         )
         parsed = result.to_dict()
         assert "summary" in parsed
         assert parsed["data"][0]["cnt"] == 2
 
     @pytest.mark.unit
-    def test_sql_schema_returns_envelope(self, mcp_db: object) -> None:
+    async def test_sql_schema_returns_envelope(self, mcp_db: object) -> None:
 
-        result = asyncio.run(sql_schema())
+        result = await sql_schema()
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         data = parsed["data"]

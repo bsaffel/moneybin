@@ -151,41 +151,39 @@ class TestResourceTools:
 
         register_core_tools()
 
-    def _read(self) -> dict[str, Any]:
-        import asyncio
-
-        return json.loads(asyncio.run(resource_tools()))
+    async def _read(self) -> dict[str, Any]:
+        return json.loads(await resource_tools())
 
     @pytest.mark.unit
-    def test_returns_core_namespaces(self) -> None:
-        data = self._read()
+    async def test_returns_core_namespaces(self) -> None:
+        data = await self._read()
         assert "core" in data
         assert isinstance(data["core"], list)
         core: list[dict[str, Any]] = data["core"]
         assert len(core) > 0
 
     @pytest.mark.unit
-    def test_core_namespaces_have_required_fields(self) -> None:
-        data = self._read()
+    async def test_core_namespaces_have_required_fields(self) -> None:
+        data = await self._read()
         for entry in data["core"]:
             assert "namespace" in entry
             assert "loaded" in entry
             assert "description" in entry
 
     @pytest.mark.unit
-    def test_core_namespaces_loaded_true(self) -> None:
-        data = self._read()
+    async def test_core_namespaces_loaded_true(self) -> None:
+        data = await self._read()
         core_entries: list[dict[str, Any]] = data["core"]
         assert all(entry["loaded"] is True for entry in core_entries)
 
     @pytest.mark.unit
-    def test_discover_tool_present(self) -> None:
-        data = self._read()
+    async def test_discover_tool_present(self) -> None:
+        data = await self._read()
         assert data["discover_tool"] == "moneybin_discover"
 
     @pytest.mark.unit
-    def test_known_namespaces_present(self) -> None:
-        data = self._read()
+    async def test_known_namespaces_present(self) -> None:
+        data = await self._read()
         namespaces = {e["namespace"] for e in data["core"]}
         assert "reports" in namespaces
         assert "accounts" in namespaces

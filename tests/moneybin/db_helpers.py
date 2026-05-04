@@ -196,6 +196,31 @@ CORE_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
 }
 
 
+def seed_categories_view(db: Database) -> None:
+    """Seed seeds.categories with a single default row + refresh app.categories view.
+
+    Used by tests that exercise category-toggle behavior on default-category rows.
+    The seeded row is ``('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')``.
+    """
+    from moneybin.seeds import refresh_views
+
+    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS seeds.categories (
+            category_id VARCHAR,
+            category VARCHAR,
+            subcategory VARCHAR,
+            description VARCHAR,
+            plaid_detailed VARCHAR
+        )
+    """)
+    db.execute("""
+        INSERT INTO seeds.categories VALUES
+        ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')
+    """)
+    refresh_views(db)
+
+
 def apply_core_table_comments(database: Database) -> None:
     """Apply COMMENT ON TABLE/COLUMN for core test tables.
 

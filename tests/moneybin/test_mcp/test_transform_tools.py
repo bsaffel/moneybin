@@ -8,7 +8,6 @@ and envelope shape, not real SQLMesh behavior.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from typing import Any
 
@@ -34,11 +33,11 @@ _EXPECTED_TOOLS = {
 
 
 @pytest.mark.unit
-def test_register_transform_tools_registers_all_five() -> None:
+async def test_register_transform_tools_registers_all_five() -> None:
     """All 5 transform tools register; restate is excluded by design."""
     srv = FastMCP("test")
     register_transform_tools(srv)
-    names = {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert _EXPECTED_TOOLS <= names
     assert "transform_restate" not in names
 
@@ -54,11 +53,11 @@ def test_register_transform_tools_registers_all_five() -> None:
         transform_apply,
     ],
 )
-def test_transform_tool_returns_not_implemented_envelope(
+async def test_transform_tool_returns_not_implemented_envelope(
     fn: Callable[..., Any],
 ) -> None:
     """Every transform tool returns a stub envelope referencing the spec."""
-    parsed = asyncio.run(fn()).to_dict()
+    parsed = (await fn()).to_dict()
     assert parsed["summary"]["sensitivity"] == "low"
     assert parsed["data"]["status"] == "not_implemented"
     assert parsed["data"]["spec"] == "docs/specs/mcp-tool-surface.md"

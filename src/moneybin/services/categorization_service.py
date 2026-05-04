@@ -24,6 +24,7 @@ import duckdb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.metrics.registry import (
     CATEGORIZE_BULK_DURATION_SECONDS,
     CATEGORIZE_BULK_ERRORS_TOTAL,
@@ -34,9 +35,11 @@ from moneybin.services._text import normalize_description
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
+    CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
     MERCHANTS,
     TRANSACTION_CATEGORIES,
+    USER_CATEGORIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,6 +122,39 @@ class BulkCategorizationResult:
         self.errors += len(parse_errors)
 
 
+@dataclass(slots=True)
+class RuleCreationResult:
+    """Typed result for CategorizationService.create_rules."""
+
+    created: int
+    skipped: int
+    error_details: list[dict[str, str]]
+    rule_ids: list[str]
+
+    def to_envelope(self, input_count: int) -> ResponseEnvelope:
+        """Build a ResponseEnvelope from this rule-creation result."""
+        return build_envelope(
+            data={
+                "created": self.created,
+                "skipped": self.skipped,
+                "rule_ids": self.rule_ids,
+                "error_details": self.error_details,
+            },
+            sensitivity="low",
+            total_count=input_count,
+            actions=[
+                "Use transactions_categorize_rules_list to review all rules",
+            ],
+        )
+
+    def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
+        """Prepend boundary-validation errors and reflect them in the skipped count."""
+        if not parse_errors:
+            return
+        self.error_details = parse_errors + self.error_details
+        self.skipped += len(parse_errors)
+
+
 class BulkCategorizationItem(BaseModel):
     """One row of input for ``CategorizationService.bulk_categorize``.
 
@@ -132,6 +168,72 @@ class BulkCategorizationItem(BaseModel):
     subcategory: str | None = Field(default=None, min_length=1, max_length=100)
 
 
+class CategorizationRuleInput(BaseModel):
+    """One rule for ``CategorizationService.create_rules``.
+
+    Validated at the CLI/MCP boundary by ``validate_rule_items``. The
+    service refuses untyped dicts.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    merchant_pattern: str = Field(min_length=1, max_length=500)
+    category: str = Field(min_length=1, max_length=100)
+    subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+    match_type: MatchType = "contains"
+    min_amount: float | None = None
+    max_amount: float | None = None
+    account_id: str | None = Field(default=None, min_length=1, max_length=64)
+    priority: int = Field(default=100, ge=0, le=10_000)
+
+
+def _validate_items[T: BaseModel](
+    raw: object,
+    model_cls: type[T],
+    *,
+    id_field: str,
+    list_error_msg: str,
+) -> tuple[list[T], list[dict[str, str]]]:
+    """Validate raw decoded JSON dicts into typed Pydantic items + per-row errors.
+
+    Shared by ``validate_bulk_items`` and ``validate_rule_items``: per-item
+    failures contribute an ``error_details`` entry but do not abort the batch.
+    The ``id_field`` is the per-row identity surfaced in error dicts so callers
+    can correlate failures (e.g., ``transaction_id`` for bulk_categorize,
+    ``name`` for rule creation).
+    """
+    if not isinstance(raw, list):
+        raise ValueError(list_error_msg)
+
+    items: list[T] = []
+    errors: list[dict[str, str]] = []
+    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]  # raw is intentionally `object`; isinstance check below narrows the type
+        if not isinstance(row, dict):
+            errors.append({
+                id_field: "(missing)",
+                "reason": f"Row {index} is not an object",
+            })
+            continue
+        row_dict: dict[str, object] = {
+            str(k): v  # pyright: ignore[reportUnknownArgumentType]  # dict keys from untyped JSON input
+            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]  # dict from untyped JSON input
+        }
+        try:
+            items.append(model_cls.model_validate(row_dict))
+        except ValidationError as e:
+            id_val = row_dict.get(id_field)
+            id_str = str(id_val).strip() if isinstance(id_val, str) else ""
+            if not id_str:
+                id_str = "(missing)"
+            reason = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]  # Pydantic error loc is Sequence[int | str]
+                for err in e.errors()
+            )
+            errors.append({id_field: id_str, "reason": reason})
+    return items, errors
+
+
 def validate_bulk_items(
     raw: object,
 ) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
@@ -142,35 +244,28 @@ def validate_bulk_items(
     final ``BulkCategorizationResult.error_details`` so the response envelope
     surfaces every failure together.
     """
-    if not isinstance(raw, list):
-        raise ValueError("Input must be a JSON array of categorization items")
+    return _validate_items(
+        raw,
+        BulkCategorizationItem,
+        id_field="transaction_id",
+        list_error_msg="Input must be a JSON array of categorization items",
+    )
 
-    items: list[BulkCategorizationItem] = []
-    errors: list[dict[str, str]] = []
-    for index, row in enumerate(raw):  # pyright: ignore[reportUnknownArgumentType]  # raw is intentionally `object`; isinstance check below narrows the type
-        if not isinstance(row, dict):
-            errors.append({
-                "transaction_id": "(missing)",
-                "reason": f"Row {index} is not an object",
-            })
-            continue
-        row_dict: dict[str, object] = {
-            str(k): v  # pyright: ignore[reportUnknownArgumentType]  # dict keys from untyped JSON input
-            for k, v in row.items()  # pyright: ignore[reportUnknownMemberType]  # dict from untyped JSON input
-        }
-        try:
-            items.append(BulkCategorizationItem.model_validate(row_dict))
-        except ValidationError as e:
-            txn_id_val = row_dict.get("transaction_id")
-            txn_id = str(txn_id_val).strip() if isinstance(txn_id_val, str) else ""
-            if not txn_id:
-                txn_id = "(missing)"
-            reason = "; ".join(
-                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"  # pyright: ignore[reportUnknownArgumentType]  # Pydantic error loc is Sequence[int | str]
-                for err in e.errors()
-            )
-            errors.append({"transaction_id": txn_id, "reason": reason})
-    return items, errors
+
+def validate_rule_items(
+    raw: object,
+) -> tuple[list[CategorizationRuleInput], list[dict[str, str]]]:
+    """Validate raw rule dicts into typed inputs + per-row errors.
+
+    Mirrors ``validate_bulk_items``: malformed rows contribute an
+    ``error_details`` entry but do not abort the batch.
+    """
+    return _validate_items(
+        raw,
+        CategorizationRuleInput,
+        id_field="name",
+        list_error_msg="Input must be a JSON array of rule items",
+    )
 
 
 @lru_cache(maxsize=512)
@@ -345,6 +440,181 @@ class CategorizationService:
         )
         logger.info(f"Created merchant mapping {merchant_id}")
         return merchant_id
+
+    # -- Rule management --
+
+    def create_rules(
+        self, items: Sequence[CategorizationRuleInput]
+    ) -> RuleCreationResult:
+        """Create multiple categorization rules in one call.
+
+        Each item is INSERTed into ``app.categorization_rules`` with a fresh
+        12-char UUID hex ``rule_id``, ``is_active=true``, and
+        ``created_by='ai'``. Per-row insertion failures are caught so a
+        single bad row does not abort the batch — they appear in
+        ``error_details``.
+        """
+        created = 0
+        skipped = 0
+        error_details: list[dict[str, str]] = []
+        rule_ids: list[str] = []
+
+        for item in items:
+            rule_id = uuid.uuid4().hex[:12]
+            try:
+                self._db.execute(
+                    f"""
+                    INSERT INTO {CATEGORIZATION_RULES.full_name}
+                    (rule_id, name, merchant_pattern, match_type,
+                     min_amount, max_amount, account_id,
+                     category, subcategory, priority, is_active,
+                     created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
+                            'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,  # noqa: S608  # TableRef constant, no user input interpolated
+                    [
+                        rule_id,
+                        item.name,
+                        item.merchant_pattern,
+                        item.match_type,
+                        item.min_amount,
+                        item.max_amount,
+                        item.account_id,
+                        item.category,
+                        item.subcategory,
+                        item.priority,
+                    ],
+                )
+                created += 1
+                rule_ids.append(rule_id)
+            except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+                skipped += 1
+                logger.exception(f"create_rules failed for rule {item.name!r}")
+                error_details.append({
+                    "name": item.name,
+                    "reason": "Failed to create rule — check logs for details.",
+                })
+
+        return RuleCreationResult(
+            created=created,
+            skipped=skipped,
+            error_details=error_details,
+            rule_ids=rule_ids,
+        )
+
+    def deactivate_rule(self, rule_id: str) -> bool:
+        """Soft-delete a rule by setting ``is_active=false``.
+
+        Returns ``True`` if the rule existed (and is now inactive),
+        ``False`` if no rule with that ID was found.
+        """
+        row = self._db.execute(
+            f"""
+            UPDATE {CATEGORIZATION_RULES.full_name}
+            SET is_active = false, updated_at = CURRENT_TIMESTAMP
+            WHERE rule_id = ?
+            RETURNING rule_id
+            """,  # noqa: S608  # TableRef constant, no user input interpolated
+            [rule_id],
+        ).fetchone()
+        return row is not None
+
+    # -- Category management --
+
+    def create_category(
+        self,
+        category: str,
+        *,
+        subcategory: str | None = None,
+        description: str | None = None,
+    ) -> str:
+        """Create a custom user category (active by default).
+
+        Top-level duplicate detection uses an explicit pre-check because
+        DuckDB's UNIQUE constraint treats NULL as distinct. The
+        check-then-insert shape is safe under MoneyBin's single-process,
+        single-writer connection model — see ``database.py`` for the rationale.
+
+        Raises:
+            UserError(code="CATEGORY_ALREADY_EXISTS"): the
+                ``(category, subcategory)`` pair is already present in
+                ``app.user_categories``.
+        """
+        # DuckDB treats NULL != NULL in UNIQUE constraints, so a top-level
+        # category (subcategory IS NULL) can be inserted multiple times without
+        # raising ConstraintException. Guard explicitly for that case.
+        if subcategory is None:
+            existing = self._db.execute(
+                f"""
+                SELECT 1 FROM {USER_CATEGORIES.full_name}
+                WHERE category = ? AND subcategory IS NULL
+                LIMIT 1
+                """,  # noqa: S608  # TableRef constant, no user input interpolated
+                [category],
+            ).fetchone()
+            if existing:
+                raise UserError(
+                    f"Category already exists: {category}",
+                    code="CATEGORY_ALREADY_EXISTS",
+                )
+
+        category_id = uuid.uuid4().hex[:12]
+        try:
+            self._db.execute(
+                f"""
+                INSERT INTO {USER_CATEGORIES.full_name}
+                (category_id, category, subcategory, description,
+                 is_active, created_at)
+                VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP)
+                """,  # noqa: S608  # TableRef constant, no user input interpolated
+                [category_id, category, subcategory, description],
+            )
+        except duckdb.ConstraintException:
+            sub = f" / {subcategory}" if subcategory else ""
+            raise UserError(
+                f"Category already exists: {category}{sub}",
+                code="CATEGORY_ALREADY_EXISTS",
+            ) from None
+        return category_id
+
+    def toggle_category(self, category_id: str, *, is_active: bool) -> None:
+        """Enable or disable a category. Existing categorizations are preserved.
+
+        Default categories (is_default=true) write to ``app.category_overrides``;
+        user-created categories update ``app.user_categories.is_active`` directly.
+
+        Raises:
+            UserError(code="CATEGORY_NOT_FOUND"): no category with this ID
+                exists in either ``app.user_categories`` or the seeded defaults.
+        """
+        cat = self._db.execute(
+            f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
+            [category_id],
+        ).fetchone()
+        if not cat:
+            raise UserError(
+                f"Category {category_id} not found",
+                code="CATEGORY_NOT_FOUND",
+            )
+
+        if cat[0]:  # default category — record/upsert the override
+            self._db.execute(
+                f"""
+                INSERT INTO {CATEGORY_OVERRIDES.full_name}
+                    (category_id, is_active, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (category_id) DO UPDATE
+                    SET is_active = excluded.is_active,
+                        updated_at = excluded.updated_at
+                """,  # noqa: S608  # TableRef constant
+                [category_id, is_active],
+            )
+        else:
+            self._db.execute(
+                f"UPDATE {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"SET is_active = ? WHERE category_id = ?",
+                [is_active, category_id],
+            )
 
     # -- Categorization core --
 

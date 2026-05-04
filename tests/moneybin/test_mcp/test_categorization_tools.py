@@ -5,8 +5,6 @@ Individual categorization logic is tested in test_categorization_service.py.
 These tests verify the MCP tool wiring, envelope format, and basic end-to-end.
 """
 
-import asyncio
-
 import pytest
 from fastmcp import FastMCP
 
@@ -20,25 +18,25 @@ from moneybin.mcp.tools.transactions_categorize import (
     register_transactions_categorize_tools,
     transactions_categorize_stats,
 )
-from moneybin.seeds import refresh_views
+from tests.moneybin.db_helpers import seed_categories_view
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
-def _registered_names() -> set[str]:
+async def _registered_names() -> set[str]:
     srv = FastMCP("test")
     register_categories_tools(srv)
     register_merchants_tools(srv)
     register_transactions_categorize_tools(srv)
-    return {t.name for t in asyncio.run(srv._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    return {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 
 class TestCategorizeToolRegistration:
     """Verify categorize tools register and return envelopes."""
 
     @pytest.mark.unit
-    def test_all_categorize_tools_register(self) -> None:
-        names = _registered_names()
+    async def test_all_categorize_tools_register(self) -> None:
+        names = await _registered_names()
         assert "categories_list" in names
         assert "transactions_categorize_rules_list" in names
         assert "merchants_list" in names
@@ -52,23 +50,23 @@ class TestCategorizeToolRegistration:
         assert "categories_toggle" in names
 
     @pytest.mark.unit
-    def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
-        parsed = asyncio.run(transactions_categorize_stats()).to_dict()
+    async def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
+        parsed = (await transactions_categorize_stats()).to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
 
     @pytest.mark.unit
-    def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:
+    async def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:
         """List categories returns a valid envelope (empty when no data)."""
-        cat_result = asyncio.run(categories_list()).to_dict()
+        cat_result = (await categories_list()).to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
         assert isinstance(cat_result["data"], list)
 
     @pytest.mark.unit
-    def test_register_includes_auto_rule_tools(self) -> None:
-        names = _registered_names()
+    async def test_register_includes_auto_rule_tools(self) -> None:
+        names = await _registered_names()
         assert {
             "transactions_categorize_auto_review",
             "transactions_categorize_auto_confirm",
@@ -76,39 +74,19 @@ class TestCategorizeToolRegistration:
         } <= names
 
 
-def _seed_categories_view(db: object) -> None:
-    """Populate seeds.categories + the app.categories view for write-path tests."""
-    from moneybin.database import Database
-
-    assert isinstance(db, Database)
-    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
-    db.execute("""
-        CREATE TABLE seeds.categories (
-            category_id VARCHAR,
-            category VARCHAR,
-            subcategory VARCHAR,
-            description VARCHAR,
-            plaid_detailed VARCHAR
-        )
-    """)
-    db.execute("""
-        INSERT INTO seeds.categories VALUES
-        ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')
-    """)
-    refresh_views(db)
-
-
 class TestToggleCategoryWritePath:
     """categories_toggle routes writes to the right backing table."""
 
     @pytest.mark.unit
-    def test_toggle_default_category_writes_override(self, mcp_db: object) -> None:
+    async def test_toggle_default_category_writes_override(
+        self, mcp_db: object
+    ) -> None:
         from moneybin.database import Database
 
         assert isinstance(mcp_db, Database)
-        _seed_categories_view(mcp_db)
+        seed_categories_view(mcp_db)
 
-        asyncio.run(categories_toggle(category_id="FND", is_active=False))
+        await categories_toggle(category_id="FND", is_active=False)
 
         rows = mcp_db.execute(
             "SELECT category_id, is_active FROM app.category_overrides"
@@ -116,18 +94,20 @@ class TestToggleCategoryWritePath:
         assert rows == [("FND", False)]
 
     @pytest.mark.unit
-    def test_toggle_user_category_updates_user_categories(self, mcp_db: object) -> None:
+    async def test_toggle_user_category_updates_user_categories(
+        self, mcp_db: object
+    ) -> None:
         from moneybin.database import Database
 
         assert isinstance(mcp_db, Database)
-        _seed_categories_view(mcp_db)
+        seed_categories_view(mcp_db)
         mcp_db.execute("""
             INSERT INTO app.user_categories
             (category_id, category, subcategory, is_active)
             VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
         """)
 
-        asyncio.run(categories_toggle(category_id="CUSTOM1", is_active=False))
+        await categories_toggle(category_id="CUSTOM1", is_active=False)
 
         rows = mcp_db.execute(
             "SELECT is_active FROM app.user_categories WHERE category_id = ?",
