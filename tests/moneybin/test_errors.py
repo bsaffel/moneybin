@@ -31,7 +31,14 @@ def test_classify_file_not_found_returns_user_error() -> None:
 def test_classify_unknown_exception_returns_none() -> None:
     """Unrecognized exceptions return None so callers can re-raise."""
     assert classify_user_error(RuntimeError("internal bug")) is None
-    assert classify_user_error(ValueError("bad input")) is None
+
+
+def test_classify_value_error_returns_user_error() -> None:
+    """ValueError maps to a UserError so CLI date/decimal parse errors surface cleanly."""
+    result = classify_user_error(ValueError("bad input"))
+    assert result is not None
+    assert result.code == "invalid_input"
+    assert "bad input" in result.message
 
 
 def test_user_error_to_dict_omits_none_hint() -> None:

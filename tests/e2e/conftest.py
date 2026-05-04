@@ -71,6 +71,10 @@ FAST_ARGON2_ENV = {
     "PYTHONPATH": str(Path(__file__).resolve().parent.parent.parent)
     + os.pathsep
     + os.environ.get("PYTHONPATH", ""),
+    # Disable Rich/Click ANSI styling so help-text assertions match raw strings
+    # (e.g., "--output" appears verbatim, not split across colour escape codes).
+    "NO_COLOR": "1",
+    "TERM": "dumb",
 }
 
 TEST_ENCRYPTION_KEY = (
