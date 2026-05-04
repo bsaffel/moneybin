@@ -7,6 +7,7 @@ from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -256,7 +257,7 @@ class TestSyntheticWriter:
         captured: list[tuple[str, pl.DataFrame]] = []
         original_ingest = db.ingest_dataframe
 
-        def capturing_ingest(table: str, df: pl.DataFrame, **kwargs: str) -> None:
+        def capturing_ingest(table: str, df: pl.DataFrame, **kwargs: Any) -> None:
             captured.append((table, df))
             return original_ingest(table, df, **kwargs)
 
