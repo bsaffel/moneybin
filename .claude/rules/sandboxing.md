@@ -1,6 +1,6 @@
 # Sandboxed Bash Patterns
 
-Shape bash invocations to run silently and efficiently in this project's sandbox + permission setup. Mechanics in `private/sandboxing.md`.
+Shape bash invocations to run silently and efficiently in this project's sandbox + permission setup.
 
 ## Single commands sandbox automatically
 
@@ -16,7 +16,7 @@ Prefer this shape when the work fits.
 
 ## Use the Read tool for file content, not bash `cat`
 
-For reading a file into context, use the `Read` tool — not `cat`. `Read` is sandbox-independent, supports proper glob-based scoping (e.g. `Read(//path/**/*.md)`), and avoids the bash command-string matcher entirely. Reserve `cat` for cases that genuinely need shell interpretation: piping into another command, multi-file concatenation, or building files via heredoc.
+For reading a file into context, use the `Read` tool — not `cat`. `Read` takes a single absolute path (e.g. `Read(/Users/.../src/foo.py)`), is sandbox-independent, supports `offset`/`limit` for large files, and avoids the bash command-string matcher entirely. Reserve `cat` for cases that genuinely need shell interpretation: piping into another command, multi-file concatenation, or building files via heredoc. To find files by pattern, use `Glob` (or `Grep`), then `Read` the specific paths.
 
 ## Pipelines and chains run silently when components are allowlisted
 
