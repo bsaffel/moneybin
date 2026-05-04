@@ -63,6 +63,10 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 - **Observability wiring**: Specs touching app code must include metrics. See `docs/specs/observability.md` and `src/moneybin/metrics/registry.py`.
 - Statuses: `draft` → `ready` → `in-progress` → `implemented`.
 
+## Plans vs Specs
+
+Specs (intent, durable) live in `docs/specs/` and are tracked. Implementation plans (step-by-step scaffolding from `superpowers:writing-plans` and similar) are ephemeral and **do not belong in the repo** — write them to `private/plans/` (gitignored). From a worktree, that is `../../private/plans/`. Before discarding a plan, lift any durable design rationale into the relevant spec or an ADR.
+
 ## Configuration
 
 All config in `src/moneybin/config.py` — one `MoneyBinSettings` root via Pydantic Settings. Never hardcode paths, credentials, or tunable parameters. Env vars use `MONEYBIN_` prefix with `__` for nesting: `MONEYBIN_DATABASE__PATH`.
@@ -100,3 +104,4 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 |------|--------|
 | `shipping.md` | Post-implementation checklist: README updates, roadmap icons, `/simplify` pre-push pass |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
+| `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
