@@ -220,7 +220,7 @@ The six phases ship as **four** PRs, not six — grouped by review-coherence rat
 | PR | Phases | Plan | Why grouped this way |
 |---|---|---|---|
 | **PR 1** | Phase 1 | _shipped_ | Pure relocation — runner moved to `tests/scenarios/_runner/`, scenarios driven via pytest. |
-| **PR 2a** | Phase 2 | `docs/superpowers/plans/2026-05-01-validation-library-extract.md` | Validation-library reorganization, `Database` first-arg standardization, expectation decoupling, explicit registries. Locks the stable `moneybin.validation.*` contract. |
+| **PR 2a** | Phase 2 | _shipped (#80)_ | Validation-library reorganization, `Database` first-arg standardization, expectation decoupling, explicit registries. Locks the stable `moneybin.validation.*` contract. |
 | **PR 2b** | Phases 3 + 4 | _written after PR 2a merges_ | Tier 1 backfill (P3) adds the missing primitives and replaces `±15%`/`min_rows ≥ 100` with derived formulas; the four new scenarios (P4) need both PR 2a's library and the Tier 1 backfill to be authored cleanly. |
 | **PR 3** | Phases 5 + 6 | _written after PR 2b merges_ | Tier 2/4 enrichment (P5) and the contributor recipe (P6) are the documentation/quality polish layer; they don't gate each other but neither blocks anything downstream. |
 
