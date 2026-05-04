@@ -71,7 +71,7 @@ def migrate_status(
         drift = runner.check_drift()
         versions = get_current_versions(db)
 
-        if output == "json":
+        if output == OutputFormat.JSON:
             payload = {
                 "applied": [
                     {

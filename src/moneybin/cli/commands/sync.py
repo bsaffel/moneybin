@@ -7,6 +7,8 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 
+from .stubs import _not_implemented
+
 app = typer.Typer(
     help="Sync financial data from external services",
     no_args_is_help=True,
@@ -17,16 +19,6 @@ key_app = typer.Typer(
 )
 app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
-
-
-def _not_implemented(owning_spec: str) -> None:
-    """Print a not-implemented message.
-
-    Args:
-        owning_spec: The spec filename under docs/specs/ that owns this feature.
-    """
-    logger.info("This command is not yet implemented.")
-    logger.info(f"💡 See docs/specs/{owning_spec} for the design")
 
 
 @app.command("login")
@@ -70,7 +62,7 @@ def sync_status(
     quiet: bool = quiet_option,  # noqa: ARG001 — placeholder; nothing to suppress yet
 ) -> None:
     """Show connected institutions and sync health."""
-    if output == "json":
+    if output == OutputFormat.JSON:
         typer.echo(
             json.dumps(
                 {"status": "not_implemented", "spec": "docs/specs/sync-overview.md"},

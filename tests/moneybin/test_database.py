@@ -252,7 +252,7 @@ class TestIngestDataframe:
 
         df = pl.DataFrame({"id": [1]})
         with pytest.raises(ValueError, match="on_conflict"):
-            db.ingest_dataframe("test_items", df, on_conflict="bad")
+            db.ingest_dataframe("test_items", df, on_conflict="bad")  # type: ignore[arg-type]  # negative test: intentionally invalid value to verify the runtime ValueError
 
 
 class TestRunSqlmeshMigrate:

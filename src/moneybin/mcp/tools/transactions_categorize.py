@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 
-import duckdb
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
@@ -25,11 +24,6 @@ from moneybin.services.categorization_service import (
     validate_bulk_items,
     validate_rule_items,
 )
-from moneybin.tables import (
-    CATEGORIZATION_RULES,
-    FCT_TRANSACTIONS,
-    TRANSACTION_CATEGORIES,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -41,36 +35,7 @@ def transactions_categorize_rules_list() -> ResponseEnvelope:
     Returns rule ID, name, pattern, match type, category, priority,
     and active status. Rules are applied in priority order during import.
     """
-    db = get_database()
-    try:
-        rows = db.execute(
-            f"""
-            SELECT rule_id, name, merchant_pattern, match_type,
-                   min_amount, max_amount, account_id,
-                   category, subcategory, priority, is_active
-            FROM {CATEGORIZATION_RULES.full_name}
-            ORDER BY priority ASC, created_at ASC
-            """  # noqa: S608  # TableRef constant, no user input
-        ).fetchall()
-    except duckdb.CatalogException:
-        rows = []
-
-    data = [
-        {
-            "rule_id": r[0],
-            "name": r[1],
-            "merchant_pattern": r[2],
-            "match_type": r[3],
-            "min_amount": r[4],
-            "max_amount": r[5],
-            "account_id": r[6],
-            "category": r[7],
-            "subcategory": r[8],
-            "priority": r[9],
-            "is_active": r[10],
-        }
-        for r in rows
-    ]
+    data = CategorizationService(get_database()).list_rules()
     return build_envelope(
         data=data,
         sensitivity="low",
@@ -106,33 +71,15 @@ def transactions_categorize_pending_list(
     Args:
         limit: Maximum number of results (default 50, max 1000).
     """
-    db = get_database()
-    clamped_limit = min(limit, 1000)
-
-    try:
-        result = db.execute(
-            f"""
-            SELECT t.transaction_id, t.transaction_date, t.amount,
-                   t.description, t.memo, t.account_id
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                ON t.transaction_id = c.transaction_id
-            WHERE c.transaction_id IS NULL
-            ORDER BY t.transaction_date DESC
-            LIMIT ?
-            """,  # noqa: S608  # TableRef constants, no user input
-            [clamped_limit],
-        )
-        columns = [desc[0] for desc in result.description]
-        fetched = result.fetchall()
-    except duckdb.CatalogException:
+    records = CategorizationService(get_database()).list_uncategorized_transactions(
+        limit=min(limit, 1000)
+    )
+    if records is None:
         return build_envelope(
             data=[],
             sensitivity="medium",
             actions=["Import data first using import_file"],
         )
-
-    records = [dict(zip(columns, row, strict=False)) for row in fetched]
     return build_envelope(
         data=records,
         sensitivity="medium",

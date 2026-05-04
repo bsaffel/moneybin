@@ -21,13 +21,13 @@ app.add_typer(networth.app, name="networth")
 @app.command("spending")
 def reports_spending() -> None:
     """Spending analysis report."""
-    _not_implemented("spending-reports.md")
+    _not_implemented("cli-restructure.md")
 
 
 @app.command("cashflow")
 def reports_cashflow() -> None:
     """Cash flow report."""
-    _not_implemented("cashflow-reports.md")
+    _not_implemented("cli-restructure.md")
 
 
 @app.command("budget")

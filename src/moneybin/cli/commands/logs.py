@@ -201,9 +201,9 @@ def _do_prune(log_dir: Path, older_than: str, *, dry_run: bool, quiet: bool) -> 
     for log_file in log_dir.glob("*.log"):
         if not log_file.is_file():
             continue
-        mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
-        if mtime < cutoff:
-            size = log_file.stat().st_size
+        stat = log_file.stat()
+        if datetime.fromtimestamp(stat.st_mtime) < cutoff:
+            size = stat.st_size
             if dry_run:
                 if not quiet:
                     logger.info(
@@ -283,7 +283,7 @@ def _do_view(
         return
 
     has_filters = bool(
-        level or since_dt or until_dt or grep_pattern or output == "json"
+        level or since_dt or until_dt or grep_pattern or output == OutputFormat.JSON
     )
     if has_filters:
         read_lines = lines * 10 if (level or grep_pattern) else lines
@@ -297,7 +297,7 @@ def _do_view(
             pattern=grep_pattern,
         )
         filtered = filtered[-lines:]
-        if output == "json":
+        if output == OutputFormat.JSON:
             typer.echo(json.dumps([e.to_dict() for e in filtered], indent=2))
         else:
             for entry in filtered:

@@ -53,6 +53,37 @@ def emit_json(key: str, payload: object) -> None:
     typer.echo(json.dumps({key: payload}, indent=2, default=str))
 
 
+@contextmanager
+def sqlmesh_command(
+    operation: str, *, success: str | None = None
+) -> Generator[Database, None, None]:
+    """Wrap a SQLMesh-fronted command with consistent ⚙️/✅/❌ logging.
+
+    SQLMesh raises broad untyped exceptions that bypass ``classify_user_error``.
+    This wrapper layers on top of ``handle_cli_errors`` so user errors
+    (DatabaseKeyError, etc.) still classify correctly while SQLMesh's broad
+    failures get a uniform ``❌ {operation} failed: {e}`` line and exit 1.
+    Yields the active ``Database`` for commands that need it.
+
+    Args:
+        operation: Verb-noun describing the action (e.g. ``"SQLMesh plan"``).
+            Used in the leading ``⚙️ {operation}…`` and trailing
+            ``❌ {operation} failed`` lines.
+        success: Custom success message after ``✅ ``. Defaults to
+            ``f"{operation} completed"``.
+    """
+    logger.info(f"⚙️  {operation}...")
+    try:
+        with handle_cli_errors() as db:
+            yield db
+        logger.info(f"✅ {success or f'{operation} completed'}")
+    except typer.Exit:
+        raise
+    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        logger.error(f"❌ {operation} failed: {e}")
+        raise typer.Exit(1) from e
+
+
 @dataclass
 class _CLIFlags:
     """Flags stashed by ``main_callback`` for later lazy resolution."""

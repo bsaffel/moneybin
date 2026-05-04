@@ -163,6 +163,10 @@ ignore = [
 "src/moneybin/services/*.py" = [
     "S608",  # SQL injection false positives — TableRef constants, parameterized values
 ]
+# Loaders interpolate TableRef constants for revert/finalize SQL
+"src/moneybin/loaders/*.py" = [
+    "S608",  # SQL injection false positives — TableRef constants, parameterized values
+]
 "src/moneybin/cli/commands/categorize.py" = [
     "T201",  # print() allowed in CLI commands for user output
     "S608",  # SQL injection false positives — TableRef constants

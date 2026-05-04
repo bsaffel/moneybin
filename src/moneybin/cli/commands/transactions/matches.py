@@ -77,7 +77,7 @@ def matches_history_cmd(
     with handle_cli_errors() as db:
         entries = get_match_log(db, limit=limit, match_type=match_type)
 
-        if output == "json":
+        if output == OutputFormat.JSON:
             emit_json("matches", entries)
             return
 

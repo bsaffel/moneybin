@@ -2,6 +2,8 @@
 
 import re
 from datetime import timedelta
+from decimal import Decimal
+from typing import Any
 
 
 def parse_duration(duration: str) -> timedelta:
@@ -30,3 +32,28 @@ def parse_duration(duration: str) -> timedelta:
         return timedelta(hours=value)
     else:
         return timedelta(minutes=value)
+
+
+def coerce_to_decimal(v: Any) -> Decimal | None:
+    """Coerce mixed numeric input to Decimal; return None for empty/None.
+
+    Strips currency formatting (``$``, ``,``) from strings before conversion.
+    Used by Pydantic ``mode="before"`` validators across extractors that parse
+    OFX library output, PDF text, and CSV cells — inputs may arrive as
+    Decimal, int, float, str (with or without formatting), empty string, or
+    None.
+
+    Required-field validators should call this and reject ``None`` before
+    returning, so the field signature stays ``Decimal``.
+    """
+    if v is None or v == "":
+        return None
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, (int, float, str)):
+        if isinstance(v, str):
+            v = v.replace(",", "").replace("$", "").strip()
+            if not v:
+                return None
+        return Decimal(str(v))
+    raise ValueError(f"Cannot convert {type(v)} to Decimal")

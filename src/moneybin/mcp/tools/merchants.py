@@ -19,7 +19,6 @@ from moneybin.services.categorization_service import (
     CategorizationService,
     validate_match_type,
 )
-from moneybin.tables import MERCHANTS
 
 logger = logging.getLogger(__name__)
 
@@ -32,32 +31,7 @@ def merchants_list() -> ResponseEnvelope:
     and associated category. Merchant mappings normalize transaction
     descriptions and provide default categories.
     """
-    import duckdb
-
-    db = get_database()
-    try:
-        rows = db.execute(
-            f"""
-            SELECT merchant_id, raw_pattern, match_type,
-                   canonical_name, category, subcategory
-            FROM {MERCHANTS.full_name}
-            ORDER BY canonical_name
-            """  # noqa: S608  # TableRef constant, no user input
-        ).fetchall()
-    except duckdb.CatalogException:
-        rows = []
-
-    data = [
-        {
-            "merchant_id": r[0],
-            "raw_pattern": r[1],
-            "match_type": r[2],
-            "canonical_name": r[3],
-            "category": r[4],
-            "subcategory": r[5],
-        }
-        for r in rows
-    ]
+    data = CategorizationService(get_database()).list_merchants()
     return build_envelope(
         data=data,
         sensitivity="low",

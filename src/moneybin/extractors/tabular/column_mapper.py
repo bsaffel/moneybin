@@ -19,6 +19,7 @@ from moneybin.extractors.tabular.field_aliases import (
     match_header_to_field,
 )
 from moneybin.extractors.tabular.formats import (
+    ConfidenceType,
     NumberFormatType,
     SignConventionType,
 )
@@ -52,7 +53,7 @@ class MappingResult:
     field_mapping: dict[str, str]
     """Destination field → source column name."""
 
-    confidence: str
+    confidence: ConfidenceType
     """Confidence tier: high, medium, low."""
 
     date_format: str | None = None
@@ -256,7 +257,7 @@ def _assign_confidence(
     mapping: dict[str, str],
     flagged: list[str],
     date_format: str | None,
-) -> str:
+) -> ConfidenceType:
     """Assign confidence tier based on mapping quality.
 
     Args:

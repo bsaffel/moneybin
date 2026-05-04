@@ -14,9 +14,10 @@ import logging
 
 import typer
 
-from moneybin.cli.commands.stubs import _not_implemented
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json
+
+from ..stubs import _not_implemented
 
 logger = logging.getLogger(__name__)
 

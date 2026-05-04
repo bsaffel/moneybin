@@ -593,7 +593,7 @@ def list_tools(
 
     sorted_tools = sorted(tools, key=lambda t: t.name)
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         tools_payload = [
             {
                 "name": tool.name,
@@ -639,7 +639,7 @@ def list_prompts(
 
     sorted_prompts = sorted(prompts, key=lambda p: p.name)
 
-    if output == "json":
+    if output == OutputFormat.JSON:
         prompts_payload = [
             {
                 "name": prompt.name,

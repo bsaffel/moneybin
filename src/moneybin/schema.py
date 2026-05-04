@@ -28,6 +28,8 @@ import duckdb
 import sqlglot
 import sqlglot.expressions as exp
 
+from moneybin.database import escape_sql_literal
+
 logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
@@ -99,7 +101,7 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
             description = statement.comments[-1].strip()
             if description:
                 try:
-                    safe_desc = description.replace("'", "''")
+                    safe_desc = escape_sql_literal(description)
                     conn.execute(f"COMMENT ON TABLE {table_name} IS '{safe_desc}'")
                     logger.debug(f"Applied table comment to {table_name}")
                 except duckdb.CatalogException:
@@ -115,7 +117,7 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
             if not comment:
                 continue
             try:
-                safe_comment = comment.replace("'", "''")
+                safe_comment = escape_sql_literal(comment)
                 conn.execute(
                     f"COMMENT ON COLUMN {table_name}.{col_def.name} IS '{safe_comment}'"
                 )

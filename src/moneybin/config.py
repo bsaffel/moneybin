@@ -29,11 +29,8 @@ def _is_moneybin_repo(path: Path) -> bool:
     """
     if not (path / ".git").exists():
         return False
-    pyproject = path / "pyproject.toml"
-    if not pyproject.exists():
-        return False
     try:
-        content = pyproject.read_text()
+        content = (path / "pyproject.toml").read_text()
         return '\nname = "moneybin"' in content
     except OSError:
         return False
@@ -653,15 +650,6 @@ class MoneyBinSettings(BaseSettings):
         """Active profile's inbox parent: <inbox_root>/<profile>/."""
         return self.import_.inbox_root / self.profile
 
-    def validate_required_credentials(self) -> None:
-        """Validate that required credentials are present.
-
-        Note: Plaid credentials are now validated on the server side.
-        This method is kept for potential future client-side validation needs.
-        """
-        # No client-side credentials to validate currently
-        pass
-
 
 # Global settings - single instance for current profile
 _current_settings: MoneyBinSettings | None = None
@@ -676,7 +664,6 @@ _current_profile: str | None = None
 # Without this, ``moneybin logs`` (a docker-style usage error) would fire
 # the first-run wizard before Click ever surfaces the missing-arg error.
 _profile_resolver: Callable[[], None] | None = None
-_resolver_in_progress: bool = False
 
 
 def register_profile_resolver(fn: Callable[[], None] | None) -> None:
@@ -692,23 +679,9 @@ def register_profile_resolver(fn: Callable[[], None] | None) -> None:
 
 
 def _maybe_resolve_profile() -> None:
-    """Invoke the registered resolver if no profile is set.
-
-    Guarded against re-entry so a resolver that itself reads settings
-    before calling ``set_current_profile()`` fails fast with the normal
-    "no profile set" error rather than recursing.
-    """
-    global _resolver_in_progress
-    if (
-        _current_profile is None
-        and _profile_resolver is not None
-        and not _resolver_in_progress
-    ):
-        _resolver_in_progress = True
-        try:
-            _profile_resolver()
-        finally:
-            _resolver_in_progress = False
+    """Invoke the registered resolver if no profile is set."""
+    if _current_profile is None and _profile_resolver is not None:
+        _profile_resolver()
 
 
 def get_settings() -> MoneyBinSettings:
@@ -744,8 +717,6 @@ def get_settings() -> MoneyBinSettings:
     # Load and cache new settings for current profile
     try:
         settings = MoneyBinSettings(profile=_current_profile)
-        settings.validate_required_credentials()
-
         _current_settings = settings
         return settings
 
@@ -899,12 +870,3 @@ def get_raw_data_path() -> Path:
         Path: The raw data path
     """
     return get_settings().data.raw_data_path
-
-
-def get_sync_config() -> SyncConfig:
-    """Get the sync service configuration for the current profile.
-
-    Returns:
-        SyncConfig: The sync service configuration
-    """
-    return get_settings().sync

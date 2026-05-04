@@ -29,6 +29,8 @@ import pytesseract
 from pdf2image import convert_from_path
 from pydantic import BaseModel, Field, field_validator
 
+from moneybin.utils.parsing import coerce_to_decimal
+
 logger = logging.getLogger(__name__)
 
 _DECIMAL_AMOUNT = pl.Decimal(precision=18, scale=2)
@@ -76,13 +78,7 @@ class W2StateLocalInfo(BaseModel):
     @classmethod
     def validate_decimal(cls, v: Any) -> Decimal | None:
         """Convert numeric fields to Decimal for precision."""
-        if v is None or v == "":
-            return None
-        if isinstance(v, Decimal):
-            return v
-        if isinstance(v, (int, float, str)):
-            return Decimal(str(v))
-        raise ValueError(f"Cannot convert {type(v)} to Decimal")
+        return coerce_to_decimal(v)
 
     model_config = {"extra": "forbid"}
 
@@ -210,18 +206,7 @@ class W2FormSchema(BaseModel):
     @classmethod
     def validate_decimal(cls, v: Any) -> Decimal | None:
         """Convert monetary fields to Decimal for precision."""
-        if v is None or v == "":
-            return None
-        if isinstance(v, Decimal):
-            return v
-        if isinstance(v, (int, float, str)):
-            # Remove common formatting (commas, dollar signs)
-            if isinstance(v, str):
-                v = v.replace(",", "").replace("$", "").strip()
-                if not v:
-                    return None
-            return Decimal(str(v))
-        raise ValueError(f"Cannot convert {type(v)} to Decimal")
+        return coerce_to_decimal(v)
 
     model_config = {"extra": "allow"}
 
@@ -235,6 +220,30 @@ class ExtractionResult:
     data: dict[str, Any] | None
     error: str | None
     confidence_score: float  # 0.0 to 1.0
+
+    @classmethod
+    def failed(cls, method: str, error: str) -> "ExtractionResult":
+        """Build a failed result with no data and zero confidence."""
+        return cls(
+            method=method,
+            success=False,
+            data=None,
+            error=error,
+            confidence_score=0.0,
+        )
+
+    @classmethod
+    def successful(
+        cls, method: str, data: dict[str, Any], confidence: float
+    ) -> "ExtractionResult":
+        """Build a successful result with parsed data and confidence score."""
+        return cls(
+            method=method,
+            success=True,
+            data=data,
+            error=None,
+            confidence_score=confidence,
+        )
 
 
 @dataclass
@@ -305,14 +314,7 @@ class W2Extractor:
         if self.config.enable_ocr:
             ocr_result = self._extract_using_ocr(file_path)
         else:
-            # Create a "not attempted" result
-            ocr_result = ExtractionResult(
-                method="ocr",
-                success=False,
-                data=None,
-                error="OCR disabled by configuration",
-                confidence_score=0.0,
-            )
+            ocr_result = ExtractionResult.failed("ocr", "OCR disabled by configuration")
 
         # Compare and validate results
         final_data = self._compare_and_validate(text_result, ocr_result, file_path)
@@ -352,13 +354,7 @@ class W2Extractor:
         try:
             with pdfplumber.open(file_path) as pdf:
                 if len(pdf.pages) == 0:
-                    return ExtractionResult(
-                        method="text",
-                        success=False,
-                        data=None,
-                        error="PDF contains no pages",
-                        confidence_score=0.0,
-                    )
+                    return ExtractionResult.failed("text", "PDF contains no pages")
 
                 # Extract text from all pages
                 # W-2 PDFs often contain 4 copies in a 2x2 grid (employee/employer copies)
@@ -371,13 +367,7 @@ class W2Extractor:
                     full_text += cropped_page.extract_text() or ""
 
                 if not full_text.strip():
-                    return ExtractionResult(
-                        method="text",
-                        success=False,
-                        data=None,
-                        error="No text extracted",
-                        confidence_score=0.0,
-                    )
+                    return ExtractionResult.failed("text", "No text extracted")
 
                 logger.debug(f"Extracted {len(full_text)} characters via text method")
 
@@ -394,23 +384,11 @@ class W2Extractor:
                 # Calculate confidence score based on completeness
                 confidence = self._calculate_confidence(w2_data)
 
-                return ExtractionResult(
-                    method="text",
-                    success=True,
-                    data=w2_data,
-                    error=None,
-                    confidence_score=confidence,
-                )
+                return ExtractionResult.successful("text", w2_data, confidence)
 
         except Exception as e:
             logger.warning(f"Text extraction failed: {e}")
-            return ExtractionResult(
-                method="text",
-                success=False,
-                data=None,
-                error=str(e),
-                confidence_score=0.0,
-            )
+            return ExtractionResult.failed("text", str(e))
 
     def _extract_using_ocr(self, file_path: Path) -> ExtractionResult:
         """Extract W2 data using OCR (pytesseract).
@@ -427,13 +405,7 @@ class W2Extractor:
             images = convert_from_path(str(file_path), dpi=300)
 
             if not images:
-                return ExtractionResult(
-                    method="ocr",
-                    success=False,
-                    data=None,
-                    error="Failed to convert PDF to images",
-                    confidence_score=0.0,
-                )
+                return ExtractionResult.failed("ocr", "Failed to convert PDF to images")
 
             # Perform OCR on each page
             # W-2 PDFs often contain 4 copies in a 2x2 grid (employee/employer copies)
@@ -448,13 +420,7 @@ class W2Extractor:
                 full_text += page_text  # type: ignore[reportOperatorIssue] - pytesseract returns str
 
             if not full_text.strip():  # type: ignore[reportUnknownMemberType] - pytesseract returns str
-                return ExtractionResult(
-                    method="ocr",
-                    success=False,
-                    data=None,
-                    error="No text extracted via OCR",
-                    confidence_score=0.0,
-                )
+                return ExtractionResult.failed("ocr", "No text extracted via OCR")
 
             logger.debug(f"Extracted {len(full_text)} characters via OCR")  # type: ignore[reportUnknownArgumentType] - pytesseract returns str
 
@@ -464,23 +430,11 @@ class W2Extractor:
             # Calculate confidence score
             confidence = self._calculate_confidence(w2_data)
 
-            return ExtractionResult(
-                method="ocr",
-                success=True,
-                data=w2_data,
-                error=None,
-                confidence_score=confidence,
-            )
+            return ExtractionResult.successful("ocr", w2_data, confidence)
 
         except Exception as e:
             logger.warning(f"OCR extraction failed: {e}")
-            return ExtractionResult(
-                method="ocr",
-                success=False,
-                data=None,
-                error=str(e),
-                confidence_score=0.0,
-            )
+            return ExtractionResult.failed("ocr", str(e))
 
     def _compare_and_validate(
         self,
