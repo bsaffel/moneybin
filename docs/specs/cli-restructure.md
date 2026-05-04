@@ -128,6 +128,13 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   +-- show <account_id>          -- Show one account
 |   +-- rename <account_id> <name> -- Rename an account
 |   +-- include <account_id>       -- Toggle include_in_net_worth [--no]
+|   +-- archive <account_id>       -- Mark archived; cascades exclude_in_net_worth=FALSE
+|   +-- unarchive <account_id>     -- Clear archived flag (does NOT restore include)
+|   +-- set <account_id>           -- Bulk metadata update
+|   |   [--official-name NAME] [--last-four XXXX] [--subtype TYPE]
+|   |   [--holder-category CAT] [--currency CODE] [--credit-limit AMT]
+|   |   [--clear-official-name] [--clear-last-four] [--clear-subtype]
+|   |   [--clear-holder-category] [--clear-credit-limit]
 |   +-- balance                    -- Per-account balance workflow (net-worth.md)
 |   |   +-- show [--account ID] [--as-of DATE]
 |   |   +-- assert <account_id> <date> <amount> [--notes] [--yes]

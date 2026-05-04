@@ -167,6 +167,92 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "app.account_settings": [
+        Example(
+            question="User-customized account settings (display names, subtypes, etc.)",
+            sql="""
+                SELECT account_id, display_name, account_subtype, holder_category,
+                       archived, include_in_net_worth
+                FROM app.account_settings
+                ORDER BY account_id
+            """,
+        ),
+    ],
+    "app.balance_assertions": [
+        Example(
+            question="All user-entered balance assertions",
+            sql="""
+                SELECT account_id, assertion_date, balance, notes
+                FROM app.balance_assertions
+                ORDER BY account_id, assertion_date DESC
+            """,
+        ),
+        Example(
+            question="Latest balance assertion per account",
+            sql="""
+                SELECT DISTINCT ON (account_id) account_id, assertion_date AS latest_date, balance
+                FROM app.balance_assertions
+                ORDER BY account_id, assertion_date DESC
+            """,
+        ),
+    ],
+    "core.fct_balances": [
+        Example(
+            question="All balance observations for one account",
+            sql="""
+                SELECT balance_date, balance, source_type, source_ref
+                FROM core.fct_balances
+                WHERE account_id = 'YOUR_ACCOUNT_ID'
+                ORDER BY balance_date DESC
+            """,
+        ),
+    ],
+    "core.fct_balances_daily": [
+        Example(
+            question="Current balance for every account (latest date per account)",
+            sql="""
+                SELECT account_id, balance_date, balance, is_observed, observation_source
+                FROM core.fct_balances_daily
+                WHERE balance_date = (
+                    SELECT MAX(balance_date) FROM core.fct_balances_daily AS b2
+                    WHERE b2.account_id = fct_balances_daily.account_id
+                )
+                ORDER BY account_id
+            """,
+        ),
+        Example(
+            question="Daily balance history for one account",
+            sql="""
+                SELECT balance_date, balance, is_observed, reconciliation_delta
+                FROM core.fct_balances_daily
+                WHERE account_id = 'YOUR_ACCOUNT_ID'
+                ORDER BY balance_date DESC
+            """,
+        ),
+    ],
+    "core.agg_net_worth": [
+        Example(
+            question="Net worth today",
+            sql="""
+                SELECT balance_date, net_worth, account_count, total_assets, total_liabilities
+                FROM core.agg_net_worth
+                ORDER BY balance_date DESC
+                LIMIT 1
+            """,
+        ),
+        Example(
+            question="Net worth trend over the last 12 months (monthly)",
+            sql="""
+                SELECT
+                    STRFTIME(balance_date, '%Y-%m') AS month,
+                    MAX(net_worth) AS end_of_month_net_worth
+                FROM core.agg_net_worth
+                WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
+                GROUP BY month
+                ORDER BY month
+            """,
+        ),
+    ],
 }
 
 _BEYOND_NOTE = (

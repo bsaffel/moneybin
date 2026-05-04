@@ -113,13 +113,7 @@ class TestStubCommands:
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],
             ["sync", "schedule", "remove"],
-            ["accounts", "list"],
-            ["accounts", "show", "ACC1"],
-            ["accounts", "rename", "ACC1", "newname"],
-            ["accounts", "include", "ACC1"],
-            ["accounts", "balance", "show"],
             ["accounts", "investments", "show"],
-            ["reports", "networth", "show"],
             ["reports", "spending"],
             ["reports", "cashflow"],
             ["reports", "budget"],
@@ -225,6 +219,64 @@ class TestDBReadOnlyCommands:
     def test_mcp_list_tools(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("mcp", "list-tools", env=e2e_profile)
         result.assert_success()
+
+    # ── accounts ─────────────────────────────────────────────────────────
+    # Subprocess-level boot tests: verify the commands wire and parse flags
+    # correctly. The shared e2e_profile has no transforms run yet so
+    # core.dim_accounts / fct_balances_daily / agg_net_worth do not exist;
+    # read commands that require those tables are covered at help-tier only.
+    # Write commands (rename, include, archive, set, balance assert/delete/list)
+    # are covered in test_e2e_mutating.py which uses isolated envs.
+
+    def test_accounts_list_help(self) -> None:
+        result = run_cli("accounts", "list", "--help")
+        result.assert_success()
+        assert "--output" in result.stdout
+
+    def test_accounts_show_help(self) -> None:
+        result = run_cli("accounts", "show", "--help")
+        result.assert_success()
+        assert "account_id" in result.stdout.lower() or "ACCOUNT_ID" in result.stdout
+
+    def test_accounts_balance_show_help(self) -> None:
+        result = run_cli("accounts", "balance", "show", "--help")
+        result.assert_success()
+        assert "--output" in result.stdout
+
+    def test_accounts_balance_history_help(self) -> None:
+        result = run_cli("accounts", "balance", "history", "--help")
+        result.assert_success()
+        assert "--account" in result.stdout
+
+    def test_accounts_balance_list_help(self) -> None:
+        result = run_cli("accounts", "balance", "list", "--help")
+        result.assert_success()
+        assert "--output" in result.stdout
+
+    def test_accounts_balance_assert_help(self) -> None:
+        result = run_cli("accounts", "balance", "assert", "--help")
+        result.assert_success()
+        assert "--output" not in result.stdout or "account_id" in result.stdout.lower()
+
+    def test_accounts_balance_delete_help(self) -> None:
+        result = run_cli("accounts", "balance", "delete", "--help")
+        result.assert_success()
+        assert "--yes" in result.stdout or "assertion_date" in result.stdout.lower()
+
+    def test_accounts_balance_reconcile_help(self) -> None:
+        result = run_cli("accounts", "balance", "reconcile", "--help")
+        result.assert_success()
+        assert "--threshold" in result.stdout
+
+    def test_reports_networth_show_help(self) -> None:
+        result = run_cli("reports", "networth", "show", "--help")
+        result.assert_success()
+        assert "--output" in result.stdout
+
+    def test_reports_networth_history_help(self) -> None:
+        result = run_cli("reports", "networth", "history", "--help")
+        result.assert_success()
+        assert "--from" in result.stdout
 
     # ── stats ───────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 # tests/moneybin/test_mcp/test_tools.py
-"""Tests for v1 MCP tool functions.
+"""Tests for MCP tool functions.
 
 These tests exercise the underlying tool functions directly. Registration
 with the FastMCP server is covered by tests/mcp/test_visibility.py.
@@ -32,8 +32,8 @@ _INSERT_TRANSACTIONS = """
 """
 
 
-class TestV1ToolRegistration:
-    """Verify v1 tools register correctly and produce envelope responses."""
+class TestToolRegistration:
+    """Verify tools register correctly and produce envelope responses."""
 
     @pytest.mark.unit
     async def test_spending_tools_register(self) -> None:
@@ -49,8 +49,22 @@ class TestV1ToolRegistration:
         srv = FastMCP("test")
         register_accounts_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        # v2 entity tools
         assert "accounts_list" in names
+        assert "accounts_get" in names
+        assert "accounts_summary" in names
+        assert "accounts_rename" in names
+        assert "accounts_include" in names
+        assert "accounts_archive" in names
+        assert "accounts_unarchive" in names
+        assert "accounts_settings_update" in names
+        # v2 balance tools
         assert "accounts_balance_list" in names
+        assert "accounts_balance_history" in names
+        assert "accounts_balance_reconcile" in names
+        assert "accounts_balance_assertions_list" in names
+        assert "accounts_balance_assert" in names
+        assert "accounts_balance_assertion_delete" in names
 
     @pytest.mark.unit
     async def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
@@ -59,8 +73,20 @@ class TestV1ToolRegistration:
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
-        assert parsed["summary"]["sensitivity"] == "low"
+        # Default (redacted=False) returns medium sensitivity (includes last_four, credit_limit)
+        assert parsed["summary"]["sensitivity"] == "medium"
         assert len(parsed["data"]) == 2  # 2 accounts from mcp_db fixture
+
+    async def test_accounts_list_redacted_returns_low_sensitivity(
+        self, mcp_db: object
+    ) -> None:
+        result = await accounts_list(redacted=True)
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "low"
+        # Redacted mode omits last_four and credit_limit
+        for account in parsed["data"]:
+            assert "last_four" not in account
+            assert "credit_limit" not in account
 
     @pytest.mark.unit
     async def test_sql_query_returns_envelope(self, mcp_db: object) -> None:

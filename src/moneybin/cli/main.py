@@ -127,6 +127,23 @@ app.add_typer(
     help="Sync transactions from external services",
 )
 app.add_typer(
+    accounts.app,
+    name="accounts",
+    help="Account listing, settings, and lifecycle ops",
+)
+app.add_typer(
+    reports.app,
+    name="reports",
+    help="Cross-domain analytical reports",
+)
+app.add_typer(transactions.app, name="transactions")
+app.add_typer(assets.app, name="assets")
+app.add_typer(categories.app, name="categories")
+app.add_typer(merchants.app, name="merchants")
+app.add_typer(budget_cmd.app, name="budget")
+app.add_typer(tax.app, name="tax")
+app.add_typer(system.app, name="system")
+app.add_typer(
     transform.app,
     name="transform",
     help="Run SQLMesh data transformations",
@@ -143,15 +160,6 @@ app.add_typer(
     name="mcp",
     help="MCP server for AI assistant integration",
 )
-app.add_typer(accounts.app, name="accounts")
-app.add_typer(transactions.app, name="transactions")
-app.add_typer(assets.app, name="assets")
-app.add_typer(categories.app, name="categories")
-app.add_typer(merchants.app, name="merchants")
-app.add_typer(reports.app, name="reports")
-app.add_typer(tax.app, name="tax")
-app.add_typer(system.app, name="system")
-app.add_typer(budget_cmd.app, name="budget")
 app.add_typer(
     db.app,
     name="db",

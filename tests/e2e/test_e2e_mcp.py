@@ -98,3 +98,145 @@ class TestMCPServerBoot:
                 assert envelope["summary"]["sensitivity"] == "low"
                 assert envelope["data"]["domain"] == "categorize"
                 assert envelope["actions"], "discover should return next-step hints"
+
+    async def test_accounts_v2_tools_registered(self, mcp_env: dict[str, str]) -> None:
+        """All 14 v2 accounts namespace tools are registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                tool_names = {t.name for t in tools_result.tools}
+
+                v2_accounts_tools = {
+                    "accounts_list",
+                    "accounts_get",
+                    "accounts_summary",
+                    "accounts_rename",
+                    "accounts_include",
+                    "accounts_archive",
+                    "accounts_unarchive",
+                    "accounts_settings_update",
+                    "accounts_balance_list",
+                    "accounts_balance_history",
+                    "accounts_balance_reconcile",
+                    "accounts_balance_assertions_list",
+                    "accounts_balance_assert",
+                    "accounts_balance_assertion_delete",
+                }
+                missing = v2_accounts_tools - tool_names
+                assert not missing, f"Missing v2 accounts tools: {missing}"
+
+                # v1 tool removed — confirm it is gone
+                assert "accounts_balances" not in tool_names
+
+    async def test_accounts_balance_assertions_list_invocable(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """accounts_balance_assertions_list returns a valid medium-sensitivity envelope.
+
+        Uses the app.balance_assertions table (created at DB init, not SQLMesh),
+        so this works on a fresh database and returns an empty list.
+        """
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.types import TextContent
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                result = await session.call_tool("accounts_balance_assertions_list", {})
+                assert not result.isError, (
+                    f"accounts_balance_assertions_list returned error: {result.content}"
+                )
+                content = result.content[0]
+                assert isinstance(content, TextContent)
+                envelope = json.loads(content.text)
+                assert envelope["summary"]["sensitivity"] == "medium"
+                # Fresh DB has no assertions — empty list is correct
+                assert isinstance(envelope["data"], list)
+
+
+class TestReportsNetworthTools:
+    """v2 reports_networth_* tool smoke tests."""
+
+    async def test_reports_networth_tools_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """Both reports_networth_* tools are registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                tool_names = {t.name for t in tools_result.tools}
+
+                assert "reports_networth_get" in tool_names
+                assert "reports_networth_history" in tool_names
+
+
+class TestNamespaceResources:
+    """MCP resource registration smoke tests."""
+
+    async def test_accounts_summary_resource_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """accounts://summary resource is registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resources_result = await session.list_resources()
+                resource_uris = {str(r.uri) for r in resources_result.resources}
+                assert "accounts://summary" in resource_uris
+
+    async def test_networth_summary_resource_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """net-worth://summary resource is registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resources_result = await session.list_resources()
+                resource_uris = {str(r.uri) for r in resources_result.resources}
+                assert "net-worth://summary" in resource_uris

@@ -25,7 +25,16 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     source_file VARCHAR,
     extracted_at TIMESTAMP,
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    display_name VARCHAR,
+    official_name VARCHAR,
+    last_four VARCHAR,
+    account_subtype VARCHAR,
+    holder_category VARCHAR,
+    iso_currency_code VARCHAR DEFAULT 'USD',
+    credit_limit DECIMAL(18, 2),
+    archived BOOLEAN DEFAULT FALSE,
+    include_in_net_worth BOOLEAN DEFAULT TRUE
 );
 """
 
@@ -82,6 +91,40 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
 """
 
 
+CORE_FCT_BALANCES_DDL = """\
+CREATE VIEW IF NOT EXISTS core.fct_balances AS
+SELECT
+    'placeholder'::VARCHAR AS account_id,
+    CURRENT_DATE AS balance_date,
+    0.00::DECIMAL(18, 2) AS balance,
+    'ofx'::VARCHAR AS source_type,
+    'placeholder'::VARCHAR AS source_ref
+WHERE FALSE;
+"""
+
+CORE_FCT_BALANCES_DAILY_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
+    account_id VARCHAR,
+    balance_date DATE,
+    balance DECIMAL(18, 2),
+    is_observed BOOLEAN,
+    observation_source VARCHAR,
+    reconciliation_delta DECIMAL(18, 2)
+);
+"""
+
+CORE_AGG_NET_WORTH_DDL = """\
+CREATE VIEW IF NOT EXISTS core.agg_net_worth AS
+SELECT
+    CURRENT_DATE AS balance_date,
+    0.00::DECIMAL(18, 2) AS net_worth,
+    0 AS account_count,
+    0.00::DECIMAL(18, 2) AS total_assets,
+    0.00::DECIMAL(18, 2) AS total_liabilities
+WHERE FALSE;
+"""
+
+
 def create_core_tables(db: Database) -> None:
     """Create core tables for testing.
 
@@ -94,6 +137,9 @@ def create_core_tables(db: Database) -> None:
     db.execute(CORE_DIM_ACCOUNTS_DDL)
     db.execute(CORE_FCT_TRANSACTIONS_DDL)
     db.execute(CORE_BRIDGE_TRANSFERS_DDL)
+    db.execute(CORE_FCT_BALANCES_DDL)
+    db.execute(CORE_FCT_BALANCES_DAILY_DDL)
+    db.execute(CORE_AGG_NET_WORTH_DDL)
 
 
 def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
@@ -108,6 +154,9 @@ def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(CORE_DIM_ACCOUNTS_DDL)
     conn.execute(CORE_FCT_TRANSACTIONS_DDL)
     conn.execute(CORE_BRIDGE_TRANSFERS_DDL)
+    conn.execute(CORE_FCT_BALANCES_DDL)
+    conn.execute(CORE_FCT_BALANCES_DAILY_DDL)
+    conn.execute(CORE_AGG_NET_WORTH_DDL)
 
 
 # Table and column comments for core tables — mirror the SQLMesh model

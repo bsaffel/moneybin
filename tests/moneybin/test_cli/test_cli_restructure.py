@@ -124,6 +124,14 @@ class TestStubbedCommands:
         assert result.exit_code == 0
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
+    def test_accounts_group_exists(self, mock_profile: MagicMock) -> None:
+        """Accounts group exists and shows list + show subcommands."""
+        result = runner.invoke(app, ["accounts", "--help"])
+        assert result.exit_code == 0
+        assert "list" in result.output
+        assert "show" in result.output
+
+    @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
     def test_export_stubbed(self, mock_profile: MagicMock) -> None:
         """Export group exists."""
         result = runner.invoke(app, ["export", "--help"])

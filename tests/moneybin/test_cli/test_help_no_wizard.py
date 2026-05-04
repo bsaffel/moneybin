@@ -23,6 +23,8 @@ _GROUPS = [
     ["profile"],
     ["import"],
     ["sync"],
+    ["accounts"],
+    ["reports"],
     ["transactions"],
     ["transactions", "categorize"],
     ["transactions", "categorize", "rules"],

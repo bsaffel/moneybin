@@ -48,9 +48,11 @@ def system_db(tmp_path: Path) -> Generator[Database, None, None]:
     conn.execute("""
         INSERT INTO core.dim_accounts VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
-         'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+         'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
-         'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         'Other Bank SAVINGS ...0002', NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE)
     """)  # noqa: S608  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
