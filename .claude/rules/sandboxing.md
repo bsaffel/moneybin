@@ -20,7 +20,7 @@ For reading a file into context, use the `Read` tool — not `cat`. `Read` takes
 
 ## Pipelines and chains run silently when components are allowlisted
 
-The project allowlist covers common downstream filters: `head`, `tail`, `grep` (project-scoped paths), `wc`, `jq`, `sort`, `uniq`, `awk`, `sed`, `cut`, `tee`. Pipelines and `&&`/`||`/`;` chains around these pass without prompts and save context tokens vs. reading full output:
+The project allowlist covers common downstream filters: `head`, `tail`, `grep` (only when the searched paths are inside the project directory — outside paths are denied by the sandbox), `wc`, `jq`, `sort`, `uniq`, `awk`, `sed`, `cut`, `tee`. Pipelines and `&&`/`||`/`;` chains around these pass without prompts and save context tokens vs. reading full output:
 
 ```bash
 make test 2>&1 | tail -100
