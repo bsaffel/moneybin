@@ -144,9 +144,9 @@ class BalanceService:
     ) -> BalanceAssertion:
         """Insert or update a balance assertion.
 
-        Uses NOW() instead of CURRENT_TIMESTAMP — DuckDB treats CURRENT_TIMESTAMP
-        as an identifier (not a function call) inside ON CONFLICT DO UPDATE clauses.
         On the INSERT path, created_at is populated from the column DEFAULT.
+        On the UPDATE path, created_at is preserved (it records first entry,
+        not last update) — only balance and notes change on re-assertion.
         """
         self._assert_account_exists(account_id)
         self._db.execute(
@@ -156,8 +156,7 @@ class BalanceService:
             VALUES (?, ?, ?, ?)
             ON CONFLICT (account_id, assertion_date) DO UPDATE SET
                 balance = excluded.balance,
-                notes = excluded.notes,
-                created_at = NOW()
+                notes = excluded.notes
             """,
             [account_id, assertion_date, balance, notes],
         )

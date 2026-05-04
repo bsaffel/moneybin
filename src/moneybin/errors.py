@@ -13,6 +13,7 @@ translated into user-facing messages.
 
 from __future__ import annotations
 
+from decimal import InvalidOperation
 from typing import Any
 
 from moneybin.database import DatabaseKeyError, database_key_error_hint
@@ -79,4 +80,6 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         return UserError(msg, code="file_not_found")
     if isinstance(exc, ValueError):
         return UserError(str(exc), code="invalid_input")
+    if isinstance(exc, InvalidOperation):
+        return UserError(f"invalid decimal value: {exc}", code="invalid_input")
     return None

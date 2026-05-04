@@ -58,7 +58,8 @@ SELECT
   CURRENT_TIMESTAMP AS updated_at, /* When this core record was last refreshed by SQLMesh */
   COALESCE(
     s.display_name,
-    w.institution_name || ' ' || w.account_type || ' …' || RIGHT(w.account_id, 4)
+    w.institution_name || ' ' || w.account_type || ' …' || RIGHT(w.account_id, 4),
+    w.account_id
   ) AS display_name, /* Resolved display label: user override → derived default → bare account_id */
   s.official_name, /* Institution's formal name (mirrors Plaid official_name); user-set or future Plaid sync */
   s.last_four, /* Last 4 digits of account number (mirrors Plaid mask); user-set or future Plaid sync */

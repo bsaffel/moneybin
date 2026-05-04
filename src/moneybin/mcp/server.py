@@ -177,7 +177,6 @@ def register_core_tools() -> None:
     register_system_tools(mcp)
     register_reports_tools(mcp)
     register_accounts_tools(mcp)
-    register_reports_tools(mcp)
     register_transactions_tools(mcp)
     register_transactions_categorize_tools(mcp)
     register_categories_tools(mcp)

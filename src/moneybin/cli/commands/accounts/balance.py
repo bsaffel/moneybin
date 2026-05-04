@@ -151,9 +151,9 @@ def accounts_balance_reconcile(
     quiet: bool = quiet_option,  # noqa: ARG001 — reconcile has no informational chatter
 ) -> None:
     """Show observed balance days with non-zero reconciliation delta."""
-    parsed_threshold = Decimal(threshold)
     account_ids = [account] if account else None
     with handle_cli_errors() as db:
+        parsed_threshold = Decimal(threshold)
         observations = BalanceService(db).reconcile(
             account_ids=account_ids, threshold=parsed_threshold
         )

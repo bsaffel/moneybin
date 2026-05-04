@@ -211,7 +211,7 @@ def set_cmd(
     currency: str | None = typer.Option(
         None, "--currency", help="ISO-4217 currency code (e.g., USD)"
     ),
-    credit_limit: float | None = typer.Option(
+    credit_limit: str | None = typer.Option(
         None, "--credit-limit", help="Credit limit (for credit cards / lines)"
     ),
     clear_official_name: bool = typer.Option(False, "--clear-official-name"),
@@ -241,13 +241,8 @@ def set_cmd(
     _add("account_subtype", subtype, clear_subtype)
     _add("holder_category", holder_category, clear_holder_category)
     _add("iso_currency_code", currency, clear_currency)
-    _add(
-        "credit_limit",
-        Decimal(str(credit_limit)) if credit_limit is not None else None,
-        clear_credit_limit,
-    )
 
-    if not diff:
+    if not diff and credit_limit is None and not clear_credit_limit:
         typer.echo(
             "error: at least one --field flag is required (or use --clear-FIELD)",
             err=True,
@@ -269,6 +264,13 @@ def set_cmd(
                 raise typer.Exit(2)
 
     with handle_cli_errors() as db:
+        # Decimal conversion inside the handler so InvalidOperation surfaces
+        # via classify_user_error rather than as a raw traceback.
+        _add(
+            "credit_limit",
+            Decimal(credit_limit) if credit_limit is not None else None,
+            clear_credit_limit,
+        )
         AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
     typer.echo(
         f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}",
