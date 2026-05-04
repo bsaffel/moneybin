@@ -156,7 +156,7 @@ class TestListAccounts:
         service = AccountService(account_db)
         result = service.list_accounts()
         # accounts are now dicts after the AccountListResult shape change
-        names = [a["institution_name"] for a in result.accounts]
+        names = [str(a["institution_name"]) for a in result.accounts]
         assert names == sorted(names)
 
     @pytest.mark.unit
