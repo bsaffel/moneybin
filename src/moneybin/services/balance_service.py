@@ -13,9 +13,9 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from moneybin.database import Database
-from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.tables import BALANCE_ASSERTIONS, DIM_ACCOUNTS, FCT_BALANCES_DAILY
+from moneybin.services.account_service import assert_account_exists
+from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +126,7 @@ class BalanceService:
 
     def _assert_account_exists(self, account_id: str) -> None:
         """Raise UserError if account_id is not in core.dim_accounts."""
-        row = self._db.execute(
-            f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
-            [account_id],
-        ).fetchone()
-        if row is None:
-            raise UserError(f"Account not found: {account_id}", code="not_found")
+        assert_account_exists(self._db, account_id)
 
     # --- Assertion CRUD ---
 

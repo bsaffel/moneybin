@@ -271,7 +271,9 @@ def set_cmd(
             Decimal(credit_limit) if credit_limit is not None else None,
             clear_credit_limit,
         )
-        AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
+        _, warnings = AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
+    for w in warnings:
+        typer.echo(f"⚠️  {w.get('message', w)}", err=True)
     typer.echo(
         f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}",
         err=True,

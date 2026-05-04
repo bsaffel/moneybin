@@ -55,7 +55,11 @@ def accounts_list(
     Args:
         include_archived: Include archived accounts (default: hide them)
         type_filter: Match account_type or account_subtype (case-insensitive)
-        redacted: Omit last_four and credit_limit; downgrades sensitivity to low
+        redacted: Omit last_four and credit_limit; downgrades response envelope
+            sensitivity to ``low``. NOTE: the tool-level ``@mcp_tool`` decorator
+            tier is a conservative upper bound (``medium``) for consent gates;
+            the actual per-call sensitivity is reported via
+            ``ResponseEnvelope.summary.sensitivity`` and varies with ``redacted``.
 
     Returns the resolved view from core.dim_accounts including display_name,
     institution_name, account_type, account_subtype, holder_category,

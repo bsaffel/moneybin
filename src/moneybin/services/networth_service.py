@@ -165,7 +165,7 @@ class NetworthService:
                 "period": row[0].isoformat() if row[0] else None,
                 "net_worth": row[1],
                 "change_abs": row[2],
-                "change_pct": float(row[3]) if row[3] is not None else None,
+                "change_pct": row[3],
             }
             for row in rows
         ]

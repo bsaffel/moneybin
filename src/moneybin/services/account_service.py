@@ -322,6 +322,21 @@ class AccountListResult:
         )
 
 
+def assert_account_exists(db: Database, account_id: str) -> None:
+    """Raise UserError if account_id is not in core.dim_accounts.
+
+    Module-level helper shared by services that need to validate account
+    existence before mutating per-account state. Keeps the not_found path
+    in one place across AccountService, BalanceService, and future siblings.
+    """
+    row = db.execute(
+        f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
+        [account_id],
+    ).fetchone()
+    if row is None:
+        raise UserError(f"Account not found: {account_id}", code="not_found")
+
+
 class AccountService:
     """Account and balance operations.
 
@@ -335,12 +350,7 @@ class AccountService:
 
     def _assert_account_exists(self, account_id: str) -> None:
         """Raise UserError if account_id is not in core.dim_accounts."""
-        row = self._db.execute(
-            f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
-            [account_id],
-        ).fetchone()
-        if row is None:
-            raise UserError(f"Account not found: {account_id}", code="not_found")
+        assert_account_exists(self._db, account_id)
 
     def list_accounts(
         self,

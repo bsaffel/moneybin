@@ -14,6 +14,7 @@ but which would be harder to read and test than the equivalent Python walk.
 
 from __future__ import annotations
 
+import math
 import typing as t
 from collections.abc import Iterator
 from datetime import date, datetime
@@ -37,7 +38,7 @@ def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
     value faithfully for personal-finance-scale amounts (float64 precision is
     adequate below ~$10B per the project's amount range).
     """
-    if value is None:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
         return default
     return Decimal(str(value))
 
