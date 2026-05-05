@@ -22,7 +22,7 @@ app = typer.Typer(
 
 
 @app.command("review")
-def review(
+def auto_review(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     limit: int | None = typer.Option(
@@ -68,7 +68,7 @@ def review(
 
 
 @app.command("confirm")
-def confirm(
+def auto_confirm(
     approve: list[str] = typer.Option(
         None, "--approve", help="Proposal IDs to approve"
     ),
@@ -114,7 +114,7 @@ def confirm(
 
 
 @app.command("stats")
-def stats(
+def auto_stats(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — stats has no informational chatter; only data
 ) -> None:
@@ -142,7 +142,7 @@ def stats(
 
 
 @app.command("rules")
-def rules(
+def auto_rules(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     limit: int | None = typer.Option(

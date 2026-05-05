@@ -30,7 +30,7 @@ app.add_typer(networth_app, name="networth")
 
 
 @networth_app.command("show")
-def networth_show_cmd(
+def reports_networth_show(
     as_of: str | None = typer.Option(
         None, "--as-of", help="ISO date (YYYY-MM-DD); shows networth on or before"
     ),
@@ -66,7 +66,7 @@ def networth_show_cmd(
 
 
 @networth_app.command("history")
-def networth_history_cmd(
+def reports_networth_history(
     from_date: str = typer.Option(..., "--from", help="ISO date (YYYY-MM-DD)"),
     to_date: str = typer.Option(..., "--to", help="ISO date (YYYY-MM-DD)"),
     interval: str = typer.Option(

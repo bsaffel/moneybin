@@ -61,7 +61,7 @@ def matches_run(
 
 
 @app.command("history")
-def matches_history_cmd(
+def matches_history(
     limit: int = typer.Option(20, "--limit", "-n", help="Max records to show"),
     match_type: str | None = typer.Option(
         None, "--type", help="Filter by match type: dedup or transfer"
@@ -106,7 +106,7 @@ def matches_history_cmd(
 
 
 @app.command("undo")
-def matches_undo_cmd(
+def matches_undo(
     match_id: str = typer.Argument(..., help="Match ID to reverse"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 @app.command("plan")
-def plan_transforms(
+def transform_plan(
     auto_apply: bool = typer.Option(
         False, "--apply", "-a", help="Automatically apply the plan"
     ),
@@ -31,7 +31,7 @@ def plan_transforms(
         # Delegate so source-priority seeding (run_transforms) happens before
         # ctx.plan; calling ctx.plan(auto_apply=True) directly would skip
         # seeding and risk NULL-winning merges in core fields.
-        apply_transforms()
+        transform_apply()
         return
 
     with sqlmesh_command("SQLMesh plan"), sqlmesh_context() as ctx:
@@ -39,7 +39,7 @@ def plan_transforms(
 
 
 @app.command("apply")
-def apply_transforms() -> None:
+def transform_apply() -> None:
     """Apply all pending SQLMesh changes.
 
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
@@ -52,7 +52,7 @@ def apply_transforms() -> None:
 
 
 @app.command("seed")
-def seed_transforms() -> None:
+def transform_seed() -> None:
     """Materialize SQLMesh seed models and propagate to app tables.
 
     Re-runs the seed step in isolation — useful after editing a seed CSV
