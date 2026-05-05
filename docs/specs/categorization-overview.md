@@ -294,7 +294,7 @@ a powerful bootstrap signal:
    useful from day one.
 
 This is the highest-leverage bootstrap strategy for users switching from another tool.
-See `private/specs/strategic-analysis.md` §6 for the full migration strategy.
+See `private/strategy/strategic-analysis.md` §6 for the full migration strategy.
 
 ### Synthetic training data from seed merchants (v1)
 
@@ -314,7 +314,7 @@ Ship a baseline ML model trained on the developer's own categorized transaction 
 
 The baseline model is a static artifact shipped with MoneyBin. It contains no raw transaction data — only the trained model weights (TF-IDF vocabulary + SVM coefficients). The user's own data gradually replaces the baseline as auto-retraining incorporates their categorizations.
 
-**Bootstrap from competitor data.** The baseline can be further enriched using categorized transaction exports from competing tools (Mint, YNAB, Monarch, Tiller) — see `private/specs/strategic-analysis.md` §6 for available export formats and category schemas. Importing and categorizing representative data from multiple tools expands the baseline model's vocabulary beyond any single user's spending patterns.
+**Bootstrap from competitor data.** The baseline can be further enriched using categorized transaction exports from competing tools (Mint, YNAB, Monarch, Tiller) — see `private/strategy/strategic-analysis.md` §6 for available export formats and category schemas. Importing and categorizing representative data from multiple tools expands the baseline model's vocabulary beyond any single user's spending patterns.
 
 **Upgrade path to community model.** The pre-trained baseline is a single-contributor model. A future community model could aggregate anonymized training data from opted-in users (see below), producing a higher-quality baseline. The architecture is the same — a shipped model artifact that the user's data gradually personalizes.
 
@@ -412,5 +412,5 @@ Decisions made during spec review, preserved for context.
 Cross-cutting decisions deferred to child specs or to resolve during implementation.
 - **Observability strategy.** Multiple sections of this spec stipulate logging (retraining events, threshold-tier shifts, auto-rule proposals, ML predictions dropped). A cross-cutting logging/observability design pass is needed to ensure a coherent approach across import summaries, per-transaction provenance, and system-level statistics. This is a concern shared with other specs (sync, matching) and should be addressed holistically rather than per-feature.
 - **First-import prompt design.** The bootstrap strategies identify LLM bulk categorization as the primary cold-start solver, but no MCP prompt is designed specifically for the first-time experience — detecting low coverage, proactively offering AI categorization + auto-rule generation as a guided session. Needs design work in `mcp-tool-surface.md`.
-- **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function. See `private/specs/strategic-analysis.md` §6 for source tool category formats.
+- **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function. See `private/strategy/strategic-analysis.md` §6 for source tool category formats.
 - **CLI-only cold start.** Bootstrap strategies assume MCP for LLM bulk categorization. CLI-only users lack an AI assistant to bulk-categorize and face a worse cold-start experience. Needs consideration — possibly a CLI command that invokes the LLM directly, or heavier reliance on the pre-trained baseline model.

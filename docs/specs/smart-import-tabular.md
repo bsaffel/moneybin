@@ -43,7 +43,7 @@ format-based system) and absorbs Pillar B (Excel import) from
 - `CLAUDE.md` "Architecture: Data Layers" — raw/prep/core layering this spec conforms to.
 - `.claude/rules/cli.md` — non-interactive parity requirement (every interactive
   prompt has a flag equivalent).
-- `private/specs/strategic-analysis.md` §6 — data portability and migration strategy
+- `private/strategy/strategic-analysis.md` §6 — data portability and migration strategy
   that motivates the built-in formats and category migration flow.
 
 ### Competitive context
@@ -52,7 +52,7 @@ No open-source personal finance tool treats migration as a first-class feature. 
 tools typically means: export transactions, re-import, re-categorize from scratch —
 discarding years of categorization work. MoneyBin's smart tabular importer preserves
 imported categories and uses them to seed the auto-rule engine, giving users a
-fully-categorized MoneyBin on day one. See `private/specs/strategic-analysis.md` §6 for
+fully-categorized MoneyBin on day one. See `private/strategy/strategic-analysis.md` §6 for
 the full migration path matrix.
 
 ---
