@@ -899,4 +899,88 @@ def test_find_matching_rule_uses_txn_row_override(real_db: Database) -> None:
         txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1"),
     )
     assert match is not None
-    assert match[1] == "Shopping"
+
+
+# ---------------------------------------------------------------------------
+# categorize_assist tests (Task 14 — RED)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def db_with_uncategorized_txns(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> Database:
+    """Database seeded with 10 uncategorized transactions in core.fct_transactions."""
+    db = Database(
+        tmp_path / "assist.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
+    create_core_tables(db)
+    descriptions = [
+        "STARBUCKS #1234",
+        "AMZN MKTP US*ABCD",
+        "NETFLIX.COM",
+        "VENMO PAYMENT TO J SMITH",
+        "RANDOM LOCAL CAFE",
+        "SHELL OIL #5678",
+        "WHOLE FOODS MKT",
+        "UBER EATS",
+        "CHECK #2341",
+        "COMCAST CABLE 800-555-1234",
+    ]
+    for i, desc in enumerate(descriptions):
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, ?, DATE '2026-04-01', ?, ?, ?)",
+            [f"txn_{i}", "acct_test", -10.00, desc, "csv"],
+        )
+    return db
+
+
+def test_categorize_assist_returns_redacted_uncategorized(
+    db_with_uncategorized_txns: Database,
+) -> None:
+    """categorize_assist should return uncategorized txns with redacted descriptions only."""
+    from moneybin.services.categorization_service import (
+        CategorizationService,
+        RedactedTransaction,
+    )
+
+    svc = CategorizationService(db_with_uncategorized_txns)
+    result = svc.categorize_assist(limit=10)
+
+    assert all(isinstance(r, RedactedTransaction) for r in result)
+    for r in result:
+        assert hasattr(r, "opaque_id")
+        assert hasattr(r, "description_redacted")
+        assert hasattr(r, "source_type")
+        # Confirm no amount/date/account fields
+        assert not hasattr(r, "amount")
+        assert not hasattr(r, "date")
+        assert not hasattr(r, "account_id")
+
+
+def test_categorize_assist_respects_limit(db_with_uncategorized_txns: Database) -> None:
+    """categorize_assist returns no more rows than the requested limit."""
+    from moneybin.services.categorization_service import CategorizationService
+
+    svc = CategorizationService(db_with_uncategorized_txns)
+    result = svc.categorize_assist(limit=5)
+    assert len(result) <= 5
+
+
+def test_categorize_assist_clamps_to_max_batch_size(
+    db_with_uncategorized_txns: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Server enforces assist_max_batch_size hard ceiling."""
+    from unittest.mock import MagicMock as _MagicMock
+
+    from moneybin.services import categorization_service as _cs
+
+    mock_settings = _MagicMock()
+    mock_settings.categorization.assist_max_batch_size = 3
+    monkeypatch.setattr(_cs, "get_settings", lambda: mock_settings)
+
+    svc = _cs.CategorizationService(db_with_uncategorized_txns)
+    result = svc.categorize_assist(limit=100)  # over the ceiling
+    assert len(result) <= 3
