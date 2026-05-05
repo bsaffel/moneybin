@@ -33,8 +33,8 @@ Related specs and docs:
 - [`observability.md`](observability.md) — `logs` and `stats` commands
 - [`database-migration.md`](database-migration.md) — `db migrate` commands
 - [`mcp-architecture.md`](mcp-architecture.md) / [`mcp-tool-surface.md`](mcp-tool-surface.md) — MCP tool/prompt enumeration
-- `private/specs/distribution-roadmap.md` — `get_base_dir()` fix, first-run experience
-- `private/specs/mvp-roadmap.md` — implementation leverage ordering
+- `private/strategy/distribution-roadmap.md` — `get_base_dir()` fix, first-run experience
+- `private/strategy/mvp-roadmap.md` — implementation leverage ordering
 
 ## Design Principles
 

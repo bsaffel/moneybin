@@ -32,7 +32,7 @@ account numbers, or spending patterns.
 
 ### Competitive context
 No open-source personal finance tool encrypts the local database by default. See
-`private/specs/strategic-analysis.md` §1 for the full competitor comparison. This is a
+`private/strategy/strategic-analysis.md` §1 for the full competitor comparison. This is a
 genuine differentiator: MoneyBin is the only tool in this space where a copied database
 file is a useless encrypted blob without the key.
 

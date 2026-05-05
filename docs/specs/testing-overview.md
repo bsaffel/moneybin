@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-26
 > Status: Ready — umbrella doc for the testing & validation initiative. Child specs listed in [Child Specs](#child-specs) are written separately.
-> Companions: `private/specs/core-concerns.md` §10 (original requirements, not checked in), `CLAUDE.md` "Architecture: Data Layers", [`sync-overview.md`](sync-overview.md) (owns Plaid Sandbox testing)
+> Companions: `private/strategy/core-concerns.md` §10 (original requirements, not checked in), `CLAUDE.md` "Architecture: Data Layers", [`sync-overview.md`](sync-overview.md) (owns Plaid Sandbox testing)
 
 ## Purpose
 

@@ -19,7 +19,7 @@ rewrites.
   umbrella spec. Defines verification tiers, scenario format, persona catalog, and
   assertion library. This spec implements the generator; the scenario runner is a peer
   concern.
-- `private/specs/core-concerns.md` §10 — original requirements scaffold for testing &
+- `private/strategy/core-concerns.md` §10 — original requirements scaffold for testing &
   synthetic data.
 - [`smart-import-tabular.md`](smart-import-tabular.md) — defines
   `Database.ingest_dataframe()`, the bulk write primitive the generator uses.
@@ -31,7 +31,7 @@ rewrites.
   enable Tier 3 scored evaluation of transfer detection.
 - `CLAUDE.md` "Architecture: Data Layers" — raw/prep/core layering. Generated data
   enters at raw and flows through the full pipeline.
-- `private/specs/mvp-roadmap.md` — Level 0 deliverable. The generator is an
+- `private/strategy/mvp-roadmap.md` — Level 0 deliverable. The generator is an
   infrastructure multiplier: every feature after it has proper test data.
 
 ### Companion spec
