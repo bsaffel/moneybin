@@ -16,7 +16,7 @@ Three commitments:
 
 1. **Accuracy over automation.** No silent miscategorization. Every automated decision is explainable and reversible. The user can trace any categorization to the rule, merchant mapping, or ML prediction that produced it.
 2. **The system learns.** User categorizations seed auto-rules. Accumulated history trains a local ML model. Coverage improves with every import.
-3. **Fully local.** Rules, merchant mappings, and ML models run entirely on the user's machine. No data leaves for categorization purposes. Verifiable from the audit log — a grep for outbound categorization calls should return zero rows.
+3. **Fully local for the automatic path.** Rules, merchant mappings, seed merchants, Plaid pass-through, migration imports, and ML models run entirely on the user's machine. No data leaves for *automatic* categorization. LLM-assisted categorization (priority 8) is opt-in, user-mediated, and bound by the redaction contract documented in [`categorization-cold-start.md`](categorization-cold-start.md) — no transaction data leaves except via that explicit workflow. Verifiable from the audit log: outbound categorization calls only appear when the user invoked `transactions_categorize_assist` or its CLI equivalent.
 
 ## Target users
 
@@ -36,27 +36,34 @@ Every categorization source has a distinct `categorized_by` value for auditabili
 | 1 (highest) | User manual | `'user'` | Nothing | 1.0 |
 | 2 | User-defined rules | `'rule'` | User only | 1.0 |
 | 3 | Auto-generated rules | `'auto_rule'` | User, rules | 1.0 |
-| 4 | ML predictions | `'ml'` | User, rules, auto-rules | Model confidence (0–1) |
-| 5 | Plaid categories | `'plaid'` | All above | 1.0 (provider-supplied) |
-| 6 (lowest) | LLM bulk categorize | `'ai'` | All above | 1.0 (user confirmed batch) |
+| 4 | Migration imports | `'migration'` | All above | 1.0 |
+| 5 | ML predictions | `'ml'` | All above | Model confidence (0–1) |
+| 6 | Plaid categories | `'plaid'` | All above | 1.0 (provider-supplied) |
+| 7 | Seed merchants | `'seed'` | All above | 1.0 (curated) |
+| 8 (lowest) | LLM-assist | `'ai'` | All above | 1.0 (user accepted batch) |
 
-The deterministic pipeline respects this ordering — a transaction already categorized by a higher-priority source is never re-categorized by a lower one.
+The deterministic pipeline respects this ordering — a transaction already categorized by a higher-priority source is never re-categorized by a lower one. See [`categorization-cold-start.md`](categorization-cold-start.md) for the full per-source mechanism description.
 
 ## Deterministic categorization pipeline
 
-The pipeline runs automatically after every import. Steps 1–2 exist today. Steps 3–4 are added by this spec.
+The pipeline runs automatically after every import. Source-attached categorizations (Plaid, migration imports) apply at import time before the pipeline runs. Steps 1–2 exist today. Steps 3–4 are added by this spec. The optional LLM-assist step (after the deterministic pipeline) is owned by [`categorization-cold-start.md`](categorization-cold-start.md).
 
 ```mermaid
 flowchart TD
-    A[Import completes] --> B[1. User-defined rules\npriority order, first match wins\npattern + optional amount/account filters]
-    B --> C[2. Merchant mappings\nmatch normalized description\napply merchant's default category]
+    A[Import completes] --> A2{Source-attached<br/>categories?}
+    A2 -->|Plaid txn| AP[Plaid pass-through<br/>categorized_by='plaid']
+    A2 -->|Migration import| AM[Migration mapping<br/>categorized_by='migration']
+    A2 -->|None| B
+    AP --> B[1. User-defined rules\npriority order, first match wins\npattern + optional amount/account filters]
+    AM --> B
+    B --> C[2. Merchant mappings\nmatch normalized description<br/>seed merchants → 'seed'<br/>user merchants → 'rule']
     C --> D[3. Auto-rules\nsame mechanism as user rules\ncreated_by='auto_rule']
     D --> E[4. ML predictions\non remaining uncategorized]
     E --> F{Confidence level}
     F -->|High: above auto-apply threshold| G[Auto-apply\ncategorized_by='ml']
     F -->|Medium: above review threshold| H[Proposal in review queue]
     F -->|Low: below review threshold| I[Drop\nlogged for debugging only]
-    G --> J[5. Remaining = uncategorized\navailable for LLM bulk categorization\nor manual review]
+    G --> J[Remaining = uncategorized\noptional LLM-assist or manual review<br/>see categorization-cold-start.md]
     H --> J
     I --> J
 ```
@@ -113,10 +120,12 @@ The v1 implementation uses TF-IDF (term frequency–inverse document frequency) 
 |---|---|---|
 | `user` | 1.0 | Highest signal — explicit user decision |
 | `rule` | 1.0 | User-authored rule, equivalent confidence |
-| `auto_rule` | 0.9 | User-approved, slightly less direct |
+| `auto_rule` | 0.9 | User-accepted, slightly less direct |
+| `migration` | 0.85 | User-attested in prior tool (Mint, YNAB, etc.) |
 | `ml` | 0.0 | Excluded — circular (model training on its own output) |
 | `plaid` | 0.7 | Provider-supplied, generally accurate but unvalidated |
-| `ai` | 0.8 | LLM-decided, user confirmed the batch |
+| `ai` | 0.8 | LLM-decided, user accepted the batch |
+| `seed` | 0.5 | Generic curated mappings — may bias toward defaults; open question whether to exclude entirely (resolve during implementation) |
 
 - **Minimum training samples:** configurable, default 50 categorized transactions.
 - **Features:** TF-IDF on normalized transaction description (v1). Amount as an optional second feature for experimentation.
@@ -269,13 +278,15 @@ Every categorization is traceable to its origin. No black boxes.
 
 ## Bootstrap strategies
 
-The categorization system starts cold — no rules, no merchant mappings, no ML model. These strategies accelerate the path to useful coverage.
+The categorization system starts cold — no rules, no merchant mappings, no ML model. These strategies accelerate the path to useful coverage. See [`categorization-cold-start.md`](categorization-cold-start.md) for the full cold-start workflow that ties them together.
 
 ### Seed merchant mappings (v1)
 
-Ship a curated set of ~200–500 common merchant name-to-category mappings (STARBUCKS → Coffee, AMAZON → Shopping, NETFLIX → Entertainment, etc.). These are deterministic — no ML needed — and provide immediate value on first import.
+Ship a curated set of ~2,100 common merchant name-to-category mappings, organized per region (1000 US + 1000 CA + 100 global). These are deterministic — no ML needed — and provide immediate value on first import. Loaded as SQLMesh seed models (`seeds.merchants_global` / `seeds.merchants_us` / `seeds.merchants_ca`) and exposed alongside user-created merchants via the `app.merchants` view.
 
-The seed merchant list is loaded alongside the existing Plaid PFCv2 category seed. Users can disable or override any seed mapping.
+Users can disable or override any seed mapping via `app.merchant_overrides`. User-created merchants outrank seeds in lookup ordering — user authority over curated defaults.
+
+See [`categorization-cold-start.md`](categorization-cold-start.md) for the multi-region design, curation strategy, and conflict-resolution rules.
 
 ### Migration-imported categories as bootstrap (v1)
 
@@ -293,12 +304,11 @@ a powerful bootstrap signal:
    ML model. A user who imports 5 years of history has a corpus that makes the ML model
    useful from day one.
 
-This is the highest-leverage bootstrap strategy for users switching from another tool.
-See `private/specs/strategic-analysis.md` §6 for the full migration strategy.
+This is the highest-leverage bootstrap strategy for users switching from another tool. Migration-applied categorizations write `categorized_by='migration'` for traceability and weighted-training (0.85). See `private/strategy/strategic-analysis.md` §6 for the full migration strategy.
 
-### Synthetic training data from seed merchants (v1)
+### LLM-assist cold-start workflow (v1)
 
-Generate synthetic transaction descriptions from the seed merchant list (e.g., "SQ *STARBUCKS #1234", "AMZN MKTP US*AB1CD2") with their known categories. Train the initial ML model on this synthetic corpus as a cold-start strategy. Accuracy will be moderate but better than no model.
+The first-run LLM-assisted categorization workflow — designed in [`categorization-cold-start.md`](categorization-cold-start.md) — turns the user's MCP-connected LLM (or any LLM via the CLI bridge) into the cold-start solver for transactions not covered by seeds, Plaid, or migration. PII redaction contract enforced at the type level: amounts, dates, and account references never leave; descriptions are stripped of card last-fours, emails, phones, and P2P recipient names before transmission. Auto-rule mining of LLM categorizations creates the snowball that reduces LLM involvement on subsequent imports.
 
 ### Provider categories as training signal (automatic)
 
@@ -306,17 +316,7 @@ When transactions arrive from Plaid (or future providers), they include provider
 
 ### LLM categorizations as training signal (automatic)
 
-When the AI bulk-categorizes via MCP, those categorizations (weighted at 0.8) become training data. A single MCP categorization session can provide enough labeled data to train an initial model.
-
-### Pre-trained baseline model (v1)
-
-Ship a baseline ML model trained on the developer's own categorized transaction history combined with Plaid provider categories. This gives the ML pipeline a useful starting point before the user has categorized anything — common merchants and spending patterns are already learned.
-
-The baseline model is a static artifact shipped with MoneyBin. It contains no raw transaction data — only the trained model weights (TF-IDF vocabulary + SVM coefficients). The user's own data gradually replaces the baseline as auto-retraining incorporates their categorizations.
-
-**Bootstrap from competitor data.** The baseline can be further enriched using categorized transaction exports from competing tools (Mint, YNAB, Monarch, Tiller) — see `private/specs/strategic-analysis.md` §6 for available export formats and category schemas. Importing and categorizing representative data from multiple tools expands the baseline model's vocabulary beyond any single user's spending patterns.
-
-**Upgrade path to community model.** The pre-trained baseline is a single-contributor model. A future community model could aggregate anonymized training data from opted-in users (see below), producing a higher-quality baseline. The architecture is the same — a shipped model artifact that the user's data gradually personalizes.
+When the AI bulk-categorizes via MCP or the CLI bridge, those categorizations (weighted at 0.8) become training data. A single LLM-assist session can provide enough labeled data to train an initial model.
 
 ### Community-contributed merchant mappings (future)
 
@@ -341,7 +341,7 @@ This is a future initiative with real privacy design work. The architecture supp
 - `categorized_by` taxonomy and auditability
 - Confidence thresholds (configurable, independent from transaction-matching)
 - Observability: import summaries, per-transaction explainability, system-level stats
-- Bootstrap strategies: seed merchants, pre-trained baseline model, synthetic training data, provider/LLM signal, progressive confidence disclosure
+- Bootstrap strategies: seed merchants (multi-region, ~2100 entries), migration imports, provider/LLM signal, LLM-assist cold-start workflow (per [`categorization-cold-start.md`](categorization-cold-start.md)), progressive confidence disclosure
 
 ## Out of scope
 
@@ -352,7 +352,7 @@ Explicitly deferred or owned elsewhere.
 - **Category taxonomy seed data** — Plaid PFCv2 seed is already implemented. This spec references it; it is not redesigned here.
 - **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Future direction (see below).
 - **Provider category mapping table** — the current `plaid_detailed` column on `app.categories` is provider-specific. When a second provider (Nordigen, etc.) is integrated, this column should be extracted to a generic `app.category_mappings` table. Future direction (see below).
-- **LLM-assisted bulk categorization** — already implemented. This spec documents the contract and priority level; it does not redesign the workflow.
+- **LLM-assisted bulk categorization workflow** — the bulk tool itself is implemented; the cold-start workflow that wraps it (first-run prompt, PII redaction, propose/commit lifecycle) is owned by [`categorization-cold-start.md`](categorization-cold-start.md), not redesigned here.
 - **Merchant normalization** — already implemented. This spec documents the contract; it does not redesign the normalization logic.
 
 ## Adjacent initiatives
@@ -367,7 +367,15 @@ Peer initiative. Owns transfer detection, cross-source deduplication, and golden
 
 ### Privacy & AI Trust — `privacy-and-ai-trust.md`
 
-Constrains any future cloud-based categorization features. The community-contributed merchant mappings strategy (future) must conform to this spec's consent model.
+Constrains any future cloud-based categorization features. The community-contributed merchant mappings strategy (future) must conform to this spec's consent model. The cold-start LLM-assist redaction contract (per [`categorization-cold-start.md`](categorization-cold-start.md)) aligns with this spec.
+
+### Recurring transaction detection (recommended future spec)
+
+Every commercial competitor surfaces "this is your monthly Netflix charge" as a first-class concept. Recurring detection complements categorization — recurring patterns are easy to categorize and surface as "you have N active subscriptions." A future spec would design transaction-series identification, schedule inference, and a `transactions_recurring_assist` peer to `transactions_categorize_assist`. Independent from cold-start; reuses the same workflow primitives.
+
+### Local LLM-driven categorization (recommended future spec)
+
+A future spec could add an opt-in path where MoneyBin invokes a locally-running LLM (Ollama, llamafile, LM Studio, etc.) for categorization without requiring an MCP client or external API. Closes the cold-start gap for users who want LLM-assist with full offline operation. Reuses the export/apply JSON contract from [`categorization-cold-start.md`](categorization-cold-start.md) — the local LLM is just another consumer of the same primitives. Not v1; revisit when local-LLM ergonomics mature and there's measured user demand.
 
 ## Build order & rationale
 
@@ -411,6 +419,5 @@ Decisions made during spec review, preserved for context.
 
 Cross-cutting decisions deferred to child specs or to resolve during implementation.
 - **Observability strategy.** Multiple sections of this spec stipulate logging (retraining events, threshold-tier shifts, auto-rule proposals, ML predictions dropped). A cross-cutting logging/observability design pass is needed to ensure a coherent approach across import summaries, per-transaction provenance, and system-level statistics. This is a concern shared with other specs (sync, matching) and should be addressed holistically rather than per-feature.
-- **First-import prompt design.** The bootstrap strategies identify LLM bulk categorization as the primary cold-start solver, but no MCP prompt is designed specifically for the first-time experience — detecting low coverage, proactively offering AI categorization + auto-rule generation as a guided session. Needs design work in `mcp-tool-surface.md`.
-- **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function. See `private/specs/strategic-analysis.md` §6 for source tool category formats.
-- **CLI-only cold start.** Bootstrap strategies assume MCP for LLM bulk categorization. CLI-only users lack an AI assistant to bulk-categorize and face a worse cold-start experience. Needs consideration — possibly a CLI command that invokes the LLM directly, or heavier reliance on the pre-trained baseline model.
+- **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function. See `private/strategy/strategic-analysis.md` §6 for source tool category formats.
+- **In-band LLM-assist for headless/automated CLI workflows.** Designed-out for v1; the cold-start manual-bridge (`moneybin categorize export-uncategorized` + `apply-from-file`) serves the common case, and agents driving the CLI directly use the same primitives. Revisit if usage data shows demand for direct LLM-API-calling commands like `moneybin categorize llm --provider claude`. See [`categorization-cold-start.md`](categorization-cold-start.md) Section 9.

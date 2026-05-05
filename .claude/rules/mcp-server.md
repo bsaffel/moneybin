@@ -25,7 +25,7 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 2. **Privacy by architecture.** Every tool declares a sensitivity tier (`low`, `medium`, `high`). The middleware enforces consent and redaction automatically.
 3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.
 4. **AI-ergonomic.** Tool names, descriptions, and parameter schemas are designed for LLM tool selection.
-5. **CLI symmetry.** Every MCP tool has a CLI equivalent via the same service layer. `--output json` on any CLI command returns the same response envelope.
+5. **CLI symmetry.** Every MCP tool has a CLI equivalent via the same service layer. `--output json` on any CLI command returns the same response envelope. **The CLI is a first-class agent surface, not just a human surface** — Claude Code, Codex CLI, Gemini CLI, and similar agents drive CLI commands directly as a peer pathway to MCP. When designing data-flow primitives (JSON I/O, stdin/stdout, redaction contracts), assume both human and agent consumers; agents pipe and chain commands the way humans use shells. See `cli.md` for stdout/stderr conventions, scripting flags, and `--output json`.
 
 ## Tool Taxonomy
 

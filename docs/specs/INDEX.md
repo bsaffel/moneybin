@@ -56,6 +56,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Overview](categorization-overview.md) | Umbrella | ready | Auto-rule generation, ML categorization, priority hierarchy, bootstrap strategies. Supersedes archived `transaction-categorization` spec. |
 | [Auto-Rule Generation](categorization-auto-rules.md) | Feature | implemented | Auto-generate categorization rules from user edits (pillar E); merchant-first pattern extraction, proposal review queue |
 | [Categorize Bulk](categorize-bulk.md) | Feature | implemented | `moneybin categorize bulk` CLI parity for `categorize_bulk` MCP tool; shared Pydantic input model with per-item validation; `BulkRecordingContext` to drop per-item duplicate DB lookups in the bulk loop |
+| [Cold Start](categorization-cold-start.md) | Feature | ready | First-run categorization: per-region seed merchants (US/CA/global, ~2100 entries), `app.merchants` view split (seeds + user_merchants + overrides), LLM-assist workflow with type-enforced PII redaction, CLI export/apply bridge for agent + manual modes; renames `transactions_categorize_bulk_apply` → `_apply` and `auto_confirm` → `auto_accept` |
 | `categorization-ml.md` | Feature | planned | Pillar D: local ML-powered categorization |
 | `merchant-entity-resolution.md` | Feature | planned | Evolve merchants from pattern-to-category cache to first-class entities; multi-pattern matching, automated discovery, query-time resolution |
 
