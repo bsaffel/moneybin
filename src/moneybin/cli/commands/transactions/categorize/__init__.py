@@ -33,7 +33,7 @@ app.add_typer(ml.app, name="ml")
 
 
 @app.command("bulk")
-def bulk(
+def categorize_bulk(
     stdin_sentinel: str | None = typer.Argument(
         None,
         help="Pass '-' to read JSON from stdin.",
@@ -129,7 +129,7 @@ def bulk(
 
 
 @app.command("stats")
-def stats(
+def categorize_stats(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
 ) -> None:
