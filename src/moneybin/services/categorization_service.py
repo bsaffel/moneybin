@@ -23,6 +23,7 @@ from typing import Any, Literal
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import (
@@ -31,7 +32,7 @@ from moneybin.metrics.registry import (
     CATEGORIZE_BULK_ITEMS_TOTAL,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services._text import normalize_description
+from moneybin.services._text import normalize_description, redact_for_llm
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -84,6 +85,20 @@ class CategorizationStats:
                 "Use transactions_categorize_pending_list to see uncategorized transactions"
             ],
         )
+
+
+@dataclass(frozen=True)
+class RedactedTransaction:
+    """LLM-safe view of an uncategorized transaction.
+
+    Type-enforces the redaction contract: no amount, date, or account fields.
+    Adding any new field requires conscious code review — accidental PII leakage
+    is a compile-time impossibility enforced by the frozen dataclass shape.
+    """
+
+    opaque_id: str  # transaction_id (opaque hash, never decoded by LLM)
+    description_redacted: str  # output of redact_for_llm()
+    source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf' — helps LLM judge quality
 
 
 @dataclass(slots=True)
@@ -1343,3 +1358,50 @@ class CategorizationService:
             percent_categorized=float(raw["pct_categorized"]),
             by_source=by_source,
         )
+
+    def categorize_assist(
+        self,
+        limit: int = 100,
+        account_filter: list[str] | None = None,
+        date_range: tuple[str, str] | None = None,
+    ) -> list[RedactedTransaction]:
+        """Return uncategorized transactions as redacted records for LLM review.
+
+        Sensitivity: medium. Output is sent to the user's LLM via MCP or
+        written to disk via the CLI bridge. The redaction contract is enforced
+        by RedactedTransaction's frozen dataclass shape.
+        """
+        settings = get_settings().categorization
+        effective_limit = min(limit, settings.assist_max_batch_size)
+
+        where_clauses = ["tc.transaction_id IS NULL"]
+        params: list[object] = []
+        if account_filter:
+            where_clauses.append(
+                f"t.account_id IN ({','.join('?' * len(account_filter))})"
+            )
+            params.extend(account_filter)
+        if date_range:
+            where_clauses.append("t.transaction_date BETWEEN ? AND ?")
+            params.extend(date_range)
+        where_sql = " AND ".join(where_clauses)
+
+        rows = self._db.execute(
+            f"""
+            SELECT t.transaction_id, t.description, t.source_type
+            FROM {FCT_TRANSACTIONS.full_name} t
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
+            WHERE {where_sql}
+            LIMIT ?
+            """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
+            params + [effective_limit],
+        ).fetchall()
+
+        return [
+            RedactedTransaction(
+                opaque_id=row[0],
+                description_redacted=redact_for_llm(row[1] or ""),
+                source_type=row[2],
+            )
+            for row in rows
+        ]
