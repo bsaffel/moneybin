@@ -61,8 +61,49 @@ def materialize_seeds(db: Database) -> None:
     refresh_views(db)
 
 
+def _ensure_seed_tables_exist(db: Database) -> None:
+    """Create seed tables if they don't exist yet.
+
+    In production, SQLMesh has already created and populated these tables —
+    the CREATE TABLE IF NOT EXISTS calls are no-ops. In fresh test DBs (where
+    SQLMesh hasn't run), the empty tables let refresh_views assemble the
+    app.* views without hitting a CatalogException on missing tables.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+    db.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SEED_CATEGORIES.full_name} (
+            category_id VARCHAR PRIMARY KEY,
+            category VARCHAR,
+            subcategory VARCHAR,
+            description VARCHAR,
+            plaid_detailed VARCHAR
+        )
+        """  # noqa: S608  # all interpolated names are TableRef constants, not user input
+    )
+    merchant_ddl = """(
+            merchant_id VARCHAR PRIMARY KEY,
+            raw_pattern VARCHAR,
+            match_type VARCHAR,
+            canonical_name VARCHAR,
+            category VARCHAR,
+            subcategory VARCHAR,
+            country VARCHAR
+        )"""
+    db.execute(
+        f"CREATE TABLE IF NOT EXISTS {SEED_MERCHANTS_GLOBAL.full_name} {merchant_ddl}"  # noqa: S608
+    )
+    db.execute(
+        f"CREATE TABLE IF NOT EXISTS {SEED_MERCHANTS_US.full_name} {merchant_ddl}"  # noqa: S608
+    )
+    db.execute(
+        f"CREATE TABLE IF NOT EXISTS {SEED_MERCHANTS_CA.full_name} {merchant_ddl}"  # noqa: S608
+    )
+
+
 def refresh_views(db: Database) -> None:
     """Create or replace the app views that expose seeds + user data."""
+    _ensure_seed_tables_exist(db)
     # Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
     sql = f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS

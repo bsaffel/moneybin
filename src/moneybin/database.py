@@ -181,6 +181,15 @@ class Database:
 
         init_schemas(self._conn)
 
+        # Assemble app.categories and app.merchants views on every open.
+        # _ensure_seed_tables_exist creates empty seeds.* tables if SQLMesh
+        # hasn't run yet (tests, fresh installs) — the CREATE TABLE IF NOT
+        # EXISTS calls are no-ops in production where SQLMesh has already
+        # populated them.
+        from moneybin.seeds import refresh_views
+
+        refresh_views(self)
+
         from moneybin.migrations import (
             MigrationError,
             MigrationRunner,
