@@ -86,7 +86,8 @@ class TestCategorizeAssistMCPTool:
 
         assert response.summary.sensitivity == "medium"
         assert isinstance(response.data, list)
-        for item in response.data:
+        items: list[dict[str, object]] = response.data  # type: ignore[assignment]  # ResponseEnvelope.data is loosely typed; tighten in ResponseEnvelope.data followup
+        for item in items:
             assert "opaque_id" in item
             assert "description_redacted" in item
             assert "source_type" in item
@@ -122,7 +123,8 @@ class TestCategorizeAssistMCPTool:
 
         # All seeded rows belong to acct_test — full set should be returned
         assert isinstance(response.data, list)
-        assert len(response.data) > 0
+        data: list[object] = response.data  # type: ignore[assignment]  # ResponseEnvelope.data is loosely typed
+        assert len(data) > 0
 
     async def test_empty_result_when_no_uncategorized(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

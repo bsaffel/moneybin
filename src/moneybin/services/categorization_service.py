@@ -722,7 +722,7 @@ class CategorizationService:
 
         if valid_category_set:
             valid_sorted = sorted(valid_category_set)
-            validated_items = []
+            validated_items: list[BulkCategorizationItem] = []
             for item in items:
                 if item.category not in valid_category_set:
                     errors += 1
@@ -735,7 +735,7 @@ class CategorizationService:
                     })
                 else:
                     validated_items.append(item)
-            items = validated_items  # type: ignore[assignment]  # reassign to filtered list
+            items = validated_items
 
             if not items:
                 CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)

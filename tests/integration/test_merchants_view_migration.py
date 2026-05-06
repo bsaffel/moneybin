@@ -115,8 +115,9 @@ def test_migration_idempotent_when_already_a_view(tmp_path: object) -> None:
         migrate(conn)  # must not raise or alter data
 
         assert _table_type(conn, "merchants") == "VIEW"
-        count = conn.execute("SELECT COUNT(*) FROM app.user_merchants").fetchone()[0]
-        assert count == 1
+        count_row = conn.execute("SELECT COUNT(*) FROM app.user_merchants").fetchone()
+        assert count_row is not None
+        assert count_row[0] == 1
 
 
 def test_migration_no_op_on_fresh_install(tmp_path: object) -> None:
