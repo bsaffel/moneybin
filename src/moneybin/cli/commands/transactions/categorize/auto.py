@@ -69,12 +69,10 @@ def review(
 
 @app.command("accept")
 def categorize_auto_accept(
-    approve: list[str] = typer.Option(
-        None, "--approve", help="Proposal IDs to approve"
-    ),
+    accept: list[str] = typer.Option(None, "--accept", help="Proposal IDs to accept"),
     reject: list[str] = typer.Option(None, "--reject", help="Proposal IDs to reject"),
-    approve_all: bool = typer.Option(
-        False, "--approve-all", help="Approve all pending proposals"
+    accept_all: bool = typer.Option(
+        False, "--accept-all", help="Accept all pending proposals"
     ),
     reject_all: bool = typer.Option(
         False, "--reject-all", help="Reject all pending proposals"
@@ -83,30 +81,30 @@ def categorize_auto_accept(
     """Batch accept/reject auto-rule proposals."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    if approve_all and reject_all:
-        logger.error("❌ --approve-all and --reject-all are mutually exclusive")
+    if accept_all and reject_all:
+        logger.error("❌ --accept-all and --reject-all are mutually exclusive")
         raise typer.Exit(2)
 
     with handle_cli_errors() as db:
         svc = AutoRuleService(db)
-        if approve_all or reject_all:
+        if accept_all or reject_all:
             pending_ids = [
                 cast(str, p["proposed_rule_id"]) for p in svc.list_pending_proposals()
             ]
-            if approve_all:
-                approve = (approve or []) + pending_ids
+            if accept_all:
+                accept = (accept or []) + pending_ids
             if reject_all:
                 reject = (reject or []) + pending_ids
 
-        # Explicit reject wins over --approve-all: a user passing
-        # --approve-all --reject <id> means "approve all except <id>".
-        approve_set = set(approve or [])
+        # Explicit reject wins over --accept-all: a user passing
+        # --accept-all --reject <id> means "accept all except <id>".
+        accept_set = set(accept or [])
         reject_set = set(reject or [])
-        approve_set -= reject_set
-        result = svc.accept(accept=sorted(approve_set), reject=sorted(reject_set))
+        accept_set -= reject_set
+        result = svc.accept(accept=sorted(accept_set), reject=sorted(reject_set))
 
     logger.info(
-        f"✅ Approved {result.approved} "
+        f"✅ Accepted {result.approved} "
         f"(categorized {result.newly_categorized} existing); "
         f"rejected {result.rejected}; "
         f"skipped {result.skipped}"

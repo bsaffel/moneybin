@@ -333,10 +333,10 @@ class TestAutoRulePipeline:
 
         # auto-accept promotes the proposal to an active rule
         result = run_cli(
-            "transactions", "categorize", "auto", "accept", "--approve-all", env=env
+            "transactions", "categorize", "auto", "accept", "--accept-all", env=env
         )
         result.assert_success()
-        assert "Approved 1" in result.output, (
+        assert "Accepted 1" in result.output, (
             f"auto-accept did not approve the proposal: {result.output}"
         )
 

@@ -341,12 +341,12 @@ class TestCategorizeMutating:
         result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
 
-        # auto-accept --approve-all promotes it
+        # auto-accept --accept-all promotes it
         result = run_cli(
-            "transactions", "categorize", "auto", "accept", "--approve-all", env=env
+            "transactions", "categorize", "auto", "accept", "--accept-all", env=env
         )
         result.assert_success()
-        assert "Approved" in result.output, (
+        assert "Accepted" in result.output, (
             f"auto-accept missing approval message: {result.output}"
         )
 
