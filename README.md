@@ -88,7 +88,7 @@ Once connected, ask things like:
 | Watched inbox: drop files in `~/Documents/MoneyBin/<profile>/inbox/` (or `inbox/<account-slug>/` for single-account files), `moneybin import inbox` drains them — successes move to `processed/YYYY-MM/`, failures to `failed/YYYY-MM/` with a YAML error sidecar. | [Smart Import Inbox](docs/specs/smart-import-inbox.md) |
 | Three-layer SQL pipeline: raw → staging → core, multi-source union, source-agnostic consumers | [Data Pipeline](docs/guides/data-pipeline.md) |
 | Cross-source dedup, transfer detection, golden-record merge, review/undo workflow | [Data Pipeline](docs/guides/data-pipeline.md) · [matching specs](docs/specs/matching-overview.md) |
-| Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits | [Categorization](docs/guides/categorization.md) |
+| Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits. **Cold-start:** curated seed merchants (US/CA/global), LLM-assist workflow for the long tail (via `transactions_categorize_assist` MCP tool or `moneybin transactions categorize export-uncategorized` + `apply-from-file` for agent-driven flows). | [Categorization](docs/guides/categorization.md) |
 | AES-256-GCM encryption at rest, key management, automatic schema migrations | [Database & Security](docs/guides/database-security.md) |
 | Multi-profile isolation (per-profile DB, config, logs) | [Profiles](docs/guides/profiles.md) |
 | MCP server: ~15 tool domains under the v2 path-prefix taxonomy (accounts, transactions, reports, categories, merchants, system, budget, tax, sync, transform, import, …), prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
@@ -117,7 +117,7 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 |---|---|
 | OFX/QFX/QBO, tabular (CSV/TSV/Excel/Parquet/Feather), W-2 PDF import; competitor migration profiles; watched-folder inbox; reversible batches with re-import detection | ✅ |
 | Cross-source dedup, transfer detection, golden-record merge | ✅ |
-| Rule engine + merchant normalization + auto-rule generation | ✅ |
+| Rule engine + merchant normalization + auto-rule generation + cold-start (seed merchants, LLM-assist workflow) | ✅ |
 | Encryption at rest, key management, multi-profile, schema migrations, observability | ✅ |
 | Comprehensive scenario testing (five-tier taxonomy, 10 scenarios, bug-report recipe) | ✅ |
 | Native PDF parsing (beyond W-2), AI-assisted file parsing | 🗓️ |
