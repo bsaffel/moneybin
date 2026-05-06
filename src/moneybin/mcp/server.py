@@ -66,6 +66,15 @@ mcp = FastMCP(
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
         - Prefer bulk tools (transactions_categorize_apply, transactions_categorize_rules_create).
         - Sensitivity tiers: low / medium / high. Without consent, tools degrade to aggregates — they never fail.
+
+        Cold-start workflow:
+        When the user has uncategorized transactions (visible via system_status or after
+        import_inbox_sync), use moneybin_discover('categorize') to enable the categorize.*
+        namespace. Then: transactions_categorize_assist returns redacted descriptions for
+        you to propose categories on; the user reviews; transactions_categorize_apply
+        commits accepted proposals. Privacy: assist sends only redacted descriptions —
+        no amounts, dates, or account IDs. Only invoke when uncategorized count is
+        non-trivial and the user has indicated interest in AI-assisted categorization.
         """
     ),
     # mask_error_details wraps unclassified exceptions in a generic ToolError.
