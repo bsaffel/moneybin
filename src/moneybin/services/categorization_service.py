@@ -322,7 +322,15 @@ def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
 def _fetch_merchants(
     db: Database,
 ) -> list[tuple[str, str, str, str, str, str | None]] | None:
-    """Fetch all merchant mappings ordered by match priority.
+    """Fetch all merchant mappings ordered for lookup precedence.
+
+    Ordering:
+    1. is_user DESC — user-created merchants outrank seed merchants
+    2. match_type — exact > contains > regex (existing precedence)
+
+    User outranks seed regardless of match-type granularity. A user 'contains'
+    rule beats a seed 'exact' rule because user authority over curated defaults
+    is the architectural commitment.
 
     Args:
         db: Database instance (read-only access is sufficient).
@@ -337,12 +345,13 @@ def _fetch_merchants(
                    canonical_name, category, subcategory
             FROM {MERCHANTS.full_name}
             ORDER BY
+                is_user DESC,
                 CASE match_type
                     WHEN 'exact' THEN 1
                     WHEN 'contains' THEN 2
                     WHEN 'regex' THEN 3
                 END
-            """,
+            """,  # noqa: S608  # MERCHANTS is a TableRef constant, not user input
         ).fetchall()
     except duckdb.CatalogException:
         return None
