@@ -41,6 +41,7 @@ from moneybin.tables import (
     MERCHANTS,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
+    USER_MERCHANTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -447,11 +448,11 @@ class CategorizationService:
         merchant_id = uuid.uuid4().hex[:12]
         self._db.execute(
             f"""
-            INSERT INTO {MERCHANTS.full_name}
+            INSERT INTO {USER_MERCHANTS.full_name}
             (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,
+             category, subcategory, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
             [
                 merchant_id,
                 raw_pattern,
@@ -462,7 +463,7 @@ class CategorizationService:
                 created_by,
             ],
         )
-        logger.info(f"Created merchant mapping {merchant_id}")
+        logger.info(f"Created user merchant {merchant_id}")
         return merchant_id
 
     # -- Rule management --
