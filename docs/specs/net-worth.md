@@ -20,7 +20,7 @@ Related specs and docs:
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 - `core-concerns.md` §8D — original requirements scaffold
 - `core-concerns.md` §6 — reporting & analysis concerns
-- `mvp-roadmap.md` Level 1 — net worth is a Level 1 deliverable
+- `mvp-roadmap.md` M1 — net worth is an M1 deliverable
 
 ## Requirements
 
@@ -36,7 +36,7 @@ Related specs and docs:
 10. **CLI commands:** `moneybin reports networth show`, `moneybin reports networth history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
 11. **MCP tools** (per [`mcp-tool-surface.md`](mcp-tool-surface.md) v2): `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions_list`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
 12. **All commands support `--output json`** for non-interactive parity.
-13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (Level 2 and Level 3 respectively). Net worth v1 covers cash accounts only.
+13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M3B and M3C respectively). Net worth v1 covers cash accounts only.
 
 ## Data Model
 
@@ -319,13 +319,13 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 
 ## Out of Scope
 
-- **Investment holdings in net worth** — Level 2 concern. Net worth v1 is cash-only. Investment tracking (`investment-tracking.md`, Wave 2) will extend `fct_balances` with holdings valuation when it ships.
-- **Multi-currency conversion** — Level 3 concern. All balances assumed single-currency for v1. Multi-currency (`multi-currency.md`, Wave 3) will add home-currency conversion to `fct_balances_daily`.
+- **Investment holdings in net worth** — M3B concern. Net worth v1 is cash-only. Investment tracking (`investment-tracking.md`, M3B) will extend `fct_balances` with holdings valuation when it ships.
+- **Multi-currency conversion** — M3C concern. All balances assumed single-currency for v1. Multi-currency (`multi-currency.md`, M3C) will add home-currency conversion to `fct_balances_daily`.
 - **Balance forecasting/projection** — "What will my net worth be in 6 months?" is a separate feature requiring trend extrapolation.
 - **Balance alerts/notifications** — "Notify me when balance drops below X" is out of scope for the data model spec.
 - **Historical balance backfill without an anchor** — If a user imports 2 years of transactions but only has balance observations from the last 3 months, we do not attempt to reconstruct balances before the first observation. Absent, not best-effort.
 - **Plaid balance sync scheduling** — The polling/scheduling mechanism for Plaid balance snapshots belongs in `sync-plaid.md`, not here. This spec consumes whatever Plaid provides.
-- **Net worth trend analysis and reporting** — Cash flow statements, trend charts, and category breakdowns belong in `net-worth-reporting.md` (Wave 3). This spec provides the data model they consume.
+- **Net worth trend analysis and reporting** — Cash flow statements, trend charts, and category breakdowns belong in `net-worth-reporting.md` (M3). This spec provides the data model they consume.
 
 ## Coordination with `account-management.md`
 

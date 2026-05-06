@@ -12,13 +12,13 @@ This spec is the curator's surface — the row-by-row grooming that turns "data 
 
 ## Background
 
-Levels 0–1 shipped a defensible engine: encrypted DuckDB, smart import + dedup + transfer detection, rule + auto-rule categorization, accounts and net worth, ~33 MCP tools. The product today is a credible "ETL + canonical store + MCP surface for personal finance."
+M0–M1 shipped a defensible engine: encrypted DuckDB, smart import + dedup + transfer detection, rule + auto-rule categorization, accounts and net worth, ~33 MCP tools. The product today is a credible "ETL + canonical store + MCP surface for personal finance."
 
-The post-Level-1 strategic review (`private/strategy/2026-05-04-strategic-review-product.md`, `…engineering.md`) named the **Curator segment** as MoneyBin's most defensible position: "I want my financial history to be a clean, verifiable, queryable record I trust — not a passive feed from a black-box service. I'll spend an hour a month grooming it because the result is mine." Lunch Money, Tiller, Fina, Beancount/Fava users self-select into curating; MoneyBin's encrypted-local-DuckDB + MCP-native posture serves them better than any competitor — *if* the curation surface exists.
+The post-M1 strategic review (`private/strategy/2026-05-04-strategic-review-product.md`, `…engineering.md`) named the **Curator segment** as MoneyBin's most defensible position: "I want my financial history to be a clean, verifiable, queryable record I trust — not a passive feed from a black-box service. I'll spend an hour a month grooming it because the result is mine." Lunch Money, Tiller, Fina, Beancount/Fava users self-select into curating; MoneyBin's encrypted-local-DuckDB + MCP-native posture serves them better than any competitor — *if* the curation surface exists.
 
 It currently doesn't. `app.transaction_notes` exists with single-note semantics; nothing else (tags, splits, import labels, audit history, manual entry) is reachable from CLI or MCP. The strategic review explicitly reversed the prior "manual entry out of scope" call as a positioning bug.
 
-This spec ships the bundle as a single coherent surface. It is the lead Wave 2 entry spec, gating other Wave 2 work because Plaid, investments, and reporting all benefit from knowing the user-state shape.
+This spec ships the bundle as a single coherent surface. It is the lead M2A spec, gating other M2/M3 work because Plaid, investments, and reporting all benefit from knowing the user-state shape.
 
 ### Related specs
 
@@ -38,7 +38,7 @@ This spec ships the bundle as a single coherent surface. It is the lead Wave 2 e
 
 - `private/strategy/2026-05-04-strategic-review-product.md` §(d) "Free-Wins Scorecard" — the user-flagged trio (manual entry, annotations/notes/tags, verified flag) plus #2 audit log, #7 annotations, #8 manual entry, #12 split-via-annotation: **ship now**.
 - `private/strategy/2026-05-04-strategic-review-engineering.md` §(d) "Bundle recommendation" — "One Wave 2 hardening spec ('user state on transactions') covering manual entry, notes/tags, balance-assertion notes, import-batch tagging, split annotations. Single migration that introduces `app.user_state` schema with 5–6 tables. One MCP tool family. Adds two scenario tests."
-- `private/spec_implementation.md` Wave 2 entry — names this spec as a gating Wave 2A deliverable.
+- `private/spec_implementation.md` M2 entry — names this spec as a gating M2A deliverable.
 
 ### Decisions made during design (cross-references for reviewers)
 
@@ -54,7 +54,7 @@ This spec ships the bundle as a single coherent surface. It is the lead Wave 2 e
 
 ## Architectural Pattern
 
-This spec establishes two cross-cutting patterns that future specs reference. Both are written here for `architecture-shared-primitives.md` (the sibling Wave 2 entry spec) and `mcp-ux-standards.md` (a future spec) to lift verbatim.
+This spec establishes two cross-cutting patterns that future specs reference. Both are written here for `architecture-shared-primitives.md` (the sibling M2 entry spec) and `mcp-ux-standards.md` (a future spec) to lift verbatim.
 
 ### Pattern 1 — Curation storage and presentation
 
@@ -126,14 +126,14 @@ A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) i
 25. A single `app.audit_log` table records all user-driven mutations to in-scope app state, plus AI-call provenance (subsuming the previously planned `app.ai_audit_log` table).
 26. Audit emission is synchronous, in the same DuckDB transaction as the mutation. Implementation: `AuditService.record_audit_event(action, target, before, after, *, actor, parent_audit_id=None, context=None)`.
 27. In-scope services emit events: `TransactionService` (manual entry, notes, tags, splits), `ImportService` (labels), `CategorizationService` (category set/clear), merchant service (create/set), rule service (create/update/delete), AI provider boundary (`ai.external_call`).
-28. Out-of-scope services do not emit; retroactive coverage is the Wave 4 `audit-log.md` spec's responsibility.
+28. Out-of-scope services do not emit; retroactive coverage is the post-launch `audit-log.md` spec's responsibility.
 29. `before_value` and `after_value` capture the relevant column subset of the affected row, not the entire table row. Bulk operations (`tag.rename`) emit one parent event capturing the operation intent and per-row child events with `parent_audit_id` chaining.
 30. AI-specific fields (flow_tier, backend, model, data_sent_hash, consent_reference, user_initiated) ride `context_json` — promoted to indexed columns only when a real query pattern demands it.
 31. The existing `get_ai_audit_log` MCP/CLI surface continues to work — internally rewritten to query `app.audit_log` with `action LIKE 'ai.%'`. No compatibility view; `privacy-and-ai-trust.md` is updated to reference the unified table directly.
 
 ### Cross-cutting
 
-32. All in-scope tables live in the `app.*` schema. This spec is the first to populate it heavily; `architecture-shared-primitives.md` (sibling Wave 2 entry spec) formalizes the layer in `AGENTS.md`.
+32. All in-scope tables live in the `app.*` schema. This spec is the first to populate it heavily; `architecture-shared-primitives.md` (sibling M2 entry spec) formalizes the layer in `AGENTS.md`.
 33. CLI is single-txn / per-row imperative. MCP is declarative-set or bulk where the semantic naturally collapses (tags, splits, labels, manual entry).
 34. CLI/MCP capabilities are symmetric — anything one can do, the other can express.
 35. Two manual transactions with identical `(account_id, transaction_date, amount, description)` coexist as distinct rows. Manual entries are user-authoritative; deduplication (if desired) is the user's explicit action via `transactions delete` or splits.
@@ -569,7 +569,7 @@ Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. C
 | `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions list` → `transactions_tags_set` / `transactions_notes_add` in a loop. |
 | `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit_list`. |
 
-Pure prompt content; no schema work. Aligned with the strategic review's "monthly-ritual prompts" recommendation (Wave 2A scorecard).
+Pure prompt content; no schema work. Aligned with the strategic review's "monthly-ritual prompts" recommendation (M2A scorecard).
 
 ### Privacy and sensitivity
 
@@ -595,7 +595,7 @@ Mutating service methods write the audit event in the same DuckDB transaction as
 | `rule.create`, `rule.update`, `rule.delete` | rule service (extension) |
 | `ai.external_call` | AI provider boundary (replaces direct write to retired `app.ai_audit_log` table) |
 
-In-scope services emit; out-of-scope services are silent until the Wave 4 `audit-log.md` spec retrofits coverage. The README and `INDEX.md` will not claim "complete audit log" until that lands.
+In-scope services emit; out-of-scope services are silent until the post-launch `audit-log.md` spec retrofits coverage. The README and `INDEX.md` will not claim "complete audit log" until that lands.
 
 ### Before/after capture rules
 
@@ -758,12 +758,12 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 - **Tag normalization.** Current shape is single VARCHAR with `namespace:value` convention enforced at the service layer. Promotion to a normalized two-table model (`app.tags(tag_id, namespace, value)` + `app.transaction_tags(transaction_id, tag_id)`) is future work — triggered when tag rename/merge/autocomplete UX needs richer semantics.
 - **Bulk manual entry CLI.** CLI stays single-txn-per-call. Bulk lives only in MCP, where LLMs batch naturally. The `import file` flow remains the path for tabular bulk loads.
 - **Import history browser.** The bundle scope is *labeling* batches, not building a batch-history browser. Listing past imports is a real gap; `import status` (existing) covers health and SQL covers exotic queries. A future `import history` spec can land if the demand materializes.
-- **Audit log policy.** Retention, redaction tiers, MCP exposure rules, retroactive emission from out-of-scope services — owned by Wave 4 `audit-log.md`. This spec ships the table; that spec ships the policy.
+- **Audit log policy.** Retention, redaction tiers, MCP exposure rules, retroactive emission from out-of-scope services — owned by post-launch `audit-log.md`. This spec ships the table; that spec ships the policy.
 - **Multi-user identity for `created_by` / `applied_by` / `author`.** Currently `'cli'` or `'mcp'` (plus `'legacy'` for migrated notes). When a hosted multi-user surface lands, this column gets richer. Schema is forward-compatible.
 - **Strict split balance enforcement.** The sum-of-children = parent.amount invariant is warn-not-block. Strict reconciliation lands with the future transaction-reconciliation spec.
 
 ### Follow-ups
 
-- Update `private/spec_implementation.md` Wave 2 entry: note that this spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift, and that an MCP-vocabulary audit pass is added to `mcp-tool-surface.md` v2's remaining work (candidates: `accounts_include`, `accounts_archive`, `categories_toggle`).
+- Update `private/spec_implementation.md` M2 entry: note that this spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift, and that an MCP-vocabulary audit pass is added to `mcp-tool-surface.md` v2's remaining work (candidates: `accounts_include`, `accounts_archive`, `categories_toggle`).
 - Future `mcp-ux-standards.md` (in `cli-restructure.md`'s "Future Specs to Add") lifts the declarative-set principle from this spec's §Architectural Pattern.
 - Future `architecture-shared-primitives.md` formalizes the `app.*` schema layer in `AGENTS.md` and the LIST/STRUCT presentation pattern in `.claude/rules/database.md`.

@@ -299,7 +299,7 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 - **Hard delete of accounts.** Archive is the only v1 lifecycle terminator. Hard delete is dangerous (orphans transactions and balance observations, breaks audit trails) and rare. The data warehouse principle: data goes in, data does not get destructively removed.
 - **Vanity / cosmetic fields** — `sort_order`, `color`, `notes`. Not part of v1's "structural metadata" framing. Easy to add later via migration if a real consumer surfaces.
 - **Account groups, tags, or hierarchies.** `holder_category` (personal / business / joint) provides the only grouping affordance v1 needs.
-- **Multi-currency arithmetic.** `iso_currency_code` is recorded per account but no conversion happens in v1. `multi-currency.md` (Wave 3) handles home-currency conversion.
+- **Multi-currency arithmetic.** `iso_currency_code` is recorded per account but no conversion happens in v1. `multi-currency.md` (M3C) handles home-currency conversion.
 - **Plaid sync precedence rules.** When Plaid sync lands and back-fills metadata fields, conflict resolution between user-set and Plaid-set values is decided in [`sync-plaid.md`](sync-plaid.md), not here.
 - **Closed enum for `account_subtype` / `holder_category`.** Open vocabulary with soft validation; closed enums age badly.
 - **`accounts list` pagination.** v1 assumes account counts in the dozens, not thousands. Pagination if/when a real user crosses 100 accounts.

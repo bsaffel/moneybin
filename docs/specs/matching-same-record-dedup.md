@@ -405,4 +405,4 @@ When a new source is added to MoneyBin, the following must be updated for matchi
 
 ### Deferred to implementation tuning milestone
 
-1. **Confidence score formula.** The exact weighting of date distance and description similarity. Spec requires the formula to be auditable (signals persisted in JSON) but doesn't fix the weights — they should be tuned against real data. See MVP roadmap Level 1 tuning milestone.
+1. **Confidence score formula.** The exact weighting of date distance and description similarity. Spec requires the formula to be auditable (signals persisted in JSON) but doesn't fix the weights — they should be tuned against real data. See MVP roadmap M1 tuning milestone.

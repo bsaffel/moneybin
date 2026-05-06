@@ -31,7 +31,7 @@ rewrites.
   enable Tier 3 scored evaluation of transfer detection.
 - `CLAUDE.md` "Architecture: Data Layers" — raw/prep/core layering. Generated data
   enters at raw and flows through the full pipeline.
-- `private/strategy/mvp-roadmap.md` — Level 0 deliverable. The generator is an
+- `private/strategy/mvp-roadmap.md` — M0 deliverable. The generator is an
   infrastructure multiplier: every feature after it has proper test data.
 
 ### Companion spec
@@ -829,10 +829,10 @@ The spec template (`_template.md`) includes this as an optional section. See
 
 | Extension | Gates on | Notes |
 |---|---|---|
-| `investor` persona (david) | Investment schema (Level 2) | Brokerage, 401k, IRA, dividends, trades, capital gains. Persona YAML needs investment-specific config. |
-| `international` persona (eve) | Multi-currency schema (Level 3) | Multi-bank across countries, EUR + GBP + USD, forex fees, cross-currency transfers. |
+| `investor` persona (david) | Investment schema (M3B) | Brokerage, 401k, IRA, dividends, trades, capital gains. Persona YAML needs investment-specific config. |
+| `international` persona (eve) | Multi-currency schema (M3C) | Multi-bank across countries, EUR + GBP + USD, forex fees, cross-currency transfers. |
 | Merchant ground-truth labels | Future merchant quality spec | Add `expected_merchant` column to `synthetic.ground_truth`. Generator already knows the true name — just emit it. |
-| Budget model enrichment | Budget-tracking rewrite (Wave 3) | `monthly_budget` in persona YAML becomes more expressive to align with budget model. |
+| Budget model enrichment | Budget-tracking rewrite (M3C) | `monthly_budget` in persona YAML becomes more expressive to align with budget model. |
 | Anonymized generation mode | `testing-anonymized-data.md` | Separate engine, same output layer. Structure-preserving anonymization of real data. |
 | Level 3 realism | No blocker | Richer YAML seed data + correlation engine in `SpendingGenerator`. |
 
@@ -845,7 +845,7 @@ The spec template (`_template.md`) includes this as an optional section. See
 - **CSV fixture library** — sibling child spec (`testing-csv-fixtures.md`)
 - **Institution-formatted CSV output** — fixture library concern
 - **Plaid Sandbox fixtures** — deferred to sync spec (`sync-overview.md`)
-- **Investment/multi-currency personas** — gated on schema additions (Level 2/3)
+- **Investment/multi-currency personas** — gated on schema additions (M3B / M3C)
 - **Merchant ground-truth scoring** — documented extension point; awaits merchant
   quality spec
 - **CI/CD pipeline configuration** — implementation detail for later
