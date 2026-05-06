@@ -10,6 +10,7 @@ proposal/approval/deactivation lifecycle and depends on this module's
 ``find_matching_rule`` and ``normalize_description``.
 """
 
+import difflib
 import logging
 import re
 import typing
@@ -58,6 +59,22 @@ def validate_match_type(match_type: str) -> MatchType:
             f"Must be one of: {', '.join(sorted(_VALID_MATCH_TYPES))}"
         )
     return match_type  # type: ignore[return-value]  # validated above
+
+
+def _did_you_mean(
+    invalid: str, valid_options: list[str], n: int = 3, cutoff: float = 0.4
+) -> list[str]:
+    """Return up to n closest matches from valid_options for an invalid category string.
+
+    Matches case-insensitively so "FOOD" matches "Food & Dining", then returns
+    the original-cased option so callers can feed suggestions back as-is.
+    """
+    lower_invalid = invalid.lower()
+    lower_to_orig = {opt.lower(): opt for opt in valid_options}
+    matches = difflib.get_close_matches(
+        lower_invalid, list(lower_to_orig), n=n, cutoff=cutoff
+    )
+    return [lower_to_orig[m] for m in matches]
 
 
 @dataclass(slots=True)
@@ -109,7 +126,7 @@ class BulkCategorizationResult:
     applied: int
     skipped: int
     errors: int
-    error_details: list[dict[str, str]]
+    error_details: list[dict[str, Any]]
     merchants_created: int = 0
 
     def to_envelope(self, input_count: int) -> ResponseEnvelope:
@@ -130,7 +147,7 @@ class BulkCategorizationResult:
             ],
         )
 
-    def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
+    def merge_parse_errors(self, parse_errors: list[dict[str, Any]]) -> None:
         """Prepend boundary-validation errors and reflect them in the error count."""
         if not parse_errors:
             return
@@ -679,7 +696,7 @@ class CategorizationService:
         skipped = 0
         errors = 0
         merchants_created = 0
-        error_details: list[dict[str, str]] = []
+        error_details: list[dict[str, Any]] = []
 
         if not items:
             return BulkCategorizationResult(
@@ -689,6 +706,46 @@ class CategorizationService:
                 error_details=error_details,
                 merchants_created=merchants_created,
             )
+
+        # Phase 1 — validate categories against the active taxonomy.
+        # Fetch once for the whole batch so cost is O(1) in batch size.
+        try:
+            valid_category_set = {
+                row[0]
+                for row in self._db.execute(
+                    f"SELECT DISTINCT category FROM {CATEGORIES.full_name} WHERE is_active"  # noqa: S608  # CATEGORIES is a TableRef constant
+                ).fetchall()
+            }
+        except duckdb.CatalogException:
+            # View not yet materialized (e.g., no seeds loaded); skip validation.
+            valid_category_set = None
+
+        if valid_category_set:
+            valid_sorted = sorted(valid_category_set)
+            validated_items = []
+            for item in items:
+                if item.category not in valid_category_set:
+                    errors += 1
+                    error_details.append({
+                        "transaction_id": item.transaction_id,
+                        "error": "invalid_category",
+                        "invalid_value": item.category,
+                        "valid_categories": valid_sorted,
+                        "did_you_mean": _did_you_mean(item.category, valid_sorted),
+                    })
+                else:
+                    validated_items.append(item)
+            items = validated_items  # type: ignore[assignment]  # reassign to filtered list
+
+            if not items:
+                CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
+                return BulkCategorizationResult(
+                    applied=applied,
+                    skipped=skipped,
+                    errors=errors,
+                    error_details=error_details,
+                    merchants_created=merchants_created,
+                )
 
         # Phase 2 — batch-fetch txn rows (description + amount + account_id)
         txn_ids = [item.transaction_id for item in items]

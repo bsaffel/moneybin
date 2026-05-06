@@ -565,6 +565,29 @@ def test_service_bulk_categorize_applies_categorization(
     assert result.applied == 1
 
 
+def test_bulk_categorize_returns_did_you_mean_on_invalid_category(
+    real_db: Database,
+) -> None:
+    """bulk_categorize rejects an invalid category with a structured did_you_mean field."""
+    real_db.execute(
+        "INSERT INTO app.user_categories (category_id, category, subcategory) "
+        "VALUES ('cat001', 'Food & Dining', NULL)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.bulk_categorize([
+        BulkCategorizationItem(transaction_id="txn_dym", category="FOOD"),
+    ])
+
+    assert result.errors == 1
+    assert result.applied == 0
+    detail = result.error_details[0]
+    assert detail["error"] == "invalid_category"
+    assert detail["invalid_value"] == "FOOD"
+    assert "valid_categories" in detail
+    assert "did_you_mean" in detail
+    assert "Food & Dining" in detail["did_you_mean"]
+
+
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
     """list_pending_proposals returns proposals recorded via AutoRuleService."""
     from moneybin.services.auto_rule_service import AutoRuleService
