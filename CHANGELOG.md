@@ -2,25 +2,34 @@
 
 All notable changes to MoneyBin are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). MoneyBin is pre-1.0 and pre-launch; entries are grouped by **milestone** (Level 0 → Level 1 → Wave 2 → Wave 3 → 1.0 launch) rather than semantic releases until 1.0 ships. See the [README roadmap](README.md#roadmap) for what each milestone covers.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). MoneyBin is pre-1.0 and pre-launch; entries are grouped by **milestone** (M0 → M1 → M2A/B/C → M3A–E → 1.0 launch) rather than semantic releases until 1.0 ships. See [`docs/roadmap.md`](docs/roadmap.md) for what each milestone covers.
 
 ## [Unreleased]
 
-Wave 2 work in flight. Nothing shipped to users since the Level 1 closeout.
+M2 work in flight; M2A `transaction-curation.md` spec published (PR #115). Doc surface tightened for the personas reachable today.
 
-### Added (planned, not yet shipped)
-- Wave 2A: manual transaction entry, transaction notes, multi-tag table, "verified" curator flag, edit-history audit log, import-batch labels, split-via-annotation. New `app.*` user-state schema layer.
-- Wave 2B: `architecture-shared-primitives.md` reference doc, `app.*` and `reports.*` schema conventions, local/hosted split contract.
-- Wave 2C: `brew install moneybin` distribution, PyPI publish workflow, first-run wizard, `moneybin doctor` health command, `reports.*` recipe library, demo profile preset, static landing page.
+### Added
+- `CHANGELOG.md` (Keep-A-Changelog format) with M0/M1 history backfilled from PR titles.
+- `docs/guides/threat-model.md` — one-page user-facing distillation of `privacy-data-protection.md`. What encryption protects against; what it doesn't (forgotten passphrase, malware, AI vendor data flow).
+- `docs/architecture.md` (placeholder pointing forward to `architecture-shared-primitives.md` at M2B).
+- `docs/audience.md` — who MoneyBin is for, today and at launch.
+- `docs/roadmap.md` — milestone status (M0 through M3E + post-launch). Replaces the in-README roadmap matrix.
+- `docs/features.md` — capability snapshot with per-feature guide links. Replaces the in-README "What Works Today" table.
+- `docs/comparison.md` — wider 8-way competitor comparison and tier framing.
+- `docs/licensing.md` — why AGPL, what it does and doesn't mean.
+- `pyproject.toml` PyPI-publish-ready metadata (description, classifiers, URLs, keywords). Bumped setuptools floor to ≥77.0 for PEP 639 license metadata.
 
 ### Changed
-- README rewritten for the post-strategic-review framing: tagline preserved, sub-line refresh ("financial data platform you actually own"), Why-bullets reordered with lineage first, Wave-aligned roadmap, expanded comparison table (Era/BankSync, Lunch Money, Wealthfolio added), License section with substance. New `docs/guides/threat-model.md` user-facing one-pager.
+- **Milestone terminology unified.** Retired "Level 0/1" + "Wave 2A/2B/2C/Wave 3" dual systems for one consistent **milestone** convention: M0, M1, M2A, M2B, M2C, M3A, M3B, M3C, M3D, M3E, Post-launch. M3 decomposes into sub-milestones because it has parallel domain (Plaid/investments/multi-currency) and surface (Web UI/hosted) tracks. M3E closing = launch.
+- **README significantly tightened** — from ~196 lines to ~115 lines. Storefront pattern: tagline preserved, status callout + Why-bullets + How-It-Works diagram + Quick Start + 5×5 ✓/✗ comparison + Documentation/Community/Contributing/License pointers. In-README roadmap matrix removed (lives in `docs/roadmap.md`); detailed feature inventory removed (lives in `docs/features.md`); 8-column comparison table replaced with tight 5×5 (full version in `docs/comparison.md`); License essay condensed (full rationale in `docs/licensing.md`). Modeled on Bitwarden, Plausible, DuckDB, SQLMesh peer-set conventions.
+- `.claude/rules/shipping.md` extended with the post-implementation checklist for `CHANGELOG.md`, `docs/roadmap.md`, `docs/features.md`. Documents what does and doesn't earn a CHANGELOG entry.
+- `CONTRIBUTING.md` "Where the strategy lives" expanded to include the new docs and a one-line CHANGELOG rule.
 
 ---
 
-## [Level 1] — 2026-05-04 (Data Integrity)
+## [M1] — 2026-05-04 (Data Integrity)
 
-Five Level 1 deliverables shipped plus companion work. `fct_transactions` is now trustworthy: dedup eliminates double-counting, transfer detection prevents transfer-as-spend distortion, auto-rules categorize new imports, net-worth tracks balances with self-healing reconciliation deltas.
+Five M1 deliverables shipped plus companion work. `fct_transactions` is now trustworthy: dedup eliminates double-counting, transfer detection prevents transfer-as-spend distortion, auto-rules categorize new imports, net-worth tracks balances with self-healing reconciliation deltas.
 
 ### Added
 - **Smart tabular importer** for CSV / TSV / Excel / Parquet / Feather with heuristic column detection, multi-account support, and migration profiles for Tiller, Mint, YNAB, and Maybe. Five-stage pipeline (Format Detection → Reader → Column Mapping → Transform & Validate → Load), three-tier confidence model, `TabularProfile` system with auto-save, `Database.ingest_dataframe()` primitive (#38).
@@ -60,9 +69,9 @@ Five Level 1 deliverables shipped plus companion work. `fct_transactions` is now
 
 ---
 
-## [Level 0] — 2026-04-30 (Infrastructure Multipliers)
+## [M0] — 2026-04-30 (Infrastructure)
 
-Foundational systems shipped: encryption-at-rest, schema migrations, observability, profiles, CLI/MCP scaffolding, and the synthetic data generator. Every Level 1+ feature builds on these.
+Foundational systems shipped: encryption-at-rest, schema migrations, observability, profiles, CLI/MCP scaffolding, and the synthetic data generator. Every M1+ feature builds on these.
 
 ### Added
 - **AES-256-GCM database encryption at rest** via DuckDB's encryption extension. Argon2id KDF for passphrase mode; OS keychain integration for auto-key mode. `Database` connection factory (singleton `get_database()`), `SecretStore` for unified keyring + env-var secret retrieval, `SanitizedLogFormatter` PII safety net on all log handlers. Encryption CLI: `db init/lock/unlock/rotate-key/backup/restore/key show` (#29).
@@ -76,8 +85,8 @@ Foundational systems shipped: encryption-at-rest, schema migrations, observabili
 
 ---
 
-## [Pre-Level-0] — Pre-April 2026
+## [Pre-M0] — Pre-April 2026
 
-Initial pipeline implementation that preceded the Level 0 design overhaul. Specs from this era live in [`docs/specs/archived/`](docs/specs/archived/): OFX import, CSV import (institution profiles), W-2 PDF extraction, rule-based transaction categorization, MCP read tools, MCP write tools.
+Initial pipeline implementation that preceded the M0 design overhaul. Specs from this era live in [`docs/specs/archived/`](docs/specs/archived/): OFX import, CSV import (institution profiles), W-2 PDF extraction, rule-based transaction categorization, MCP read tools, MCP write tools.
 
-These features survived the Level 0/1 redesign — they're still shipped today, but reimplemented under the new abstractions (`Database` factory, service layer, encrypted-by-default storage, smart tabular importer that supersedes the profile-based CSV system).
+These features survived the M0/M1 redesign — they're still shipped today, but reimplemented under the new abstractions (`Database` factory, service layer, encrypted-by-default storage, smart tabular importer that supersedes the profile-based CSV system).
