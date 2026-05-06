@@ -67,7 +67,7 @@ class TransactionSearchResult:
             total_count=self.total_count,
             actions=[
                 "Use transactions_recurring_list to find subscription patterns",
-                "Use transactions_categorize_bulk_apply to categorize uncategorized transactions",
+                "Use transactions_categorize_apply to categorize uncategorized transactions",
             ],
         )
 

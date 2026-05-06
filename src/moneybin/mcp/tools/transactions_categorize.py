@@ -84,17 +84,21 @@ def transactions_categorize_pending_list(
         data=records,
         sensitivity="medium",
         actions=[
-            "Use transactions_categorize_bulk_apply to assign categories to these transactions",
+            "Use transactions_categorize_apply to assign categories to these transactions",
             "Use transactions_categorize_rules_create to set up automatic categorization",
         ],
     )
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
-def transactions_categorize_bulk_apply(
+def transactions_categorize_apply(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
     """Assign categories to multiple transactions in one call.
+
+    Renamed from transactions_categorize_bulk_apply — the _bulk suffix was
+    redundant per mcp-server.md batch-first principle (all collection ops accept
+    lists by default).
 
     Each item should have ``transaction_id``, ``category``, and
     optionally ``subcategory``. Transactions that already have a
@@ -226,8 +230,8 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_categorize_bulk_apply,
-        "transactions_categorize_bulk_apply",
+        transactions_categorize_apply,
+        "transactions_categorize_apply",
         "Assign categories to multiple transactions in one call. "
         "Auto-creates merchant mappings for future auto-categorization.",
     )

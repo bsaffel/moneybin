@@ -64,7 +64,7 @@ mcp = FastMCP(
 
         Conventions:
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
-        - Prefer bulk tools (transactions_categorize_bulk_apply, transactions_categorize_rules_create).
+        - Prefer bulk tools (transactions_categorize_apply, transactions_categorize_rules_create).
         - Sensitivity tiers: low / medium / high. Without consent, tools degrade to aggregates — they never fail.
         """
     ),
