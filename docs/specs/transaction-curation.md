@@ -6,7 +6,7 @@ draft
 
 ## Goal
 
-Establish the user-state layer on top of MoneyBin's canonical transaction store: manual transaction entry (CLI single, MCP bulk), free-text multi-note threads, multi-tag annotations, split-via-annotation as an interim before first-class splits, import-batch labels, and a unified edit-history audit log. All on a new and growing `app.*` user-state schema, with **zero changes to the existing `raw → prep → core` pipeline contract** beyond adding one new raw source (manual transactions).
+Establish the user-state layer on top of MoneyBin's canonical transaction store: manual transaction entry (CLI single, MCP bulk), free-text multi-note threads, multi-tag annotations, split-via-annotation as an interim before first-class splits, import-batch labels, and a unified edit-history audit log. All on a new and growing `app.*` user-state schema. The existing `raw → prep → core` ingestion contract — its matching, dedup, merge, and categorization behaviors — is unchanged: manual transactions enter via one new raw source. `core.fct_transactions` is extended *additively* with curation-presentation columns (LIST/STRUCT joins from `app.*`), and a sibling `core.vw_transaction_lines` view is added; see §Data Model.
 
 This spec is the curator's surface — the row-by-row grooming that turns "data MoneyBin has" into "data the user trusts and uses."
 
@@ -86,7 +86,7 @@ A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) i
 
 1. Users can create one or more manual transactions via CLI (`transactions create`, single-txn) or MCP (`transactions_create`, bulk 1–100 per call).
 2. Manual transactions land in a new `raw.manual_transactions` table mirroring the `raw.tabular_transactions` column shape.
-3. A new `prep.stg_manual__transactions` staging view is added to the existing `prep.int_transactions__unioned` model. No other prep or core models change shape.
+3. A new `prep.stg_manual__transactions` staging view is added to the existing `prep.int_transactions__unioned` model. No prep or core models *on the manual-ingestion path* change shape beyond adding this staging view. (Curation-presentation columns added to `core.fct_transactions` and the new `core.vw_transaction_lines` view are described in §Data Model — additive joins from `app.*`, not changes to the ingestion contract.)
 4. Each manual-entry CLI invocation or MCP bulk call writes exactly one row to `raw.import_log` with `source_type='manual'`, `format_name='manual_entry'`, and the resulting `import_id` is reusable for batch labeling and reversal.
 5. Manual transactions enter the standard pipeline: transform → match → categorize. They are reversible via the existing `import revert <import_id>` flow.
 6. Manual transactions are excluded from cross-source dedup (Tier 3) candidate selection. They are never proposed as matches against imported rows in either direction. Explicit user merge via `transactions matches confirm` is the only path that pairs them.
@@ -313,7 +313,7 @@ enriched AS (
     tg.tag_count,
     s.splits,
     s.split_count,
-    s.split_count > 0 AS has_splits
+    COALESCE(s.split_count, 0) > 0 AS has_splits
   FROM prep.int_transactions__merged AS t
   LEFT JOIN app.transaction_categories AS c ON t.transaction_id = c.transaction_id
   LEFT JOIN app.merchants              AS m ON c.merchant_id    = m.merchant_id
@@ -395,7 +395,7 @@ This spec adds one predicate to the candidate-selection step: rows with `source_
 
 The escape hatch for explicit user merges: `transactions matches confirm <manual_id> <import_id>` writes `app.match_decisions` with `match_tier='user_manual_merge'` and emits an audit event. This is rare-by-design.
 
-**Cross-spec edit landing in this PR:** `matching-same-record-dedup.md` gets a paragraph under "Matching Engine § Candidate blocking" documenting the exemption.
+**Cross-spec edit (follow-up, lands with implementation):** `matching-same-record-dedup.md` gets a paragraph under "Matching Engine § Candidate blocking" documenting the exemption. Not included in the spec PR.
 
 ### Auto-rule generator — manual exemption
 
@@ -411,7 +411,7 @@ Manual descriptions are user-authored and idiosyncratic ("Coffee at Joe's"). The
 
 The auto-rule generator continues to learn from user category edits made *to imported* rows — that's unchanged. Manual rows themselves are simply not training data.
 
-**Cross-spec edit landing in this PR:** `categorization-auto-rules.md` gets a paragraph under the training-data section documenting the exemption.
+**Cross-spec edit (follow-up, lands with implementation):** `categorization-auto-rules.md` gets a paragraph under the training-data section documenting the exemption. Not included in the spec PR.
 
 ### Categorization priority hierarchy — unchanged
 
@@ -459,7 +459,7 @@ Imperative verbs operating on individual `note_id`s. Each emits its own audit ev
 ```
 transactions tags add <txn_id> <tag> [<tag>...]      Idempotent; tag pattern validated
 transactions tags remove <txn_id> <tag> [<tag>...]
-transactions tags list [--account ID] [--from DATE] [--to DATE]
+transactions tags list [--txn-id ID] [--account ID] [--from DATE] [--to DATE]
                                                       Without flags: distinct tags with usage counts.
                                                       With --txn-id: tags on one transaction.
 transactions tags rename <old_tag> <new_tag>          Bulk rename across all rows; emits parent + per-row child audit events
@@ -521,7 +521,7 @@ Per `feedback_cli_function_naming.md` and `.claude/rules/cli.md`: Typer subgroup
 
 Per `mcp-architecture.md` and `mcp-tool-surface.md` v2: path-prefix-verb-suffix names, sensitivity tiers, response envelopes, write-tool confirmation conventions.
 
-Ten new tools, two prompts, one extended resource. Catalog grows from ~33 to ~43 — comfortably under the 50-tool friction line.
+Nine new tools, two prompts, one new resource and two extended. Catalog grows from ~33 to ~42 — comfortably under the 50-tool friction line.
 
 ### Tools
 
@@ -603,9 +603,9 @@ In-scope services emit; out-of-scope services are silent until the Wave 4 `audit
 - For bulk operations (`tag.rename`): the parent event captures the operation intent (`{old_tag, new_tag, row_count}`); per-row child events capture each row's before/after with `parent_audit_id` chaining.
 - For idempotent operations (re-applying an existing tag): the event is still recorded with `before == after`, marked via a `context_json.noop = true` flag. Useful for forensic "did this run?" questions.
 
-## Cross-Spec Edits in This PR
+## Cross-Spec Edits (Follow-up — Land with Implementation)
 
-These edits to other specs land in the same PR as `transaction-curation.md`:
+These edits to sibling specs are required follow-ups. They are **NOT** included in the spec PR — they land alongside the implementation PR for this spec, when the code-side commitments make them concrete:
 
 1. **[`matching-same-record-dedup.md`](matching-same-record-dedup.md)** — paragraph addition under "Matching Engine § Candidate blocking" documenting the `source_type='manual'` exemption.
 2. **[`categorization-auto-rules.md`](categorization-auto-rules.md)** — paragraph addition under the training-data section documenting the `source_type='manual'` exemption.
@@ -739,7 +739,7 @@ All four scenarios use the new `curator` persona where applicable.
 
 ### Tier 5 — MCP integration (`tests/e2e/test_e2e_mcp.py`)
 
-Existing test file extended to cover the 9 new MCP tools and 2 prompts and 1 new resource: tool registration, response envelope shape, sensitivity-tier behavior (medium tools degrade without consent), `transactions_create`'s `pipeline_summary` in response, declarative-set diff correctness for `transactions_tags_set`.
+Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resource, and 2 extended resources: tool registration, response envelope shape, sensitivity-tier behavior (medium tools degrade without consent), `transactions_create`'s `pipeline_summary` in response, declarative-set diff correctness for `transactions_tags_set`.
 
 ## Dependencies
 
