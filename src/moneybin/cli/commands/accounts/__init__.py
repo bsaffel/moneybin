@@ -39,7 +39,7 @@ app = typer.Typer(
 
 
 @app.command("list")
-def list_cmd(
+def accounts_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
     include_archived: bool = typer.Option(
@@ -67,7 +67,7 @@ def list_cmd(
 
 
 @app.command("show")
-def show_cmd(
+def accounts_show(
     account_id: str = typer.Argument(..., help="Account ID"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001
@@ -86,7 +86,7 @@ def show_cmd(
 
 
 @app.command("rename")
-def rename_cmd(
+def accounts_rename(
     account_id: str = typer.Argument(..., help="Account ID"),
     display_name: str = typer.Argument(
         ..., help="New display name (empty string clears)"
@@ -101,7 +101,7 @@ def rename_cmd(
 
 
 @app.command("include")
-def include_cmd(
+def accounts_include(
     account_id: str = typer.Argument(..., help="Account ID"),
     no: bool = typer.Option(False, "--no", help="Set include_in_net_worth=FALSE"),
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
@@ -115,7 +115,7 @@ def include_cmd(
 
 
 @app.command("archive")
-def archive_cmd(
+def accounts_archive(
     account_id: str = typer.Argument(..., help="Account ID"),
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
@@ -129,7 +129,7 @@ def archive_cmd(
 
 
 @app.command("unarchive")
-def unarchive_cmd(
+def accounts_unarchive(
     account_id: str = typer.Argument(..., help="Account ID"),
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
@@ -192,7 +192,7 @@ _SOFT_VALIDATED_FIELDS: dict[
 
 
 @app.command("set")
-def set_cmd(
+def accounts_set(
     account_id: str = typer.Argument(..., help="Account ID"),
     official_name: str | None = typer.Option(
         None, "--official-name", help="Institution's formal account name"

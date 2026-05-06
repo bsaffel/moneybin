@@ -106,3 +106,15 @@ Commit messages: imperative mood, < 72-char subject, body explains *why*.
 ## Specs and shipping
 
 Feature work is tracked through specs in `docs/specs/`. The [Spec Index](docs/specs/INDEX.md) is the single source of truth for status. When a feature ships, update the spec status, the index, and the README roadmap. See [`.claude/rules/shipping.md`](.claude/rules/shipping.md) for the full checklist.
+
+## Where the strategy lives
+
+The public planning artifacts are:
+
+- [`docs/specs/`](docs/specs/INDEX.md) — design specs for every feature (status: `draft` → `ready` → `in-progress` → `implemented`).
+- [`docs/decisions/`](docs/decisions/) — architecture decision records (ADRs) for the load-bearing choices.
+- [`docs/guides/`](docs/guides/) — user-facing how-tos for shipped capabilities.
+- [`README.md`](README.md) — current state + roadmap by Wave.
+- [`CHANGELOG.md`](CHANGELOG.md) — version history.
+
+Project-internal strategy (positioning, competitor analysis, persona-and-marketing breakdowns, hosted-tier design, wave-by-wave implementation tracking) lives in `private/strategy/` and is not committed. If you're contributing and want context on *why* a spec was written the way it was, the spec's `Background` section links to the relevant ADRs and references; the answer is rarely outside the public artifacts.

@@ -497,7 +497,7 @@ def import_preview(
 
 
 @formats_app.command("list")
-def list_formats(
+def formats_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -554,7 +554,7 @@ def list_formats(
 
 
 @formats_app.command("show")
-def show_format(
+def formats_show(
     name: str = typer.Argument(..., help="Format name to show"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — show has no info chatter; only data lines
@@ -627,7 +627,7 @@ def show_format(
 
 
 @formats_app.command("delete")
-def delete_format(
+def formats_delete(
     name: str = typer.Argument(..., help="Format name to delete"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:

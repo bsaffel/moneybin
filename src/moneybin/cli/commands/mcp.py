@@ -66,7 +66,7 @@ app.add_typer(config_app, name="config")
 
 
 @config_app.callback(invoke_without_command=True)
-def config_show(ctx: typer.Context) -> None:
+def mcp_config_show(ctx: typer.Context) -> None:
     """Display current MCP server configuration.
 
     Shows the active profile, database path, and MCP-specific limits
@@ -89,7 +89,7 @@ def config_show(ctx: typer.Context) -> None:
 
 
 @config_app.command("path")
-def config_path(
+def mcp_config_path(
     client: Annotated[
         str,
         typer.Option(
@@ -151,7 +151,7 @@ def config_path(
 
 
 @config_app.command("generate")
-def config_generate(
+def mcp_config_generate(
     client: Annotated[
         str,
         typer.Option(
@@ -572,7 +572,7 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
 
 
 @app.command("list-tools")
-def list_tools(
+def mcp_list_tools(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — list-tools has no info chatter; only data lines
 ) -> None:
@@ -613,7 +613,7 @@ def list_tools(
 
 
 @app.command("list-prompts")
-def list_prompts(
+def mcp_list_prompts(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:

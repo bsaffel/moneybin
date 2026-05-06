@@ -20,7 +20,7 @@ app = typer.Typer(
 
 
 @app.command("list")
-def list_rules(
+def rules_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -69,7 +69,7 @@ def list_rules(
 
 
 @app.command("apply")
-def apply_rules() -> None:
+def rules_apply() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
     from moneybin.services.categorization_service import CategorizationService
 
