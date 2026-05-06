@@ -1,0 +1,67 @@
+"""Export uncategorized transactions for LLM-assisted categorization."""
+
+import json
+import logging
+import sys
+from pathlib import Path
+
+import typer
+
+from moneybin.cli.utils import handle_cli_errors
+
+logger = logging.getLogger(__name__)
+
+
+def categorize_export_uncategorized(
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write JSON to this file path instead of stdout.",
+    ),
+    account_filter: list[str] | None = typer.Option(
+        None,
+        "--account-filter",
+        help="Restrict to transactions in these account IDs (repeatable).",
+    ),
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help="Maximum transactions to export (defaults to configured assist_max_batch_size).",
+    ),
+) -> None:
+    """Export uncategorized transactions as redacted JSON for LLM review.
+
+    Output is a JSON array of objects with opaque_id, description_redacted,
+    and source_type — no amounts, dates, or account identifiers. Feed the
+    output to an LLM, fill in category/subcategory, then pipe back through
+    ``moneybin transactions categorize apply-from-file``.
+    """
+    from moneybin.services.categorization_service import CategorizationService
+
+    with handle_cli_errors() as db:
+        svc = CategorizationService(db)
+        effective_limit = limit if limit is not None else 100
+        rows = svc.categorize_assist(
+            limit=effective_limit,
+            account_filter=account_filter or None,
+        )
+
+    payload = [
+        {
+            "opaque_id": row.opaque_id,
+            "description_redacted": row.description_redacted,
+            "source_type": row.source_type,
+        }
+        for row in rows
+    ]
+    json_text = json.dumps(payload, indent=2)
+
+    if output is not None:
+        output.write_text(json_text, encoding="utf-8")
+        logger.info(
+            f"✅ Exported {len(payload)} uncategorized transactions to {output}"
+        )
+    else:
+        sys.stdout.write(json_text + "\n")

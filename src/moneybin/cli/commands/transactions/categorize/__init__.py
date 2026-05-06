@@ -19,6 +19,8 @@ from moneybin.cli.utils import handle_cli_errors
 from moneybin.protocol.envelope import ResponseEnvelope
 
 from . import auto, ml, rules
+from .apply_from_file import categorize_apply_from_file
+from .export import categorize_export_uncategorized
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,9 @@ app = typer.Typer(
 app.add_typer(rules.app, name="rules")
 app.add_typer(auto.app, name="auto")
 app.add_typer(ml.app, name="ml")
+
+app.command("export-uncategorized")(categorize_export_uncategorized)
+app.command("apply-from-file")(categorize_apply_from_file)
 
 
 @app.command("apply")
