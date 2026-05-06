@@ -33,7 +33,7 @@ def test_auto_review_help():
 
 def test_auto_confirm_help_lists_approve_and_reject_flags():
     """Auto confirm --help exposes batch approve/reject flags."""
-    result = runner.invoke(app, ["auto", "confirm", "--help"])
+    result = runner.invoke(app, ["auto", "accept", "--help"])
     assert result.exit_code == 0
     out = _plain(result.stdout)
     assert "--approve" in out
@@ -61,7 +61,7 @@ def test_auto_subgroup_help_lists_all_actions() -> None:
 
     result = runner.invoke(categorize_app, ["auto", "--help"])
     assert result.exit_code == 0
-    for action in ("review", "confirm", "stats", "rules"):
+    for action in ("review", "accept", "stats", "rules"):
         assert action in result.stdout
 
 
@@ -88,7 +88,7 @@ def test_auto_confirm_explicit_approve(
     svc.accept.return_value = _confirm_result(approved=2)
 
     result = runner.invoke(
-        app, ["auto", "confirm", "--approve", "a1", "--approve", "a2"]
+        app, ["auto", "accept", "--approve", "a1", "--approve", "a2"]
     )
     assert result.exit_code == 0
     svc.accept.assert_called_once_with(accept=["a1", "a2"], reject=[])
@@ -104,7 +104,7 @@ def test_auto_confirm_explicit_reject(
     svc = mock_svc_cls.return_value
     svc.accept.return_value = _confirm_result(rejected=1)
 
-    result = runner.invoke(app, ["auto", "confirm", "--reject", "r1"])
+    result = runner.invoke(app, ["auto", "accept", "--reject", "r1"])
     assert result.exit_code == 0
     svc.accept.assert_called_once_with(accept=[], reject=["r1"])
 
@@ -123,7 +123,7 @@ def test_auto_confirm_approve_all_expands_pending(
     ]
     svc.accept.return_value = _confirm_result(approved=2)
 
-    result = runner.invoke(app, ["auto", "confirm", "--approve-all"])
+    result = runner.invoke(app, ["auto", "accept", "--approve-all"])
     assert result.exit_code == 0
     svc.accept.assert_called_once_with(accept=["p1", "p2"], reject=[])
 
@@ -142,7 +142,7 @@ def test_auto_confirm_reject_all_expands_pending(
     ]
     svc.accept.return_value = _confirm_result(rejected=2)
 
-    result = runner.invoke(app, ["auto", "confirm", "--reject-all"])
+    result = runner.invoke(app, ["auto", "accept", "--reject-all"])
     assert result.exit_code == 0
     svc.accept.assert_called_once_with(accept=[], reject=["p1", "p2"])
 
@@ -162,12 +162,12 @@ def test_auto_confirm_approve_all_with_explicit_reject_excludes_id(
     ]
     svc.accept.return_value = _confirm_result(approved=2, rejected=1)
 
-    result = runner.invoke(app, ["auto", "confirm", "--approve-all", "--reject", "p2"])
+    result = runner.invoke(app, ["auto", "accept", "--approve-all", "--reject", "p2"])
     assert result.exit_code == 0
     svc.accept.assert_called_once_with(accept=["p1", "p3"], reject=["p2"])
 
 
 def test_auto_confirm_rejects_both_all_flags() -> None:
     """--approve-all and --reject-all are mutually exclusive (exit code 2)."""
-    result = runner.invoke(app, ["auto", "confirm", "--approve-all", "--reject-all"])
+    result = runner.invoke(app, ["auto", "accept", "--approve-all", "--reject-all"])
     assert result.exit_code == 2

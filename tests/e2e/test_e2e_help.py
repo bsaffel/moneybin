@@ -38,7 +38,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["transactions", "categorize"],
     ["transactions", "categorize", "auto"],
     ["transactions", "categorize", "auto", "review"],
-    ["transactions", "categorize", "auto", "confirm"],
+    ["transactions", "categorize", "auto", "accept"],
     ["transactions", "categorize", "auto", "stats"],
     ["transactions", "categorize", "auto", "rules"],
     ["transactions", "categorize", "rules"],

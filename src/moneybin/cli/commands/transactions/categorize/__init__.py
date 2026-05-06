@@ -32,8 +32,8 @@ app.add_typer(auto.app, name="auto")
 app.add_typer(ml.app, name="ml")
 
 
-@app.command("bulk")
-def bulk(
+@app.command("apply")
+def categorize_apply(
     stdin_sentinel: str | None = typer.Argument(
         None,
         help="Pass '-' to read JSON from stdin.",
@@ -43,15 +43,15 @@ def bulk(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Bulk-assign categories to transactions from a JSON array.
+    """Assign categories to transactions from a JSON array.
 
     Read from a file:
 
-      moneybin transactions categorize bulk --input cats.json
+      moneybin transactions categorize apply --input cats.json
 
     Or from stdin:
 
-      cat cats.json | moneybin transactions categorize bulk -
+      cat cats.json | moneybin transactions categorize apply -
 
     Per-item validation: failures are reported in the result without aborting
     the batch. Exit code is 1 if any item failed.

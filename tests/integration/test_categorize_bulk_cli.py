@@ -94,7 +94,7 @@ class TestCategorizeBulkCLI:
             ])
         )
 
-        result = _invoke(monkeypatch, db, store, ["bulk", "--input", str(cats_file)])
+        result = _invoke(monkeypatch, db, store, ["apply", "--input", str(cats_file)])
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
 
     def test_stdin_sentinel_reads_json_from_stdin(
@@ -105,7 +105,7 @@ class TestCategorizeBulkCLI:
         txn_id = _seed_one_transaction(db)
 
         payload = json.dumps([{"transaction_id": txn_id, "category": "Food"}])
-        result = _invoke(monkeypatch, db, store, ["bulk", "-"], input=payload)
+        result = _invoke(monkeypatch, db, store, ["apply", "-"], input=payload)
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
 
     def test_json_output_returns_envelope(
@@ -124,7 +124,7 @@ class TestCategorizeBulkCLI:
             monkeypatch,
             db,
             store,
-            ["bulk", "--input", str(cats_file), "--output", "json"],
+            ["apply", "--input", str(cats_file), "--output", "json"],
         )
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]
@@ -150,7 +150,7 @@ class TestCategorizeBulkCLI:
             monkeypatch,
             db,
             store,
-            ["bulk", "--input", str(cats_file), "--output", "json"],
+            ["apply", "--input", str(cats_file), "--output", "json"],
         )
         assert result.exit_code == 1  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]
@@ -168,7 +168,7 @@ class TestCategorizeBulkCLI:
         cats_file = tmp_path / "cats.json"
         cats_file.write_text(json.dumps({"items": []}))  # dict, not list
 
-        result = _invoke(monkeypatch, db, store, ["bulk", "--input", str(cats_file)])
+        result = _invoke(monkeypatch, db, store, ["apply", "--input", str(cats_file)])
         assert result.exit_code == 1  # type: ignore[union-attr]
 
     def test_missing_file_exits_two(
@@ -182,7 +182,7 @@ class TestCategorizeBulkCLI:
             monkeypatch,
             db,
             store,
-            ["bulk", "--input", str(tmp_path / "missing.json")],
+            ["apply", "--input", str(tmp_path / "missing.json")],
         )
         assert result.exit_code == 2  # type: ignore[union-attr]
 
@@ -200,7 +200,7 @@ class TestCategorizeBulkCLI:
             monkeypatch,
             db,
             store,
-            ["bulk", "--input", str(cats_file), "--output", "json"],
+            ["apply", "--input", str(cats_file), "--output", "json"],
         )
         assert result.exit_code == 0  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]

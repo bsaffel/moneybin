@@ -343,7 +343,7 @@ class TestCategorizeMutating:
 
         # auto-accept --approve-all promotes it
         result = run_cli(
-            "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
+            "transactions", "categorize", "auto", "accept", "--approve-all", env=env
         )
         result.assert_success()
         assert "Approved" in result.output, (

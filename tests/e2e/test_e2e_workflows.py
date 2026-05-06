@@ -317,7 +317,7 @@ class TestAutoRulePipeline:
         result = run_cli(
             "transactions",
             "categorize",
-            "bulk",
+            "apply",
             "--input",
             str(json_path),
             env=env,
@@ -333,7 +333,7 @@ class TestAutoRulePipeline:
 
         # auto-accept promotes the proposal to an active rule
         result = run_cli(
-            "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
+            "transactions", "categorize", "auto", "accept", "--approve-all", env=env
         )
         result.assert_success()
         assert "Approved 1" in result.output, (

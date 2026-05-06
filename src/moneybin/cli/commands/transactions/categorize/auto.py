@@ -67,8 +67,8 @@ def review(
         )
 
 
-@app.command("confirm")
-def confirm(
+@app.command("accept")
+def categorize_auto_accept(
     approve: list[str] = typer.Option(
         None, "--approve", help="Proposal IDs to approve"
     ),
@@ -80,7 +80,7 @@ def confirm(
         False, "--reject-all", help="Reject all pending proposals"
     ),
 ) -> None:
-    """Batch approve/reject auto-rule proposals."""
+    """Batch accept/reject auto-rule proposals."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
     if approve_all and reject_all:
