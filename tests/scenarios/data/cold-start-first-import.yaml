@@ -1,0 +1,66 @@
+scenario: cold-start-first-import
+description: >
+  Cold-start validation: seed merchant rules represent the initial state of a
+  fresh install (global seeds only, no user history). After categorize runs,
+  the transactions that match seed rules are labeled; the accuracy evaluation
+  proves the seed coverage is meaningful without needing LLM assist.
+  This simulates the snowball starting point — every transaction the seeds
+  auto-label is one the user doesn't have to manually review.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+# Pipeline rationale:
+#   generate   — synthetic transactions from the basic persona (1 year).
+#   transform  — materialize core.fct_transactions and dim_accounts.
+#   seed_merchants — populate app.merchants from the persona's merchant catalog;
+#                    this approximates the global seed merchants a fresh install
+#                    would have (common chains like Starbucks, Netflix, etc.).
+#   categorize — apply_deterministic() matches transaction descriptions against
+#                app.merchants rules; covered transactions get categories.
+#   transform  — re-materialize fct_transactions so the category LEFT JOIN
+#                reflects the newly written app.transaction_categories rows.
+pipeline:
+  - generate
+  - transform
+  - seed_merchants
+  - categorize
+  - transform
+
+assertions:
+  - name: no_duplicate_transactions
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  - name: sign_convention
+    fn: assert_sign_convention
+  - name: fk_account_id
+    fn: assert_valid_foreign_keys
+    args:
+      child: core.fct_transactions
+      column: account_id
+      parent: core.dim_accounts
+      parent_column: account_id
+
+# Cold-start threshold is intentionally lower than the standard full-pipeline
+# scenarios (0.70 for basic, 0.80 for family). At cold start only the global
+# seed merchants are present — no user corrections, no learned overrides.
+# 0.40 is derived from the basic persona's merchant catalog: roughly half of
+# the generated spending merchants have a direct description_prefix match in
+# the catalog, and income + recurring categories cover the remainder partially.
+# This floor ensures the seeds provide *meaningful* first-pass coverage without
+# over-claiming.
+evaluations:
+  - name: cold_start_categorization_coverage
+    fn: score_categorization
+    threshold:
+      metric: accuracy
+      min: 0.40
+
+gates:
+  required_assertions: all
+  required_evaluations: all
