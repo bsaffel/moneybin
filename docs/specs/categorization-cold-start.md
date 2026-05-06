@@ -1,7 +1,7 @@
 # Feature: Categorization Cold-Start
 
 ## Status
-ready
+implemented
 
 ## Goal
 
@@ -431,9 +431,9 @@ For every transaction sent via `transactions_categorize_assist`, the LLM receive
 ```python
 @dataclass(frozen=True)
 class RedactedTransaction:
-    opaque_id: str              # existing transaction_id (opaque hash/UUID)
-    description_redacted: str   # redact_for_llm(description)
-    source_type: str            # 'csv' | 'ofx' | 'plaid' | 'pdf'
+    opaque_id: str  # existing transaction_id (opaque hash/UUID)
+    description_redacted: str  # redact_for_llm(description)
+    source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf'
 ```
 
 Never sent: `amount`, `date`, `account_id`, `currency`, `memo`, `check_number`, `payee`, prior categorizations, related transactions.
