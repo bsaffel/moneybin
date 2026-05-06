@@ -13,6 +13,11 @@ from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 
+# Keys the BulkCategorizationItem model accepts (extra="forbid"). Used to strip
+# export-shape extras (opaque_id, description_redacted, source_type) from rows
+# fed to apply-from-file, after opaque_id → transaction_id remap.
+_ALLOWED_BULK_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
+
 
 def categorize_apply_from_file(
     input_path: Path | None = typer.Argument(
@@ -68,18 +73,23 @@ def categorize_apply_from_file(
         typer.echo(f"❌ Invalid JSON: {e}", err=True)
         raise typer.Exit(1) from e
 
-    # Remap opaque_id → transaction_id for BulkCategorizationItem validation.
-    # The export command uses opaque_id to be consistent with the MCP tool
-    # envelope shape; the service model uses transaction_id.
+    # Map export-shape rows into BulkCategorizationItem-shape rows. The export
+    # command emits {opaque_id, description_redacted, source_type} for the LLM
+    # to annotate with category/subcategory; the service model is
+    # {transaction_id, category, subcategory} with extra="forbid", so we must
+    # strip the export-only keys before validation. opaque_id → transaction_id
+    # if no transaction_id is already present.
     normalized: object = raw
     if isinstance(raw, list):
         remapped: list[object] = []
         for row in raw:  # pyright: ignore[reportUnknownVariableType]
-            if isinstance(row, dict) and "opaque_id" in row:
+            if isinstance(row, dict):
                 row_dict: dict[str, object] = {str(k): v for k, v in row.items()}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
-                if "transaction_id" not in row_dict:
-                    row_dict["transaction_id"] = row_dict.get("opaque_id", "")
-                remapped.append(row_dict)
+                if "transaction_id" not in row_dict and "opaque_id" in row_dict:
+                    row_dict["transaction_id"] = row_dict["opaque_id"]
+                remapped.append({
+                    k: v for k, v in row_dict.items() if k in _ALLOWED_BULK_ITEM_KEYS
+                })
             else:
                 remapped.append(row)  # pyright: ignore[reportUnknownArgumentType]
         normalized = remapped

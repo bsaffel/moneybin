@@ -28,7 +28,7 @@ def categorize_export_uncategorized(
         None,
         "--limit",
         min=1,
-        help="Maximum transactions to export (defaults to configured assist_max_batch_size).",
+        help="Maximum transactions to export (defaults to configured assist_default_batch_size).",
     ),
 ) -> None:
     """Export uncategorized transactions as redacted JSON for LLM review.
@@ -38,13 +38,18 @@ def categorize_export_uncategorized(
     output to an LLM, fill in category/subcategory, then pipe back through
     ``moneybin transactions categorize apply-from-file``.
     """
+    from moneybin.config import get_settings
     from moneybin.mcp.privacy import audit_log
     from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors() as db:
         svc = CategorizationService(db)
-        effective_limit = limit if limit is not None else 100
+        effective_limit = (
+            limit
+            if limit is not None
+            else get_settings().categorization.assist_default_batch_size
+        )
         rows = svc.categorize_assist(
             limit=effective_limit,
             account_filter=account_filter or None,

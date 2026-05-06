@@ -43,6 +43,11 @@ def transactions_categorize_assist(
 
     date_tuple = None
     if date_range:
+        if "start" not in date_range or "end" not in date_range:
+            raise ValueError(
+                "date_range must include both 'start' and 'end' keys "
+                "(ISO date strings)."
+            )
         date_tuple = (date_range["start"], date_range["end"])
 
     svc = CategorizationService(get_database())

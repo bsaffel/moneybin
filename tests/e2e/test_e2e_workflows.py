@@ -305,7 +305,7 @@ class TestAutoRulePipeline:
             json.dumps([
                 {
                     "transaction_id": txn_id,
-                    "category": "Food & Dining",
+                    "category": "Food & Drink",
                     "subcategory": "Coffee",
                 }
             ]),

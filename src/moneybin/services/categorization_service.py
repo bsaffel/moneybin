@@ -726,12 +726,20 @@ class CategorizationService:
             for item in items:
                 if item.category not in valid_category_set:
                     errors += 1
+                    suggestions = _did_you_mean(item.category, valid_sorted)
+                    reason = (
+                        f"Invalid category {item.category!r}; "
+                        f"did you mean: {', '.join(suggestions)}"
+                        if suggestions
+                        else f"Invalid category {item.category!r}"
+                    )
                     error_details.append({
                         "transaction_id": item.transaction_id,
+                        "reason": reason,
                         "error": "invalid_category",
                         "invalid_value": item.category,
                         "valid_categories": valid_sorted,
-                        "did_you_mean": _did_you_mean(item.category, valid_sorted),
+                        "did_you_mean": suggestions,
                     })
                 else:
                     validated_items.append(item)
@@ -1478,7 +1486,7 @@ class CategorizationService:
                 RedactedTransaction(
                     opaque_id=row[0],
                     description_redacted=redact_for_llm(row[1] or ""),
-                    source_type=row[2],
+                    source_type=row[2] or "",
                 )
                 for row in rows
             ]
