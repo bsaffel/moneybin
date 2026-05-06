@@ -67,6 +67,35 @@ class TestInboxSyncTool:
         envelope = await inbox_sync_tool()
         assert not any("inbox/<account-slug>" in a for a in envelope.actions)
 
+    async def test_categorize_hint_appears_when_above_threshold(
+        self, patch_service: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hint referencing categorize_assist is appended when uncategorized >= threshold."""
+        patch_service.sync.return_value = InboxSyncResult(
+            processed=[{"filename": "a.csv", "transactions": 5}],
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox._uncategorized_count",
+            lambda: 50,
+        )
+        envelope = await inbox_sync_tool()
+        assert any("categorize_assist" in a for a in envelope.actions)
+        assert any("50" in a for a in envelope.actions)
+
+    async def test_categorize_hint_absent_below_threshold(
+        self, patch_service: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No hint when uncategorized count is below the configured threshold."""
+        patch_service.sync.return_value = InboxSyncResult(
+            processed=[{"filename": "a.csv", "transactions": 1}],
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox._uncategorized_count",
+            lambda: 0,
+        )
+        envelope = await inbox_sync_tool()
+        assert not any("categorize_assist" in a for a in envelope.actions)
+
 
 class TestInboxListTool:
     """import_inbox_list envelope shape."""
