@@ -39,6 +39,7 @@ def categorize_export_uncategorized(
     ``moneybin transactions categorize apply-from-file``.
     """
     from moneybin.mcp.privacy import audit_log
+    from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors() as db:
@@ -48,6 +49,8 @@ def categorize_export_uncategorized(
             limit=effective_limit,
             account_filter=account_filter or None,
         )
+
+    CATEGORIZE_ASSIST_CALLS_TOTAL.labels(surface="cli").inc()
 
     audit_log(
         tool="categorize_export_uncategorized_cli",

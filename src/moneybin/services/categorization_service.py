@@ -1438,6 +1438,13 @@ class CategorizationService:
         written to disk via the CLI bridge. The redaction contract is enforced
         by RedactedTransaction's frozen dataclass shape.
         """
+        import time
+
+        from moneybin.metrics.registry import (
+            CATEGORIZE_ASSIST_DURATION_SECONDS,
+            CATEGORIZE_ASSIST_TXNS_RETURNED_TOTAL,
+        )
+
         settings = get_settings().categorization
         effective_limit = min(limit, settings.assist_max_batch_size)
 
@@ -1453,22 +1460,29 @@ class CategorizationService:
             params.extend(date_range)
         where_sql = " AND ".join(where_clauses)
 
-        rows = self._db.execute(
-            f"""
-            SELECT t.transaction_id, t.description, t.source_type
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
-            WHERE {where_sql}
-            LIMIT ?
-            """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
-            params + [effective_limit],
-        ).fetchall()
+        start = time.monotonic()
+        result: list[RedactedTransaction] = []
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT t.transaction_id, t.description, t.source_type
+                FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
+                WHERE {where_sql}
+                LIMIT ?
+                """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
+                params + [effective_limit],
+            ).fetchall()
 
-        return [
-            RedactedTransaction(
-                opaque_id=row[0],
-                description_redacted=redact_for_llm(row[1] or ""),
-                source_type=row[2],
-            )
-            for row in rows
-        ]
+            result = [
+                RedactedTransaction(
+                    opaque_id=row[0],
+                    description_redacted=redact_for_llm(row[1] or ""),
+                    source_type=row[2],
+                )
+                for row in rows
+            ]
+            return result
+        finally:
+            CATEGORIZE_ASSIST_DURATION_SECONDS.observe(time.monotonic() - start)
+            CATEGORIZE_ASSIST_TXNS_RETURNED_TOTAL.inc(len(result))

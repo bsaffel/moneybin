@@ -11,6 +11,7 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import audit_log
+from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization_service import CategorizationService
 
@@ -50,6 +51,8 @@ def transactions_categorize_assist(
         account_filter=account_filter,
         date_range=date_tuple,
     )
+
+    CATEGORIZE_ASSIST_CALLS_TOTAL.labels(surface="mcp").inc()
 
     audit_log(
         tool="transactions_categorize_assist",
