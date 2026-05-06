@@ -82,7 +82,7 @@ def _create_init_script(db_path: Path) -> Path:
 
 
 @app.command("init")
-def init_db(
+def db_init(
     database: Path | None = typer.Option(
         None,
         "--database",
@@ -108,7 +108,7 @@ def init_db(
     based key derivation via Argon2id.
     """
     from moneybin.config import get_settings
-    from moneybin.database import init_db as do_init_db
+    from moneybin.database import init_db
     from moneybin.secrets import SecretStore
 
     settings = get_settings()
@@ -131,7 +131,7 @@ def init_db(
 
     db_cfg = settings.database
     try:
-        do_init_db(
+        init_db(
             db_path,
             passphrase=pp,
             secret_store=SecretStore(),
@@ -214,7 +214,7 @@ def _run_duckdb_cli(
 
 
 @app.command("shell")
-def open_shell(
+def db_shell(
     database: Path | None = typer.Option(
         None,
         "--database",
@@ -229,7 +229,7 @@ def open_shell(
 
 
 @app.command("ui")
-def open_ui(
+def db_ui(
     database: Path | None = typer.Option(
         None,
         "--database",
@@ -251,7 +251,7 @@ def open_ui(
 
 
 @app.command("query")
-def run_query(
+def db_query(
     sql: str = typer.Argument(..., help="SQL query to execute"),
     database: Path | None = typer.Option(
         None,

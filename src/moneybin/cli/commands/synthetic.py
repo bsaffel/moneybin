@@ -149,7 +149,7 @@ def _run_generate(
 
 
 @app.command("generate")
-def generate(
+def synthetic_generate(
     persona: str = typer.Option(
         ..., "--persona", help="Persona to generate (basic, family, freelancer)"
     ),
@@ -176,7 +176,7 @@ def generate(
 
 
 @app.command("reset")
-def reset(
+def synthetic_reset(
     persona: str = typer.Option(..., "--persona", help="Persona to regenerate"),
     profile: str | None = typer.Option(
         None, "--profile", help="Target profile to reset"
