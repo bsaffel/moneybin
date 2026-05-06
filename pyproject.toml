@@ -7,8 +7,45 @@ build-backend = "setuptools.build_meta"
 # Documentation: https://packaging.python.org/en/latest/specifications/core-metadata/
 name = "moneybin"
 version = "0.1.0"
-description = "AI-powered personal finance app built on DuckDB and MCP"
+description = "Local-first, AI-native personal finance data platform built on DuckDB, SQLMesh, and MCP."
+readme = "README.md"
 license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Brandon Saffel", email = "brandon@prestidigital.co" }]
+maintainers = [{ name = "Brandon Saffel", email = "brandon@prestidigital.co" }]
+keywords = [
+    "personal-finance",
+    "finance",
+    "data-platform",
+    "data-warehouse",
+    "duckdb",
+    "sqlmesh",
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "local-first",
+    "encrypted",
+    "agpl",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: SQL",
+    "Topic :: Database",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Office/Business :: Financial :: Accounting",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 requires-python = ">=3.12"
 dependencies = [
     # Data transforms (SQLMesh manages raw → staging → core pipeline)
@@ -58,6 +95,13 @@ dependencies = [
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
     "tomlkit>=0.13.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/bsaffel/moneybin"
+Repository = "https://github.com/bsaffel/moneybin"
+Changelog = "https://github.com/bsaffel/moneybin/blob/main/CHANGELOG.md"
+Issues = "https://github.com/bsaffel/moneybin/issues"
+Documentation = "https://github.com/bsaffel/moneybin/tree/main/docs"
 
 [tool.setuptools]
 # Configure src/ layout for proper package discovery
