@@ -1,6 +1,8 @@
 [build-system]
 # Documentation: https://packaging.python.org/en/latest/specifications/build-backend/
-requires = ["setuptools>=61.0", "wheel"]
+# setuptools>=77.0 required for PEP 639 license metadata (`project.license`
+# SPDX expression + `project.license-files` field).
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
