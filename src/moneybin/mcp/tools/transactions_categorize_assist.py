@@ -10,6 +10,7 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import audit_log
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization_service import CategorizationService
 
@@ -48,6 +49,16 @@ def transactions_categorize_assist(
         limit=effective_limit,
         account_filter=account_filter,
         date_range=date_tuple,
+    )
+
+    audit_log(
+        tool="transactions_categorize_assist",
+        sensitivity="medium",
+        metadata={
+            "txn_count": len(redacted),
+            "account_filter": account_filter,
+            "redaction_version": settings.redaction_version,
+        },
     )
 
     return build_envelope(

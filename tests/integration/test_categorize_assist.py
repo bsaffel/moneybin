@@ -145,3 +145,29 @@ class TestCategorizeAssistMCPTool:
 
         assert response.data == []
         assert response.summary.total_count == 0
+
+    async def test_audit_log_written_on_invocation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """audit_log emits a structured INFO entry with counts but no content."""
+        import logging
+
+        db, _store = _make_db(tmp_path)
+        _seed_uncategorized_transactions(db, count=3)
+        monkeypatch.setattr("moneybin.database._database_instance", db)
+
+        with caplog.at_level(logging.INFO, logger="moneybin.mcp.privacy"):
+            await transactions_categorize_assist(limit=5)
+
+        audit_entries = [r for r in caplog.records if "audit:" in r.message]
+        assert len(audit_entries) == 1
+        entry_msg = audit_entries[0].message
+        assert "transactions_categorize_assist" in entry_msg
+        assert "txn_count" in entry_msg
+        assert "redaction_version" in entry_msg
+        # Confirm no per-record content leaked into the audit entry
+        assert "description" not in entry_msg
+        assert "MERCHANT" not in entry_msg

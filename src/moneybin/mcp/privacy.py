@@ -44,6 +44,29 @@ def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:
     logger.debug(f"MCP tool call: {tool_name} (sensitivity={sensitivity.value})")
 
 
+def audit_log(
+    *,
+    tool: str,
+    sensitivity: str,
+    metadata: dict[str, object],
+) -> None:
+    """Record a privacy-relevant tool invocation with structured metadata.
+
+    Stub implementation — writes a structured log entry at INFO level.
+    When the audit log spec (privacy-data-protection.md) is implemented,
+    this will persist to the audit table.
+
+    Only counts, version strings, and filter parameters are allowed in
+    metadata — never descriptions, IDs, or per-record content.
+
+    Args:
+        tool: Tool or command name (e.g. "transactions_categorize_assist").
+        sensitivity: Sensitivity tier string ("low", "medium", "high").
+        metadata: Count/parameter metadata. No PII or financial content.
+    """
+    logger.info(f"audit: tool={tool} sensitivity={sensitivity} metadata={metadata}")
+
+
 @functools.lru_cache(maxsize=1)
 def _get_mcp_limits() -> tuple[int, int, frozenset[str] | None]:
     """Load MCP limits from config (lazy, cached after first call).

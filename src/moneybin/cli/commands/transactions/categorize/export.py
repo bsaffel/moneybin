@@ -38,6 +38,7 @@ def categorize_export_uncategorized(
     output to an LLM, fill in category/subcategory, then pipe back through
     ``moneybin transactions categorize apply-from-file``.
     """
+    from moneybin.mcp.privacy import audit_log
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors() as db:
@@ -47,6 +48,15 @@ def categorize_export_uncategorized(
             limit=effective_limit,
             account_filter=account_filter or None,
         )
+
+    audit_log(
+        tool="categorize_export_uncategorized_cli",
+        sensitivity="medium",
+        metadata={
+            "txn_count": len(rows),
+            "account_filter": list(account_filter) if account_filter else None,
+        },
+    )
 
     payload = [
         {
