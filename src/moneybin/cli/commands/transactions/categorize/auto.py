@@ -103,7 +103,7 @@ def confirm(
         approve_set = set(approve or [])
         reject_set = set(reject or [])
         approve_set -= reject_set
-        result = svc.confirm(approve=sorted(approve_set), reject=sorted(reject_set))
+        result = svc.accept(accept=sorted(approve_set), reject=sorted(reject_set))
 
     logger.info(
         f"✅ Approved {result.approved} "

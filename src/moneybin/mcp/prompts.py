@@ -97,7 +97,7 @@ def review_auto_rules() -> str:
         **Relevant tools:**
         - transactions_categorize_auto_stats — pending proposal count and rule health
         - transactions_categorize_auto_review — list pending proposals with samples
-        - transactions_categorize_auto_confirm — batch approve/reject proposals by ID
+        - transactions_categorize_auto_accept — batch approve/reject proposals by ID
         - transactions_categorize_rules_list — review currently active rules
 
         **Workflow:**
@@ -105,12 +105,12 @@ def review_auto_rules() -> str:
         2. Fetch proposals with transactions_categorize_auto_review
         3. For each proposal, show the merchant pattern, suggested
            category, sample matching transactions, and trigger count
-        4. Group user decisions and submit them with transactions_categorize_auto_confirm
+        4. Group user decisions and submit them with transactions_categorize_auto_accept
 
         **Guardrails:**
         - Always show sample transactions before asking for approval
         - Flag proposals that seem overly broad or ambiguous
-        - Confirm batches with the user before submitting auto_confirm
+        - Confirm batches with the user before submitting auto_accept
         - Approved rules categorize matching transactions immediately
     """)
 

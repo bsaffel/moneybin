@@ -85,13 +85,13 @@ def test_auto_confirm_explicit_approve(
     """Explicit --approve forwards exactly the given IDs to confirm()."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
-    svc.confirm.return_value = _confirm_result(approved=2)
+    svc.accept.return_value = _confirm_result(approved=2)
 
     result = runner.invoke(
         app, ["auto", "confirm", "--approve", "a1", "--approve", "a2"]
     )
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=["a1", "a2"], reject=[])
+    svc.accept.assert_called_once_with(accept=["a1", "a2"], reject=[])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -102,11 +102,11 @@ def test_auto_confirm_explicit_reject(
     """Explicit --reject forwards exactly the given IDs to confirm()."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
-    svc.confirm.return_value = _confirm_result(rejected=1)
+    svc.accept.return_value = _confirm_result(rejected=1)
 
     result = runner.invoke(app, ["auto", "confirm", "--reject", "r1"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=[], reject=["r1"])
+    svc.accept.assert_called_once_with(accept=[], reject=["r1"])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -121,11 +121,11 @@ def test_auto_confirm_approve_all_expands_pending(
         {"proposed_rule_id": "p1"},
         {"proposed_rule_id": "p2"},
     ]
-    svc.confirm.return_value = _confirm_result(approved=2)
+    svc.accept.return_value = _confirm_result(approved=2)
 
     result = runner.invoke(app, ["auto", "confirm", "--approve-all"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=["p1", "p2"], reject=[])
+    svc.accept.assert_called_once_with(accept=["p1", "p2"], reject=[])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -140,11 +140,11 @@ def test_auto_confirm_reject_all_expands_pending(
         {"proposed_rule_id": "p1"},
         {"proposed_rule_id": "p2"},
     ]
-    svc.confirm.return_value = _confirm_result(rejected=2)
+    svc.accept.return_value = _confirm_result(rejected=2)
 
     result = runner.invoke(app, ["auto", "confirm", "--reject-all"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=[], reject=["p1", "p2"])
+    svc.accept.assert_called_once_with(accept=[], reject=["p1", "p2"])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -160,11 +160,11 @@ def test_auto_confirm_approve_all_with_explicit_reject_excludes_id(
         {"proposed_rule_id": "p2"},
         {"proposed_rule_id": "p3"},
     ]
-    svc.confirm.return_value = _confirm_result(approved=2, rejected=1)
+    svc.accept.return_value = _confirm_result(approved=2, rejected=1)
 
     result = runner.invoke(app, ["auto", "confirm", "--approve-all", "--reject", "p2"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=["p1", "p3"], reject=["p2"])
+    svc.accept.assert_called_once_with(accept=["p1", "p3"], reject=["p2"])
 
 
 def test_auto_confirm_rejects_both_all_flags() -> None:

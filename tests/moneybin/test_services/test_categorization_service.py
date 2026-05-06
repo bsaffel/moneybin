@@ -741,7 +741,7 @@ def test_list_auto_rules_returns_active_auto_rules(real_db: Database) -> None:
     auto = AutoRuleService(real_db)
     pid = auto.record_categorization("lt1", "Food & Drink")
     assert pid is not None
-    auto.confirm(approve=[pid])
+    auto.accept(accept=[pid])
 
     rules = auto.list_active_rules()
     assert any(r["merchant_pattern"] == "CHIPOTLE" for r in rules)

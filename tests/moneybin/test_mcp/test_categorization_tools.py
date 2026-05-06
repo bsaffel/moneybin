@@ -69,7 +69,7 @@ class TestCategorizeToolRegistration:
         names = await _registered_names()
         assert {
             "transactions_categorize_auto_review",
-            "transactions_categorize_auto_confirm",
+            "transactions_categorize_auto_accept",
             "transactions_categorize_auto_stats",
         } <= names
 

@@ -307,10 +307,10 @@ class TestCategorizeMutating:
     def test_categorize_auto_review_and_confirm(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
-        """auto-review surfaces a pending proposal; auto-confirm promotes it."""
+        """auto-review surfaces a pending proposal; auto-accept promotes it."""
         env = make_workflow_env_fast(tmp_path, "catauto", _mutating_profile_template)
 
-        # auto-confirm's promotion path joins core.fct_transactions to
+        # auto-accept's promotion path joins core.fct_transactions to
         # backfill matches, so transforms must materialize the (empty)
         # core schema before we exercise approve-all.
         result = run_cli("transform", "apply", env=env, timeout=180)
@@ -318,7 +318,7 @@ class TestCategorizeMutating:
 
         # Insert a pending proposal directly — bulk_categorize is MCP-only and
         # has no CLI surface, so seed app.proposed_rules via db query. The
-        # CLI we exercise is auto-review / auto-confirm / auto-stats /
+        # CLI we exercise is auto-review / auto-accept / auto-stats /
         # auto-rules; how the proposal got there is irrelevant.
         insert_sql = (
             "INSERT INTO app.proposed_rules "
@@ -341,13 +341,13 @@ class TestCategorizeMutating:
         result = run_cli("transactions", "categorize", "auto", "stats", env=env)
         result.assert_success()
 
-        # auto-confirm --approve-all promotes it
+        # auto-accept --approve-all promotes it
         result = run_cli(
             "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
         )
         result.assert_success()
         assert "Approved" in result.output, (
-            f"auto-confirm missing approval message: {result.output}"
+            f"auto-accept missing approval message: {result.output}"
         )
 
         # auto-rules now lists at least one active rule, and auto-stats
