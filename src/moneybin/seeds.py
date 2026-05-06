@@ -102,8 +102,27 @@ def _ensure_seed_tables_exist(db: Database) -> None:
 
 
 def refresh_views(db: Database) -> None:
-    """Create or replace the app views that expose seeds + user data."""
+    """Create or replace the app views that expose seeds + user data.
+
+    Idempotent and safe to call before migrations run. If `app.merchants`
+    still exists as a TABLE (pre-V006 database opened with
+    `no_auto_upgrade=True` — the operator has opted out of auto-migration),
+    skip the view creation entirely. DuckDB rejects `CREATE OR REPLACE VIEW`
+    over a table; failing here would block startup before the operator can
+    apply migrations manually. Reads against `app.merchants` continue to
+    return the legacy table's data until the operator runs migrations.
+    """
     _ensure_seed_tables_exist(db)
+    legacy = db.execute(
+        "SELECT table_type FROM information_schema.tables "
+        "WHERE table_schema = 'app' AND table_name = 'merchants'"
+    ).fetchone()
+    if legacy is not None and legacy[0] == "BASE TABLE":
+        logger.warning(
+            "app.merchants exists as a TABLE (pre-V006 schema); skipping view "
+            "refresh. Run migrations to complete the upgrade."
+        )
+        return
     # Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
     sql = f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS

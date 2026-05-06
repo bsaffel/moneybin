@@ -586,6 +586,10 @@ def test_bulk_categorize_returns_did_you_mean_on_invalid_category(
     assert "valid_categories" in detail
     assert "did_you_mean" in detail
     assert "Food & Dining" in detail["did_you_mean"]
+    # `reason` is the human-readable summary the CLI table renderer
+    # (`apply` and `apply-from-file`) reads. Locking the contract.
+    assert "reason" in detail
+    assert "FOOD" in detail["reason"]
 
 
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
