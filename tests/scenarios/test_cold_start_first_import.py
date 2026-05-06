@@ -15,14 +15,6 @@ from tests.scenarios._runner import load_shipped_scenario, run_scenario
 
 @pytest.mark.scenarios
 @pytest.mark.slow
-@pytest.mark.skip(
-    reason=(
-        "Forward-looking scenario. Placeholder seed CSVs (one row each) do not overlap "
-        "the basic persona's merchant catalog, so deterministic accuracy is 0.0. Enable "
-        "after Phase 12 seed curation lands (~2100 entries) and the runner supports "
-        "simulate_llm_assist for the snowball half of the scenario."
-    )
-)
 def test_cold_start_first_import() -> None:
     """Seeds-only merchant rules cover a meaningful fraction of first-import transactions."""
     scenario = load_shipped_scenario("cold-start-first-import")

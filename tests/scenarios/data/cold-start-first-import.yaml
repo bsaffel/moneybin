@@ -1,11 +1,15 @@
 scenario: cold-start-first-import
 description: >
-  Cold-start validation: seed merchant rules represent the initial state of a
-  fresh install (global seeds only, no user history). After categorize runs,
-  the transactions that match seed rules are labeled; the accuracy evaluation
-  proves the seed coverage is meaningful without needing LLM assist.
-  This simulates the snowball starting point — every transaction the seeds
-  auto-label is one the user doesn't have to manually review.
+  Exercises the cold-start branch's merchants split end-to-end on a fresh DB:
+  app.merchants view assembled over app.user_merchants ∪ seeds.merchants_*,
+  _fetch_merchants ordering with is_user discriminator, create_merchant routing
+  to user_merchants. seed_merchants writes the persona's full merchant catalog
+  to app.user_merchants (via service.create_merchant) and apply_deterministic
+  reads the merged view; accuracy proves the integration is intact.
+  Note: this models the snowball endpoint (full seeds), not the literal
+  first-run minimal-seed state. A true cold-start scenario (placeholder seeds +
+  simulate_llm_assist) requires Phase 12 seed curation and runner support for
+  the assist step.
 
 setup:
   persona: basic
@@ -26,6 +30,7 @@ setup:
 pipeline:
   - generate
   - transform
+  - match
   - seed_merchants
   - categorize
   - transform
@@ -46,20 +51,17 @@ assertions:
       parent: core.dim_accounts
       parent_column: account_id
 
-# Cold-start threshold is intentionally lower than the standard full-pipeline
-# scenarios (0.70 for basic, 0.80 for family). At cold start only the global
-# seed merchants are present — no user corrections, no learned overrides.
-# 0.40 is derived from the basic persona's merchant catalog: roughly half of
-# the generated spending merchants have a direct description_prefix match in
-# the catalog, and income + recurring categories cover the remainder partially.
-# This floor ensures the seeds provide *meaningful* first-pass coverage without
-# over-claiming.
+# Same accuracy floor (0.70) as basic-full-pipeline because the pipeline is
+# identical: seed_merchants populates app.user_merchants from the persona's
+# full merchant catalog, so apply_deterministic should achieve the same
+# coverage it does in basic-full-pipeline. A regression here below 0.70 would
+# indicate the merchants view assembly or _fetch_merchants ordering is broken.
 evaluations:
   - name: cold_start_categorization_coverage
     fn: score_categorization
     threshold:
       metric: accuracy
-      min: 0.40
+      min: 0.70
 
 gates:
   required_assertions: all
