@@ -104,7 +104,7 @@ Two parallel tracks. Both must close for M3E (and launch).
 #### M3 Surface track
 
 - **M3D — Web UI + Streamable HTTP MCP.** FastAPI app + Web UI (categorization queue, dashboards, account list, balance reconciliation). Same UI at `moneybin ui` (local) and the hosted tier. Streamable HTTP MCP transport unlocks ChatGPT web/mobile and other remote clients. Spec: `web-ui-overview.md` (planned).
-- **M3E — Hosted launch.** Auth0 + Stripe + per-user encrypted DuckDB + zero-knowledge passphrase + recovery codes + GDPR data-export/delete + on-call ready. **This is launch.** See [`hosted-strategy.md`](../private/strategy/hosted-strategy.md) for the full hosted product design (project-internal).
+- **M3E — Hosted launch.** Auth0 + Stripe + per-user encrypted DuckDB + zero-knowledge passphrase + recovery codes + GDPR data-export/delete + on-call ready. **This is launch.**
 
 ### Post-launch (designed but not gating launch)
 

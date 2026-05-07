@@ -119,6 +119,6 @@ The public planning artifacts are:
 - [`README.md`](README.md) — storefront pointing to the rest.
 - [`CHANGELOG.md`](CHANGELOG.md) — version history.
 
-Project-internal strategy (positioning, competitor analysis, persona-and-marketing breakdowns, hosted-tier design, milestone-by-milestone implementation tracking) lives in `private/strategy/` and is not committed. If you're contributing and want context on *why* a spec was written the way it was, the spec's `Background` section links to the relevant ADRs and references; the answer is rarely outside the public artifacts.
+If you're contributing and want context on *why* a spec was written the way it was, the spec's `Background` section links to the relevant ADRs and references — the answer almost always lives in the public artifacts above.
 
 **User-visible changes update `CHANGELOG.md`'s `Unreleased`.** Refactors, internal-only docs, and CI tweaks don't need entries. See `.claude/rules/shipping.md` for the full post-implementation checklist.

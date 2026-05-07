@@ -31,10 +31,10 @@ account numbers, or spending patterns.
   referenced by the log sanitization rules.
 
 ### Competitive context
-No open-source personal finance tool encrypts the local database by default. See
-`private/strategy/strategic-analysis.md` §1 for the full competitor comparison. This is a
-genuine differentiator: MoneyBin is the only tool in this space where a copied database
-file is a useless encrypted blob without the key.
+No open-source personal finance tool encrypts the local database by default. This is a
+genuine differentiator: MoneyBin is among the few tools in this space where a copied
+database file is a useless encrypted blob without the key. See [`docs/comparison.md`](../comparison.md)
+for the wider competitor landscape.
 
 ## Threat Model
 

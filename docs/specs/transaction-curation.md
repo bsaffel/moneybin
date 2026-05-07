@@ -14,9 +14,9 @@ This spec is the curator's surface — the row-by-row grooming that turns "data 
 
 M0–M1 shipped a defensible engine: encrypted DuckDB, smart import + dedup + transfer detection, rule + auto-rule categorization, accounts and net worth, ~33 MCP tools. The product today is a credible "ETL + canonical store + MCP surface for personal finance."
 
-The post-M1 strategic review (`private/strategy/2026-05-04-strategic-review-product.md`, `…engineering.md`) named the **Curator segment** as MoneyBin's most defensible position: "I want my financial history to be a clean, verifiable, queryable record I trust — not a passive feed from a black-box service. I'll spend an hour a month grooming it because the result is mine." Lunch Money, Tiller, Fina, Beancount/Fava users self-select into curating; MoneyBin's encrypted-local-DuckDB + MCP-native posture serves them better than any competitor — *if* the curation surface exists.
+The **Curator segment** is MoneyBin's most defensible position: "I want my financial history to be a clean, verifiable, queryable record I trust — not a passive feed from a black-box service. I'll spend an hour a month grooming it because the result is mine." Lunch Money, Tiller, Fina, Beancount/Fava users self-select into curating; MoneyBin's encrypted-local-DuckDB + MCP-native posture serves them better than any competitor — *if* the curation surface exists.
 
-It currently doesn't. `app.transaction_notes` exists with single-note semantics; nothing else (tags, splits, import labels, audit history, manual entry) is reachable from CLI or MCP. The strategic review explicitly reversed the prior "manual entry out of scope" call as a positioning bug.
+It currently doesn't. `app.transaction_notes` exists with single-note semantics; nothing else (tags, splits, import labels, audit history, manual entry) is reachable from CLI or MCP. Manual entry is in-scope: a curator can't trust a record they can't repair.
 
 This spec ships the bundle as a single coherent surface. It is the lead M2A spec, gating other M2/M3 work because Plaid, investments, and reporting all benefit from knowing the user-state shape.
 
@@ -33,12 +33,6 @@ This spec ships the bundle as a single coherent surface. It is the lead M2A spec
 - [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) — `app.ai_audit_log` schema. This spec subsumes that table into the unified `app.audit_log` and updates the privacy spec accordingly.
 - [`testing-synthetic-data.md`](testing-synthetic-data.md) — persona YAML format. This spec ships a new "curator" persona.
 - [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md) — five-tier assertion taxonomy and scenario YAML schema.
-
-### Strategic context
-
-- `private/strategy/2026-05-04-strategic-review-product.md` §(d) "Free-Wins Scorecard" — the user-flagged trio (manual entry, annotations/notes/tags, verified flag) plus #2 audit log, #7 annotations, #8 manual entry, #12 split-via-annotation: **ship now**.
-- `private/strategy/2026-05-04-strategic-review-engineering.md` §(d) "Bundle recommendation" — "One Wave 2 hardening spec ('user state on transactions') covering manual entry, notes/tags, balance-assertion notes, import-batch tagging, split annotations. Single migration that introduces `app.user_state` schema with 5–6 tables. One MCP tool family. Adds two scenario tests."
-- `private/spec_implementation.md` M2 entry — names this spec as a gating M2A deliverable.
 
 ### Decisions made during design (cross-references for reviewers)
 
@@ -569,7 +563,7 @@ Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. C
 | `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions list` → `transactions_tags_set` / `transactions_notes_add` in a loop. |
 | `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit_list`. |
 
-Pure prompt content; no schema work. Aligned with the strategic review's "monthly-ritual prompts" recommendation (M2A scorecard).
+Pure prompt content; no schema work. Aligned with the curator-segment "monthly-ritual prompt" theme.
 
 ### Privacy and sensitivity
 
@@ -764,6 +758,6 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 
 ### Follow-ups
 
-- Update `private/spec_implementation.md` M2 entry: note that this spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift, and that an MCP-vocabulary audit pass is added to `mcp-tool-surface.md` v2's remaining work (candidates: `accounts_include`, `accounts_archive`, `categories_toggle`).
+- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. An MCP-vocabulary audit pass is added to `mcp-tool-surface.md` v2's remaining work (candidates: `accounts_include`, `accounts_archive`, `categories_toggle`).
 - Future `mcp-ux-standards.md` (in `cli-restructure.md`'s "Future Specs to Add") lifts the declarative-set principle from this spec's §Architectural Pattern.
 - Future `architecture-shared-primitives.md` formalizes the `app.*` schema layer in `AGENTS.md` and the LIST/STRUCT presentation pattern in `.claude/rules/database.md`.

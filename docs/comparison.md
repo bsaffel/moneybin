@@ -20,9 +20,9 @@ A wider comparison than the ✓/✗ summary in the README. The peer set is the p
 | **Self-host** | ✓ files | ✓ Docker | ✓ | ✓ | ✗ | ✗ | ✓ desktop | ✓ + M3E hosted parity |
 | **Maturity** | Years | Years | Years | Archived; "Sure" fork active | New (2026) | Years | Active | Pre-launch (M2 in flight) |
 
-## Tier framing (from the strategic review)
+## Tier framing
 
-These categories come from the May 2026 competitor landscape analysis. They help orient *why* a given tool feels close or distant.
+These categories help orient *why* a given tool feels close or distant.
 
 ### Tier 0 — Direct lane (AI-native + personal-finance vertical)
 
@@ -77,7 +77,7 @@ This page should be kept current as those milestones close.
 
 ## What MoneyBin doesn't try to be
 
-The strategic review made some explicit "we are not for these audiences" calls. Listing them here so the comparison is honest:
+Listing the audiences MoneyBin is explicitly not for, so the comparison is honest:
 
 - **Mass-market mobile-first consumers.** Monarch, Copilot, and Rocket Money are well-funded and mobile-polished. MoneyBin is desktop-and-web; native mobile is post-launch at earliest.
 - **Professional accountants / CPAs.** Beancount and QuickBooks own this segment. The features they need (proper double-entry, tax-year-aware lot matching, audit trails for clients) are deep enough to warrant a different product.

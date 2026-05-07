@@ -593,7 +593,7 @@ Per `.claude/rules/cli.md`, every flag is sufficient on its own. No interactive 
 
 ## Representative scenarios for v1
 
-Six scenarios ship with the runner. Each maps to one or more failure modes from §"Concrete failure modes." (`categorization-priority-hierarchy` is deferred — see `private/followups.md`.)
+Six scenarios ship with the runner. Each maps to one or more failure modes from §"Concrete failure modes." (`categorization-priority-hierarchy` is deferred.)
 
 | # | Scenario | Persona | Seed | Catches | Mode |
 |---|---|---|---|---|---|

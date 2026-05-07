@@ -127,6 +127,5 @@ Migrate sensitivity gates, consent enforcement, and audit logging onto the 3.x t
 - [ADR-002: Privacy Tiers](002-privacy-tiers.md)
 - [ADR-003: MCP Server as Primary Interface](003-mcp-primary-interface.md)
 - [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) — current MCP server design
-- [`private/followups.md`](../../private/followups.md) — original deferred-work entry capturing the option-A vs option-B decision logic from the `chore/quality-cleanup` branch (2026-04-28); this ADR supersedes the "Migrate from `mcp.server.fastmcp` to `fastmcp` 3.x" section
 - [PrefectHQ/fastmcp](https://github.com/PrefectHQ/fastmcp) — the standalone, actively maintained continuation of the FastMCP project
 - [What's New in FastMCP 3.0](https://jlowin.dev/blog/fastmcp-3-whats-new) — provider/transform architecture, visibility system, error masking

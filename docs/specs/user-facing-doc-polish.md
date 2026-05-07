@@ -11,10 +11,6 @@ The tagline `Your finances, understood by AI.` stays as the aspirational vision 
 
 ## Background
 
-- `private/strategy/personas-and-marketing.md` §3–§5 (project-internal) — Sam, Devon, Priya personas and what they check for in the first 30 seconds.
-- `private/strategy/strategic-analysis.md` §8 (project-internal) — positioning statement and key differentiators.
-- `private/strategy/mvp-roadmap.md` M2A/2B/2C structure (project-internal) — drives the "wave-aligned roadmap" rewrite.
-- `private/strategy/distribution-roadmap.md` (project-internal) — brew install + PyPI gating.
 - [`docs/specs/privacy-data-protection.md`](privacy-data-protection.md) — source for the user-facing threat model.
 - [`docs/decisions/009-encryption-key-management.md`](../decisions/009-encryption-key-management.md) — KDF + key-storage decisions referenced from the threat model.
 - Existing user-facing assets that this spec extends: [`README.md`](../../README.md), [`SECURITY.md`](../../SECURITY.md) (already strong, no change), [`CONTRIBUTING.md`](../../CONTRIBUTING.md) (one minor addition), [`docs/guides/database-security.md`](../guides/database-security.md).
@@ -27,7 +23,7 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 1. **Tagline preserved.** The README masthead retains `Your finances, understood by AI.` as the aspirational vision tagline. Honesty and substance follow below it.
 
-2. **Sub-line carries the post-strategic-review framing.** The line immediately below the tagline reads (or paraphrases): *The local-first, AI-native financial data platform you actually own. Encrypted by default. Queryable with SQL. Extensible with MCP.* Use "data platform" — not "ledger" (which has Beancount/hledger double-entry connotations MoneyBin's `dim_accounts` + `fct_transactions` star schema doesn't match), not "data warehouse" (technically accurate but tonally cold). The "data platform" framing aligns with the canonical phrasing already in `private/strategy/strategic-analysis.md`.
+2. **Sub-line carries the honesty + substance framing.** The line immediately below the tagline reads (or paraphrases): *The local-first, AI-native financial data platform you actually own. Encrypted by default. Queryable with SQL. Extensible with MCP.* Use "data platform" — not "ledger" (which has Beancount/hledger double-entry connotations MoneyBin's `dim_accounts` + `fct_transactions` star schema doesn't match), not "data warehouse" (technically accurate but tonally cold).
 
 3. **Status block names the pre-launch state honestly.** The status paragraph explicitly references M2 (curator state, brew install, first-run wizard) and M3 (Plaid sync, investments, multi-currency, Web UI, hosted) — not "coming soon" hand-waves.
 
@@ -35,7 +31,7 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 5. **Quick Start frames the developer install honestly.** A one-line preface acknowledges that today's install path is `git clone` + `uv` (developer install) and that `brew install moneybin` ships in M2C. Active repulsion of personas who can't yet use it (Mark, Casey) is a feature, not a bug.
 
-6. **"Who this is for / not yet for" candor block exists.** A pre-Quick-Start section names today's fits (curator-engineers, MCP developers, self-hosters) and today's not-yet-fits (one-click bank sync, polished mobile, investment tracking, pure envelope budgeting). Pulled from `private/strategy/personas-and-marketing.md` §3, §4, §5.
+6. **"Who this is for / not yet for" candor block exists.** A pre-Quick-Start section names today's fits (curator-engineers, MCP developers, self-hosters) and today's not-yet-fits (one-click bank sync, polished mobile, investment tracking, pure envelope budgeting).
 
 7. **Comparison table expands beyond the original four.** Era / BankSync, Lunch Money, Wealthfolio added as columns. Rows include encrypted-at-rest, AI/MCP integration, SQL access, license. Honest about what each competitor does and doesn't do; no "first" or "only" claims.
 
@@ -130,7 +126,7 @@ This is documentation work; testing is by inspection and review.
 
 - **Markdown linting** — existing CI gates apply (markdownlint per project conventions).
 - **Link integrity** — verify all internal links (relative paths to specs, ADRs, guides) resolve.
-- **Persona walkthrough** — manually walk the README from each of Sam/Devon/Priya's first-30-seconds checking pattern (per `private/strategy/personas-and-marketing.md` §3–§5). Each persona's named bounce triggers must be addressed.
+- **Persona walkthrough** — manually walk the README from each of Sam/Devon/Priya's first-30-seconds checking pattern. Each persona's named bounce triggers must be addressed.
 - **Honesty audit** — grep the README for superlatives ("first," "only," "the best") and aspirational hand-waves ("coming soon," "powered by AI") that aren't immediately substantiated.
 - **CHANGELOG accuracy** — entries cross-referenced against `git log --oneline` for the relevant range; PR numbers cited.
 - **Threat model accuracy** — claims in `docs/guides/threat-model.md` cross-checked against [`privacy-data-protection.md`](privacy-data-protection.md) and ADR-009.
@@ -141,7 +137,6 @@ None. This spec does not exercise the data pipeline.
 
 ## Dependencies
 
-- **Strategic analysis docs** in `private/strategy/` (already complete as of 2026-05-05): `strategic-analysis.md`, `personas-and-marketing.md`, `mvp-roadmap.md`, `feature-roadmap.md`, `distribution-roadmap.md`, `hosted-strategy.md`. These are the upstream sources for the framing changes.
 - **`privacy-data-protection.md`** (✅ implemented) — source material for the threat model guide.
 - **ADR-009** (encryption key management, ✅ written) — referenced from the threat model.
 - **No code dependencies.** This work does not require any product change to ship the `now` batch.
@@ -151,7 +146,7 @@ None. This spec does not exercise the data pipeline.
 ## Out of Scope
 
 - **Static landing page** at `moneybin.dev` (or chosen domain). Tracked separately in `distribution-roadmap.md` as a M2C deliverable; not an in-repo artifact.
-- **The architecture-shared-primitives spec itself** (`architecture-shared-primitives.md` — M2B). Tracked in `private/spec_implementation.md`. This spec only consumes its output via the `docs/architecture.md` distillation.
+- **The architecture-shared-primitives spec itself** (`architecture-shared-primitives.md` — M2B). This spec only consumes its output via the `docs/architecture.md` distillation.
 - **`brew install` formula authoring and PyPI publish workflow.** Tracked in `distribution-roadmap.md` as M2C deliverables. This spec only updates the README's Quick Start framing to reflect them.
 - **Demo asciinema cast production.** Acknowledged here as forward-pointer; the actual recording and embedding ship at M2C close.
 - **Telemetry / version-check / opt-in metrics in the package.** Tracked in `distribution-roadmap.md` §6 as post-launch consideration.

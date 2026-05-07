@@ -32,20 +32,12 @@ MoneyBin is a personal financial data platform built on Python, DuckDB, and SQLM
 
 ```mermaid
 graph LR
-    A["Bank Files<br/>(OFX, CSV/TSV/Excel,<br/>Parquet, PDF)"] --> B["Extractors<br/>+ Loaders"]
-    A2["Bank Sync<br/>(M3A)"] -.-> B2["Sync Client"]
-    B --> C["Raw Tables<br/>(raw.*)"]
-    B2 -.-> C
-    C --> D["Staging<br/>(prep.* views)"]
-    D --> M["Matching<br/>(dedup + transfers)"]
-    M --> CAT["Categorization<br/>(rules + auto-rules)"]
-    CAT --> E["Core Tables<br/>(core.*)"]
-    E --> F["MCP Server"]
-    E --> G["CLI"]
-    E --> H["DuckDB SQL"]
+    A["Your bank files<br/>(+ sync at M3A)"] --> B["MoneyBin<br/>encrypted DuckDB"]
+    B --> C["AI assistants<br/>via MCP"]
+    B --> D["CLI + SQL"]
 ```
 
-Solid arrows are shipped; dashed arrows are designed. → [Architecture](docs/architecture.md)
+→ [Architecture](docs/architecture.md) for the full pipeline.
 
 ## Quick Start
 
@@ -75,13 +67,13 @@ Once Claude (or any MCP client) is connected, ask:
 
 ## Comparison
 
-|  | Beancount | Firefly III | Actual | Era / BankSync | MoneyBin |
-|---|---|---|---|---|---|
-| Local-first | ✓ | ✓ | ✓ | ✗ | ✓ |
-| Encrypted at rest by default | ✗ | ✗ | ✗ | server-side | ✓ |
-| AI-native (MCP) | ✗ | ✗ | ✗ | ✓ | ✓ |
-| SQL-queryable | ✗ | API only | ✗ | ✗ | ✓ |
-| AGPL self-host | ✓ | ✓ | (MIT) | ✗ | ✓ |
+|  | Beancount | Wealthfolio | Actual | Firefly III | Fina | Era / BankSync | MoneyBin |
+|---|---|---|---|---|---|---|---|
+| Local-first | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Encrypted at rest by default | ❌ | ✅ | ❌ | ❌ | 🟡 server-side | 🟡 server-side | ✅ |
+| AI-native (MCP) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| SQL-queryable | ❌ | ❌ | ❌ | 🟡 API only | ❌ | ❌ | ✅ |
+| Open-source self-host | ✅ | ✅ | ✅ MIT | ✅ | ❌ | ❌ | ✅ AGPL |
 
 The other tools are mature and excellent at what they do. → [Wider 8-way comparison + tier framing](docs/comparison.md)
 
