@@ -8,15 +8,22 @@ detection. Consumed by both MCP tools and CLI commands.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services._validators import validate_note_text
+from moneybin.services.audit_service import AuditService
 from moneybin.tables import FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
 logger = logging.getLogger(__name__)
+
+# Audit target prefix for note operations (schema, table); the third tuple
+# element is the per-event transaction_id so chains stitch by entity.
+_AUDIT_TARGET_NOTES = ("app", "transaction_notes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,15 +118,34 @@ class RecurringResult:
         )
 
 
-class TransactionService:
-    """Transaction search and recurring pattern operations.
+@dataclass(frozen=True, slots=True)
+class Note:
+    """One row of ``app.transaction_notes`` (multi-note shape)."""
 
-    All methods return typed dataclasses with a ``to_envelope()`` method.
+    note_id: str
+    transaction_id: str
+    text: str
+    author: str
+    created_at: str
+
+
+class TransactionService:
+    """Transaction search, recurring patterns, and note-thread operations.
+
+    Search and recurring helpers return typed dataclasses with a
+    ``to_envelope()`` method. Note operations (``add_note`` / ``edit_note`` /
+    ``delete_note`` / ``list_notes``) wrap the mutation and the audit event in
+    a single DuckDB transaction.
     """
 
-    def __init__(self, db: Database) -> None:
-        """Initialize TransactionService with an open Database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Initialize with an open Database; lazily build AuditService if absent.
+
+        ``audit`` is keyword-only so existing positional call sites
+        (``TransactionService(db)``) continue to work without modification.
+        """
         self._db = db
+        self._audit = audit if audit is not None else AuditService(db)
 
     def search(
         self,
@@ -281,3 +307,158 @@ class TransactionService:
 
         logger.info(f"Found {len(transactions)} recurring patterns")
         return RecurringResult(transactions=transactions)
+
+    # ------------------------------------------------------------------
+    # Notes (multi-note threads on a transaction; spec Req 9–12)
+    # ------------------------------------------------------------------
+
+    def add_note(self, transaction_id: str, text: str, *, actor: str) -> Note:
+        """Append a note to a transaction; emit ``note.add`` audit event.
+
+        Generates a 12-hex truncated UUID4 for ``note_id``. The mutation and
+        the audit row land in the same DuckDB transaction so failures roll
+        both back together.
+        """
+        validate_note_text(text)
+        note_id = uuid.uuid4().hex[:12]
+        # Explicit begin/commit — DuckDB's connection context-manager closes the
+        # connection on exit, which would invalidate the long-lived process-wide
+        # connection. We pair the mutation and audit insert atomically instead.
+        self._db.begin()
+        try:
+            self._db.conn.execute(
+                """
+                INSERT INTO app.transaction_notes
+                    (note_id, transaction_id, text, author)
+                VALUES (?, ?, ?, ?)
+                """,
+                [note_id, transaction_id, text, actor],
+            )
+            self._audit.record_audit_event(
+                action="note.add",
+                target=(*_AUDIT_TARGET_NOTES, transaction_id),
+                before=None,
+                after={"note_id": note_id, "text": text, "author": actor},
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        row = self._db.conn.execute(
+            """
+            SELECT note_id, transaction_id, text, author, created_at
+              FROM app.transaction_notes
+             WHERE note_id = ?
+            """,
+            [note_id],
+        ).fetchone()
+        if row is None:  # defensive — insert just succeeded
+            raise RuntimeError(f"note_id={note_id} vanished after insert")
+        logger.info(f"note.add note_id={note_id} actor={actor}")
+        return _row_to_note(row)
+
+    def edit_note(self, note_id: str, text: str, *, actor: str) -> Note:
+        """Update note text; emit ``note.edit`` audit event.
+
+        Raises ``LookupError`` if ``note_id`` is unknown.
+        """
+        validate_note_text(text)
+        self._db.begin()
+        try:
+            existing = self._db.conn.execute(
+                """
+                SELECT transaction_id, text
+                  FROM app.transaction_notes
+                 WHERE note_id = ?
+                """,
+                [note_id],
+            ).fetchone()
+            if existing is None:
+                raise LookupError(f"note_id={note_id} not found")
+            txn_id, prior = existing[0], existing[1]
+            self._db.conn.execute(
+                "UPDATE app.transaction_notes SET text = ? WHERE note_id = ?",
+                [text, note_id],
+            )
+            self._audit.record_audit_event(
+                action="note.edit",
+                target=(*_AUDIT_TARGET_NOTES, txn_id),
+                before={"text": prior},
+                after={"text": text},
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        row = self._db.conn.execute(
+            """
+            SELECT note_id, transaction_id, text, author, created_at
+              FROM app.transaction_notes
+             WHERE note_id = ?
+            """,
+            [note_id],
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"note_id={note_id} vanished after update")
+        logger.info(f"note.edit note_id={note_id} actor={actor}")
+        return _row_to_note(row)
+
+    def delete_note(self, note_id: str, *, actor: str) -> None:
+        """Delete a note; emit ``note.delete`` audit event with ``after=None``.
+
+        Raises ``LookupError`` if ``note_id`` is unknown.
+        """
+        self._db.begin()
+        try:
+            existing = self._db.conn.execute(
+                """
+                SELECT transaction_id, text, author
+                  FROM app.transaction_notes
+                 WHERE note_id = ?
+                """,
+                [note_id],
+            ).fetchone()
+            if existing is None:
+                raise LookupError(f"note_id={note_id} not found")
+            txn_id, text, author = existing[0], existing[1], existing[2]
+            self._db.conn.execute(
+                "DELETE FROM app.transaction_notes WHERE note_id = ?",
+                [note_id],
+            )
+            self._audit.record_audit_event(
+                action="note.delete",
+                target=(*_AUDIT_TARGET_NOTES, txn_id),
+                before={"note_id": note_id, "text": text, "author": author},
+                after=None,
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(f"note.delete note_id={note_id} actor={actor}")
+
+    def list_notes(self, transaction_id: str) -> list[Note]:
+        """Return all notes for a transaction in chronological order."""
+        rows = self._db.conn.execute(
+            """
+            SELECT note_id, transaction_id, text, author, created_at
+              FROM app.transaction_notes
+             WHERE transaction_id = ?
+             ORDER BY created_at, note_id
+            """,
+            [transaction_id],
+        ).fetchall()
+        return [_row_to_note(r) for r in rows]
+
+
+def _row_to_note(row: tuple[Any, ...]) -> Note:
+    return Note(
+        note_id=str(row[0]),
+        transaction_id=str(row[1]),
+        text=str(row[2]),
+        author=str(row[3]),
+        created_at=str(row[4]),
+    )

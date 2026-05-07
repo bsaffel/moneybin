@@ -12,7 +12,9 @@ import pytest
 
 import moneybin.database as db_module
 from moneybin.database import Database
+from moneybin.services.audit_service import AuditService
 from moneybin.services.transaction_service import (
+    Note,
     RecurringResult,
     RecurringTransaction,
     Transaction,
@@ -210,3 +212,142 @@ class TestEmptyResults:
         result = service.recurring()
         assert isinstance(result, RecurringResult)
         assert result.transactions == []
+
+
+class TestNotes:
+    """Tests for TransactionService note operations (multi-note shape)."""
+
+    @pytest.fixture()
+    def audit_service(self, transaction_db: Database) -> AuditService:
+        return AuditService(transaction_db)
+
+    @pytest.fixture()
+    def txn_service(
+        self, transaction_db: Database, audit_service: AuditService
+    ) -> TransactionService:
+        return TransactionService(transaction_db, audit=audit_service)
+
+    @pytest.fixture()
+    def sample_transaction_id(self) -> str:
+        # T1 is inserted by the transaction_db fixture
+        return "T1"
+
+    @pytest.mark.unit
+    def test_add_note_writes_row_and_emits_audit(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        note = txn_service.add_note(
+            sample_transaction_id, "checked statement", actor="cli"
+        )
+        assert isinstance(note, Note)
+        assert note.note_id and len(note.note_id) == 12
+        assert note.transaction_id == sample_transaction_id
+        assert note.text == "checked statement"
+        assert note.author == "cli"
+        assert note.created_at  # populated from DB default
+
+        events = audit_service.list_events(
+            action_pattern="note.add", target_id=sample_transaction_id
+        )
+        assert len(events) == 1
+        assert events[0].after_value == {
+            "note_id": note.note_id,
+            "text": "checked statement",
+            "author": "cli",
+        }
+        assert events[0].before_value is None
+        assert events[0].target_table == "transaction_notes"
+        assert events[0].target_schema == "app"
+
+    @pytest.mark.unit
+    def test_add_note_rejects_overlong_text(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        with pytest.raises(ValueError):
+            txn_service.add_note(sample_transaction_id, "x" * 2001, actor="cli")
+
+    @pytest.mark.unit
+    def test_add_note_rejects_empty_text(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        with pytest.raises(ValueError):
+            txn_service.add_note(sample_transaction_id, "", actor="cli")
+
+    @pytest.mark.unit
+    def test_edit_note_updates_text_and_emits_audit(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        note = txn_service.add_note(sample_transaction_id, "v1", actor="cli")
+        edited = txn_service.edit_note(note.note_id, "v2", actor="cli")
+        assert edited.text == "v2"
+        assert edited.note_id == note.note_id
+        events = audit_service.list_events(action_pattern="note.edit")
+        assert len(events) == 1
+        assert events[0].before_value == {"text": "v1"}
+        assert events[0].after_value == {"text": "v2"}
+        assert events[0].target_id == sample_transaction_id
+
+    @pytest.mark.unit
+    def test_edit_note_missing_raises_lookup(
+        self, txn_service: TransactionService
+    ) -> None:
+        with pytest.raises(LookupError):
+            txn_service.edit_note("doesnotexist", "anything", actor="cli")
+
+    @pytest.mark.unit
+    def test_delete_note_emits_audit_with_after_null(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        note = txn_service.add_note(sample_transaction_id, "doomed", actor="mcp")
+        txn_service.delete_note(note.note_id, actor="mcp")
+        events = audit_service.list_events(action_pattern="note.delete")
+        assert len(events) == 1
+        assert events[0].after_value is None
+        assert events[0].before_value == {
+            "note_id": note.note_id,
+            "text": "doomed",
+            "author": "mcp",
+        }
+        assert events[0].target_id == sample_transaction_id
+        # Row is gone
+        assert txn_service.list_notes(sample_transaction_id) == []
+
+    @pytest.mark.unit
+    def test_delete_note_missing_raises_lookup(
+        self, txn_service: TransactionService
+    ) -> None:
+        with pytest.raises(LookupError):
+            txn_service.delete_note("doesnotexist", actor="cli")
+
+    @pytest.mark.unit
+    def test_list_notes_returns_chronological(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        n1 = txn_service.add_note(sample_transaction_id, "first", actor="cli")
+        n2 = txn_service.add_note(sample_transaction_id, "second", actor="cli")
+        notes = txn_service.list_notes(sample_transaction_id)
+        assert [n.note_id for n in notes] == [n1.note_id, n2.note_id]
+        assert [n.text for n in notes] == ["first", "second"]
+
+    @pytest.mark.unit
+    def test_list_notes_empty_for_unknown_transaction(
+        self, txn_service: TransactionService
+    ) -> None:
+        assert txn_service.list_notes("nope") == []
+
+    @pytest.mark.unit
+    def test_lazy_audit_service_default(self, transaction_db: Database) -> None:
+        # When constructed without an explicit audit service, one is built lazily
+        # so all existing call sites continue to work.
+        service = TransactionService(transaction_db)
+        note = service.add_note("T1", "lazy default", actor="cli")
+        assert note.text == "lazy default"
