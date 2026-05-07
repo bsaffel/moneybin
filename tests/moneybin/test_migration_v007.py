@@ -162,6 +162,67 @@ class TestV007Migration:
         assert ctx["user_initiated"] is False
 
     def test_v007_idempotent_on_second_run(self, db: Database) -> None:
-        """Running migrate twice is safe."""
+        """Second migrate run must leave state byte-identical to first run."""
+        # Seed both legacy structures so the migration has real work to do.
+        _drop_and_recreate_legacy_notes(db)
+        db.execute(
+            "INSERT INTO app.transaction_notes (transaction_id, note, created_at) "
+            "VALUES (?, ?, ?)",
+            ["txn_idem_1", "first legacy note", "2025-03-01 09:00:00"],
+        )
+        db.execute(
+            "INSERT INTO app.transaction_notes (transaction_id, note, created_at) "
+            "VALUES (?, ?, ?)",
+            ["txn_idem_2", "second legacy note", "2025-03-02 09:00:00"],
+        )
+        _create_legacy_ai_audit_log(db)
+        db.execute(
+            """
+            INSERT INTO app.ai_audit_log (
+                audit_id, timestamp, flow_tier, feature, backend, model,
+                data_sent_summary, data_sent_hash, response_summary,
+                consent_reference, user_initiated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "ai_idem_1",
+                "2025-03-03 09:00:00",
+                1,
+                "categorize",
+                "anthropic",
+                "claude-sonnet-4-6",
+                "summary",
+                "hash",
+                "response",
+                "consent_xyz",
+                True,
+            ],
+        )
+
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
+
+        notes_after_first = db.execute(
+            "SELECT note_id, transaction_id, text, author, created_at "
+            "FROM app.transaction_notes ORDER BY transaction_id"
+        ).fetchall()
+        audit_after_first = db.execute(
+            "SELECT audit_id, occurred_at, actor, action, context_json "
+            "FROM app.audit_log ORDER BY audit_id"
+        ).fetchall()
+
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
+
+        notes_after_second = db.execute(
+            "SELECT note_id, transaction_id, text, author, created_at "
+            "FROM app.transaction_notes ORDER BY transaction_id"
+        ).fetchall()
+        audit_after_second = db.execute(
+            "SELECT audit_id, occurred_at, actor, action, context_json "
+            "FROM app.audit_log ORDER BY audit_id"
+        ).fetchall()
+
+        # Same row counts, same identifiers, same content.
+        assert len(notes_after_first) == 2
+        assert len(audit_after_first) == 1
+        assert notes_after_second == notes_after_first
+        assert audit_after_second == audit_after_first

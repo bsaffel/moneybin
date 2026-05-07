@@ -5,9 +5,10 @@ app.transaction_splits, app.imports, app.audit_log), reshapes
 app.transaction_notes from single-note to multi-note, and retires
 app.ai_audit_log by re-routing its rows into the unified app.audit_log.
 
-Schema DDL for the new tables lives in src/moneybin/sql/schema/*.sql and is
-applied by init_schemas() on every startup. This migration is responsible for
-the parts that init_schemas can't do idempotently:
+Table creation for the new tables is handled by ``init_schemas`` via the
+registered schema files in ``src/moneybin/sql/schema/*.sql`` — those run on
+every startup before migrations, so this module only handles the parts that
+``init_schemas`` cannot do idempotently:
 
 - Reshape an existing single-note app.transaction_notes table (the old DDL had
   the same name, so CREATE TABLE IF NOT EXISTS in the new schema file is a
@@ -31,96 +32,8 @@ logger = logging.getLogger(__name__)
 
 def migrate(conn: object) -> None:
     """Reshape transaction_notes and retire ai_audit_log."""
-    _ensure_new_tables(conn)
     _reshape_transaction_notes(conn)
     _retire_ai_audit_log(conn)
-
-
-def _ensure_new_tables(conn: object) -> None:
-    """Make sure the new curation tables exist.
-
-    init_schemas() creates them on startup, but the migration runner can be
-    invoked against a database that hasn't been re-initialized yet (e.g. tests
-    that drop tables, or older DBs upgrading mid-flight). Re-creating with
-    CREATE TABLE IF NOT EXISTS is cheap and safe.
-    """
-    conn.execute(  # type: ignore[union-attr]
-        """
-        CREATE TABLE IF NOT EXISTS app.audit_log (
-            audit_id        VARCHAR PRIMARY KEY,
-            occurred_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            actor           VARCHAR NOT NULL,
-            action          VARCHAR NOT NULL,
-            target_schema   VARCHAR,
-            target_table    VARCHAR,
-            target_id       VARCHAR,
-            before_value    JSON,
-            after_value     JSON,
-            parent_audit_id VARCHAR,
-            context_json    JSON
-        )
-        """
-    )
-    conn.execute(  # type: ignore[union-attr]
-        """
-        CREATE TABLE IF NOT EXISTS app.transaction_tags (
-            transaction_id VARCHAR NOT NULL,
-            tag            VARCHAR NOT NULL,
-            applied_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            applied_by     VARCHAR NOT NULL,
-            PRIMARY KEY (transaction_id, tag)
-        )
-        """
-    )
-    conn.execute(  # type: ignore[union-attr]
-        """
-        CREATE TABLE IF NOT EXISTS app.transaction_splits (
-            split_id       VARCHAR PRIMARY KEY,
-            transaction_id VARCHAR NOT NULL,
-            amount         DECIMAL(18, 2) NOT NULL,
-            category       VARCHAR,
-            subcategory    VARCHAR,
-            note           VARCHAR,
-            ord            INTEGER NOT NULL DEFAULT 0,
-            created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            created_by     VARCHAR NOT NULL
-        )
-        """
-    )
-    conn.execute(  # type: ignore[union-attr]
-        """
-        CREATE TABLE IF NOT EXISTS app.imports (
-            import_id  VARCHAR PRIMARY KEY,
-            labels     VARCHAR[],
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_by VARCHAR NOT NULL
-        )
-        """
-    )
-    conn.execute(  # type: ignore[union-attr]
-        """
-        CREATE TABLE IF NOT EXISTS raw.manual_transactions (
-            source_transaction_id VARCHAR PRIMARY KEY,
-            source_type           VARCHAR NOT NULL DEFAULT 'manual',
-            source_origin         VARCHAR NOT NULL DEFAULT 'user',
-            import_id             VARCHAR NOT NULL,
-            account_id            VARCHAR NOT NULL,
-            transaction_date      DATE NOT NULL,
-            amount                DECIMAL(18, 2) NOT NULL,
-            description           VARCHAR NOT NULL,
-            merchant_name         VARCHAR,
-            memo                  VARCHAR,
-            category              VARCHAR,
-            subcategory           VARCHAR,
-            payment_channel       VARCHAR,
-            transaction_type      VARCHAR,
-            check_number          VARCHAR,
-            currency_code         VARCHAR DEFAULT 'USD',
-            created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            created_by            VARCHAR NOT NULL
-        )
-        """
-    )
 
 
 def _columns(conn: object, schema: str, table: str) -> set[str]:
@@ -151,13 +64,9 @@ def _reshape_transaction_notes(conn: object) -> None:
     """
     cols = _columns(conn, "app", "transaction_notes")
     if not cols:
-        # Table doesn't exist at all — nothing to reshape; _ensure_new_tables
-        # will not have created it because the canonical DDL lives in the
-        # schema file (loaded by init_schemas). Caller should have run
-        # init_schemas first; nothing to do here.
+        # table absent — init_schemas handles fresh creation
         return
     if "note_id" in cols:
-        # Already in new shape.
         return
     if "note" not in cols:
         # Unrecognized shape — bail out rather than corrupt data.

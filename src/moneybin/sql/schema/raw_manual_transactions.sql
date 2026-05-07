@@ -3,7 +3,7 @@
    'manual' and source-origin is 'user'. One raw.import_log batch is created
    per CLI call or MCP bulk call. */
 CREATE TABLE IF NOT EXISTS raw.manual_transactions (
-    source_transaction_id VARCHAR PRIMARY KEY,                        -- 'manual_' + truncated UUID4 (12 hex)
+    source_transaction_id VARCHAR PRIMARY KEY,                        -- Truncated UUID4 (12 hex), prefixed with 'manual_' for source-clarity in joins
     source_type           VARCHAR NOT NULL DEFAULT 'manual',          -- Discriminator; matches matcher and auto-rule exemption predicates
     source_origin         VARCHAR NOT NULL DEFAULT 'user',            -- Origin tag; always 'user' for manual entries
     import_id             VARCHAR NOT NULL,                           -- FK to raw.import_log.import_id; one batch per CLI call or MCP bulk call

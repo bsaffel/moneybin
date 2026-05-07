@@ -166,6 +166,7 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT import_id, labels, updated_at, updated_by
                 FROM app.imports
                 ORDER BY updated_at DESC
+                LIMIT 50
             """,
         ),
     ],
