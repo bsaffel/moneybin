@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from moneybin.database import Database
@@ -13,21 +9,8 @@ from moneybin.services.audit_service import AuditEvent, AuditService
 
 
 @pytest.fixture()
-def empty_db(tmp_path: Path) -> Generator[Database, None, None]:
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "audit.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-    )
-    yield database
-    database.close()
-
-
-@pytest.fixture()
-def audit_service(empty_db: Database) -> AuditService:
-    return AuditService(empty_db)
+def audit_service(db: Database) -> AuditService:
+    return AuditService(db)
 
 
 class TestRecordAuditEvent:
