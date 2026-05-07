@@ -11,7 +11,7 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.adapters.categorize_adapters import (
-    auto_confirm_envelope,
+    auto_accept_envelope,
     auto_review_envelope,
     auto_stats_envelope,
 )
@@ -84,17 +84,21 @@ def transactions_categorize_pending_list(
         data=records,
         sensitivity="medium",
         actions=[
-            "Use transactions_categorize_bulk_apply to assign categories to these transactions",
+            "Use transactions_categorize_apply to assign categories to these transactions",
             "Use transactions_categorize_rules_create to set up automatic categorization",
         ],
     )
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
-def transactions_categorize_bulk_apply(
+def transactions_categorize_apply(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
     """Assign categories to multiple transactions in one call.
+
+    Renamed from transactions_categorize_bulk_apply — the _bulk suffix was
+    redundant per mcp-server.md batch-first principle (all collection ops accept
+    lists by default).
 
     Each item should have ``transaction_id``, ``category``, and
     optionally ``subcategory``. Transactions that already have a
@@ -172,24 +176,24 @@ def transactions_categorize_auto_review(limit: int | None = None) -> ResponseEnv
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
-def transactions_categorize_auto_confirm(
-    approve: list[str] | None = None,
+def transactions_categorize_auto_accept(
+    accept: list[str] | None = None,
     reject: list[str] | None = None,
 ) -> ResponseEnvelope:
-    """Approve or reject auto-rule proposals by ID.
+    """Accept or reject auto-rule proposals by ID.
 
-    Approved proposals become active rules and immediately categorize
+    Accepted proposals become active rules and immediately categorize
     matching transactions.
 
     Args:
-        approve: Proposal IDs to approve and promote to active rules.
+        accept: Proposal IDs to accept and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
     """
-    result = AutoRuleService(get_database()).confirm(
-        approve=approve or [],
+    result = AutoRuleService(get_database()).accept(
+        accept=accept or [],
         reject=reject or [],
     )
-    return auto_confirm_envelope(result)
+    return auto_accept_envelope(result)
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
@@ -226,8 +230,8 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_categorize_bulk_apply,
-        "transactions_categorize_bulk_apply",
+        transactions_categorize_apply,
+        "transactions_categorize_apply",
         "Assign categories to multiple transactions in one call. "
         "Auto-creates merchant mappings for future auto-categorization.",
     )
@@ -252,9 +256,9 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_categorize_auto_confirm,
-        "transactions_categorize_auto_confirm",
-        "Batch approve/reject auto-rule proposals. Approved "
+        transactions_categorize_auto_accept,
+        "transactions_categorize_auto_accept",
+        "Batch accept/reject auto-rule proposals. Accepted "
         "proposals become active rules and immediately categorize "
         "matching transactions.",
     )

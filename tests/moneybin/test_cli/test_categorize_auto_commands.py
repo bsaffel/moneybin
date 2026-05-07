@@ -31,14 +31,14 @@ def test_auto_review_help():
     assert "pending" in _plain(result.stdout).lower()
 
 
-def test_auto_confirm_help_lists_approve_and_reject_flags():
-    """Auto confirm --help exposes batch approve/reject flags."""
-    result = runner.invoke(app, ["auto", "confirm", "--help"])
+def test_auto_accept_help_lists_accept_and_reject_flags():
+    """Auto accept --help exposes batch accept/reject flags."""
+    result = runner.invoke(app, ["auto", "accept", "--help"])
     assert result.exit_code == 0
     out = _plain(result.stdout)
-    assert "--approve" in out
+    assert "--accept" in out
     assert "--reject" in out
-    assert "--approve-all" in out
+    assert "--accept-all" in out
     assert "--reject-all" in out
 
 
@@ -61,7 +61,7 @@ def test_auto_subgroup_help_lists_all_actions() -> None:
 
     result = runner.invoke(categorize_app, ["auto", "--help"])
     assert result.exit_code == 0
-    for action in ("review", "confirm", "stats", "rules"):
+    for action in ("review", "accept", "stats", "rules"):
         assert action in result.stdout
 
 
@@ -79,58 +79,56 @@ def _confirm_result(
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
-def test_auto_confirm_explicit_approve(
+def test_auto_accept_explicit_accept(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
-    """Explicit --approve forwards exactly the given IDs to confirm()."""
+    """Explicit --accept forwards exactly the given IDs to accept()."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
-    svc.confirm.return_value = _confirm_result(approved=2)
+    svc.accept.return_value = _confirm_result(approved=2)
 
-    result = runner.invoke(
-        app, ["auto", "confirm", "--approve", "a1", "--approve", "a2"]
-    )
+    result = runner.invoke(app, ["auto", "accept", "--accept", "a1", "--accept", "a2"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=["a1", "a2"], reject=[])
+    svc.accept.assert_called_once_with(accept=["a1", "a2"], reject=[])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
-def test_auto_confirm_explicit_reject(
+def test_auto_accept_explicit_reject(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
-    """Explicit --reject forwards exactly the given IDs to confirm()."""
+    """Explicit --reject forwards exactly the given IDs to accept()."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
-    svc.confirm.return_value = _confirm_result(rejected=1)
+    svc.accept.return_value = _confirm_result(rejected=1)
 
-    result = runner.invoke(app, ["auto", "confirm", "--reject", "r1"])
+    result = runner.invoke(app, ["auto", "accept", "--reject", "r1"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=[], reject=["r1"])
+    svc.accept.assert_called_once_with(accept=[], reject=["r1"])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
-def test_auto_confirm_approve_all_expands_pending(
+def test_auto_accept_accept_all_expands_pending(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
-    """--approve-all expands to every pending proposal ID."""
+    """--accept-all expands to every pending proposal ID."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
     svc.list_pending_proposals.return_value = [
         {"proposed_rule_id": "p1"},
         {"proposed_rule_id": "p2"},
     ]
-    svc.confirm.return_value = _confirm_result(approved=2)
+    svc.accept.return_value = _confirm_result(approved=2)
 
-    result = runner.invoke(app, ["auto", "confirm", "--approve-all"])
+    result = runner.invoke(app, ["auto", "accept", "--accept-all"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=["p1", "p2"], reject=[])
+    svc.accept.assert_called_once_with(accept=["p1", "p2"], reject=[])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
-def test_auto_confirm_reject_all_expands_pending(
+def test_auto_accept_reject_all_expands_pending(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
     """--reject-all expands to every pending proposal ID."""
@@ -140,19 +138,19 @@ def test_auto_confirm_reject_all_expands_pending(
         {"proposed_rule_id": "p1"},
         {"proposed_rule_id": "p2"},
     ]
-    svc.confirm.return_value = _confirm_result(rejected=2)
+    svc.accept.return_value = _confirm_result(rejected=2)
 
-    result = runner.invoke(app, ["auto", "confirm", "--reject-all"])
+    result = runner.invoke(app, ["auto", "accept", "--reject-all"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=[], reject=["p1", "p2"])
+    svc.accept.assert_called_once_with(accept=[], reject=["p1", "p2"])
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
-def test_auto_confirm_approve_all_with_explicit_reject_excludes_id(
+def test_auto_accept_accept_all_with_explicit_reject_excludes_id(
     mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
-    """--approve-all --reject <id> approves all pending except <id>, which is rejected."""
+    """--accept-all --reject <id> accepts all pending except <id>, which is rejected."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
     svc.list_pending_proposals.return_value = [
@@ -160,14 +158,14 @@ def test_auto_confirm_approve_all_with_explicit_reject_excludes_id(
         {"proposed_rule_id": "p2"},
         {"proposed_rule_id": "p3"},
     ]
-    svc.confirm.return_value = _confirm_result(approved=2, rejected=1)
+    svc.accept.return_value = _confirm_result(approved=2, rejected=1)
 
-    result = runner.invoke(app, ["auto", "confirm", "--approve-all", "--reject", "p2"])
+    result = runner.invoke(app, ["auto", "accept", "--accept-all", "--reject", "p2"])
     assert result.exit_code == 0
-    svc.confirm.assert_called_once_with(approve=["p1", "p3"], reject=["p2"])
+    svc.accept.assert_called_once_with(accept=["p1", "p3"], reject=["p2"])
 
 
-def test_auto_confirm_rejects_both_all_flags() -> None:
-    """--approve-all and --reject-all are mutually exclusive (exit code 2)."""
-    result = runner.invoke(app, ["auto", "confirm", "--approve-all", "--reject-all"])
+def test_auto_accept_rejects_both_all_flags() -> None:
+    """--accept-all and --reject-all are mutually exclusive (exit code 2)."""
+    result = runner.invoke(app, ["auto", "accept", "--accept-all", "--reject-all"])
     assert result.exit_code == 2

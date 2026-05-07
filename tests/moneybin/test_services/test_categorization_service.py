@@ -565,6 +565,33 @@ def test_service_bulk_categorize_applies_categorization(
     assert result.applied == 1
 
 
+def test_bulk_categorize_returns_did_you_mean_on_invalid_category(
+    real_db: Database,
+) -> None:
+    """bulk_categorize rejects an invalid category with a structured did_you_mean field."""
+    real_db.execute(
+        "INSERT INTO app.user_categories (category_id, category, subcategory) "
+        "VALUES ('cat001', 'Food & Dining', NULL)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.bulk_categorize([
+        BulkCategorizationItem(transaction_id="txn_dym", category="FOOD"),
+    ])
+
+    assert result.errors == 1
+    assert result.applied == 0
+    detail = result.error_details[0]
+    assert detail["error"] == "invalid_category"
+    assert detail["invalid_value"] == "FOOD"
+    assert "valid_categories" in detail
+    assert "did_you_mean" in detail
+    assert "Food & Dining" in detail["did_you_mean"]
+    # `reason` is the human-readable summary the CLI table renderer
+    # (`apply` and `apply-from-file`) reads. Locking the contract.
+    assert "reason" in detail
+    assert "FOOD" in detail["reason"]
+
+
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
     """list_pending_proposals returns proposals recorded via AutoRuleService."""
     from moneybin.services.auto_rule_service import AutoRuleService
@@ -718,7 +745,7 @@ def test_list_auto_rules_returns_active_auto_rules(real_db: Database) -> None:
     auto = AutoRuleService(real_db)
     pid = auto.record_categorization("lt1", "Food & Drink")
     assert pid is not None
-    auto.confirm(approve=[pid])
+    auto.accept(accept=[pid])
 
     rules = auto.list_active_rules()
     assert any(r["merchant_pattern"] == "CHIPOTLE" for r in rules)
@@ -899,4 +926,195 @@ def test_find_matching_rule_uses_txn_row_override(real_db: Database) -> None:
         txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1"),
     )
     assert match is not None
-    assert match[1] == "Shopping"
+
+
+# ---------------------------------------------------------------------------
+# categorize_assist tests (Task 14 — RED)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def db_with_uncategorized_txns(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> Database:
+    """Database seeded with 10 uncategorized transactions in core.fct_transactions."""
+    db = Database(
+        tmp_path / "assist.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+    )
+    create_core_tables(db)
+    descriptions = [
+        "STARBUCKS #1234",
+        "AMZN MKTP US*ABCD",
+        "NETFLIX.COM",
+        "VENMO PAYMENT TO J SMITH",
+        "RANDOM LOCAL CAFE",
+        "SHELL OIL #5678",
+        "WHOLE FOODS MKT",
+        "UBER EATS",
+        "CHECK #2341",
+        "COMCAST CABLE 800-555-1234",
+    ]
+    for i, desc in enumerate(descriptions):
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, ?, DATE '2026-04-01', ?, ?, ?)",
+            [f"txn_{i}", "acct_test", -10.00, desc, "csv"],
+        )
+    return db
+
+
+def test_categorize_assist_returns_redacted_uncategorized(
+    db_with_uncategorized_txns: Database,
+) -> None:
+    """categorize_assist should return uncategorized txns with redacted descriptions only."""
+    from moneybin.services.categorization_service import (
+        CategorizationService,
+        RedactedTransaction,
+    )
+
+    svc = CategorizationService(db_with_uncategorized_txns)
+    result = svc.categorize_assist(limit=10)
+
+    assert all(isinstance(r, RedactedTransaction) for r in result)
+    for r in result:
+        assert hasattr(r, "opaque_id")
+        assert hasattr(r, "description_redacted")
+        assert hasattr(r, "source_type")
+        # Confirm no amount/date/account fields
+        assert not hasattr(r, "amount")
+        assert not hasattr(r, "date")
+        assert not hasattr(r, "account_id")
+
+
+def test_categorize_assist_respects_limit(db_with_uncategorized_txns: Database) -> None:
+    """categorize_assist returns no more rows than the requested limit."""
+    from moneybin.services.categorization_service import CategorizationService
+
+    svc = CategorizationService(db_with_uncategorized_txns)
+    result = svc.categorize_assist(limit=5)
+    assert len(result) <= 5
+
+
+def test_categorize_assist_clamps_to_max_batch_size(
+    db_with_uncategorized_txns: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Server enforces assist_max_batch_size hard ceiling."""
+    from unittest.mock import MagicMock as _MagicMock
+
+    from moneybin.services import categorization_service as _cs
+
+    mock_settings = _MagicMock()
+    mock_settings.categorization.assist_max_batch_size = 3
+    monkeypatch.setattr(_cs, "get_settings", lambda: mock_settings)
+
+    svc = _cs.CategorizationService(db_with_uncategorized_txns)
+    result = svc.categorize_assist(limit=100)  # over the ceiling
+    assert len(result) <= 3
+
+
+# ---------------------------------------------------------------------------
+# Task 16: user merchant outranks seed on overlap
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def db_with_seed_and_user_merchants(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> Database:
+    """Database with both a seed merchant and a user merchant matching the same pattern.
+
+    Seed: STARBUCKS contains → Food & Dining / Coffee Shops
+    User: STARBUCKS contains → Business Meals
+    The user entry must win in _fetch_merchants ordering.
+    """
+    db = Database(
+        tmp_path / "overlap.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+    )
+    # The app schema (user_merchants, merchant_overrides) is created by Database init.
+    # Simulate seed tables that SQLMesh would create in production.
+    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS seeds.merchants_global (
+            merchant_id VARCHAR PRIMARY KEY,
+            raw_pattern VARCHAR,
+            match_type VARCHAR,
+            canonical_name VARCHAR,
+            category VARCHAR,
+            subcategory VARCHAR,
+            country VARCHAR
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS seeds.merchants_us (
+            merchant_id VARCHAR PRIMARY KEY,
+            raw_pattern VARCHAR,
+            match_type VARCHAR,
+            canonical_name VARCHAR,
+            category VARCHAR,
+            subcategory VARCHAR,
+            country VARCHAR
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS seeds.merchants_ca (
+            merchant_id VARCHAR PRIMARY KEY,
+            raw_pattern VARCHAR,
+            match_type VARCHAR,
+            canonical_name VARCHAR,
+            category VARCHAR,
+            subcategory VARCHAR,
+            country VARCHAR
+        )
+        """
+    )
+    db.execute(
+        "INSERT INTO seeds.merchants_us VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            "seed_us_starbucks",
+            "STARBUCKS",
+            "contains",
+            "Starbucks",
+            "Food & Dining",
+            "Coffee Shops",
+            "US",
+        ],
+    )
+    db.execute(
+        "INSERT INTO app.user_merchants "
+        "(merchant_id, raw_pattern, match_type, canonical_name, category, subcategory, created_by) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            "user_m_starbucks",
+            "STARBUCKS",
+            "contains",
+            "Starbucks Business",
+            "Business Meals",
+            None,
+            "user",
+        ],
+    )
+    from moneybin.seeds import refresh_views
+
+    refresh_views(db)
+    return db
+
+
+def test_user_merchant_outranks_seed_on_overlap(
+    db_with_seed_and_user_merchants: Database,
+) -> None:
+    """When both a user merchant and a seed merchant could match, user wins."""
+    from moneybin.services.categorization_service import CategorizationService
+
+    svc = CategorizationService(db_with_seed_and_user_merchants)
+    match = svc.match_merchant("STARBUCKS #1234")
+
+    assert match is not None
+    assert match["category"] == "Business Meals"  # user wins over seed

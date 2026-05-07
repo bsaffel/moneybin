@@ -1,0 +1,2 @@
+merchant_id,raw_pattern,match_type,canonical_name,category,subcategory,country
+seed_us_starbucks,STARBUCKS,contains,Starbucks,Food & Dining,Coffee Shops,US

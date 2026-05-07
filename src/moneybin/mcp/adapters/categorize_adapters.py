@@ -25,13 +25,13 @@ def auto_review_envelope(result: AutoReviewResult) -> ResponseEnvelope:
         sensitivity="medium",
         total_count=result.total_count,
         actions=[
-            "Use transactions_categorize_auto_confirm to approve or reject proposals",
+            "Use transactions_categorize_auto_accept to accept or reject proposals",
         ],
     )
 
 
-def auto_confirm_envelope(result: AutoConfirmResult) -> ResponseEnvelope:
-    """Build a ResponseEnvelope for the transactions_categorize_auto_confirm tool."""
+def auto_accept_envelope(result: AutoConfirmResult) -> ResponseEnvelope:
+    """Build a ResponseEnvelope for the transactions_categorize_auto_accept tool."""
     return build_envelope(
         data={
             "approved": result.approved,

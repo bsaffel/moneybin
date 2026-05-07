@@ -143,6 +143,22 @@ CATEGORIZE_BULK_ERRORS_TOTAL = Counter(
     "Number of bulk_categorize calls that raised before returning a result",
 )
 
+CATEGORIZE_ASSIST_CALLS_TOTAL = Counter(
+    "moneybin_categorize_assist_calls_total",
+    "Number of categorize_assist invocations (MCP + CLI)",
+    ["surface"],
+)
+
+CATEGORIZE_ASSIST_TXNS_RETURNED_TOTAL = Counter(
+    "moneybin_categorize_assist_txns_returned_total",
+    "Total redacted transactions returned across all categorize_assist calls",
+)
+
+CATEGORIZE_ASSIST_DURATION_SECONDS = Histogram(
+    "moneybin_categorize_assist_duration_seconds",
+    "Duration of categorize_assist server-side processing (excludes LLM time)",
+)
+
 # ── Account matching ─────────────────────────────────────────────────────────
 
 ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(

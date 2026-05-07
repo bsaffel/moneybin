@@ -15,9 +15,34 @@ from moneybin.services.inbox_service import InboxService
 logger = logging.getLogger(__name__)
 
 
+def _uncategorized_count() -> int:
+    """Return the count of transactions lacking a category entry.
+
+    Returns 0 on any error so a DB hiccup never breaks the import summary.
+    """
+    try:
+        from moneybin.database import get_database
+        from moneybin.tables import FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
+
+        db = get_database()
+        row = db.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {FCT_TRANSACTIONS.full_name} t
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
+            WHERE tc.transaction_id IS NULL
+            """,  # noqa: S608  # table names are TableRef constants, not user input
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:  # noqa: BLE001 — never surface DB errors in summary hint
+        return 0
+
+
 @mcp_tool(sensitivity="low")
 def inbox_sync() -> ResponseEnvelope:
     """Drain the active profile's import inbox."""
+    from moneybin.config import get_settings
+
     service = InboxService.for_active_profile()
     result = dataclasses.asdict(service.sync())
 
@@ -27,6 +52,17 @@ def inbox_sync() -> ResponseEnvelope:
             0,
             "Move failed files into inbox/<account-slug>/ and re-run import_inbox_sync",
         )
+
+    threshold = get_settings().categorization.assist_offer_threshold
+    uncategorized = _uncategorized_count()
+    if uncategorized >= threshold:
+        actions.append(
+            f"{uncategorized} uncategorized transactions — use "
+            "moneybin_discover('categorize') then transactions_categorize_assist "
+            "for AI-assisted categorization, or "
+            "`moneybin transactions categorize export-uncategorized` for the CLI bridge"
+        )
+
     return build_envelope(data=result, sensitivity="low", actions=actions)
 
 

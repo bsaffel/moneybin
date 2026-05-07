@@ -225,10 +225,10 @@ class TestCategorizationPipeline:
 
 
 class TestAutoRulePipeline:
-    """Workflow 6: import → transform → categorize bulk → auto-confirm → verify rule promoted.
+    """Workflow 6: import → transform → categorize bulk → auto-accept → verify rule promoted.
 
     This test drives the full auto-rule pipeline through the CLI:
-    import → transform → categorize bulk → auto-review → auto-confirm → re-apply.
+    import → transform → categorize bulk → auto-review → auto-accept → re-apply.
 
     Promotion is verified by inspecting both the active categorization_rules table
     (created_by='auto_rule' after approval) and re-running apply-rules — the rule
@@ -305,7 +305,7 @@ class TestAutoRulePipeline:
             json.dumps([
                 {
                     "transaction_id": txn_id,
-                    "category": "Food & Dining",
+                    "category": "Food & Drink",
                     "subcategory": "Coffee",
                 }
             ]),
@@ -317,7 +317,7 @@ class TestAutoRulePipeline:
         result = run_cli(
             "transactions",
             "categorize",
-            "bulk",
+            "apply",
             "--input",
             str(json_path),
             env=env,
@@ -331,13 +331,13 @@ class TestAutoRulePipeline:
             f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
         )
 
-        # auto-confirm promotes the proposal to an active rule
+        # auto-accept promotes the proposal to an active rule
         result = run_cli(
-            "transactions", "categorize", "auto", "confirm", "--approve-all", env=env
+            "transactions", "categorize", "auto", "accept", "--accept-all", env=env
         )
         result.assert_success()
-        assert "Approved 1" in result.output, (
-            f"auto-confirm did not approve the proposal: {result.output}"
+        assert "Accepted 1" in result.output, (
+            f"auto-accept did not approve the proposal: {result.output}"
         )
 
         # Verify a rule with created_by='auto_rule' now exists in

@@ -195,7 +195,7 @@ def test_approve_promotes_to_active_rule(real_db: Database) -> None:
     pid = svc.record_categorization("t1", "Food & Drink", subcategory="Coffee")
     assert pid is not None
 
-    result = svc.confirm(approve=[pid])
+    result = svc.accept(accept=[pid])
     assert result.approved == 1
 
     rule = real_db.execute(
@@ -223,7 +223,7 @@ def test_approve_immediately_categorizes_existing_uncategorized(
         "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
         "VALUES ('t9', 'a1', DATE '2026-01-02', -7.00, 'STARBUCKS DOWNTOWN', 'csv')"
     )
-    result = svc.confirm(approve=[pid])
+    result = svc.accept(accept=[pid])
     assert result.newly_categorized == 1
 
     cat = real_db.execute(
@@ -250,7 +250,7 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
     svc = AutoRuleService(real_db)
     pid = svc.record_categorization("t1", "Food & Drink")
     assert pid is not None
-    svc.confirm(approve=[pid])
+    svc.accept(accept=[pid])
 
     # Two user overrides correcting STARBUCKS to Groceries
     for tid in ("t10", "t11"):
@@ -293,7 +293,7 @@ def test_reject_marks_proposal_rejected_without_creating_rule(
     svc = AutoRuleService(real_db)
     pid = svc.record_categorization("t1", "Food & Drink")
     assert pid is not None
-    svc.confirm(reject=[pid])
+    svc.accept(reject=[pid])
 
     status = real_db.execute(
         f"SELECT status, decided_by FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?",  # noqa: S608  # building test input string, not executing SQL

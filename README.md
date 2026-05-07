@@ -106,7 +106,7 @@ Once connected, ask things like:
 | Watched inbox: drop files in `~/Documents/MoneyBin/<profile>/inbox/` (or `inbox/<account-slug>/` for single-account files), `moneybin import inbox` drains them — successes move to `processed/YYYY-MM/`, failures to `failed/YYYY-MM/` with a YAML error sidecar. | [Smart Import Inbox](docs/specs/smart-import-inbox.md) |
 | Three-layer SQL pipeline: raw → staging → core, multi-source union, source-agnostic consumers | [Data Pipeline](docs/guides/data-pipeline.md) |
 | Cross-source dedup, transfer detection, golden-record merge, review/undo workflow | [Data Pipeline](docs/guides/data-pipeline.md) · [matching specs](docs/specs/matching-overview.md) |
-| Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits | [Categorization](docs/guides/categorization.md) |
+| Rule-based categorization (exact / substring / regex), merchant normalization, bulk ops, **auto-rule learning** from your edits. **Cold-start:** curated seed merchants (US/CA/global), LLM-assist workflow for the long tail (via `transactions_categorize_assist` MCP tool or `moneybin transactions categorize export-uncategorized` + `apply-from-file` for agent-driven flows). | [Categorization](docs/guides/categorization.md) |
 | AES-256-GCM encryption at rest, key management, automatic schema migrations | [Database & Security](docs/guides/database-security.md) · [Threat Model](docs/guides/threat-model.md) |
 | Multi-profile isolation (per-profile DB, config, logs) | [Profiles](docs/guides/profiles.md) |
 | MCP server: ~15 tool domains under the v2 path-prefix taxonomy (accounts, transactions, reports, categories, merchants, system, budget, tax, sync, transform, import, …), prompt templates, resources, `--output json` parity with CLI | [MCP Server](docs/guides/mcp-server.md) |
@@ -135,7 +135,7 @@ Full command reference: [CLI Reference](docs/guides/cli-reference.md).
 |---|---|---|
 | OFX/QFX/QBO + tabular import (CSV/TSV/Excel/Parquet/Feather) + W-2 PDF + watched-folder inbox + reversible batches | Levels 0–1 | ✅ |
 | Cross-source dedup + transfer detection + golden-record merge | Level 1 | ✅ |
-| Rule engine + merchant normalization + auto-rule generation | Level 1 | ✅ |
+| Rule engine + merchant normalization + auto-rule generation + cold-start (seed merchants, LLM-assist workflow) | Level 1 | ✅ |
 | Encryption at rest + key management + multi-profile + schema migrations + observability | Level 0 | ✅ |
 | Account management + net-worth & balance tracking with reconciliation deltas | Level 1 | ✅ |
 | MCP server (~33 tools, v2 taxonomy, install across 9 clients) + curated `moneybin://schema` resource + tool timeouts | Levels 0–1 | ✅ |

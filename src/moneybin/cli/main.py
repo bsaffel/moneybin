@@ -27,6 +27,7 @@ from .commands import (
     mcp,
     merchants,
     migrate,
+    privacy,
     profile,
     reports,
     stats,
@@ -140,6 +141,9 @@ app.add_typer(transactions.app, name="transactions")
 app.add_typer(assets.app, name="assets")
 app.add_typer(categories.app, name="categories")
 app.add_typer(merchants.app, name="merchants")
+app.add_typer(
+    privacy.app, name="privacy", help="Privacy utilities: redaction and audit"
+)
 app.add_typer(budget_cmd.app, name="budget")
 app.add_typer(tax.app, name="tax")
 app.add_typer(system.app, name="system")

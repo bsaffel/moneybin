@@ -19,6 +19,8 @@ from moneybin.cli.utils import handle_cli_errors
 from moneybin.protocol.envelope import ResponseEnvelope
 
 from . import auto, ml, rules
+from .apply_from_file import categorize_apply_from_file
+from .export import categorize_export_uncategorized
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +33,12 @@ app.add_typer(rules.app, name="rules")
 app.add_typer(auto.app, name="auto")
 app.add_typer(ml.app, name="ml")
 
+app.command("export-uncategorized")(categorize_export_uncategorized)
+app.command("apply-from-file")(categorize_apply_from_file)
 
-@app.command("bulk")
-def categorize_bulk(
+
+@app.command("apply")
+def categorize_apply(
     stdin_sentinel: str | None = typer.Argument(
         None,
         help="Pass '-' to read JSON from stdin.",
@@ -43,15 +48,15 @@ def categorize_bulk(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Bulk-assign categories to transactions from a JSON array.
+    """Assign categories to transactions from a JSON array.
 
     Read from a file:
 
-      moneybin transactions categorize bulk --input cats.json
+      moneybin transactions categorize apply --input cats.json
 
     Or from stdin:
 
-      cat cats.json | moneybin transactions categorize bulk -
+      cat cats.json | moneybin transactions categorize apply -
 
     Per-item validation: failures are reported in the result without aborting
     the batch. Exit code is 1 if any item failed.
@@ -129,7 +134,7 @@ def categorize_bulk(
 
 
 @app.command("stats")
-def categorize_stats(
+def stats(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
 ) -> None:

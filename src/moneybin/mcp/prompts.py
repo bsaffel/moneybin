@@ -63,7 +63,7 @@ def categorization_organize() -> str:
         - transactions_categorize_stats — check current categorization coverage
         - transactions_categorize_pending_list — fetch uncategorized transactions
         - categories_list — see available categories
-        - transactions_categorize_bulk_apply — apply categories to transactions
+        - transactions_categorize_apply — apply categories to transactions
         - transactions_categorize_rules_create — create rules for recurring patterns
         - merchants_create — map merchant names to categories
 
@@ -72,7 +72,7 @@ def categorization_organize() -> str:
         2. Fetch a batch with transactions_categorize_pending_list (limit ~20)
         3. Group similar transactions by description pattern
         4. For repeating patterns, suggest a rule (transactions_categorize_rules_create)
-        5. For one-offs, use transactions_categorize_bulk_apply directly
+        5. For one-offs, use transactions_categorize_apply directly
         6. Repeat until coverage is acceptable
 
         **Guardrails:**
@@ -97,7 +97,7 @@ def review_auto_rules() -> str:
         **Relevant tools:**
         - transactions_categorize_auto_stats — pending proposal count and rule health
         - transactions_categorize_auto_review — list pending proposals with samples
-        - transactions_categorize_auto_confirm — batch approve/reject proposals by ID
+        - transactions_categorize_auto_accept — batch approve/reject proposals by ID
         - transactions_categorize_rules_list — review currently active rules
 
         **Workflow:**
@@ -105,12 +105,12 @@ def review_auto_rules() -> str:
         2. Fetch proposals with transactions_categorize_auto_review
         3. For each proposal, show the merchant pattern, suggested
            category, sample matching transactions, and trigger count
-        4. Group user decisions and submit them with transactions_categorize_auto_confirm
+        4. Group user decisions and submit them with transactions_categorize_auto_accept
 
         **Guardrails:**
         - Always show sample transactions before asking for approval
         - Flag proposals that seem overly broad or ambiguous
-        - Confirm batches with the user before submitting auto_confirm
+        - Confirm batches with the user before submitting auto_accept
         - Approved rules categorize matching transactions immediately
     """)
 

@@ -11,7 +11,7 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 - **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.
 - **Linting/formatting**: `make format && make lint` (Ruff, line length 88).
 - **Type checking**: `uv run pyright` on modified files (not mypy).
-- **Tests**: Dev: `uv run pytest tests/path/to/test_file.py -v`. Pre-commit: `make test`.
+- **Tests**: Dev: `uv run pytest tests/path/to/test_file.py -v`. Pre-commit: `make test`. Always `uv run pytest` — never `uv run python -m pytest` (sandbox-denied per the `python -m` ban above). If `uv run pytest` resolves to the wrong interpreter, the venv has stale shebangs from a worktree move; fix with `uv sync --reinstall` rather than working around it via `python -m`.
 - **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing.
 - **SQL formatting**: `uv run sqlmesh -p sqlmesh format`.
 - **Check library docs first**: Before implementing patterns with SQLMesh, DuckDB, Pydantic, etc., verify the correct API in official docs. Training knowledge may be outdated.

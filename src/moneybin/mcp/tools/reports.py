@@ -109,7 +109,7 @@ def reports_spending_by_category(
     """Get spending breakdown by category for a period.
 
     Requires transactions to be categorized. Use ``transactions_categorize_pending_list``
-    and ``transactions_categorize_bulk_apply`` to categorize transactions first.
+    and ``transactions_categorize_apply`` to categorize transactions first.
     """
     service = SpendingService(get_database())
     result = service.by_category(

@@ -10,6 +10,7 @@ proposal/approval/deactivation lifecycle and depends on this module's
 ``find_matching_rule`` and ``normalize_description``.
 """
 
+import difflib
 import logging
 import re
 import typing
@@ -23,6 +24,7 @@ from typing import Any, Literal
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import (
@@ -31,7 +33,7 @@ from moneybin.metrics.registry import (
     CATEGORIZE_BULK_ITEMS_TOTAL,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services._text import normalize_description
+from moneybin.services._text import normalize_description, redact_for_llm
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -40,6 +42,7 @@ from moneybin.tables import (
     MERCHANTS,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
+    USER_MERCHANTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,6 +59,22 @@ def validate_match_type(match_type: str) -> MatchType:
             f"Must be one of: {', '.join(sorted(_VALID_MATCH_TYPES))}"
         )
     return match_type  # type: ignore[return-value]  # validated above
+
+
+def _did_you_mean(
+    invalid: str, valid_options: list[str], n: int = 3, cutoff: float = 0.4
+) -> list[str]:
+    """Return up to n closest matches from valid_options for an invalid category string.
+
+    Matches case-insensitively so "FOOD" matches "Food & Dining", then returns
+    the original-cased option so callers can feed suggestions back as-is.
+    """
+    lower_invalid = invalid.lower()
+    lower_to_orig = {opt.lower(): opt for opt in valid_options}
+    matches = difflib.get_close_matches(
+        lower_invalid, list(lower_to_orig), n=n, cutoff=cutoff
+    )
+    return [lower_to_orig[m] for m in matches]
 
 
 @dataclass(slots=True)
@@ -86,6 +105,20 @@ class CategorizationStats:
         )
 
 
+@dataclass(frozen=True)
+class RedactedTransaction:
+    """LLM-safe view of an uncategorized transaction.
+
+    Type-enforces the redaction contract: no amount, date, or account fields.
+    Adding any new field requires conscious code review — accidental PII leakage
+    is a compile-time impossibility enforced by the frozen dataclass shape.
+    """
+
+    opaque_id: str  # transaction_id (opaque hash, never decoded by LLM)
+    description_redacted: str  # output of redact_for_llm()
+    source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf' — helps LLM judge quality
+
+
 @dataclass(slots=True)
 class BulkCategorizationResult:
     """Typed result for bulk categorization operations."""
@@ -93,7 +126,7 @@ class BulkCategorizationResult:
     applied: int
     skipped: int
     errors: int
-    error_details: list[dict[str, str]]
+    error_details: list[dict[str, Any]]
     merchants_created: int = 0
 
     def to_envelope(self, input_count: int) -> ResponseEnvelope:
@@ -114,7 +147,7 @@ class BulkCategorizationResult:
             ],
         )
 
-    def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
+    def merge_parse_errors(self, parse_errors: list[dict[str, Any]]) -> None:
         """Prepend boundary-validation errors and reflect them in the error count."""
         if not parse_errors:
             return
@@ -307,7 +340,15 @@ def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
 def _fetch_merchants(
     db: Database,
 ) -> list[tuple[str, str, str, str, str, str | None]] | None:
-    """Fetch all merchant mappings ordered by match priority.
+    """Fetch all merchant mappings ordered for lookup precedence.
+
+    Ordering:
+    1. is_user DESC — user-created merchants outrank seed merchants
+    2. match_type — exact > contains > regex (existing precedence)
+
+    User outranks seed regardless of match-type granularity. A user 'contains'
+    rule beats a seed 'exact' rule because user authority over curated defaults
+    is the architectural commitment.
 
     Args:
         db: Database instance (read-only access is sufficient).
@@ -322,12 +363,13 @@ def _fetch_merchants(
                    canonical_name, category, subcategory
             FROM {MERCHANTS.full_name}
             ORDER BY
+                is_user DESC,
                 CASE match_type
                     WHEN 'exact' THEN 1
                     WHEN 'contains' THEN 2
                     WHEN 'regex' THEN 3
                 END
-            """,
+            """,  # noqa: S608  # MERCHANTS is a TableRef constant, not user input
         ).fetchall()
     except duckdb.CatalogException:
         return None
@@ -423,11 +465,11 @@ class CategorizationService:
         merchant_id = uuid.uuid4().hex[:12]
         self._db.execute(
             f"""
-            INSERT INTO {MERCHANTS.full_name}
+            INSERT INTO {USER_MERCHANTS.full_name}
             (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,
+             category, subcategory, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
             [
                 merchant_id,
                 raw_pattern,
@@ -438,7 +480,7 @@ class CategorizationService:
                 created_by,
             ],
         )
-        logger.info(f"Created merchant mapping {merchant_id}")
+        logger.info(f"Created user merchant {merchant_id}")
         return merchant_id
 
     # -- Rule management --
@@ -654,7 +696,7 @@ class CategorizationService:
         skipped = 0
         errors = 0
         merchants_created = 0
-        error_details: list[dict[str, str]] = []
+        error_details: list[dict[str, Any]] = []
 
         if not items:
             return BulkCategorizationResult(
@@ -664,6 +706,54 @@ class CategorizationService:
                 error_details=error_details,
                 merchants_created=merchants_created,
             )
+
+        # Phase 1 — validate categories against the active taxonomy.
+        # Fetch once for the whole batch so cost is O(1) in batch size.
+        try:
+            valid_category_set = {
+                row[0]
+                for row in self._db.execute(
+                    f"SELECT DISTINCT category FROM {CATEGORIES.full_name} WHERE is_active"  # noqa: S608  # CATEGORIES is a TableRef constant
+                ).fetchall()
+            }
+        except duckdb.CatalogException:
+            # View not yet materialized (e.g., no seeds loaded); skip validation.
+            valid_category_set = None
+
+        if valid_category_set:
+            valid_sorted = sorted(valid_category_set)
+            validated_items: list[BulkCategorizationItem] = []
+            for item in items:
+                if item.category not in valid_category_set:
+                    errors += 1
+                    suggestions = _did_you_mean(item.category, valid_sorted)
+                    reason = (
+                        f"Invalid category {item.category!r}; "
+                        f"did you mean: {', '.join(suggestions)}"
+                        if suggestions
+                        else f"Invalid category {item.category!r}"
+                    )
+                    error_details.append({
+                        "transaction_id": item.transaction_id,
+                        "reason": reason,
+                        "error": "invalid_category",
+                        "invalid_value": item.category,
+                        "valid_categories": valid_sorted,
+                        "did_you_mean": suggestions,
+                    })
+                else:
+                    validated_items.append(item)
+            items = validated_items
+
+            if not items:
+                CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
+                return BulkCategorizationResult(
+                    applied=applied,
+                    skipped=skipped,
+                    errors=errors,
+                    error_details=error_details,
+                    merchants_created=merchants_created,
+                )
 
         # Phase 2 — batch-fetch txn rows (description + amount + account_id)
         txn_ids = [item.transaction_id for item in items]
@@ -1343,3 +1433,64 @@ class CategorizationService:
             percent_categorized=float(raw["pct_categorized"]),
             by_source=by_source,
         )
+
+    def categorize_assist(
+        self,
+        limit: int = 100,
+        account_filter: list[str] | None = None,
+        date_range: tuple[str, str] | None = None,
+    ) -> list[RedactedTransaction]:
+        """Return uncategorized transactions as redacted records for LLM review.
+
+        Sensitivity: medium. Output is sent to the user's LLM via MCP or
+        written to disk via the CLI bridge. The redaction contract is enforced
+        by RedactedTransaction's frozen dataclass shape.
+        """
+        import time
+
+        from moneybin.metrics.registry import (
+            CATEGORIZE_ASSIST_DURATION_SECONDS,
+            CATEGORIZE_ASSIST_TXNS_RETURNED_TOTAL,
+        )
+
+        settings = get_settings().categorization
+        effective_limit = min(limit, settings.assist_max_batch_size)
+
+        where_clauses = ["tc.transaction_id IS NULL"]
+        params: list[object] = []
+        if account_filter:
+            where_clauses.append(
+                f"t.account_id IN ({','.join('?' * len(account_filter))})"
+            )
+            params.extend(account_filter)
+        if date_range:
+            where_clauses.append("t.transaction_date BETWEEN ? AND ?")
+            params.extend(date_range)
+        where_sql = " AND ".join(where_clauses)
+
+        start = time.monotonic()
+        result: list[RedactedTransaction] = []
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT t.transaction_id, t.description, t.source_type
+                FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
+                WHERE {where_sql}
+                LIMIT ?
+                """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
+                params + [effective_limit],
+            ).fetchall()
+
+            result = [
+                RedactedTransaction(
+                    opaque_id=row[0],
+                    description_redacted=redact_for_llm(row[1] or ""),
+                    source_type=row[2] or "",
+                )
+                for row in rows
+            ]
+            return result
+        finally:
+            CATEGORIZE_ASSIST_DURATION_SECONDS.observe(time.monotonic() - start)
+            CATEGORIZE_ASSIST_TXNS_RETURNED_TOTAL.inc(len(result))

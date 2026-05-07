@@ -307,18 +307,18 @@ class AutoRuleService:
             return limit
         return get_settings().categorization.auto_rule_list_default_limit
 
-    def confirm(
+    def accept(
         self,
-        approve: list[str] | None = None,
+        accept: list[str] | None = None,
         reject: list[str] | None = None,
     ) -> AutoConfirmResult:
-        """Approve and/or reject pending proposals; returns aggregate counts.
+        """Accept and/or reject pending proposals; returns aggregate counts.
 
-        IDs appearing in both lists are dropped from ``approve`` so an explicit
+        IDs appearing in both lists are dropped from ``accept`` so an explicit
         reject always wins. The CLI does the same dedup before calling, but
         applying it here keeps direct service callers (MCP, scripts) safe.
         """
-        approve_set = set(approve or [])
+        approve_set = set(accept or [])
         reject_set = set(reject or [])
         approve_set -= reject_set
         a = self.approve(sorted(approve_set))
