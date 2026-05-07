@@ -128,10 +128,56 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Notes for a specific transaction "
             "(substitute YOUR_TRANSACTION_ID)",
             sql="""
-                SELECT transaction_id, note, created_at
+                SELECT note_id, transaction_id, text, author, created_at
                 FROM app.transaction_notes
                 WHERE transaction_id = 'YOUR_TRANSACTION_ID'
                 ORDER BY created_at
+            """,
+        ),
+    ],
+    "app.transaction_tags": [
+        Example(
+            question="Tags applied to a specific transaction "
+            "(substitute YOUR_TRANSACTION_ID)",
+            sql="""
+                SELECT transaction_id, tag, applied_at, applied_by
+                FROM app.transaction_tags
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                ORDER BY tag
+            """,
+        ),
+    ],
+    "app.transaction_splits": [
+        Example(
+            question="Split children of a parent transaction "
+            "(substitute YOUR_TRANSACTION_ID)",
+            sql="""
+                SELECT split_id, transaction_id, amount, category, subcategory, ord
+                FROM app.transaction_splits
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                ORDER BY ord, split_id
+            """,
+        ),
+    ],
+    "app.imports": [
+        Example(
+            question="User-applied labels on import batches",
+            sql="""
+                SELECT import_id, labels, updated_at, updated_by
+                FROM app.imports
+                ORDER BY updated_at DESC
+            """,
+        ),
+    ],
+    "app.audit_log": [
+        Example(
+            question="Most recent audit events across all actions",
+            sql="""
+                SELECT audit_id, occurred_at, actor, action,
+                       target_schema, target_table, target_id
+                FROM app.audit_log
+                ORDER BY occurred_at DESC
+                LIMIT 50
             """,
         ),
     ],
