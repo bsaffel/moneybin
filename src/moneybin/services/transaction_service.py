@@ -15,7 +15,7 @@ from typing import Any
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services._validators import validate_note_text
+from moneybin.services._validators import validate_note_text, validate_slug
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Audit target prefix for note operations (schema, table); the third tuple
 # element is the per-event transaction_id so chains stitch by entity.
 _AUDIT_TARGET_NOTES = ("app", "transaction_notes")
+_AUDIT_TARGET_TAGS = ("app", "transaction_tags")
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +120,14 @@ class RecurringResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TagRenameResult:
+    """Result of ``rename_tag``: the parent audit_id and how many rows shifted."""
+
+    parent_audit_id: str
+    row_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class Note:
     """One row of ``app.transaction_notes`` (multi-note shape)."""
 
@@ -130,12 +139,14 @@ class Note:
 
 
 class TransactionService:
-    """Transaction search, recurring patterns, and note-thread operations.
+    """Transaction search, recurring patterns, notes, and tag operations.
 
     Search and recurring helpers return typed dataclasses with a
-    ``to_envelope()`` method. Note operations (``add_note`` / ``edit_note`` /
-    ``delete_note`` / ``list_notes``) wrap the mutation and the audit event in
-    a single DuckDB transaction.
+    ``to_envelope()`` method. Note and tag operations wrap each mutation and
+    its audit event(s) in a single DuckDB transaction. Tag writes come in
+    imperative (``add_tags``/``remove_tags``) and declarative (``set_tags``)
+    flavors; ``rename_tag`` is the one bulk operation and emits a parent
+    ``tag.rename`` audit event with per-row ``tag.rename_row`` children.
     """
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
@@ -439,6 +450,265 @@ class TransactionService:
             self._db.rollback()
             raise
         logger.info(f"note.delete note_id={note_id} actor={actor}")
+
+    # ------------------------------------------------------------------
+    # Tags (slug-flavored labels on a transaction; spec Req 13–16)
+    # ------------------------------------------------------------------
+
+    def add_tags(
+        self, transaction_id: str, tags: list[str], *, actor: str
+    ) -> list[str]:
+        """Apply tags to a transaction; emit one ``tag.add`` event per tag.
+
+        Idempotent: re-adding an existing tag emits a ``tag.add`` event with
+        ``context_json={"noop": True}`` and no row change. All tag patterns
+        are validated up front so a bad tag never half-mutates state.
+        Returns the list of tags that were actually inserted (excludes no-ops).
+        """
+        for t in tags:
+            validate_slug(t)
+        added: list[str] = []
+        self._db.begin()
+        try:
+            for tag in tags:
+                existed = self._db.conn.execute(
+                    """
+                    SELECT 1 FROM app.transaction_tags
+                     WHERE transaction_id = ? AND tag = ?
+                    """,
+                    [transaction_id, tag],
+                ).fetchone()
+                if existed:
+                    self._audit.record_audit_event(
+                        action="tag.add",
+                        target=(*_AUDIT_TARGET_TAGS, transaction_id),
+                        before={"tag": tag},
+                        after={"tag": tag},
+                        actor=actor,
+                        context={"noop": True},
+                    )
+                    continue
+                self._db.conn.execute(
+                    """
+                    INSERT INTO app.transaction_tags
+                        (transaction_id, tag, applied_by)
+                    VALUES (?, ?, ?)
+                    """,
+                    [transaction_id, tag, actor],
+                )
+                self._audit.record_audit_event(
+                    action="tag.add",
+                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
+                    before=None,
+                    after={"tag": tag},
+                    actor=actor,
+                )
+                added.append(tag)
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(
+            f"tag.add transaction_id={transaction_id} added={len(added)} "
+            f"requested={len(tags)} actor={actor}"
+        )
+        return added
+
+    def remove_tags(
+        self, transaction_id: str, tags: list[str], *, actor: str
+    ) -> list[str]:
+        """Remove tags from a transaction; emit one ``tag.remove`` per tag.
+
+        Idempotent: removing an absent tag emits a ``tag.remove`` event with
+        ``context_json={"noop": True}`` and no row change. Returns the list
+        of tags that were actually deleted.
+        """
+        removed: list[str] = []
+        self._db.begin()
+        try:
+            for tag in tags:
+                existed = self._db.conn.execute(
+                    """
+                    SELECT 1 FROM app.transaction_tags
+                     WHERE transaction_id = ? AND tag = ?
+                    """,
+                    [transaction_id, tag],
+                ).fetchone()
+                if not existed:
+                    self._audit.record_audit_event(
+                        action="tag.remove",
+                        target=(*_AUDIT_TARGET_TAGS, transaction_id),
+                        before=None,
+                        after=None,
+                        actor=actor,
+                        context={"noop": True},
+                    )
+                    continue
+                self._db.conn.execute(
+                    """
+                    DELETE FROM app.transaction_tags
+                     WHERE transaction_id = ? AND tag = ?
+                    """,
+                    [transaction_id, tag],
+                )
+                self._audit.record_audit_event(
+                    action="tag.remove",
+                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
+                    before={"tag": tag},
+                    after=None,
+                    actor=actor,
+                )
+                removed.append(tag)
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(
+            f"tag.remove transaction_id={transaction_id} removed={len(removed)} "
+            f"requested={len(tags)} actor={actor}"
+        )
+        return removed
+
+    def set_tags(
+        self, transaction_id: str, tags: list[str], *, actor: str
+    ) -> list[str]:
+        """Declarative target-state. Diffs current vs desired and writes the delta.
+
+        Validates every tag, then computes additions and deletions and applies
+        them atomically in a single DuckDB transaction so the row state and
+        all audit events commit (or roll back) together. The MCP-flavored
+        counterpart to imperative ``add_tags`` / ``remove_tags``. Returns the
+        sorted final tag list.
+        """
+        for t in tags:
+            validate_slug(t)
+        desired = set(tags)
+        self._db.begin()
+        try:
+            current_rows = self._db.conn.execute(
+                "SELECT tag FROM app.transaction_tags WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchall()
+            current = {r[0] for r in current_rows}
+            to_add = sorted(desired - current)
+            to_remove = sorted(current - desired)
+            for tag in to_add:
+                self._db.conn.execute(
+                    """
+                    INSERT INTO app.transaction_tags
+                        (transaction_id, tag, applied_by)
+                    VALUES (?, ?, ?)
+                    """,
+                    [transaction_id, tag, actor],
+                )
+                self._audit.record_audit_event(
+                    action="tag.add",
+                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
+                    before=None,
+                    after={"tag": tag},
+                    actor=actor,
+                )
+            for tag in to_remove:
+                self._db.conn.execute(
+                    """
+                    DELETE FROM app.transaction_tags
+                     WHERE transaction_id = ? AND tag = ?
+                    """,
+                    [transaction_id, tag],
+                )
+                self._audit.record_audit_event(
+                    action="tag.remove",
+                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
+                    before={"tag": tag},
+                    after=None,
+                    actor=actor,
+                )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(
+            f"tag.set transaction_id={transaction_id} added={len(to_add)} "
+            f"removed={len(to_remove)} actor={actor}"
+        )
+        return sorted(desired)
+
+    def rename_tag(self, old_tag: str, new_tag: str, *, actor: str) -> TagRenameResult:
+        """Rename a tag globally; emit one parent + N child audit events.
+
+        The parent ``tag.rename`` event has ``target_id=None`` since it spans
+        many rows; each per-row update emits a ``tag.rename_row`` child whose
+        ``parent_audit_id`` chains back to the parent (Req 15).
+        """
+        validate_slug(old_tag)
+        validate_slug(new_tag)
+        self._db.begin()
+        try:
+            rows = self._db.conn.execute(
+                "SELECT transaction_id FROM app.transaction_tags WHERE tag = ?",
+                [old_tag],
+            ).fetchall()
+            parent = self._audit.record_audit_event(
+                action="tag.rename",
+                target=(*_AUDIT_TARGET_TAGS, None),
+                before={"old_tag": old_tag},
+                after={"new_tag": new_tag, "row_count": len(rows)},
+                actor=actor,
+            )
+            for (txn_id,) in rows:
+                self._db.conn.execute(
+                    """
+                    UPDATE app.transaction_tags
+                       SET tag = ?
+                     WHERE transaction_id = ? AND tag = ?
+                    """,
+                    [new_tag, txn_id, old_tag],
+                )
+                self._audit.record_audit_event(
+                    action="tag.rename_row",
+                    target=(*_AUDIT_TARGET_TAGS, txn_id),
+                    before={"tag": old_tag},
+                    after={"tag": new_tag},
+                    actor=actor,
+                    parent_audit_id=parent.audit_id,
+                )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(
+            f"tag.rename old={old_tag} new={new_tag} row_count={len(rows)} "
+            f"actor={actor}"
+        )
+        return TagRenameResult(parent_audit_id=parent.audit_id, row_count=len(rows))
+
+    def list_tags(self, transaction_id: str) -> list[str]:
+        """Return the tags applied to a transaction in lexicographic order."""
+        rows = self._db.conn.execute(
+            """
+            SELECT tag FROM app.transaction_tags
+             WHERE transaction_id = ?
+             ORDER BY tag
+            """,
+            [transaction_id],
+        ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def list_distinct_tags(self) -> list[tuple[str, int]]:
+        """Return ``(tag, usage_count)`` pairs sorted by tag.
+
+        ``usage_count`` is the number of rows in ``app.transaction_tags`` —
+        i.e. the number of (transaction, tag) applications.
+        """
+        rows = self._db.conn.execute(
+            """
+            SELECT tag, COUNT(*) AS usage_count
+              FROM app.transaction_tags
+             GROUP BY tag
+             ORDER BY tag
+            """
+        ).fetchall()
+        return [(str(r[0]), int(r[1])) for r in rows]
 
     def list_notes(self, transaction_id: str) -> list[Note]:
         """Return all notes for a transaction in chronological order."""
