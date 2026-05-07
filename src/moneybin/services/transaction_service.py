@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # element is the per-event transaction_id so chains stitch by entity.
 _AUDIT_TARGET_NOTES = ("app", "transaction_notes")
 _AUDIT_TARGET_TAGS = ("app", "transaction_tags")
+_AUDIT_TARGET_SPLITS = ("app", "transaction_splits")
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +126,21 @@ class TagRenameResult:
 
     parent_audit_id: str
     row_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class Split:
+    """One row of ``app.transaction_splits``."""
+
+    split_id: str
+    transaction_id: str
+    amount: Decimal
+    category: str | None
+    subcategory: str | None
+    note: str | None
+    ord: int
+    created_at: str
+    created_by: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -722,6 +738,315 @@ class TransactionService:
             [transaction_id],
         ).fetchall()
         return [_row_to_note(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Splits (curator-style allocations of one parent across categories;
+    # spec Req 17–21). Sum of children should equal parent.amount but is
+    # warn-not-block: callers use ``splits_balance`` to surface the residual.
+    # ------------------------------------------------------------------
+
+    def add_split(
+        self,
+        transaction_id: str,
+        amount: Decimal,
+        *,
+        category: str | None = None,
+        subcategory: str | None = None,
+        note: str | None = None,
+        actor: str,
+    ) -> Split:
+        """Append a split to a transaction; emit ``split.add`` audit event.
+
+        Generates a 12-hex truncated UUID4 ``split_id`` and computes the
+        next ``ord`` as ``MAX(ord)+1`` for the parent (or 0 when first).
+        """
+        split_id = uuid.uuid4().hex[:12]
+        self._db.begin()
+        try:
+            ord_row = self._db.conn.execute(
+                """
+                SELECT COALESCE(MAX(ord) + 1, 0)
+                  FROM app.transaction_splits
+                 WHERE transaction_id = ?
+                """,
+                [transaction_id],
+            ).fetchone()
+            next_ord = int(ord_row[0]) if ord_row is not None else 0
+            params: list[Any] = [
+                split_id,
+                transaction_id,
+                amount,
+                category,
+                subcategory,
+                note,
+                next_ord,
+                actor,
+            ]
+            self._db.conn.execute(
+                """
+                INSERT INTO app.transaction_splits
+                    (split_id, transaction_id, amount, category, subcategory,
+                     note, ord, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                params,
+            )
+            self._audit.record_audit_event(
+                action="split.add",
+                target=(*_AUDIT_TARGET_SPLITS, transaction_id),
+                before=None,
+                # ``Decimal`` is not JSON-serializable by default; render as a
+                # string so the audit row round-trips faithfully.
+                after={
+                    "split_id": split_id,
+                    "amount": str(amount),
+                    "category": category,
+                },
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        row = self._db.conn.execute(
+            """
+            SELECT split_id, transaction_id, amount, category, subcategory,
+                   note, ord, created_at, created_by
+              FROM app.transaction_splits
+             WHERE split_id = ?
+            """,
+            [split_id],
+        ).fetchone()
+        if row is None:  # defensive — insert just succeeded
+            raise RuntimeError(f"split_id={split_id} vanished after insert")
+        logger.info(
+            f"split.add split_id={split_id} transaction_id={transaction_id} "
+            f"actor={actor}"
+        )
+        return _row_to_split(row)
+
+    def remove_split(self, split_id: str, *, actor: str) -> None:
+        """Delete a split; emit ``split.remove`` event with ``after=None``.
+
+        Raises ``LookupError`` if ``split_id`` is unknown.
+        """
+        self._db.begin()
+        try:
+            existing = self._db.conn.execute(
+                """
+                SELECT transaction_id, amount, category
+                  FROM app.transaction_splits
+                 WHERE split_id = ?
+                """,
+                [split_id],
+            ).fetchone()
+            if existing is None:
+                raise LookupError(f"split_id={split_id} not found")
+            txn_id, amount, category = existing[0], existing[1], existing[2]
+            self._db.conn.execute(
+                "DELETE FROM app.transaction_splits WHERE split_id = ?",
+                [split_id],
+            )
+            self._audit.record_audit_event(
+                action="split.remove",
+                target=(*_AUDIT_TARGET_SPLITS, txn_id),
+                before={
+                    "split_id": split_id,
+                    "amount": str(amount),
+                    "category": category,
+                },
+                after=None,
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(f"split.remove split_id={split_id} actor={actor}")
+
+    def clear_splits(self, transaction_id: str, *, actor: str) -> None:
+        """Delete all splits for a transaction; emit one ``split.clear`` event.
+
+        No-op (no audit event, no SQL) when the parent has no splits.
+        """
+        self._db.begin()
+        try:
+            count_row = self._db.conn.execute(
+                """
+                SELECT COUNT(*)
+                  FROM app.transaction_splits
+                 WHERE transaction_id = ?
+                """,
+                [transaction_id],
+            ).fetchone()
+            count = int(count_row[0]) if count_row is not None else 0
+            if count == 0:
+                self._db.commit()
+                return
+            self._db.conn.execute(
+                "DELETE FROM app.transaction_splits WHERE transaction_id = ?",
+                [transaction_id],
+            )
+            self._audit.record_audit_event(
+                action="split.clear",
+                target=(*_AUDIT_TARGET_SPLITS, transaction_id),
+                before={"split_count": count},
+                after=None,
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(
+            f"split.clear transaction_id={transaction_id} count={count} actor={actor}"
+        )
+
+    def set_splits(
+        self,
+        transaction_id: str,
+        splits: list[dict[str, Any]],
+        *,
+        actor: str,
+    ) -> list[Split]:
+        """Declarative replace: clear existing splits and add the new sequence atomically.
+
+        Validates every input dict (``amount`` required and Decimal) before
+        mutating state so a malformed input never leaves the row set in a
+        half-applied state. The clear + adds run in one DuckDB transaction.
+        """
+        prepared: list[dict[str, Any]] = []
+        for idx, s in enumerate(splits):
+            if "amount" not in s:
+                raise ValueError(f"splits[{idx}] missing required 'amount'")
+            amount = s["amount"]
+            if not isinstance(amount, Decimal):
+                raise ValueError(
+                    f"splits[{idx}].amount must be Decimal, got {type(amount).__name__}"
+                )
+            prepared.append({
+                "amount": amount,
+                "category": s.get("category"),
+                "subcategory": s.get("subcategory"),
+                "note": s.get("note"),
+            })
+        self._db.begin()
+        try:
+            count_row = self._db.conn.execute(
+                """
+                SELECT COUNT(*)
+                  FROM app.transaction_splits
+                 WHERE transaction_id = ?
+                """,
+                [transaction_id],
+            ).fetchone()
+            count = int(count_row[0]) if count_row is not None else 0
+            if count > 0:
+                self._db.conn.execute(
+                    "DELETE FROM app.transaction_splits WHERE transaction_id = ?",
+                    [transaction_id],
+                )
+                self._audit.record_audit_event(
+                    action="split.clear",
+                    target=(*_AUDIT_TARGET_SPLITS, transaction_id),
+                    before={"split_count": count},
+                    after=None,
+                    actor=actor,
+                )
+            for ord_idx, s in enumerate(prepared):
+                split_id = uuid.uuid4().hex[:12]
+                self._db.conn.execute(
+                    """
+                    INSERT INTO app.transaction_splits
+                        (split_id, transaction_id, amount, category, subcategory,
+                         note, ord, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        split_id,
+                        transaction_id,
+                        s["amount"],
+                        s["category"],
+                        s["subcategory"],
+                        s["note"],
+                        ord_idx,
+                        actor,
+                    ],
+                )
+                self._audit.record_audit_event(
+                    action="split.add",
+                    target=(*_AUDIT_TARGET_SPLITS, transaction_id),
+                    before=None,
+                    after={
+                        "split_id": split_id,
+                        "amount": str(s["amount"]),
+                        "category": s["category"],
+                    },
+                    actor=actor,
+                )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        logger.info(
+            f"split.set transaction_id={transaction_id} count={len(prepared)} "
+            f"actor={actor}"
+        )
+        return self.list_splits(transaction_id)
+
+    def list_splits(self, transaction_id: str) -> list[Split]:
+        """Return all splits for a transaction ordered by ``ord, split_id``."""
+        rows = self._db.conn.execute(
+            """
+            SELECT split_id, transaction_id, amount, category, subcategory,
+                   note, ord, created_at, created_by
+              FROM app.transaction_splits
+             WHERE transaction_id = ?
+             ORDER BY ord, split_id
+            """,
+            [transaction_id],
+        ).fetchall()
+        return [_row_to_split(r) for r in rows]
+
+    def splits_balance(self, transaction_id: str) -> Decimal:
+        """Return signed residual ``parent.amount - SUM(children.amount)``.
+
+        Returns ``Decimal("0")`` when the children exactly balance the parent;
+        a non-zero signed residual otherwise. Raises ``LookupError`` if the
+        parent transaction does not exist in ``core.fct_transactions``.
+        """
+        row = self._db.conn.execute(
+            f"""
+            SELECT t.amount - COALESCE((
+                SELECT SUM(amount)
+                  FROM app.transaction_splits s
+                 WHERE s.transaction_id = t.transaction_id
+            ), 0) AS residual
+              FROM {FCT_TRANSACTIONS.full_name} t
+             WHERE t.transaction_id = ?
+            """,
+            [transaction_id],
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"transaction_id={transaction_id} not found")
+        # DuckDB returns DECIMAL columns as ``Decimal`` natively; defend against
+        # str-shaped returns from older drivers without losing precision.
+        residual = row[0]
+        return residual if isinstance(residual, Decimal) else Decimal(str(residual))
+
+
+def _row_to_split(row: tuple[Any, ...]) -> Split:
+    return Split(
+        split_id=str(row[0]),
+        transaction_id=str(row[1]),
+        amount=row[2] if isinstance(row[2], Decimal) else Decimal(str(row[2])),
+        category=str(row[3]) if row[3] is not None else None,
+        subcategory=str(row[4]) if row[4] is not None else None,
+        note=str(row[5]) if row[5] is not None else None,
+        ord=int(row[6]),
+        created_at=str(row[7]),
+        created_by=str(row[8]),
+    )
 
 
 def _row_to_note(row: tuple[Any, ...]) -> Note:

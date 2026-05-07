@@ -18,6 +18,7 @@ from moneybin.services.transaction_service import (
     Note,
     RecurringResult,
     RecurringTransaction,
+    Split,
     TagRenameResult,
     Transaction,
     TransactionSearchResult,
@@ -536,3 +537,291 @@ class TestTags:
         self, txn_service: TransactionService
     ) -> None:
         assert txn_service.list_tags("nope") == []
+
+
+class TestSplits:
+    """Tests for TransactionService split operations (Req 17–21)."""
+
+    @pytest.fixture()
+    def audit_service(self, transaction_db: Database) -> AuditService:
+        return AuditService(transaction_db)
+
+    @pytest.fixture()
+    def txn_service(
+        self, transaction_db: Database, audit_service: AuditService
+    ) -> TransactionService:
+        return TransactionService(transaction_db, audit=audit_service)
+
+    @pytest.fixture()
+    def sample_transaction_id(self) -> str:
+        # T1 from the transaction_db fixture (amount -50.00).
+        return "T1"
+
+    @pytest.fixture()
+    def sample_transaction_id_amount_minus_100(self, transaction_db: Database) -> str:
+        # Insert a parent transaction with amount=-100.00 for balance tests.
+        transaction_db.conn.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at,
+                transaction_year, transaction_month, transaction_day,
+                transaction_day_of_week, transaction_year_month,
+                transaction_year_quarter
+            ) VALUES
+            ('TSPLIT', 'A1', '2026-04-20', -100.00, 100.00, 'expense',
+             'Big Box Store', 'DEBIT', false, 'USD', 'ofx',
+             '2026-04-20', CURRENT_TIMESTAMP,
+             2026, 4, 20, 6, '2026-04', '2026-Q2')
+            """  # noqa: S608  # test input, not executing SQL
+        )
+        return "TSPLIT"
+
+    @pytest.mark.unit
+    def test_add_split_inserts_with_auto_incrementing_ord(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        s1 = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-30.00"),
+            category="Supplies",
+            actor="cli",
+        )
+        s2 = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-20.00"),
+            category="Gas",
+            actor="cli",
+        )
+        s3 = txn_service.add_split(
+            sample_transaction_id, Decimal("-10.00"), category="Misc", actor="cli"
+        )
+        assert isinstance(s1, Split)
+        assert s1.ord == 0
+        assert s2.ord == 1
+        assert s3.ord == 2
+        assert s1.amount == Decimal("-30.00")
+        assert s1.split_id and len(s1.split_id) == 12
+
+        splits = txn_service.list_splits(sample_transaction_id)
+        assert [s.split_id for s in splits] == [s1.split_id, s2.split_id, s3.split_id]
+        assert [s.ord for s in splits] == [0, 1, 2]
+
+    @pytest.mark.unit
+    def test_add_split_emits_audit(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        s = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-25.50"),
+            category="Coffee",
+            actor="cli",
+        )
+        events = audit_service.list_events(
+            action_pattern="split.add", target_id=sample_transaction_id
+        )
+        assert len(events) == 1
+        assert events[0].before_value is None
+        assert events[0].after_value == {
+            "split_id": s.split_id,
+            "amount": "-25.50",
+            "category": "Coffee",
+        }
+        assert events[0].target_table == "transaction_splits"
+        assert events[0].target_schema == "app"
+
+    @pytest.mark.unit
+    def test_remove_split_emits_audit_with_before(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        s = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-10.00"),
+            category="Coffee",
+            actor="cli",
+        )
+        txn_service.remove_split(s.split_id, actor="cli")
+        events = audit_service.list_events(action_pattern="split.remove")
+        assert len(events) == 1
+        assert events[0].after_value is None
+        assert events[0].before_value == {
+            "split_id": s.split_id,
+            "amount": "-10.00",
+            "category": "Coffee",
+        }
+        assert events[0].target_id == sample_transaction_id
+        assert txn_service.list_splits(sample_transaction_id) == []
+
+    @pytest.mark.unit
+    def test_remove_split_missing_raises_lookup(
+        self, txn_service: TransactionService
+    ) -> None:
+        with pytest.raises(LookupError):
+            txn_service.remove_split("doesnotexist", actor="cli")
+
+    @pytest.mark.unit
+    def test_clear_splits_removes_all_and_emits_one_event(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        txn_service.add_split(
+            sample_transaction_id, Decimal("-10.00"), category="A", actor="cli"
+        )
+        txn_service.add_split(
+            sample_transaction_id, Decimal("-20.00"), category="B", actor="cli"
+        )
+        txn_service.clear_splits(sample_transaction_id, actor="cli")
+        assert txn_service.list_splits(sample_transaction_id) == []
+        events = audit_service.list_events(action_pattern="split.clear")
+        assert len(events) == 1
+        assert events[0].before_value == {"split_count": 2}
+        assert events[0].after_value is None
+        assert events[0].target_id == sample_transaction_id
+
+    @pytest.mark.unit
+    def test_clear_splits_noop_when_empty(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        txn_service.clear_splits(sample_transaction_id, actor="cli")
+        events = audit_service.list_events(action_pattern="split.clear")
+        assert events == []
+
+    @pytest.mark.unit
+    def test_set_splits_replaces_all_atomically(
+        self,
+        txn_service: TransactionService,
+        sample_transaction_id: str,
+    ) -> None:
+        txn_service.add_split(
+            sample_transaction_id, Decimal("-10.00"), category="A", actor="cli"
+        )
+        result = txn_service.set_splits(
+            sample_transaction_id,
+            [
+                {
+                    "amount": Decimal("-50.00"),
+                    "category": "B",
+                    "subcategory": None,
+                    "note": None,
+                }
+            ],
+            actor="mcp",
+        )
+        assert len(result) == 1
+        assert result[0].amount == Decimal("-50.00")
+        assert result[0].category == "B"
+        assert result[0].ord == 0
+        listed = txn_service.list_splits(sample_transaction_id)
+        assert [(s.amount, s.category) for s in listed] == [(Decimal("-50.00"), "B")]
+
+    @pytest.mark.unit
+    def test_set_splits_validates_before_mutating(
+        self,
+        txn_service: TransactionService,
+        sample_transaction_id: str,
+    ) -> None:
+        # Seed an existing split that should remain untouched on validation failure.
+        txn_service.add_split(
+            sample_transaction_id, Decimal("-10.00"), category="Keep", actor="cli"
+        )
+        with pytest.raises(ValueError):
+            txn_service.set_splits(
+                sample_transaction_id,
+                [
+                    {"amount": Decimal("-5.00"), "category": "ok"},
+                    {"amount": 7.0, "category": "bad-float"},  # not Decimal
+                ],
+                actor="mcp",
+            )
+        listed = txn_service.list_splits(sample_transaction_id)
+        assert [(s.amount, s.category) for s in listed] == [(Decimal("-10.00"), "Keep")]
+
+    @pytest.mark.unit
+    def test_splits_balance_returns_signed_residual(
+        self,
+        txn_service: TransactionService,
+        sample_transaction_id_amount_minus_100: str,
+    ) -> None:
+        txn_service.add_split(
+            sample_transaction_id_amount_minus_100,
+            Decimal("-60.00"),
+            category="A",
+            actor="cli",
+        )
+        # parent -100, children -60 → residual = -100 - (-60) = -40
+        residual = txn_service.splits_balance(sample_transaction_id_amount_minus_100)
+        assert residual == Decimal("-40.00")
+        assert isinstance(residual, Decimal)
+
+    @pytest.mark.unit
+    def test_splits_balance_zero_when_balanced(
+        self,
+        txn_service: TransactionService,
+        sample_transaction_id_amount_minus_100: str,
+    ) -> None:
+        txn_service.add_split(
+            sample_transaction_id_amount_minus_100,
+            Decimal("-60.00"),
+            category="A",
+            actor="cli",
+        )
+        txn_service.add_split(
+            sample_transaction_id_amount_minus_100,
+            Decimal("-40.00"),
+            category="B",
+            actor="cli",
+        )
+        assert txn_service.splits_balance(
+            sample_transaction_id_amount_minus_100
+        ) == Decimal("0.00")
+
+    @pytest.mark.unit
+    def test_splits_balance_no_children_equals_parent(
+        self,
+        txn_service: TransactionService,
+        sample_transaction_id_amount_minus_100: str,
+    ) -> None:
+        # No splits → residual = parent.amount
+        assert txn_service.splits_balance(
+            sample_transaction_id_amount_minus_100
+        ) == Decimal("-100.00")
+
+    @pytest.mark.unit
+    def test_splits_balance_missing_parent_raises_lookup(
+        self, txn_service: TransactionService
+    ) -> None:
+        with pytest.raises(LookupError):
+            txn_service.splits_balance("nope")
+
+    @pytest.mark.unit
+    def test_list_splits_honors_ord(
+        self, txn_service: TransactionService, sample_transaction_id: str
+    ) -> None:
+        s1 = txn_service.add_split(
+            sample_transaction_id, Decimal("-1.00"), category="x", actor="cli"
+        )
+        s2 = txn_service.add_split(
+            sample_transaction_id, Decimal("-2.00"), category="y", actor="cli"
+        )
+        splits = txn_service.list_splits(sample_transaction_id)
+        assert [s.ord for s in splits] == [0, 1]
+        assert [s.split_id for s in splits] == [s1.split_id, s2.split_id]
+
+    @pytest.mark.unit
+    def test_list_splits_empty_for_unknown_transaction(
+        self, txn_service: TransactionService
+    ) -> None:
+        assert txn_service.list_splits("nope") == []
