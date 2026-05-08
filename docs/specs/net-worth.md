@@ -326,6 +326,7 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 - **Historical balance backfill without an anchor** — If a user imports 2 years of transactions but only has balance observations from the last 3 months, we do not attempt to reconstruct balances before the first observation. Absent, not best-effort.
 - **Plaid balance sync scheduling** — The polling/scheduling mechanism for Plaid balance snapshots belongs in `sync-plaid.md`, not here. This spec consumes whatever Plaid provides.
 - **Net worth trend analysis and reporting** — Cash flow statements, trend charts, and category breakdowns belong in `net-worth-reporting.md` (M3). This spec provides the data model they consume.
+- **Transaction-level reconciliation** — Per-transaction cleared/reconciled markers (the legacy "verified" concept) are not yet specced. When designed, that future spec should subsume what [`transaction-curation.md`](transaction-curation.md) §Out of Scope deferred as the "verified" curator flag — one transaction-grain reconciliation surface, not two parallel markers. Cross-link to [`transaction-curation.md`](transaction-curation.md) §Out of Scope.
 
 ## Coordination with `account-management.md`
 

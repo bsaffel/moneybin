@@ -35,7 +35,7 @@ from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.audit_service import AuditEvent, AuditService
+from moneybin.services.audit_service import AuditService
 from moneybin.services.import_service import ImportService
 from moneybin.services.transaction_service import (
     Note,
@@ -72,22 +72,6 @@ def _split_dict(split: Split) -> dict[str, Any]:
         "ord": split.ord,
         "created_at": split.created_at,
         "created_by": split.created_by,
-    }
-
-
-def _event_dict(event: AuditEvent) -> dict[str, Any]:
-    return {
-        "audit_id": event.audit_id,
-        "occurred_at": event.occurred_at,
-        "actor": event.actor,
-        "action": event.action,
-        "target_schema": event.target_schema,
-        "target_table": event.target_table,
-        "target_id": event.target_id,
-        "before_value": event.before_value,
-        "after_value": event.after_value,
-        "parent_audit_id": event.parent_audit_id,
-        "context_json": event.context_json,
     }
 
 
@@ -301,7 +285,7 @@ def system_audit_list(
         limit=limit,
     )
     return build_envelope(
-        data=[_event_dict(e) for e in events],
+        data=[e.to_dict() for e in events],
         sensitivity="medium",
         actions=[
             "Filter with action_pattern='tag.%' / 'note.%' / 'split.%' to drill in",

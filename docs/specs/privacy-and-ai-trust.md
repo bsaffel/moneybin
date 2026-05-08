@@ -52,7 +52,7 @@ Every path where data might leave the user's machine falls into one of four tier
 
 **Data state:** Leaves the machine, but critical and high-sensitivity fields are stripped or replaced. Only low-sensitivity and structural data is sent.
 **Consent:** None required — the system handles minimization automatically.
-**Audit:** Logged in `app.ai_audit_log` with `flow_tier=1`.
+**Audit:** Logged in unified `app.audit_log` with `action='ai.external_call'` and `context_json.flow_tier=1` (see §Audit log).
 
 ### Tier 2 — User-initiated, real data
 
@@ -170,21 +170,34 @@ The redaction engine transforms data before it leaves the machine. It is the mec
 
 Every external AI call is recorded. The audit log is a user-facing feature, not just infrastructure — it's how the user "checks the receipt."
 
-### Schema: `app.ai_audit_log`
+### Storage: unified `app.audit_log`
 
-| Column | Type | Description |
+AI-call audit rows live in the unified `app.audit_log` defined by [`transaction-curation.md`](transaction-curation.md) §Data Model — there is no separate `app.ai_audit_log` table. One audit surface, one retention story; AI-specific metadata rides `context_json`. Rows produced by AI calls use `action='ai.external_call'`; the per-row contract:
+
+| `app.audit_log` column | AI-call value |
+|---|---|
+| `audit_id` | UUID for this audit entry |
+| `occurred_at` | Equivalent of the legacy `timestamp` column |
+| `actor` | The feature initiating the call (e.g., `smart_import_parse`, `mcp_transaction_query`) — equivalent of the legacy `feature` column |
+| `action` | `ai.external_call` |
+| `target_schema` / `target_table` / `target_id` | The entity the call was about, when scoped (e.g., one transaction). NULL for cross-cutting calls. |
+| `before_value` / `after_value` | Generally NULL — AI calls don't mutate row state directly. Used when an AI-driven update writes through a service that captures before/after. |
+| `context_json` | AI-specific fields, conventions below |
+
+#### `context_json` conventions for `action='ai.external_call'`
+
+| Key | Type | Notes |
 |---|---|---|
-| `audit_id` | `VARCHAR PRIMARY KEY` | Unique identifier for this audit entry |
-| `timestamp` | `TIMESTAMP` | When the call was made |
-| `flow_tier` | `INTEGER` | 1, 2, or 3 (tier 0 is not logged — no external flow) |
-| `feature` | `VARCHAR` | Which feature initiated the call (e.g., `smart_import_parse`, `mcp_transaction_query`) |
-| `backend` | `VARCHAR` | Provider used (e.g., `anthropic`, `openai`, `ollama`) |
-| `model` | `VARCHAR` | Specific model (e.g., `claude-sonnet-4-6`, `gpt-4o`, `llama3`) |
-| `data_sent_summary` | `VARCHAR` | Human-readable summary: row count, field list, redaction level. NOT the actual data. |
-| `data_sent_hash` | `VARCHAR` | SHA-256 of the actual payload for forensic verification without storing the payload |
-| `response_summary` | `VARCHAR` | What came back: schema/shape description, not content |
-| `consent_reference` | `VARCHAR` | Which consent grant authorized this call (FK to `app.ai_consent_grants`) |
-| `user_initiated` | `BOOLEAN` | True if the user directly triggered this (MCP query); false if system-initiated (Smart Import) |
+| `flow_tier` | integer | 1, 2, or 3 (tier 0 is not logged — no external flow) |
+| `backend` | string | Provider used (`anthropic`, `openai`, `ollama`, …) |
+| `model` | string | Specific model (`claude-sonnet-4-6`, `gpt-4o`, `llama3`, …) |
+| `data_sent_summary` | string | Human-readable summary: row count, field list, redaction level. NOT the payload. |
+| `data_sent_hash` | string | SHA-256 of the actual payload — forensic verification without retention. |
+| `response_summary` | string | What came back: schema/shape, not content. |
+| `consent_reference` | string | FK to the `app.ai_consent_grants` row that authorized the call. |
+| `user_initiated` | boolean | True for direct MCP queries; false for system-initiated calls (Smart Import). |
+
+The `get_ai_audit_log` consumer surface is preserved — it reads from `app.audit_log` filtered by `action='ai.external_call'` and projects `context_json` keys back into the original column names so callers see no API change.
 
 ### Why no payload storage
 

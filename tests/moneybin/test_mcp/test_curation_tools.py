@@ -78,12 +78,10 @@ def _seed_import(db: Database, import_id: str = "IMP_TEST_001") -> str:
     db.execute(
         """
         INSERT INTO raw.import_log (
-            import_id, source_type, format_name, source_filename,
-            file_hash, started_at, completed_at, status, row_count,
-            actor
-        ) VALUES (?, 'manual', 'manual', 'inline', NULL,
-                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'success', 0,
-                  'tester')
+            import_id, source_file, source_type, source_origin,
+            format_name, account_names, status, rows_total, rows_imported
+        ) VALUES (?, 'inline', 'manual', 'manual',
+                  'manual', '[]'::JSON, 'complete', 0, 0)
         """,
         [import_id],
     )

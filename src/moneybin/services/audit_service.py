@@ -43,6 +43,22 @@ class AuditEvent:
     parent_audit_id: str | None
     context_json: dict[str, Any] | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-friendly dict (CLI/MCP envelope payload)."""
+        return {
+            "audit_id": self.audit_id,
+            "occurred_at": self.occurred_at,
+            "actor": self.actor,
+            "action": self.action,
+            "target_schema": self.target_schema,
+            "target_table": self.target_table,
+            "target_id": self.target_id,
+            "before_value": self.before_value,
+            "after_value": self.after_value,
+            "parent_audit_id": self.parent_audit_id,
+            "context_json": self.context_json,
+        }
+
 
 class AuditService:
     """Emit and query ``app.audit_log``."""

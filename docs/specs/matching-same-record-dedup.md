@@ -201,6 +201,8 @@ SQL query against prep views. Returns pairs where:
 
 This produces a narrow candidate set. No fuzzy logic at this stage.
 
+**Manual-entry exemption.** Rows with `source_type = 'manual'` are excluded from candidate selection on both sides — they are never proposed as matches against imported rows in either direction. Manual entries express explicit user intent ("I am recording this transaction"); silently merging one with an OFX/CSV row would erase that intent without consent. Pairing a manual row with an imported row is reachable only via explicit `transactions matches confirm`. See [`transaction-curation.md`](transaction-curation.md) §Manual Entry for the broader rationale.
+
 ### Scoring
 
 For each candidate pair, DuckDB computes:
