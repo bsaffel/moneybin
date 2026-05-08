@@ -7,10 +7,14 @@ import typer
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json, handle_cli_errors
 
+from . import audit as _audit
+
 app = typer.Typer(
     help="System and data status",
     no_args_is_help=True,
 )
+
+app.add_typer(_audit.app, name="audit")
 
 logger = logging.getLogger(__name__)
 
