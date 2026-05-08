@@ -16,7 +16,7 @@ MoneyBin's pre-launch plan is organized as **milestones**: M0 through M3, each w
 | **M3A** | Plaid Transactions sync | Domain | 📐 designed |
 | **M3B** | Investment tracking | Domain | 📐 designed |
 | **M3C** | Multi-currency + budget rollovers | Domain | 📐 designed |
-| **M3D** | Web UI + Streamable HTTP MCP | Surface | 📐 designed |
+| **M3D** | Web UI hardening + Streamable HTTP MCP | Surface | 📐 designed |
 | **M3E** | Hosted launch | Surface — closes launch | 📐 designed |
 | **Post-launch** | (anything after M3E) | — | 🗓️ planned |
 
@@ -133,7 +133,7 @@ flowchart LR
     M3A[M3A — Plaid]
     M3B[M3B — Investments]
     M3C[M3C — Multi-currency + budgets]
-    M3D[M3D — Web UI + Streamable HTTP]
+    M3D[M3D — Web UI hardening]
     M3E[M3E — Hosted launch]
 
     M0 --> M1
