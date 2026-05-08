@@ -71,6 +71,62 @@ EXAMPLES: dict[str, list[Example]] = {
                 ORDER BY transaction_year_month
             """,
         ),
+        Example(
+            question="Notes on a specific transaction "
+            "(substitute YOUR_TRANSACTION_ID; LIST(STRUCT) column)",
+            sql="""
+                SELECT notes
+                FROM core.fct_transactions
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Transactions tagged 'tax:business' "
+            "(use ANY(tags), not len(tags) > 0, for NULL-safe filtering)",
+            sql="""
+                SELECT transaction_id, transaction_date, amount, description, tags
+                FROM core.fct_transactions
+                WHERE 'tax:business' = ANY(tags)
+                ORDER BY transaction_date DESC
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Transactions that have at least one note "
+            "(use note_count > 0, not len(notes) > 0, to avoid 3-valued logic)",
+            sql="""
+                SELECT transaction_id, transaction_date, amount, description, note_count
+                FROM core.fct_transactions
+                WHERE note_count > 0
+                ORDER BY transaction_date DESC
+                LIMIT 50
+            """,
+        ),
+    ],
+    "core.fct_transaction_lines": [
+        Example(
+            question="Split-line rows only "
+            "(parent transaction is excluded for split transactions)",
+            sql="""
+                SELECT transaction_id, line_id, line_amount, line_category, line_kind
+                FROM core.fct_transaction_lines
+                WHERE line_kind = 'split'
+                ORDER BY transaction_id, line_id
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Spending by category at the line grain "
+            "(splits expand to N rows; unsplit transactions count once as 'whole')",
+            sql="""
+                SELECT line_category, SUM(ABS(line_amount)) AS total
+                FROM core.fct_transaction_lines
+                WHERE line_amount < 0
+                GROUP BY line_category
+                ORDER BY total DESC
+            """,
+        ),
     ],
     "core.dim_accounts": [
         Example(

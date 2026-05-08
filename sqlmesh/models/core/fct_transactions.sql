@@ -1,5 +1,7 @@
 /* Canonical transactions fact view; reads from the deduplicated merged layer
-   with categorization and merchant joins; negative amount = expense, positive = income */
+   with categorization and merchant joins; negative amount = expense, positive = income.
+   Curation columns (notes/tags/splits + counts) join from app.* per Architectural
+   Pattern 1: app.* writes are flat-relational; consumers read DuckDB nested types. */
 -- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
 MODEL (
   name core.fct_transactions,
@@ -7,7 +9,42 @@ MODEL (
   grain transaction_id
 );
 
-WITH enriched AS (
+WITH notes_agg AS (
+  SELECT
+    transaction_id,
+    LIST(STRUCT_PACK(
+      note_id := note_id,
+      text := text,
+      author := author,
+      created_at := created_at
+    ) ORDER BY created_at) AS notes,
+    COUNT(*) AS note_count
+  FROM app.transaction_notes
+  GROUP BY transaction_id
+),
+tags_agg AS (
+  SELECT
+    transaction_id,
+    LIST(tag ORDER BY tag) AS tags,
+    COUNT(*) AS tag_count
+  FROM app.transaction_tags
+  GROUP BY transaction_id
+),
+splits_agg AS (
+  SELECT
+    transaction_id,
+    LIST(STRUCT_PACK(
+      split_id := split_id,
+      amount := amount,
+      category := category,
+      subcategory := subcategory,
+      note := note
+    ) ORDER BY ord, split_id) AS splits,
+    COUNT(*) AS split_count
+  FROM app.transaction_splits
+  GROUP BY transaction_id
+),
+enriched AS (
   SELECT
     t.transaction_id,
     t.account_id,
@@ -44,7 +81,14 @@ WITH enriched AS (
     (
       NOT bt_debit.transfer_id IS NULL OR NOT bt_credit.transfer_id IS NULL
     ) AS is_transfer,
-    t.loaded_at
+    t.loaded_at,
+    n.notes,
+    n.note_count,
+    tg.tags,
+    tg.tag_count,
+    s.splits,
+    s.split_count,
+    COALESCE(s.split_count, 0) > 0 AS has_splits
   FROM prep.int_transactions__merged AS t
   LEFT JOIN app.transaction_categories AS c
     ON t.transaction_id = c.transaction_id
@@ -54,6 +98,12 @@ WITH enriched AS (
     ON t.transaction_id = bt_debit.debit_transaction_id
   LEFT JOIN core.bridge_transfers AS bt_credit
     ON t.transaction_id = bt_credit.credit_transaction_id
+  LEFT JOIN notes_agg AS n
+    ON t.transaction_id = n.transaction_id
+  LEFT JOIN tags_agg AS tg
+    ON t.transaction_id = tg.transaction_id
+  LEFT JOIN splits_agg AS s
+    ON t.transaction_id = s.transaction_id
 )
 SELECT
   transaction_id, /* Gold key: deterministic SHA-256 hash, unique per real-world transaction */
@@ -94,5 +144,12 @@ SELECT
   DATE_PART('day', transaction_date) AS transaction_day, /* Calendar day (1-31) */
   DATE_PART('dayofweek', transaction_date) AS transaction_day_of_week, /* Day of week: 0 = Sunday */
   STRFTIME(transaction_date, '%Y-%m') AS transaction_year_month, /* YYYY-MM for period grouping */
-  STRFTIME(transaction_date, '%Y') || '-Q' || QUARTER(transaction_date) AS transaction_year_quarter /* YYYY-QN for period grouping */
+  STRFTIME(transaction_date, '%Y') || '-Q' || QUARTER(transaction_date) AS transaction_year_quarter, /* YYYY-QN for period grouping */
+  notes, /* LIST(STRUCT(note_id, text, author, created_at)); chronological. NULL when no notes — use note_count > 0, not len(notes) > 0 */
+  note_count, /* INTEGER count of notes; NULL when no notes exist for the transaction */
+  tags, /* LIST(VARCHAR); sorted; 'namespace:value' or bare 'value'. NULL when no tags — filter via 'x' = ANY(tags) or tag_count > 0 */
+  tag_count, /* INTEGER count of tags; NULL when no tags exist */
+  splits, /* LIST(STRUCT(split_id, amount, category, subcategory, note)); ordered by ord. NULL when no splits */
+  split_count, /* INTEGER count of splits; NULL when no splits exist */
+  has_splits /* BOOLEAN; TRUE when the transaction has one or more splits in app.transaction_splits */
 FROM enriched

@@ -29,6 +29,7 @@ class TableRef(NamedTuple):
 # -- Core layer (canonical tables built by SQLMesh transforms) --
 DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")
+FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="interface")
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")

@@ -16,6 +16,7 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_BALANCES,
     FCT_BALANCES_DAILY,
+    FCT_TRANSACTION_LINES,
     FCT_TRANSACTIONS,
     IMPORTS,
     INTERFACE_TABLES,
@@ -32,6 +33,7 @@ pytestmark = pytest.mark.unit
 
 EXPECTED_INTERFACE = {
     FCT_TRANSACTIONS.full_name,
+    FCT_TRANSACTION_LINES.full_name,
     DIM_ACCOUNTS.full_name,
     BRIDGE_TRANSFERS.full_name,
     CATEGORIES.full_name,
