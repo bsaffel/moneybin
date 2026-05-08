@@ -1,0 +1,70 @@
+# Curator persona — design artifact (transaction-curation spec §Synthetic Data).
+#
+# The curator persona describes a user who actively annotates the canonical
+# transaction store: ~10% of total volume entered manually (cash, Venmo,
+# checks), ~15% of rows carry one or more notes, ~25% carry tags, ~5% are
+# split across categories, and select import batches carry labels.
+#
+# Status: forward-looking. The synthetic generator
+# (``src/moneybin/testing/synthetic/``) consumed by the scenario harness's
+# ``generate`` step is account/recurring/spending-driven and does not yet
+# accept ``manual_entries`` / ``notes`` / ``tags`` / ``splits`` /
+# ``import_labels`` keys. The four scenario tests added in this task do not
+# pull from this file via the runner — they construct focused fixtures
+# directly via service-layer calls (the same surfaces a real curator hits)
+# so each test asserts a precise post-state. When the synthetic generator
+# learns curation rates, this file becomes its YAML driver and the rate
+# fields below become the source of truth for ground-truth assertions.
+
+name: curator
+description: >
+  Curator who annotates ~25% of transactions, manually enters ~10%, splits
+  ~5%, and labels select import batches. Used for the four Tier-4 scenario
+  tests covering manual-entry dedup, manual-entry auto-rule training,
+  audit-log idempotency, and split-via-annotation.
+
+window_days: 180
+
+# Baseline imports over the 6-month window. Counts are nominal; the
+# generator's RNG produces ±5%/year variance, so any future scenario
+# asserting on counts must derive its tolerance from the formula and the
+# seed (per `.claude/rules/testing.md` §Scenario Expectations).
+imports:
+  - format: csv
+    rows: 600
+  - format: ofx
+    rows: 200
+
+manual_entries:
+  rate: 0.10
+  cash_purchases: true
+  venmo_settlements: true
+  check_entries: true
+
+notes:
+  rate: 0.15
+  phrasing_pool:
+    - "checked statement, this is the {merchant} repair"
+    - "split between {cat_a} and {cat_b}"
+    - "reimbursable, will be invoiced"
+    - "kid's school field trip"
+    - "review-later: ambiguous merchant name"
+
+tags:
+  rate: 0.25
+  vocabulary:
+    - tax:business-expense
+    - tax:medical
+    - vacation:hawaii-2026
+    - recurring
+    - review-later
+
+splits:
+  rate: 0.05
+  ground_truth_balanced: true
+
+import_labels:
+  - import_index: 0
+    labels: [tax-year-2024]
+  - import_index: 2
+    labels: [q1-reupload]
