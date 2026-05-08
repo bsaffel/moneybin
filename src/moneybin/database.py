@@ -246,6 +246,16 @@ class Database:
             except importlib.metadata.PackageNotFoundError:
                 pass  # SQLMesh not installed — skip
 
+        # Assemble app.categories and app.merchants views AFTER migrations.
+        # Order matters on the upgrade path: V006 must drop the legacy
+        # `app.merchants` TABLE before refresh_views can `CREATE OR REPLACE
+        # VIEW app.merchants` (DuckDB rejects replacing a table with a view).
+        # _ensure_seed_tables_exist creates empty seeds.* tables if SQLMesh
+        # hasn't populated them yet (tests, fresh installs).
+        from moneybin.seeds import refresh_views
+
+        refresh_views(self)
+
         logger.debug(f"Database connection established: {db_path}")
 
     def _check_permissions(self, db_path: Path) -> None:

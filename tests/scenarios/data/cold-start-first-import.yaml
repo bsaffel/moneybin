@@ -1,0 +1,68 @@
+scenario: cold-start-first-import
+description: >
+  Exercises the cold-start branch's merchants split end-to-end on a fresh DB:
+  app.merchants view assembled over app.user_merchants ∪ seeds.merchants_*,
+  _fetch_merchants ordering with is_user discriminator, create_merchant routing
+  to user_merchants. seed_merchants writes the persona's full merchant catalog
+  to app.user_merchants (via service.create_merchant) and apply_deterministic
+  reads the merged view; accuracy proves the integration is intact.
+  Note: this models the snowball endpoint (full seeds), not the literal
+  first-run minimal-seed state. A true cold-start scenario (placeholder seeds +
+  simulate_llm_assist) requires Phase 12 seed curation and runner support for
+  the assist step.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+# Pipeline rationale:
+#   generate   — synthetic transactions from the basic persona (1 year).
+#   transform  — materialize core.fct_transactions and dim_accounts.
+#   seed_merchants — populate app.merchants from the persona's merchant catalog;
+#                    this approximates the global seed merchants a fresh install
+#                    would have (common chains like Starbucks, Netflix, etc.).
+#   categorize — apply_deterministic() matches transaction descriptions against
+#                app.merchants rules; covered transactions get categories.
+#   transform  — re-materialize fct_transactions so the category LEFT JOIN
+#                reflects the newly written app.transaction_categories rows.
+pipeline:
+  - generate
+  - transform
+  - match
+  - seed_merchants
+  - categorize
+  - transform
+
+assertions:
+  - name: no_duplicate_transactions
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  - name: sign_convention
+    fn: assert_sign_convention
+  - name: fk_account_id
+    fn: assert_valid_foreign_keys
+    args:
+      child: core.fct_transactions
+      column: account_id
+      parent: core.dim_accounts
+      parent_column: account_id
+
+# Same accuracy floor (0.70) as basic-full-pipeline because the pipeline is
+# identical: seed_merchants populates app.user_merchants from the persona's
+# full merchant catalog, so apply_deterministic should achieve the same
+# coverage it does in basic-full-pipeline. A regression here below 0.70 would
+# indicate the merchants view assembly or _fetch_merchants ordering is broken.
+evaluations:
+  - name: cold_start_categorization_coverage
+    fn: score_categorization
+    threshold:
+      metric: accuracy
+      min: 0.70
+
+gates:
+  required_assertions: all
+  required_evaluations: all

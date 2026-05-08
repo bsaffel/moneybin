@@ -18,6 +18,9 @@ from moneybin.mcp.tools.transactions_categorize import (
     register_transactions_categorize_tools,
     transactions_categorize_stats,
 )
+from moneybin.mcp.tools.transactions_categorize_assist import (
+    register_transactions_categorize_assist_tools,
+)
 from tests.moneybin.db_helpers import seed_categories_view
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -28,6 +31,7 @@ async def _registered_names() -> set[str]:
     register_categories_tools(srv)
     register_merchants_tools(srv)
     register_transactions_categorize_tools(srv)
+    register_transactions_categorize_assist_tools(srv)
     return {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 
@@ -42,12 +46,13 @@ class TestCategorizeToolRegistration:
         assert "merchants_list" in names
         assert "transactions_categorize_stats" in names
         assert "transactions_categorize_pending_list" in names
-        assert "transactions_categorize_bulk_apply" in names
+        assert "transactions_categorize_apply" in names
         assert "transactions_categorize_rules_create" in names
         assert "transactions_categorize_rule_delete" in names
         assert "merchants_create" in names
         assert "categories_create" in names
         assert "categories_toggle" in names
+        assert "transactions_categorize_assist" in names
 
     @pytest.mark.unit
     async def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
@@ -69,7 +74,7 @@ class TestCategorizeToolRegistration:
         names = await _registered_names()
         assert {
             "transactions_categorize_auto_review",
-            "transactions_categorize_auto_confirm",
+            "transactions_categorize_auto_accept",
             "transactions_categorize_auto_stats",
         } <= names
 

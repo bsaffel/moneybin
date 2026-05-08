@@ -55,7 +55,7 @@ async def test_extended_tools_hidden_at_connect() -> None:
 
     async with Client(mcp) as client:
         names = {t.name for t in await client.list_tools()}
-        assert "transactions_categorize_bulk_apply" not in names
+        assert "transactions_categorize_apply" not in names
         assert "budget_set" not in names
 
 
@@ -70,7 +70,7 @@ async def test_discover_reveals_namespace_tools() -> None:
     async with Client(mcp) as client:
         await client.call_tool("moneybin_discover", {"domain": "categorize"})
         names = {t.name for t in await client.list_tools()}
-        assert "transactions_categorize_bulk_apply" in names
+        assert "transactions_categorize_apply" in names
 
 
 async def test_unknown_domain_returns_error_envelope() -> None:
@@ -98,15 +98,15 @@ async def test_per_session_discover_isolated() -> None:
 
     async with Client(mcp) as client_a, Client(mcp) as client_b:
         before_a = {t.name for t in await client_a.list_tools()}
-        assert "transactions_categorize_bulk_apply" not in before_a
+        assert "transactions_categorize_apply" not in before_a
 
         await client_a.call_tool("moneybin_discover", {"domain": "categorize"})
 
         after_a = {t.name for t in await client_a.list_tools()}
         visible_b = {t.name for t in await client_b.list_tools()}
 
-        assert "transactions_categorize_bulk_apply" in after_a
-        assert "transactions_categorize_bulk_apply" not in visible_b, (
+        assert "transactions_categorize_apply" in after_a
+        assert "transactions_categorize_apply" not in visible_b, (
             "Client B's tool visibility leaked from Client A's discover call — "
             "session isolation is broken."
         )
@@ -126,7 +126,7 @@ async def test_visibility_or_match_semantics() -> None:
     async with Client(mcp) as client:
         await client.call_tool("moneybin_discover", {"domain": "categorize"})
         names = {t.name for t in await client.list_tools()}
-        assert "transactions_categorize_bulk_apply" in names, (
+        assert "transactions_categorize_apply" in names, (
             "categorize tools should be enabled"
         )
         assert "budget_set" not in names, (
@@ -194,4 +194,4 @@ async def test_hidden_tool_is_uncallable_via_tools_call() -> None:
 
     async with Client(mcp) as client:
         with pytest.raises(ToolError):
-            await client.call_tool("transactions_categorize_bulk_apply", {})
+            await client.call_tool("transactions_categorize_apply", {})
