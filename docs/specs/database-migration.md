@@ -23,7 +23,7 @@ fresh installs never replay a long migration history.
   data).
 - Without a migration layer, users who upgrade the package against an existing database
   can encounter silent data corruption or hard crashes.
-- Investment tracking (Level 2) and multi-currency (Level 3) will introduce breaking
+- Investment tracking (M3B) and multi-currency (M3C) will introduce breaking
   DDL changes that every existing database must absorb automatically.
 
 ## Architecture

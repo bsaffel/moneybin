@@ -435,7 +435,7 @@ Selected for simplicity, auditability, and mature library support. X25519 is the
 **Known limitations:**
 
 - **Not quantum-resistant.** X25519 is vulnerable to Shor's algorithm on a sufficiently powerful quantum computer. The threat to personal financial data is not imminent, but the design must not preclude an upgrade.
-- **Not FIPS 140-3 compliant.** X25519 is not a NIST-approved curve. FIPS requires P-256, P-384, or P-521 for ECC. Argon2id (used for passphrase-based key protection) is also not FIPS-approved (FIPS requires PBKDF2 or HKDF). If MoneyBin ever pursues SOC 2 certification or serves regulated entities, these algorithms would need to be swapped. See `private/strategy/compliance-gap-analysis.md` (planned) for the full gap assessment.
+- **Not FIPS 140-3 compliant.** X25519 is not a NIST-approved curve. FIPS requires P-256, P-384, or P-521 for ECC. Argon2id (used for passphrase-based key protection) is also not FIPS-approved (FIPS requires PBKDF2 or HKDF). If MoneyBin ever pursues SOC 2 certification or serves regulated entities, these algorithms would need to be swapped.
 
 **Upgrade path: hybrid X25519 + ML-KEM (CRYSTALS-Kyber)**
 
@@ -637,7 +637,7 @@ The [`testing-and-validation-overview.md`](testing-and-validation-overview.md) u
 
 ## Build order & phasing
 
-### Phase 1: Core sync flow (MVP — Level 2 deliverable)
+### Phase 1: Core sync flow (M3A deliverable)
 
 - `SyncClient` with login, logout, connect, disconnect, pull, status
 - `PlaidLoader` with raw table DDL, JSON loading, `removed_transactions`
@@ -673,9 +673,9 @@ The [`testing-and-validation-overview.md`](testing-and-validation-overview.md) u
 - Swap without protocol, CLI, or server API changes
 - Timing: when the hybrid library ecosystem matures (Signal PQXDH and Apple PQ3 shipped in 2024; Rust/Python libraries are emerging)
 
-### Relationship to MVP roadmap
+### Relationship to roadmap
 
-Phase 1 of this spec maps to MVP Level 2 ("Plaid Transactions") in `private/strategy/mvp-roadmap.md`. Phases 2–4 are post-MVP enhancements. The build order here refines the internal phasing within the Level 2 deliverable — it does not change the roadmap sequencing.
+Phase 1 of this spec maps to **M3A — Plaid Transactions sync** in [`docs/roadmap.md`](../roadmap.md). Phases 2–4 are post-launch enhancements. The build order here refines the internal phasing within the M3A deliverable — it does not change the roadmap sequencing.
 
 ---
 
@@ -716,11 +716,11 @@ Infrastructure spec. The `Database` class that sync loaders write through handle
 Not designed here. Architectural constraints noted so the current design does not preclude them.
 
 1. **`sync push`** — multi-device sync. Push encrypted DuckDB state (or deltas) to the server so another device can pull it. Would add `moneybin sync push` command and bidirectional protocol extensions.
-2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investment-tracking.md` spec (MVP Level 2). New child spec: `sync-plaid-investments.md`.
+2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investment-tracking.md` spec (M3B). New child spec: `sync-plaid-investments.md`.
 3. **Plaid Liabilities** — sync loan, mortgage, and credit card debt details. Separate child spec.
 4. **Webhook-based sync** — server pushes notifications when new data is available, eliminating polling. Requires a client-side listener or notification mechanism.
 5. **Integration test environment** — coordinated setup for running server-dependent tests. Separate spec covering docker-compose, Auth0 test tenant, sandbox credential management.
-6. **Compliance gap analysis** — assessment of MoneyBin's security posture against SOC 2, FIPS 140-3, and other certifications. Planned as `private/strategy/compliance-gap-analysis.md`.
+6. **Compliance gap analysis** — assessment of MoneyBin's security posture against SOC 2, FIPS 140-3, and other certifications. Tracked separately.
 
 ## Success criteria
 

@@ -2,32 +2,82 @@
 
 ## When a Feature Ships
 
-After marking a spec as `implemented` (in both the spec file and `INDEX.md`), update public-facing documentation:
+After marking a spec as `implemented` (in both the spec file and `INDEX.md`), update public-facing documentation in this order:
 
-### README.md Updates
+### 1. CHANGELOG.md (user-visible changes)
 
-1. **Roadmap table**: Change the feature's icon from 📐 or 🗓️ to ✅.
-2. **"What Works Today" section**: Add or expand content describing the shipped feature. For user-facing surfaces (MCP tools, CLI commands, import formats), include enough detail that a reader understands what they can do — command examples, supported formats, tool domains, etc. Keep it scannable.
-3. **If the feature is large** (e.g., full MCP tool catalog, complete CLI reference), create a sub-page under `docs/` and link from the README rather than inlining everything.
+If the change is user-visible, add a bullet to `CHANGELOG.md`'s `Unreleased` section under the appropriate category:
 
-### What "enough detail" means
+- **Added** — new features, new commands, new tools, new import formats
+- **Changed** — behavior changes users will notice (default flag changes, schema changes, breaking changes)
+- **Deprecated** — features marked for future removal
+- **Removed** — features removed in this version
+- **Fixed** — bug fixes (only those that affect user behavior)
+- **Security** — security-relevant fixes
 
-- **New import format**: add to the import table, show a one-liner CLI example.
-- **New CLI command group**: add representative commands to the CLI section or link to a dedicated reference page.
-- **New MCP domain**: add to the MCP tools table with a one-line description.
-- **Infrastructure** (encryption, migrations): a sentence or two in the relevant section is fine.
+Cite PR numbers. Keep entries to one or two sentences each.
 
-The goal is that someone reading the README gets an accurate picture of what MoneyBin can do *today*, without needing to dig through specs.
+**What does NOT need a CHANGELOG entry:**
+
+- Internal refactors with no behavior change (`/simplify` passes)
+- CI tweaks
+- Code-style changes (formatting, lint rules)
+- Test-only PRs (unless they unblock something)
+- ADR additions (the ADR itself is the durable artifact)
+- Changes scoped to `private/` docs
+
+When in doubt: if a user reading the changelog would benefit from knowing about it, add an entry. If it's purely internal, skip it.
+
+### 2. docs/roadmap.md (milestone status)
+
+Move the feature row from `📐 designed` (or `🗓️ planned`) to `✅ shipped` in the milestone table. If the milestone itself just closed (e.g., M2A or M3B), update the milestone status. The roadmap is the canonical source of milestone state.
+
+### 3. docs/features.md (capability snapshot)
+
+If the feature adds a user-facing capability (CLI command, MCP tool, import format, etc.), add or update the relevant entry in `docs/features.md`. Link to the per-feature guide if one exists.
+
+### 4. README.md (status callout only)
+
+The README is a storefront — it points to `docs/roadmap.md` rather than carrying the milestone matrix itself. Only update the README if:
+
+- The status callout near the top needs to reflect a milestone closing (e.g., M2A → in flight → shipped).
+- The Why-MoneyBin bullets need a small adjustment because a previously-promised feature now exists.
+
+**Do not** re-add an in-README roadmap matrix. **Do not** re-add a detailed "What Works Today" feature table. Those live in `docs/`.
+
+See `docs/specs/user-facing-doc-polish.md` for the README structure rationale.
+
+### 5. Per-feature guides
+
+For shipped features that warrant a user-facing how-to, add a guide in `docs/guides/`:
+
+- **New import format**: extend the existing data-import guide; show a CLI example.
+- **New CLI command group**: representative commands in the CLI reference or a dedicated guide.
+- **New MCP domain**: add to the MCP server guide with a one-line description.
+- **Infrastructure** (encryption, migrations): a sentence or two in the relevant existing guide.
+
+The goal is that someone reading the docs gets an accurate picture of what MoneyBin can do *today*, without digging through specs.
 
 ## When a New Spec Is Written
 
-- Add a 📐 entry to the relevant roadmap table in `README.md`.
+- Add a 📐 entry in the appropriate row of `docs/roadmap.md` (matched to the milestone the spec is gated on).
+- Add the spec to `docs/specs/INDEX.md` with status `draft` or `ready`.
 
 ## When a Feature Is Planned (No Spec Yet)
 
-- Add a 🗓️ entry to the relevant roadmap table in `README.md`.
+- Add a 🗓️ entry to `docs/roadmap.md` in the post-launch section.
+- No `INDEX.md` entry until a spec exists.
 
-### Test Layer Check
+## When a Milestone Closes
+
+When all sub-milestones in a tier close (e.g., M2A + M2B + M2C all ship → M2 closes; M3A through M3E all close → launch):
+
+1. Move the `Unreleased` block in `CHANGELOG.md` into a new dated section: `## [M2A] — YYYY-MM-DD`. Reset `Unreleased` to a placeholder like `(no changes since M2A)`.
+2. Update `docs/roadmap.md` milestone status row.
+3. Update README status callout.
+4. Tag the commit (`git tag M2A` or similar) for cross-reference.
+
+## Test Layer Check
 
 Before marking a spec as `implemented`, verify the feature has tests at every applicable layer (see testing.md "Test Coverage by Layer"). Unit tests alone are not sufficient for features that add CLI commands or cross subsystem boundaries.
 
@@ -37,4 +87,4 @@ After implementation is complete and documentation is updated, run `/simplify` *
 
 ## Principle
 
-The README is the project's storefront. It must stay honest — never claim shipped status for designed-only features — but it should also stay *current*. A shipped feature that isn't in the README is invisible to users.
+The user-facing surface — README, CHANGELOG, roadmap, features — must stay **honest** (never claim shipped status for designed-only features) and **current** (a shipped feature with no doc trail is invisible to users). The README defers to `docs/` for detail; `docs/` defers to per-feature guides for depth. Each layer's job is to point downstream, not to carry every detail.

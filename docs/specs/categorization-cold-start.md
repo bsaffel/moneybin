@@ -15,7 +15,6 @@ Design the first-run categorization experience: how a brand-new MoneyBin install
 - Privacy alignment: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) — redaction aligns with this consent model
 - Tool registration: [`mcp-tool-surface.md`](mcp-tool-surface.md) — new MCP tools register here
 - Architecture rules: `.claude/rules/mcp-server.md`, `.claude/rules/cli.md`, `.claude/rules/database.md`
-- Strategic context: `private/strategy/categorization-competitive-context.md` (positioning rationale, not in public spec)
 
 The categorization overview already commits to several v1 bootstrap strategies (seed merchants, migration imports, Plaid pass-through) and acknowledges LLM-assist categorization as the lowest-priority solver in the precedence ladder. What's missing — and what this spec addresses — is the cold-start *workflow* that ties these solvers together for first-run, plus the PII redaction contract that makes LLM-assist privacy-defensible.
 
@@ -549,8 +548,6 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 - `docs/specs/INDEX.md` — add this spec at status `ready`
 - `.claude/rules/mcp-server.md` — strengthen principle 5 with agent-as-CLI-consumer framing
 - `.claude/rules/cli.md` — add Consumer Model section
-- `private/followups.md` — add three new followups (redaction internationalization, server-side merchant DB enrichment, rename + accept/reject standardization)
-- `private/strategy/categorization-competitive-context.md` — new file
 - `README.md` — update categorization roadmap and "What Works Today" section per `.claude/rules/shipping.md`
 - `tests/e2e/test_e2e_workflows.py` — update for renamed commands
 
@@ -662,7 +659,7 @@ Future spec recommended (see Adjacent initiatives in overview).
 
 ### Server-side merchant DB enrichment
 
-Followup logged in `private/followups.md` (Tier D).
+Tracked as a Tier D followup.
 
 - Slots into the priority ladder cleanly — new `categorized_by='enrichment'` between `'plaid'` and `'ai'`.
 - Per "sync server is opaque" principle, server-side enrichment is invisible to client beyond receiving better-quality data.

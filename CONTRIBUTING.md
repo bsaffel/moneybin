@@ -114,7 +114,11 @@ The public planning artifacts are:
 - [`docs/specs/`](docs/specs/INDEX.md) — design specs for every feature (status: `draft` → `ready` → `in-progress` → `implemented`).
 - [`docs/decisions/`](docs/decisions/) — architecture decision records (ADRs) for the load-bearing choices.
 - [`docs/guides/`](docs/guides/) — user-facing how-tos for shipped capabilities.
-- [`README.md`](README.md) — current state + roadmap by Wave.
+- [`docs/roadmap.md`](docs/roadmap.md) — milestone status (M0 through M3E + post-launch).
+- [`docs/features.md`](docs/features.md) — capability snapshot (what works today).
+- [`README.md`](README.md) — storefront pointing to the rest.
 - [`CHANGELOG.md`](CHANGELOG.md) — version history.
 
-Project-internal strategy (positioning, competitor analysis, persona-and-marketing breakdowns, hosted-tier design, wave-by-wave implementation tracking) lives in `private/strategy/` and is not committed. If you're contributing and want context on *why* a spec was written the way it was, the spec's `Background` section links to the relevant ADRs and references; the answer is rarely outside the public artifacts.
+If you're contributing and want context on *why* a spec was written the way it was, the spec's `Background` section links to the relevant ADRs and references — the answer almost always lives in the public artifacts above.
+
+**User-visible changes update `CHANGELOG.md`'s `Unreleased`.** Refactors, internal-only docs, and CI tweaks don't need entries. See `.claude/rules/shipping.md` for the full post-implementation checklist.

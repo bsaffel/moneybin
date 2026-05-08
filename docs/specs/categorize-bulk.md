@@ -10,7 +10,7 @@ Add a `moneybin transactions categorize bulk` CLI command that mirrors the exist
 ## Background
 
 - `mcp-architecture.md` §5 (CLI Symmetry) requires every MCP tool to have a CLI equivalent. `transactions_categorize_bulk_apply` is the largest remaining gap.
-- `private/followups.md` items: "No `categorize bulk` CLI command", "Cache active-rule patterns and merchant pairs across `bulk_categorize` loop", "Avoid duplicate description SELECT in `bulk_categorize`".
+- Tracked deferred work: a `categorize bulk` CLI command, caching of active-rule patterns and merchant pairs across the `bulk_categorize` loop, and removing the duplicate description SELECT.
 - Auto-rule learning is *triggered* by `bulk_categorize`. Without a CLI surface, there is no honest end-to-end CLI path through the auto-rule pipeline. `tests/e2e/test_e2e_workflows.py::TestAutoRulePipeline::test_import_then_promote_proposal` currently seeds `app.proposed_rules` via raw `db query` SQL as a workaround.
 - Today's hot path: `AutoRuleService.record_categorization` runs ~5 DB queries per item (description SELECT, rule-engine evaluation queries, merchants table SELECT) — many of which duplicate state the bulk loop already fetched.
 
@@ -67,7 +67,6 @@ No schema changes. New in-memory types only:
   - Migrate dict-based bulk tests to construct `BulkCategorizationItem`. Add coverage for context-routed paths and assertions that DB queries are not issued when the context is provided.
 - `docs/specs/INDEX.md` — add this spec under Categorization.
 - `docs/specs/mcp-architecture.md` §5 — note that `transactions_categorize_bulk_apply` now has CLI parity.
-- `private/followups.md` — remove the three resolved items.
 - `README.md` — per `.claude/rules/shipping.md`: update CLI section / categorization roadmap.
 
 ### Key Decisions

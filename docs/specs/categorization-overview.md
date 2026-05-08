@@ -304,7 +304,7 @@ a powerful bootstrap signal:
    ML model. A user who imports 5 years of history has a corpus that makes the ML model
    useful from day one.
 
-This is the highest-leverage bootstrap strategy for users switching from another tool. Migration-applied categorizations write `categorized_by='migration'` for traceability and weighted-training (0.85). See `private/strategy/strategic-analysis.md` §6 for the full migration strategy.
+This is the highest-leverage bootstrap strategy for users switching from another tool. Migration-applied categorizations write `categorized_by='migration'` for traceability and weighted-training (0.85).
 
 ### LLM-assist cold-start workflow (v1)
 
@@ -419,5 +419,5 @@ Decisions made during spec review, preserved for context.
 
 Cross-cutting decisions deferred to child specs or to resolve during implementation.
 - **Observability strategy.** Multiple sections of this spec stipulate logging (retraining events, threshold-tier shifts, auto-rule proposals, ML predictions dropped). A cross-cutting logging/observability design pass is needed to ensure a coherent approach across import summaries, per-transaction provenance, and system-level statistics. This is a concern shared with other specs (sync, matching) and should be addressed holistically rather than per-feature.
-- **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function. See `private/strategy/strategic-analysis.md` §6 for source tool category formats.
+- **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function.
 - **In-band LLM-assist for headless/automated CLI workflows.** Designed-out for v1; the cold-start manual-bridge (`moneybin categorize export-uncategorized` + `apply-from-file`) serves the common case, and agents driving the CLI directly use the same primitives. Revisit if usage data shows demand for direct LLM-API-calling commands like `moneybin categorize llm --provider claude`. See [`categorization-cold-start.md`](categorization-cold-start.md) Section 9.

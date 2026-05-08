@@ -34,7 +34,7 @@ If you used **auto-key mode** and you destroy the OS keychain entry (or migrate 
 **Mitigation pattern:**
 - After `db init`, run `moneybin db key show` once to get the actual key. Save it somewhere durable (password manager, encrypted file, paper in a safe — your call). If you lose your passphrase or keychain, you can pass this key explicitly to recover access.
 - Run `moneybin db backup` regularly. Backups are encrypted with the same key.
-- The hosted tier (Wave 3) handles this with mandatory recovery codes at signup, but the local install puts you in charge.
+- The hosted tier (M3E) handles this with mandatory recovery codes at signup, but the local install puts you in charge.
 
 ### Malware running as your user
 
@@ -58,14 +58,14 @@ Concretely:
 
 - Local stdio MCP (`moneybin mcp config generate --client claude-desktop`) sends data to Anthropic when you ask Claude.
 - ChatGPT Desktop's MCP equivalent sends data to OpenAI.
-- The hosted Streamable HTTP MCP (Wave 3) authenticates via Bearer token, but the AI vendor still sees the data needed to answer your prompt.
+- The hosted Streamable HTTP MCP (M3D + M3E) authenticates via Bearer token, but the AI vendor still sees the data needed to answer your prompt.
 
 This isn't a bug — it's the entire point of the AI integration. We're saying it explicitly because some products imply "your data never leaves your machine" while quietly streaming it to a model API. MoneyBin doesn't.
 
 **Practical implications:**
 
 - Choose your AI client deliberately. Anthropic, OpenAI, Google, and others have different data-use policies; review them.
-- The hosted MoneyBin tier (Wave 3) uses **zero-knowledge encryption** — *we* can't read your data, but the AI vendor you connect to still sees what it needs to answer.
+- The hosted MoneyBin tier (M3E) uses **zero-knowledge encryption** — *we* can't read your data, but the AI vendor you connect to still sees what it needs to answer.
 - A future redaction layer is on the post-launch roadmap (`privacy-and-ai-trust.md`) — opt-in scrubbing of merchant names and amounts before MCP responses leave your machine. Not shipped yet.
 
 ## Defense in depth (layers beyond encryption)
@@ -83,16 +83,16 @@ This isn't a bug — it's the entire point of the AI integration. We're saying i
 
 See [`docs/guides/database-security.md`](database-security.md) for the operational commands (key rotation, backup/restore, lock management).
 
-## Hosted tier (Wave 3) — additional protections
+## Hosted tier (M3E) — additional protections
 
-Wave 3 brings hosted SaaS at `app.moneybin.io`. The hosted threat model extends this one:
+M3E brings hosted SaaS at `app.moneybin.io`. The hosted threat model extends this one:
 
 - **Zero-knowledge passphrase model.** Server stores ciphertext only. Decryption happens in the request-handling process using a key derived from your passphrase.
 - **Mandatory recovery codes.** Generated at signup, can't be skipped — fixes the "forgotten passphrase = data loss" trap.
 - **Same AGPL code, self-hostable.** The hosted runtime (`moneybin-server`) is open source. You can self-host the same hosted experience.
 - **Plaid OAuth handled server-side.** You never hold Plaid credentials directly.
 
-Full hosted threat model lands with `hosted-strategy.md`'s implementation in Wave 3.
+Full hosted threat model lands with `hosted-strategy.md`'s implementation in M3E.
 
 ## Reporting a vulnerability
 

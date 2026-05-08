@@ -440,5 +440,5 @@ Transfers that always occur at the same amount or within a narrow range (e.g., $
 
 ### Deferred to implementation tuning milestone
 
-1. **Confidence score formula.** Exact combination of the four signals. Starting weights provided (`date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15`) but should be tuned against real data. See MVP roadmap Level 1 tuning milestone.
+1. **Confidence score formula.** Exact combination of the four signals. Starting weights provided (`date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15`) but should be tuned against real data. See MVP roadmap M1 tuning milestone.
 2. **Keyword list.** The initial set of transfer-indicating terms (TRANSFER, XFER, ACH, DIRECT DEP, WIRE, etc.) and how to handle institution-specific variations. Start with a reasonable default set; tune alongside confidence scores with real data.

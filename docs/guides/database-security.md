@@ -35,7 +35,7 @@ The mitigation pattern, in order of importance:
 2. **Run `moneybin db backup` regularly.** Backups are encrypted with the same key as the live database. A backup is only useful if you can still decrypt it — which is why item #1 comes first.
 3. **Test restore at least once.** Before you trust a backup, restore it (`moneybin db restore <path>`) into a scratch profile and verify it opens.
 
-The hosted tier (Wave 3) handles this with mandatory recovery codes at signup, but local install puts you in charge.
+The hosted tier (M3E) handles this with mandatory recovery codes at signup, but local install puts you in charge.
 
 ## Key Management
 
