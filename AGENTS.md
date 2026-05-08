@@ -46,12 +46,15 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 | Raw | `raw` | Table | Untouched data from loaders (Python) |
 | Staging | `prep` | View | Light cleaning, type casting (SQLMesh `stg_*`) |
 | Core | `core` | Table | Canonical, deduplicated, multi-source |
+| User state | `app` | Table | User-authored state on canonical entities (categorizations, notes, tags, audit log, account settings, proposed rules). Written by services; presented to consumers via `core.*` joins. |
+| Aggregations | `agg_*` / `reports` | View / Table | Cross-entity rollups (`agg_net_worth`) and analytical recipes (`reports.cash_flow`, `reports.uncategorized_queue`, etc.). Consumer-facing read surface for dashboards and MCP tools. |
 
-1. **One canonical table per entity** — `dim_accounts`, `fct_transactions`, etc. Consumers read from core only.
+1. **One canonical table per entity** — `dim_accounts`, `fct_transactions`, etc. Consumers read from core (and `app`/`reports` views) only.
 2. **Multi-source union** — Core models `UNION ALL` from every staging source with `source_system` column.
 3. **Dedup in core** — `ROW_NUMBER()` windows for duplicates; mapping tables for cross-source dedup.
 4. **Accounting sign convention** — negative = expense, positive = income. `DECIMAL(18,2)` for amounts, `DATE` for dates.
 5. **Source-agnostic consumers** — MCP server, CLI use `TableRef` constants, never source-specific logic.
+6. **`app.*` is user state, not raw data** — anything authored by the user (categorizations, notes, tags, settings, audit history) lives here. Services are the only writers; presentation joins back through `core.*`.
 
 ## Specs & Implementation Tracking
 

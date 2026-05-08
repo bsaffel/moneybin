@@ -64,16 +64,19 @@ Reverses the original "no manual entry" cut. Cohesive umbrella covering:
 - Manual transaction entry (CLI + MCP, no UI)
 - Free-text notes on transactions
 - Multi-tag table
-- "Verified" curator flag
 - Edit-history audit log
 - Import-batch labels
 - Split-via-annotation (interim before first-class splits, which remain parked)
 
 All on a new `app.*` user-state schema layer; zero changes to the `raw → prep → core` pipeline. Spec: [`docs/specs/transaction-curation.md`](specs/transaction-curation.md).
 
+A per-transaction `verified` flag was considered and dropped — see the spec's *Out of Scope* section. The trust narrative is "integrity by construction," surfaced through `moneybin doctor` (M2C) running continuous invariant checks, not through per-row user assertion.
+
 #### M2B — Architecture Reference
 
 Codifies the 12 primitives that crystallized through M0–M1 (`Database` factory, `SecretStore`, service-layer contract, `TableRef`, `ResponseEnvelope`, `@mcp_tool` decorator + privacy middleware, `@tracked` / `track_duration()`, `SanitizedLogFormatter`, `TabularProfile` + `ingest_dataframe()`, `MoneyBinSettings`, SQLMesh layer conventions, scenario fixture YAML format). Names the `app.*` user-state layer and `reports.*` presentation-layer schema explicitly. Encodes the local/hosted split contract.
+
+Includes a **writer-coordination contract**: sync, MCP, and the local Web UI (M2C prototype, M3D production) all coordinate through one writer interface so the user never observes a DuckDB lock-contention error. Tested via a concurrent-writers scenario in the runner. Without this, M3A's Plaid sync would conflict with active MCP sessions, and the local tier would feel structurally worse than hosted.
 
 Reference doc all M3 specs cite rather than re-deriving. Spec: `architecture-shared-primitives.md` (planned).
 
@@ -81,15 +84,16 @@ Reference doc all M3 specs cite rather than re-deriving. Spec: `architecture-sha
 
 The launchable beachhead — `brew install moneybin` works end-to-end on a clean Mac:
 
-- `moneybin doctor` — one-shot health/integrity report (trust signal)
+- `moneybin doctor` — continuous integrity check (FK invariants, sign convention, balanced transfers, reconciliation deltas). Designed as the trust artifact: "✅ N invariants passing across M transactions." This is the surfaced form of *integrity by construction* — the brand's load-bearing claim.
 - `reports.*` SQLMesh recipe library (`cash_flow`, `recurring_subscriptions`, `year_over_year_spending`, `top_merchants`, `uncategorized_queue`, `balance_drift`)
 - `moneybin demo` — instant synthetic-data preset
 - Monthly-ritual MCP prompts (close the month, anomaly walk-through, recurring review, uncategorized walkthrough)
 - First-run wizard
+- **Web UI prototype** (FastAPI + React, narrow scope): AI-categorization-proposal review queue + transactions list. Treated as the first iteration of the M3D UI, not throwaway. Stress-tests the writer-coordination architecture (M2B) under real concurrent load before M3A and M3D depend on it. Spec: `web-ui-prototype.md` (planned).
 - PyPI publish workflow + Homebrew formula
 - Static landing page + 60-second demo video
 
-Spec: [`docs/specs/user-facing-doc-polish.md`](specs/user-facing-doc-polish.md) (now batch shipped via PR #114).
+Spec: [`docs/specs/user-facing-doc-polish.md`](specs/user-facing-doc-polish.md) (already shipped) plus `web-ui-prototype.md` (planned).
 
 ### M3 — Launch (designed; closes at launch)
 
@@ -98,12 +102,12 @@ Two parallel tracks. Both must close for M3E (and launch).
 #### M3 Domain track
 
 - **M3A — Plaid Transactions sync** (via `moneybin-server`). Long-running sync uses job-handle pattern (`sync.start` / `sync.status` / `sync.result`) to fit MCP timeout cap. Plaid Production approval is 4–8 weeks; paperwork starts the week the investment-tracking spec lands. Spec: `sync-plaid.md`.
-- **M3B — Investment tracking.** Holdings, FIFO lots, realized/unrealized gain/loss, ST/LT classification, Yahoo + CoinGecko prices. Largest competitive moat. Spec: `investment-tracking.md` (planned). Pre-spec ADRs: cost-basis engine location (pure Python vs SQL); investment fact-table shape (new `fct_investment_transactions` vs extend `fct_transactions`).
+- **M3B — Investment tracking.** Holdings, FIFO lots, realized/unrealized gain/loss, ST/LT classification, Yahoo + CoinGecko prices. Largest competitive moat. Spec: `investment-tracking.md` (planned). Pre-spec ADRs: cost-basis engine location (pure Python vs SQL); investment fact-table shape (new `fct_investment_transactions` vs extend `fct_transactions`). Spec must include a load-bearing Testing section (invariants, fixture strategy, blocking property tests); M3B does not ship until cost-basis output ties to a real-world 1099-B end-to-end through the pipeline.
 - **M3C — Multi-currency + budget rollovers.** `amount_original` + `currency_original` on `fct_transactions`, Frankfurter FX rates, realized FX gain/loss on conversions; budget rollovers close the last traditional-budgeting gap. Pre-spec ADRs: FX cost-basis policy (FIFO matching investments?); home currency detection (OS locale default vs explicit). Specs: `multi-currency.md` (planned), `budget-tracking.md` (planned).
 
 #### M3 Surface track
 
-- **M3D — Web UI + Streamable HTTP MCP.** FastAPI app + Web UI (categorization queue, dashboards, account list, balance reconciliation). Same UI at `moneybin ui` (local) and the hosted tier. Streamable HTTP MCP transport unlocks ChatGPT web/mobile and other remote clients. Spec: `web-ui-overview.md` (planned).
+- **M3D — Web UI hardening + Streamable HTTP MCP.** Extends the M2C Web UI prototype to the full surface (dashboards, account management, balance reconciliation, investment lots from M3B, multi-currency from M3C) and ships the Streamable HTTP MCP transport that unlocks ChatGPT web/mobile and other remote clients. Same UI at `moneybin ui` (local) and the hosted tier. Spec: `web-ui-overview.md` (planned).
 - **M3E — Hosted launch.** Auth0 + Stripe + per-user encrypted DuckDB + zero-knowledge passphrase + recovery codes + GDPR data-export/delete + on-call ready. **This is launch.**
 
 ### Post-launch (designed but not gating launch)
@@ -139,7 +143,7 @@ flowchart LR
     M2A --> M2C
     M2B --> M3A
     M2B --> M3B
-    M2B --> M3D
+    M2C --> M3D
     M3B --> M3C
     M3A --> M3E
     M3B --> M3E
@@ -147,7 +151,7 @@ flowchart LR
     M3D --> M3E
 ```
 
-M2A and M2B run in parallel (different cognitive modes). M2C depends on both. M3A, M3B, and M3D all depend on M2B settling the architecture contract; M3C waits on M3B for the investment fact-table shape; M3E waits on everything in M3.
+M2A and M2B run in parallel (different cognitive modes). M2C depends on both — M2B because the writer-coordination contract must exist before the M2C Web UI prototype writes concurrently with MCP, M2A because curator-state is what the prototype's queue reviews. M3A and M3B both depend on M2B settling the architecture contract. M3C waits on M3B for the investment fact-table shape. M3D extends M2C's Web UI prototype rather than starting from scratch. M3E waits on everything.
 
 ## When milestones close
 
@@ -155,11 +159,11 @@ M2A and M2B run in parallel (different cognitive modes). M2C depends on both. M3
 |---|---|
 | M2A | `transaction-curation.md` ships and curator-state features are usable end-to-end |
 | M2B | `architecture-shared-primitives.md` is published and the public distillation lands at `docs/architecture.md` |
-| M2C | `brew install moneybin && moneybin demo` works on a clean Mac with a clean `moneybin doctor` output, and the landing page is live |
+| M2C | `brew install moneybin && moneybin demo` works on a clean Mac with a clean `moneybin doctor` output, the Web UI prototype runs at `moneybin ui` and lets a user review AI-categorization proposals end-to-end, and the landing page is live |
 | M3A | Plaid Production is approved and a first user syncs from a real bank |
 | M3B | Investment cost-basis numbers tie to at least one broker's official 1099-B for a full tax year |
 | M3C | A non-USD user can import multi-currency transactions, see home-currency equivalents, and FX gain/loss on a deliberate round-trip ties to bank-statement-derived expectation within $0.01 |
-| M3D | Same UI works at `moneybin ui` (local) and the hosted tier; ChatGPT web connects via Streamable HTTP MCP |
+| M3D | The full UI surface (dashboards, accounts, balances, investments, multi-currency) ships at `moneybin ui` (local) and the hosted tier from the same codebase; ChatGPT web connects via Streamable HTTP MCP |
 | M3E | Hosted ops + billing + GDPR + on-call all close; a beta user signs up, links a bank, asks Claude a question, and downloads their full encrypted DuckDB. **Launch.** |
 
 ## Anti-roadmap
