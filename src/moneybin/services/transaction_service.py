@@ -7,6 +7,7 @@ detection. Consumed by both MCP tools and CLI commands.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
@@ -35,6 +36,21 @@ _AUDIT_TARGET_SPLITS = ("app", "transaction_splits")
 _AUDIT_TARGET_MANUAL = ("raw", "manual_transactions")
 _MANUAL_BATCH_MAX = 100
 _MANUAL_FORMAT_NAME = "manual_entry"
+_MANUAL_SOURCE_TYPE = "manual"
+
+
+def _predict_manual_gold_key(source_transaction_id: str, account_id: str) -> str:
+    """Pre-compute the gold ``transaction_id`` the SQLMesh pipeline will assign.
+
+    Mirrors the unmatched-row branch of ``int_transactions__matched``:
+    ``SUBSTRING(SHA256(source_type || '|' || source_transaction_id || '|' || account_id), 1, 16)``.
+    Manual rows are exempt from the matcher (spec Req 6 / Task 8) so this
+    branch is the only one they hit. If either side of this hash drifts from
+    the SQL, the pre-attached user-category row will silently fail to join in
+    ``core.fct_transactions``.
+    """
+    raw = f"{_MANUAL_SOURCE_TYPE}|{source_transaction_id}|{account_id}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,12 +149,15 @@ class RecurringResult:
 class ManualEntryRawResult:
     """Raw-write outcome for a single manual entry.
 
-    Task 7a returns only the freshly minted ``source_transaction_id``. Task 10
-    will extend this with ``transaction_id`` (== source_transaction_id once the
-    matcher's manual exemption lands in Task 8) and a per-entry pipeline summary.
+    ``transaction_id`` is the predicted gold key the SQLMesh pipeline will
+    assign on its next pass — manual rows are exempt from the matcher (Task 8)
+    so they always fall to the SHA256 fallback in
+    ``int_transactions__matched``. Pre-computing it here lets us attach a
+    user-category row keyed on the future gold id BEFORE the pipeline runs.
     """
 
     source_transaction_id: str
+    transaction_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +433,9 @@ class TransactionService:
         try:
             for entry in prepared:
                 source_transaction_id = "manual_" + uuid.uuid4().hex[:12]
+                transaction_id = _predict_manual_gold_key(
+                    source_transaction_id, entry["account_id"]
+                )
                 self._db.conn.execute(
                     f"""
                     INSERT INTO {MANUAL_TRANSACTIONS.full_name} (
@@ -433,8 +455,12 @@ class TransactionService:
                         entry["description"],
                         entry.get("merchant_name"),
                         entry.get("memo"),
-                        # ``category`` is intentionally NOT written here even if
-                        # provided in the input dict — see Task 10.
+                        # The ``category`` / ``subcategory`` columns on
+                        # ``raw.manual_transactions`` are intentionally NULL —
+                        # user-supplied categories live in
+                        # ``app.transaction_categories`` (written below) so
+                        # they're treated identically to categories on rows
+                        # imported from any other source.
                         None,
                         None,
                         entry.get("payment_channel"),
@@ -445,7 +471,10 @@ class TransactionService:
                     ],
                 )
                 results.append(
-                    ManualEntryRawResult(source_transaction_id=source_transaction_id)
+                    ManualEntryRawResult(
+                        source_transaction_id=source_transaction_id,
+                        transaction_id=transaction_id,
+                    )
                 )
 
             self._audit.record_audit_event(
@@ -459,6 +488,26 @@ class TransactionService:
         except Exception:
             self._db.rollback()
             raise
+
+        # Attach user-supplied categories AFTER the raw-write commits. Each
+        # set_category call opens its own txn + emits its own ``category.set``
+        # audit event. Doing this outside the raw-write txn keeps the rollback
+        # blast radius small; if a categorization write fails the raw rows
+        # remain (the next pipeline pass picks them up uncategorized).
+        from moneybin.services.categorization_service import CategorizationService
+
+        cat_service = CategorizationService(self._db, audit=self._audit)
+        for entry, raw_result in zip(prepared, results, strict=True):
+            category = entry.get("category")
+            if not (isinstance(category, str) and category.strip()):
+                continue
+            cat_service.set_category(
+                raw_result.transaction_id,
+                category=category,
+                subcategory=entry.get("subcategory"),
+                categorized_by="user",
+                actor=actor,
+            )
 
         logger.info(
             f"manual.create import_id={import_id} row_count={len(results)} "
@@ -523,6 +572,8 @@ class TransactionService:
             "transaction_type": entry.get("transaction_type"),
             "check_number": entry.get("check_number"),
             "currency_code": entry.get("currency_code"),
+            "category": entry.get("category"),
+            "subcategory": entry.get("subcategory"),
         }
 
     # ------------------------------------------------------------------

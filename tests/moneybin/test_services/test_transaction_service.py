@@ -959,27 +959,81 @@ class TestManualEntry:
         assert log_count[0] == 0
 
     @pytest.mark.unit
-    def test_create_manual_batch_ignores_category_for_now(
+    @pytest.mark.unit
+    def test_create_manual_batch_with_category_writes_user_categorization(
         self, transaction_db: Database
     ) -> None:
+        import hashlib
+
         self._seed_account(transaction_db)
         service = TransactionService(transaction_db)
         result = service.create_manual_batch(
             [self._entry(category="Food & Drink", subcategory="Coffee Shops")],
             actor="cli",
         )
-        # Raw row written.
+        # Raw row's category column stays NULL (categorization lives in app.).
         raw_rows = transaction_db.conn.execute(
             "SELECT category, subcategory FROM raw.manual_transactions "
             "WHERE import_id = ?",
             [result.import_id],
         ).fetchall()
-        assert len(raw_rows) == 1
-        assert raw_rows[0] == (None, None)
-        # No user-category row written — that arrives in Task 10.
+        assert raw_rows == [(None, None)]
+
+        # ManualEntryRawResult exposes the predicted gold key, and it matches
+        # the SQLMesh int_transactions__matched fallback hash.
+        entry_result = result.results[0]
+        expected_txn_id = hashlib.sha256(
+            f"manual|{entry_result.source_transaction_id}|A1".encode()
+        ).hexdigest()[:16]
+        assert entry_result.transaction_id == expected_txn_id
+
+        # User-category row keyed on the predicted gold transaction_id.
+        cat_rows = transaction_db.conn.execute(
+            "SELECT category, subcategory, categorized_by "
+            "FROM app.transaction_categories WHERE transaction_id = ?",
+            [entry_result.transaction_id],
+        ).fetchall()
+        assert cat_rows == [("Food & Drink", "Coffee Shops", "user")]
+
+        # And a category.set audit event was emitted alongside manual.create.
+        actions = [
+            r[0]
+            for r in transaction_db.conn.execute(
+                "SELECT action FROM app.audit_log ORDER BY occurred_at"
+            ).fetchall()
+        ]
+        assert "manual.create" in actions
+        assert "category.set" in actions
+
+    @pytest.mark.unit
+    def test_create_manual_batch_without_category_writes_no_categorization(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch(
+            [self._entry(), self._entry(amount=Decimal("9.99"))],
+            actor="cli",
+        )
+        cat_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id IN (?, ?)",
+            [r.transaction_id for r in result.results],
+        ).fetchone()
+        assert cat_count is not None and cat_count[0] == 0
+        cat_set = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE action = 'category.set'"
+        ).fetchone()
+        assert cat_set is not None and cat_set[0] == 0
+
+    @pytest.mark.unit
+    def test_create_manual_batch_skips_blank_category_string(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch([self._entry(category="   ")], actor="cli")
         cat_count = transaction_db.conn.execute(
             "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id = ?",
-            [result.results[0].source_transaction_id],
+            [result.results[0].transaction_id],
         ).fetchone()
-        assert cat_count is not None
-        assert cat_count[0] == 0
+        assert cat_count is not None and cat_count[0] == 0
