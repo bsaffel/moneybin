@@ -45,10 +45,14 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 |-------|--------|-------------|---------|
 | Raw | `raw` | Table | Untouched data from loaders (Python) |
 | Staging | `prep` | View | Light cleaning, type casting (SQLMesh `stg_*`) |
-| Core | `core` | Table | Canonical, deduplicated, multi-source |
+| Core | `core` | Table / View | Canonical, deduplicated, multi-source (`fct_*`, `dim_*`, `bridge_*`) |
+| App | `app` | Table | User-state and application-managed metadata (mutable; not derivable from raw) |
+| Reports | `reports` | View | Curated presentation models, one per CLI/MCP report |
 
-1. **One canonical table per entity** — `dim_accounts`, `fct_transactions`, etc. Consumers read from core only.
-2. **Multi-source union** — Core models `UNION ALL` from every staging source with `source_system` column.
+Full schema reference (including `meta`, `seeds`, `synthetic`, prefix conventions, layer rules, and consumer access patterns): [`architecture-shared-primitives.md`](docs/specs/architecture-shared-primitives.md).
+
+1. **One canonical table per entity** — `dim_accounts`, `fct_transactions`, etc. Consumers read from `core` and `reports` only.
+2. **Multi-source union** — Core models `UNION ALL` from every staging source with `source_type` column.
 3. **Dedup in core** — `ROW_NUMBER()` windows for duplicates; mapping tables for cross-source dedup.
 4. **Accounting sign convention** — negative = expense, positive = income. `DECIMAL(18,2)` for amounts, `DATE` for dates.
 5. **Source-agnostic consumers** — MCP server, CLI use `TableRef` constants, never source-specific logic.

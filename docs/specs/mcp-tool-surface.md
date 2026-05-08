@@ -129,6 +129,73 @@ Length budget: ~150–300 tokens. The text is loaded once per session, so the co
 
 Keep the text in sync with the spec. Renames and new top-level groups must update both.
 
+### Protocol-standard capability coverage matrix
+
+MoneyBin layers its own primitives (sensitivity tiers, `ResponseEnvelope`, exposure principle) on top of the standard MCP capabilities. Both layers are first-class — clients consume the protocol-standard fields directly for confirmation UI, capability negotiation, and context injection, while MoneyBin's layer governs data exposure. **Every PR that adds tools, prompts, or resources is reviewed against this matrix; reject changes that ship a new surface without explicitly accounting for each capability.**
+
+The matrix is intentionally exhaustive — including capabilities MoneyBin defers — so deferrals are conscious, not silent.
+
+| Capability | MCP spec status | MoneyBin status | Notes / next action |
+|---|---|---|---|
+| **Tools** | core | ✅ shipped | ~19 core + extended namespaces; v2 surface in this spec |
+| **Tool `annotations`** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) | core (added 2025) | 📐 designed, ⏳ not yet wired | Extend `@mcp_tool` decorator (see [§Decorator: protocol annotations](#decorator-protocol-annotations)). Critically: clients use these for confirmation UI; MoneyBin's sensitivity tiers do *not* substitute. |
+| **Prompts** | core | ✅ shipped | 6 prompts in `src/moneybin/mcp/prompts.py`; surfaced via FastMCP. Add new prompts when a workflow is repeatable and benefits from a templated agent path. |
+| **Resources** | core | ✅ shipped | 8 resources in `src/moneybin/mcp/resources.py` including `moneybin://schema`. Pattern is established; extend for any read-only context that benefits from URI addressing (docs, schema docs, error-code catalog, BQL-style references if added). |
+| **Resource templates** | core | ⏳ deliberate defer | Use direct URIs only today. Revisit if/when a parameterized resource (e.g. `moneybin://account/{id}/summary`) is genuinely cheaper than an equivalent tool. |
+| **`tools/list_changed` notifications** | core | ✅ shipped | Used by progressive disclosure. Honored by Claude Code; Claude Desktop support is unreliable, which is why `MoneyBinSettings.mcp.progressive_disclosure` defaults `False`. |
+| **`resources/list_changed` notifications** | core | ⏳ not used | Resource set is static today. If `moneybin://schema` ever becomes dynamic per-session, wire this. |
+| **`prompts/list_changed` notifications** | core | ⏳ not used | Prompt set is static today. |
+| **Progress notifications** | core | ⏳ not used | Required for the job-handle pattern; `sync-plaid.md` rewrite is the first surface that needs it. |
+| **Sampling** | optional | ⏳ deliberate defer | Server requesting LLM completions back from the client. No current use case; consider only if MoneyBin needs to delegate categorization to the host LLM (today this is an explicit non-goal — categorization runs locally). |
+| **Roots** | optional | ⏳ deliberate defer | Filesystem scope advertisement from the client. Inbox-watching uses MoneyBin-side configuration today. Revisit if a future tool needs to ask the agent for the user's working directory. |
+| **Elicitation** | optional | ⏳ deliberate defer | Server requesting structured user input mid-tool-call. Spec mentions it as an alternative to `confirm` parameters for destructive ops; we use the parameter pattern for now. Revisit when destructive write-tool count > 5. |
+| **Logging level negotiation** | optional | ⏳ not used | Server-side log level honors `MoneyBinSettings.logging.level`; not negotiated per session. |
+| **Pagination cursors** | core | ⏳ partial | `summary.has_more` + `summary.total_count` flag truncation; `offset` parameter handles paging. No opaque cursor pattern; revisit if any tool needs server-side iteration state. |
+| **Server `instructions`** | core | ✅ shipped | `FastMCP(instructions=...)` in `src/moneybin/mcp/server.py`. See above subsection. |
+| **MCP capability negotiation** | core | ✅ shipped via FastMCP | FastMCP handles `initialize` capabilities; MoneyBin doesn't negotiate per-capability flags today. |
+
+**Discipline:** when a competitor review or MCP spec evolution surfaces a capability not in this table, add it before deciding what to do — the table itself is the audit trail. PRs that add a row marked `⏳ deliberate defer` must include the rationale; PRs that flip a row from `⏳` to `📐` or `✅` must update the relevant subsection of this spec.
+
+#### Decorator: protocol annotations
+
+The `@mcp_tool` decorator in `src/moneybin/mcp/decorator.py` accepts MoneyBin's `sensitivity` and `domain` keyword arguments today. The MCP-protocol-standard tool `annotations` are not yet emitted — clients have no machine-readable way to ask "is this tool destructive?" beyond reading the tool name.
+
+**Required extension** (planned; not yet implemented):
+
+```python
+@mcp_tool(
+    sensitivity="medium",
+    read_only=False,        # MCP readOnlyHint — default True for sensitivity=low queries
+    destructive=True,       # MCP destructiveHint — irreversible state change
+    idempotent=False,       # MCP idempotentHint — safe to retry without side effects
+)
+def transactions_correct(...) -> ResponseEnvelope: ...
+```
+
+The decorator emits these as MCP `tool.annotations` so compatible clients can render confirmation UI (Claude Desktop's "are you sure" dialog, IDE-style permission prompts) without server-side dance. Defaults assume read-only retrieval (`read_only=True`, `destructive=False`, `idempotent=True`); writes opt out explicitly.
+
+This is *complementary to* sensitivity tiers, not redundant — sensitivity describes data exposure (what the tool returns and to whom); annotations describe action class (what the tool does to state). Both are required; clients consume each layer differently.
+
+#### Tool descriptions: invariants must be in the description, not just the rule files
+
+The MCP description string is the only schema-attached prose the agent sees. Invariants the agent needs to apply correctly — accounting sign convention, decimal precision, ID-composite requirements on destructive ops, source-system value sets — must be stated in the tool description, not only in `.claude/rules/database.md` or `AGENTS.md`. Those files are for human contributors; the agent never sees them.
+
+Required content in tool descriptions for any tool that:
+- accepts an `amount` field — state the sign convention ("negative = expense, positive = income; transfers exempt"), the decimal precision (`DECIMAL(18,2)` for money), and the date format (`DATE`)
+- mutates state — state the exact reversibility story ("this update writes to `app.*` and is recorded in `app.audit_log`; revert via …") and any required ID composites
+- returns currency-bearing data — state that `amount` is in the currency named by the paired currency column, never inferred from context (per `architecture-shared-primitives.md` Invariant 7)
+
+Audit pass required against the current tool surface; no new tool ships without this content. See [§Tool description audit](#tool-description-audit) work item.
+
+#### Bulk-with-cap convention
+
+Write tools that accept an array of items obey a server-enforced upper bound. Today the analog for reads is `MoneyBinSettings.mcp.max_rows` (default 1000); writes need a parallel cap.
+
+- **Setting:** `MoneyBinSettings.mcp.max_bulk_write` (default 500). Validated at decorator level for any tool that accepts `list[...]` of length > 1.
+- **Tool description:** state the cap explicitly ("accepts 1–500 items per call").
+- **Error path:** exceeding the cap returns a `ResponseEnvelope.error` with `code="bulk_cap_exceeded"`; never partial-success.
+- **Reference:** `lunchmoney-mcp` ships 1–500 caps on bulk writes (`update_transactions_bulk`, `delete_transactions_bulk`); MoneyBin's `categorize_bulk` already implements this shape — codify it across other writes.
+
 ---
 
 ## 2. Exemplars
@@ -474,6 +541,18 @@ Full account details including routing/account numbers.
 - **Behavior:** Returns single account object with all fields including masked `routing_number` and `account_number` (e.g., `...1234`). Unmasked only in verified-local mode with `LOCAL_UNMASK_CRITICAL`. Degraded response returns the `accounts_list` view for that account (metadata only).
 - **Service:** `AccountService.details() -> AccountDetail`
 - **CLI:** `moneybin accounts show --account-id ID`
+
+### `accounts_resolve`
+
+Free-text → account-ID resolution for natural-language references.
+
+- **Sensitivity:** `low` — returns account metadata only (display name, type, masked institution); no balances, no PII.
+- **Unique parameters:** `query: str` (the free-text fragment, e.g. "my Chase account", "checking", "schwab brokerage"); `limit: int = 5` (max alternatives returned).
+- **Behavior:** Returns the best-match account plus alternatives, with confidence scores. Implemented via fuzzy match (`difflib.SequenceMatcher` already used for tabular account matching) over `display_name`, `account_subtype`, and `institution_name` from `core.dim_accounts`. Empty result returns `data=[]` with a `low_confidence` action hint.
+- **Why this exists:** without it, every conversation that starts with a natural account reference takes three turns — `accounts_list` → agent scans the result → agent picks an `account_id`. Single-tool resolution collapses that to one call. Agent ergonomic primitive, not a new capability.
+- **Service:** `AccountService.resolve(query: str, limit: int = 5) -> list[AccountResolution]`
+- **CLI:** `moneybin accounts resolve "<query>"` (`--output json` returns the same envelope)
+- **Reference:** `agigante80/actual-mcp-server` ships an analogous `actual_get_id_by_name` for the same agent-ergonomic reason.
 
 ### `reports_networth_get`
 
@@ -1464,7 +1543,7 @@ These tools can be fully implemented with the current codebase and existing infr
 **Infrastructure**: `moneybin_discover`
 **`spending.*`**: `summary`, `by_category`, `merchants`, `compare`
 **`cashflow.*`**: `summary`, `income`
-**`accounts.*`**: `list`, `balances`, `networth`
+**`accounts.*`**: `list`, `balances`, `networth`, `resolve`
 **`transactions.*`**: `search`, `recurring`
 **`import.*`**: `file`, `status`, `csv_preview`, `list_formats`
 **`categorize.*`**: `uncategorized`, `bulk`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `seed`, `stats`
@@ -1473,4 +1552,37 @@ These tools can be fully implemented with the current codebase and existing infr
 **`overview.*`**: `status`, `health`
 **`sql.*`**: `query`
 
-This is a 34-tool surface (33 domain tools + `moneybin_discover`) that can ship independently of any pending spec work. With progressive disclosure, the AI sees ~19 core tools at connection time plus `moneybin_discover`; extended namespaces load on demand.
+This is a 35-tool surface (34 domain tools + `moneybin_discover`) that can ship independently of any pending spec work. With progressive disclosure, the AI sees ~20 core tools at connection time plus `moneybin_discover`; extended namespaces load on demand.
+
+---
+
+## 18. Standing audits and drift tests
+
+These are recurring audits, not one-shot work items. Each is owned by the spec and enforced via CI or a documented review checklist.
+
+### Tool description audit
+
+Every tool whose description omits a relevant invariant fails review. Required content per tool class:
+
+- Tools that accept an `amount` field — sign convention, decimal precision, date format (per [§Tool descriptions: invariants must be in the description, not just the rule files](#tool-descriptions-invariants-must-be-in-the-description-not-just-the-rule-files)).
+- Tools that mutate state — reversibility statement, ID-composite requirements, `app.audit_log` reference.
+- Tools that return currency-bearing data — currency-pairing invariant per `architecture-shared-primitives.md` Invariant 7.
+
+Discharge: a one-time audit pass on the existing surface (tracked as a work item in `private/implementation.md`); subsequent enforcement is reviewer responsibility on every new tool.
+
+### Tool catalog drift test
+
+The tool list documented in this spec must match the runtime-registered set. Without enforcement, the documentation drifts (the competitor `copilot-money-mcp` README claims 17 tools but its server registers 33).
+
+- **Test:** a pytest case under `tests/moneybin/test_mcp/` enumerates registered tools via FastMCP's `tools/list` and diffs against a fixture list extracted from this spec (or maintained alongside it). Fails if any tool is registered but undocumented, or documented but unregistered.
+- **Discharge:** add the test alongside the next tool addition; backfill the fixture from the current registered set.
+
+### Protocol-coverage matrix freshness
+
+The matrix in [§Protocol-standard capability coverage matrix](#protocol-standard-capability-coverage-matrix) must be re-reviewed:
+
+1. **Whenever the MCP spec adds or changes a capability.** Track the MCP spec changelog (https://modelcontextprotocol.io/) on a quarterly cadence; add new rows for any new capability before deciding adopt vs. defer.
+2. **Whenever a competitor review surfaces a capability we've missed.** The 2026-05-08 MCP-tool-surface review identified `annotations` as such a gap; future reviews should produce similar diffs.
+3. **Whenever a row flips status** (`⏳ deliberate defer` → `📐 designed` → `✅ shipped`). The matrix is the audit trail for these transitions.
+
+Owner: whoever maintains this spec. Cadence: quarterly review minimum, plus ad-hoc on the triggers above.
