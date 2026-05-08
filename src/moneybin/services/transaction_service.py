@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -17,7 +18,12 @@ from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._validators import validate_note_text, validate_slug
 from moneybin.services.audit_service import AuditService
-from moneybin.tables import FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
+from moneybin.tables import (
+    DIM_ACCOUNTS,
+    FCT_TRANSACTIONS,
+    MANUAL_TRANSACTIONS,
+    TRANSACTION_CATEGORIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +32,9 @@ logger = logging.getLogger(__name__)
 _AUDIT_TARGET_NOTES = ("app", "transaction_notes")
 _AUDIT_TARGET_TAGS = ("app", "transaction_tags")
 _AUDIT_TARGET_SPLITS = ("app", "transaction_splits")
+_AUDIT_TARGET_MANUAL = ("raw", "manual_transactions")
+_MANUAL_BATCH_MAX = 100
+_MANUAL_FORMAT_NAME = "manual_entry"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +127,26 @@ class RecurringResult:
                 "Use budget_set to create a budget for a recurring expense",
             ],
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ManualEntryRawResult:
+    """Raw-write outcome for a single manual entry.
+
+    Task 7a returns only the freshly minted ``source_transaction_id``. Task 10
+    will extend this with ``transaction_id`` (== source_transaction_id once the
+    matcher's manual exemption lands in Task 8) and a per-entry pipeline summary.
+    """
+
+    source_transaction_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManualBatchResult:
+    """Outcome of one ``create_manual_batch`` call: import_id + ordered rows."""
+
+    import_id: str
+    results: list[ManualEntryRawResult]
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +363,167 @@ class TransactionService:
 
         logger.info(f"Found {len(transactions)} recurring patterns")
         return RecurringResult(transactions=transactions)
+
+    # ------------------------------------------------------------------
+    # Manual entry — raw-write half (spec Req 1–6, Task 7a).
+    # ------------------------------------------------------------------
+
+    def create_manual_batch(
+        self, entries: list[dict[str, Any]], *, actor: str
+    ) -> ManualBatchResult:
+        """Write a batch of manual transactions to ``raw.manual_transactions``.
+
+        Validates every entry up front (account exists, amount is non-zero
+        ``Decimal``, transaction_date is parseable, description non-empty);
+        raises ``ValueError`` with the offending index on the first failure
+        before opening any transaction. Allocates one ``raw.import_log`` row
+        for the batch via ``ImportService.allocate_import_log`` and inserts
+        every row under that ``import_id`` inside a single DuckDB transaction
+        alongside one ``manual.create`` audit event.
+
+        This is Task 7a: the raw-write path only. The pipeline is **not**
+        triggered here — the next normal ``import_file`` / ``transform apply``
+        pass picks these rows up. Inputs containing a ``category`` key are
+        accepted but ignored; the user-category write attaches in Task 10
+        once ``CategorizationService.set_category`` lands and the matcher
+        guarantees ``transaction_id == source_transaction_id`` for manual
+        rows (Task 8).
+        """
+        if not 1 <= len(entries) <= _MANUAL_BATCH_MAX:
+            raise ValueError(
+                f"manual batch size must be 1..{_MANUAL_BATCH_MAX}, got {len(entries)}"
+            )
+
+        prepared: list[dict[str, Any]] = []
+        for idx, raw in enumerate(entries):
+            prepared.append(self._validate_manual_entry(raw, idx))
+
+        # Defer the ImportService import — allocate_import_log lives there and
+        # services have a soft no-cycle convention; ImportService imports from
+        # loaders only, so the local import keeps both directions clean.
+        from moneybin.services.import_service import ImportService
+
+        import_id = ImportService(self._db).allocate_import_log(
+            source_type="manual",
+            format_name=_MANUAL_FORMAT_NAME,
+            actor=actor,
+        )
+
+        results: list[ManualEntryRawResult] = []
+        self._db.begin()
+        try:
+            for entry in prepared:
+                source_transaction_id = "manual_" + uuid.uuid4().hex[:12]
+                self._db.conn.execute(
+                    f"""
+                    INSERT INTO {MANUAL_TRANSACTIONS.full_name} (
+                        source_transaction_id, import_id, account_id,
+                        transaction_date, amount, description, merchant_name,
+                        memo, category, subcategory, payment_channel,
+                        transaction_type, check_number, currency_code,
+                        created_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        source_transaction_id,
+                        import_id,
+                        entry["account_id"],
+                        entry["transaction_date"],
+                        entry["amount"],
+                        entry["description"],
+                        entry.get("merchant_name"),
+                        entry.get("memo"),
+                        # ``category`` is intentionally NOT written here even if
+                        # provided in the input dict — see Task 10.
+                        None,
+                        None,
+                        entry.get("payment_channel"),
+                        entry.get("transaction_type"),
+                        entry.get("check_number"),
+                        entry.get("currency_code") or "USD",
+                        actor,
+                    ],
+                )
+                results.append(
+                    ManualEntryRawResult(source_transaction_id=source_transaction_id)
+                )
+
+            self._audit.record_audit_event(
+                action="manual.create",
+                target=(*_AUDIT_TARGET_MANUAL, import_id),
+                before=None,
+                after={"row_count": len(results)},
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
+        logger.info(
+            f"manual.create import_id={import_id} row_count={len(results)} "
+            f"actor={actor}"
+        )
+        return ManualBatchResult(import_id=import_id, results=results)
+
+    def _validate_manual_entry(self, entry: dict[str, Any], idx: int) -> dict[str, Any]:
+        """Validate one manual-entry dict; raise ``ValueError`` with index hint."""
+        account_id = entry.get("account_id")
+        if not isinstance(account_id, str) or not account_id:
+            raise ValueError(f"entries[{idx}].account_id must be a non-empty string")
+        row = self._db.conn.execute(
+            f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",
+            [account_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"entries[{idx}].account_id={account_id!r} not found in "
+                f"{DIM_ACCOUNTS.full_name}"
+            )
+
+        amount = entry.get("amount")
+        if not isinstance(amount, Decimal):
+            raise ValueError(
+                f"entries[{idx}].amount must be Decimal, got {type(amount).__name__}"
+            )
+        if amount == 0:
+            raise ValueError(f"entries[{idx}].amount must be non-zero")
+
+        raw_date = entry.get("transaction_date")
+        parsed_date: date
+        if isinstance(raw_date, date) and not isinstance(raw_date, datetime):
+            parsed_date = raw_date
+        elif isinstance(raw_date, datetime):
+            parsed_date = raw_date.date()
+        elif isinstance(raw_date, str) and raw_date:
+            try:
+                parsed_date = date.fromisoformat(raw_date)
+            except ValueError as e:
+                raise ValueError(
+                    f"entries[{idx}].transaction_date {raw_date!r} is not "
+                    f"ISO 8601 (YYYY-MM-DD)"
+                ) from e
+        else:
+            raise ValueError(
+                f"entries[{idx}].transaction_date is required (date or YYYY-MM-DD)"
+            )
+
+        description = entry.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError(f"entries[{idx}].description must be a non-empty string")
+
+        return {
+            "account_id": account_id,
+            "amount": amount,
+            "transaction_date": parsed_date,
+            "description": description,
+            "merchant_name": entry.get("merchant_name"),
+            "memo": entry.get("memo"),
+            "payment_channel": entry.get("payment_channel"),
+            "transaction_type": entry.get("transaction_type"),
+            "check_number": entry.get("check_number"),
+            "currency_code": entry.get("currency_code"),
+        }
 
     # ------------------------------------------------------------------
     # Notes (multi-note threads on a transaction; spec Req 9–12)

@@ -15,6 +15,8 @@ from moneybin.database import Database
 from moneybin.services._validators import InvalidSlugError
 from moneybin.services.audit_service import AuditService
 from moneybin.services.transaction_service import (
+    ManualBatchResult,
+    ManualEntryRawResult,
     Note,
     RecurringResult,
     RecurringTransaction,
@@ -825,3 +827,159 @@ class TestSplits:
         self, txn_service: TransactionService
     ) -> None:
         assert txn_service.list_splits("nope") == []
+
+
+class TestManualEntry:
+    """Tests for ``TransactionService.create_manual_batch`` (Task 7a)."""
+
+    @staticmethod
+    def _seed_account(database: Database, account_id: str = "A1") -> None:
+        database.conn.execute(
+            "INSERT INTO core.dim_accounts (account_id) VALUES (?)",
+            [account_id],
+        )
+
+    @staticmethod
+    def _entry(**overrides: object) -> dict[str, object]:
+        base: dict[str, object] = {
+            "account_id": "A1",
+            "amount": Decimal("-12.34"),
+            "transaction_date": "2026-04-15",
+            "description": "Coffee Shop",
+        }
+        base.update(overrides)
+        return base
+
+    @pytest.mark.unit
+    def test_create_manual_batch_writes_one_import_log_row(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch(
+            [self._entry(), self._entry(amount=Decimal("99.00"))],
+            actor="cli",
+        )
+        assert isinstance(result, ManualBatchResult)
+        assert len(result.results) == 2
+        assert all(
+            isinstance(r, ManualEntryRawResult)
+            and r.source_transaction_id.startswith("manual_")
+            for r in result.results
+        )
+
+        log_rows = transaction_db.conn.execute(
+            "SELECT source_type, format_name FROM raw.import_log WHERE import_id = ?",
+            [result.import_id],
+        ).fetchall()
+        assert log_rows == [("manual", "manual_entry")]
+
+        manual_rows = transaction_db.conn.execute(
+            "SELECT source_transaction_id, import_id "
+            "FROM raw.manual_transactions WHERE import_id = ?",
+            [result.import_id],
+        ).fetchall()
+        assert len(manual_rows) == 2
+        assert {r[0] for r in manual_rows} == {
+            r.source_transaction_id for r in result.results
+        }
+        assert {r[1] for r in manual_rows} == {result.import_id}
+
+    @pytest.mark.unit
+    def test_create_manual_batch_emits_one_manual_create_audit(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch(
+            [self._entry(), self._entry()], actor="cli"
+        )
+
+        audit_rows = transaction_db.conn.execute(
+            "SELECT action, target_id, after_value FROM app.audit_log "
+            "WHERE action = 'manual.create'"
+        ).fetchall()
+        assert len(audit_rows) == 1
+        action, target_id, after_value = audit_rows[0]
+        assert action == "manual.create"
+        assert target_id == result.import_id
+        import json as _json
+
+        assert _json.loads(after_value) == {"row_count": 2}
+
+    @pytest.mark.unit
+    def test_create_manual_batch_rejects_whole_batch_on_validation_failure(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        with pytest.raises(ValueError, match=r"entries\[1\]\.account_id"):
+            service.create_manual_batch(
+                [
+                    self._entry(),
+                    self._entry(account_id="GHOST"),
+                    self._entry(),
+                ],
+                actor="cli",
+            )
+        # No raw rows and no import_log row should have been written.
+        manual_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.manual_transactions"
+        ).fetchone()
+        assert manual_count is not None
+        assert manual_count[0] == 0
+        log_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.import_log WHERE source_type = 'manual'"
+        ).fetchone()
+        assert log_count is not None
+        assert log_count[0] == 0
+
+    @pytest.mark.unit
+    def test_create_manual_batch_rejects_size_zero(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        with pytest.raises(ValueError, match="batch size"):
+            service.create_manual_batch([], actor="cli")
+
+    @pytest.mark.unit
+    def test_create_manual_batch_rejects_size_above_100(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        oversize = [self._entry() for _ in range(101)]
+        with pytest.raises(ValueError, match="batch size"):
+            service.create_manual_batch(oversize, actor="cli")
+        # Size check fires before any DB mutation.
+        log_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM raw.import_log WHERE source_type = 'manual'"
+        ).fetchone()
+        assert log_count is not None
+        assert log_count[0] == 0
+
+    @pytest.mark.unit
+    def test_create_manual_batch_ignores_category_for_now(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch(
+            [self._entry(category="Food & Drink", subcategory="Coffee Shops")],
+            actor="cli",
+        )
+        # Raw row written.
+        raw_rows = transaction_db.conn.execute(
+            "SELECT category, subcategory FROM raw.manual_transactions "
+            "WHERE import_id = ?",
+            [result.import_id],
+        ).fetchall()
+        assert len(raw_rows) == 1
+        assert raw_rows[0] == (None, None)
+        # No user-category row written — that arrives in Task 10.
+        cat_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id = ?",
+            [result.results[0].source_transaction_id],
+        ).fetchone()
+        assert cat_count is not None
+        assert cat_count[0] == 0

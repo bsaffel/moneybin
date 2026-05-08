@@ -181,6 +181,35 @@ class ImportService:
         """Initialize ImportService with an open Database connection."""
         self._db = db
 
+    def allocate_import_log(
+        self,
+        *,
+        source_type: str,
+        format_name: str,
+        actor: str,
+    ) -> str:
+        """Allocate a fresh ``raw.import_log`` row and return its ``import_id``.
+
+        Thin wrapper around :func:`moneybin.loaders.import_log.begin_import`
+        that exposes the lifecycle to callers (manual entry, future API
+        connectors) that don't have a source file but still need an
+        ``import_id`` to attribute their raw rows. ``source_type`` must be
+        in the loader's allowlist (see ``_REVERT_TABLES``); ``actor`` is
+        recorded as the ``account_names`` payload so audit consumers can
+        trace which surface (cli/mcp) initiated the batch.
+        """
+        from moneybin.loaders import import_log
+
+        return import_log.begin_import(
+            self._db,
+            source_file=f"<{source_type}:{actor}>",
+            source_type=source_type,  # type: ignore[arg-type]  # runtime-validated
+            source_origin=actor,
+            account_names=[actor],
+            format_name=format_name,
+            format_source="manual",
+        )
+
     def _query_date_range(
         self,
         table: str,

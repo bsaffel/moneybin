@@ -12,6 +12,7 @@ class TestMatchingSettings:
         assert settings.review_threshold == 0.70
         assert settings.date_window_days == 3
         assert settings.source_priority == [
+            "manual",
             "plaid",
             "csv",
             "excel",
