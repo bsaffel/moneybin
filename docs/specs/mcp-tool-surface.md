@@ -139,8 +139,8 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 |---|---|---|---|
 | **Tools** | core | ✅ shipped | ~19 core + extended namespaces; v2 surface in this spec |
 | **Tool `annotations`** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) | core (added 2025) | 📐 designed, ⏳ not yet wired | Extend `@mcp_tool` decorator (see [§Decorator: protocol annotations](#decorator-protocol-annotations)). Critically: clients use these for confirmation UI; MoneyBin's sensitivity tiers do *not* substitute. |
-| **Prompts** | core | ✅ shipped | 6 prompts in `src/moneybin/mcp/prompts.py`; surfaced via FastMCP. Add new prompts when a workflow is repeatable and benefits from a templated agent path. |
-| **Resources** | core | ✅ shipped | 8 resources in `src/moneybin/mcp/resources.py` including `moneybin://schema`. Pattern is established; extend for any read-only context that benefits from URI addressing (docs, schema docs, error-code catalog, BQL-style references if added). |
+| **Prompts** | core | ✅ shipped | Registered via `@mcp.prompt()` in `src/moneybin/mcp/prompts.py`; surfaced via FastMCP. Add new prompts when a workflow is repeatable and benefits from a templated agent path. |
+| **Resources** | core | ✅ shipped | Registered via `@mcp.resource(...)` in `src/moneybin/mcp/resources.py`, including the curated `moneybin://schema` resource. Pattern is established; extend for any read-only context that benefits from URI addressing (docs, schema docs, error-code catalog, BQL-style references if added). |
 | **Resource templates** | core | ⏳ deliberate defer | Use direct URIs only today. Revisit if/when a parameterized resource (e.g. `moneybin://account/{id}/summary`) is genuinely cheaper than an equivalent tool. |
 | **`tools/list_changed` notifications** | core | ✅ shipped | Used by progressive disclosure. Honored by Claude Code; Claude Desktop support is unreliable, which is why `MoneyBinSettings.mcp.progressive_disclosure` defaults `False`. |
 | **`resources/list_changed` notifications** | core | ⏳ not used | Resource set is static today. If `moneybin://schema` ever becomes dynamic per-session, wire this. |
