@@ -193,6 +193,37 @@ def resource_accounts_summary() -> str:
     return json.dumps(AccountService(get_database()).summary(), default=str)
 
 
+@mcp.resource("moneybin://recent-curation")
+def resource_recent_curation() -> str:
+    """Last 50 audit events — ambient context for curation workflows.
+
+    Resources are enhancement-only (some MCP clients are tools-only); the
+    canonical read path for audit events is the ``system_audit_list`` tool.
+    Sensitivity: medium — audit before/after values can carry row-level data.
+    """
+    logger.info("Resource read: moneybin://recent-curation")
+    from moneybin.services.audit_service import AuditService
+
+    events = AuditService(get_database()).list_events(limit=50)
+    payload = [
+        {
+            "audit_id": e.audit_id,
+            "occurred_at": e.occurred_at,
+            "actor": e.actor,
+            "action": e.action,
+            "target_schema": e.target_schema,
+            "target_table": e.target_table,
+            "target_id": e.target_id,
+            "before_value": e.before_value,
+            "after_value": e.after_value,
+            "parent_audit_id": e.parent_audit_id,
+            "context_json": e.context_json,
+        }
+        for e in events
+    ]
+    return json.dumps({"events": payload}, default=str)
+
+
 @mcp.resource("net-worth://summary")
 def resource_networth_summary() -> str:
     """Current net worth snapshot for AI conversation context.

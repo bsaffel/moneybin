@@ -150,6 +150,75 @@ def onboarding() -> str:
 
 
 @mcp.prompt()
+def curate_recent_transactions() -> str:
+    """Walk the user through curating recently-imported transactions."""
+    return _dedent("""
+        Help the user curate their most recent transactions — propose tags
+        and an initial note for rows that lack curator context.
+
+        **Goal:** Drain the un-noted, un-tagged tail of recent imports so the
+        next analysis pass has consistent metadata.
+
+        **Relevant tools:**
+        - transactions_search — fetch recent rows; pair with system_audit_list to
+          spot gaps (no note.add / tag.add events on a transaction_id).
+        - transactions_tags_set — declarative tag replacement (idempotent).
+        - transactions_notes_add — append a curator note.
+        - system_audit_list — sanity check what already happened.
+
+        **Workflow:**
+        1. Call transactions_search with a recent date window (e.g., last 30 days,
+           limit 50). Preserve transaction_id, description, amount, account_id.
+        2. For each row, propose a small set of slug-pattern tags
+           (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
+           and reusable; reuse existing tags when possible (a prior
+           system_audit_list with action_pattern='tag.%' helps here).
+        3. Confirm the batch with the user before mutating.
+        4. Apply: transactions_tags_set per row, transactions_notes_add for any
+           row where a note adds context the description does not.
+
+        **Guardrails:**
+        - Tags are slugs — ASCII alnum + `_`/`-`, optional single namespace.
+        - Notes max 2000 chars, must be non-empty.
+        - Never invent transaction_ids; only act on rows returned by search.
+        - Prefer fewer high-signal tags over many noisy ones.
+    """)
+
+
+@mcp.prompt()
+def review_curation_history() -> str:
+    """Summarize the last 7 days of curation activity from the audit log."""
+    return _dedent("""
+        Summarize what curation actions happened recently and surface anything
+        unusual (high-volume tag renames, repeated noop edits, unfamiliar
+        actors).
+
+        **Goal:** Give the user a quick mental model of what changed in the
+        last week without forcing them to read raw audit rows.
+
+        **Relevant tools:**
+        - system_audit_list — pull recent events. Call with limit=500 and
+          filters['from'] set to seven days ago (ISO timestamp).
+        - The result `data[]` already includes action, actor, target_table,
+          target_id, before/after, parent_audit_id.
+
+        **Workflow:**
+        1. Call system_audit_list with from = (now - 7 days) and limit=500.
+        2. Group by `action_pattern` prefix: note.*, tag.*, split.*,
+           import_label.*, manual.*, category.*.
+        3. Report counts per group, top 3 actors, and any noteworthy
+           outliers (parent tag.rename events, large split.clear bursts).
+        4. Offer drill-down via further system_audit_list calls
+           (e.g., action_pattern='tag.rename') if the user asks.
+
+        **Guardrails:**
+        - Read-only — do not mutate state from this prompt.
+        - Do not echo raw before/after values for high-sensitivity rows;
+          summarize counts instead.
+    """)
+
+
+@mcp.prompt()
 def tax_prep() -> str:
     """Tax preparation — gather W-2 data and deductible expenses."""
     return _dedent("""
