@@ -10,9 +10,9 @@ MoneyBin's pre-launch plan is organized as **milestones**: M0 through M3, each w
 |---|---|---|---|
 | **M0** | Infrastructure | — | ✅ shipped |
 | **M1** | Data Integrity | — | ✅ shipped |
-| **M2A** | Curator State | — | 📐 in flight |
-| **M2B** | Architecture Reference | — | 📐 in flight |
-| **M2C** | Brand Surface + Distribution | — | 📐 in flight |
+| **M2A** | Curator State | — | 🚧 in flight |
+| **M2B** | Architecture Reference | — | 🚧 in flight |
+| **M2C** | Brand Surface + Distribution | — | 🚧 in flight |
 | **M3A** | Plaid Transactions sync | Domain | 📐 designed |
 | **M3B** | Investment tracking | Domain | 📐 designed |
 | **M3C** | Multi-currency + budget rollovers | Domain | 📐 designed |
@@ -20,7 +20,7 @@ MoneyBin's pre-launch plan is organized as **milestones**: M0 through M3, each w
 | **M3E** | Hosted launch | Surface — closes launch | 📐 designed |
 | **Post-launch** | (anything after M3E) | — | 🗓️ planned |
 
-Legend: ✅ shipped · 📐 designed · 🗓️ planned
+Legend: ✅ shipped · 🚧 in flight · 📐 designed · 🗓️ planned
 
 ## Detail
 
@@ -97,9 +97,9 @@ Two parallel tracks. Both must close for M3E (and launch).
 
 #### M3 Domain track
 
-- **M3A — Plaid Transactions sync** (via `moneybin-server`). Long-running sync uses job-handle pattern (`sync.start` / `sync.status` / `sync.result`) to fit MCP timeout cap. Plaid Production approval is 4–8 weeks; paperwork starts the week the investment-tracking spec lands. Spec: `sync-plaid.md` (Tier C → rewrite).
+- **M3A — Plaid Transactions sync** (via `moneybin-server`). Long-running sync uses job-handle pattern (`sync.start` / `sync.status` / `sync.result`) to fit MCP timeout cap. Plaid Production approval is 4–8 weeks; paperwork starts the week the investment-tracking spec lands. Spec: `sync-plaid.md`.
 - **M3B — Investment tracking.** Holdings, FIFO lots, realized/unrealized gain/loss, ST/LT classification, Yahoo + CoinGecko prices. Largest competitive moat. Spec: `investment-tracking.md` (planned). Pre-spec ADRs: cost-basis engine location (pure Python vs SQL); investment fact-table shape (new `fct_investment_transactions` vs extend `fct_transactions`).
-- **M3C — Multi-currency + budget rollovers.** `amount_original` + `currency_original` on `fct_transactions`, Frankfurter FX rates, realized FX gain/loss on conversions; budget rollovers close the last traditional-budgeting gap. Pre-spec ADRs: FX cost-basis policy (FIFO matching investments?); home currency detection (OS locale default vs explicit). Specs: `multi-currency.md` (planned), `budget-tracking.md` (Tier C → rewrite).
+- **M3C — Multi-currency + budget rollovers.** `amount_original` + `currency_original` on `fct_transactions`, Frankfurter FX rates, realized FX gain/loss on conversions; budget rollovers close the last traditional-budgeting gap. Pre-spec ADRs: FX cost-basis policy (FIFO matching investments?); home currency detection (OS locale default vs explicit). Specs: `multi-currency.md` (planned), `budget-tracking.md` (planned).
 
 #### M3 Surface track
 

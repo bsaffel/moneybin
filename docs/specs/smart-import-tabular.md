@@ -404,11 +404,11 @@ This table grows over time as users encounter new header conventions. Aliases ar
 — not auto-generated or fuzzy-matched. Aggressive normalization before matching (case,
 whitespace, separators) covers most variation without fuzzy logic.
 
-**Future: Investment field aliases (deferred to Level 2):**
+**Future: Investment field aliases (deferred to M3B):**
 
 When the detection engine finds matches against investment aliases (ticker, shares,
 price, action, commission), it routes to investment raw tables. The routing hook is
-designed here; the investment schema is implemented in Level 2.
+designed here; the investment schema is implemented in M3B.
 
 ```python
 # Deferred — investment transaction detection
@@ -1772,7 +1772,7 @@ open-source tool treats import as seriously as MoneyBin does.
 | AI-assisted parsing (Pillar F) | Consent-gated cloud dependency; separate spec. See `smart-import-ai-parsing.md`. |
 | ML-powered format detection | Rules-based heuristics cover the 80% case. Validated by hledger (rules files), Firefly III (role-based mapping), and Sure (template reuse) — all ship without ML for format detection. Beancount's `smart_importer` proves ML is valuable for *categorization* (post-import), not format detection (pre-import). Add ML if heuristics hit a ceiling in practice. |
 | JSON / JSONL import | JSON's nested data types (objects, arrays) map better to DuckDB's native STRUCT/LIST/MAP types than to a flattened tabular DataFrame. A future JSON importer should leverage `duckdb.read_json_auto()` for native type inference rather than squeezing through the tabular pipeline. Separate spec when needed. |
-| Investment transaction routing | Architecture supports it (field alias table, routing hook). Implementation deferred to Level 2. |
+| Investment transaction routing | Architecture supports it (field alias table, routing hook). Implementation deferred to M3B. |
 | Partitioned Parquet datasets | Single-file Parquet in v1. `polars.read_parquet()` accepts globs — minimal lift when needed. |
 | Legacy Excel (.xls) | `.xlsx` is universal for modern exports. Add `xlrd` if demand materializes. |
 | Compressed files (.csv.gz, .zip) | Polars can read gzipped CSV natively. ZIP requires extraction logic. Defer and add incrementally. |

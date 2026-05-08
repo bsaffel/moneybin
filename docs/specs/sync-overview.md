@@ -637,7 +637,7 @@ The [`testing-and-validation-overview.md`](testing-and-validation-overview.md) u
 
 ## Build order & phasing
 
-### Phase 1: Core sync flow (MVP — Level 2 deliverable)
+### Phase 1: Core sync flow (M3A deliverable)
 
 - `SyncClient` with login, logout, connect, disconnect, pull, status
 - `PlaidLoader` with raw table DDL, JSON loading, `removed_transactions`
@@ -716,7 +716,7 @@ Infrastructure spec. The `Database` class that sync loaders write through handle
 Not designed here. Architectural constraints noted so the current design does not preclude them.
 
 1. **`sync push`** — multi-device sync. Push encrypted DuckDB state (or deltas) to the server so another device can pull it. Would add `moneybin sync push` command and bidirectional protocol extensions.
-2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investment-tracking.md` spec (MVP Level 2). New child spec: `sync-plaid-investments.md`.
+2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investment-tracking.md` spec (M3B). New child spec: `sync-plaid-investments.md`.
 3. **Plaid Liabilities** — sync loan, mortgage, and credit card debt details. Separate child spec.
 4. **Webhook-based sync** — server pushes notifications when new data is available, eliminating polling. Requires a client-side listener or notification mechanism.
 5. **Integration test environment** — coordinated setup for running server-dependent tests. Separate spec covering docker-compose, Auth0 test tenant, sandbox credential management.

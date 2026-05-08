@@ -5,7 +5,7 @@ ready
 
 ## Goal
 
-Bring the user-facing documentation surface (README, CHANGELOG, threat model, database-security guide, License framing, comparison table) up to a bar that survives ruthless scrutiny from the technical personas MoneyBin can credibly serve today and at M2C close — Sam (curator-engineer), Devon (MCP-native developer), and Priya (self-hosted privacy refugee). Most of the work ships *before* M2C and doesn't depend on product changes; the parts that do (architecture distillation, brew install instructions, demo asset) flip cleanly when their gating wave closes.
+Bring the user-facing documentation surface (README, CHANGELOG, threat model, database-security guide, License framing, comparison table) up to a bar that survives ruthless scrutiny from the technical personas MoneyBin can credibly serve today and at M2C close — Sam (curator-engineer), Devon (MCP-native developer), and Priya (self-hosted privacy refugee). Most of the work ships *before* M2C and doesn't depend on product changes; the parts that do (architecture distillation, brew install instructions, demo asset) flip cleanly when their gating milestone closes.
 
 The tagline `Your finances, understood by AI.` stays as the aspirational vision statement. The honesty and substance layer lives immediately below it.
 
@@ -39,7 +39,7 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 9. **License section explains AGPL with substance.** Replaces the badge-only treatment. Names the four implications (free use, free fork, network-service-must-publish-source, hosted-server-runs-the-same-code). References the Bitwarden / Plausible / Element / Sentry / Ghost peer set.
 
-10. **`CHANGELOG.md` exists at repo root.** Backfilled from recent PRs in Keep-A-Changelog format. Groups entries by version (or by wave milestone — to be decided in implementation). Devon checks for this; absence reads as "not serious."
+10. **`CHANGELOG.md` exists at repo root.** Backfilled from recent PRs in Keep-A-Changelog format. Groups entries by version (or by milestone — to be decided in implementation). Devon checks for this; absence reads as "not serious."
 
 11. **`docs/guides/threat-model.md` exists.** One-page user-facing distillation of [`privacy-data-protection.md`](privacy-data-protection.md): what the encryption protects against (stolen laptop, synced folder, shared machine), what it doesn't (forgotten passphrase + lost recovery codes = data loss; AI vendor data flow when you ask Claude/ChatGPT a question; an attacker with both DB file and live keychain session). References ADR-009 for KDF rationale.
 
@@ -92,7 +92,7 @@ None. This spec does not introduce or modify any database schemas, migrations, o
 
 ### Sequencing
 
-The work splits cleanly into "ship now (no product dependencies)" and "ship at wave close":
+The work splits cleanly into "ship now (no product dependencies)" and "ship at milestone close":
 
 **Now (single docs PR or two):**
 1. README rewrite — tagline preserved, sub-line refreshed, Why bullets reordered, candor block added, comparison table expanded, License section with substance, milestone-aligned roadmap, Documentation section adds ADR link, MCP transport clarity. Quick Start preface acknowledges brew install ships at M2C without yet promising the command works today.
