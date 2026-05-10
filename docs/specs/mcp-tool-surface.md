@@ -138,7 +138,7 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 | Capability | MCP spec status | MoneyBin status | Notes / next action |
 |---|---|---|---|
 | **Tools** | core | ✅ shipped | ~19 core + extended namespaces; v2 surface in this spec |
-| **Tool `annotations`** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) | core (added 2025) | 📐 designed, ⏳ not yet wired | Extend `@mcp_tool` decorator (see [§Decorator: protocol annotations](#decorator-protocol-annotations)). Critically: clients use these for confirmation UI; MoneyBin's sensitivity tiers do *not* substitute. |
+| **Tool `annotations`** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) | core (added 2025) | ✅ shipped | Emitted by `@mcp_tool` via `mcp.types.ToolAnnotations` in `src/moneybin/mcp/_registration.py`. Clients use these for confirmation UI; MoneyBin's sensitivity tiers complement them, not substitute. |
 | **Prompts** | core | ✅ shipped | Registered via `@mcp.prompt()` in `src/moneybin/mcp/prompts.py`; surfaced via FastMCP. Add new prompts when a workflow is repeatable and benefits from a templated agent path. |
 | **Resources** | core | ✅ shipped | Registered via `@mcp.resource(...)` in `src/moneybin/mcp/resources.py`, including the curated `moneybin://schema` resource. Pattern is established; extend for any read-only context that benefits from URI addressing (docs, schema docs, error-code catalog, BQL-style references if added). |
 | **Resource templates** | core | ⏳ deliberate defer | Use direct URIs only today. Revisit if/when a parameterized resource (e.g. `moneybin://account/{id}/summary`) is genuinely cheaper than an equivalent tool. |
@@ -158,9 +158,9 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 
 #### Decorator: protocol annotations
 
-The `@mcp_tool` decorator in `src/moneybin/mcp/decorator.py` accepts MoneyBin's `sensitivity` and `domain` keyword arguments today. The MCP-protocol-standard tool `annotations` are not yet emitted — clients have no machine-readable way to ask "is this tool destructive?" beyond reading the tool name.
+The `@mcp_tool` decorator in `src/moneybin/mcp/decorator.py` accepts MoneyBin's `sensitivity` and `domain` keyword arguments today, plus MCP-standard `annotations` kwargs as of this PR.
 
-**Required extension** (planned; not yet implemented):
+**Implemented signature**:
 
 ```python
 @mcp_tool(
