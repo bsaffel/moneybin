@@ -719,3 +719,174 @@ class TestMutatorAccountValidation:
         svc = AccountService(extended_db)
         with pytest.raises(UserError, match="Account not found"):
             svc.settings_update("ACCTO1_typo", official_name="New Name")
+
+
+class TestAccountResolution:
+    """Tests for the AccountResolution dataclass."""
+
+    @pytest.mark.unit
+    def test_to_dict_shape(self) -> None:
+        """AccountResolution.to_dict produces the agent-facing JSON shape."""
+        from moneybin.services.account_service import AccountResolution
+
+        r = AccountResolution(
+            account_id="abc123",
+            display_name="Chase Checking",
+            account_subtype="checking",
+            institution_name="Chase",
+            confidence=0.876,
+        )
+        assert r.to_dict() == {
+            "account_id": "abc123",
+            "display_name": "Chase Checking",
+            "account_subtype": "checking",
+            "institution_name": "Chase",
+            "confidence": 0.876,
+        }
+
+    @pytest.mark.unit
+    def test_rounds_confidence_to_three_decimals(self) -> None:
+        """Confidence is rounded to 3 decimals at serialization."""
+        from moneybin.services.account_service import AccountResolution
+
+        r = AccountResolution(
+            account_id="x",
+            display_name="X",
+            account_subtype=None,
+            institution_name=None,
+            confidence=0.123456789,
+        )
+        assert r.to_dict()["confidence"] == 0.123
+
+    @pytest.mark.unit
+    def test_preserves_nulls(self) -> None:
+        """Null subtypes/institution serialize as null (not omitted)."""
+        from moneybin.services.account_service import AccountResolution
+
+        r = AccountResolution(
+            account_id="x",
+            display_name="X",
+            account_subtype=None,
+            institution_name=None,
+            confidence=1.0,
+        )
+        d = r.to_dict()
+        assert d["account_subtype"] is None
+        assert d["institution_name"] is None
+
+
+class TestAccountServiceResolve:
+    """Tests for AccountService.resolve()."""
+
+    @pytest.mark.unit
+    def test_exact_display_name_match_returns_top_confidence(
+        self, extended_db: Database
+    ) -> None:
+        """Exact display_name match returns top-confidence candidate."""
+        _insert_dim_account(
+            extended_db,
+            "a1",
+            display_name="Chase Checking",
+            account_subtype="checking",
+            institution_name="Chase",
+        )
+        _insert_dim_account(
+            extended_db,
+            "a2",
+            display_name="Schwab Brokerage",
+            account_subtype="brokerage",
+            institution_name="Schwab",
+        )
+        matches = AccountService(extended_db).resolve("Chase Checking")
+        assert len(matches) >= 1
+        assert matches[0].account_id == "a1"
+        assert matches[0].confidence == 1.0
+
+    @pytest.mark.unit
+    def test_fuzzy_match_handles_typos(self, extended_db: Database) -> None:
+        """Typo'd query still finds the right account."""
+        _insert_dim_account(
+            extended_db,
+            "a1",
+            display_name="Chase Checking",
+            account_subtype="checking",
+            institution_name="Chase",
+        )
+        matches = AccountService(extended_db).resolve("Chse Chking")
+        assert len(matches) == 1
+        assert matches[0].account_id == "a1"
+        assert 0.5 < matches[0].confidence < 1.0
+
+    @pytest.mark.unit
+    def test_no_match_returns_empty_list(self, extended_db: Database) -> None:
+        """Query with no candidates returns empty list."""
+        matches = AccountService(extended_db).resolve("nonexistent")
+        assert matches == []
+
+    @pytest.mark.unit
+    def test_limit_caps_results(self, extended_db: Database) -> None:
+        """Limit caps the number of results."""
+        _insert_dim_account(extended_db, "a1", display_name="Account One")
+        _insert_dim_account(extended_db, "a2", display_name="Account Two")
+        _insert_dim_account(extended_db, "a3", display_name="Account Three")
+        _insert_dim_account(extended_db, "a4", display_name="Account Four")
+        matches = AccountService(extended_db).resolve("account", limit=2)
+        assert len(matches) == 2
+
+    @pytest.mark.unit
+    def test_matches_against_subtype(self, extended_db: Database) -> None:
+        """Match against account_subtype, not just display_name."""
+        _insert_dim_account(
+            extended_db,
+            "a1",
+            display_name="Account 1234",
+            account_subtype="checking",
+            institution_name="Chase",
+        )
+        matches = AccountService(extended_db).resolve("checking")
+        assert len(matches) == 1
+        assert matches[0].account_id == "a1"
+
+    @pytest.mark.unit
+    def test_matches_against_institution_name(self, extended_db: Database) -> None:
+        """Match against institution_name."""
+        _insert_dim_account(
+            extended_db,
+            "a1",
+            display_name="XYZ Account",
+            account_subtype="checking",
+            institution_name="Schwab Bank",
+        )
+        matches = AccountService(extended_db).resolve("schwab")
+        assert len(matches) == 1
+        assert matches[0].account_id == "a1"
+
+    @pytest.mark.unit
+    def test_results_sort_by_confidence_descending(self, extended_db: Database) -> None:
+        """Results sort by confidence descending."""
+        _insert_dim_account(
+            extended_db,
+            "a1",
+            display_name="Chase Checking",
+            account_subtype="checking",
+            institution_name="Chase",
+        )
+        _insert_dim_account(
+            extended_db,
+            "a2",
+            display_name="Bank of America",
+            account_subtype="checking",
+            institution_name="BofA",
+        )
+        matches = AccountService(extended_db).resolve("chase")
+        assert len(matches) >= 1
+        assert matches[0].account_id == "a1"  # better fuzzy match
+        if len(matches) > 1:
+            assert matches[0].confidence > matches[1].confidence
+
+    @pytest.mark.unit
+    def test_empty_query_returns_empty_list(self, extended_db: Database) -> None:
+        """Whitespace-only or empty query short-circuits to empty list."""
+        _insert_dim_account(extended_db, "a1", display_name="Anything")
+        assert AccountService(extended_db).resolve("") == []
+        assert AccountService(extended_db).resolve("   ") == []

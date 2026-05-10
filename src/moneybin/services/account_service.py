@@ -12,7 +12,7 @@ import logging
 import re
 from dataclasses import dataclass
 from decimal import Decimal
-from difflib import get_close_matches
+from difflib import SequenceMatcher, get_close_matches
 from typing import Any, Literal, cast
 
 from moneybin.database import Database
@@ -295,6 +295,30 @@ class AccountSettingsRepository:
             f"DELETE FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",
             [account_id],
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AccountResolution:
+    """A single fuzzy-match candidate from AccountService.resolve().
+
+    See docs/specs/mcp-tool-surface.md §accounts_resolve.
+    """
+
+    account_id: str
+    display_name: str
+    account_subtype: str | None
+    institution_name: str | None
+    confidence: float
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to plain dict for JSON / envelope transport."""
+        return {
+            "account_id": self.account_id,
+            "display_name": self.display_name,
+            "account_subtype": self.account_subtype,
+            "institution_name": self.institution_name,
+            "confidence": round(self.confidence, 3),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,3 +629,51 @@ class AccountService:
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )
         return updated, warnings
+
+    def resolve(self, query: str, limit: int = 5) -> list[AccountResolution]:
+        """Fuzzy-match a free-text query against core.dim_accounts.
+
+        Scores each account against display_name, account_subtype, and
+        institution_name using difflib.SequenceMatcher. Returns the top-`limit`
+        matches sorted by confidence descending.
+
+        See docs/specs/mcp-tool-surface.md §accounts_resolve.
+        """
+        query_clean = query.lower().strip()
+        if not query_clean:
+            return []
+
+        rows = self._db.execute(
+            f"""
+            SELECT account_id, display_name, account_subtype, institution_name
+            FROM {DIM_ACCOUNTS.full_name}
+            """
+        ).fetchall()
+
+        scored: list[AccountResolution] = []
+        for account_id, display_name, account_subtype, institution_name in rows:
+            best = 0.0
+            for field_value in (display_name, account_subtype, institution_name):
+                if field_value:
+                    ratio = SequenceMatcher(
+                        None, query_clean, field_value.lower()
+                    ).ratio()
+                    if ratio > best:
+                        best = ratio
+            if best > 0:
+                scored.append(
+                    AccountResolution(
+                        account_id=account_id,
+                        display_name=display_name,
+                        account_subtype=account_subtype,
+                        institution_name=institution_name,
+                        confidence=best,
+                    )
+                )
+
+        scored.sort(key=lambda r: r.confidence, reverse=True)
+        logger.info(
+            f"Resolved query (len={len(query_clean)}): "
+            f"{len(scored)} candidates, returning {min(limit, len(scored))}"
+        )
+        return scored[:limit]
