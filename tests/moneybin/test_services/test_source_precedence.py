@@ -19,6 +19,7 @@ from moneybin.services.categorization_service import (
     _SOURCE_PRIORITY as _PRIORITY,  # pyright: ignore[reportPrivateUsage]  # test reads the canonical ladder
 )
 from moneybin.services.categorization_service import (
+    BulkCategorizationItem,
     CategorizationService,
 )
 from tests.moneybin.db_helpers import create_core_tables
@@ -261,3 +262,85 @@ def test_auto_rule_backfill_routes_through_write_categorization(
         "moneybin_categorize_write_skipped_precedence_total", metric_labels
     )
     assert (after or 0.0) - (before or 0.0) == 1.0
+
+
+def test_blocked_write_does_not_mutate_merchant_or_proposal_state(
+    real_db: Database, fresh_txn: str
+) -> None:
+    """A precedence-blocked bulk write must not touch downstream learning state.
+
+    Regression guard: ``_bulk_categorize_inner`` resolves the merchant, writes
+    the categorization, and only then records the auto-rule proposal and
+    appends to the exemplar set. If the write is rejected by the precedence
+    guard (higher-priority source already covers the row), the suggestion was
+    refused — mutating the merchant table or proposing a rule from a rejected
+    suggestion would poison future matching and learning.
+    """
+    cat_svc = CategorizationService(real_db)
+
+    # Pre-categorize as user (priority 1 — highest).
+    cat_svc.write_categorization(
+        transaction_id=fresh_txn,
+        category="Coffee Shops",
+        subcategory=None,
+        categorized_by="user",
+    )
+
+    merchants_before = real_db.execute(
+        "SELECT COUNT(*) FROM app.user_merchants"
+    ).fetchone()
+    assert merchants_before is not None
+    merchant_count_before = int(merchants_before[0])
+
+    exemplars_before = real_db.execute(
+        "SELECT merchant_id, len(exemplars) FROM app.user_merchants"
+    ).fetchall()
+
+    proposals_before = real_db.execute(
+        "SELECT proposed_rule_id, trigger_count FROM app.proposed_rules"
+    ).fetchall()
+
+    # Bulk-categorize with a NEW category + canonical name. This is the
+    # rejected-suggestion path: ai (priority 8) is lower than the existing
+    # user write, so the write_categorization call should return written=False
+    # and no downstream state should change.
+    result = cat_svc.bulk_categorize([
+        BulkCategorizationItem(
+            transaction_id=fresh_txn,
+            category="Different",
+            subcategory=None,
+            canonical_merchant_name="SomeNew",
+        ),
+    ])
+
+    assert result.applied == 0
+    assert result.skipped >= 1
+    # The user categorization is intact.
+    row = real_db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories "
+        "WHERE transaction_id = ?",
+        [fresh_txn],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "Coffee Shops"
+    assert row[1] == "user"
+
+    # No new merchant was created from the rejected suggestion.
+    merchants_after = real_db.execute(
+        "SELECT COUNT(*) FROM app.user_merchants"
+    ).fetchone()
+    assert merchants_after is not None
+    assert int(merchants_after[0]) == merchant_count_before
+
+    # No existing merchant's exemplar set grew.
+    exemplars_after = real_db.execute(
+        "SELECT merchant_id, len(exemplars) FROM app.user_merchants"
+    ).fetchall()
+    assert exemplars_after == exemplars_before
+
+    # No auto-rule learning fired (no new proposals; existing trigger_counts
+    # unchanged).
+    proposals_after = real_db.execute(
+        "SELECT proposed_rule_id, trigger_count FROM app.proposed_rules"
+    ).fetchall()
+    assert proposals_after == proposals_before

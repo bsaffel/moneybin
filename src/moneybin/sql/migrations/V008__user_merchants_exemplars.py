@@ -39,4 +39,4 @@ def migrate(conn: object) -> None:
             "ALTER TABLE app.user_merchants ALTER COLUMN raw_pattern DROP NOT NULL"
         )
 
-    logger.info("V007 migration complete")
+    logger.info("V008 migration complete")
