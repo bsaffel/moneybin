@@ -30,3 +30,4 @@ INNER JOIN core.dim_accounts AS a ON ba.account_id = a.account_id
 LEFT JOIN core.fct_balances_daily AS fbd
   ON ba.account_id = fbd.account_id
   AND ba.assertion_date = fbd.balance_date
+WHERE NOT a.archived

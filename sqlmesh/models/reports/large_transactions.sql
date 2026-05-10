@@ -20,6 +20,7 @@ WITH base AS (
   FROM core.fct_transactions AS t
   INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
   WHERE NOT t.is_transfer
+    AND NOT a.archived
 ), per_account_median AS (
   SELECT
     account_id,

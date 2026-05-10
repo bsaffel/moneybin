@@ -106,35 +106,35 @@ def _ensure_seed_tables_exist(db: Database) -> None:
 def refresh_views(db: Database) -> None:
     """Create or replace the resolved dim views and drop retired legacy views.
 
-    Idempotent and safe to call before migrations run. If ``app.merchants``
-    still exists as a TABLE (pre-V006 database opened with
-    ``no_auto_upgrade=True`` — the operator has opted out of auto-migration),
-    skip the cleanup entirely. DuckDB rejects DROP/CREATE-OR-REPLACE against
-    a table; failing here would block startup before the operator can apply
-    migrations manually. Reads against ``app.merchants`` continue to return
-    the legacy table's data until the operator runs migrations.
+    Idempotent and safe to call before migrations run.
+
+    ``core.dim_categories`` has no V006 dependency and is always built.
+
+    ``core.dim_merchants`` requires ``app.user_merchants`` (created by V006).
+    If V006 has not yet run — ``app.merchants`` is still a TABLE because the
+    operator opened the database with ``no_auto_upgrade=True`` — build a
+    backward-compat passthrough that wraps the legacy table so categorization
+    reads still resolve. The full union (user + seeds + overrides) lands once
+    migrations complete.
     """
     _ensure_seed_tables_exist(db)
     legacy = db.execute(
         "SELECT table_type FROM information_schema.tables "
         "WHERE table_schema = 'app' AND table_name = 'merchants'"
     ).fetchone()
-    if legacy is not None and legacy[0] == "BASE TABLE":
-        logger.warning(
-            "app.merchants exists as a TABLE (pre-V006 schema); skipping "
-            "view refresh. Run migrations to complete the upgrade."
-        )
-        return
+    is_pre_v006_table = legacy is not None and legacy[0] == "BASE TABLE"
 
-    # Drop the retired app.* views. Idempotent on fresh DBs.
+    # Drop the retired app.categories view (no V006 dependency).
     db.execute("DROP VIEW IF EXISTS app.categories")
-    db.execute("DROP VIEW IF EXISTS app.merchants")
+    # app.merchants is dropped only post-V006 — pre-V006 it's the user-data
+    # TABLE we are about to wrap.
+    if not is_pre_v006_table:
+        db.execute("DROP VIEW IF EXISTS app.merchants")
 
-    # Build resolved dim views. Mirrors sqlmesh/models/core/dim_categories.sql
-    # and sqlmesh/models/core/dim_merchants.sql so tests and freshly-opened
-    # databases see the dims without requiring a full SQLMesh `transform
-    # apply`. SQLMesh subsequently CREATE OR REPLACEs these with identical
-    # bodies on every transform run.
+    # Build resolved dim views. Mirrors sqlmesh/models/core/dim_*.sql so tests
+    # and freshly-opened databases see the dims without requiring a full
+    # SQLMesh `transform apply`. SQLMesh subsequently CREATE OR REPLACEs these
+    # with identical bodies on every transform run.
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
@@ -149,7 +149,7 @@ def refresh_views(db: Database) -> None:
             NULL::TIMESTAMP AS created_at
         FROM {SEED_CATEGORIES.full_name} s
         LEFT JOIN {CATEGORY_OVERRIDES.full_name} o USING (category_id)
-        UNION ALL
+        UNION
         SELECT
             category_id,
             category,
@@ -162,6 +162,24 @@ def refresh_views(db: Database) -> None:
         FROM {USER_CATEGORIES.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
     )
+
+    if is_pre_v006_table:
+        logger.warning(
+            "app.merchants exists as a TABLE (pre-V006 schema); building "
+            "core.dim_merchants as a passthrough over the legacy table. "
+            "Run migrations to complete the upgrade."
+        )
+        db.execute(
+            f"""
+            CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
+            SELECT
+                merchant_id, raw_pattern, match_type, canonical_name,
+                category, subcategory, created_by, created_at,
+                true AS is_user
+            FROM app.merchants
+            """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
+        )
+        return
 
     db.execute(
         f"""

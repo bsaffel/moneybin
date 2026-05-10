@@ -8,13 +8,15 @@ MODEL (
 
 WITH normalized AS (
   SELECT
-    COALESCE(merchant_name, '(unknown)') AS merchant_normalized,
-    amount,
-    category,
-    transaction_date,
-    account_id
-  FROM core.fct_transactions
-  WHERE NOT is_transfer
+    COALESCE(t.merchant_name, '(unknown)') AS merchant_normalized,
+    t.amount,
+    t.category,
+    t.transaction_date,
+    t.account_id
+  FROM core.fct_transactions AS t
+  INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
+  WHERE NOT t.is_transfer
+    AND NOT a.archived
 )
 SELECT
   merchant_normalized, /* Normalized merchant string; '(unknown)' when source merchant is NULL */

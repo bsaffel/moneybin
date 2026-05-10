@@ -1,7 +1,7 @@
 /* Resolved category dimension: unifies seeds.categories with
-   app.user_categories and applies app.category_overrides.
-   Replaces the Python-built app.categories view (retired with
-   reports-recipe-library.md). */
+   app.user_categories and applies app.category_overrides. UNION (not UNION ALL)
+   collapses any accidental category_id collision between a seed row and a
+   user_categories row into a single output row. */
 MODEL (
   name core.dim_categories,
   kind VIEW
@@ -18,7 +18,7 @@ SELECT
   NULL::TIMESTAMP AS created_at /* NULL for seeded categories; populated for user_categories below */
 FROM seeds.categories AS s
 LEFT JOIN app.category_overrides AS o USING (category_id)
-UNION ALL
+UNION
 SELECT
   category_id,
   category,

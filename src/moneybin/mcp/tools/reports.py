@@ -19,7 +19,7 @@ Read tools:
 from __future__ import annotations
 
 from datetime import date as _date
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 
@@ -32,11 +32,16 @@ from moneybin.services.networth_service import NetworthService
 from moneybin.services.reports_service import ReportsService
 
 
-def _envelope(cols: list[str], rows: list[tuple[Any, ...]]) -> ResponseEnvelope:
-    """Wrap a (cols, rows) result as a medium-sensitivity envelope."""
+def _envelope(
+    cols: list[str],
+    rows: list[tuple[Any, ...]],
+    *,
+    sensitivity: Literal["low", "medium", "high"] = "medium",
+) -> ResponseEnvelope:
+    """Wrap a (cols, rows) result as a response envelope at ``sensitivity``."""
     return build_envelope(
         data=[dict(zip(cols, r, strict=False)) for r in rows],
-        sensitivity="medium",
+        sensitivity=sensitivity,
     )
 
 
@@ -87,7 +92,7 @@ def reports_networth_history_get(
     return build_envelope(data=rows, sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="low")
 def reports_spending_get(
     from_month: str | None = None,
     to_month: str | None = None,
@@ -106,10 +111,10 @@ def reports_spending_get(
     cols, rows = ReportsService(get_database()).spending_trend(
         from_month=from_month, to_month=to_month, category=category, compare=compare
     )
-    return _envelope(cols, rows)
+    return _envelope(cols, rows, sensitivity="low")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="low")
 def reports_cashflow_get(
     from_month: str | None = None,
     to_month: str | None = None,
@@ -125,10 +130,10 @@ def reports_cashflow_get(
     cols, rows = ReportsService(get_database()).cash_flow(
         from_month=from_month, to_month=to_month, by=by
     )
-    return _envelope(cols, rows)
+    return _envelope(cols, rows, sensitivity="low")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="low")
 def reports_recurring_get(
     min_confidence: float = 0.5,
     status: str = "active",
@@ -145,10 +150,10 @@ def reports_recurring_get(
     cols, rows = ReportsService(get_database()).recurring_subscriptions(
         min_confidence=min_confidence, status=status, cadence=cadence
     )
-    return _envelope(cols, rows)
+    return _envelope(cols, rows, sensitivity="low")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="low")
 def reports_merchants_get(
     top: int = 25,
     sort: str = "spend",
@@ -160,7 +165,7 @@ def reports_merchants_get(
         sort: spend | count | recent.
     """
     cols, rows = ReportsService(get_database()).merchant_activity(top=top, sort=sort)
-    return _envelope(cols, rows)
+    return _envelope(cols, rows, sensitivity="low")
 
 
 @mcp_tool(sensitivity="medium")

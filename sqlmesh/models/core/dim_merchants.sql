@@ -1,7 +1,8 @@
 /* Resolved merchant dimension: unifies app.user_merchants with regional seed
-   merchant tables (global, US, CA) and applies app.merchant_overrides.
-   User merchants take precedence on overlap. Replaces the Python-built
-   app.merchants view (retired with reports-recipe-library.md). */
+   merchant tables (global, US, CA) and applies app.merchant_overrides to the
+   seed rows only. User merchants are not joined to overrides — they are
+   already mutable, so corrections happen on the source row. User merchants
+   take precedence on overlap. */
 MODEL (
   name core.dim_merchants,
   kind VIEW

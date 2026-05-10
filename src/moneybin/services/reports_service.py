@@ -17,6 +17,7 @@ the constant rather than redefining it.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
@@ -83,8 +84,9 @@ class ReportsService:
         select_cols = "year_month"
         group_cols = "year_month"
         if "account" in by:
-            select_cols += ", account_name"
-            group_cols += ", account_name"
+            # account_id keeps rows distinct when two accounts share a display_name
+            select_cols += ", account_id, account_name"
+            group_cols += ", account_id, account_name"
         if "category" in by:
             select_cols += ", category"
             group_cols += ", category"
@@ -193,7 +195,7 @@ class ReportsService:
     def uncategorized_queue(
         self,
         *,
-        min_amount: object = 0,
+        min_amount: Decimal | float | int = 0,
         account: str | None = None,
         limit: int = 50,
     ) -> QueryResult:

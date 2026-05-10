@@ -8,14 +8,16 @@ MODEL (
 
 WITH monthly AS (
   SELECT
-    date_trunc('month', transaction_date) AS year_month,
-    category,
-    SUM(ABS(amount)) AS total_spend,
+    date_trunc('month', t.transaction_date) AS year_month,
+    t.category,
+    SUM(ABS(t.amount)) AS total_spend,
     COUNT(*) AS txn_count
-  FROM core.fct_transactions
-  WHERE amount < 0
-    AND NOT is_transfer
-  GROUP BY date_trunc('month', transaction_date), category
+  FROM core.fct_transactions AS t
+  INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
+  WHERE t.amount < 0
+    AND NOT t.is_transfer
+    AND NOT a.archived
+  GROUP BY date_trunc('month', t.transaction_date), t.category
 )
 SELECT
   m.year_month, /* First-of-month */

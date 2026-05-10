@@ -57,7 +57,8 @@ class TestReportsRecurringGet:
         result = await reports_recurring_get()
         assert isinstance(result, ResponseEnvelope)
         parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "medium"
+        # Aggregate per-merchant rollup — sensitivity is "low" per mcp-server.md.
+        assert parsed["summary"]["sensitivity"] == "low"
         merchants = {row["merchant_normalized"] for row in parsed["data"]}
         # Default min_confidence=0.5, status='active' → drops OldGym (inactive)
         # and WeakSignal (confidence=0.3).

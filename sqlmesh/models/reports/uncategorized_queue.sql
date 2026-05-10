@@ -22,3 +22,4 @@ FROM core.fct_transactions AS t
 INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
 WHERE t.category IS NULL
   AND NOT t.is_transfer
+  AND NOT a.archived

@@ -10,14 +10,16 @@ MODEL (
 
 WITH eligible AS (
   SELECT
-    COALESCE(merchant_name, '(unknown)') AS merchant_normalized,
-    ROUND(amount, 0) AS amount_bucket,
-    amount,
-    transaction_date
-  FROM core.fct_transactions
-  WHERE amount < 0
-    AND NOT is_transfer
-    AND transaction_date >= current_date - INTERVAL '18 months'
+    COALESCE(t.merchant_name, '(unknown)') AS merchant_normalized,
+    ROUND(t.amount, 0) AS amount_bucket,
+    t.amount,
+    t.transaction_date
+  FROM core.fct_transactions AS t
+  INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
+  WHERE t.amount < 0
+    AND NOT t.is_transfer
+    AND NOT a.archived
+    AND t.transaction_date >= current_date - INTERVAL '18 months'
 ), with_intervals AS (
   SELECT
     merchant_normalized,
@@ -60,9 +62,9 @@ SELECT
   first_seen, /* Earliest charge in this cluster */
   last_seen, /* Most recent charge */
   CASE
-    WHEN current_date - last_seen <= 60 THEN 'active'
+    WHEN current_date - last_seen <= GREATEST(60, interval_days_avg * 2) THEN 'active'
     ELSE 'inactive'
-  END AS status, /* 'active' if last_seen within 60 days */
+  END AS status, /* 'active' if last_seen is within max(60 days, 2× cadence) — scales for yearly/quarterly */
   CASE
     WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2 THEN avg_amount * 52
     WHEN interval_days_avg BETWEEN 12 AND 16 AND interval_days_stddev < 3 THEN avg_amount * 26
