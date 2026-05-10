@@ -317,7 +317,7 @@ class AccountListResult:
             sensitivity=self.sensitivity,
             actions=[
                 "Use accounts_balance_list for current balances",
-                "Use reports_spending_summary with account_id to filter by account",
+                "Use reports_spending_get with a category filter to drill in by account",
             ],
         )
 

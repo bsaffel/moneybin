@@ -45,7 +45,7 @@ async def test_core_tools_visible_at_connect() -> None:
 
     async with Client(mcp) as client:
         names = {t.name for t in await client.list_tools()}
-        assert "reports_spending_summary" in names
+        assert "reports_spending_get" in names
         assert "accounts_list" in names
 
 
