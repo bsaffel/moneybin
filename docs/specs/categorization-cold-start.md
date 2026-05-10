@@ -440,7 +440,9 @@ For every transaction sent via `transactions_categorize_assist`, the LLM receive
 ```python
 @dataclass(frozen=True)
 class RedactedTransaction:
-    opaque_id: str  # existing transaction_id (opaque hash/UUID)
+    transaction_id: (
+        str  # source-provided FITID or content hash; non-sensitive synthetic identifier
+    )
     description_redacted: str  # redact_for_llm(description)
     memo_redacted: str  # redact_for_llm(memo) — added in v2
     source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf'
@@ -605,17 +607,17 @@ moneybin transactions categorize apply --input cats.json
 
 JSON contracts:
 
-**Export output / apply input first half (`opaque_id` is the existing `transaction_id`):**
+**Export output / apply input first half:**
 ```json
 [
-  {"opaque_id": "txn_abc123", "description_redacted": "STARBUCKS", "source_type": "csv"}
+  {"transaction_id": "txn_abc123", "description_redacted": "STARBUCKS", "source_type": "csv"}
 ]
 ```
 
 **Apply input format:**
 ```json
 [
-  {"opaque_id": "txn_abc123", "category": "Food & Dining", "subcategory": "Coffee Shops", "canonical_merchant_name": "Starbucks"}
+  {"transaction_id": "txn_abc123", "category": "Food & Dining", "subcategory": "Coffee Shops", "canonical_merchant_name": "Starbucks"}
 ]
 ```
 

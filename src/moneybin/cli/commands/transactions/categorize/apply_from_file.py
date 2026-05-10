@@ -14,8 +14,8 @@ from moneybin.protocol.envelope import ResponseEnvelope
 logger = logging.getLogger(__name__)
 
 # Keys the BulkCategorizationItem model accepts (extra="forbid"). Used to strip
-# export-shape extras (opaque_id, description_redacted, source_type) from rows
-# fed to apply-from-file, after opaque_id → transaction_id remap.
+# export-shape extras (description_redacted, source_type) from rows fed to
+# apply-from-file.
 _ALLOWED_BULK_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
 
 
@@ -29,7 +29,7 @@ def categorize_apply_from_file(
     r"""Apply LLM-generated categories from a JSON file to transactions.
 
     Reads a JSON array where each object has:
-      opaque_id, category, and (optionally) subcategory.
+      transaction_id, category, and (optionally) subcategory.
 
     Designed for the export → LLM → apply workflow:
 
@@ -74,19 +74,16 @@ def categorize_apply_from_file(
         raise typer.Exit(1) from e
 
     # Map export-shape rows into BulkCategorizationItem-shape rows. The export
-    # command emits {opaque_id, description_redacted, source_type} for the LLM
-    # to annotate with category/subcategory; the service model is
+    # command emits {transaction_id, description_redacted, source_type} for the
+    # LLM to annotate with category/subcategory; the service model is
     # {transaction_id, category, subcategory} with extra="forbid", so we must
-    # strip the export-only keys before validation. opaque_id → transaction_id
-    # if no transaction_id is already present.
+    # strip the export-only keys before validation.
     normalized: object = raw
     if isinstance(raw, list):
         remapped: list[object] = []
         for row in raw:  # pyright: ignore[reportUnknownVariableType]
             if isinstance(row, dict):
                 row_dict: dict[str, object] = {str(k): v for k, v in row.items()}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
-                if "transaction_id" not in row_dict and "opaque_id" in row_dict:
-                    row_dict["transaction_id"] = row_dict["opaque_id"]
                 remapped.append({
                     k: v for k, v in row_dict.items() if k in _ALLOWED_BULK_ITEM_KEYS
                 })

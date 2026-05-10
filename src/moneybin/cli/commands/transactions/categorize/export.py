@@ -33,7 +33,7 @@ def categorize_export_uncategorized(
 ) -> None:
     """Export uncategorized transactions as redacted JSON for LLM review.
 
-    Output is a JSON array of objects with opaque_id, description_redacted,
+    Output is a JSON array of objects with transaction_id, description_redacted,
     and source_type — no amounts, dates, or account identifiers. Feed the
     output to an LLM, fill in category/subcategory, then pipe back through
     ``moneybin transactions categorize apply-from-file``.
@@ -68,7 +68,7 @@ def categorize_export_uncategorized(
 
     payload = [
         {
-            "opaque_id": row.opaque_id,
+            "transaction_id": row.transaction_id,
             "description_redacted": row.description_redacted,
             "source_type": row.source_type,
         }

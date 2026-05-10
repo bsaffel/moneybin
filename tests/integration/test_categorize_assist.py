@@ -94,7 +94,7 @@ class TestCategorizeAssistMCPTool:
         assert isinstance(response.data, list)
         items: list[dict[str, object]] = response.data  # type: ignore[assignment]  # ResponseEnvelope.data is loosely typed; tighten in ResponseEnvelope.data followup
         for item in items:
-            assert "opaque_id" in item
+            assert "transaction_id" in item
             assert "description_redacted" in item
             assert "source_type" in item
             # Confirm no amount/date/account fields leaked

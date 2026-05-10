@@ -219,7 +219,7 @@ class RedactedTransaction:
     by the frozen dataclass shape.
     """
 
-    opaque_id: str
+    transaction_id: str
     description_redacted: str
     memo_redacted: str
     source_type: str
@@ -2109,7 +2109,7 @@ class CategorizationService:
 
             result = [
                 RedactedTransaction(
-                    opaque_id=row[0],
+                    transaction_id=row[0],
                     description_redacted=redact_for_llm(row[1] or ""),
                     memo_redacted=redact_for_llm(row[2] or ""),
                     source_type=row[3] or "",

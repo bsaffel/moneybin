@@ -71,7 +71,7 @@ def transactions_categorize_assist(
     return build_envelope(
         data=[
             {
-                "opaque_id": r.opaque_id,
+                "transaction_id": r.transaction_id,
                 "description_redacted": r.description_redacted,
                 "memo_redacted": r.memo_redacted,
                 "source_type": r.source_type,

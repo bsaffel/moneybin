@@ -71,7 +71,7 @@ The frozen dataclass that crosses the privacy boundary in `src/moneybin/services
 ```python
 @dataclass(frozen=True)
 class RedactedTransaction:
-    opaque_id: str
+    transaction_id: str
     description_redacted: str
     memo_redacted: str
     source_type: str
