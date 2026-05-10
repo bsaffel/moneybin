@@ -18,9 +18,11 @@ from moneybin.services.networth_service import NetworthService
 
 from ..stubs import _not_implemented
 from .balance_drift import balance_drift_app
+from .cashflow import cashflow_app
 from .large_transactions import large_transactions_app
 from .merchants import merchants_app
 from .recurring import recurring_app
+from .spending import spending_app
 from .uncategorized import uncategorized_app
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,8 @@ app = typer.Typer(
 
 networth_app = typer.Typer(help="Net worth reports", no_args_is_help=True)
 app.add_typer(networth_app, name="networth")
+app.add_typer(cashflow_app, name="cashflow")
+app.add_typer(spending_app, name="spending")
 app.add_typer(recurring_app, name="recurring")
 app.add_typer(merchants_app, name="merchants")
 app.add_typer(uncategorized_app, name="uncategorized")
@@ -103,18 +107,6 @@ def reports_networth_history(
             f"{row['period']:<12} {row['net_worth']:>12} {change_abs!s:>13} "
             f"{change_pct:>10}"
         )
-
-
-@app.command("spending")
-def reports_spending() -> None:
-    """Spending analysis report."""
-    _not_implemented("cli-restructure.md")
-
-
-@app.command("cashflow")
-def reports_cashflow() -> None:
-    """Cash flow report."""
-    _not_implemented("cli-restructure.md")
 
 
 @app.command("budget")

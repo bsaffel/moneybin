@@ -114,8 +114,6 @@ class TestStubCommands:
             ["sync", "schedule", "show"],
             ["sync", "schedule", "remove"],
             ["accounts", "investments", "show"],
-            ["reports", "spending"],
-            ["reports", "cashflow"],
             ["reports", "budget"],
             ["reports", "health"],
             ["budget", "set", "Food", "500"],
