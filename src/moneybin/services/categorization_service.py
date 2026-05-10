@@ -33,11 +33,11 @@ from moneybin.metrics.registry import (
     CATEGORIZE_BULK_ITEMS_TOTAL,
     CATEGORIZE_MATCH_OUTCOME_TOTAL,
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
+    MERCHANT_EXEMPLAR_COUNT,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import (
     build_match_text,
-    normalize_description,
     redact_for_llm,
 )
 from moneybin.tables import (
@@ -53,7 +53,7 @@ from moneybin.tables import (
 
 logger = logging.getLogger(__name__)
 
-MatchType = Literal["exact", "contains", "regex"]
+MatchType = Literal["exact", "contains", "regex", "oneOf"]
 _VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
 
 
@@ -228,6 +228,16 @@ class BulkCategorizationItem(BaseModel):
     transaction_id: str = Field(min_length=1, max_length=64)
     category: str = Field(min_length=1, max_length=100)
     subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+    canonical_merchant_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description=(
+            "LLM-proposed canonical merchant name; merges this row's match_text "
+            "into an existing merchant's oneOf exemplar set rather than creating "
+            "a new merchant per row."
+        ),
+    )
 
 
 class CategorizationRuleInput(BaseModel):
@@ -366,14 +376,23 @@ def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return False
 
 
+# Merchant row shape used by the in-memory matcher: (merchant_id, raw_pattern,
+# match_type, canonical_name, category, subcategory, exemplars). raw_pattern is
+# None for exemplar-only merchants (match_type='oneOf'); exemplars is the set
+# of exact match_text values for oneOf set-membership lookup.
+MerchantRow = tuple[str, str | None, str, str, str, str | None, list[str]]
+
+
 def _fetch_merchants(
     db: Database,
-) -> list[tuple[str, str, str, str, str, str | None]] | None:
+) -> list[MerchantRow] | None:
     """Fetch all merchant mappings ordered for lookup precedence.
 
     Ordering:
     1. is_user DESC — user-created merchants outrank seed merchants
-    2. match_type — exact > contains > regex (existing precedence)
+    2. match_type — oneOf > exact > contains > regex (most-specific match
+       shape wins; matches OP_SCORES specificity from
+       categorization-matching-mechanics.md)
 
     User outranks seed regardless of match-type granularity. A user 'contains'
     rule beats a seed 'exact' rule because user authority over curated defaults
@@ -389,14 +408,15 @@ def _fetch_merchants(
         return db.execute(
             f"""
             SELECT merchant_id, raw_pattern, match_type,
-                   canonical_name, category, subcategory
+                   canonical_name, category, subcategory, exemplars
             FROM {MERCHANTS.full_name}
             ORDER BY
                 is_user DESC,
                 CASE match_type
-                    WHEN 'exact' THEN 1
-                    WHEN 'contains' THEN 2
-                    WHEN 'regex' THEN 3
+                    WHEN 'oneOf' THEN 1
+                    WHEN 'exact' THEN 2
+                    WHEN 'contains' THEN 3
+                    WHEN 'regex' THEN 4
                 END
             """,  # noqa: S608  # MERCHANTS is a TableRef constant, not user input
         ).fetchall()
@@ -404,9 +424,56 @@ def _fetch_merchants(
         return None
 
 
+def _match_exemplar(
+    match_text: str,
+    merchants: list[MerchantRow],
+    *,
+    description_present: bool = True,
+    memo_present: bool = False,
+) -> dict[str, str | None] | None:
+    """Match match_text against merchants' oneOf exemplar sets (set membership).
+
+    Returns the first merchant whose exemplars contain ``match_text`` exactly.
+    Iteration order is the same as ``_fetch_merchants`` (is_user DESC, oneOf
+    first), so user merchants win and exact-string membership fires before
+    pattern-based shapes. Records ``outcome='exemplar'`` on a hit.
+    """
+    if description_present and memo_present:
+        shape = "both"
+    elif memo_present:
+        shape = "memo_only"
+    else:
+        shape = "description_only"
+
+    if not match_text:
+        return None
+
+    for row in merchants:
+        (
+            merchant_id,
+            _raw_pattern,
+            match_type,
+            canonical_name,
+            category,
+            subcategory,
+            exemplars,
+        ) = row
+        if match_type != "oneOf":
+            continue
+        if exemplars and match_text in exemplars:
+            CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="exemplar", shape=shape).inc()
+            return {
+                "merchant_id": merchant_id,
+                "canonical_name": canonical_name,
+                "category": category,
+                "subcategory": subcategory,
+            }
+    return None
+
+
 def _match_text(
     match_text: str,
-    merchants: list[tuple[str, str, str, str, str, str | None]],
+    merchants: list[MerchantRow],
     *,
     description_present: bool = True,
     memo_present: bool = False,
@@ -418,6 +485,10 @@ def _match_text(
 
     description_present and memo_present control the "shape" label on the
     match-outcome metric so callers can attribute matches by signal source.
+
+    Exemplar-only merchants (match_type='oneOf' with raw_pattern=None) are
+    skipped — exemplar lookup is handled by :func:`_match_exemplar`, which
+    callers invoke first.
     """
     if description_present and memo_present:
         shape = "both"
@@ -431,9 +502,18 @@ def _match_text(
         return None
 
     for row in merchants:
-        merchant_id, raw_pattern, match_type, canonical_name, category, subcategory = (
-            row
-        )
+        (
+            merchant_id,
+            raw_pattern,
+            match_type,
+            canonical_name,
+            category,
+            subcategory,
+            _exemplars,
+        ) = row
+        if match_type == "oneOf" or not raw_pattern:
+            # Exemplar-only merchants are handled by _match_exemplar.
+            continue
         if matches_pattern(match_text, raw_pattern, match_type):
             CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(
                 outcome=str(match_type or "contains"), shape=shape
@@ -447,6 +527,35 @@ def _match_text(
 
     CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
     return None
+
+
+def _match_merchants(
+    match_text: str,
+    merchants: list[MerchantRow],
+    *,
+    description_present: bool = True,
+    memo_present: bool = False,
+) -> dict[str, str | None] | None:
+    """Resolve a merchant for ``match_text`` against the cached merchant list.
+
+    Two-stage lookup per categorization-matching-mechanics.md §Matcher
+    algorithm: oneOf exemplar membership first (most-specific match shape),
+    then pattern-based (exact / contains / regex) fallback.
+    """
+    hit = _match_exemplar(
+        match_text,
+        merchants,
+        description_present=description_present,
+        memo_present=memo_present,
+    )
+    if hit is not None:
+        return hit
+    return _match_text(
+        match_text,
+        merchants,
+        description_present=description_present,
+        memo_present=memo_present,
+    )
 
 
 class CategorizationService:
@@ -468,6 +577,10 @@ class CategorizationService:
     ) -> dict[str, str | None] | None:
         """Look up a merchant by raw description (and optional memo).
 
+        Two-stage lookup: oneOf exemplar membership first (most-specific shape),
+        then pattern-based exact/contains/regex (per
+        categorization-matching-mechanics.md §Matcher algorithm).
+
         For OFX-sourced and aggregator-style transactions, memo carries the
         wrapped merchant identity and is essential for accurate matching.
         """
@@ -475,7 +588,7 @@ class CategorizationService:
         if merchants is None:
             return None
         match_text = build_match_text(description, memo)
-        return _match_text(
+        return _match_merchants(
             match_text,
             merchants,
             description_present=bool(description and description.strip()),
@@ -484,34 +597,45 @@ class CategorizationService:
 
     def create_merchant(
         self,
-        raw_pattern: str,
+        raw_pattern: str | None,
         canonical_name: str,
         *,
-        match_type: MatchType = "contains",
+        match_type: MatchType = "oneOf",
         category: str | None = None,
         subcategory: str | None = None,
         created_by: str = "ai",
+        exemplars: list[str] | None = None,
     ) -> str:
         """Create a merchant mapping.
 
         Args:
-            raw_pattern: Pattern to match in transaction descriptions.
+            raw_pattern: Pattern to match in transaction descriptions; pass
+                ``None`` for exemplar-only merchants (``match_type='oneOf'``).
             canonical_name: Clean merchant name for display.
-            match_type: How to match: 'exact', 'contains', or 'regex'.
+            match_type: How to match: 'exact', 'contains', 'regex', or 'oneOf'.
+                Defaults to ``'oneOf'`` — system-created merchants use the
+                exemplar accumulator (categorization-matching-mechanics.md
+                §Schema changes); user-authored merchants pick 'contains' or
+                'regex' explicitly.
             category: Optional default category for this merchant.
             subcategory: Optional default subcategory.
             created_by: Who created the mapping ('user', 'ai', 'rule').
+            exemplars: Initial exemplar set (exact match_text values) for
+                oneOf merchants. Defaults to ``[]``.
 
         Returns:
             The merchant_id of the created merchant.
         """
         merchant_id = uuid.uuid4().hex[:12]
+        # DuckDB binds Python lists to VARCHAR[]. An empty list keeps the
+        # column default semantics intact for non-exemplar merchants.
+        exemplars_param: list[str] = list(exemplars) if exemplars else []
         self._db.execute(
             f"""
             INSERT INTO {USER_MERCHANTS.full_name}
             (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+             category, subcategory, created_by, exemplars)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
             [
                 merchant_id,
@@ -521,10 +645,55 @@ class CategorizationService:
                 category,
                 subcategory,
                 created_by,
+                exemplars_param,
             ],
         )
+        if exemplars_param:
+            MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(
+                len(exemplars_param)
+            )
         logger.info(f"Created user merchant {merchant_id}")
         return merchant_id
+
+    def _find_merchant_by_canonical_name(self, canonical_name: str) -> str | None:
+        """Return ``merchant_id`` for the user-merchant with this canonical name, or None.
+
+        Used by the exemplar accumulator to detect whether a previously-created
+        merchant should grow its exemplar set instead of spawning a duplicate.
+        """
+        try:
+            row = self._db.execute(
+                f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
+                "WHERE canonical_name = ? LIMIT 1",  # noqa: S608  # TableRef constant
+                [canonical_name],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return None
+        return row[0] if row else None
+
+    def _append_exemplar(self, merchant_id: str, match_text: str) -> int:
+        """Append ``match_text`` to a merchant's exemplar set; return new size.
+
+        Idempotent via ``list_distinct``: re-appending an existing exemplar
+        leaves the set unchanged. Updates the per-merchant gauge to surface
+        any merchant whose set is approaching the soft-cap signal (200).
+        """
+        self._db.execute(
+            f"""
+            UPDATE {USER_MERCHANTS.full_name}
+            SET exemplars = list_distinct(list_append(exemplars, ?))
+            WHERE merchant_id = ?
+            """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant
+            [match_text, merchant_id],
+        )
+        row = self._db.execute(
+            f"SELECT len(exemplars) FROM {USER_MERCHANTS.full_name} "
+            "WHERE merchant_id = ?",  # noqa: S608  # TableRef constant
+            [merchant_id],
+        ).fetchone()
+        new_size = int(row[0]) if row and row[0] is not None else 0
+        MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(new_size)
+        return new_size
 
     # -- Rule management --
 
@@ -959,7 +1128,7 @@ class CategorizationService:
                 match_text = build_match_text(description, memo)
                 if match_text and ctx.merchant_mappings:
                     try:
-                        existing = _match_text(
+                        existing = _match_merchants(
                             match_text,
                             ctx.merchant_mappings,
                             description_present=bool(
@@ -986,35 +1155,50 @@ class CategorizationService:
                 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
                     logger.warning("auto-rule recording failed", exc_info=True)
 
-                if merchant_id is None and description:
+                # Exemplar accumulator (categorization-matching-mechanics.md
+                # §Schema changes). When no merchant matched this row, either
+                # grow the exemplar set of an existing merchant with the same
+                # LLM-proposed canonical_merchant_name, or create a new
+                # exemplar-only merchant. System-generated merchants never
+                # invent a contains pattern from the full description — that
+                # over-generalized aggregator strings (bug 3).
+                if merchant_id is None and match_text:
                     try:
-                        normalized = normalize_description(description)
-                        if normalized:
+                        canonical_name = item.canonical_merchant_name or match_text
+                        existing_id = self._find_merchant_by_canonical_name(
+                            canonical_name
+                        )
+                        if existing_id is not None:
+                            self._append_exemplar(existing_id, match_text)
+                            merchant_id = existing_id
+                        else:
                             merchant_id = self.create_merchant(
-                                normalized,
-                                normalized,
-                                match_type="contains",
+                                None,
+                                canonical_name,
+                                match_type="oneOf",
                                 category=category,
                                 subcategory=subcategory,
                                 created_by="ai",
+                                exemplars=[match_text],
                             )
                             merchants_created += 1
-                            # Register into context preserving _fetch_merchants()
-                            # ordering (exact → contains → regex) so subsequent
-                            # items in this batch match the just-created contains
-                            # rule before any pre-existing regex rule.
-                            new_row = (
+                            # Register into context so subsequent items in this
+                            # batch see the new exemplar-only merchant at the
+                            # head of the merchant list (oneOf is first per
+                            # _fetch_merchants ordering).
+                            new_row: MerchantRow = (
                                 merchant_id,
-                                normalized,
-                                "contains",
-                                normalized,
+                                None,
+                                "oneOf",
+                                canonical_name,
                                 category,
                                 subcategory,
+                                [match_text],
                             )
                             ctx.register_new_merchant(new_row)
-                    except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
+                    except Exception:  # noqa: BLE001 — exemplar accumulation is best-effort; categorization proceeds without it
                         logger.debug(
-                            f"Could not create merchant for {txn_id}",
+                            f"Could not accumulate exemplar for {txn_id}",
                             exc_info=True,
                         )
 
@@ -1105,7 +1289,7 @@ class CategorizationService:
             match_text = build_match_text(description, memo)
             if not match_text:
                 continue
-            merchant = _match_text(
+            merchant = _match_merchants(
                 match_text,
                 merchants,
                 description_present=bool(description and str(description).strip()),

@@ -174,6 +174,17 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
     ["src_existing", "src_attempted"],
 )
 
+# Per-merchant labels can grow with the number of system-created merchants
+# (categorization-matching-mechanics.md §Open questions: "no cap in v1"). The
+# metric is gauge-only and written only when an exemplar is appended, so
+# label cardinality is bounded by the merchant population — acceptable for v1.
+MERCHANT_EXEMPLAR_COUNT = Gauge(
+    "moneybin_merchant_exemplar_count",
+    "Per-merchant exemplar set size; alarm if any merchant exceeds 200 — "
+    "may indicate need for graduation to a generalized pattern.",
+    ["merchant_id"],
+)
+
 # ── Account matching ─────────────────────────────────────────────────────────
 
 ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(

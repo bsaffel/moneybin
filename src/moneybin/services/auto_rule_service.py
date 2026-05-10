@@ -130,11 +130,21 @@ class BulkRecordingContext:
         return None
 
     def register_new_merchant(self, merchant_row: tuple[Any, ...]) -> None:
-        """Insert at the canonical match-order position (before the first regex)."""
-        insert_at = next(
-            (i for i, m in enumerate(self.merchant_mappings) if m[2] == "regex"),
-            len(self.merchant_mappings),
-        )
+        """Insert at the canonical match-order position (before the first regex).
+
+        Preserves the ordering from ``_fetch_merchants``
+        (oneOf → exact → contains → regex). Exemplar-only merchants are
+        inserted at the front so they fire before pattern-based shapes for
+        subsequent items in the same bulk batch.
+        """
+        match_type = merchant_row[2] if len(merchant_row) > 2 else None
+        if match_type == "oneOf":
+            insert_at = 0
+        else:
+            insert_at = next(
+                (i for i, m in enumerate(self.merchant_mappings) if m[2] == "regex"),
+                len(self.merchant_mappings),
+            )
         self.merchant_mappings.insert(insert_at, merchant_row)
         self.new_merchant_count += 1
 
@@ -143,10 +153,21 @@ class BulkRecordingContext:
     ) -> bool:
         """Mirror of ``AutoRuleService._merchant_mapping_covers`` against the cached list."""
         for merchant in self.merchant_mappings:
-            _mid, raw_pattern, match_type, _canonical, m_cat, m_subcat = merchant
+            # Tolerate either the legacy 6-tuple or the post-exemplars 7-tuple
+            # shape from _fetch_merchants. exemplars is unused here — coverage
+            # is asked about pattern matches, not exact-string membership.
+            _mid = merchant[0]
+            raw_pattern = merchant[1]
+            match_type = merchant[2]
+            m_cat = merchant[4]
+            m_subcat = merchant[5]
             if str(m_cat) != category:
                 continue
             if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
+                continue
+            if match_type == "oneOf" or raw_pattern is None:
+                # Exemplar-only merchants cover exact match_text values rather
+                # than patterns; pattern-coverage doesn't apply.
                 continue
             if matches_pattern(
                 pattern, str(raw_pattern), str(match_type or "contains")
@@ -839,6 +860,9 @@ class AutoRuleService:
             if str(m_cat) != category:
                 continue
             if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
+                continue
+            if raw_pattern is None or m_type == "oneOf":
+                # Exemplar-only merchants don't participate in pattern coverage.
                 continue
             if matches_pattern(pattern, str(raw_pattern), str(m_type or "contains")):
                 return True
