@@ -329,3 +329,32 @@ async def test_max_items_multiple_list_params_each_capped() -> None:
     assert result.error is not None
     assert result.error.details is not None
     assert result.error.details["parameter"] == "reject"
+
+
+@pytest.mark.unit
+async def test_register_emits_tool_annotations() -> None:
+    """register() builds ToolAnnotations from wrapper attrs and passes to FastMCP."""
+    from fastmcp import FastMCP
+
+    from moneybin.mcp._registration import register
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(
+        sensitivity="medium",
+        read_only=False,
+        destructive=True,
+        idempotent=False,
+    )
+    def write_tool(items: list[str]) -> ResponseEnvelope:
+        return build_envelope(data={"n": len(items)}, sensitivity="medium")
+
+    mcp = FastMCP("test")
+    register(mcp, write_tool, "write_tool", "Write tool description.")
+
+    tools = await mcp._list_tools()
+    write = next(t for t in tools if t.name == "write_tool")
+    assert write.annotations is not None
+    assert write.annotations.readOnlyHint is False
+    assert write.annotations.destructiveHint is True
+    assert write.annotations.idempotentHint is False
+    assert write.annotations.openWorldHint is False
