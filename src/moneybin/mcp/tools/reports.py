@@ -146,32 +146,42 @@ def register_reports_tools(mcp: FastMCP) -> None:
         mcp,
         reports_networth_get,
         "reports_networth_get",
-        "Current or historical net worth snapshot with per-account breakdown.",
+        "Current or historical net worth snapshot with per-account breakdown. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         reports_networth_history,
         "reports_networth_history",
-        "Net worth time series with period-over-period change (daily/weekly/monthly).",
+        "Net worth time series with period-over-period change (daily/weekly/monthly). "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         reports_spending_summary,
         "reports_spending_summary",
         "Get income vs expense totals by month. Returns time-series "
-        "data suitable for charting.",
+        "data suitable for charting. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         reports_spending_by_category,
         "reports_spending_by_category",
         "Get spending breakdown by category for a period. "
-        "Requires transactions to be categorized.",
+        "Requires transactions to be categorized. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         reports_budget_status,
         "reports_budget_status",
         "Get budget vs actual spending comparison for a month. "
-        "Shows target, spent, remaining, and status for each category.",
+        "Shows target, spent, remaining, and status for each category. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
