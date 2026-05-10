@@ -892,7 +892,11 @@ class AutoRuleService:
             """,
             [scan_cap],
         ).fetchall()
-        matched_ids: list[str] = []
+        # Route every write through write_categorization so the source-priority
+        # guard (categorization-matching-mechanics.md §Source precedence) fires
+        # on the auto-rule backfill path; a direct INSERT would let auto_rule
+        # silently overwrite a higher-priority existing categorization.
+        applied = 0
         for txn_id, description, amount, account_id, memo in rows:
             winner = CategorizationService.match_first_rule(
                 active_rules,
@@ -903,16 +907,16 @@ class AutoRuleService:
             )
             if winner is None:
                 continue
-            if winner[0] == rule_id:
-                matched_ids.append(str(txn_id))
-        if not matched_ids:
-            return 0
-        self._db.executemany(
-            f"""
-            INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-            (transaction_id, category, subcategory, categorized_at, categorized_by, rule_id, confidence)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'auto_rule', ?, 1.0)
-            """,
-            [[mid, category, subcategory, rule_id] for mid in matched_ids],
-        )
-        return len(matched_ids)
+            if winner[0] != rule_id:
+                continue
+            outcome = self._categorization.write_categorization(
+                transaction_id=str(txn_id),
+                category=category,
+                subcategory=subcategory,
+                categorized_by="auto_rule",
+                rule_id=rule_id,
+                confidence=1.0,
+            )
+            if outcome.written:
+                applied += 1
+        return applied

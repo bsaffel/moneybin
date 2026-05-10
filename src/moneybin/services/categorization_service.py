@@ -1037,6 +1037,7 @@ class CategorizationService:
                             "Skipped: a higher-priority categorization "
                             "(user, rule, or other) already covers this transaction."
                         ),
+                        "error": "lower_priority_source",
                     })
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 errors += 1
@@ -1111,20 +1112,17 @@ class CategorizationService:
                 memo_present=bool(memo and str(memo).strip()),
             )
             if merchant and merchant.get("category"):
+                # Merchants don't have a dedicated source-priority slot in the v1
+                # ladder (user/rule/auto_rule/migration/ml/plaid/seed/ai). Recording
+                # merchant matches as 'rule' preserves historical behavior; a
+                # follow-up spec may introduce a dedicated 'merchant' priority
+                # between auto_rule and migration.
                 outcome = self.write_categorization(
                     transaction_id=txn_id,
                     category=str(merchant["category"]),
-                    subcategory=(
-                        str(merchant["subcategory"])
-                        if merchant["subcategory"] is not None
-                        else None
-                    ),
+                    subcategory=merchant["subcategory"],
                     categorized_by="rule",
-                    merchant_id=(
-                        str(merchant["merchant_id"])
-                        if merchant["merchant_id"] is not None
-                        else None
-                    ),
+                    merchant_id=merchant["merchant_id"],
                     confidence=1.0,
                 )
                 if outcome.written:
