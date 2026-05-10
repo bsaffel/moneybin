@@ -20,7 +20,7 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
-from moneybin.services._text import normalize_description
+from moneybin.services._text import build_match_text, normalize_description
 from moneybin.services.categorization_service import (
     CategorizationService,
     matches_pattern,
@@ -432,11 +432,12 @@ class AutoRuleService:
     def check_overrides(self) -> int:
         """Deactivate auto-rules with override count >= configured threshold; return number deactivated.
 
-        An override = a transaction whose description matches the auto-rule's pattern
-        but is currently categorized by 'user' with a different category. When the
-        threshold is reached we deactivate the rule, mark its source proposal superseded,
-        create a new pending proposal with the most common override category, and
-        append a row to ``app.rule_deactivations`` for the audit trail.
+        An override = a transaction whose canonical match_text (description +
+        memo, normalized) matches the auto-rule's pattern but is currently
+        categorized by 'user' with a different category. When the threshold is
+        reached we deactivate the rule, mark its source proposal superseded,
+        create a new pending proposal with the most common override category,
+        and append a row to ``app.rule_deactivations`` for the audit trail.
         """
         settings = get_settings().categorization
         threshold = settings.auto_rule_override_threshold
@@ -476,20 +477,22 @@ class AutoRuleService:
             # Excludes 'rule' and 'auto_rule' (machine-applied; counting them
             # would deactivate auto-rules due to overlapping rule engine output)
             # and predates legacy categorizations via the created_at filter.
-            # Pattern matching is done in Python via ``matches_pattern`` against
-            # both the raw and normalized description, mirroring how the rule
-            # engine itself selects rows. SQL-only matching cannot reproduce
-            # ``normalize_description`` (Python regex) and got case-sensitivity
-            # wrong on the regex branch.
+            # Pattern matching uses ``matches_pattern`` against the canonical
+            # ``match_text`` (description + memo, normalized) — same input as
+            # every other matcher per the spec's parity principle. SQL-only
+            # matching cannot reproduce ``normalize_description``.
             candidate_rows = self._db.execute(
                 f"""
-                SELECT c.transaction_id, t.description, c.category, c.subcategory,
-                       c.categorized_at
+                SELECT c.transaction_id, t.description, t.memo, c.category,
+                       c.subcategory, c.categorized_at
                 FROM {TRANSACTION_CATEGORIES.full_name} c
                 JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
                 WHERE c.categorized_by IN ('user', 'ai')
                   AND c.categorized_at > ?
-                  AND t.description IS NOT NULL
+                  AND (
+                    (t.description IS NOT NULL AND t.description != '')
+                    OR (t.memo IS NOT NULL AND t.memo != '')
+                  )
                   AND (
                     c.category != ?
                     OR COALESCE(c.subcategory, '') != COALESCE(?, '')
@@ -499,14 +502,12 @@ class AutoRuleService:
                 [rule_created_at, rule_category, rule_subcategory],
             ).fetchall()
             buckets: dict[tuple[str, str | None], list[str]] = {}
-            for txn_id, description, c_cat, c_subcat, _at in candidate_rows:
-                desc = str(description)
-                if not (
-                    matches_pattern(desc, pattern, rule_match_type)
-                    or matches_pattern(
-                        normalize_description(desc), pattern, rule_match_type
-                    )
-                ):
+            for txn_id, description, memo, c_cat, c_subcat, _at in candidate_rows:
+                match_text = build_match_text(
+                    str(description) if description else None,
+                    str(memo) if memo else None,
+                )
+                if not matches_pattern(match_text, pattern, rule_match_type):
                     continue
                 key = (str(c_cat), c_subcat if c_subcat is None else str(c_subcat))
                 buckets.setdefault(key, []).append(str(txn_id))

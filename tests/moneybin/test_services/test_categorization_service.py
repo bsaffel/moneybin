@@ -923,7 +923,7 @@ def test_find_matching_rule_uses_txn_row_override(real_db: Database) -> None:
     match = svc.find_matching_rule(
         "ghost_txn",
         rules_override=override_rules,
-        txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1"),
+        txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1", None),
     )
     assert match is not None
 

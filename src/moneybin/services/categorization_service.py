@@ -1053,11 +1053,12 @@ class CategorizationService:
     ) -> tuple[str, str, str | None, str] | None:
         """Return ``(rule_id, category, subcategory, created_by)`` for the first rule that matches.
 
-        Evaluates pattern against the canonical match_text (description + memo,
-        each normalized via build_match_text). Also retains a fallback against
-        the raw description so legacy patterns that depended on uncleaned input
-        still match. Amount bounds and account filter are applied as before.
-        Returns ``None`` when no rule matches.
+        Evaluates the pattern against the canonical ``match_text`` only —
+        ``build_match_text(description, memo)``, each side normalized via
+        ``normalize_description`` per the matching spec
+        (``categorization-matching-mechanics.md`` §Match input). Amount bounds
+        and account filter are applied as before. Returns ``None`` when no
+        rule matches.
         """
         match_text = build_match_text(description, memo)
         for rule in rules:
@@ -1072,10 +1073,7 @@ class CategorizationService:
                 subcategory,
                 created_by,
             ) = rule
-            if not (
-                matches_pattern(match_text, pattern, match_type)
-                or matches_pattern(description, pattern, match_type)
-            ):
+            if not matches_pattern(match_text, pattern, match_type):
                 continue
             if (
                 min_amount is not None
@@ -1100,7 +1098,6 @@ class CategorizationService:
         *,
         rules_override: list[tuple[Any, ...]] | None = None,
         txn_row_override: tuple[str, float | None, str | None, str | None]
-        | tuple[str, float | None, str | None]
         | None = None,
     ) -> tuple[str, str, str | None, str] | None:
         """Return the first active rule matching this transaction, or ``None``.
@@ -1114,16 +1111,11 @@ class CategorizationService:
         The bulk path supplies pre-loaded rule rows and txn metadata via
         ``rules_override`` and ``txn_row_override`` so this function issues no
         queries during a bulk loop. Both default to ``None`` for non-bulk callers.
-        ``txn_row_override`` accepts (description, amount, account_id) for
-        backward compatibility, or (description, amount, account_id, memo) when
-        memo is available.
+        ``txn_row_override`` is ``(description, amount, account_id, memo)``.
         """
         memo: str | None = None
         if txn_row_override is not None:
-            if len(txn_row_override) == 4:
-                description, amount, account_id, memo = txn_row_override
-            else:
-                description, amount, account_id = txn_row_override
+            description, amount, account_id, memo = txn_row_override
         else:
             try:
                 txn_row = self._db.execute(
