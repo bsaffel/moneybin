@@ -148,7 +148,9 @@ def test_mcp_tool_default_annotations() -> None:
 @pytest.mark.unit
 def test_find_list_params_no_lists() -> None:
     """A signature with no list params yields empty list."""
-    from moneybin.mcp.decorator import _find_list_params
+    from moneybin.mcp.decorator import (
+        _find_list_params,  # pyright: ignore[reportPrivateUsage]
+    )
 
     def fn(name: str, count: int) -> None: ...
 
@@ -158,7 +160,9 @@ def test_find_list_params_no_lists() -> None:
 @pytest.mark.unit
 def test_find_list_params_single_list() -> None:
     """A list[str] param is detected."""
-    from moneybin.mcp.decorator import _find_list_params
+    from moneybin.mcp.decorator import (
+        _find_list_params,  # pyright: ignore[reportPrivateUsage]
+    )
 
     def fn(items: list[str]) -> None: ...
 
@@ -170,7 +174,9 @@ def test_find_list_params_sequence() -> None:
     """Sequence[Mapping[...]] is detected (transactions_categorize_apply shape)."""
     from collections.abc import Mapping, Sequence
 
-    from moneybin.mcp.decorator import _find_list_params
+    from moneybin.mcp.decorator import (
+        _find_list_params,  # pyright: ignore[reportPrivateUsage]
+    )
 
     def fn(items: Sequence[Mapping[str, str]]) -> None: ...
 
@@ -180,7 +186,9 @@ def test_find_list_params_sequence() -> None:
 @pytest.mark.unit
 def test_find_list_params_multiple() -> None:
     """Multiple list params are all returned (e.g. accept + reject)."""
-    from moneybin.mcp.decorator import _find_list_params
+    from moneybin.mcp.decorator import (
+        _find_list_params,  # pyright: ignore[reportPrivateUsage]
+    )
 
     def fn(accept: list[str], reject: list[str]) -> None: ...
 
@@ -190,7 +198,9 @@ def test_find_list_params_multiple() -> None:
 @pytest.mark.unit
 def test_find_list_params_optional_list() -> None:
     """list[X] | None is detected (Optional list arg)."""
-    from moneybin.mcp.decorator import _find_list_params
+    from moneybin.mcp.decorator import (
+        _find_list_params,  # pyright: ignore[reportPrivateUsage]
+    )
 
     def fn(items: list[str] | None = None) -> None: ...
 
@@ -200,7 +210,9 @@ def test_find_list_params_optional_list() -> None:
 @pytest.mark.unit
 def test_find_list_params_str_not_a_list() -> None:
     """Str is not treated as a list even though it's a Sequence."""
-    from moneybin.mcp.decorator import _find_list_params
+    from moneybin.mcp.decorator import (
+        _find_list_params,  # pyright: ignore[reportPrivateUsage]
+    )
 
     def fn(name: str) -> None: ...
 
@@ -351,7 +363,7 @@ async def test_register_emits_tool_annotations() -> None:
     mcp = FastMCP("test")
     register(mcp, write_tool, "write_tool", "Write tool description.")
 
-    tools = await mcp._list_tools()
+    tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     write = next(t for t in tools if t.name == "write_tool")
     assert write.annotations is not None
     assert write.annotations.readOnlyHint is False
