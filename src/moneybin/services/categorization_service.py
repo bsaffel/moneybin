@@ -32,6 +32,7 @@ from moneybin.metrics.registry import (
     CATEGORIZE_BULK_ERRORS_TOTAL,
     CATEGORIZE_BULK_ITEMS_TOTAL,
     CATEGORIZE_MATCH_OUTCOME_TOTAL,
+    CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import (
@@ -80,6 +81,20 @@ def _did_you_mean(
         lower_invalid, list(lower_to_orig), n=n, cutoff=cutoff
     )
     return [lower_to_orig[m] for m in matches]
+
+
+@dataclass(slots=True, frozen=True)
+class WriteOutcome:
+    """Result of a guarded write to ``app.transaction_categories``.
+
+    Returned by :meth:`CategorizationService.write_categorization`. The
+    ``written`` flag distinguishes successful writes (insert or precedence-
+    permitted update) from precedence-blocked attempts. ``skipped_reason`` is
+    populated only when ``written`` is False.
+    """
+
+    written: bool
+    skipped_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -688,6 +703,90 @@ class CategorizationService:
 
     # -- Categorization core --
 
+    def write_categorization(
+        self,
+        *,
+        transaction_id: str,
+        category: str,
+        subcategory: str | None,
+        categorized_by: str,
+        merchant_id: str | None = None,
+        rule_id: str | None = None,
+        confidence: float | None = None,
+    ) -> WriteOutcome:
+        """Insert or replace a categorization, respecting source precedence.
+
+        Single guarded write path for ``app.transaction_categories``. Lower
+        numeric priority = higher authority (per
+        ``categorization-matching-mechanics.md`` §Source precedence). A new
+        write succeeds only if its source priority is ≤ the existing row's;
+        otherwise the existing row stands and the
+        ``CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL`` metric is incremented.
+
+        Returns:
+            ``WriteOutcome.written=True`` if the write took effect (insert or
+            permitted update); ``False`` with ``skipped_reason='lower_priority_source'``
+            if a higher-priority categorization already exists.
+        """
+        # The CASE block is duplicated by design — the precedence comparison is
+        # needed at exactly this one call site, and a SQL/Python UDF would be
+        # over-abstraction (per categorization-matching-mechanics.md
+        # §Source precedence). Promote to a UDF only if a second call site
+        # appears.
+        cursor = self._db.execute(
+            f"""
+            INSERT INTO {TRANSACTION_CATEGORIES.full_name}
+                (transaction_id, category, subcategory, categorized_at,
+                 categorized_by, merchant_id, rule_id, confidence)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+            ON CONFLICT (transaction_id) DO UPDATE SET
+                category = EXCLUDED.category,
+                subcategory = EXCLUDED.subcategory,
+                categorized_at = EXCLUDED.categorized_at,
+                categorized_by = EXCLUDED.categorized_by,
+                merchant_id = EXCLUDED.merchant_id,
+                rule_id = EXCLUDED.rule_id,
+                confidence = EXCLUDED.confidence
+            WHERE
+                (CASE EXCLUDED.categorized_by
+                   WHEN 'user' THEN 1 WHEN 'rule' THEN 2
+                   WHEN 'auto_rule' THEN 3 WHEN 'migration' THEN 4
+                   WHEN 'ml' THEN 5 WHEN 'plaid' THEN 6
+                   WHEN 'seed' THEN 7 WHEN 'ai' THEN 8 END)
+                <= (CASE {TRANSACTION_CATEGORIES.full_name}.categorized_by
+                      WHEN 'user' THEN 1 WHEN 'rule' THEN 2
+                      WHEN 'auto_rule' THEN 3 WHEN 'migration' THEN 4
+                      WHEN 'ml' THEN 5 WHEN 'plaid' THEN 6
+                      WHEN 'seed' THEN 7 WHEN 'ai' THEN 8 END)
+            RETURNING transaction_id
+            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
+            [
+                transaction_id,
+                category,
+                subcategory,
+                categorized_by,
+                merchant_id,
+                rule_id,
+                confidence,
+            ],
+        )
+        if cursor.fetchone() is not None:
+            return WriteOutcome(written=True)
+
+        # Row exists with a higher-priority source; record the skip with labels
+        # for both sides of the comparison so dashboards can distinguish "ai
+        # blocked by user" from "ai blocked by rule" etc.
+        existing = self._db.execute(
+            f"SELECT categorized_by FROM {TRANSACTION_CATEGORIES.full_name} "
+            "WHERE transaction_id = ?",  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
+            [transaction_id],
+        ).fetchone()
+        CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL.labels(
+            src_existing=existing[0] if existing else "unknown",
+            src_attempted=categorized_by,
+        ).inc()
+        return WriteOutcome(written=False, skipped_reason="lower_priority_source")
+
     def bulk_categorize(
         self, items: Sequence[BulkCategorizationItem]
     ) -> BulkCategorizationResult:
@@ -919,16 +1018,26 @@ class CategorizationService:
                             exc_info=True,
                         )
 
-                self._db.execute(
-                    f"""
-                    INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
-                    (transaction_id, category, subcategory,
-                     categorized_at, categorized_by, merchant_id)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
-                    """,
-                    [txn_id, category, subcategory, merchant_id],
+                outcome = self.write_categorization(
+                    transaction_id=txn_id,
+                    category=category,
+                    subcategory=subcategory,
+                    categorized_by="ai",
+                    merchant_id=merchant_id,
                 )
-                applied += 1
+                if outcome.written:
+                    applied += 1
+                else:
+                    # Higher-priority source already categorized this row;
+                    # leave it alone and surface as a skip.
+                    skipped += 1
+                    error_details.append({
+                        "transaction_id": txn_id,
+                        "reason": (
+                            "Skipped: a higher-priority categorization "
+                            "(user, rule, or other) already covers this transaction."
+                        ),
+                    })
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 errors += 1
                 logger.exception(f"bulk_categorize failed for transaction {txn_id!r}")
@@ -990,7 +1099,7 @@ class CategorizationService:
         if not uncategorized:
             return 0
 
-        rows_to_insert: list[list[object]] = []
+        categorized_count = 0
         for txn_id, description, memo in uncategorized:
             match_text = build_match_text(description, memo)
             if not match_text:
@@ -1002,23 +1111,24 @@ class CategorizationService:
                 memo_present=bool(memo and str(memo).strip()),
             )
             if merchant and merchant.get("category"):
-                rows_to_insert.append([
-                    txn_id,
-                    merchant["category"],
-                    merchant["subcategory"],
-                    merchant["merchant_id"],
-                ])
-        if rows_to_insert:
-            self._db.executemany(
-                f"""
-                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, merchant_id, confidence)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
-                """,
-                rows_to_insert,
-            )
-        categorized_count = len(rows_to_insert)
+                outcome = self.write_categorization(
+                    transaction_id=txn_id,
+                    category=str(merchant["category"]),
+                    subcategory=(
+                        str(merchant["subcategory"])
+                        if merchant["subcategory"] is not None
+                        else None
+                    ),
+                    categorized_by="rule",
+                    merchant_id=(
+                        str(merchant["merchant_id"])
+                        if merchant["merchant_id"] is not None
+                        else None
+                    ),
+                    confidence=1.0,
+                )
+                if outcome.written:
+                    categorized_count += 1
 
         if categorized_count:
             logger.info(
@@ -1186,7 +1296,7 @@ class CategorizationService:
         if not uncategorized:
             return 0
 
-        rows_to_insert: list[list[object]] = []
+        categorized_count = 0
         for txn_id, description, amount, account_id, memo in uncategorized:
             match = self.match_first_rule(
                 rules,
@@ -1199,24 +1309,16 @@ class CategorizationService:
                 continue
             rule_id, category, subcategory, created_by = match
             categorized_by = "auto_rule" if created_by == "auto_rule" else "rule"
-            rows_to_insert.append([
-                txn_id,
-                category,
-                subcategory,
-                categorized_by,
-                rule_id,
-            ])
-        if rows_to_insert:
-            self._db.executemany(
-                f"""
-                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, rule_id, confidence)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, 1.0)
-                """,
-                rows_to_insert,
+            outcome = self.write_categorization(
+                transaction_id=txn_id,
+                category=category,
+                subcategory=subcategory,
+                categorized_by=categorized_by,
+                rule_id=rule_id,
+                confidence=1.0,
             )
-        categorized_count = len(rows_to_insert)
+            if outcome.written:
+                categorized_count += 1
 
         if categorized_count:
             logger.info(f"Rule engine categorized {categorized_count} transactions")

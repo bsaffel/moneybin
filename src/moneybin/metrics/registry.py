@@ -167,6 +167,13 @@ CATEGORIZE_MATCH_OUTCOME_TOTAL = Counter(
     ["outcome", "shape"],
 )
 
+CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
+    "moneybin_categorize_write_skipped_precedence_total",
+    "Categorization writes skipped because a higher-priority source already "
+    "categorized the row.",
+    ["src_existing", "src_attempted"],
+)
+
 # ── Account matching ─────────────────────────────────────────────────────────
 
 ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(
