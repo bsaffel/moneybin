@@ -46,7 +46,11 @@ Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-9
 
 Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_apply`). No CRUD naming.
 
-**Progressive disclosure:** Per-session, tag-based visibility. All tools are registered at boot; extended-namespace tools carry `tags={domain}` and are hidden by `Visibility(False, tags={domain})` transforms. Core namespaces (~19 tools) are visible at connect; extended namespaces (`categorize`, `budget`, `tax`, `privacy`, `transactions_matches`) are revealed for the calling session only via the `moneybin_discover` meta-tool. Each tool stays single-purpose — no consolidation into action-parameter tools. See `mcp-architecture.md` §3.
+**Progressive disclosure** is a desired future state, not the current operational reality. The mechanism (tag-based visibility + `moneybin_discover` meta-tool + `tools/list_changed` notification) is wired and tested, but **`MoneyBinSettings.mcp.progressive_disclosure` defaults `False`** because client support for `tools/list_changed` is unreliable in practice (Claude Desktop has spotty support; only Claude Code reliably honors it). In default deployment **every registered tool is visible at connect** — the `tags={domain}` markers on extended-namespace tools are dormant metadata until the flag is flipped on.
+
+**Design implication:** When adding a new MCP tool, assume the **full tool surface is always visible** to the agent. Do not rely on progressive disclosure to keep a tool out of the context window. The agent-attention budget for tool descriptions and schemas is set by the total registered surface, not by any "core vs. extended" split. Each tool's description, parameter schema, and namespace placement must justify itself against the full-surface bar.
+
+See `mcp-architecture.md` §3 for the design rationale and `MoneyBinSettings.mcp.progressive_disclosure` field description for the current flag state.
 
 ## Response Envelope
 
