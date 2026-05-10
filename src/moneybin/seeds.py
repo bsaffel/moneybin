@@ -1,16 +1,17 @@
 """SQLMesh seed materialization + the views that expose seeds alongside user data.
 
 Seeds are managed by SQLMesh (``seeds.*`` schema, populated from CSV). The
-application reads from ``app.*`` views that union seed rows with user
-additions and apply user overrides (e.g. deactivations). This keeps seed
-edits flowing through immediately while preserving user state.
+canonical resolved dimensions — categories and merchants — are exposed as
+``core.dim_categories`` and ``core.dim_merchants``. These views are also
+declared as SQLMesh models in ``sqlmesh/models/core/dim_*.sql`` (the
+canonical spec for column shapes). ``refresh_views`` builds equivalent
+views directly via DuckDB so they are available in fresh test databases
+and on every ``Database`` open without requiring a full SQLMesh ``transform
+apply`` first; ``transform apply`` will subsequently ``CREATE OR REPLACE``
+the same views with identical bodies.
 
-Both categories and merchants follow this pattern: seed tables are populated
-by SQLMesh, then ``refresh_views`` assembles the ``app.*`` view that merges
-seeds with user rows and applies overrides.
-
-To add a new seed: add a SQLMesh seed model, add its full name to
-``_SEED_MODELS``, and extend ``refresh_views`` with the corresponding view.
+Also drops the legacy ``app.categories`` / ``app.merchants`` views from
+existing databases (retired in favor of the ``core.dim_*`` models).
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ _SEED_MODELS: list[str] = [
 
 
 def materialize_seeds(db: Database) -> None:
-    """Materialize all SQLMesh seed models, then (re)create the app views.
+    """Materialize all SQLMesh seed models, then (re)create the dim views.
 
     Idempotent. Safe to call from ``db init``, ``transform seed``, and
     ``transform apply``.
@@ -66,8 +67,9 @@ def _ensure_seed_tables_exist(db: Database) -> None:
 
     In production, SQLMesh has already created and populated these tables —
     the CREATE TABLE IF NOT EXISTS calls are no-ops. In fresh test DBs (where
-    SQLMesh hasn't run), the empty tables let refresh_views assemble the
-    app.* views without hitting a CatalogException on missing tables.
+    SQLMesh hasn't run), the empty tables let ``refresh_views`` assemble the
+    ``core.dim_*`` views without hitting a CatalogException on missing
+    source tables.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
     db.execute(
@@ -102,29 +104,39 @@ def _ensure_seed_tables_exist(db: Database) -> None:
 
 
 def refresh_views(db: Database) -> None:
-    """Create or replace the app views that expose seeds + user data.
+    """Create or replace the resolved dim views and drop retired legacy views.
 
-    Idempotent and safe to call before migrations run. If `app.merchants`
-    still exists as a TABLE (pre-V006 database opened with
-    `no_auto_upgrade=True` — the operator has opted out of auto-migration),
-    skip the view creation entirely. DuckDB rejects `CREATE OR REPLACE VIEW`
-    over a table; failing here would block startup before the operator can
-    apply migrations manually. Reads against `app.merchants` continue to
-    return the legacy table's data until the operator runs migrations.
+    Idempotent and safe to call before migrations run.
+
+    ``core.dim_categories`` has no V006 dependency and is always built.
+
+    ``core.dim_merchants`` requires ``app.user_merchants`` (created by V006).
+    If V006 has not yet run — ``app.merchants`` is still a TABLE because the
+    operator opened the database with ``no_auto_upgrade=True`` — build a
+    backward-compat passthrough that wraps the legacy table so categorization
+    reads still resolve. The full union (user + seeds + overrides) lands once
+    migrations complete.
     """
     _ensure_seed_tables_exist(db)
     legacy = db.execute(
         "SELECT table_type FROM information_schema.tables "
         "WHERE table_schema = 'app' AND table_name = 'merchants'"
     ).fetchone()
-    if legacy is not None and legacy[0] == "BASE TABLE":
-        logger.warning(
-            "app.merchants exists as a TABLE (pre-V006 schema); skipping view "
-            "refresh. Run migrations to complete the upgrade."
-        )
-        return
-    # Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
-    sql = f"""
+    is_pre_v006_table = legacy is not None and legacy[0] == "BASE TABLE"
+
+    # Drop the retired app.categories view (no V006 dependency).
+    db.execute("DROP VIEW IF EXISTS app.categories")
+    # app.merchants is dropped only post-V006 — pre-V006 it's the user-data
+    # TABLE we are about to wrap.
+    if not is_pre_v006_table:
+        db.execute("DROP VIEW IF EXISTS app.merchants")
+
+    # Build resolved dim views. Mirrors sqlmesh/models/core/dim_*.sql so tests
+    # and freshly-opened databases see the dims without requiring a full
+    # SQLMesh `transform apply`. SQLMesh subsequently CREATE OR REPLACEs these
+    # with identical bodies on every transform run.
+    db.execute(
+        f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
         SELECT
             s.category_id,
@@ -137,7 +149,7 @@ def refresh_views(db: Database) -> None:
             NULL::TIMESTAMP AS created_at
         FROM {SEED_CATEGORIES.full_name} s
         LEFT JOIN {CATEGORY_OVERRIDES.full_name} o USING (category_id)
-        UNION ALL
+        UNION
         SELECT
             category_id,
             category,
@@ -149,9 +161,28 @@ def refresh_views(db: Database) -> None:
             created_at
         FROM {USER_CATEGORIES.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
-    db.execute(sql)
+    )
 
-    merchants_sql = f"""
+    if is_pre_v006_table:
+        logger.warning(
+            "app.merchants exists as a TABLE (pre-V006 schema); building "
+            "core.dim_merchants as a passthrough over the legacy table. "
+            "Run migrations to complete the upgrade."
+        )
+        db.execute(
+            f"""
+            CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
+            SELECT
+                merchant_id, raw_pattern, match_type, canonical_name,
+                category, subcategory, created_by, created_at,
+                true AS is_user
+            FROM app.merchants
+            """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
+        )
+        return
+
+    db.execute(
+        f"""
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
         -- User merchants first (user wins on overlap)
         SELECT
@@ -197,4 +228,4 @@ def refresh_views(db: Database) -> None:
         LEFT JOIN {MERCHANT_OVERRIDES.full_name} o USING (merchant_id)
         WHERE COALESCE(o.is_active, true)
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
-    db.execute(merchants_sql)
+    )

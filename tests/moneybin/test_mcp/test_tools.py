@@ -36,12 +36,25 @@ class TestToolRegistration:
     """Verify tools register correctly and produce envelope responses."""
 
     @pytest.mark.unit
-    async def test_spending_tools_register(self) -> None:
+    async def test_reports_tools_register(self) -> None:
         srv = FastMCP("test")
         register_reports_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert "reports_spending_summary" in names
-        assert "reports_spending_by_category" in names
+        # Renamed networth_history → networth_history_get
+        assert "reports_networth_get" in names
+        assert "reports_networth_history_get" in names
+        # New reports.* view-backed tools
+        assert "reports_spending_get" in names
+        assert "reports_cashflow_get" in names
+        assert "reports_recurring_get" in names
+        assert "reports_merchants_get" in names
+        assert "reports_uncategorized_get" in names
+        assert "reports_large_transactions_get" in names
+        assert "reports_balance_drift_get" in names
+        # Removed v1 tools should be gone
+        assert "reports_spending_summary" not in names
+        assert "reports_spending_by_category" not in names
+        assert "reports_networth_history" not in names
 
     @pytest.mark.unit
     async def test_accounts_tools_register(self) -> None:

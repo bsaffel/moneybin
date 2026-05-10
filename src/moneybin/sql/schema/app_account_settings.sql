@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     holder_category      VARCHAR,                                  -- 'personal' / 'business' / 'joint'; open vocabulary
     iso_currency_code    VARCHAR,                                  -- ISO-4217 (USD, EUR, ...); NULL defaults to USD until multi-currency.md ships
     credit_limit         DECIMAL(18, 2),                           -- User-asserted credit limit on credit cards / lines (drives utilization metrics)
-    archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from agg_net_worth
-    include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to agg_net_worth (independent toggle, but archive cascades to FALSE)
+    archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from reports.net_worth
+    include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to reports.net_worth (independent toggle, but archive cascades to FALSE)
     updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
 );

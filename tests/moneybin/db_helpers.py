@@ -86,8 +86,47 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     transaction_day INTEGER,
     transaction_day_of_week INTEGER,
     transaction_year_month VARCHAR,
-    transaction_year_quarter VARCHAR
+    transaction_year_quarter VARCHAR,
+    is_transfer BOOLEAN,
+    transfer_pair_id VARCHAR,
+    notes STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMP)[],
+    note_count INTEGER,
+    tags VARCHAR[],
+    tag_count INTEGER,
+    splits STRUCT(split_id VARCHAR, amount DECIMAL(18, 2), category VARCHAR, subcategory VARCHAR, note VARCHAR)[],
+    split_count INTEGER,
+    has_splits BOOLEAN
 );
+"""
+
+# core.fct_transaction_lines view — split-expanded grain. Mirrors the SQLMesh
+# model definition. Created in tests after fct_transactions is created.
+CORE_FCT_TRANSACTION_LINES_DDL = """\
+CREATE OR REPLACE VIEW core.fct_transaction_lines AS
+SELECT
+    t.transaction_id,
+    COALESCE(s.split_id, 'whole') AS line_id,
+    COALESCE(s.amount, t.amount) AS line_amount,
+    COALESCE(s.category, t.category) AS line_category,
+    COALESCE(s.subcategory, t.subcategory) AS line_subcategory,
+    s.note AS line_note,
+    CASE WHEN s.split_id IS NULL THEN 'whole' ELSE 'split' END AS line_kind,
+    t.account_id,
+    t.transaction_date,
+    t.merchant_name,
+    t.description,
+    t.is_pending,
+    t.transfer_pair_id,
+    t.is_transfer,
+    t.source_type,
+    t.source_count,
+    t.transaction_year,
+    t.transaction_month,
+    t.transaction_year_month,
+    t.transaction_year_quarter
+FROM core.fct_transactions AS t
+LEFT JOIN UNNEST(t.splits) AS u (s) ON TRUE
+WHERE NOT COALESCE(t.has_splits, FALSE) OR s.split_id IS NOT NULL;
 """
 
 
@@ -113,8 +152,8 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
 );
 """
 
-CORE_AGG_NET_WORTH_DDL = """\
-CREATE VIEW IF NOT EXISTS core.agg_net_worth AS
+REPORTS_NET_WORTH_DDL = """\
+CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
     CURRENT_DATE AS balance_date,
     0.00::DECIMAL(18, 2) AS net_worth,
@@ -137,9 +176,10 @@ def create_core_tables(db: Database) -> None:
     db.execute(CORE_DIM_ACCOUNTS_DDL)
     db.execute(CORE_FCT_TRANSACTIONS_DDL)
     db.execute(CORE_BRIDGE_TRANSFERS_DDL)
+    db.execute(CORE_FCT_TRANSACTION_LINES_DDL)
     db.execute(CORE_FCT_BALANCES_DDL)
     db.execute(CORE_FCT_BALANCES_DAILY_DDL)
-    db.execute(CORE_AGG_NET_WORTH_DDL)
+    db.execute(REPORTS_NET_WORTH_DDL)
 
 
 def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
@@ -154,9 +194,10 @@ def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(CORE_DIM_ACCOUNTS_DDL)
     conn.execute(CORE_FCT_TRANSACTIONS_DDL)
     conn.execute(CORE_BRIDGE_TRANSFERS_DDL)
+    conn.execute(CORE_FCT_TRANSACTION_LINES_DDL)
     conn.execute(CORE_FCT_BALANCES_DDL)
     conn.execute(CORE_FCT_BALANCES_DAILY_DDL)
-    conn.execute(CORE_AGG_NET_WORTH_DDL)
+    conn.execute(REPORTS_NET_WORTH_DDL)
 
 
 # Table and column comments for core tables — mirror the SQLMesh model
@@ -197,7 +238,7 @@ CORE_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
 
 
 def seed_categories_view(db: Database) -> None:
-    """Seed seeds.categories with a single default row + refresh app.categories view.
+    """Seed seeds.categories with a single default row + refresh dim views.
 
     Used by tests that exercise category-toggle behavior on default-category rows.
     The seeded row is ``('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')``.

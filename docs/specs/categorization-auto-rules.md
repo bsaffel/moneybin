@@ -154,6 +154,8 @@ After the categorization is written to `app.transaction_categories`:
 
 The hook is lightweight: one SELECT each against rules, merchants, and proposals, then at most one INSERT/UPDATE. No perceptible latency on the categorization call.
 
+**Manual-entry exemption.** Transactions with `source_type = 'manual'` are excluded from training-data extraction — they never seed proposals or contribute to `trigger_count`. Manual rows are typed under user attention and reflect deliberate choices ("I categorized this $40 line as Groceries because that's what it was"); using them to project recurring auto-rules over future *imported* rows would amplify one-off intent into a heuristic the user never asked for. The auto-rule engine's pattern source is imported transactions only. See [`transaction-curation.md`](transaction-curation.md) §Manual Entry for the broader rationale.
+
 ## CLI Interface
 
 | Command | Description |

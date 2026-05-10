@@ -1,0 +1,23 @@
+scenario: manual-entry-dedup
+description: >
+  Manual transaction created on the same (account_id, transaction_date,
+  amount, description) as a CSV-imported row must NOT be auto-merged with
+  the imported row. Per transaction-curation spec Req 6, manual rows are
+  exempt from the matcher candidate-pair generation; the user retains
+  intent and may reconcile by hand. Test drives the pipeline directly
+  via ``scenario_env`` + service calls; the empty pipeline below keeps the
+  scenario YAML schema-valid for the loader without invoking generation.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+# Test-driven: pipeline steps are invoked from the test body so it can
+# interleave fixture loads with manual_batch creation, then run transform
+# + match and assert on post-state.
+pipeline: []
+assertions: []
+gates:
+  required_assertions: all

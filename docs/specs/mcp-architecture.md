@@ -380,7 +380,7 @@ When the configured AI backend is verified-local (Ollama on localhost):
 |---|---|
 | Redaction engine | Field-level masking rules per sensitivity tier, deterministic redaction |
 | Consent management | `app.ai_consent_grants` schema, grant/revoke lifecycle, consent check API |
-| Audit log | `app.ai_audit_log` schema, logging contract, query API |
+| Audit log | Unified `app.audit_log` schema, logging contract, query API — AI calls land as `action='ai.external_call'`. See [`transaction-curation.md`](transaction-curation.md) §Data Model. |
 | Provider profiles | `AIBackend` interface, provider metadata, verified-local detection |
 
 Each gets its own spec. This spec defines how the MCP layer *consumes* them.
@@ -581,7 +581,7 @@ This spec's job is to ensure that when the Apps spec arrives, it finds a tool su
 |---|---|---|
 | **Redaction Engine** (new spec) | Field-level masking rules per sensitivity tier, deterministic redaction, reverse-lookup mapping | Not yet written |
 | **Consent Management** (new spec) | `app.ai_consent_grants` schema, grant/revoke lifecycle, consent check API | Not yet written |
-| **Audit Log** (new spec) | `app.ai_audit_log` schema, logging contract, query API | Not yet written |
+| **Audit Log** | Unified `app.audit_log` schema, logging contract, query API — AI calls land as `action='ai.external_call'` with metadata on `context_json`. See [`transaction-curation.md`](transaction-curation.md) §Data Model and [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) §Audit log. | Implemented |
 | **Provider Profiles** (new spec) | `AIBackend` interface, provider metadata, verified-local detection | Not yet written |
 | **AIConfig** (new spec) | `MoneyBinSettings.ai` configuration block, backend selection | Not yet written |
 | **Privacy & AI Trust** | Framework spec — the design authority for all of the above | Draft |
@@ -591,7 +591,7 @@ This spec's job is to ensure that when the Apps spec arrives, it finds a tool su
 
 | Item | Relationship |
 |---|---|
-| **Schema migration playbook** | New tables (`ai_consent_grants`, `ai_audit_log`, corrections, annotations) need migrations on existing DBs |
+| **Schema migration playbook** | New tables (`ai_consent_grants`, unified `audit_log`, corrections, annotations) need migrations on existing DBs |
 | **`get_base_dir` fix** | MCP server uses this to locate the database; must be resolved before MCP v1 ships |
 | **Synthetic data** | Testing the new tool surface requires realistic multi-account, multi-source data |
 | **Transfer detection** | Affects spending/cashflow tool accuracy — tools should work correctly with and without transfer detection in place |

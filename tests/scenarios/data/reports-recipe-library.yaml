@@ -1,0 +1,82 @@
+scenario: reports-recipe-library
+description: >
+  Exercise the eight reports.* SQLMesh views end-to-end against the basic
+  synthetic persona, and assert four migrations landed cleanly:
+    - core.agg_net_worth dropped, replaced by reports.net_worth
+    - app.categories retired, replaced by core.dim_categories
+    - app.merchants retired, replaced by core.dim_merchants
+  Generic shape assertions (sign convention, no duplicates, fct minimum rows)
+  live in the YAML; migration drops/exists, per-view row floors, and the
+  sentinel SQL invariants are driven from the Python entry point as
+  extra_assertions because they need raw catalog/SQL probes that aren't in
+  the generic YAML primitive registry.
+
+  Persona setup: basic persona, 2 years. The basic persona's recurring block
+  declares 5 monthly outflows (rent, electric, internet, phone, car insurance)
+  plus the salary bi-weekly inflow; 2 years guarantees >=24 occurrences of
+  each monthly recurring → cadence='monthly' branch fires for those rows.
+  spending_trend.yoy comparisons need >=12 months of history; 2 years gives
+  one full prior-year window.
+
+setup:
+  persona: basic
+  seed: 42
+  # 2 years: required for spending_trend YoY (LAG 12) to have a prior-year
+  # row in monthly, and for recurring_subscriptions to clear its >=3
+  # occurrences-in-18-months threshold per merchant+amount bucket.
+  years: 2
+  fixtures: []
+
+# Pipeline mirrors cold-start-first-import / basic-full-pipeline:
+#   generate   — synthetic transactions from the basic persona (2 years).
+#   transform  — materialize core.* and reports.* views.
+#   match      — detect transfers (cross-account rent payment, CC payoff).
+#   seed_merchants — populate core.dim_merchants from the persona catalog so
+#                    apply_deterministic has rules to evaluate.
+#   categorize — apply_deterministic() assigns categories from rules+merchants.
+#   transform  — re-materialize so reports.* views see post-categorization
+#                category values (uncategorized_queue depends on category IS NULL).
+pipeline:
+  - generate
+  - transform
+  - match
+  - seed_merchants
+  - categorize
+  - transform
+
+# Generic shape assertions over the underlying fct table. Per-view row floors
+# and migration drops live in the Python entry point because they need
+# catalog probes / raw SQL.
+assertions:
+  - name: fct_transactions_nonempty
+    fn: assert_min_rows
+    args:
+      # Floor: 2 years * 12 months/year * 5 recurring outflows = 120 rows
+      # minimum from the persona's deterministic recurring block alone,
+      # before salary inflows or random spending categories. We assert a
+      # conservative 100 to absorb date-edge effects in the generator
+      # (months that don't fully overlap the 2-year window).
+      table_min_rows:
+        core.fct_transactions: 100
+  - name: sign_convention
+    fn: assert_sign_convention
+  - name: no_duplicate_transactions
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  - name: fk_account_id
+    fn: assert_valid_foreign_keys
+    args:
+      child: core.fct_transactions
+      column: account_id
+      parent: core.dim_accounts
+      parent_column: account_id
+
+# No evaluations: this scenario is targeted at view materialization +
+# migration health, not categorization accuracy.
+evaluations: []
+
+gates:
+  required_assertions: all
+  required_evaluations: all

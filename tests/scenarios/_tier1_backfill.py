@@ -70,6 +70,15 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "transaction_day_of_week": "BIGINT",
     "transaction_year_month": "VARCHAR",
     "transaction_year_quarter": "VARCHAR",
+    # Curation columns added by transaction-curation spec (V007); see
+    # sqlmesh/models/core/fct_transactions.sql notes_agg/tags_agg/splits_agg CTEs.
+    "notes": 'STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMP)[]',
+    "note_count": "BIGINT",
+    "tags": "VARCHAR[]",
+    "tag_count": "BIGINT",
+    "splits": "STRUCT(split_id VARCHAR, amount DECIMAL(18,2), category VARCHAR, subcategory VARCHAR, note VARCHAR)[]",
+    "split_count": "BIGINT",
+    "has_splits": "BOOLEAN",
 }
 
 

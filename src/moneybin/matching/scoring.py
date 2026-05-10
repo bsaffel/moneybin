@@ -124,6 +124,10 @@ def _get_candidates(
 
     table = quote_table_ref(table)
 
+    # Manual-source exemption: per transaction-curation spec Req 6, manual rows
+    # are excluded as candidates in *either* direction — never matched against
+    # imported rows, never matched against other manual rows. Predicate is
+    # applied to both sides of the self-join.
     query = f"""
         SELECT
             a.source_transaction_id AS stid_a,
@@ -145,6 +149,8 @@ def _get_candidates(
             ON a.account_id = b.account_id
             AND a.amount = b.amount
             AND ABS(DATEDIFF('day', a.transaction_date, b.transaction_date)) <= ?
+            AND a.source_type != 'manual'
+            AND b.source_type != 'manual'
             AND (
                 a.source_type,
                 a.source_origin,

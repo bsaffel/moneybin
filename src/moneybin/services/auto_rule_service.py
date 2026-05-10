@@ -90,6 +90,7 @@ class TxnRow:
     description: str | None
     amount: float | None
     account_id: str | None
+    source_type: str | None = None
 
 
 @dataclass(slots=True)
@@ -198,6 +199,12 @@ class AutoRuleService:
         merchant mappings for the batch path so no read queries are issued
         per-transaction. When ``None``, the existing DB-backed behavior is used.
         """
+        # Manual-source exemption: per transaction-curation spec Req 7, user
+        # categorizations on manual rows do not seed auto-rule training. The
+        # check happens here so neither the proposal-creation path nor the
+        # increment path observes manual rows.
+        if self._is_manual_source(transaction_id, context=context):
+            return None
         extracted = self._extract_pattern(
             transaction_id, merchant_id=merchant_id, context=context
         )
@@ -475,6 +482,11 @@ class AutoRuleService:
             # engine itself selects rows. SQL-only matching cannot reproduce
             # ``normalize_description`` (Python regex) and got case-sensitivity
             # wrong on the regex branch.
+            # Manual-source exemption: per transaction-curation spec Req 7,
+            # user categorizations on manual rows do not feed auto-rule
+            # training. Manual rows are user-curated by definition; using
+            # them as override evidence would conflate authoring intent with
+            # rule-deactivation signal.
             candidate_rows = self._db.execute(
                 f"""
                 SELECT c.transaction_id, t.description, c.category, c.subcategory,
@@ -484,6 +496,7 @@ class AutoRuleService:
                 WHERE c.categorized_by IN ('user', 'ai')
                   AND c.categorized_at > ?
                   AND t.description IS NOT NULL
+                  AND t.source_type != 'manual'
                   AND (
                     c.category != ?
                     OR COALESCE(c.subcategory, '') != COALESCE(?, '')
@@ -697,6 +710,28 @@ class AutoRuleService:
         )
 
     # -- Internals --
+
+    def _is_manual_source(
+        self,
+        transaction_id: str,
+        *,
+        context: RecordingContext | None = None,
+    ) -> bool:
+        """Return True if the transaction's source_type is 'manual'.
+
+        Used to enforce the auto-rule training exemption for manual rows
+        (transaction-curation spec Req 7). When a bulk context is provided,
+        ``source_type`` comes from the cached ``TxnRow`` so the bulk path
+        issues no extra queries; otherwise we read it directly.
+        """
+        if context is not None:
+            row = context.txn_row_for(transaction_id)
+            return bool(row) and row.source_type == "manual"
+        db_row = self._db.execute(
+            f"SELECT source_type FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
+            [transaction_id],
+        ).fetchone()
+        return bool(db_row) and db_row[0] == "manual"
 
     def _extract_pattern(
         self,

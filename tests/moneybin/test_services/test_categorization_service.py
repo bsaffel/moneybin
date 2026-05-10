@@ -491,7 +491,7 @@ class TestGetCategorizationStats:
 
 
 class TestCategoriesView:
-    """Tests for the app.categories view that unions seeds + user_categories."""
+    """Tests for the core.dim_categories view that unions seeds + user_categories."""
 
     @staticmethod
     def _setup_seeds_and_view(db: Database) -> None:
@@ -1118,3 +1118,93 @@ def test_user_merchant_outranks_seed_on_overlap(
 
     assert match is not None
     assert match["category"] == "Business Meals"  # user wins over seed
+
+
+class TestSetCategoryAudit:
+    """Audit emission for set_category / clear_category (Req 25-31)."""
+
+    @pytest.mark.unit
+    def test_set_category_emits_audit_event(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        svc.set_category("T1", category="Food", subcategory="Coffee", actor="cli")
+
+        rows = db.conn.execute(
+            "SELECT action, target_table, target_id, before_value, after_value "
+            "FROM app.audit_log WHERE action = 'category.set'"
+        ).fetchall()
+        assert len(rows) == 1
+        action, target_table, target_id, before, after = rows[0]
+        assert action == "category.set"
+        assert target_table == "transaction_categories"
+        assert target_id == "T1"
+        assert before is None
+        import json as _json
+
+        assert _json.loads(after) == {
+            "category": "Food",
+            "subcategory": "Coffee",
+            "categorized_by": "user",
+        }
+        cat_rows = db.conn.execute(
+            "SELECT category, subcategory, categorized_by "
+            "FROM app.transaction_categories WHERE transaction_id = ?",
+            ["T1"],
+        ).fetchall()
+        assert cat_rows == [("Food", "Coffee", "user")]
+
+    @pytest.mark.unit
+    def test_clear_category_emits_audit_with_after_null(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        svc.set_category("T1", category="Food", actor="cli")
+        svc.clear_category("T1", actor="cli")
+
+        clear_rows = db.conn.execute(
+            "SELECT before_value, after_value FROM app.audit_log "
+            "WHERE action = 'category.clear'"
+        ).fetchall()
+        assert len(clear_rows) == 1
+        before, after = clear_rows[0]
+        assert after is None
+        import json as _json
+
+        b = _json.loads(before)
+        assert b["category"] == "Food"
+        # Row deleted.
+        cnt = db.conn.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id = ?",
+            ["T1"],
+        ).fetchone()
+        assert cnt is not None and cnt[0] == 0
+
+    @pytest.mark.unit
+    def test_clear_category_noop_when_absent_emits_no_event(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        svc.clear_category("T-missing", actor="cli")
+        cnt = db.conn.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE action = 'category.clear'"
+        ).fetchone()
+        assert cnt is not None and cnt[0] == 0
+
+    @pytest.mark.unit
+    def test_set_category_overwrite_captures_before_and_after(
+        self, db: Database
+    ) -> None:
+        svc = CategorizationService(db)
+        svc.set_category("T1", category="Food", actor="cli")
+        svc.set_category("T1", category="Travel", subcategory="Flights", actor="cli")
+
+        rows = db.conn.execute(
+            "SELECT before_value, after_value FROM app.audit_log "
+            "WHERE action = 'category.set' ORDER BY occurred_at"
+        ).fetchall()
+        assert len(rows) == 2
+        import json as _json
+
+        # First event: no prior.
+        assert rows[0][0] is None
+        # Second event: before captures the prior {Food}, after has {Travel/Flights}.
+        before = _json.loads(rows[1][0])
+        after = _json.loads(rows[1][1])
+        assert before["category"] == "Food"
+        assert after["category"] == "Travel"
+        assert after["subcategory"] == "Flights"

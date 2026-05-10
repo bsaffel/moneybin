@@ -71,6 +71,62 @@ EXAMPLES: dict[str, list[Example]] = {
                 ORDER BY transaction_year_month
             """,
         ),
+        Example(
+            question="Notes on a specific transaction "
+            "(substitute YOUR_TRANSACTION_ID; LIST(STRUCT) column)",
+            sql="""
+                SELECT notes
+                FROM core.fct_transactions
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Transactions tagged 'tax:business' "
+            "(use ANY(tags), not len(tags) > 0, for NULL-safe filtering)",
+            sql="""
+                SELECT transaction_id, transaction_date, amount, description, tags
+                FROM core.fct_transactions
+                WHERE 'tax:business' = ANY(tags)
+                ORDER BY transaction_date DESC
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Transactions that have at least one note "
+            "(use note_count > 0, not len(notes) > 0, to avoid 3-valued logic)",
+            sql="""
+                SELECT transaction_id, transaction_date, amount, description, note_count
+                FROM core.fct_transactions
+                WHERE note_count > 0
+                ORDER BY transaction_date DESC
+                LIMIT 50
+            """,
+        ),
+    ],
+    "core.fct_transaction_lines": [
+        Example(
+            question="Split-line rows only "
+            "(parent transaction is excluded for split transactions)",
+            sql="""
+                SELECT transaction_id, line_id, line_amount, line_category, line_kind
+                FROM core.fct_transaction_lines
+                WHERE line_kind = 'split'
+                ORDER BY transaction_id, line_id
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Spending by category at the line grain "
+            "(splits expand to N rows; unsplit transactions count once as 'whole')",
+            sql="""
+                SELECT line_category, SUM(ABS(line_amount)) AS total
+                FROM core.fct_transaction_lines
+                WHERE line_amount < 0
+                GROUP BY line_category
+                ORDER BY total DESC
+            """,
+        ),
     ],
     "core.dim_accounts": [
         Example(
@@ -104,12 +160,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "app.categories": [
+    "core.dim_categories": [
         Example(
             question="All active categories",
             sql="""
                 SELECT category_id, category, subcategory, description
-                FROM app.categories
+                FROM core.dim_categories
                 WHERE is_active
                 ORDER BY category, subcategory
             """,
@@ -128,19 +184,66 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Notes for a specific transaction "
             "(substitute YOUR_TRANSACTION_ID)",
             sql="""
-                SELECT transaction_id, note, created_at
+                SELECT note_id, transaction_id, text, author, created_at
                 FROM app.transaction_notes
                 WHERE transaction_id = 'YOUR_TRANSACTION_ID'
                 ORDER BY created_at
             """,
         ),
     ],
-    "app.merchants": [
+    "app.transaction_tags": [
+        Example(
+            question="Tags applied to a specific transaction "
+            "(substitute YOUR_TRANSACTION_ID)",
+            sql="""
+                SELECT transaction_id, tag, applied_at, applied_by
+                FROM app.transaction_tags
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                ORDER BY tag
+            """,
+        ),
+    ],
+    "app.transaction_splits": [
+        Example(
+            question="Split children of a parent transaction "
+            "(substitute YOUR_TRANSACTION_ID)",
+            sql="""
+                SELECT split_id, transaction_id, amount, category, subcategory, ord
+                FROM app.transaction_splits
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                ORDER BY ord, split_id
+            """,
+        ),
+    ],
+    "app.imports": [
+        Example(
+            question="User-applied labels on import batches",
+            sql="""
+                SELECT import_id, labels, updated_at, updated_by
+                FROM app.imports
+                ORDER BY updated_at DESC
+                LIMIT 50
+            """,
+        ),
+    ],
+    "app.audit_log": [
+        Example(
+            question="Most recent audit events across all actions",
+            sql="""
+                SELECT audit_id, occurred_at, actor, action,
+                       target_schema, target_table, target_id
+                FROM app.audit_log
+                ORDER BY occurred_at DESC
+                LIMIT 50
+            """,
+        ),
+    ],
+    "core.dim_merchants": [
         Example(
             question="Merchants with their canonical names",
             sql="""
                 SELECT merchant_id, canonical_name, raw_pattern
-                FROM app.merchants
+                FROM core.dim_merchants
                 ORDER BY canonical_name
             """,
         ),
@@ -230,12 +333,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "core.agg_net_worth": [
+    "reports.net_worth": [
         Example(
             question="Net worth today",
             sql="""
                 SELECT balance_date, net_worth, account_count, total_assets, total_liabilities
-                FROM core.agg_net_worth
+                FROM reports.net_worth
                 ORDER BY balance_date DESC
                 LIMIT 1
             """,
@@ -246,10 +349,106 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT
                     STRFTIME(balance_date, '%Y-%m') AS month,
                     MAX(net_worth) AS end_of_month_net_worth
-                FROM core.agg_net_worth
+                FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
                 GROUP BY month
                 ORDER BY month
+            """,
+        ),
+    ],
+    "reports.cash_flow": [
+        Example(
+            question="Monthly net cash flow across all accounts",
+            sql="""
+                SELECT year_month, SUM(net) AS total_net
+                FROM reports.cash_flow
+                GROUP BY year_month
+                ORDER BY year_month
+            """,
+        ),
+        Example(
+            question="Top outflow categories over the last 12 months",
+            sql="""
+                SELECT category, SUM(outflow) AS total_outflow
+                FROM reports.cash_flow
+                WHERE year_month >= date_trunc('month', current_date - INTERVAL 12 MONTH)
+                GROUP BY category
+                ORDER BY total_outflow ASC
+            """,
+        ),
+    ],
+    "reports.spending_trend": [
+        Example(
+            question="Latest month's spending with MoM/YoY deltas",
+            sql="""
+                SELECT year_month, category, total_spend, mom_pct, yoy_pct
+                FROM reports.spending_trend
+                WHERE year_month = (SELECT MAX(year_month) FROM reports.spending_trend)
+                ORDER BY total_spend DESC
+            """,
+        ),
+    ],
+    "reports.recurring_subscriptions": [
+        Example(
+            question="Active high-confidence subscriptions ordered by annualized cost",
+            sql="""
+                SELECT merchant_normalized, cadence, avg_amount, annualized_cost, confidence
+                FROM reports.recurring_subscriptions
+                WHERE status = 'active' AND confidence >= 0.7
+                ORDER BY annualized_cost DESC
+            """,
+        ),
+    ],
+    "reports.uncategorized_queue": [
+        Example(
+            question="Highest-impact uncategorized transactions",
+            sql="""
+                SELECT account_name, txn_date, amount, description, age_days, priority_score
+                FROM reports.uncategorized_queue
+                ORDER BY priority_score DESC
+                LIMIT 25
+            """,
+        ),
+    ],
+    "reports.merchant_activity": [
+        Example(
+            question="Top merchants by lifetime spend",
+            sql="""
+                SELECT merchant_normalized, total_spend, txn_count, top_category
+                FROM reports.merchant_activity
+                ORDER BY total_spend DESC
+                LIMIT 25
+            """,
+        ),
+    ],
+    "reports.large_transactions": [
+        Example(
+            question="Top 100 transactions by absolute amount",
+            sql="""
+                SELECT account_name, txn_date, amount, merchant_normalized, category
+                FROM reports.large_transactions
+                WHERE is_top_100
+                ORDER BY ABS(amount) DESC
+            """,
+        ),
+        Example(
+            question="Account-level outliers (modified z-score > 2.5)",
+            sql="""
+                SELECT account_name, txn_date, amount, amount_zscore_account
+                FROM reports.large_transactions
+                WHERE amount_zscore_account > 2.5
+                ORDER BY amount_zscore_account DESC
+            """,
+        ),
+    ],
+    "reports.balance_drift": [
+        Example(
+            question="Reconciliation drift sorted by absolute delta",
+            sql="""
+                SELECT account_name, assertion_date, asserted_balance, computed_balance, drift, status
+                FROM reports.balance_drift
+                WHERE status IN ('drift', 'warning')
+                ORDER BY drift_abs DESC
             """,
         ),
     ],
@@ -279,7 +478,7 @@ def build_schema_doc() -> dict[str, Any]:
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
     # Union tables and views — `duckdb_tables()` excludes views, but
-    # interface objects like `app.categories` are views (see seeds.py).
+    # interface objects like `core.dim_categories` are SQLMesh-managed views.
     rows = db.execute(
         f"""
         WITH interface_objects AS (

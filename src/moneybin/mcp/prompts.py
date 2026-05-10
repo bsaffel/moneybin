@@ -29,18 +29,20 @@ def monthly_review() -> str:
         that needs attention.
 
         **Relevant tools:**
-        - reports_spending_summary — income vs expenses by month
-        - reports_spending_by_category — category breakdown
+        - reports_spending_get — monthly spending trend with MoM/YoY deltas
+        - reports_cashflow_get — inflow/outflow/net per account x category
         - reports_budget_status — budget vs actual comparison
         - accounts_balance_list — current account balances
-        - transactions_recurring_list — subscription/recurring charge review
+        - reports_recurring_get — subscription/recurring charge review
 
         **Workflow:**
-        1. Start with reports_spending_summary for the last 1-2 months
-        2. If spending is above average, drill into reports_spending_by_category
+        1. Start with reports_spending_get for the last 1-2 months
+        2. If spending is above average, drill into reports_spending_get with a
+           specific ``category`` filter, or use reports_cashflow_get for an
+           account-and-category breakdown
         3. Check reports_budget_status for any categories over budget
         4. Review accounts_balance_list for current position
-        5. Optionally check transactions_recurring_list for subscription review
+        5. Optionally check reports_recurring_get for subscription review
 
         **Guardrails:**
         - Present totals and trends, not individual transaction details unless asked
@@ -129,14 +131,14 @@ def onboarding() -> str:
         - import_list_formats — see supported formats
         - accounts_list — verify imported accounts
         - transactions_categorize_stats — check categorization coverage
-        - reports_spending_summary — first look at their data
+        - reports_spending_get — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
         2. Import files one at a time with import_file
         3. Verify with accounts_list that accounts were created
         4. Check transactions_categorize_stats — if many uncategorized, offer to help
-        5. Show reports_spending_summary as their first financial snapshot
+        5. Show reports_spending_get as their first financial snapshot
 
         Default categories are seeded automatically by `moneybin db init`
         and `moneybin transform apply`.
@@ -146,6 +148,75 @@ def onboarding() -> str:
         - If import fails, explain what went wrong and suggest alternatives
         - Don't overwhelm with all available tools — introduce gradually
         - Celebrate successful imports to build confidence
+    """)
+
+
+@mcp.prompt()
+def curate_recent_transactions() -> str:
+    """Walk the user through curating recently-imported transactions."""
+    return _dedent("""
+        Help the user curate their most recent transactions — propose tags
+        and an initial note for rows that lack curator context.
+
+        **Goal:** Drain the un-noted, un-tagged tail of recent imports so the
+        next analysis pass has consistent metadata.
+
+        **Relevant tools:**
+        - transactions_search — fetch recent rows; pair with system_audit_list to
+          spot gaps (no note.add / tag.add events on a transaction_id).
+        - transactions_tags_set — declarative tag replacement (idempotent).
+        - transactions_notes_add — append a curator note.
+        - system_audit_list — sanity check what already happened.
+
+        **Workflow:**
+        1. Call transactions_search with a recent date window (e.g., last 30 days,
+           limit 50). Preserve transaction_id, description, amount, account_id.
+        2. For each row, propose a small set of slug-pattern tags
+           (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
+           and reusable; reuse existing tags when possible (a prior
+           system_audit_list with action_pattern='tag.%' helps here).
+        3. Confirm the batch with the user before mutating.
+        4. Apply: transactions_tags_set per row, transactions_notes_add for any
+           row where a note adds context the description does not.
+
+        **Guardrails:**
+        - Tags are slugs — ASCII alnum + `_`/`-`, optional single namespace.
+        - Notes max 2000 chars, must be non-empty.
+        - Never invent transaction_ids; only act on rows returned by search.
+        - Prefer fewer high-signal tags over many noisy ones.
+    """)
+
+
+@mcp.prompt()
+def review_curation_history() -> str:
+    """Summarize the last 7 days of curation activity from the audit log."""
+    return _dedent("""
+        Summarize what curation actions happened recently and surface anything
+        unusual (high-volume tag renames, repeated noop edits, unfamiliar
+        actors).
+
+        **Goal:** Give the user a quick mental model of what changed in the
+        last week without forcing them to read raw audit rows.
+
+        **Relevant tools:**
+        - system_audit_list — pull recent events. Call with limit=500 and
+          filters['from'] set to seven days ago (ISO timestamp).
+        - The result `data[]` already includes action, actor, target_table,
+          target_id, before/after, parent_audit_id.
+
+        **Workflow:**
+        1. Call system_audit_list with from = (now - 7 days) and limit=500.
+        2. Group by `action_pattern` prefix: note.*, tag.*, split.*,
+           import_label.*, manual.*, category.*.
+        3. Report counts per group, top 3 actors, and any noteworthy
+           outliers (parent tag.rename events, large split.clear bursts).
+        4. Offer drill-down via further system_audit_list calls
+           (e.g., action_pattern='tag.rename') if the user asks.
+
+        **Guardrails:**
+        - Read-only — do not mutate state from this prompt.
+        - Do not echo raw before/after values for high-sensitivity rows;
+          summarize counts instead.
     """)
 
 
@@ -160,14 +231,14 @@ def tax_prep() -> str:
 
         **Relevant tools:**
         - tax_w2 — retrieve W-2 wage and tax data
-        - reports_spending_by_category — find deduction-eligible categories
+        - reports_spending_get — find deduction-eligible categories
         - transactions_search — search for specific deductible expenses
         - categories_list — review tax-relevant categories
 
         **Workflow:**
         1. Ask for the tax year
         2. Pull W-2 data with tax_w2 for that year
-        3. Review reports_spending_by_category for deduction-eligible categories
+        3. Review reports_spending_get for deduction-eligible categories
            (charitable, medical, business expenses, etc.)
         4. If needed, search for specific transactions with transactions_search
         5. Summarize totals by deduction category

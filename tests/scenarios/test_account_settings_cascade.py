@@ -1,6 +1,6 @@
 """Scenario: archive cascade flows from app.account_settings through core.dim_accounts.
 
-Verifies the cascade reaches core.agg_net_worth and the accounts list CLI.
+Verifies the cascade reaches reports.net_worth and the accounts list CLI.
 
 Fixture: tests/fixtures/ofx/multi_account_sample.ofx
   - CHECKING1 (CHECKING): balance $1,000.00, 1 debit (-$50.00)
@@ -11,7 +11,7 @@ Expectations (independently derived from fixture file before running):
                   include_in_net_worth=TRUE.
   - Post-archive: CHECKING1 has archived=TRUE, include_in_net_worth=FALSE.
                   SAVINGS1 is unchanged.
-  - agg_net_worth after second transform: CHECKING1 excluded;
+  - reports.net_worth after second transform: CHECKING1 excluded;
                   account_count on the balance date must be 1 (SAVINGS1 only).
   - list_accounts(include_archived=False): 1 account (SAVINGS1).
   - list_accounts(include_archived=True):  2 accounts (both).
@@ -40,7 +40,7 @@ _ARCHIVE_RESTATE_MODELS = [
 @pytest.mark.scenarios
 @pytest.mark.slow
 def test_archive_cascade_excludes_from_networth() -> None:
-    """Archiving an account flips include_in_net_worth and excludes from agg_net_worth."""
+    """Archiving an account flips include_in_net_worth and excludes from reports.net_worth."""
     # Bootstrap using the multi-account scenario's setup (import + transform pipeline).
     # We drive steps manually so we can inject the archive mutation between transforms.
     scenario = load_shipped_scenario("ofx-multi-account-statement")
@@ -75,9 +75,9 @@ def test_archive_cascade_excludes_from_networth() -> None:
                 f"Account {acct_id} should have include_in_net_worth=TRUE pre-archive"
             )
 
-        # agg_net_worth is a VIEW — verify both accounts contribute (account_count=2).
+        # reports.net_worth is a VIEW — verify both accounts contribute (account_count=2).
         pre_nw = db.execute(
-            "SELECT account_count FROM core.agg_net_worth ORDER BY balance_date LIMIT 1"
+            "SELECT account_count FROM reports.net_worth ORDER BY balance_date LIMIT 1"
         ).fetchone()
         assert pre_nw is not None and pre_nw[0] == 2, (
             f"Expected account_count=2 before archive, got {pre_nw}"
@@ -139,11 +139,11 @@ def test_archive_cascade_excludes_from_networth() -> None:
         assert savings_archived is False, "SAVINGS1.archived must remain FALSE"
         assert savings_include is True, "SAVINGS1.include_in_net_worth must remain TRUE"
 
-        # agg_net_worth is a VIEW that re-evaluates on every read.
+        # reports.net_worth is a VIEW that re-evaluates on every read.
         # After archiving CHECKING1, only SAVINGS1 contributes → account_count=1.
         # (Derived independently: fixture has 1 non-archived account after the mutation.)
         post_nw = db.execute(
-            "SELECT account_count FROM core.agg_net_worth ORDER BY balance_date LIMIT 1"
+            "SELECT account_count FROM reports.net_worth ORDER BY balance_date LIMIT 1"
         ).fetchone()
         assert post_nw is not None and post_nw[0] == 1, (
             f"Expected account_count=1 after archive (SAVINGS1 only), got {post_nw}"

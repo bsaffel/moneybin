@@ -1,0 +1,23 @@
+scenario: manual-entry-auto-rule-training
+description: >
+  Contrast pair: a manual transaction with user-supplied category and an
+  imported transaction with the same description and same user-supplied
+  category. Per transaction-curation spec Req 7, only the imported
+  transaction should feed the auto-rule generator's training set; the
+  manual row is a curator authoring intent, not a rule-deactivation
+  signal. Asserts both the positive (imported row appears in
+  ``app.proposed_rules.sample_txn_ids``) and the negative (manual row
+  does not), so a regression that dropped the manual exemption from
+  ``AutoRuleService.record_categorization`` would fail here even if the
+  proposal happened to land for unrelated reasons.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+pipeline: []
+assertions: []
+gates:
+  required_assertions: all
