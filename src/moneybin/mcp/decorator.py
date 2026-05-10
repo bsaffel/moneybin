@@ -27,7 +27,7 @@ import inspect
 import logging
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from moneybin.database import interrupt_and_reset_database
 from moneybin.errors import UserError, classify_user_error
@@ -62,8 +62,65 @@ def _get_timeout_seconds() -> float:
 
 
 def _find_list_params(fn: Callable[..., Any]) -> list[str]:
-    """Find parameters annotated as list/Sequence/Collection (filled in Task 1.6)."""
-    return []
+    """Return parameter names whose annotation is a list/Sequence/Collection.
+
+    Strings are excluded — ``str`` is technically a ``Sequence[str]``, but
+    list-cap semantics don't apply to it. ``X | None`` (Optional) annotations
+    are unwrapped before inspection.
+    """
+    import typing
+    from collections.abc import Collection, Sequence
+
+    sig = inspect.signature(fn)
+    try:
+        type_hints = typing.get_type_hints(fn)
+    except Exception:  # noqa: BLE001 — eval failure shouldn't block decoration
+        return []
+    list_params: list[str] = []
+
+    for param_name in sig.parameters:
+        annotation: Any = type_hints.get(param_name)
+        if annotation is None:
+            continue
+        # Unwrap Optional[X] / X | None.
+        origin = typing.get_origin(annotation)
+        union_origin = type(int | str)
+        if origin is typing.Union or origin is union_origin:
+            args = [a for a in typing.get_args(annotation) if a is not type(None)]
+            if len(args) == 1:
+                annotation = args[0]
+                origin = typing.get_origin(annotation)
+        # str/bytes are explicitly excluded.
+        if annotation is str or annotation is bytes:
+            continue
+        # Direct origin match (covers list[X], Sequence[X], Collection[X], tuple[X, ...]).
+        if origin in (list, tuple, Sequence, Collection):
+            list_params.append(param_name)
+            continue
+        # Bare list/tuple type without subscript.
+        if (
+            isinstance(annotation, type)
+            and annotation
+            not in (
+                str,
+                bytes,
+            )
+            and issubclass(annotation, (list, tuple))
+        ):
+            list_params.append(param_name)
+            continue
+        # Generic alias with a non-builtin origin (e.g. custom Sequence subclass).
+        if origin is not None and isinstance(origin, type):
+            origin_type = cast(type, origin)
+            try:
+                if origin_type not in (str, bytes) and issubclass(
+                    origin_type, (Sequence, Collection)
+                ):
+                    list_params.append(param_name)
+            except TypeError:
+                pass
+
+    return list_params
 
 
 def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:

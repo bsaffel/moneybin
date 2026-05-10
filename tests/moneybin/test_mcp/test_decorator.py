@@ -146,6 +146,68 @@ def test_mcp_tool_default_annotations() -> None:
 
 
 @pytest.mark.unit
+def test_find_list_params_no_lists() -> None:
+    """A signature with no list params yields empty list."""
+    from moneybin.mcp.decorator import _find_list_params
+
+    def fn(name: str, count: int) -> None: ...
+
+    assert _find_list_params(fn) == []
+
+
+@pytest.mark.unit
+def test_find_list_params_single_list() -> None:
+    """A list[str] param is detected."""
+    from moneybin.mcp.decorator import _find_list_params
+
+    def fn(items: list[str]) -> None: ...
+
+    assert _find_list_params(fn) == ["items"]
+
+
+@pytest.mark.unit
+def test_find_list_params_sequence() -> None:
+    """Sequence[Mapping[...]] is detected (transactions_categorize_apply shape)."""
+    from collections.abc import Mapping, Sequence
+
+    from moneybin.mcp.decorator import _find_list_params
+
+    def fn(items: Sequence[Mapping[str, str]]) -> None: ...
+
+    assert _find_list_params(fn) == ["items"]
+
+
+@pytest.mark.unit
+def test_find_list_params_multiple() -> None:
+    """Multiple list params are all returned (e.g. accept + reject)."""
+    from moneybin.mcp.decorator import _find_list_params
+
+    def fn(accept: list[str], reject: list[str]) -> None: ...
+
+    assert sorted(_find_list_params(fn)) == ["accept", "reject"]
+
+
+@pytest.mark.unit
+def test_find_list_params_optional_list() -> None:
+    """list[X] | None is detected (Optional list arg)."""
+    from moneybin.mcp.decorator import _find_list_params
+
+    def fn(items: list[str] | None = None) -> None: ...
+
+    assert _find_list_params(fn) == ["items"]
+
+
+@pytest.mark.unit
+def test_find_list_params_str_not_a_list() -> None:
+    """Str is not treated as a list even though it's a Sequence."""
+    from moneybin.mcp.decorator import _find_list_params
+
+    def fn(name: str) -> None: ...
+
+    assert _find_list_params(fn) == []
+
+
+@pytest.mark.unit
 def test_mcp_tool_explicit_annotations() -> None:
     """Explicit kwargs override defaults."""
 
