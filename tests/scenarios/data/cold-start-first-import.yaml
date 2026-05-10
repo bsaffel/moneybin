@@ -4,7 +4,7 @@ description: >
   app.merchants view assembled over app.user_merchants ∪ seeds.merchants_*,
   _fetch_merchants ordering with is_user discriminator, create_merchant routing
   to user_merchants. seed_merchants writes the persona's full merchant catalog
-  to app.user_merchants (via service.create_merchant) and apply_deterministic
+  to app.user_merchants (via service.create_merchant) and categorize_pending
   reads the merged view; accuracy proves the integration is intact.
   Note: this models the snowball endpoint (full seeds), not the literal
   first-run minimal-seed state. A true cold-start scenario (placeholder seeds +
@@ -23,7 +23,7 @@ setup:
 #   seed_merchants — populate app.merchants from the persona's merchant catalog;
 #                    this approximates the global seed merchants a fresh install
 #                    would have (common chains like Starbucks, Netflix, etc.).
-#   categorize — apply_deterministic() matches transaction descriptions against
+#   categorize — categorize_pending() matches transaction descriptions against
 #                app.merchants rules; covered transactions get categories.
 #   transform  — re-materialize fct_transactions so the category LEFT JOIN
 #                reflects the newly written app.transaction_categories rows.
@@ -53,7 +53,7 @@ assertions:
 
 # Same accuracy floor (0.70) as basic-full-pipeline because the pipeline is
 # identical: seed_merchants populates app.user_merchants from the persona's
-# full merchant catalog, so apply_deterministic should achieve the same
+# full merchant catalog, so categorize_pending should achieve the same
 # coverage it does in basic-full-pipeline. A regression here below 0.70 would
 # indicate the merchants view assembly or _fetch_merchants ordering is broken.
 evaluations:

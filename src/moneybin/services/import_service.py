@@ -1099,7 +1099,7 @@ class ImportService:
 
         try:
             service = CategorizationService(self._db)
-            stats = service.apply_deterministic()
+            stats = service.categorize_pending()
             if stats["total"] > 0:
                 logger.info(
                     f"Auto-categorized {stats['total']} transactions "

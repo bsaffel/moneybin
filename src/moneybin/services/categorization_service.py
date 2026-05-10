@@ -1095,7 +1095,7 @@ class CategorizationService:
     def apply_rules(self) -> int:
         """Apply active categorization rules to uncategorized transactions.
 
-        Runs before merchant mapping in :meth:`apply_deterministic` so that
+        Runs before merchant mapping in :meth:`categorize_pending` so that
         explicit rules take priority. Rules are evaluated in priority order
         (lower number = higher priority); the first matching rule wins. Rules
         can filter by merchant pattern, amount range, and account ID.
@@ -1166,12 +1166,15 @@ class CategorizationService:
             logger.info(f"Rule engine categorized {categorized_count} transactions")
         return categorized_count
 
-    def apply_deterministic(self) -> dict[str, int]:
-        """Run all deterministic categorization: rules first, then merchant fallback.
+    def categorize_pending(self) -> dict[str, int]:
+        """Categorize all pending (uncategorized) transactions.
 
+        Runs current rules and merchants against pending transactions.
         Rules run first in priority order so explicit user-defined rules (which can
         filter by amount, account, and pattern) take precedence over generic merchant
         mappings. Merchant mappings apply only to transactions not matched by any rule.
+
+        Idempotent: a second run on the same state writes nothing.
 
         Returns:
             Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
@@ -1182,7 +1185,7 @@ class CategorizationService:
 
         if total:
             logger.info(
-                f"Deterministic categorization: {merchant_count} merchant, "
+                f"categorize_pending: {merchant_count} merchant, "
                 f"{rule_count} rule, {total} total"
             )
 

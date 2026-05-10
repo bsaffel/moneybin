@@ -41,9 +41,9 @@ def apply_merchant_categories(db: Database) -> int:
     return CategorizationService(db).apply_merchant_categories()
 
 
-def apply_deterministic_categorization(db: Database) -> dict[str, int]:
-    """Test shim — delegates to CategorizationService.apply_deterministic."""
-    return CategorizationService(db).apply_deterministic()
+def categorize_pending(db: Database) -> dict[str, int]:
+    """Test shim — delegates to CategorizationService.categorize_pending."""
+    return CategorizationService(db).categorize_pending()
 
 
 def get_categorization_stats(db: Database) -> dict[str, int | float]:
@@ -417,7 +417,7 @@ class TestApplyDeterministicCategorization:
             VALUES ('R001', 'Amazon', 'AMZN', 'contains', 'Shopping',
                     10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """)
-        stats = apply_deterministic_categorization(db)
+        stats = categorize_pending(db)
         assert stats["merchant"] >= 1
         assert stats["rule"] >= 1
         assert stats["total"] >= 2
@@ -447,7 +447,7 @@ class TestApplyDeterministicCategorization:
             VALUES ('R001', 'Amazon Business', 'AMZN', 'contains', 'Business',
                     10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """)
-        apply_deterministic_categorization(db)
+        categorize_pending(db)
         row = db.execute("""
             SELECT category FROM app.transaction_categories
             WHERE transaction_id = 'TXN003'
@@ -633,7 +633,7 @@ def test_no_public_module_level_categorization_functions() -> None:
         "ensure_seed_table",
         "get_active_categories",
         "create_merchant",
-        "apply_deterministic_categorization",
+        "categorize_pending",
     }
     leaked = {name for name in forbidden if hasattr(mod, name)}
     assert not leaked, f"These should be class methods only: {leaked}"
@@ -648,7 +648,7 @@ def test_service_exposes_consolidated_methods(real_db: Database) -> None:
     expected = {
         "bulk_categorize",
         "apply_rules",
-        "apply_deterministic",
+        "categorize_pending",
         "stats",
         "match_merchant",
         "apply_merchant_categories",
