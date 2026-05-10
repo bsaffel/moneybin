@@ -238,10 +238,15 @@ CORE_COLUMN_COMMENTS: dict[str, dict[str, str]] = {
 
 
 def seed_categories_view(db: Database) -> None:
-    """Seed seeds.categories with a single default row + refresh app.categories view.
+    """Seed seeds.categories with a single default row + create core.dim_categories.
 
     Used by tests that exercise category-toggle behavior on default-category rows.
     The seeded row is ``('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')``.
+
+    In production, ``core.dim_categories`` is a SQLMesh-managed view (see
+    ``sqlmesh/models/core/dim_categories.sql``). Tests don't run SQLMesh, so this
+    helper builds an equivalent view by hand — keep the SELECT body in sync with
+    the SQLMesh model.
     """
     from moneybin.seeds import refresh_views
 
@@ -258,6 +263,31 @@ def seed_categories_view(db: Database) -> None:
     db.execute("""
         INSERT INTO seeds.categories VALUES
         ('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')
+    """)
+    db.execute("""
+        CREATE OR REPLACE VIEW core.dim_categories AS
+        SELECT
+            s.category_id,
+            s.category,
+            s.subcategory,
+            s.description,
+            s.plaid_detailed,
+            true AS is_default,
+            COALESCE(o.is_active, true) AS is_active,
+            NULL::TIMESTAMP AS created_at
+        FROM seeds.categories s
+        LEFT JOIN app.category_overrides o USING (category_id)
+        UNION ALL
+        SELECT
+            category_id,
+            category,
+            subcategory,
+            description,
+            NULL AS plaid_detailed,
+            false AS is_default,
+            is_active,
+            created_at
+        FROM app.user_categories
     """)
     refresh_views(db)
 

@@ -1,13 +1,15 @@
 """SQLMesh seed materialization + the views that expose seeds alongside user data.
 
 Seeds are managed by SQLMesh (``seeds.*`` schema, populated from CSV). The
-application reads from ``app.*`` views that union seed rows with user
-additions and apply user overrides (e.g. deactivations). This keeps seed
-edits flowing through immediately while preserving user state.
+canonical resolved categories view (seeds + user + overrides) is now
+``core.dim_categories``, owned by the SQLMesh model at
+``sqlmesh/models/core/dim_categories.sql``. The legacy ``app.categories``
+view created by previous versions of ``refresh_views`` is dropped here as a
+cleanup step.
 
-Both categories and merchants follow this pattern: seed tables are populated
-by SQLMesh, then ``refresh_views`` assembles the ``app.*`` view that merges
-seeds with user rows and applies overrides.
+Merchants still follow the legacy pattern: ``refresh_views`` builds the
+``app.merchants`` UNION view from seeds + user_merchants + overrides. This
+will move to ``core.dim_merchants`` in the next migration.
 
 To add a new seed: add a SQLMesh seed model, add its full name to
 ``_SEED_MODELS``, and extend ``refresh_views`` with the corresponding view.
@@ -19,15 +21,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from moneybin.tables import (
-    CATEGORIES,
-    CATEGORY_OVERRIDES,
     MERCHANT_OVERRIDES,
     MERCHANTS,
     SEED_CATEGORIES,
     SEED_MERCHANTS_CA,
     SEED_MERCHANTS_GLOBAL,
     SEED_MERCHANTS_US,
-    USER_CATEGORIES,
     USER_MERCHANTS,
 )
 
@@ -123,33 +122,9 @@ def refresh_views(db: Database) -> None:
             "refresh. Run migrations to complete the upgrade."
         )
         return
-    # Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
-    sql = f"""
-        CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
-        SELECT
-            s.category_id,
-            s.category,
-            s.subcategory,
-            s.description,
-            s.plaid_detailed,
-            true AS is_default,
-            COALESCE(o.is_active, true) AS is_active,
-            NULL::TIMESTAMP AS created_at
-        FROM {SEED_CATEGORIES.full_name} s
-        LEFT JOIN {CATEGORY_OVERRIDES.full_name} o USING (category_id)
-        UNION ALL
-        SELECT
-            category_id,
-            category,
-            subcategory,
-            description,
-            NULL AS plaid_detailed,
-            false AS is_default,
-            is_active,
-            created_at
-        FROM {USER_CATEGORIES.full_name}
-        """  # noqa: S608  # all interpolated names are TableRef constants, not user input
-    db.execute(sql)
+    # Drop legacy app.categories view (replaced by core.dim_categories per
+    # reports-recipe-library.md). Idempotent on fresh DBs.
+    db.execute("DROP VIEW IF EXISTS app.categories")
 
     merchants_sql = f"""
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS

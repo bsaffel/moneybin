@@ -160,12 +160,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "app.categories": [
+    "core.dim_categories": [
         Example(
             question="All active categories",
             sql="""
                 SELECT category_id, category, subcategory, description
-                FROM app.categories
+                FROM core.dim_categories
                 WHERE is_active
                 ORDER BY category, subcategory
             """,
@@ -382,7 +382,7 @@ def build_schema_doc() -> dict[str, Any]:
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
     # Union tables and views — `duckdb_tables()` excludes views, but
-    # interface objects like `app.categories` are views (see seeds.py).
+    # interface objects like `core.dim_categories` are SQLMesh-managed views.
     rows = db.execute(
         f"""
         WITH interface_objects AS (

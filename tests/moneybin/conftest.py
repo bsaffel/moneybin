@@ -118,14 +118,14 @@ def mock_secret_store() -> MagicMock:
 def schema_catalog_db(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> Generator[Database, None, None]:
-    """Database with core tables + the app.categories view stub.
+    """Database with core tables + the core.dim_categories view stub.
 
     `Database.__init__` runs `init_schemas()` which creates every base
     `app.*` interface table (budgets, merchants, categorization_rules,
     transaction_categories, transaction_notes, etc.). It does NOT create
-    `app.categories`, which is a view normally materialized by SQLMesh
-    seeds. We stub it here so drift tests cover the full interface
-    surface, not just core.*.
+    `core.dim_categories`, which is a view normally materialized by SQLMesh.
+    We stub it here so drift tests cover the full interface surface,
+    not just core.*.
     """
     database = Database(
         tmp_path / "schema_catalog.duckdb",
@@ -135,7 +135,7 @@ def schema_catalog_db(
     create_core_tables_raw(database.conn)
     apply_core_table_comments(database)
     database.execute(
-        "CREATE OR REPLACE VIEW app.categories AS "
+        "CREATE OR REPLACE VIEW core.dim_categories AS "
         "SELECT CAST(NULL AS VARCHAR) AS category_id, "
         "CAST(NULL AS VARCHAR) AS category, "
         "CAST(NULL AS VARCHAR) AS subcategory, "

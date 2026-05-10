@@ -58,9 +58,7 @@ TRANSACTION_TAGS = TableRef("app", "transaction_tags", audience="interface")
 TRANSACTION_SPLITS = TableRef("app", "transaction_splits", audience="interface")
 IMPORTS = TableRef("app", "imports", audience="interface")
 AUDIT_LOG = TableRef("app", "audit_log", audience="interface")
-# view: seeds.categories ∪ app.user_categories, with overrides applied
-# (migrating to core.dim_categories — see reports-recipe-library.md)
-CATEGORIES = TableRef("app", "categories", audience="interface")
+CATEGORIES = TableRef("core", "dim_categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")
 CATEGORY_OVERRIDES = TableRef("app", "category_overrides")
 # view: app.user_merchants ∪ seeds.merchants_*, with overrides applied
