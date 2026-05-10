@@ -451,37 +451,59 @@ class CategorizationService:
         """
         self._db.begin()
         try:
-            prior = self._fetch_category_row(transaction_id)
-            self._db.conn.execute(
-                f"""
-                INSERT INTO {TRANSACTION_CATEGORIES.full_name}
-                  (transaction_id, category, subcategory,
-                   categorized_at, categorized_by)
-                VALUES (?, ?, ?, NOW(), ?)
-                ON CONFLICT (transaction_id) DO UPDATE SET
-                    category = EXCLUDED.category,
-                    subcategory = EXCLUDED.subcategory,
-                    categorized_at = NOW(),
-                    categorized_by = EXCLUDED.categorized_by
-                """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
-                [transaction_id, category, subcategory, categorized_by],
-            )
-            after = {
-                "category": category,
-                "subcategory": subcategory,
-                "categorized_by": categorized_by,
-            }
-            self._audit.record_audit_event(
-                action="category.set",
-                target=(*self._CATEGORY_AUDIT_TARGET, transaction_id),
-                before=prior,
-                after=after,
+            self.set_category_in_active_txn(
+                transaction_id,
+                category=category,
+                subcategory=subcategory,
+                categorized_by=categorized_by,
                 actor=actor,
             )
             self._db.commit()
         except Exception:
             self._db.rollback()
             raise
+
+    def set_category_in_active_txn(
+        self,
+        transaction_id: str,
+        *,
+        category: str,
+        subcategory: str | None,
+        categorized_by: str,
+        actor: str,
+    ) -> None:
+        """``set_category`` body without txn boundaries.
+
+        Use when the caller already owns a transaction and wants to batch
+        multiple category writes atomically with their own audit chain.
+        """
+        prior = self._fetch_category_row(transaction_id)
+        self._db.conn.execute(
+            f"""
+            INSERT INTO {TRANSACTION_CATEGORIES.full_name}
+              (transaction_id, category, subcategory,
+               categorized_at, categorized_by)
+            VALUES (?, ?, ?, NOW(), ?)
+            ON CONFLICT (transaction_id) DO UPDATE SET
+                category = EXCLUDED.category,
+                subcategory = EXCLUDED.subcategory,
+                categorized_at = NOW(),
+                categorized_by = EXCLUDED.categorized_by
+            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
+            [transaction_id, category, subcategory, categorized_by],
+        )
+        after = {
+            "category": category,
+            "subcategory": subcategory,
+            "categorized_by": categorized_by,
+        }
+        self._audit.record_audit_event(
+            action="category.set",
+            target=(*self._CATEGORY_AUDIT_TARGET, transaction_id),
+            before=prior,
+            after=after,
+            actor=actor,
+        )
 
     def clear_category(self, transaction_id: str, *, actor: str) -> None:
         """Delete a transaction's category row and emit ``category.clear`` audit.

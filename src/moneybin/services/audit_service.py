@@ -80,7 +80,11 @@ class AuditService:
     ) -> AuditEvent:
         """Insert one audit event. Caller manages the surrounding txn."""
         target_schema, target_table, target_id = target
-        audit_id = uuid.uuid4().hex[:12]
+        # Full UUID4 hex (32 chars). Audit log grows with every mutation plus
+        # per-row tag.rename_row children — well past identifiers.md's 100K-row
+        # threshold for full UUIDs over short app entity lifetimes. Internal
+        # id; readability is not a constraint here.
+        audit_id = uuid.uuid4().hex
         self._db.conn.execute(
             """
             INSERT INTO app.audit_log (

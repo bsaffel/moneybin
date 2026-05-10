@@ -25,7 +25,7 @@ def validate_slug(value: str) -> None:
 
 def validate_note_text(text: str) -> None:
     """Enforce non-empty note text within ``NOTE_MAX_LEN`` chars (Req 11)."""
-    if not text:
+    if not text.strip():
         raise ValueError("note text must be non-empty")
     if len(text) > NOTE_MAX_LEN:
         raise ValueError(f"note text exceeds {NOTE_MAX_LEN} chars")

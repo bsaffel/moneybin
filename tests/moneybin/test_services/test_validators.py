@@ -56,3 +56,9 @@ def test_validate_note_text_max_length() -> None:
 def test_validate_note_text_rejects_empty() -> None:
     with pytest.raises(ValueError):
         validate_note_text("")
+
+
+@pytest.mark.parametrize("whitespace", [" ", "   ", "\t", "\n", " \t \n "])
+def test_validate_note_text_rejects_whitespace_only(whitespace: str) -> None:
+    with pytest.raises(ValueError):
+        validate_note_text(whitespace)

@@ -138,7 +138,7 @@ def _retire_ai_audit_log(conn: object) -> None:
 
     for row in rows:
         record: dict[str, Any] = dict(zip(col_list, row, strict=True))
-        audit_id = record.get("audit_id") or uuid.uuid4().hex[:12]
+        audit_id = record.get("audit_id") or uuid.uuid4().hex
         occurred_at = record.get("timestamp")
         backend = record.get("backend") or "unknown"
         model = record.get("model") or "unknown"

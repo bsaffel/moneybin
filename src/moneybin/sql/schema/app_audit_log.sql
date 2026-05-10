@@ -5,7 +5,7 @@
    consent_reference, user_initiated) ride context_json — promoted to indexed
    columns only when a real query pattern demands it. */
 CREATE TABLE IF NOT EXISTS app.audit_log (
-    audit_id        VARCHAR PRIMARY KEY,                          -- Truncated UUID4 (12 hex)
+    audit_id        VARCHAR PRIMARY KEY,                          -- Full UUID4 hex (32 chars). Audit log row count grows with every mutation, plus per-row tag.rename_row children — sized for >100K rows per identifiers.md.
     occurred_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the event happened
     actor           VARCHAR NOT NULL,                             -- 'cli', 'mcp', 'auto_rule', 'system', 'ai:<provider>:<model>'
     action          VARCHAR NOT NULL,                             -- e.g. 'manual.create', 'note.add', 'tag.rename', 'split.add', 'category.set', 'ai.external_call'

@@ -44,7 +44,7 @@ class TestRecordAuditEvent:
             after={"tag": "tax:business"},
             actor="mcp",
         )
-        assert event.audit_id and len(event.audit_id) == 12
+        assert event.audit_id and len(event.audit_id) == 32
 
     def test_idempotent_op_marks_context_noop(
         self, audit_service: AuditService

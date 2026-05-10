@@ -402,11 +402,13 @@ class TransactionService:
 
         This is Task 7a: the raw-write path only. The pipeline is **not**
         triggered here — the next normal ``import_file`` / ``transform apply``
-        pass picks these rows up. Inputs containing a ``category`` key are
-        accepted but ignored; the user-category write attaches in Task 10
-        once ``CategorizationService.set_category`` lands and the matcher
-        guarantees ``transaction_id == source_transaction_id`` for manual
-        rows (Task 8).
+        pass picks these rows up.
+
+        Categorization (when an entry carries a non-empty ``category``) runs
+        in its own dedicated transaction *after* the raw-write commits. The
+        whole categorization batch is one atomic txn — either every supplied
+        category lands, or none do. Raw rows always remain on category
+        failure; the next pipeline pass picks them up uncategorized.
         """
         if not 1 <= len(entries) <= _MANUAL_BATCH_MAX:
             raise ValueError(
@@ -486,28 +488,50 @@ class TransactionService:
             )
             self._db.commit()
         except Exception:
+            # Any failure between allocate_import_log() and the commit leaves
+            # an orphaned ``importing``-status row in raw.import_log that
+            # blocks re-imports and shows up in `moneybin import history`.
+            # Mirror the OFX path: mark the batch as failed before re-raising.
             self._db.rollback()
+            from moneybin.loaders import import_log
+
+            import_log.finalize_import(
+                self._db,
+                import_id,
+                status="failed",
+                rows_total=0,
+                rows_imported=0,
+            )
             raise
 
-        # Attach user-supplied categories AFTER the raw-write commits. Each
-        # set_category call opens its own txn + emits its own ``category.set``
-        # audit event. Doing this outside the raw-write txn keeps the rollback
-        # blast radius small; if a categorization write fails the raw rows
-        # remain (the next pipeline pass picks them up uncategorized).
+        # Attach user-supplied categories in one atomic txn AFTER the raw-write
+        # commits. All-or-nothing: a failure on entry N rolls back entries
+        # 0..N-1's category rows so the caller sees a clean failure rather
+        # than partial categorization. The raw rows always remain — the next
+        # pipeline pass picks them up uncategorized.
         from moneybin.services.categorization_service import CategorizationService
 
         cat_service = CategorizationService(self._db, audit=self._audit)
-        for entry, raw_result in zip(prepared, results, strict=True):
-            category = entry.get("category")
-            if not (isinstance(category, str) and category.strip()):
-                continue
-            cat_service.set_category(
-                raw_result.transaction_id,
-                category=category,
-                subcategory=entry.get("subcategory"),
-                categorized_by="user",
-                actor=actor,
-            )
+        cat_entries = [
+            (entry, raw_result)
+            for entry, raw_result in zip(prepared, results, strict=True)
+            if isinstance(entry.get("category"), str) and entry["category"].strip()
+        ]
+        if cat_entries:
+            self._db.begin()
+            try:
+                for entry, raw_result in cat_entries:
+                    cat_service.set_category_in_active_txn(
+                        raw_result.transaction_id,
+                        category=entry["category"],
+                        subcategory=entry.get("subcategory"),
+                        categorized_by="user",
+                        actor=actor,
+                    )
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
 
         logger.info(
             f"manual.create import_id={import_id} row_count={len(results)} "
