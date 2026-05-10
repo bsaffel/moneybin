@@ -61,6 +61,44 @@ def _get_timeout_seconds() -> float:
     return get_settings().mcp.tool_timeout_seconds
 
 
+def _get_max_items() -> int | None:
+    """Read the configured collection cap. Indirected for test monkeypatching."""
+    from moneybin.config import get_settings
+
+    return get_settings().mcp.max_items
+
+
+def _check_collection_caps(
+    fn_name: str,
+    list_params: list[str],
+    bound_args: dict[str, Any],
+    cap: int | None,
+) -> ResponseEnvelope | None:
+    """Return an error envelope if any list param exceeds ``cap``, else None."""
+    if cap is None:
+        return None
+    for param_name in list_params:
+        value = bound_args.get(param_name)
+        if value is None:
+            continue
+        try:
+            length = len(value)
+        except TypeError:
+            continue
+        if length > cap:
+            err = UserError(
+                f"{fn_name}: parameter '{param_name}' has {length} items; max is {cap}",
+                code="too_many_items",
+                details={
+                    "limit": cap,
+                    "received": length,
+                    "parameter": param_name,
+                },
+            )
+            return build_error_envelope(error=err, sensitivity="low")
+    return None
+
+
 def _find_list_params(fn: Callable[..., Any]) -> list[str]:
     """Return parameter names whose annotation is a list/Sequence/Collection.
 
@@ -201,6 +239,26 @@ def mcp_tool(
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
             log_tool_call(fn.__name__, tier)
+            # Resolve cap: explicit per-tool override wins; otherwise inherit settings.
+            cap_attr = cast(
+                "int | None | _UnsetType",
+                wrapper._mcp_max_items,  # type: ignore[attr-defined]
+            )
+            if isinstance(cap_attr, _UnsetType):
+                cap: int | None = _get_max_items()
+            else:
+                cap = cap_attr
+            if list_params:
+                bound: dict[str, Any]
+                try:
+                    bound = dict(
+                        inspect.signature(fn).bind_partial(*args, **kwargs).arguments
+                    )
+                except TypeError:
+                    bound = {}
+                cap_error = _check_collection_caps(fn.__name__, list_params, bound, cap)
+                if cap_error is not None:
+                    return cap_error
             timeout_s = _get_timeout_seconds()
             started = time.monotonic()
             # asyncio.timeout()'s .expired() lets us distinguish a cap-fired

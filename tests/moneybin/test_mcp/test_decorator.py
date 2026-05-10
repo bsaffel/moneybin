@@ -225,3 +225,107 @@ def test_mcp_tool_explicit_annotations() -> None:
     assert example._mcp_destructive is True  # type: ignore[attr-defined]
     assert example._mcp_idempotent is False  # type: ignore[attr-defined]
     assert example._mcp_open_world is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+async def test_max_items_under_cap_passes() -> None:
+    """A list under the cap calls the body normally."""
+    from moneybin.mcp.decorator import mcp_tool
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(sensitivity="low", max_items=10)
+    def fn(items: list[str]) -> ResponseEnvelope:
+        return build_envelope(data={"count": len(items)}, sensitivity="low")
+
+    result = await fn(items=["a", "b", "c"])
+    assert result.error is None
+    assert result.data == {"count": 3}
+
+
+@pytest.mark.unit
+async def test_max_items_over_cap_returns_error() -> None:
+    """A list over the cap returns ResponseEnvelope.error with code=too_many_items."""
+    from moneybin.mcp.decorator import mcp_tool
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(sensitivity="low", max_items=2)
+    def fn(items: list[str]) -> ResponseEnvelope:
+        return build_envelope(data={"count": len(items)}, sensitivity="low")
+
+    result = await fn(items=["a", "b", "c"])
+    assert result.error is not None
+    assert result.error.code == "too_many_items"
+    assert result.error.details is not None
+    assert result.error.details["limit"] == 2
+    assert result.error.details["received"] == 3
+    assert result.error.details["parameter"] == "items"
+
+
+@pytest.mark.unit
+async def test_max_items_empty_list_passes() -> None:
+    """An empty list is not a cap violation."""
+    from moneybin.mcp.decorator import mcp_tool
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(sensitivity="low", max_items=2)
+    def fn(items: list[str]) -> ResponseEnvelope:
+        return build_envelope(data={"count": len(items)}, sensitivity="low")
+
+    result = await fn(items=[])
+    assert result.error is None
+
+
+@pytest.mark.unit
+async def test_max_items_disabled_with_none() -> None:
+    """max_items=None disables the cap entirely."""
+    from moneybin.mcp.decorator import mcp_tool
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(sensitivity="low", max_items=None)
+    def fn(items: list[str]) -> ResponseEnvelope:
+        return build_envelope(data={"count": len(items)}, sensitivity="low")
+
+    result = await fn(items=["a"] * 10000)
+    assert result.error is None
+    assert result.data == {"count": 10000}
+
+
+@pytest.mark.unit
+async def test_max_items_default_inherits_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When max_items is not specified, decorator reads MCPConfig.max_items at call time."""
+    from moneybin.mcp.decorator import mcp_tool
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(sensitivity="low")
+    def fn(items: list[str]) -> ResponseEnvelope:
+        return build_envelope(data={"count": len(items)}, sensitivity="low")
+
+    # Patch the cap getter rather than mutating the frozen settings object.
+    monkeypatch.setattr("moneybin.mcp.decorator._get_max_items", lambda: 3)
+
+    result = await fn(items=["a", "b", "c", "d"])
+    assert result.error is not None
+    assert result.error.code == "too_many_items"
+    assert result.error.details is not None
+    assert result.error.details["limit"] == 3
+
+
+@pytest.mark.unit
+async def test_max_items_multiple_list_params_each_capped() -> None:
+    """Each list param is checked independently against the cap."""
+    from moneybin.mcp.decorator import mcp_tool
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(sensitivity="low", max_items=2)
+    def fn(accept: list[str], reject: list[str]) -> ResponseEnvelope:
+        return build_envelope(
+            data={"a": len(accept), "r": len(reject)}, sensitivity="low"
+        )
+
+    # accept under, reject over → reject triggers
+    result = await fn(accept=["x"], reject=["a", "b", "c"])
+    assert result.error is not None
+    assert result.error.details is not None
+    assert result.error.details["parameter"] == "reject"
