@@ -8,8 +8,12 @@ from decimal import Decimal, InvalidOperation
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
-from moneybin.tables import REPORTS_UNCATEGORIZED_QUEUE
+from moneybin.cli.utils import (
+    emit_json,
+    handle_cli_errors,
+    render_rich_table,
+)
+from moneybin.services.reports_service import ReportsService
 
 logger = logging.getLogger(__name__)
 
@@ -37,31 +41,10 @@ def reports_uncategorized_show(
     except InvalidOperation as e:
         raise typer.BadParameter(f"Invalid --min-amount: {min_amount}") from e
     with handle_cli_errors() as db:
-        sql = f"""
-            SELECT transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_normalized, age_days, priority_score
-            FROM {REPORTS_UNCATEGORIZED_QUEUE.full_name}
-            WHERE ABS(amount) >= ?
-        """  # noqa: S608  # TableRef interpolation, parameterized values
-        params: list[object] = [min_amount_dec]
-        if account:
-            sql += " AND account_name = ?"
-            params.append(account)
-        sql += " ORDER BY priority_score DESC LIMIT ?"
-        params.append(limit)
-
-        cursor = db.execute(sql, params)
-        rows = cursor.fetchall()
-        cols = [d[0] for d in cursor.description]
-    payload = [dict(zip(cols, r, strict=False)) for r in rows]
+        cols, rows = ReportsService(db).uncategorized_queue(
+            min_amount=min_amount_dec, account=account, limit=limit
+        )
     if output == OutputFormat.JSON:
-        emit_json("uncategorized", payload)
+        emit_json("uncategorized", [dict(zip(cols, r, strict=False)) for r in rows])
         return
-    from rich.console import Console  # noqa: PLC0415 — defer heavy import
-    from rich.table import Table  # noqa: PLC0415 — defer heavy import
-
-    console = Console()
-    table = Table(*cols)
-    for r in rows:
-        table.add_row(*[str(v) if v is not None else "" for v in r])
-    console.print(table)
+    render_rich_table(cols, rows)

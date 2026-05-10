@@ -7,16 +7,18 @@ import logging
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
-from moneybin.tables import REPORTS_SPENDING_TREND
+from moneybin.cli.utils import (
+    emit_json,
+    handle_cli_errors,
+    render_rich_table,
+)
+from moneybin.services.reports_service import SPENDING_COMPARES, ReportsService
 
 logger = logging.getLogger(__name__)
 
 spending_app = typer.Typer(
     help="Spending trend with MoM/YoY/trailing deltas", no_args_is_help=True
 )
-
-_VALID_COMPARE = {"yoy", "mom", "trailing"}
 
 
 @spending_app.command("show")
@@ -31,41 +33,13 @@ def reports_spending_show(
     quiet: bool = quiet_option,  # noqa: ARG001
 ) -> None:
     """Show spending trend with MoM/YoY/trailing comparisons."""
-    if compare not in _VALID_COMPARE:
+    if compare not in SPENDING_COMPARES:
         raise typer.BadParameter(f"Unknown comparison: {compare}")
     with handle_cli_errors() as db:
-        sql = f"""
-            SELECT year_month, category, total_spend, txn_count,
-                   prev_month_spend, mom_delta, mom_pct,
-                   prev_year_spend, yoy_delta, yoy_pct,
-                   trailing_3mo_avg
-            FROM {REPORTS_SPENDING_TREND.full_name}
-            WHERE 1=1
-        """  # noqa: S608  # TableRef interpolation
-        params: list[object] = []
-        if from_month:
-            sql += " AND year_month >= ?"
-            params.append(from_month)
-        if to_month:
-            sql += " AND year_month <= ?"
-            params.append(to_month)
-        if category:
-            sql += " AND category = ?"
-            params.append(category)
-        sql += " ORDER BY year_month, total_spend DESC"
-
-        cursor = db.execute(sql, params)
-        rows = cursor.fetchall()
-        cols = [d[0] for d in cursor.description]
-    payload = [dict(zip(cols, r, strict=False)) for r in rows]
+        cols, rows = ReportsService(db).spending_trend(
+            from_month=from_month, to_month=to_month, category=category, compare=compare
+        )
     if output == OutputFormat.JSON:
-        emit_json("spending", payload)
+        emit_json("spending", [dict(zip(cols, r, strict=False)) for r in rows])
         return
-    from rich.console import Console  # noqa: PLC0415 — defer heavy import
-    from rich.table import Table  # noqa: PLC0415 — defer heavy import
-
-    console = Console()
-    table = Table(*cols)
-    for r in rows:
-        table.add_row(*[str(v) if v is not None else "" for v in r])
-    console.print(table)
+    render_rich_table(cols, rows)

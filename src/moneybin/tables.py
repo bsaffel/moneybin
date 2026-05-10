@@ -92,8 +92,7 @@ FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")
 GROUND_TRUTH = TableRef("synthetic", "ground_truth")
 
 # -- Reports presentation views (SQLMesh-managed, read-only) --
-# One model per CLI/MCP `reports *` surface (per cli-restructure.md v2 +
-# reports-recipe-library.md). Consumers read these views; never written to.
+# One model per CLI/MCP `reports *` surface. Consumers read; never write.
 REPORTS_NET_WORTH = TableRef("reports", "net_worth", audience="interface")
 REPORTS_CASH_FLOW = TableRef("reports", "cash_flow", audience="interface")
 REPORTS_SPENDING_TREND = TableRef("reports", "spending_trend", audience="interface")

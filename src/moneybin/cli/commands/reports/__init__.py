@@ -1,9 +1,4 @@
-"""Reports top-level command group.
-
-Owns cross-domain analytical and aggregation view operations. Per
-cli-restructure.md v2: cross-cutting read-only views (networth,
-spending, cashflow, financial health, budget vs actual).
-"""
+"""Reports top-level command group — cross-domain read-only views."""
 
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ apply`` first; ``transform apply`` will subsequently ``CREATE OR REPLACE``
 the same views with identical bodies.
 
 Also drops the legacy ``app.categories`` / ``app.merchants`` views from
-existing databases — they are retired with reports-recipe-library.md.
+existing databases (retired in favor of the ``core.dim_*`` models).
 """
 
 from __future__ import annotations
@@ -126,8 +126,7 @@ def refresh_views(db: Database) -> None:
         )
         return
 
-    # Drop legacy views (retired with reports-recipe-library.md). Idempotent
-    # on fresh DBs where these were never created.
+    # Drop the retired app.* views. Idempotent on fresh DBs.
     db.execute("DROP VIEW IF EXISTS app.categories")
     db.execute("DROP VIEW IF EXISTS app.merchants")
 
