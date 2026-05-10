@@ -69,7 +69,7 @@ def categorize_apply(
     from moneybin.services.categorization_service import (
         CategorizationResult,
         CategorizationService,
-        validate_bulk_items,
+        validate_items,
     )
 
     use_stdin = stdin_sentinel == "-"
@@ -102,7 +102,7 @@ def categorize_apply(
         raise typer.Exit(1) from e
 
     try:
-        items, parse_errors = validate_bulk_items(raw)
+        items, parse_errors = validate_items(raw)
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e

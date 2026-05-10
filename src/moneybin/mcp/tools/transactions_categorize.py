@@ -21,7 +21,7 @@ from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
     CategorizationResult,
     CategorizationService,
-    validate_bulk_items,
+    validate_items,
     validate_rule_items,
 )
 
@@ -115,7 +115,7 @@ def transactions_categorize_apply(
             applied=0, skipped=0, errors=0, error_details=[]
         ).to_envelope(0)
 
-    validated, parse_errors = validate_bulk_items(items)
+    validated, parse_errors = validate_items(items)
     result = CategorizationService(get_database()).categorize_items(validated)
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(items))

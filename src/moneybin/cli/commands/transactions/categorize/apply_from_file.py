@@ -48,7 +48,7 @@ def categorize_apply_from_file(
     from moneybin.cli.output import render_or_json
     from moneybin.services.categorization_service import (
         CategorizationResult,
-        validate_bulk_items,
+        validate_items,
     )
 
     use_stdin = str(input_path) == "-"
@@ -95,7 +95,7 @@ def categorize_apply_from_file(
         normalized = remapped
 
     try:
-        items, parse_errors = validate_bulk_items(normalized)
+        items, parse_errors = validate_items(normalized)
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e

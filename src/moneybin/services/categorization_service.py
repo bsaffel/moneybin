@@ -230,7 +230,7 @@ def _validate_items[T: BaseModel](
 ) -> tuple[list[T], list[dict[str, str]]]:
     """Validate raw decoded JSON dicts into typed Pydantic items + per-row errors.
 
-    Shared by ``validate_bulk_items`` and ``validate_rule_items``: per-item
+    Shared by ``validate_items`` and ``validate_rule_items``: per-item
     failures contribute an ``error_details`` entry but do not abort the batch.
     The ``id_field`` is the per-row identity surfaced in error dicts so callers
     can correlate failures (e.g., ``transaction_id`` for categorize_items,
@@ -267,7 +267,7 @@ def _validate_items[T: BaseModel](
     return items, errors
 
 
-def validate_bulk_items(
+def validate_items(
     raw: object,
 ) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
     """Validate a raw decoded JSON array into typed items + per-row errors.
@@ -290,7 +290,7 @@ def validate_rule_items(
 ) -> tuple[list[CategorizationRuleInput], list[dict[str, str]]]:
     """Validate raw rule dicts into typed inputs + per-row errors.
 
-    Mirrors ``validate_bulk_items``: malformed rows contribute an
+    Mirrors ``validate_items``: malformed rows contribute an
     ``error_details`` entry but do not abort the batch.
     """
     return _validate_items(
@@ -675,7 +675,7 @@ class CategorizationService:
         Args:
             items: Validated list of BulkCategorizationItem (transaction_id, category,
                 optional subcategory). Validation is the caller's responsibility —
-                use ``validate_bulk_items`` at the CLI/MCP boundary before calling this.
+                use ``validate_items`` at the CLI/MCP boundary before calling this.
 
         Returns:
             CategorizationResult with applied/skipped/error counts.
