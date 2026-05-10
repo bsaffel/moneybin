@@ -208,8 +208,8 @@ User-level stickiness is handled by the existing priority ladder:
 8. `app.merchants` becomes a view assembled from `app.user_merchants ∪ seeds.merchants_*`, with `app.merchant_overrides` applied. User merchants outrank seeds in lookup ordering.
 9. New `app.merchant_overrides` table mirrors `app.category_overrides` pattern (deactivation + category override).
 10. New `categorized_by` enum values: `'seed'`, `'migration'`. New `created_by` values on `app.user_merchants`: `'plaid'`, `'migration'`.
-11. New configuration settings: `assist_offer_threshold` (default 10), `assist_default_batch_size` (default 100), `assist_max_batch_size` (default 200), `redaction_version` (default `"v2"` — bumped from `"v1"` when the redactor expanded to memo + structural fields; see [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md)), ML training weights for `migration` (0.85) and `seed` (0.5, TBD).
-12. Every `transactions_categorize_assist` call audit-logged with `txn_count`, `account_filter`, `redaction_version`, `timestamp`. No descriptions or transaction IDs in audit log.
+11. New configuration settings: `assist_offer_threshold` (default 10), `assist_default_batch_size` (default 100), `assist_max_batch_size` (default 200), ML training weights for `migration` (0.85) and `seed` (0.5, TBD).
+12. Every `transactions_categorize_assist` call audit-logged with `txn_count`, `account_filter`, `timestamp`. No descriptions or transaction IDs in audit log.
 13. Migration step preserves all existing `app.merchants` rows by moving them to `app.user_merchants`; existing `transaction_categories.merchant_id` references remain valid.
 14. Fuzz test suite generates synthetic transactions with embedded PII patterns and asserts no test value appears in `categorize_assist` output.
 
@@ -507,7 +507,6 @@ Every `categorize_assist` call audit-logged via existing audit infrastructure:
 | `tool` | `transactions_categorize_assist` | Which tool |
 | `txn_count` | `42` | How many sent |
 | `account_filter` | `["acct_abc123"]` or `null` | Scope |
-| `redaction_version` | `v2` | Which redactor (so historical audits remain interpretable; `v1` entries pre-date memo + structural-field expansion) |
 | `timestamp` | ISO timestamp | When |
 
 What is **not** in the audit log: actual descriptions sent, LLM response, transaction IDs. Audit records that a session occurred — not its contents.
@@ -559,7 +558,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
   - Register new `transactions_categorize_assist` tool
 - `src/moneybin/mcp/server.py` — update `FastMCP(instructions=...)` with first-run hint guidance
 - `src/moneybin/cli/commands/transactions/categorize/__init__.py` — wire new commands; rename `bulk` → `apply`
-- `src/moneybin/config.py` — add new categorization settings (`assist_*`, `redaction_version`, ML training weights)
+- `src/moneybin/config.py` — add new categorization settings (`assist_*`, ML training weights)
 - `src/moneybin/metrics/registry.py` — register `categorize_assist_*` metrics per `observability.md`
 - `docs/specs/categorization-overview.md` — apply 7 edits per "Edits to overview spec" section below
 - `docs/specs/INDEX.md` — add this spec at status `ready`
@@ -788,7 +787,7 @@ Cross-cutting decisions deferred to implementation or future work.
 
 ### Auditability
 
-- Every `categorize_assist` call appears in audit log with `txn_count`, `account_filter`, `redaction_version`, `timestamp` — verifiable via `privacy_audit_list`
+- Every `categorize_assist` call appears in audit log with `txn_count`, `account_filter`, `timestamp` — verifiable via `privacy_audit_list`
 - Every cold-start solver writes its `categorized_by` value — verifiable via `SELECT categorized_by, COUNT(*) FROM app.transaction_categories GROUP BY categorized_by`
 
 ### Documentation

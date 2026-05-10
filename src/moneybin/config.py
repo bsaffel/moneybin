@@ -519,10 +519,6 @@ class CategorizationSettings(BaseModel):
         le=500,
         description="Hard upper bound enforced server-side",
     )
-    redaction_version: str = Field(
-        default="v2",
-        description="Bump when redaction logic changes; recorded in audit log",
-    )
     training_weights: "MLTrainingWeights" = Field(
         default_factory=lambda: MLTrainingWeights()
     )

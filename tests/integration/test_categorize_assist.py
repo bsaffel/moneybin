@@ -97,7 +97,6 @@ class TestCategorizeAssistMCPTool:
             assert "opaque_id" in item
             assert "description_redacted" in item
             assert "source_type" in item
-            assert "redaction_version" in item
             # Confirm no amount/date/account fields leaked
             assert "amount" not in item
             assert "date" not in item
@@ -175,7 +174,6 @@ class TestCategorizeAssistMCPTool:
         entry_msg = audit_entries[0].message
         assert "transactions_categorize_assist" in entry_msg
         assert "txn_count" in entry_msg
-        assert "redaction_version" in entry_msg
         # Confirm no per-record content leaked into the audit entry
         assert "description" not in entry_msg
         assert "MERCHANT" not in entry_msg

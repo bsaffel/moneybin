@@ -65,7 +65,6 @@ def transactions_categorize_assist(
         metadata={
             "txn_count": len(redacted),
             "account_filter": account_filter,
-            "redaction_version": settings.redaction_version,
         },
     )
 
@@ -82,7 +81,6 @@ def transactions_categorize_assist(
                 "transfer_pair_id": r.transfer_pair_id,
                 "payment_channel": r.payment_channel,
                 "amount_sign": r.amount_sign,
-                "redaction_version": settings.redaction_version,
             }
             for r in redacted
         ],
@@ -90,8 +88,7 @@ def transactions_categorize_assist(
         actions=[
             "Propose (category, subcategory, canonical_merchant_name) per item",
             "Use transactions_categorize_apply to commit user-accepted proposals",
-            f"Redaction contract: {settings.redaction_version} "
-            "(description + memo redacted; structural fields exposed for matcher and LLM signal)",
+            "Redaction: description + memo redacted; structural fields exposed for matcher and LLM signal",
         ],
     )
 

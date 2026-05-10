@@ -85,8 +85,6 @@ class RedactedTransaction:
 
 `memo_redacted` runs through the same `redact_for_llm()` pipeline that `description_redacted` does. The existing redactor already strips P2P recipients, account-number tails, hash-prefixed refs, bare digits, embedded contact info, dates, and city/state — the patterns that memos carry. No new redaction rules are required for the v1 expansion; the contract is "run the existing redactor over both fields."
 
-The `redaction_version` setting bumps from `"v1"` → `"v2"` to mark the contract change. Audit-log entries record the active version per call so historical audits remain interpretable.
-
 ## Matcher algorithm
 
 ### Lookup order (deterministic; per source)
@@ -334,10 +332,10 @@ The work lands in a single PR but proceeds in this internal order. Each step has
 - `sqlmesh/models/seeds/*.sql` — no schema changes; seeds remain `exemplars`-free.
 - `src/moneybin/sql/schema/app_user_merchants.sql` — add `exemplars` column, drop NOT NULL on `raw_pattern`.
 - `src/moneybin/sql/migrations/V###__user_merchants_exemplars.py` — DuckDB migration.
-- `src/moneybin/config.py` — bump `redaction_version` default to `"v2"`; add temporary `assist_bypass_redaction` flag (removed after baseline experiment).
+- `src/moneybin/config.py` — add temporary `assist_bypass_redaction` flag (removed after baseline experiment).
 - `src/moneybin/metrics/registry.py` — register `merchant_exemplar_count`, `categorize_apply_redeterministic_duration_seconds`, `categorize_write_skipped_precedence_total`.
 - `docs/specs/categorization-overview.md` — update priority hierarchy, pipeline diagram, and the apply-order section to point to this spec.
-- `docs/specs/categorization-cold-start.md` — status flips `implemented` → `in-progress` for the duration of this spec's work; merchant-creation section rewritten to reference exemplar accumulation; redaction contract extended to memo + structural fields; `redaction_version = "v2"`.
+- `docs/specs/categorization-cold-start.md` — status flips `implemented` → `in-progress` for the duration of this spec's work; merchant-creation section rewritten to reference exemplar accumulation; redaction contract extended to memo + structural fields.
 - `docs/specs/categorization-auto-rules.md` — match path edits; precedence model edits.
 - `docs/specs/INDEX.md` — add this spec at status `draft`.
 - `docs/roadmap.md` — 📐 entry under the appropriate milestone.
@@ -374,7 +372,6 @@ Per `.claude/rules/testing.md`, features that cross subsystem boundaries need co
 ## Migration / rollout
 
 - **Schema migration is forward-only.** The `exemplars` column defaults to `[]`; existing merchants continue to function.
-- **`redaction_version = "v2"`** is set at deploy time. Audit logs record the active version per call. v1 audit entries remain valid; v2 entries are interpretable from the spec.
 - **Spec status flow:** `categorization-cold-start.md` flips `implemented` → `in-progress` at start of work; back to `implemented` at end. This spec starts `draft`; flips to `in-progress` at start of implementation; to `implemented` at merge.
 - **No feature flag for the new matcher behavior.** The bugs are correctness bugs; rolling forward is safer than gating.
 

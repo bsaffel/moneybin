@@ -73,9 +73,7 @@ When you edit a merchant or rule, the change does not retroactively re-run again
 
 LLM-assist runs against a redacted view of the transaction. The redactor strips card last-fours, emails, phones, P2P recipient names, and other PII patterns from `description` AND `memo`. Amounts, dates, account references, and full currency are never sent. Structural fields are sent in raw form because they're enums, booleans, opaque pair IDs, or a single sign character — no PII surface.
 
-Every `categorize_assist` call is audit-logged with `txn_count`, `account_filter`, `redaction_version`, and timestamp. The actual contents (descriptions, LLM response, transaction IDs) are not in the audit log — only that a session occurred.
-
-The redaction contract is currently `v2`. If it changes, the version stamp on each audit entry lets you reason about historical sessions.
+Every `categorize_assist` call is audit-logged with `txn_count`, `account_filter`, and timestamp. The actual contents (descriptions, LLM response, transaction IDs) are not in the audit log — only that a session occurred.
 
 ## Rule Engine
 
