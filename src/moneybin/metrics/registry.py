@@ -174,6 +174,17 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
     ["src_existing", "src_attempted"],
 )
 
+CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS = Histogram(
+    "moneybin_categorize_apply_post_commit_duration_seconds",
+    "Latency of the snowball categorize_pending call triggered after every "
+    "transactions_categorize_apply commit.",
+)
+
+CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED = Histogram(
+    "moneybin_categorize_apply_post_commit_rows_affected",
+    "Number of rows the snowball fan-out categorized per batch.",
+)
+
 # Per-merchant labels can grow with the number of system-created merchants
 # (categorization-matching-mechanics.md §Open questions: "no cap in v1"). The
 # metric is gauge-only and written only when an exemplar is appended, so

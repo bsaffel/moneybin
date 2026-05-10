@@ -28,6 +28,8 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import (
+    CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS,
+    CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED,
     CATEGORIZE_BULK_DURATION_SECONDS,
     CATEGORIZE_BULK_ERRORS_TOTAL,
     CATEGORIZE_BULK_ITEMS_TOTAL,
@@ -605,6 +607,7 @@ class CategorizationService:
         subcategory: str | None = None,
         created_by: str = "ai",
         exemplars: list[str] | None = None,
+        reapply: bool = False,
     ) -> str:
         """Create a merchant mapping.
 
@@ -622,6 +625,11 @@ class CategorizationService:
             created_by: Who created the mapping ('user', 'ai', 'rule').
             exemplars: Initial exemplar set (exact match_text values) for
                 oneOf merchants. Defaults to ``[]``.
+            reapply: When ``True``, runs ``categorize_pending`` after the
+                insert so the new merchant fans out to uncategorized rows.
+                Default ``False`` — callers inside a bulk flow (e.g.,
+                ``bulk_categorize``) skip this and let the enclosing snowball
+                pass do the work instead.
 
         Returns:
             The merchant_id of the created merchant.
@@ -653,6 +661,8 @@ class CategorizationService:
                 len(exemplars_param)
             )
         logger.info(f"Created user merchant {merchant_id}")
+        if reapply:
+            self.categorize_pending()
         return merchant_id
 
     def _find_merchant_by_canonical_name(self, canonical_name: str) -> str | None:
@@ -698,7 +708,10 @@ class CategorizationService:
     # -- Rule management --
 
     def create_rules(
-        self, items: Sequence[CategorizationRuleInput]
+        self,
+        items: Sequence[CategorizationRuleInput],
+        *,
+        reapply: bool = False,
     ) -> RuleCreationResult:
         """Create multiple categorization rules in one call.
 
@@ -707,6 +720,10 @@ class CategorizationService:
         ``created_by='ai'``. Per-row insertion failures are caught so a
         single bad row does not abort the batch — they appear in
         ``error_details``.
+
+        When ``reapply=True``, ``categorize_pending`` runs after the writes so
+        the new rules fan out to uncategorized rows immediately. Source-priority
+        enforcement keeps user manual edits safe regardless.
         """
         created = 0
         skipped = 0
@@ -749,6 +766,9 @@ class CategorizationService:
                     "reason": "Failed to create rule — check logs for details.",
                 })
 
+        if reapply and created > 0:
+            self.categorize_pending()
+
         return RuleCreationResult(
             created=created,
             skipped=skipped,
@@ -756,11 +776,16 @@ class CategorizationService:
             rule_ids=rule_ids,
         )
 
-    def deactivate_rule(self, rule_id: str) -> bool:
+    def deactivate_rule(self, rule_id: str, *, reapply: bool = False) -> bool:
         """Soft-delete a rule by setting ``is_active=false``.
 
         Returns ``True`` if the rule existed (and is now inactive),
         ``False`` if no rule with that ID was found.
+
+        When ``reapply=True`` and the rule was deactivated, runs
+        ``categorize_pending`` so any rows previously covered by lower-priority
+        sources have a chance to be re-evaluated. Existing higher-priority
+        categorizations (user/rule) are unaffected.
         """
         row = self._db.execute(
             f"""
@@ -771,7 +796,10 @@ class CategorizationService:
             """,  # noqa: S608  # TableRef constant, no user input interpolated
             [rule_id],
         ).fetchone()
-        return row is not None
+        deactivated = row is not None
+        if reapply and deactivated:
+            self.categorize_pending()
+        return deactivated
 
     # -- Category management --
 
@@ -968,6 +996,12 @@ class CategorizationService:
         Read-side cost is O(1) in the number of items: one batch description
         fetch and one merchant-table fetch, regardless of input size.
 
+        Auto-applies ``categorize_pending`` after writes commit so newly-created
+        merchants and exemplars immediately fan out to remaining uncategorized
+        rows (the "snowball" — categorization-matching-mechanics.md §Apply
+        order, bug 4). Source-priority enforcement from ``write_categorization``
+        keeps user manual edits safe.
+
         Args:
             items: Validated list of BulkCategorizationItem (transaction_id, category,
                 optional subcategory). Validation is the caller's responsibility —
@@ -978,7 +1012,20 @@ class CategorizationService:
         """
         _start = perf_counter()
         try:
-            return self._bulk_categorize_inner(items)
+            result = self._bulk_categorize_inner(items)
+            # Snowball: fan newly-created merchants/exemplars out to remaining
+            # uncategorized rows. Skipped on no-op batches so we don't churn a
+            # pending sweep when nothing committed.
+            if result.applied > 0 or result.merchants_created > 0:
+                snowball_start = perf_counter()
+                try:
+                    counts = self.categorize_pending()
+                    CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED.observe(counts["total"])
+                finally:
+                    CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS.observe(
+                        perf_counter() - snowball_start
+                    )
+            return result
         except Exception:
             CATEGORIZE_BULK_ERRORS_TOTAL.inc()
             raise

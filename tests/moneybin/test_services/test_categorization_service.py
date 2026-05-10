@@ -889,6 +889,61 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
     assert merchant_count[0] == 1
 
 
+def test_bulk_categorize_snowball_fans_out_to_siblings(real_db: Database) -> None:
+    """Snowball fan-out after bulk_categorize commits.
+
+    After bulk_categorize commits, categorize_pending runs automatically and
+    fans the new merchant out to siblings sharing the same match_text.
+
+    Fixes bug 4 from categorization-matching-mechanics.md.
+    """
+    # Seed 3 transactions with identical description+memo signatures so the
+    # exemplar created from t1 matches t2 and t3 on the snowball pass.
+    for txn_id in ["t1", "t2", "t3"]:
+        real_db.execute(
+            """
+            INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             description, memo, source_type, is_transfer)
+            VALUES (?, 'acct_test', '2026-05-10', -10.00,
+                    'STARBUCKS', 'STORE 1234', 'ofx', false)
+            """,  # noqa: S608  # test input, not executing SQL
+            [txn_id],
+        )
+
+    svc = CategorizationService(real_db)
+    assert svc.count_uncategorized() == 3
+
+    # Categorize batch 1 (just t1) with a canonical name so an exemplar-merchant
+    # is created.
+    result = svc.bulk_categorize([
+        BulkCategorizationItem(
+            transaction_id="t1",
+            category="Food & Dining",
+            subcategory="Coffee Shops",
+            canonical_merchant_name="Starbucks",
+        ),
+    ])
+    assert result.applied == 1
+
+    # SNOWBALL: t2 and t3 should now be categorized too because bulk_categorize
+    # invoked categorize_pending() after committing, which applied the new
+    # exemplar to remaining uncategorized rows.
+    assert svc.count_uncategorized() == 0
+
+    rows = real_db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert len(rows) == 3
+    assert all(r[0] == "Food & Dining" for r in rows)
+    # t1 was categorized by the LLM-assist commit ('ai'); t2/t3 by the
+    # snowball merchant fan-out, which writes 'rule' provenance.
+    assert rows[0][1] == "ai"
+    assert rows[1][1] == "rule"
+    assert rows[2][1] == "rule"
+
+
 # ---------------------------------------------------------------------------
 # find_matching_rule override tests (Task 3 — bulk path preparation)
 # ---------------------------------------------------------------------------

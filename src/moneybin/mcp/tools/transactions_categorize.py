@@ -132,6 +132,7 @@ def transactions_categorize_apply(
 @mcp_tool(sensitivity="low", domain="categorize")
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
+    reapply: bool = False,
 ) -> ResponseEnvelope:
     """Create multiple categorization rules in one call.
 
@@ -141,15 +142,22 @@ def transactions_categorize_rules_create(
 
     Args:
         rules: List of rule dicts.
+        reapply: If True, retroactively apply the new rules to all
+            uncategorized transactions after the inserts commit. Default
+            False; only future categorizations are affected.
     """
     validated, parse_errors = validate_rule_items(rules)
-    result = CategorizationService(get_database()).create_rules(validated)
+    result = CategorizationService(get_database()).create_rules(
+        validated, reapply=reapply
+    )
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(rules))
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_rule_delete(rule_id: str) -> ResponseEnvelope:
+def transactions_categorize_rule_delete(
+    rule_id: str, reapply: bool = False
+) -> ResponseEnvelope:
     """Soft-delete a categorization rule by setting it inactive.
 
     The rule remains in the database but will no longer be applied
@@ -157,8 +165,14 @@ def transactions_categorize_rule_delete(rule_id: str) -> ResponseEnvelope:
 
     Args:
         rule_id: The rule ID to deactivate.
+        reapply: If True, run categorize_pending after the deactivation so
+            rows previously covered by lower-priority sources have a chance
+            to be re-evaluated. Default False; existing categorizations are
+            left untouched.
     """
-    if not CategorizationService(get_database()).deactivate_rule(rule_id):
+    if not CategorizationService(get_database()).deactivate_rule(
+        rule_id, reapply=reapply
+    ):
         raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
     return build_envelope(
         data={"rule_id": rule_id, "action": "deactivated"},
