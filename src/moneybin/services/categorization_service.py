@@ -1597,8 +1597,8 @@ class CategorizationService:
 
         if total:
             logger.info(
-                f"categorize_pending: {merchant_count} merchant, "
-                f"{rule_count} rule, {total} total"
+                f"Categorized {total} pending transactions "
+                f"({merchant_count} merchant, {rule_count} rule)"
             )
 
         return {

@@ -419,8 +419,8 @@ class TestApplyMerchantCategories:
 # ---------------------------------------------------------------------------
 
 
-class TestApplyDeterministicCategorization:
-    """Tests for the combined merchant + rules pipeline."""
+class TestCategorizePending:
+    """Tests for the combined merchant + rules pipeline (`categorize_pending`)."""
 
     @pytest.mark.unit
     def test_rules_then_merchants(self, db_with_transactions: Database) -> None:
