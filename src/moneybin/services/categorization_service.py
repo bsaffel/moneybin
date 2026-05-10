@@ -58,6 +58,28 @@ logger = logging.getLogger(__name__)
 MatchType = Literal["exact", "contains", "regex", "oneOf"]
 _VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
 
+# OP_SCORES — adopted from Actual Budget's rules/rule-utils.ts. Higher score =
+# more specific match; specificity wins when multiple matchers fire on the same
+# row. See docs/specs/categorization-matching-mechanics.md §Matcher algorithm.
+# The same scores are duplicated as inline CASE constants in _fetch_merchants'
+# ORDER BY — one call site, no abstraction value yet in wrapping this as a
+# DuckDB UDF (matches Task 4's rationale). Keep the two in sync.
+_MATCH_SHAPE_SCORES: dict[str, int] = {
+    "oneOf": 10,
+    "exact": 10,
+    "contains": 0,
+    "regex": 0,
+}
+
+
+def score_match_shape(match_type: str) -> int:
+    """Return the specificity score for a match type.
+
+    Higher = more specific. Used to order merchants in lookup precedence.
+    Unknown types return 0 (lowest specificity) — a forward-compat default.
+    """
+    return _MATCH_SHAPE_SCORES.get(match_type, 0)
+
 
 def validate_match_type(match_type: str) -> MatchType:
     """Validate and narrow a match_type string at a service-boundary call site."""
@@ -392,9 +414,10 @@ def _fetch_merchants(
 
     Ordering:
     1. is_user DESC — user-created merchants outrank seed merchants
-    2. match_type — oneOf > exact > contains > regex (most-specific match
-       shape wins; matches OP_SCORES specificity from
-       categorization-matching-mechanics.md)
+    2. match-type OP_SCORE DESC — oneOf/exact (10) outrank contains/regex (0).
+       Inlined CASE mirrors :data:`_MATCH_SHAPE_SCORES`; keep the two in sync.
+    3. created_at ASC — deterministic tie-break among same-score, same-author
+       merchants (NULL for seed rows; sorts last in DuckDB).
 
     User outranks seed regardless of match-type granularity. A user 'contains'
     rule beats a seed 'exact' rule because user authority over curated defaults
@@ -415,11 +438,13 @@ def _fetch_merchants(
             ORDER BY
                 is_user DESC,
                 CASE match_type
-                    WHEN 'oneOf' THEN 1
-                    WHEN 'exact' THEN 2
-                    WHEN 'contains' THEN 3
-                    WHEN 'regex' THEN 4
-                END
+                    WHEN 'oneOf' THEN 10
+                    WHEN 'exact' THEN 10
+                    WHEN 'contains' THEN 0
+                    WHEN 'regex' THEN 0
+                    ELSE 0
+                END DESC,
+                created_at ASC
             """,  # noqa: S608  # MERCHANTS is a TableRef constant, not user input
         ).fetchall()
     except duckdb.CatalogException:

@@ -17,6 +17,7 @@ from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
     BulkCategorizationItem,
     CategorizationService,
+    score_match_shape,
 )
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
@@ -150,6 +151,30 @@ class TestNormalizeDescriptionGoldens:
 
         with pytest.raises(ValueError, match="Duplicate case ids"):
             _load_normalize_cases(bad_yaml)
+
+
+# ---------------------------------------------------------------------------
+# OP_SCORES specificity helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_score_match_shape_oneof_and_exact_tie_at_10() -> None:
+    assert score_match_shape("oneOf") == 10
+    assert score_match_shape("exact") == 10
+
+
+@pytest.mark.unit
+def test_score_match_shape_contains_and_regex_score_zero() -> None:
+    assert score_match_shape("contains") == 0
+    assert score_match_shape("regex") == 0
+
+
+@pytest.mark.unit
+def test_score_match_shape_unknown_returns_zero() -> None:
+    """An unknown match type defaults to lowest specificity (forward-compat)."""
+    assert score_match_shape("nonexistent_type") == 0
+    assert score_match_shape("") == 0
 
 
 # ---------------------------------------------------------------------------
