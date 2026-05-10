@@ -3,7 +3,7 @@
 ## Status
 
 - **Type:** Feature
-- **Status:** draft
+- **Status:** in-progress
 - **Milestone:** M2C ("brand surface" cluster — recipe library + `moneybin doctor`)
 
 ## Goal

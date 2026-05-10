@@ -202,7 +202,8 @@ class ReportsService:
         """Uncategorized transactions queue, ranked by curator-impact."""
         sql = f"""
             SELECT transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_normalized, age_days, priority_score
+                   description, merchant_normalized, age_days, priority_score,
+                   source_type, source_id
             FROM {REPORTS_UNCATEGORIZED_QUEUE.full_name}
             WHERE ABS(amount) >= ?
         """  # noqa: S608  # TableRef interpolation

@@ -10,6 +10,7 @@ MODEL (
 
 WITH eligible AS (
   SELECT
+    t.account_id,
     COALESCE(t.merchant_name, '(unknown)') AS merchant_normalized,
     ROUND(t.amount, 0) AS amount_bucket,
     t.amount,
@@ -21,13 +22,20 @@ WITH eligible AS (
     AND NOT a.archived
     AND t.transaction_date >= current_date - INTERVAL '18 months'
 ), with_intervals AS (
+  /* LAG partitions include account_id so two accounts paying the same
+     merchant for the same amount are treated as separate subscriptions —
+     interleaving them would yield half-cadence intervals and misclassify
+     stable monthly charges as biweekly or irregular. Household
+     subscriptions split across cards will surface as two candidate rows;
+     the user can dedupe downstream. */
   SELECT
+    account_id,
     merchant_normalized,
     amount_bucket,
     amount,
     transaction_date,
     transaction_date - LAG(transaction_date) OVER (
-      PARTITION BY merchant_normalized, amount_bucket
+      PARTITION BY account_id, merchant_normalized, amount_bucket
       ORDER BY transaction_date
     ) AS interval_days
   FROM eligible
@@ -42,7 +50,7 @@ WITH eligible AS (
     MIN(transaction_date) AS first_seen,
     MAX(transaction_date) AS last_seen
   FROM with_intervals
-  GROUP BY merchant_normalized, amount_bucket
+  GROUP BY account_id, merchant_normalized, amount_bucket
   HAVING COUNT(*) >= 3
 )
 SELECT
