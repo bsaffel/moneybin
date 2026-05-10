@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     check_number VARCHAR,
     is_pending BOOLEAN,
     pending_transaction_id VARCHAR,
+    is_transfer BOOLEAN,
+    transfer_pair_id VARCHAR,
     location_address VARCHAR,
     location_city VARCHAR,
     location_region VARCHAR,

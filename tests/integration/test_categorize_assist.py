@@ -44,8 +44,14 @@ def _seed_uncategorized_transactions(db: Database, count: int = 3) -> None:
             account_id      VARCHAR,
             transaction_date DATE,
             description     VARCHAR,
+            memo            VARCHAR,
             amount          DECIMAL(18,2),
-            source_type     VARCHAR
+            source_type     VARCHAR,
+            transaction_type VARCHAR,
+            check_number    VARCHAR,
+            payment_channel VARCHAR,
+            is_transfer     BOOLEAN,
+            transfer_pair_id VARCHAR
         )
         """
     )

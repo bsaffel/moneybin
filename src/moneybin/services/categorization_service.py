@@ -33,7 +33,11 @@ from moneybin.metrics.registry import (
     CATEGORIZE_BULK_ITEMS_TOTAL,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services._text import normalize_description, redact_for_llm
+from moneybin.services._text import (
+    build_match_text,
+    normalize_description,
+    redact_for_llm,
+)
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -109,14 +113,23 @@ class CategorizationStats:
 class RedactedTransaction:
     """LLM-safe view of an uncategorized transaction.
 
-    Type-enforces the redaction contract: no amount, date, or account fields.
-    Adding any new field requires conscious code review — accidental PII leakage
-    is a compile-time impossibility enforced by the frozen dataclass shape.
+    Type-enforces the redaction contract: no full amount, no date, no account ID.
+    The v2 contract (per categorization-matching-mechanics.md §Match input) adds
+    memo and structural-field signals. Adding any new field requires conscious
+    code review — accidental PII leakage is a compile-time impossibility enforced
+    by the frozen dataclass shape.
     """
 
-    opaque_id: str  # transaction_id (opaque hash, never decoded by LLM)
-    description_redacted: str  # output of redact_for_llm()
-    source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf' — helps LLM judge quality
+    opaque_id: str
+    description_redacted: str
+    memo_redacted: str
+    source_type: str
+    transaction_type: str | None
+    check_number: str | None
+    is_transfer: bool
+    transfer_pair_id: str | None
+    payment_channel: str | None
+    amount_sign: str  # '+' or '-'
 
 
 @dataclass(slots=True)
@@ -375,31 +388,42 @@ def _fetch_merchants(
         return None
 
 
-def _match_description(
-    description: str,
+def _match_text(
+    match_text: str,
     merchants: list[tuple[str, str, str, str, str, str | None]],
+    *,
+    description_present: bool = True,
+    memo_present: bool = False,
 ) -> dict[str, str | None] | None:
-    """Match a description against a pre-fetched merchant list.
+    r"""Match the canonical match_text against a pre-fetched merchant list.
 
-    Args:
-        description: Transaction description to match.
-        merchants: Pre-fetched merchant rows from ``_fetch_merchants()``.
+    match_text is description + "\n" + memo (per build_match_text); the matcher
+    runs against this concatenation directly, without re-normalizing.
 
-    Returns:
-        Dict with merchant_id, canonical_name, category, subcategory
-        if found, otherwise None.
+    description_present and memo_present control the "shape" label on the
+    match-outcome metric so callers can attribute matches by signal source.
     """
-    normalized = normalize_description(description)
-    if not normalized:
+    from moneybin.metrics.registry import CATEGORIZE_MATCH_OUTCOME_TOTAL
+
+    if description_present and memo_present:
+        shape = "both"
+    elif memo_present:
+        shape = "memo_only"
+    else:
+        shape = "description_only"
+
+    if not match_text:
+        CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
         return None
 
     for row in merchants:
         merchant_id, raw_pattern, match_type, canonical_name, category, subcategory = (
             row
         )
-        if matches_pattern(description, raw_pattern, match_type) or matches_pattern(
-            normalized, raw_pattern, match_type
-        ):
+        if matches_pattern(match_text, raw_pattern, match_type):
+            CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(
+                outcome=str(match_type or "contains"), shape=shape
+            ).inc()
             return {
                 "merchant_id": merchant_id,
                 "canonical_name": canonical_name,
@@ -407,6 +431,7 @@ def _match_description(
                 "subcategory": subcategory,
             }
 
+    CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
     return None
 
 
@@ -424,20 +449,24 @@ class CategorizationService:
 
     # -- Merchant lookup / management --
 
-    def match_merchant(self, description: str) -> dict[str, str | None] | None:
-        """Look up a merchant by raw description.
+    def match_merchant(
+        self, description: str, memo: str | None = None
+    ) -> dict[str, str | None] | None:
+        """Look up a merchant by raw description (and optional memo).
 
-        Args:
-            description: Transaction description to match.
-
-        Returns:
-            Dict with merchant_id, canonical_name, category, subcategory
-            if found, otherwise None.
+        For OFX-sourced and aggregator-style transactions, memo carries the
+        wrapped merchant identity and is essential for accurate matching.
         """
         merchants = _fetch_merchants(self._db)
         if merchants is None:
             return None
-        return _match_description(description, merchants)
+        match_text = build_match_text(description, memo)
+        return _match_text(
+            match_text,
+            merchants,
+            description_present=bool(description and description.strip()),
+            memo_present=bool(memo and memo.strip()),
+        )
 
     def create_merchant(
         self,
@@ -770,7 +799,7 @@ class CategorizationService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT transaction_id, description, amount, account_id
+                SELECT transaction_id, description, amount, account_id, memo
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE transaction_id IN ({placeholders})
                 """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
@@ -781,6 +810,7 @@ class CategorizationService:
                     description=row[1],
                     amount=float(row[2]) if row[2] is not None else None,
                     account_id=str(row[3]) if row[3] is not None else None,
+                    memo=row[4],
                 )
                 for row in rows
             }
@@ -827,10 +857,17 @@ class CategorizationService:
                 merchant_id: str | None = None
                 existing: dict[str, Any] | None = None
                 description = ctx.description_for(txn_id)
-                if description and ctx.merchant_mappings:
+                memo = ctx.memo_for(txn_id)
+                match_text = build_match_text(description, memo)
+                if match_text and ctx.merchant_mappings:
                     try:
-                        existing = _match_description(
-                            description, ctx.merchant_mappings
+                        existing = _match_text(
+                            match_text,
+                            ctx.merchant_mappings,
+                            description_present=bool(
+                                description and description.strip()
+                            ),
+                            memo_present=bool(memo and memo.strip()),
                         )
                         if existing:
                             merchant_id = existing["merchant_id"]
@@ -937,13 +974,15 @@ class CategorizationService:
         try:
             uncategorized = self._db.execute(
                 f"""
-                SELECT t.transaction_id, t.description
+                SELECT t.transaction_id, t.description, t.memo
                 FROM {FCT_TRANSACTIONS.full_name} t
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                     ON t.transaction_id = c.transaction_id
                 WHERE c.transaction_id IS NULL
-                    AND t.description IS NOT NULL
-                    AND t.description != ''
+                    AND (
+                        (t.description IS NOT NULL AND t.description != '')
+                        OR (t.memo IS NOT NULL AND t.memo != '')
+                    )
                 """,
             ).fetchall()
         except duckdb.CatalogException:
@@ -953,8 +992,16 @@ class CategorizationService:
             return 0
 
         rows_to_insert: list[list[object]] = []
-        for txn_id, description in uncategorized:
-            merchant = _match_description(description, merchants)
+        for txn_id, description, memo in uncategorized:
+            match_text = build_match_text(description, memo)
+            if not match_text:
+                continue
+            merchant = _match_text(
+                match_text,
+                merchants,
+                description_present=bool(description and str(description).strip()),
+                memo_present=bool(memo and str(memo).strip()),
+            )
             if merchant and merchant.get("category"):
                 rows_to_insert.append([
                     txn_id,
@@ -1002,15 +1049,17 @@ class CategorizationService:
         description: str,
         amount: float | None,
         account_id: str | None,
+        memo: str | None = None,
     ) -> tuple[str, str, str | None, str] | None:
         """Return ``(rule_id, category, subcategory, created_by)`` for the first rule that matches.
 
-        Evaluates pattern (against both raw and normalized description),
-        amount bounds, and account filter. Mirrors the rule engine semantics
-        so callers can ask "would any rule match this transaction?" without
-        duplicating logic. Returns ``None`` when no rule matches.
+        Evaluates pattern against the canonical match_text (description + memo,
+        each normalized via build_match_text). Also retains a fallback against
+        the raw description so legacy patterns that depended on uncleaned input
+        still match. Amount bounds and account filter are applied as before.
+        Returns ``None`` when no rule matches.
         """
-        normalized = normalize_description(description)
+        match_text = build_match_text(description, memo)
         for rule in rules:
             (
                 rule_id,
@@ -1024,8 +1073,8 @@ class CategorizationService:
                 created_by,
             ) = rule
             if not (
-                matches_pattern(description, pattern, match_type)
-                or matches_pattern(normalized, pattern, match_type)
+                matches_pattern(match_text, pattern, match_type)
+                or matches_pattern(description, pattern, match_type)
             ):
                 continue
             if (
@@ -1050,7 +1099,9 @@ class CategorizationService:
         transaction_id: str,
         *,
         rules_override: list[tuple[Any, ...]] | None = None,
-        txn_row_override: tuple[str, float | None, str | None] | None = None,
+        txn_row_override: tuple[str, float | None, str | None, str | None]
+        | tuple[str, float | None, str | None]
+        | None = None,
     ) -> tuple[str, str, str | None, str] | None:
         """Return the first active rule matching this transaction, or ``None``.
 
@@ -1063,22 +1114,29 @@ class CategorizationService:
         The bulk path supplies pre-loaded rule rows and txn metadata via
         ``rules_override`` and ``txn_row_override`` so this function issues no
         queries during a bulk loop. Both default to ``None`` for non-bulk callers.
+        ``txn_row_override`` accepts (description, amount, account_id) for
+        backward compatibility, or (description, amount, account_id, memo) when
+        memo is available.
         """
+        memo: str | None = None
         if txn_row_override is not None:
-            description, amount, account_id = txn_row_override
+            if len(txn_row_override) == 4:
+                description, amount, account_id, memo = txn_row_override
+            else:
+                description, amount, account_id = txn_row_override
         else:
             try:
                 txn_row = self._db.execute(
-                    f"SELECT description, amount, account_id "
+                    f"SELECT description, amount, account_id, memo "
                     f"FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
                     [transaction_id],
                 ).fetchone()
             except duckdb.CatalogException:
                 return None
-            if not txn_row or not txn_row[0]:
+            if not txn_row or not (txn_row[0] or txn_row[3]):
                 return None
-            description, amount, account_id = txn_row
-        if not description:
+            description, amount, account_id, memo = txn_row
+        if not description and not memo:
             return None
         rules = (
             rules_override if rules_override is not None else self.fetch_active_rules()
@@ -1087,9 +1145,10 @@ class CategorizationService:
             return None
         return self.match_first_rule(
             rules,
-            str(description),
+            str(description) if description else "",
             float(amount) if amount is not None else None,
             str(account_id) if account_id is not None else None,
+            str(memo) if memo else None,
         )
 
     def apply_rules(self) -> int:
@@ -1116,13 +1175,15 @@ class CategorizationService:
         try:
             uncategorized = self._db.execute(
                 f"""
-                SELECT t.transaction_id, t.description, t.amount, t.account_id
+                SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
                 FROM {FCT_TRANSACTIONS.full_name} t
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                     ON t.transaction_id = c.transaction_id
                 WHERE c.transaction_id IS NULL
-                    AND t.description IS NOT NULL
-                    AND t.description != ''
+                    AND (
+                        (t.description IS NOT NULL AND t.description != '')
+                        OR (t.memo IS NOT NULL AND t.memo != '')
+                    )
                 """,
             ).fetchall()
         except duckdb.CatalogException:
@@ -1132,12 +1193,13 @@ class CategorizationService:
             return 0
 
         rows_to_insert: list[list[object]] = []
-        for txn_id, description, amount, account_id in uncategorized:
+        for txn_id, description, amount, account_id, memo in uncategorized:
             match = self.match_first_rule(
                 rules,
-                str(description),
+                str(description) if description else "",
                 float(amount) if amount is not None else None,
                 str(account_id) if account_id is not None else None,
+                str(memo) if memo else None,
             )
             if match is None:
                 continue
@@ -1447,7 +1509,8 @@ class CategorizationService:
 
         Sensitivity: medium. Output is sent to the user's LLM via MCP or
         written to disk via the CLI bridge. The redaction contract is enforced
-        by RedactedTransaction's frozen dataclass shape.
+        by RedactedTransaction's frozen dataclass shape (v2: description + memo
+        redacted; structural fields exposed unredacted).
         """
         import time
 
@@ -1476,7 +1539,16 @@ class CategorizationService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT t.transaction_id, t.description, t.source_type
+                SELECT t.transaction_id,
+                       t.description,
+                       t.memo,
+                       t.source_type,
+                       t.transaction_type,
+                       t.check_number,
+                       t.is_transfer,
+                       t.transfer_pair_id,
+                       t.payment_channel,
+                       t.amount
                 FROM {FCT_TRANSACTIONS.full_name} t
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
                 WHERE {where_sql}
@@ -1489,7 +1561,14 @@ class CategorizationService:
                 RedactedTransaction(
                     opaque_id=row[0],
                     description_redacted=redact_for_llm(row[1] or ""),
-                    source_type=row[2] or "",
+                    memo_redacted=redact_for_llm(row[2] or ""),
+                    source_type=row[3] or "",
+                    transaction_type=row[4],
+                    check_number=row[5],
+                    is_transfer=bool(row[6]),
+                    transfer_pair_id=row[7],
+                    payment_channel=row[8],
+                    amount_sign="-" if (row[9] is not None and row[9] < 0) else "+",
                 )
                 for row in rows
             ]

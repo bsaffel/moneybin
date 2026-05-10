@@ -159,6 +159,14 @@ CATEGORIZE_ASSIST_DURATION_SECONDS = Histogram(
     "Duration of categorize_assist server-side processing (excludes LLM time)",
 )
 
+CATEGORIZE_MATCH_OUTCOME_TOTAL = Counter(
+    "moneybin_categorize_match_outcome_total",
+    "Categorization matcher outcome by lookup shape and signal source.",
+    # outcome: exemplar | exact | contains | regex | none
+    # shape: description_only | memo_only | both
+    ["outcome", "shape"],
+)
+
 # ── Account matching ─────────────────────────────────────────────────────────
 
 ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(

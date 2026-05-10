@@ -74,7 +74,14 @@ def transactions_categorize_assist(
             {
                 "opaque_id": r.opaque_id,
                 "description_redacted": r.description_redacted,
+                "memo_redacted": r.memo_redacted,
                 "source_type": r.source_type,
+                "transaction_type": r.transaction_type,
+                "check_number": r.check_number,
+                "is_transfer": r.is_transfer,
+                "transfer_pair_id": r.transfer_pair_id,
+                "payment_channel": r.payment_channel,
+                "amount_sign": r.amount_sign,
                 "redaction_version": settings.redaction_version,
             }
             for r in redacted
@@ -84,7 +91,7 @@ def transactions_categorize_assist(
             "Propose (category, subcategory, canonical_merchant_name) per item",
             "Use transactions_categorize_apply to commit user-accepted proposals",
             f"Redaction contract: {settings.redaction_version} "
-            "(descriptions only; no amounts, dates, or account IDs transmitted)",
+            "(description + memo redacted; structural fields exposed for matcher and LLM signal)",
         ],
     )
 

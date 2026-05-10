@@ -90,6 +90,7 @@ class TxnRow:
     description: str | None
     amount: float | None
     account_id: str | None
+    memo: str | None = None
 
 
 @dataclass(slots=True)
@@ -115,6 +116,11 @@ class BulkRecordingContext:
         """Return the description for the given transaction_id, or None if not loaded."""
         row = self.txn_rows.get(transaction_id)
         return row.description if row else None
+
+    def memo_for(self, transaction_id: str) -> str | None:
+        """Return the memo for the given transaction_id, or None if not loaded."""
+        row = self.txn_rows.get(transaction_id)
+        return row.memo if row else None
 
     def merchant_row_for(self, merchant_id: str) -> tuple[Any, ...] | None:
         """Return the cached merchant tuple for the given merchant_id, or None."""
@@ -740,18 +746,24 @@ class AutoRuleService:
 
         if context is not None:
             description = context.description_for(transaction_id)
+            memo = context.memo_for(transaction_id)
         else:
             desc_row = self._db.execute(
-                f"SELECT description FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
+                f"SELECT description, memo FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
                 [transaction_id],
             ).fetchone()
             description = str(desc_row[0]) if desc_row and desc_row[0] else None
-        if not description:
-            return None
-        cleaned = normalize_description(description)
-        if not cleaned:
-            return None
-        return cleaned, "contains"
+            memo = str(desc_row[1]) if desc_row and desc_row[1] else None
+        # Description is the preferred pattern source — it carries the merchant
+        # identity for most sources. Memo is the fallback for OFX-style rows
+        # where the merchant name is wrapped into the memo field.
+        cleaned_desc = normalize_description(description) if description else ""
+        if cleaned_desc:
+            return cleaned_desc, "contains"
+        cleaned_memo = normalize_description(memo) if memo else ""
+        if cleaned_memo:
+            return cleaned_memo, "contains"
+        return None
 
     def _active_rule_covers_transaction(
         self,
@@ -773,7 +785,12 @@ class AutoRuleService:
         rules_override = context.active_rules if context is not None else None
         txn_row = context.txn_row_for(transaction_id) if context is not None else None
         txn_row_override = (
-            (txn_row.description or "", txn_row.amount, txn_row.account_id)
+            (
+                txn_row.description or "",
+                txn_row.amount,
+                txn_row.account_id,
+                txn_row.memo,
+            )
             if txn_row is not None
             else None
         )
@@ -864,23 +881,24 @@ class AutoRuleService:
         scan_cap = get_settings().categorization.auto_rule_backfill_scan_cap
         rows = self._db.execute(
             f"""
-            SELECT t.transaction_id, t.description, t.amount, t.account_id
+            SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
             FROM {FCT_TRANSACTIONS.full_name} t
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
-              AND t.description IS NOT NULL
+              AND (t.description IS NOT NULL OR t.memo IS NOT NULL)
             ORDER BY t.transaction_id
             LIMIT ?
             """,
             [scan_cap],
         ).fetchall()
         matched_ids: list[str] = []
-        for txn_id, description, amount, account_id in rows:
+        for txn_id, description, amount, account_id, memo in rows:
             winner = CategorizationService.match_first_rule(
                 active_rules,
-                str(description),
+                str(description) if description else "",
                 float(amount) if amount is not None else None,
                 str(account_id) if account_id is not None else None,
+                str(memo) if memo else None,
             )
             if winner is None:
                 continue

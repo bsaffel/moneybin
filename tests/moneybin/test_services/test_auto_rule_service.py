@@ -48,16 +48,16 @@ def test_extract_pattern_falls_back_to_normalized_description() -> None:
     db = MagicMock()
     db.execute.return_value.fetchone.side_effect = [
         (None,),  # no merchant_id on the categorization row
-        ("SQ *STARBUCKS #1234 SEATTLE WA",),  # raw description
+        ("SQ *STARBUCKS #1234 SEATTLE WA", None),  # (raw description, memo)
     ]
     extracted = AutoRuleService(db)._extract_pattern("t_2")
     assert extracted == ("STARBUCKS", "contains")
 
 
 def test_extract_pattern_returns_none_when_description_empty() -> None:
-    """Extract pattern returns None when description is empty."""
+    """Extract pattern returns None when description and memo are empty."""
     db = MagicMock()
-    db.execute.return_value.fetchone.side_effect = [(None,), ("",)]
+    db.execute.return_value.fetchone.side_effect = [(None,), ("", None)]
     assert AutoRuleService(db)._extract_pattern("t_3") is None
 
 
