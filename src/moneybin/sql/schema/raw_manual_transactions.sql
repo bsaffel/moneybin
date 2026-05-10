@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     transaction_date      DATE NOT NULL,                              -- Date of the transaction as the user reports it
     amount                DECIMAL(18, 2) NOT NULL,                    -- Signed; negative = expense, positive = income
     description           VARCHAR NOT NULL,                           -- User-supplied description (free text)
-    merchant_name         VARCHAR,                                    -- Optional user-supplied merchant; resolved against app.merchants on next pipeline pass
+    merchant_name         VARCHAR,                                    -- Optional user-supplied merchant; resolved against core.dim_merchants on next pipeline pass
     memo                  VARCHAR,                                    -- Additional free-text memo
     category              VARCHAR,                                    -- Optional user-supplied category at entry time
     subcategory           VARCHAR,                                    -- Optional user-supplied subcategory

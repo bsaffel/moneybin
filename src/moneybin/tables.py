@@ -33,7 +33,6 @@ FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="inte
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
-AGG_NET_WORTH = TableRef("core", "agg_net_worth", audience="interface")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
@@ -58,12 +57,10 @@ TRANSACTION_TAGS = TableRef("app", "transaction_tags", audience="interface")
 TRANSACTION_SPLITS = TableRef("app", "transaction_splits", audience="interface")
 IMPORTS = TableRef("app", "imports", audience="interface")
 AUDIT_LOG = TableRef("app", "audit_log", audience="interface")
-# view: seeds.categories ∪ app.user_categories, with overrides applied
-CATEGORIES = TableRef("app", "categories", audience="interface")
+CATEGORIES = TableRef("core", "dim_categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")
 CATEGORY_OVERRIDES = TableRef("app", "category_overrides")
-MERCHANTS = TableRef("app", "merchants", audience="interface")
-# view: app.user_merchants ∪ seeds.merchants_*, with overrides applied
+MERCHANTS = TableRef("core", "dim_merchants", audience="interface")
 USER_MERCHANTS = TableRef("app", "user_merchants")
 MERCHANT_OVERRIDES = TableRef("app", "merchant_overrides")
 SEED_MERCHANTS_GLOBAL = TableRef("seeds", "merchants_global")
@@ -93,6 +90,25 @@ FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")
 
 # -- Synthetic tables (created on demand by the generator) --
 GROUND_TRUTH = TableRef("synthetic", "ground_truth")
+
+# -- Reports presentation views (SQLMesh-managed, read-only) --
+# One model per CLI/MCP `reports *` surface. Consumers read; never write.
+REPORTS_NET_WORTH = TableRef("reports", "net_worth", audience="interface")
+REPORTS_CASH_FLOW = TableRef("reports", "cash_flow", audience="interface")
+REPORTS_SPENDING_TREND = TableRef("reports", "spending_trend", audience="interface")
+REPORTS_RECURRING_SUBSCRIPTIONS = TableRef(
+    "reports", "recurring_subscriptions", audience="interface"
+)
+REPORTS_UNCATEGORIZED_QUEUE = TableRef(
+    "reports", "uncategorized_queue", audience="interface"
+)
+REPORTS_MERCHANT_ACTIVITY = TableRef(
+    "reports", "merchant_activity", audience="interface"
+)
+REPORTS_LARGE_TRANSACTIONS = TableRef(
+    "reports", "large_transactions", audience="interface"
+)
+REPORTS_BALANCE_DRIFT = TableRef("reports", "balance_drift", audience="interface")
 
 
 def _all_table_refs() -> tuple[TableRef, ...]:

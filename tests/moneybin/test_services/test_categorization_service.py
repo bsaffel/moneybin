@@ -491,7 +491,7 @@ class TestGetCategorizationStats:
 
 
 class TestCategoriesView:
-    """Tests for the app.categories view that unions seeds + user_categories."""
+    """Tests for the core.dim_categories view that unions seeds + user_categories."""
 
     @staticmethod
     def _setup_seeds_and_view(db: Database) -> None:

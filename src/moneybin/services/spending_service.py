@@ -55,7 +55,7 @@ class SpendingSummary:
             sensitivity="low",
             period=self.period_label,
             actions=[
-                "Use reports_spending_by_category for category breakdown",
+                "Use reports_spending_get for category breakdown with MoM/YoY deltas",
                 "Use reports_spending_compare to compare periods",
             ],
         )
