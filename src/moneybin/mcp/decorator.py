@@ -235,6 +235,9 @@ def mcp_tool(
             )
 
         list_params = _find_list_params(fn)
+        # Cache the signature at decoration time. inspect.signature is not cheap,
+        # and tools with list_params would otherwise rebuild it on every call.
+        cached_sig = inspect.signature(fn) if list_params else None
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
@@ -248,12 +251,10 @@ def mcp_tool(
                 cap: int | None = _get_max_items()
             else:
                 cap = cap_attr
-            if list_params:
+            if list_params and cached_sig is not None:
                 bound: dict[str, Any]
                 try:
-                    bound = dict(
-                        inspect.signature(fn).bind_partial(*args, **kwargs).arguments
-                    )
+                    bound = dict(cached_sig.bind_partial(*args, **kwargs).arguments)
                 except TypeError:
                     bound = {}
                 cap_error = _check_collection_caps(fn.__name__, list_params, bound, cap)

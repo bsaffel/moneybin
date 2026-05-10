@@ -373,15 +373,20 @@ def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
         limit: Maximum number of candidates to return (default 5).
 
     Returns ranked candidates with confidence scores in [0, 1]. Empty result
-    or low top-match confidence (< 0.6) emits an action hint.
+    or a top-match confidence below ``TabularConfig.account_match_threshold``
+    (the shared fuzzy-match cutoff used by the tabular importer) emits an
+    action hint suggesting the agent verify with the user.
     """
+    from moneybin.config import get_settings
+
     matches = AccountService(get_database()).resolve(query=query, limit=limit)
+    threshold = get_settings().data.tabular.account_match_threshold
     actions: list[str] = []
     if not matches:
         actions.append(
             f"No accounts matched '{query}'. Try a broader query or use accounts_list."
         )
-    elif matches[0].confidence < 0.6:
+    elif matches[0].confidence < threshold:
         actions.append(
             "Top match has low confidence; verify with the user before taking action."
         )
