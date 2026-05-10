@@ -168,11 +168,20 @@ The `@mcp_tool` decorator in `src/moneybin/mcp/decorator.py` accepts MoneyBin's 
     read_only=False,        # MCP readOnlyHint — default True for sensitivity=low queries
     destructive=True,       # MCP destructiveHint — irreversible state change
     idempotent=False,       # MCP idempotentHint — safe to retry without side effects
+    open_world=False,       # MCP openWorldHint — defaults to False (closed-world)
+    # max_items=N           # Per-tool override of MCPSettings.max_items (see §Collection size cap)
 )
 def transactions_correct(...) -> ResponseEnvelope: ...
 ```
 
-The decorator emits these as MCP `tool.annotations` so compatible clients can render confirmation UI (Claude Desktop's "are you sure" dialog, IDE-style permission prompts) without server-side dance. Defaults assume read-only retrieval (`read_only=True`, `destructive=False`, `idempotent=True`); writes opt out explicitly.
+The decorator emits these as MCP `tool.annotations` so compatible clients can render confirmation UI (Claude Desktop's "are you sure" dialog, IDE-style permission prompts) without server-side dance. Defaults assume read-only retrieval (`read_only=True`, `destructive=False`, `idempotent=True`, `open_world=False`); writes opt out explicitly.
+
+**Persistence — both wrapper attrs and FastMCP `ToolAnnotations`:**
+
+- The decorator stores each flag as a wrapper attribute (`_mcp_read_only`, `_mcp_destructive`, `_mcp_idempotent`, `_mcp_open_world`) parallel to the existing `_mcp_sensitivity` and `_mcp_domain`. This keeps the metadata reachable from Python introspection (tests, audit tooling, future structural checks) without coupling to FastMCP's internal registry.
+- `register()` in `src/moneybin/mcp/_registration.py` reads those attrs, builds a `fastmcp.tools.tool.ToolAnnotations` (or equivalent dict), and passes it via `mcp.tool(annotations=...)`. This is what reaches the wire — clients consume it from `tools/list` for confirmation UI.
+
+Both surfaces are required: wrapper attrs alone never reach clients; FastMCP `annotations` alone are unreachable from Python tests except via private FastMCP APIs.
 
 This is *complementary to* sensitivity tiers, not redundant — sensitivity describes data exposure (what the tool returns and to whom); annotations describe action class (what the tool does to state). Both are required; clients consume each layer differently.
 
@@ -187,14 +196,18 @@ Required content in tool descriptions for any tool that:
 
 Audit pass required against the current tool surface; no new tool ships without this content. See [§Tool description audit](#tool-description-audit) work item.
 
-#### Bulk-with-cap convention
+#### Collection size cap
 
-Write tools that accept an array of items obey a server-enforced upper bound. Today the analog for reads is `MoneyBinSettings.mcp.max_rows` (default 1000); writes need a parallel cap.
+Tools that accept list-typed parameters obey a server-enforced upper bound on each list's length. The analog for reads is `MoneyBinSettings.mcp.max_rows` (default 1000); list inputs get a parallel cap that prevents unbounded write batches and oversized query inputs alike.
 
-- **Setting:** `MoneyBinSettings.mcp.max_bulk_write` (default 500). Validated at decorator level for any tool that accepts `list[...]` of length > 1.
-- **Tool description:** state the cap explicitly ("accepts 1–500 items per call").
-- **Error path:** exceeding the cap returns a `ResponseEnvelope.error` with `code="bulk_cap_exceeded"`; never partial-success.
-- **Reference:** `lunchmoney-mcp` ships 1–500 caps on bulk writes (`update_transactions_bulk`, `delete_transactions_bulk`); MoneyBin's `categorize_bulk` already implements this shape — codify it across other writes.
+- **Setting:** `MoneyBinSettings.mcp.max_items` (default 500). Read at call time so test monkeypatching works.
+- **Mechanism:** at decoration time, `@mcp_tool` walks `inspect.signature(fn).parameters` and records every parameter annotated as `list[X]` / `Sequence[X]` / `Collection[X]`. At call time, each such parameter's length is checked against the cap before the tool body runs.
+- **Per-tool override:** `@mcp_tool(..., max_items=N)` sets a tool-specific cap. `max_items=None` disables the cap entirely (must be justified in the docstring). Default is to inherit from `MCPSettings.max_items`.
+- **Error path:** exceeding the cap on any list parameter returns `ResponseEnvelope.error` with `code="too_many_items"` and `details={"limit": <cap>, "received": <N>, "parameter": <name>}`; never partial-success. The agent's retry logic uses `details.parameter` to know which list to chunk.
+- **Empty lists** are not a cap violation. Tools that need to reject empty input handle that themselves (an empty list is sometimes a meaningful query, e.g., "no filters").
+- **No opt-in flag.** Every tool with a list-typed parameter is capped implicitly; the cost of the per-tool override is the right place to disambiguate when (rarely) the default is wrong. Eliminating the explicit flag keeps the call-site API minimal and makes "did the author remember to enable it?" a non-question.
+
+Reference: `lunchmoney-mcp` ships 1–500 caps on its bulk writes (`update_transactions_bulk`, `delete_transactions_bulk`); the cap convention here generalizes that to any list-typed parameter and removes the awkward "bulk vs single" distinction. MoneyBin's tool-name surface drops the "bulk" qualifier — see the §`transactions_categorize_apply` exemplar for the post-rename shape. Internal helpers (e.g., `BulkCategorizationResult` → `CategorizationResult`) carry the same rename; the sweep is part of the same PR that introduces this cap convention.
 
 ---
 
@@ -368,7 +381,7 @@ class TransactionService:
 }
 ```
 
-- **Actions (consented):** `["Use transactions_categorize_bulk_apply to categorize selected transactions", "Use transactions_correct to fix a transaction's amount or description"]`
+- **Actions (consented):** `["Use transactions_categorize_apply to categorize selected transactions", "Use transactions_correct to fix a transaction's amount or description"]`
 
 **CLI command**
 
@@ -383,7 +396,7 @@ Default output is a table with date, amount, description, category, and account 
 
 ---
 
-### 2.3 `transactions_categorize_bulk_apply` — write tool, batch semantics, paired read tool
+### 2.3 `transactions_categorize_apply` — write tool, batch semantics, paired read tool
 
 **Service layer**
 
@@ -402,7 +415,7 @@ When `create_merchant_mappings` is true, the service normalizes each transaction
 
 **MCP tool**
 
-- **Name:** `transactions_categorize_bulk_apply`
+- **Name:** `transactions_categorize_apply`
 - **Description:** "Apply categories to multiple transactions at once. Pair with `transactions_categorize_pending_list` to fetch candidates first. Optionally auto-creates merchant mappings so future imports are categorized automatically."
 - **Sensitivity:** `medium` — reads transaction descriptions to create merchant mappings.
 - **Parameters:**
@@ -547,10 +560,11 @@ Full account details including routing/account numbers.
 Free-text → account-ID resolution for natural-language references.
 
 - **Sensitivity:** `low` — returns account metadata only (display name, type, masked institution); no balances, no PII.
+- **Annotations:** `read_only=True`, `idempotent=True`, `destructive=False`, `open_world=False` — all decorator defaults; no override needed.
 - **Unique parameters:** `query: str` (the free-text fragment, e.g. "my Chase account", "checking", "schwab brokerage"); `limit: int = 5` (max alternatives returned).
-- **Behavior:** Returns the best-match account plus alternatives, with confidence scores. Implemented via fuzzy match (`difflib.SequenceMatcher` already used for tabular account matching) over `display_name`, `account_subtype`, and `institution_name` from `core.dim_accounts`. Empty result returns `data=[]` with a `low_confidence` action hint.
+- **Behavior:** Returns the best-match account plus alternatives, with confidence scores. Implemented via fuzzy match (`difflib.SequenceMatcher` already used for tabular account matching) over `display_name`, `account_subtype`, and `institution_name` from `core.dim_accounts`. Empty result returns `data=[]` with a `low_confidence` action hint; top match below a low-confidence threshold gets an action hint to verify with the user.
 - **Why this exists:** without it, every conversation that starts with a natural account reference takes three turns — `accounts_list` → agent scans the result → agent picks an `account_id`. Single-tool resolution collapses that to one call. Agent ergonomic primitive, not a new capability.
-- **Service:** `AccountService.resolve(query: str, limit: int = 5) -> list[AccountResolution]`
+- **Service:** `AccountService.resolve(query: str, limit: int = 5) -> list[AccountResolution]` in `src/moneybin/services/account_service.py`. The `AccountResolution` frozen dataclass (fields: `account_id`, `display_name`, `account_subtype`, `institution_name`, `confidence: float`, plus `to_dict()`) lives in the same module — convention parallel to other service-typed return objects. The MCP tool wraps results via `build_envelope(data=[r.to_dict() for r in resolutions], sensitivity="low", actions=[...])`.
 - **CLI:** `moneybin accounts resolve "<query>"` (`--output json` returns the same envelope)
 - **Reference:** `agigante80/actual-mcp-server` ships an analogous `actual_get_id_by_name` for the same agent-ergonomic reason.
 
@@ -769,7 +783,7 @@ Fetch transactions that haven't been categorized yet. The read side of the categ
 - **Service:** `CategorizationService.uncategorized() -> TransactionSearchResult`
 - **CLI:** `moneybin transactions categorize pending [--suggest] [--limit 50]`
 
-### `transactions_categorize_bulk_apply`
+### `transactions_categorize_apply`
 
 *Exemplar — see section 2.3.*
 
@@ -1139,7 +1153,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Work through uncategorized transactions in batches, applying categories, creating merchant mappings, and building rules so future imports require less manual work.
 
-**Relevant tools:** `transactions_categorize_stats`, `categories_list`, `transactions_categorize_pending_list`, `transactions_categorize_bulk_apply`, `transactions_categorize_rules_create`, `merchants_create`, `categories_create`
+**Relevant tools:** `transactions_categorize_stats`, `categories_list`, `transactions_categorize_pending_list`, `transactions_categorize_apply`, `transactions_categorize_rules_create`, `merchants_create`, `categories_create`
 
 **Guardrails:**
 
@@ -1152,7 +1166,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 - If `transactions_categorize_ml_status` shows a trained model, use `suggest=true` to leverage ML suggestions
 - Stop when the user says stop, not when the queue is empty
 
-**Decision points:** User confirms each batch of categorizations before `transactions_categorize_bulk_apply` is called. User confirms proposed rules before `transactions_categorize_rules_create` is called.
+**Decision points:** User confirms each batch of categorizations before `transactions_categorize_apply` is called. User confirms proposed rules before `transactions_categorize_rules_create` is called.
 
 ### `onboarding` (Setup)
 
@@ -1266,7 +1280,7 @@ Always registered regardless of namespace configuration. Enables progressive dis
   "namespace": "categorize",
   "tools_loaded": [
     {"name": "transactions_categorize_pending_list", "description": "Fetch transactions that haven't been categorized yet"},
-    {"name": "transactions_categorize_bulk_apply", "description": "Apply categories to multiple transactions at once"},
+    {"name": "transactions_categorize_apply", "description": "Apply categories to multiple transactions at once"},
     {"name": "transactions_categorize_rules_list", "description": "List active categorization rules"}
   ],
   "already_loaded": false
@@ -1334,7 +1348,7 @@ All prototype prompts are replaced by the four v1 prompts. The prototype's step-
 
 ## 16b. Rename Map (v1 → v2)
 
-Per [`cli-restructure.md`](cli-restructure.md) v2. Hard cut: rename in place, no aliases. Update the tool registry, regenerate `mcp config generate` output for all client configs, and update any AI agent prompts or external references.
+Per [`cli-restructure.md`](cli-restructure.md) v2. Hard cut: rename in place, no aliases. Update the tool registry, regenerate `mcp install` output for all client configs, and update any AI agent prompts or external references.
 
 ### `accounts_*`
 
@@ -1385,7 +1399,7 @@ Workflow tools that operate on transaction state stay nested under `transactions
 | v1 | v2 |
 |---|---|
 | `categorize_uncategorized` | `transactions_categorize_pending_list` |
-| `categorize_bulk` | `transactions_categorize_bulk_apply` |
+| `categorize_bulk` | `transactions_categorize_apply` |
 | `categorize_apply_rules` | `transactions_categorize_rules_apply` |
 | `categorize_rules` | `transactions_categorize_rules_list` |
 | `categorize_create_rules` | `transactions_categorize_rules_create` |
@@ -1556,11 +1570,11 @@ This is a 35-tool surface (34 domain tools + `moneybin_discover`) that can ship 
 
 ---
 
-## 18. Standing audits and drift tests
+## 18. Standing audits and review discipline
 
-These are recurring audits, not one-shot work items. Each is owned by the spec and enforced via CI or a documented review checklist.
+These are recurring review responsibilities, not one-shot work items. Each is owned by the spec and enforced via a documented PR-review checklist or — where the rule is mechanical — a structural test.
 
-### Tool description audit
+### Tool description audit (checklist)
 
 Every tool whose description omits a relevant invariant fails review. Required content per tool class:
 
@@ -1568,14 +1582,18 @@ Every tool whose description omits a relevant invariant fails review. Required c
 - Tools that mutate state — reversibility statement, ID-composite requirements, `app.audit_log` reference.
 - Tools that return currency-bearing data — currency-pairing invariant per `architecture-shared-primitives.md` Invariant 7.
 
-Discharge: a one-time audit pass on the existing surface (tracked as a work item in `private/implementation.md`); subsequent enforcement is reviewer responsibility on every new tool.
+Enforcement: a checklist applied during PR review on every change to an `@mcp_tool`-decorated function. Codified in [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md) under "Description requirements" so future tool authors apply it at write-time. **No structural pytest** — description text is prose, and a regex-based check produces noise (false positives on intentional convention overrides, false negatives on synonyms). Graduate to a structural test only when ≥3 invariants become statable as `(signature predicate, literal-string requirement)` pairs.
 
-### Tool catalog drift test
+Discharge: a one-time audit pass on the existing surface ran as part of the 2026-05 MCP gap-closure PR; subsequent enforcement is per-PR reviewer responsibility.
 
-The tool list documented in this spec must match the runtime-registered set. Without enforcement, the documentation drifts (the competitor `copilot-money-mcp` README claims 17 tools but its server registers 33).
+### Tool catalog discipline (PR-review rule)
 
-- **Test:** a pytest case under `tests/moneybin/test_mcp/` enumerates registered tools via FastMCP's `tools/list` and diffs against a fixture list extracted from this spec (or maintained alongside it). Fails if any tool is registered but undocumented, or documented but unregistered.
-- **Discharge:** add the test alongside the next tool addition; backfill the fixture from the current registered set.
+The tool list documented in this spec must match the runtime-registered set. Without discipline, the documentation drifts (the competitor `copilot-money-mcp` README claims 17 tools but its server registers 33 — exactly the failure mode this rule prevents).
+
+- **Rule:** any PR that adds, renames, or removes an `@mcp_tool`-decorated function MUST update this spec in the same change. Codified in [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md) under "Surface change discipline."
+- **Enforcement:** PR review. Reviewers grep for `@mcp_tool` diffs and verify each touches a corresponding spec section.
+- **Why no automated test:** a fixture-based drift test would detect code-vs-fixture drift but not code-vs-spec drift (the original problem). A spec-parsing test would detect code-vs-spec drift but is fragile to spec restructuring. The PR-review rule directly addresses the documentation-discipline problem without introducing a third synced artifact. Revisit if review attention proves insufficient.
+- **One-time audit:** the 2026-05 MCP gap-closure PR ran the first runtime-vs-spec diff; findings (orphaned spec entries, undocumented tools, visibility-tagging discrepancies) were resolved or logged as deferred follow-ups in that PR's CHANGELOG.
 
 ### Protocol-coverage matrix freshness
 
