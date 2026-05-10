@@ -246,12 +246,13 @@ class Database:
             except importlib.metadata.PackageNotFoundError:
                 pass  # SQLMesh not installed — skip
 
-        # Assemble app.categories and app.merchants views AFTER migrations.
-        # Order matters on the upgrade path: V006 must drop the legacy
-        # `app.merchants` TABLE before refresh_views can `CREATE OR REPLACE
-        # VIEW app.merchants` (DuckDB rejects replacing a table with a view).
-        # _ensure_seed_tables_exist creates empty seeds.* tables if SQLMesh
-        # hasn't populated them yet (tests, fresh installs).
+        # Drop legacy app.categories / app.merchants views AFTER migrations.
+        # The canonical resolved dims now live in core.dim_categories /
+        # core.dim_merchants (SQLMesh-managed). Order matters on the upgrade
+        # path: V006 must drop the legacy `app.merchants` TABLE before
+        # refresh_views runs the cleanup. _ensure_seed_tables_exist creates
+        # empty seeds.* tables if SQLMesh hasn't populated them yet (tests,
+        # fresh installs) so the SQLMesh dim views can resolve.
         from moneybin.seeds import refresh_views
 
         refresh_views(self)

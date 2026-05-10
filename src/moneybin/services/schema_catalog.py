@@ -238,12 +238,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "app.merchants": [
+    "core.dim_merchants": [
         Example(
             question="Merchants with their canonical names",
             sql="""
                 SELECT merchant_id, canonical_name, raw_pattern
-                FROM app.merchants
+                FROM core.dim_merchants
                 ORDER BY canonical_name
             """,
         ),

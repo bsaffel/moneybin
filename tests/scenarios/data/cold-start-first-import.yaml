@@ -1,7 +1,7 @@
 scenario: cold-start-first-import
 description: >
   Exercises the cold-start branch's merchants split end-to-end on a fresh DB:
-  app.merchants view assembled over app.user_merchants ∪ seeds.merchants_*,
+  core.dim_merchants view assembled over app.user_merchants ∪ seeds.merchants_*,
   _fetch_merchants ordering with is_user discriminator, create_merchant routing
   to user_merchants. seed_merchants writes the persona's full merchant catalog
   to app.user_merchants (via service.create_merchant) and apply_deterministic
@@ -20,11 +20,11 @@ setup:
 # Pipeline rationale:
 #   generate   — synthetic transactions from the basic persona (1 year).
 #   transform  — materialize core.fct_transactions and dim_accounts.
-#   seed_merchants — populate app.merchants from the persona's merchant catalog;
+#   seed_merchants — populate core.dim_merchants from the persona's merchant catalog;
 #                    this approximates the global seed merchants a fresh install
 #                    would have (common chains like Starbucks, Netflix, etc.).
 #   categorize — apply_deterministic() matches transaction descriptions against
-#                app.merchants rules; covered transactions get categories.
+#                core.dim_merchants rules; covered transactions get categories.
 #   transform  — re-materialize fct_transactions so the category LEFT JOIN
 #                reflects the newly written app.transaction_categories rows.
 pipeline:

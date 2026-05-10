@@ -146,6 +146,19 @@ def schema_catalog_db(
         "CAST(NULL AS TIMESTAMP) AS created_at "
         "WHERE FALSE"
     )
+    database.execute(
+        "CREATE OR REPLACE VIEW core.dim_merchants AS "
+        "SELECT CAST(NULL AS VARCHAR) AS merchant_id, "
+        "CAST(NULL AS VARCHAR) AS raw_pattern, "
+        "CAST(NULL AS VARCHAR) AS match_type, "
+        "CAST(NULL AS VARCHAR) AS canonical_name, "
+        "CAST(NULL AS VARCHAR) AS category, "
+        "CAST(NULL AS VARCHAR) AS subcategory, "
+        "CAST(NULL AS VARCHAR) AS created_by, "
+        "CAST(NULL AS TIMESTAMP) AS created_at, "
+        "CAST(NULL AS BOOLEAN) AS is_user "
+        "WHERE FALSE"
+    )
     db_module._database_instance = database  # type: ignore[attr-defined]
     try:
         yield database
