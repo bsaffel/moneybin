@@ -26,7 +26,7 @@ After connecting, you can ask your AI assistant things like:
 
 Tools are organized into domain namespaces. Names are stable — AI clients call `<domain>.<action>`.
 
-Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_balance_list`, `transactions_categorize_bulk_apply`).
+Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_balance_list`, `transactions_categorize_apply`).
 
 ### system / orientation
 
@@ -49,7 +49,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | `transactions_search` | Search with date, amount, payee, account, and category filters |
 | `transactions_recurring_list` | Detect subscriptions and regular charges |
 | `transactions_categorize_pending_list` | Find transactions needing categorization |
-| `transactions_categorize_bulk_apply` | Categorize many transactions in one call (auto-creates merchant mapping) |
+| `transactions_categorize_apply` | Categorize many transactions in one call (auto-creates merchant mapping) |
 | `transactions_categorize_stats` | Categorization coverage statistics |
 | `transactions_categorize_rules_list` / `_create` / `_rule_delete` | Manage categorization rules |
 | `transactions_categorize_auto_review` / `_auto_confirm` / `_auto_stats` | Auto-rule learning workflow |

@@ -58,16 +58,16 @@ Each merchant mapping specifies:
 All categorization operations support batch mode for efficient processing. These are designed for AI assistants that review and categorize many transactions in a single interaction turn.
 
 **Via MCP tools** (all batch-capable — single or many records per call):
-- `transactions_categorize_bulk_apply` — categorize one or many transactions (auto-creates merchant mappings)
+- `transactions_categorize_apply` — categorize one or many transactions (auto-creates merchant mappings)
 - `transactions_categorize_rules_create` — create one or many categorization rules
 - `merchants_create` — create one or many merchant mappings
 - `transactions_categorize_rule_delete` — remove a rule
 
-**Via CLI** — the bulk-apply tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
+**Via CLI** — the categorize-apply tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
 
 ```bash
-moneybin transactions categorize bulk --input cats.json
-cat cats.json | moneybin transactions categorize bulk -
+moneybin transactions categorize apply --input cats.json
+cat cats.json | moneybin transactions categorize apply -
 ```
 
 Both surfaces share the same response envelope; pass `--output json` to get the structured result.
@@ -88,7 +88,7 @@ MoneyBin learns categorization patterns from how you (or your AI assistant) cate
 
 ### How learning works
 
-Every time `transactions_categorize_bulk_apply` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
+Every time `transactions_categorize_apply` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
 
 | Term | Meaning |
 |---|---|
@@ -149,7 +149,7 @@ You'll see the new proposal in `auto-review`. Approve it to install the correcte
 
 ### What patterns get proposed
 
-The proposal pattern comes from the merchant resolution that already happens during `categorize_bulk`:
+The proposal pattern comes from the merchant resolution that already happens during categorization:
 
 - **If the transaction matched an existing merchant** — the merchant's `raw_pattern` and `match_type` are used (e.g., `AMZN` / `exact`). This is the precise substring that matches statement descriptions, not the canonical display name.
 - **If no merchant matched** — the cleaned-up description with `match_type='contains'` is used as a fallback.
