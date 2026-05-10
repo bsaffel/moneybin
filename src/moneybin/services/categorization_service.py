@@ -120,7 +120,7 @@ class RedactedTransaction:
 
 
 @dataclass(slots=True)
-class BulkCategorizationResult:
+class CategorizationResult:
     """Typed result for bulk categorization operations."""
 
     applied: int
@@ -274,7 +274,7 @@ def validate_bulk_items(
 
     Per-item validation: a malformed row contributes an ``error_details`` entry
     but does not abort the batch. Callers merge ``parse_errors`` into the
-    final ``BulkCategorizationResult.error_details`` so the response envelope
+    final ``CategorizationResult.error_details`` so the response envelope
     surfaces every failure together.
     """
     return _validate_items(
@@ -662,7 +662,7 @@ class CategorizationService:
 
     def bulk_categorize(
         self, items: Sequence[BulkCategorizationItem]
-    ) -> BulkCategorizationResult:
+    ) -> CategorizationResult:
         """Assign categories to multiple transactions with merchant auto-creation.
 
         For each item, looks up the transaction description, resolves or creates
@@ -678,7 +678,7 @@ class CategorizationService:
                 use ``validate_bulk_items`` at the CLI/MCP boundary before calling this.
 
         Returns:
-            BulkCategorizationResult with applied/skipped/error counts.
+            CategorizationResult with applied/skipped/error counts.
         """
         _start = perf_counter()
         try:
@@ -691,7 +691,7 @@ class CategorizationService:
 
     def _bulk_categorize_inner(
         self, items: Sequence[BulkCategorizationItem]
-    ) -> BulkCategorizationResult:
+    ) -> CategorizationResult:
         applied = 0
         skipped = 0
         errors = 0
@@ -699,7 +699,7 @@ class CategorizationService:
         error_details: list[dict[str, Any]] = []
 
         if not items:
-            return BulkCategorizationResult(
+            return CategorizationResult(
                 applied=applied,
                 skipped=skipped,
                 errors=errors,
@@ -747,7 +747,7 @@ class CategorizationService:
 
             if not items:
                 CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
-                return BulkCategorizationResult(
+                return CategorizationResult(
                     applied=applied,
                     skipped=skipped,
                     errors=errors,
@@ -913,7 +913,7 @@ class CategorizationService:
         CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
         CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="skipped").inc(skipped)
         CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
-        return BulkCategorizationResult(
+        return CategorizationResult(
             applied=applied,
             skipped=skipped,
             errors=errors,

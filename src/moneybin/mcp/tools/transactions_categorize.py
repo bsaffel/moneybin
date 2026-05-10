@@ -19,7 +19,7 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
-    BulkCategorizationResult,
+    CategorizationResult,
     CategorizationService,
     validate_bulk_items,
     validate_rule_items,
@@ -111,7 +111,7 @@ def transactions_categorize_apply(
         items: List of dicts with transaction_id, category, subcategory.
     """
     if not items:
-        return BulkCategorizationResult(
+        return CategorizationResult(
             applied=0, skipped=0, errors=0, error_details=[]
         ).to_envelope(0)
 
