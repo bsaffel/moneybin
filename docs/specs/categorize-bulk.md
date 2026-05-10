@@ -3,6 +3,8 @@
 ## Status
 implemented
 
+> **Naming note (2026-05-10):** Internal class and method names referenced in this spec were renamed as part of the de-bulking sweep — `BulkCategorizationResult` → `CategorizationResult`, `bulk_categorize` → `categorize_items`, `BulkCategorizationItem` → `CategorizationItem`, `BulkRecordingContext` → `RecordingContext`. The current source of truth for these types is `src/moneybin/services/categorization_service.py`.
+
 ## Goal
 
 Add a `moneybin transactions categorize bulk` CLI command that mirrors the existing `transactions_categorize_bulk_apply` MCP tool, and eliminate per-item duplicate DB lookups inside `CategorizationService.bulk_categorize` by threading a shared `BulkRecordingContext` through `AutoRuleService.record_categorization`. Tighten the bulk-categorize input contract by replacing untyped dicts with a shared Pydantic model validated at every boundary.
