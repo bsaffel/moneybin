@@ -20,7 +20,7 @@ result = db.execute(
 
 See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full design.
 
-## Bulk Data Loading
+## Batch Data Loading
 
 Use `Database.ingest_dataframe()` for loading Polars DataFrames into DuckDB. This method converts the DataFrame to Arrow (`df.to_arrow()` — zero-copy) and writes via the encrypted connection. All loaders should use this method rather than constructing INSERT statements manually.
 

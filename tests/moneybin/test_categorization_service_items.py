@@ -1,4 +1,4 @@
-"""Unit tests for BulkCategorizationItem and validate_items."""
+"""Unit tests for CategorizationItem and validate_items."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.services.categorization_service import (
-    BulkCategorizationItem,
+    CategorizationItem,
     CategorizationService,
     validate_items,
 )
 
 
-class TestBulkCategorizationItem:
-    """Tests for the BulkCategorizationItem Pydantic model."""
+class TestCategorizationItem:
+    """Tests for the CategorizationItem Pydantic model."""
 
     def test_valid_item_with_subcategory(self) -> None:
-        item = BulkCategorizationItem(
+        item = CategorizationItem(
             transaction_id="csv_abc123",
             category="Food",
             subcategory="Groceries",
@@ -27,11 +27,11 @@ class TestBulkCategorizationItem:
         assert item.subcategory == "Groceries"
 
     def test_subcategory_optional(self) -> None:
-        item = BulkCategorizationItem(transaction_id="csv_abc", category="Food")
+        item = CategorizationItem(transaction_id="csv_abc", category="Food")
         assert item.subcategory is None
 
     def test_strips_whitespace(self) -> None:
-        item = BulkCategorizationItem(
+        item = CategorizationItem(
             transaction_id="  csv_abc  ",
             category="  Food  ",
             subcategory="  Groceries  ",
@@ -42,21 +42,21 @@ class TestBulkCategorizationItem:
 
     def test_empty_transaction_id_rejected(self) -> None:
         with pytest.raises(ValueError):
-            BulkCategorizationItem(transaction_id="", category="Food")
+            CategorizationItem(transaction_id="", category="Food")
 
     def test_empty_category_rejected(self) -> None:
         with pytest.raises(ValueError):
-            BulkCategorizationItem(transaction_id="csv_abc", category="")
+            CategorizationItem(transaction_id="csv_abc", category="")
 
     def test_empty_subcategory_rejected(self) -> None:
         with pytest.raises(ValueError):
-            BulkCategorizationItem(
+            CategorizationItem(
                 transaction_id="csv_abc", category="Food", subcategory=""
             )
 
     def test_extra_fields_forbidden(self) -> None:
         with pytest.raises(ValueError):
-            BulkCategorizationItem(
+            CategorizationItem(
                 transaction_id="csv_abc",
                 category="Food",
                 notes="hallucinated by an LLM",  # type: ignore[call-arg]
@@ -64,11 +64,11 @@ class TestBulkCategorizationItem:
 
     def test_transaction_id_max_length(self) -> None:
         with pytest.raises(ValueError):
-            BulkCategorizationItem(transaction_id="x" * 65, category="Food")
+            CategorizationItem(transaction_id="x" * 65, category="Food")
 
     def test_category_max_length(self) -> None:
         with pytest.raises(ValueError):
-            BulkCategorizationItem(transaction_id="csv_abc", category="x" * 101)
+            CategorizationItem(transaction_id="csv_abc", category="x" * 101)
 
 
 class TestValidateItems:
@@ -124,7 +124,7 @@ class TestValidateItems:
 
 
 @pytest.fixture
-def db_mock_bulk_friendly() -> MagicMock:
+def db_mock_categorize_friendly() -> MagicMock:
     """Mock Database returning plausible empty results for categorize_items."""
     db = MagicMock()
     cursor = MagicMock()
@@ -134,32 +134,32 @@ def db_mock_bulk_friendly() -> MagicMock:
     return db
 
 
-class TestBulkQueryCount:
-    """Bulk loop must issue O(items) queries, not O(5 * items).
+class TestCategorizeQueryCount:
+    """Categorize loop must issue O(items) queries, not O(5 * items).
 
-    See docs/specs/categorize-bulk.md Requirement 7.
+    See the categorization spec, Requirement 7.
     """
 
     def test_per_item_path_does_not_query_rules_or_merchants(
-        self, db_mock_bulk_friendly: MagicMock
+        self, db_mock_categorize_friendly: MagicMock
     ) -> None:
         items = [
-            BulkCategorizationItem(transaction_id=f"csv_{i}", category="Food")
+            CategorizationItem(transaction_id=f"csv_{i}", category="Food")
             for i in range(5)
         ]
-        svc = CategorizationService(db_mock_bulk_friendly)
+        svc = CategorizationService(db_mock_categorize_friendly)
         result = svc.categorize_items(items)
         assert result.applied + result.errors + result.skipped == len(items)
 
         rule_queries = sum(
             1
-            for call in db_mock_bulk_friendly.execute.call_args_list
+            for call in db_mock_categorize_friendly.execute.call_args_list
             if "categorization_rules" in str(call.args[0]).lower()
             and "proposed_rules" not in str(call.args[0]).lower()
         )
         merchant_queries = sum(
             1
-            for call in db_mock_bulk_friendly.execute.call_args_list
+            for call in db_mock_categorize_friendly.execute.call_args_list
             if "merchants" in str(call.args[0]).lower()
             and "transaction_categories" not in str(call.args[0]).lower()
         )

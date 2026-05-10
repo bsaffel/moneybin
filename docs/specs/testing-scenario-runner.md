@@ -87,7 +87,7 @@ The SQLMesh-catalog bug is one symptom, not the thesis. The runner exists for th
 5. Each scenario run uses a fresh encrypted DuckDB in a temp directory. The user's profiles are never touched.
 6. Pipeline steps execute in declared order. Each step is responsible for leaving core in a consistent materialized state when it completes.
 7. The default pipeline is `generate → transform → match → categorize`. Scenarios may override the sequence — e.g., `migration-roundtrip` inserts `migrate` between `transform` and `match`.
-8. Steps execute in-process via the service layer (e.g., `CategorizationService.bulk_categorize()`, `MatchingService.run()`, `sqlmesh_context()`), not as subprocesses. The runner imports and calls service classes directly against the temp `Database` — the same entrypoints the CLI and MCP tools use.
+8. Steps execute in-process via the service layer (e.g., `CategorizationService.categorize_items()`, `MatchingService.run()`, `sqlmesh_context()`), not as subprocesses. The runner imports and calls service classes directly against the temp `Database` — the same entrypoints the CLI and MCP tools use.
 9. Specific assertions may shell out to subprocesses when verifying cross-process invariants (e.g., encryption key propagation). This is per-assertion, not per-scenario.
 10. Assertions run after the pipeline completes. Each assertion returns a structured `AssertionResult(name, passed, details)` — never a bare bool.
 11. Evaluations run after assertions. Each evaluation returns an `EvaluationResult(name, metric, value, threshold, passed)`. Threshold gating is per-scenario.
@@ -307,7 +307,7 @@ Step names map to in-process callables registered in `src/moneybin/testing/scena
 | `load_fixtures` | Reads each `setup.fixtures[]` entry; calls the appropriate extractor; writes via `Database.ingest_dataframe()` |
 | `transform` | `with sqlmesh_context() as ctx: ctx.run()` against the temp DB |
 | `match` | `MatchingService(db, settings).run()` — runs same-record dedup (Tier 2b/3) and transfer detection (Tier 4) in one pass; thin wrapper around the existing `TransactionMatcher` primitive in `src/moneybin/matching/`. See §"Service-layer prerequisites." |
-| `categorize` | `CategorizationService(db).bulk_categorize_uncategorized()`; followed by `apply_pending_auto_rules()` once `categorization-auto-rules.md` ships. The categorization service class is introduced as part of `categorization-auto-rules.md` implementation. |
+| `categorize` | `CategorizationService(db).categorize_uncategorized_items()`; followed by `apply_pending_auto_rules()` once `categorization-auto-rules.md` ships. The categorization service class is introduced as part of `categorization-auto-rules.md` implementation. |
 | `migrate` | `MigrationRunner(db).run()` against an explicitly-set target version |
 | `transform_via_subprocess` | Shells out to `uv run moneybin transform apply` with the temp profile env |
 
@@ -711,9 +711,9 @@ This is in scope for the scenario-runner implementation plan.
 
 ### `CategorizationService` (introduced by `categorization-auto-rules.md`)
 
-The categorization auto-rules implementation plan promotes the existing module-level functions in `src/moneybin/services/categorization_service.py` to a `CategorizationService` class with at minimum `bulk_categorize_uncategorized()` and `apply_pending_auto_rules()` methods. The scenario runner consumes the resulting class; this spec does not own its design.
+The categorization auto-rules implementation plan promotes the existing module-level functions in `src/moneybin/services/categorization_service.py` to a `CategorizationService` class with at minimum `categorize_uncategorized_items()` and `apply_pending_auto_rules()` methods. The scenario runner consumes the resulting class; this spec does not own its design.
 
-If the categorization plan ships first, the runner uses the class from day one. If the runner ships first, the `categorize` step temporarily calls `bulk_categorize(db, ...)` directly and migrates to the class when it lands. Either ordering works; the scenario YAML format does not change.
+If the categorization plan ships first, the runner uses the class from day one. If the runner ships first, the `categorize` step temporarily calls `categorize_items(db, ...)` directly and migrates to the class when it lands. Either ordering works; the scenario YAML format does not change.
 
 ## Implementation Plan
 
@@ -776,7 +776,7 @@ If the categorization plan ships first, the runner uses the class from day one. 
 | `Database` / `sqlmesh_context()` | ✅ Shipped | Encryption, schema init, encrypted SQLMesh adapter |
 | `ResponseEnvelope` (`mcp/envelope.py`) | ✅ Shipped | Result shape |
 | `MatchingService` | Created as part of this spec | Thin wrapper at `src/moneybin/services/matching_service.py` over the existing `TransactionMatcher` primitive. See §"Service-layer prerequisites." |
-| `CategorizationService` | Created in `categorization-auto-rules.md` | Class wrapper around the existing `bulk_categorize` function in `src/moneybin/services/categorization_service.py`. The categorization plan owns its introduction; the scenario runner consumes it. |
+| `CategorizationService` | Created in `categorization-auto-rules.md` | Class wrapper around the existing `categorize_items` function in `src/moneybin/services/categorization_service.py`. The categorization plan owns its introduction; the scenario runner consumes it. |
 | `MigrationRunner` | ✅ Shipped | Migration step in `migration-roundtrip` scenario |
 | Fixture library (`testing-csv-fixtures.md`) | Planned | Owns fixture files; this spec owns the expectation contract |
 | Anonymized data generator (`testing-anonymized-data.md`) | Planned | Optional consumer — scenarios could use anonymized real data instead of generated personas |

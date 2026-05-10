@@ -122,7 +122,7 @@ Required content:
 - Naming convention reminder (path-prefix-verb-suffix, with 2–3 examples)
 - Orientation pointers — which tool to call to "get oriented" for both new (`system_status`) and returning (`reports_health`) sessions
 - Response envelope shape (`{summary, data, actions}`) and pagination convention
-- Bulk-tool preference
+- Batch-tool preference
 - Sensitivity tiers and degraded-response behavior
 
 Length budget: ~150–300 tokens. The text is loaded once per session, so the cost is amortized — but it competes with conversation and tool descriptions for working memory.
@@ -402,14 +402,14 @@ Default output is a table with date, amount, description, category, and account 
 
 ```python
 class CategorizationService:
-    def bulk_categorize(
+    def categorize_items(
         self,
         categorizations: list[Categorization],
         create_merchant_mappings: bool = True,
-    ) -> BulkCategorizationResult: ...
+    ) -> CategorizationResult: ...
 ```
 
-`Categorization` is a dataclass: `transaction_id`, `category`, `subcategory?`, `merchant_name?`. `BulkCategorizationResult` contains applied/skipped/error counts and a list of error details.
+`Categorization` is a dataclass: `transaction_id`, `category`, `subcategory?`, `merchant_name?`. `CategorizationResult` contains applied/skipped/error counts and a list of error details.
 
 When `create_merchant_mappings` is true, the service normalizes each transaction's description and creates a merchant mapping if one doesn't already exist. This is a side-effect of categorization, not a separate tool call — it's how the system learns.
 
@@ -448,7 +448,7 @@ Note: for write tools, `data` is a result object, not an array. The envelope sti
 **CLI command**
 
 ```
-moneybin transactions categorize bulk --file categorizations.json [--no-merchant-mappings] [--output json]
+moneybin transactions categorize apply --file categorizations.json [--no-merchant-mappings] [--output json]
 ```
 
 The CLI accepts a JSON file (or stdin) since batch data doesn't work as flags. `--no-merchant-mappings` disables the auto-create side-effect. Default output is a summary line: "Applied 48, skipped 0, errors 2, merchants created 12."
@@ -645,7 +645,7 @@ Accept one or more match proposals.
 - **Sensitivity:** `medium`
 - **Unique parameters:** `match_ids: list[str]` (required).
 - **Behavior:** Confirms matches, triggers gold-record merge (dedup) or transfer link (transfer). Returns `{confirmed, skipped, errors, error_details}`. Confirmed matches take effect on next `sqlmesh run`.
-- **Service:** `MatchService.confirm() -> BulkActionResult`
+- **Service:** `MatchService.confirm() -> ActionResult`
 - **CLI:** `moneybin transactions matches confirm --match-ids ID [ID ...]`
 
 #### `transactions_matches_reject`
@@ -655,7 +655,7 @@ Reject one or more match proposals.
 - **Sensitivity:** `medium`
 - **Unique parameters:** `match_ids: list[str]` (required), `permanent: bool = false` — if true, the matcher won't re-propose this pair.
 - **Behavior:** Rejects proposals, removes from review queue. Returns `{rejected, errors}`.
-- **Service:** `MatchService.reject() -> BulkActionResult`
+- **Service:** `MatchService.reject() -> ActionResult`
 - **CLI:** `moneybin transactions matches reject --match-ids ID [ID ...] [--permanent]`
 
 #### `transactions_matches_undo`
@@ -665,7 +665,7 @@ Un-merge a previously confirmed match.
 - **Sensitivity:** `medium`
 - **Unique parameters:** `match_ids: list[str]` (required).
 - **Behavior:** Restores previously separate gold rows. Re-running the matcher will re-propose (not re-apply) the same match. Returns `{revoked, errors}`.
-- **Service:** `MatchService.revoke() -> BulkActionResult`
+- **Service:** `MatchService.revoke() -> ActionResult`
 - **CLI:** `moneybin transactions matches revoke --match-ids ID [ID ...]`
 
 #### `transactions_matches_log`
@@ -775,7 +775,7 @@ Confirm and execute AI-assisted parsing for a file.
 
 ### `transactions_categorize_pending_list`
 
-Fetch transactions that haven't been categorized yet. The read side of the categorize-then-bulk workflow.
+Fetch transactions that haven't been categorized yet. The read side of the categorize-then-apply workflow.
 
 - **Sensitivity:** `medium` — returns transaction descriptions and amounts.
 - **Unique parameters:** `suggest: bool = false` — when true, include AI-suggested categories based on merchant mappings and existing rules (does not apply them).
@@ -804,7 +804,7 @@ Create one or more categorization rules.
 - **Sensitivity:** `low`
 - **Unique parameters:** `rules: list[object]` (required) — list of `{name, merchant_pattern, category, subcategory?, match_type?, min_amount?, max_amount?, account_id?, priority?}`.
 - **Behavior:** Validates patterns and categories. Returns `{created, skipped, errors, error_details}`.
-- **Service:** `CategorizationService.create_rules() -> BulkCreateResult`
+- **Service:** `CategorizationService.create_rules() -> CreateResult`
 - **CLI:** `moneybin transactions categorize rules create --file rules.json`
 
 ### `transactions_categorize_rule_delete`
@@ -834,7 +834,7 @@ Create one or more merchant name mappings.
 - **Sensitivity:** `low`
 - **Unique parameters:** `mappings: list[object]` (required) — list of `{raw_pattern, canonical_name, match_type?, category?, subcategory?}`.
 - **Behavior:** Returns `{created, skipped, errors, error_details}`.
-- **Service:** `CategorizationService.create_merchants() -> BulkCreateResult`
+- **Service:** `CategorizationService.create_merchants() -> CreateResult`
 - **CLI:** `moneybin merchants create --file mappings.json`
 
 ### `categories_list`
@@ -906,7 +906,7 @@ Approve or reject proposed auto-generated rules.
 - **Sensitivity:** `low`
 - **Unique parameters:** `approvals: list[object]` (required) — list of `{proposed_rule_id, action}` where action is `approve` or `reject`.
 - **Behavior:** Approved rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. Returns `{approved, rejected, errors}`.
-- **Service:** `CategorizationService.auto_confirm() -> BulkActionResult`
+- **Service:** `CategorizationService.auto_confirm() -> ActionResult`
 - **CLI:** `moneybin transactions categorize auto confirm --approve <id> [<id>...] --reject <id> [<id>...]`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
@@ -1159,7 +1159,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 - Defaults are seeded automatically by `db init`; no MCP-side seed step
 - Fetch uncategorized transactions in manageable batches (50)
-- Always use bulk tools, never single-item equivalents
+- Always use batch tools, never single-item equivalents
 - Present proposed categorizations to the user for confirmation before applying
 - After applying, propose merchant mappings and rules for patterns that appeared multiple times
 - Track progress: "X of Y categorized, Z remaining"
@@ -1247,7 +1247,7 @@ Available tool namespaces with one-line descriptions, tool counts, and loaded/un
     {"namespace": "accounts", "tools": 4, "loaded": true, "description": "Account listing, balances, net worth"}
   ],
   "extended": [
-    {"namespace": "categorize", "tools": 15, "loaded": false, "description": "Rules, merchant mappings, bulk categorization, auto-rule review, ML"},
+    {"namespace": "categorize", "tools": 15, "loaded": false, "description": "Rules, merchant mappings, categorization, auto-rule review, ML"},
     {"namespace": "budget", "tools": 4, "loaded": false, "description": "Budget targets, status, rollovers"},
     {"namespace": "tax", "tools": 2, "loaded": false, "description": "W-2 data, deductible expense search"}
   ],
@@ -1310,7 +1310,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `list_institutions` | `accounts_list` | Institution is a field on account |
 | `run_read_query` | `sql_query` | |
 | `import_file` | `import_file` | |
-| `categorize_transaction` | `categorize_bulk` | Single-item removed; use list of one |
+| `categorize_transaction` | `categorize_apply` | Single-item removed; use list of one |
 | `get_uncategorized_transactions` | `categorize_uncategorized` | |
 | `seed_categories` | _removed_ | Seeds run automatically via `db init` / `transform seed` |
 | `toggle_category` | `categorize_toggle_category` | |
@@ -1318,7 +1318,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `create_merchant_mapping` | `categorize_create_merchants` | Single → bulk |
 | `create_categorization_rule` | `categorize_create_rules` | Single → bulk |
 | `delete_categorization_rule` | `categorize_delete_rule` | |
-| `bulk_categorize` | `categorize_bulk` | |
+| `bulk_categorize` | `categorize_apply` | |
 | `bulk_create_categorization_rules` | `categorize_create_rules` | |
 | `bulk_create_merchant_mappings` | `categorize_create_merchants` | |
 | `set_budget` | `budget_set` | |
@@ -1369,7 +1369,7 @@ Per [`cli-restructure.md`](cli-restructure.md) v2. Hard cut: rename in place, no
 | (new) | `accounts_include` | Toggle include_in_net_worth |
 | (new) | `accounts_archive` | Mark archived; cascades exclude from net worth |
 | (new) | `accounts_unarchive` | Clear archived flag |
-| (new) | `accounts_settings_update` | Bulk metadata update (subtype, holder category, currency, credit limit, last four, official name) |
+| (new) | `accounts_settings_update` | Metadata update (subtype, holder category, currency, credit limit, last four, official name) |
 
 ### `transactions_*` (entity ops)
 
@@ -1560,7 +1560,7 @@ These tools can be fully implemented with the current codebase and existing infr
 **`accounts.*`**: `list`, `balances`, `networth`, `resolve`
 **`transactions.*`**: `search`, `recurring`
 **`import.*`**: `file`, `status`, `csv_preview`, `list_formats`
-**`categorize.*`**: `uncategorized`, `bulk`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `seed`, `stats`
+**`categorize.*`**: `uncategorized`, `apply`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `seed`, `stats`
 **`budget.*`**: `set`, `status`, `delete`
 **`tax.*`**: `w2`
 **`overview.*`**: `status`, `health`

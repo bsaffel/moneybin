@@ -2,7 +2,7 @@
 
 Tools:
     - merchants_list — List all merchant name mappings (low sensitivity)
-    - merchants_create — Create merchant name mappings in bulk (low sensitivity)
+    - merchants_create — Create merchant name mappings (low sensitivity)
 """
 
 from __future__ import annotations

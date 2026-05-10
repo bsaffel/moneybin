@@ -13,10 +13,10 @@ from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 
-# Keys the BulkCategorizationItem model accepts (extra="forbid"). Used to strip
+# Keys the CategorizationItem model accepts (extra="forbid"). Used to strip
 # export-shape extras (opaque_id, description_redacted, source_type) from rows
 # fed to apply-from-file, after opaque_id → transaction_id remap.
-_ALLOWED_BULK_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
+_ALLOWED_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
 
 
 def categorize_apply_from_file(
@@ -73,7 +73,7 @@ def categorize_apply_from_file(
         typer.echo(f"❌ Invalid JSON: {e}", err=True)
         raise typer.Exit(1) from e
 
-    # Map export-shape rows into BulkCategorizationItem-shape rows. The export
+    # Map export-shape rows into CategorizationItem-shape rows. The export
     # command emits {opaque_id, description_redacted, source_type} for the LLM
     # to annotate with category/subcategory; the service model is
     # {transaction_id, category, subcategory} with extra="forbid", so we must
@@ -88,7 +88,7 @@ def categorize_apply_from_file(
                 if "transaction_id" not in row_dict and "opaque_id" in row_dict:
                     row_dict["transaction_id"] = row_dict["opaque_id"]
                 remapped.append({
-                    k: v for k, v in row_dict.items() if k in _ALLOWED_BULK_ITEM_KEYS
+                    k: v for k, v in row_dict.items() if k in _ALLOWED_ITEM_KEYS
                 })
             else:
                 remapped.append(row)  # pyright: ignore[reportUnknownArgumentType]

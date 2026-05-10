@@ -15,7 +15,7 @@ import yaml
 from moneybin.database import Database
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
-    BulkCategorizationItem,
+    CategorizationItem,
     CategorizationService,
 )
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
@@ -560,7 +560,7 @@ def test_service_categorize_items_applies_categorization(
     )
     svc = CategorizationService(real_db)
     result = svc.categorize_items([
-        BulkCategorizationItem(transaction_id="ts1", category="Food & Drink")
+        CategorizationItem(transaction_id="ts1", category="Food & Drink")
     ])
     assert result.applied == 1
 
@@ -575,7 +575,7 @@ def test_categorize_items_returns_did_you_mean_on_invalid_category(
     )
     svc = CategorizationService(real_db)
     result = svc.categorize_items([
-        BulkCategorizationItem(transaction_id="txn_dym", category="FOOD"),
+        CategorizationItem(transaction_id="txn_dym", category="FOOD"),
     ])
 
     assert result.errors == 1
@@ -762,7 +762,7 @@ def test_categorize_items_creates_auto_rule_proposal(real_db: Database) -> None:
     svc = CategorizationService(real_db)
     svc.categorize_items(
         [
-            BulkCategorizationItem(
+            CategorizationItem(
                 transaction_id="tb1",
                 category="Food & Drink",
                 subcategory="Coffee",
@@ -810,7 +810,7 @@ def test_categorize_items_uses_constant_number_of_db_calls(
             [f"txn_{i}", f"Coffee shop {i}"],
         )
     items = [
-        BulkCategorizationItem(
+        CategorizationItem(
             transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
         )
         for i in range(25)
@@ -868,7 +868,7 @@ def test_categorize_items_dedupes_merchant_creation_within_batch(
         )
 
     items = [
-        BulkCategorizationItem(
+        CategorizationItem(
             transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
         )
         for i in range(3)
@@ -890,7 +890,7 @@ def test_categorize_items_dedupes_merchant_creation_within_batch(
 
 
 # ---------------------------------------------------------------------------
-# find_matching_rule override tests (Task 3 — bulk path preparation)
+# find_matching_rule override tests (Task 3 — batch path preparation)
 # ---------------------------------------------------------------------------
 
 

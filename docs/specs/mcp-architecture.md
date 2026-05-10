@@ -117,7 +117,7 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 | `accounts.*` | Account management | Account listing, balance history, net worth |
 | `transactions.*` | Transaction-level operations | Search, corrections, annotations, recurring detection |
 | `import.*` | Data ingestion | File import, status, source management |
-| `categorize.*` | Categorization pipeline | Rules, merchant mappings, bulk categorization, auto-rule review |
+| `categorize.*` | Categorization pipeline | Rules, merchant mappings, categorization, auto-rule review |
 | `budget.*` | Budget tracking | Targets, status, rollovers |
 | `tax.*` | Tax information | W-2 data, future: capital gains, deductions |
 | `privacy.*` | Privacy & consent | Consent status, grants, revocations, audit log |
@@ -126,15 +126,15 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 ### Namespace principles
 
 1. **One namespace per concern, not per entity.** `import` handles all file types — there's no `import_ofx`, `import_csv`, `import_pdf`. The tool figures out the file type or accepts a hint parameter.
-2. **Read and write in the same namespace.** `categorize_bulk` (write) lives alongside `categorize_rules` (read). The verb in the tool name distinguishes intent.
-3. **No CRUD naming.** Tools are named for what the user wants to accomplish, not the database operation. `categorize_bulk` not `create_transaction_categories`. `transactions_correct` not `update_transaction`.
+2. **Read and write in the same namespace.** `categorize_apply` (write) lives alongside `categorize_rules` (read). The verb in the tool name distinguishes intent.
+3. **No CRUD naming.** Tools are named for what the user wants to accomplish, not the database operation. `categorize_apply` not `create_transaction_categories`. `transactions_correct` not `update_transaction`.
 4. **New domains added per quarter.** Q2 adds `investments.*`. Q4's multi-currency is a crosscutting concern handled at the service layer (amounts, conversions, rate lookups), not a separate tool namespace.
 
 ### Naming conventions
 
 - **Noun = query.** `spending_summary`, `accounts_balances`, `categorize_rules` — returns data.
-- **Verb = action.** `categorize_bulk`, `transactions_correct`, `import_file` — mutates state.
-- **Underscore separator.** `spending_summary`, `categorize_bulk`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `spending.summary`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
+- **Verb = action.** `categorize_apply`, `transactions_correct`, `import_file` — mutates state.
+- **Underscore separator.** `spending_summary`, `categorize_apply`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `spending.summary`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
 
 ### Progressive disclosure via per-session visibility
 
@@ -209,7 +209,7 @@ Tools that operate on collections accept and return lists in a single call. The 
 Turn 1: categorize_uncategorized(limit=50)
         -> returns 50 transactions with descriptions, amounts, dates, suggested categories
 
-Turn 2: categorize_bulk([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
+Turn 2: categorize_apply([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
         -> applies all 50 categorizations, returns summary: {applied: 48, skipped: 2, errors: [...]}
 ```
 
@@ -471,7 +471,7 @@ def spending_summary_cmd(
 | **Error handling** | Structured error in response envelope | `logger.error` + `typer.Exit(1)` |
 | **Discoverability** | Tool descriptions + `actions` array | `--help` + command group structure |
 
-The `categorize_bulk` MCP tool has CLI parity via `moneybin categorize bulk`. Both surfaces share the same `CategorizationService.bulk_categorize` implementation, validated through the same `BulkCategorizationItem` Pydantic model at every boundary.
+The `transactions_categorize_apply` MCP tool has CLI parity via `moneybin transactions categorize apply`. Both surfaces share the same `CategorizationService.categorize_items` implementation, validated through the same `CategorizationItem` Pydantic model at every boundary.
 
 ### What symmetry does NOT mean
 
@@ -507,7 +507,7 @@ moneybin
 |   +-- file
 |   +-- status
 +-- categorize
-|   +-- bulk
+|   +-- apply
 |   +-- uncategorized
 |   +-- rules
 |   +-- auto-review

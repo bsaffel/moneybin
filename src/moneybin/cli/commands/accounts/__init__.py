@@ -227,7 +227,7 @@ def accounts_set(
         help="Skip soft-validation prompt for non-canonical values",
     ),
 ) -> None:
-    """Bulk update structural metadata fields. At least one --field flag required."""
+    """Update structural metadata fields. At least one --field flag required."""
     diff: dict[str, object] = {}
 
     def _add(field: str, value: object | None, clear: bool) -> None:

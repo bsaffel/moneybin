@@ -128,7 +128,7 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   +-- include <account_id>       -- Toggle include_in_net_worth [--no]
 |   +-- archive <account_id>       -- Mark archived; cascades exclude_in_net_worth=FALSE
 |   +-- unarchive <account_id>     -- Clear archived flag (does NOT restore include)
-|   +-- set <account_id>           -- Bulk metadata update
+|   +-- set <account_id>           -- Metadata update
 |   |   [--official-name NAME] [--last-four XXXX] [--subtype TYPE]
 |   |   [--holder-category CAT] [--currency CODE] [--credit-limit AMT]
 |   |   [--clear-official-name] [--clear-last-four] [--clear-subtype]
@@ -163,7 +163,7 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |   +-- undo <match_id>
 |   |   +-- backfill
 |   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at transactions review)
-|   |   +-- bulk <category_id> --txn-ids ...
+|   |   +-- apply <category_id> --txn-ids ...
 |   |   +-- stats                  -- Coverage metrics
 |   |   +-- rules                  -- Rule management (list, create, apply, delete)
 |   |   |   +-- list

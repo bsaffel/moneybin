@@ -230,7 +230,7 @@ class TestValidateRuleItems:
 
 
 class TestCreateRules:
-    """CategorizationService.create_rules — bulk INSERT into app.categorization_rules."""
+    """CategorizationService.create_rules — batch INSERT into app.categorization_rules."""
 
     @pytest.mark.unit
     def test_empty_input_returns_zero_counts(self, db: Database) -> None:

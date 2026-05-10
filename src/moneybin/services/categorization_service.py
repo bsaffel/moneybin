@@ -28,9 +28,9 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import (
-    CATEGORIZE_BULK_DURATION_SECONDS,
-    CATEGORIZE_BULK_ERRORS_TOTAL,
-    CATEGORIZE_BULK_ITEMS_TOTAL,
+    CATEGORIZE_DURATION_SECONDS,
+    CATEGORIZE_ERRORS_TOTAL,
+    CATEGORIZE_ITEMS_TOTAL,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import normalize_description, redact_for_llm
@@ -121,7 +121,7 @@ class RedactedTransaction:
 
 @dataclass(slots=True)
 class CategorizationResult:
-    """Typed result for bulk categorization operations."""
+    """Typed result for categorization operations."""
 
     applied: int
     skipped: int
@@ -130,7 +130,7 @@ class CategorizationResult:
     merchants_created: int = 0
 
     def to_envelope(self, input_count: int) -> ResponseEnvelope:
-        """Build a ResponseEnvelope from this bulk categorization result."""
+        """Build a ResponseEnvelope from this categorization result."""
         return build_envelope(
             data={
                 "applied": self.applied,
@@ -188,7 +188,7 @@ class RuleCreationResult:
         self.skipped += len(parse_errors)
 
 
-class BulkCategorizationItem(BaseModel):
+class CategorizationItem(BaseModel):
     """One row of input for ``CategorizationService.categorize_items``.
 
     Validated at every boundary (CLI, MCP). The service refuses untyped dicts.
@@ -269,7 +269,7 @@ def _validate_items[T: BaseModel](
 
 def validate_items(
     raw: object,
-) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
+) -> tuple[list[CategorizationItem], list[dict[str, str]]]:
     """Validate a raw decoded JSON array into typed items + per-row errors.
 
     Per-item validation: a malformed row contributes an ``error_details`` entry
@@ -279,7 +279,7 @@ def validate_items(
     """
     return _validate_items(
         raw,
-        BulkCategorizationItem,
+        CategorizationItem,
         id_field="transaction_id",
         list_error_msg="Input must be a JSON array of categorization items",
     )
@@ -661,7 +661,7 @@ class CategorizationService:
     # -- Categorization core --
 
     def categorize_items(
-        self, items: Sequence[BulkCategorizationItem]
+        self, items: Sequence[CategorizationItem]
     ) -> CategorizationResult:
         """Assign categories to multiple transactions with merchant auto-creation.
 
@@ -673,7 +673,7 @@ class CategorizationService:
         fetch and one merchant-table fetch, regardless of input size.
 
         Args:
-            items: Validated list of BulkCategorizationItem (transaction_id, category,
+            items: Validated list of CategorizationItem (transaction_id, category,
                 optional subcategory). Validation is the caller's responsibility —
                 use ``validate_items`` at the CLI/MCP boundary before calling this.
 
@@ -684,13 +684,13 @@ class CategorizationService:
         try:
             return self._categorize_items_inner(items)
         except Exception:
-            CATEGORIZE_BULK_ERRORS_TOTAL.inc()
+            CATEGORIZE_ERRORS_TOTAL.inc()
             raise
         finally:
-            CATEGORIZE_BULK_DURATION_SECONDS.observe(perf_counter() - _start)
+            CATEGORIZE_DURATION_SECONDS.observe(perf_counter() - _start)
 
     def _categorize_items_inner(
-        self, items: Sequence[BulkCategorizationItem]
+        self, items: Sequence[CategorizationItem]
     ) -> CategorizationResult:
         applied = 0
         skipped = 0
@@ -722,7 +722,7 @@ class CategorizationService:
 
         if valid_category_set:
             valid_sorted = sorted(valid_category_set)
-            validated_items: list[BulkCategorizationItem] = []
+            validated_items: list[CategorizationItem] = []
             for item in items:
                 if item.category not in valid_category_set:
                     errors += 1
@@ -746,7 +746,7 @@ class CategorizationService:
             items = validated_items
 
             if not items:
-                CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
+                CATEGORIZE_ITEMS_TOTAL.labels(outcome="error").inc(errors)
                 return CategorizationResult(
                     applied=applied,
                     skipped=skipped,
@@ -762,7 +762,7 @@ class CategorizationService:
         # (auto_rule_service → categorization_service).
         from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
             AutoRuleService,
-            BulkRecordingContext,
+            RecordingContext,
             TxnRow,
         )
 
@@ -805,7 +805,7 @@ class CategorizationService:
             logger.warning("Could not batch-fetch active rules", exc_info=True)
             cached_rules = []
 
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows=txn_rows,
             active_rules=cached_rules,
             merchant_mappings=cached_merchants,
@@ -910,9 +910,9 @@ class CategorizationService:
             except Exception:  # noqa: BLE001 — override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
 
-        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
-        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="skipped").inc(skipped)
-        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
+        CATEGORIZE_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
+        CATEGORIZE_ITEMS_TOTAL.labels(outcome="skipped").inc(skipped)
+        CATEGORIZE_ITEMS_TOTAL.labels(outcome="error").inc(errors)
         return CategorizationResult(
             applied=applied,
             skipped=skipped,
@@ -1060,9 +1060,9 @@ class CategorizationService:
         covered by an existing rule?" using the canonical match semantics
         instead of re-implementing them.
 
-        The bulk path supplies pre-loaded rule rows and txn metadata via
+        The batch path supplies pre-loaded rule rows and txn metadata via
         ``rules_override`` and ``txn_row_override`` so this function issues no
-        queries during a bulk loop. Both default to ``None`` for non-bulk callers.
+        queries during a batch loop. Both default to ``None`` for non-batch callers.
         """
         if txn_row_override is not None:
             description, amount, account_id = txn_row_override

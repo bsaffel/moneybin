@@ -1,4 +1,4 @@
-"""Integration tests for `moneybin transactions categorize bulk` CLI command."""
+"""Integration tests for `moneybin transactions categorize apply` CLI command."""
 
 # ruff: noqa: S101
 
@@ -33,7 +33,7 @@ def _seed_one_transaction(db: Database) -> str:
     core.fct_transactions is a SQLMesh VIEW in production, but tests don't run
     SQLMesh, so we create a bare table with the columns the service reads.
     """
-    txn_id = "csv_bulk_cli_test_001"
+    txn_id = "csv_apply_cli_test_001"
     db.execute(  # noqa: S608  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS core.fct_transactions (
@@ -77,8 +77,8 @@ def _invoke(
     return runner.invoke(app, args, **kwargs)  # type: ignore[call-overload]
 
 
-class TestCategorizeBulkCLI:
-    """Integration tests for the 'moneybin categorize bulk' command."""
+class TestCategorizeApplyCLI:
+    """Integration tests for the 'moneybin categorize apply' command."""
 
     def test_file_input_applies_categorizations(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

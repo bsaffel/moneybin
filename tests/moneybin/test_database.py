@@ -158,7 +158,7 @@ class TestDatabaseOperations:
 
 
 class TestIngestDataframe:
-    """Database.ingest_dataframe() — Arrow-based bulk loading."""
+    """Database.ingest_dataframe() — Arrow-based batch loading."""
 
     @pytest.fixture()
     def db(

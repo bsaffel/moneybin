@@ -315,7 +315,7 @@ The `country` column from seeds is intentionally not exposed in the view — ove
 | 5 | ML predictions | `'ml'` | variable | 0.0 (circular) |
 | 6 | Plaid categories | `'plaid'` | 1.0 | 0.7 |
 | 7 | Seed merchants | `'seed'` | 1.0 | 0.5 (open question) |
-| 8 | LLM bulk | `'ai'` | 1.0 | 0.8 |
+| 8 | LLM batch | `'ai'` | 1.0 | 0.8 |
 
 ## LLM-assist workflow
 

@@ -1,4 +1,4 @@
-"""Transactions categorize namespace tools — rules, bulk categorization, auto-rules."""
+"""Transactions categorize namespace tools — rules, categorization, auto-rules."""
 
 from __future__ import annotations
 
@@ -95,10 +95,6 @@ def transactions_categorize_apply(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
     """Assign categories to multiple transactions in one call.
-
-    Renamed from transactions_categorize_bulk_apply — the _bulk suffix was
-    redundant per mcp-server.md batch-first principle (all collection ops accept
-    lists by default).
 
     Each item should have ``transaction_id``, ``category``, and
     optionally ``subcategory``. Transactions that already have a

@@ -91,11 +91,11 @@ When a user categorizes a transaction, the system identifies the pattern and pro
 
 **Key design decisions** (full detail in [`categorization-auto-rules.md`](categorization-auto-rules.md)):
 
-- **Trigger:** After any categorization event (`transactions_categorize_bulk_apply` or CLI categorization), for each categorized transaction, check whether an active rule or merchant mapping already covers the pattern. If not, create or reinforce a proposal.
+- **Trigger:** After any categorization event (`transactions_categorize_apply` or CLI categorization), for each categorized transaction, check whether an active rule or merchant mapping already covers the pattern. If not, create or reinforce a proposal.
 - **Pattern extraction:** Merchant-first — use the canonical merchant name when a `merchant_id` exists, fall back to `normalize_description()` cleanup otherwise. Reuses the existing description normalization code.
 - **Proposal lifecycle:** `pending` → `approved` (promoted to `app.categorization_rules` with `created_by='auto_rule'`, `priority=200`) or `rejected` or `superseded` (when the user corrects the category).
 - **Correction handling:** Single user overrides don't affect the rule. After `auto_rule_override_threshold` (default 2) overrides, the rule is deactivated and a new proposal is created with the corrected category.
-- **UX:** Proposals accumulate silently. `transactions_categorize_bulk_apply` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_confirm`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
+- **UX:** Proposals accumulate silently. `transactions_categorize_apply` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_confirm`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
 - **Conflicting categorizations:** Amount/account-aware rule proposals are deferred to future enhancements (see Future Directions).
 
 ---
@@ -316,7 +316,7 @@ When transactions arrive from Plaid (or future providers), they include provider
 
 ### LLM categorizations as training signal (automatic)
 
-When the AI bulk-categorizes via MCP or the CLI bridge, those categorizations (weighted at 0.8) become training data. A single LLM-assist session can provide enough labeled data to train an initial model.
+When the AI categorizes a batch via MCP or the CLI bridge, those categorizations (weighted at 0.8) become training data. A single LLM-assist session can provide enough labeled data to train an initial model.
 
 ### Community-contributed merchant mappings (future)
 

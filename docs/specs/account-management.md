@@ -36,7 +36,7 @@ Related specs and docs:
    - **MCP:** write always succeeds; response envelope includes a `warnings: [...]` array with field, message, and suggestion. The agent decides whether to retry.
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_type + …last_four(account_id)`) → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`.
-9. **CLI surface (taxonomy C):** named verbs for the four high-frequency operations (`rename`, `include`, `archive`, `unarchive`); a single bulk `set` command for the structural metadata fields (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--clear-FIELD`). See [CLI Interface](#cli-interface).
+9. **CLI surface (taxonomy C):** named verbs for the four high-frequency operations (`rename`, `include`, `archive`, `unarchive`); a single `set` command for the structural metadata fields (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--clear-FIELD`). See [CLI Interface](#cli-interface).
 10. **MCP surface:** mirrors CLI — five write tools (`accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_settings_update`) plus three read tools (`accounts_list`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources.
 11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts_list` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
@@ -145,7 +145,7 @@ moneybin accounts unarchive <account_id> [--yes]
 - Sets `archived = FALSE`. Does **NOT** restore `include_in_net_worth` — the user runs `accounts include <id>` if they want it back.
 - Logs: `"✅ Unarchived account <display_name> (still excluded from net worth — use 'moneybin accounts include' to re-enable)"` when the include flag is FALSE.
 
-### Mutation command — bulk `set`
+### Mutation command — `set`
 
 ```
 moneybin accounts set <account_id>

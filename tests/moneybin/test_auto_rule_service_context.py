@@ -8,7 +8,7 @@ import pytest
 
 from moneybin.services.auto_rule_service import (
     AutoRuleService,
-    BulkRecordingContext,
+    RecordingContext,
     TxnRow,
 )
 
@@ -26,7 +26,7 @@ class TestRecordCategorizationWithContext:
     """Verify context-aware path issues no read queries for description/rules/merchants."""
 
     def test_no_db_queries_when_context_provided(self, db_mock: MagicMock) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={
                 "csv_a": TxnRow(description="STARBUCKS", amount=-5.0, account_id=None)
             },

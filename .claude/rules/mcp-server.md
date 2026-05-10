@@ -38,13 +38,13 @@ Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-9
 | `accounts.*` | Account listing, balances, net worth |
 | `transactions.*` | Search, corrections, annotations, recurring |
 | `import.*` | File import, status |
-| `categorize.*` | Rules, merchant mappings, bulk categorization |
+| `categorize.*` | Rules, merchant mappings, categorization |
 | `budget.*` | Targets, status, rollovers |
 | `tax.*` | W-2 data, future capital gains |
 | `privacy.*` | Consent status, grants, revocations, audit log |
 | `overview.*` | Cross-domain summaries, system info |
 
-Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_bulk`). No CRUD naming.
+Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_apply`). No CRUD naming.
 
 **Progressive disclosure:** Per-session, tag-based visibility. All tools are registered at boot; extended-namespace tools carry `tags={domain}` and are hidden by `Visibility(False, tags={domain})` transforms. Core namespaces (~19 tools) are visible at connect; extended namespaces (`categorize`, `budget`, `tax`, `privacy`, `transactions_matches`) are revealed for the calling session only via the `moneybin_discover` meta-tool. Each tool stays single-purpose — no consolidation into action-parameter tools. See `mcp-architecture.md` §3.
 

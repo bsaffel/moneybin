@@ -6,7 +6,7 @@ draft
 
 ## Goal
 
-Establish the user-state layer on top of MoneyBin's canonical transaction store: manual transaction entry (CLI single, MCP bulk), free-text multi-note threads, multi-tag annotations, split-via-annotation as an interim before first-class splits, import-batch labels, and a unified edit-history audit log. All on a new and growing `app.*` user-state schema. The existing `raw → prep → core` ingestion contract — its matching, dedup, merge, and categorization behaviors — is unchanged: manual transactions enter via one new raw source. `core.fct_transactions` is extended *additively* with curation-presentation columns (LIST/STRUCT joins from `app.*`), and a sibling `core.vw_transaction_lines` view is added; see §Data Model.
+Establish the user-state layer on top of MoneyBin's canonical transaction store: manual transaction entry (CLI single, MCP batch), free-text multi-note threads, multi-tag annotations, split-via-annotation as an interim before first-class splits, import-batch labels, and a unified edit-history audit log. All on a new and growing `app.*` user-state schema. The existing `raw → prep → core` ingestion contract — its matching, dedup, merge, and categorization behaviors — is unchanged: manual transactions enter via one new raw source. `core.fct_transactions` is extended *additively* with curation-presentation columns (LIST/STRUCT joins from `app.*`), and a sibling `core.vw_transaction_lines` view is added; see §Data Model.
 
 This spec is the curator's surface — the row-by-row grooming that turns "data MoneyBin has" into "data the user trusts and uses."
 
@@ -44,7 +44,7 @@ This spec ships the bundle as a single coherent surface. It is the lead M2A spec
 | Curation tables stored relationally in `app.*`, presented as DuckDB nested types in `core.fct_transactions` | Write ergonomics from flat tables, consumer ergonomics from `LIST`/`LIST(STRUCT)` | §Architectural Pattern |
 | Notes are multi-note (extending existing `app.transaction_notes`) | Curator journaling needs history; audit log is wrong UX for that | §Data Model |
 | CLI imperative (`add`/`remove`/`edit`), MCP declarative (`*_set`) | Humans procedural, LLMs target-state — same service layer, asymmetric vocabulary | §Architectural Pattern, §CLI Interface, §MCP Interface |
-| `transactions_create` MCP tool is bulk (1–100 per call); CLI is single-txn | LLMs batch naturally; humans type interactively | §MCP Interface |
+| `transactions_create` MCP tool is batch (1–100 per call); CLI is single-txn | LLMs batch naturally; humans type interactively | §MCP Interface |
 
 ## Architectural Pattern
 
@@ -78,10 +78,10 @@ A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) i
 
 ### Manual entry
 
-1. Users can create one or more manual transactions via CLI (`transactions create`, single-txn) or MCP (`transactions_create`, bulk 1–100 per call).
+1. Users can create one or more manual transactions via CLI (`transactions create`, single-txn) or MCP (`transactions_create`, batch 1–100 per call).
 2. Manual transactions land in a new `raw.manual_transactions` table mirroring the `raw.tabular_transactions` column shape.
 3. A new `prep.stg_manual__transactions` staging view is added to the existing `prep.int_transactions__unioned` model. No prep or core models *on the manual-ingestion path* change shape beyond adding this staging view. (Curation-presentation columns added to `core.fct_transactions` and the new `core.vw_transaction_lines` view are described in §Data Model — additive joins from `app.*`, not changes to the ingestion contract.)
-4. Each manual-entry CLI invocation or MCP bulk call writes exactly one row to `raw.import_log` with `source_type='manual'`, `format_name='manual_entry'`, and the resulting `import_id` is reusable for batch labeling and reversal.
+4. Each manual-entry CLI invocation or MCP batch call writes exactly one row to `raw.import_log` with `source_type='manual'`, `format_name='manual_entry'`, and the resulting `import_id` is reusable for batch labeling and reversal.
 5. Manual transactions enter the standard pipeline: transform → match → categorize. They are reversible via the existing `import revert <import_id>` flow.
 6. Manual transactions are excluded from cross-source dedup (Tier 3) candidate selection. They are never proposed as matches against imported rows in either direction. Explicit user merge via `transactions matches confirm` is the only path that pairs them.
 7. Manual transactions are excluded from the auto-rule generator's training set. Auto-rules continue to learn from user category edits made *to imported* rows.
@@ -98,7 +98,7 @@ A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) i
 
 13. Each transaction can carry zero or more tags. Tags are flat strings in `app.transaction_tags(transaction_id, tag, applied_at, applied_by)` with `(transaction_id, tag)` as primary key.
 14. Tag pattern: `^[a-z0-9_-]+(:[a-z0-9_-]+)?$` — slug-flavored, optional namespace prefix separated by a colon (e.g., `tax:business-expense`, `vacation:hawaii-2026`, `recurring`). Service-layer validated.
-15. Bulk rename across rows is supported: `transactions tags rename old_tag new_tag` updates every row in `app.transaction_tags` and emits a parent audit event plus per-row child events with `parent_audit_id` chaining.
+15. Batch rename across rows is supported: `transactions tags rename old_tag new_tag` updates every row in `app.transaction_tags` and emits a parent audit event plus per-row child events with `parent_audit_id` chaining.
 16. `core.fct_transactions` exposes tags as `LIST(VARCHAR)` (sorted). NULL when no tags exist; `tag_count` scalar is also exposed.
 
 ### Splits (via annotation)
@@ -121,14 +121,14 @@ A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) i
 26. Audit emission is synchronous, in the same DuckDB transaction as the mutation. Implementation: `AuditService.record_audit_event(action, target, before, after, *, actor, parent_audit_id=None, context=None)`.
 27. In-scope services emit events: `TransactionService` (manual entry, notes, tags, splits), `ImportService` (labels), `CategorizationService` (category set/clear), merchant service (create/set), rule service (create/update/delete), AI provider boundary (`ai.external_call`).
 28. Out-of-scope services do not emit; retroactive coverage is the post-launch `audit-log.md` spec's responsibility.
-29. `before_value` and `after_value` capture the relevant column subset of the affected row, not the entire table row. Bulk operations (`tag.rename`) emit one parent event capturing the operation intent and per-row child events with `parent_audit_id` chaining.
+29. `before_value` and `after_value` capture the relevant column subset of the affected row, not the entire table row. Batch operations (`tag.rename`) emit one parent event capturing the operation intent and per-row child events with `parent_audit_id` chaining.
 30. AI-specific fields (flow_tier, backend, model, data_sent_hash, consent_reference, user_initiated) ride `context_json` — promoted to indexed columns only when a real query pattern demands it.
 31. The existing `get_ai_audit_log` MCP/CLI surface continues to work — internally rewritten to query `app.audit_log` with `action LIKE 'ai.%'`. No compatibility view; `privacy-and-ai-trust.md` is updated to reference the unified table directly.
 
 ### Cross-cutting
 
 32. All in-scope tables live in the `app.*` schema. This spec is the first to populate it heavily; `architecture-shared-primitives.md` (sibling M2 entry spec) formalizes the layer in `AGENTS.md`.
-33. CLI is single-txn / per-row imperative. MCP is declarative-set or bulk where the semantic naturally collapses (tags, splits, labels, manual entry).
+33. CLI is single-txn / per-row imperative. MCP is declarative-set or batch where the semantic naturally collapses (tags, splits, labels, manual entry).
 34. CLI/MCP capabilities are symmetric — anything one can do, the other can express.
 35. Two manual transactions with identical `(account_id, transaction_date, amount, description)` coexist as distinct rows. Manual entries are user-authoritative; deduplication (if desired) is the user's explicit action via `transactions delete` or splits.
 
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     source_transaction_id   VARCHAR PRIMARY KEY, -- 'manual_' + truncated UUID4 (12 hex)
     source_type             VARCHAR NOT NULL DEFAULT 'manual', -- Discriminator; matches matcher and auto-rule exemption predicates
     source_origin           VARCHAR NOT NULL DEFAULT 'user', -- Origin tag; always 'user' for manual entries
-    import_id               VARCHAR NOT NULL, -- FK to raw.import_log.import_id; one batch per CLI call or MCP bulk call
+    import_id               VARCHAR NOT NULL, -- FK to raw.import_log.import_id; one batch per CLI call or MCP batch call
     account_id              VARCHAR NOT NULL, -- FK to core.dim_accounts
     transaction_date        DATE NOT NULL, -- Date of the transaction as the user reports it
     amount                  DECIMAL(18,2) NOT NULL, -- Signed; negative = expense, positive = income
@@ -230,7 +230,7 @@ CREATE TABLE IF NOT EXISTS app.audit_log (
     target_id         VARCHAR, -- gold transaction_id, rule_id, merchant_id, import_id, etc.
     before_value      JSON, -- Prior column subset; NULL on creation
     after_value       JSON, -- New column subset; NULL on deletion
-    parent_audit_id   VARCHAR, -- Self-FK; chains AI-call → user-confirm → category-write, or bulk-rename → per-row events
+    parent_audit_id   VARCHAR, -- Self-FK; chains AI-call → user-confirm → category-write, or batch-rename → per-row events
     context_json      JSON -- Discriminator-shaped extras: AI fields (flow_tier, backend, model, data_sent_hash), source surface, hashes, etc.
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_target ON app.audit_log(target_table, target_id);
@@ -456,10 +456,10 @@ transactions tags remove <txn_id> <tag> [<tag>...]
 transactions tags list [--txn-id ID] [--account ID] [--from DATE] [--to DATE]
                                                       Without flags: distinct tags with usage counts.
                                                       With --txn-id: tags on one transaction.
-transactions tags rename <old_tag> <new_tag>          Bulk rename across all rows; emits parent + per-row child audit events
+transactions tags rename <old_tag> <new_tag>          Batch rename across all rows; emits parent + per-row child audit events
 ```
 
-`tags rename` is the single bulk-write operation in the CLI surface; every other write is per-row.
+`tags rename` is the single batch-write operation in the CLI surface; every other write is per-row.
 
 ### `transactions splits` — split-via-annotation
 
@@ -521,12 +521,12 @@ Nine new tools, two prompts, one new resource and two extended. Catalog grows fr
 
 | Tool | Sensitivity | Shape |
 |---|---|---|
-| `transactions_create` | write | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
+| `transactions_create` | write | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — batch, atomic, single `import_id` per call |
 | `transactions_notes_add` | write | `(transaction_id, text) → Note` |
 | `transactions_notes_edit` | write | `(note_id, text) → Note` |
 | `transactions_notes_delete` | write | `(note_id) → {note_id}` |
 | `transactions_tags_set` | write | `(transaction_id, tags: list[str]) → list[Tag]` — declarative; service computes diff |
-| `transactions_tags_rename` | write | `(old_tag, new_tag) → {row_count, parent_audit_id}` — bulk rename |
+| `transactions_tags_rename` | write | `(old_tag, new_tag) → {row_count, parent_audit_id}` — batch rename |
 | `transactions_splits_set` | write | `(transaction_id, splits: list[SplitInput]) → list[Split]` — declarative |
 | `import_labels_set` | write | `(import_id, labels: list[str]) → list[str]` — declarative |
 | `system_audit_list` | medium | `(filters, limit) → list[AuditEvent]` — supports `audit_id` filter for show-equivalent (returns single-element list with full payload) |
@@ -538,7 +538,7 @@ Nine new tools, two prompts, one new resource and two extended. Catalog grows fr
 
 **Why notes stay imperative in MCP:** add/edit/delete on `note_id` have distinct semantics that don't collapse into "set all notes" — you can't replace one note with another by passing a list, because the audit chain depends on which note_id is which.
 
-### `transactions_create` — bulk shape and constraints
+### `transactions_create` — batch shape and constraints
 
 - **Atomicity**: all-or-nothing per call. Validation failures reject the whole batch with per-item error reporting; no partial commit.
 - **Single import_id**: all transactions in one call land under one `raw.import_log` row with `source_type='manual'`. Users can label that batch as a unit.
@@ -594,7 +594,7 @@ In-scope services emit; out-of-scope services are silent until the post-launch `
 ### Before/after capture rules
 
 - For row-level mutations: `before_value` and `after_value` are JSON snapshots of the relevant *column subset* of the affected row, not full table rows. This keeps the audit table from becoming a row-history copy of every table.
-- For bulk operations (`tag.rename`): the parent event captures the operation intent (`{old_tag, new_tag, row_count}`); per-row child events capture each row's before/after with `parent_audit_id` chaining.
+- For batch operations (`tag.rename`): the parent event captures the operation intent (`{old_tag, new_tag, row_count}`); per-row child events capture each row's before/after with `parent_audit_id` chaining.
 - For idempotent operations (re-applying an existing tag): the event is still recorded with `before == after`, marked via a `context_json.noop = true` flag. Useful for forensic "did this run?" questions.
 
 ## Cross-Spec Edits (Follow-up — Land with Implementation)
@@ -668,7 +668,7 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 | Notes shape | Multi-note (extending existing single-note table) |
 | Tag table shape | Flat M:N with slug-pattern VARCHAR (`namespace:value` optional) |
 | Import labels shape | Single consolidated `app.imports` row with `LIST(VARCHAR)` labels column |
-| MCP bulk vs single | Bulk `transactions_create` (1–100); CLI stays single-txn |
+| MCP batch vs single | Batch `transactions_create` (1–100); CLI stays single-txn |
 | MCP declarative-set | Tags, splits, import labels use `*_set`; notes stay imperative |
 | Service organization | Extend existing `TransactionService` and `ImportService`; new cross-cutting `AuditService` |
 
@@ -693,7 +693,7 @@ Five-tier coverage per `.claude/rules/testing.md` and `testing-scenario-comprehe
 
 ### Tier 1 — Unit (`tests/moneybin/test_services/`)
 
-- `test_transaction_service.py` (extended) — `create_manual_batch` (bulk validation, atomic rejection, single import_id, pipeline trigger), notes (add/edit/delete with audit), tags (set semantics — diff computed correctly, rename with parent/child chaining, pattern validation), splits (sum-warning behavior, ord-based ordering, clear-all)
+- `test_transaction_service.py` (extended) — `create_manual_batch` (batch validation, atomic rejection, single import_id, pipeline trigger), notes (add/edit/delete with audit), tags (set semantics — diff computed correctly, rename with parent/child chaining, pattern validation), splits (sum-warning behavior, ord-based ordering, clear-all)
 - `test_import_service.py` (extended) — `set_labels` (LIST mutation, idempotency, distinct-tag query)
 - `test_audit_service.py` (new) — `record_audit_event` JSON shape, parent_audit_id chains, idempotent-noop marking, query helpers (`list_events` filters, `chain_for(audit_id)`)
 
@@ -703,7 +703,7 @@ One file per command group. Cover argument parsing, `--output json` shape, `--ye
 
 - `test_transactions_create.py` — single-txn shape, validates account_id exists, pipeline runs, transaction_id returned
 - `test_transactions_notes.py` — add/list/edit/delete; max-length error
-- `test_transactions_tags.py` — pattern validation, idempotent add, bulk rename echoes row count
+- `test_transactions_tags.py` — pattern validation, idempotent add, batch rename echoes row count
 - `test_transactions_splits.py` — add (warns on imbalance, doesn't block), list, remove, clear
 - `test_transactions_audit.py` — entity-scoped query
 - `test_system_audit.py` — list with filters, show single record
@@ -718,7 +718,7 @@ Subprocess-based golden paths:
 3. Tag rename across 10 transactions → verify all rows updated; audit log has 1 parent + 10 child events with chain.
 4. Import a CSV → label the resulting batch via `import labels add` → verify label visible in `import labels list`.
 5. Edit a category → verify audit event with before/after.
-6. MCP bulk `transactions_create` with 5 items → verify single import_id, all 5 rows in `core.fct_transactions`, batch labelable.
+6. MCP batch `transactions_create` with 5 items → verify single import_id, all 5 rows in `core.fct_transactions`, batch labelable.
 
 ### Tier 4 — Scenario (`tests/scenarios/`)
 
@@ -750,7 +750,7 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 - **Transaction attachments / receipts.** Deferred until a UI surface exists. Receipt blob storage outside the encrypted DuckDB file is its own design problem.
 - **Category-id migration.** `app.transaction_splits.category` stays VARCHAR, matching how `app.transaction_categories` stores categories today. A future spec migrates both to `category_id` references when categories become first-class entities.
 - **Tag normalization.** Current shape is single VARCHAR with `namespace:value` convention enforced at the service layer. Promotion to a normalized two-table model (`app.tags(tag_id, namespace, value)` + `app.transaction_tags(transaction_id, tag_id)`) is future work — triggered when tag rename/merge/autocomplete UX needs richer semantics.
-- **Bulk manual entry CLI.** CLI stays single-txn-per-call. Bulk lives only in MCP, where LLMs batch naturally. The `import file` flow remains the path for tabular bulk loads.
+- **Batch manual entry CLI.** CLI stays single-txn-per-call. Batch lives only in MCP, where LLMs batch naturally. The `import file` flow remains the path for tabular batch loads.
 - **Import history browser.** The bundle scope is *labeling* batches, not building a batch-history browser. Listing past imports is a real gap; `import status` (existing) covers health and SQL covers exotic queries. A future `import history` spec can land if the demand materializes.
 - **Audit log policy.** Retention, redaction tiers, MCP exposure rules, retroactive emission from out-of-scope services — owned by post-launch `audit-log.md`. This spec ships the table; that spec ships the policy.
 - **Multi-user identity for `created_by` / `applied_by` / `author`.** Currently `'cli'` or `'mcp'` (plus `'legacy'` for migrated notes). When a hosted multi-user surface lands, this column gets richer. Schema is forward-compatible.

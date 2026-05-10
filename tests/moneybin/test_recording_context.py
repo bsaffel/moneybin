@@ -1,8 +1,8 @@
-"""Unit tests for BulkRecordingContext."""
+"""Unit tests for RecordingContext."""
 
 from __future__ import annotations
 
-from moneybin.services.auto_rule_service import BulkRecordingContext, TxnRow
+from moneybin.services.auto_rule_service import RecordingContext, TxnRow
 
 
 def _merchant(
@@ -20,7 +20,7 @@ class TestTxnRowLookup:
     """Tests for txn_row_for and description_for lookup methods."""
 
     def test_txn_row_for_returns_loaded_row(self) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={
                 "csv_a": TxnRow(
                     description="STARBUCKS", amount=-5.0, account_id="acct_1"
@@ -34,7 +34,7 @@ class TestTxnRowLookup:
         assert row.description == "STARBUCKS"
 
     def test_description_for_returns_description(self) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={
                 "csv_a": TxnRow(description="STARBUCKS", amount=-5.0, account_id=None)
             },
@@ -44,7 +44,7 @@ class TestTxnRowLookup:
         assert ctx.description_for("csv_a") == "STARBUCKS"
 
     def test_description_for_returns_none_when_missing(self) -> None:
-        ctx = BulkRecordingContext(txn_rows={}, active_rules=[], merchant_mappings=[])
+        ctx = RecordingContext(txn_rows={}, active_rules=[], merchant_mappings=[])
         assert ctx.description_for("missing") is None
 
 
@@ -52,7 +52,7 @@ class TestRegisterNewMerchant:
     """Tests for register_new_merchant insertion ordering invariant."""
 
     def test_inserts_before_first_regex(self) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={},
             active_rules=[],
             merchant_mappings=[
@@ -67,7 +67,7 @@ class TestRegisterNewMerchant:
         assert ctx.merchant_mappings[3][0] == "m3"
 
     def test_appends_when_no_regex(self) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={},
             active_rules=[],
             merchant_mappings=[
@@ -83,7 +83,7 @@ class TestMerchantMappingCovers:
     """Tests for merchant_mapping_covers Python-side cover check."""
 
     def test_returns_true_on_contains_category_match(self) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={},
             active_rules=[],
             merchant_mappings=[
@@ -93,7 +93,7 @@ class TestMerchantMappingCovers:
         assert ctx.merchant_mapping_covers("AMZN MARKETPLACE", "Shopping", None)
 
     def test_returns_false_on_category_mismatch(self) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={},
             active_rules=[],
             merchant_mappings=[
@@ -103,7 +103,7 @@ class TestMerchantMappingCovers:
         assert not ctx.merchant_mapping_covers("AMZN MARKETPLACE", "Food", None)
 
     def test_subcategory_mismatch_means_no_cover(self) -> None:
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows={},
             active_rules=[],
             merchant_mappings=[

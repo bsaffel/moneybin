@@ -85,7 +85,7 @@ class AutoStatsResult:
 
 @dataclass(slots=True, frozen=True)
 class TxnRow:
-    """Pre-loaded transaction columns needed by the bulk path."""
+    """Pre-loaded transaction columns needed by the batch path."""
 
     description: str | None
     amount: float | None
@@ -93,8 +93,8 @@ class TxnRow:
 
 
 @dataclass(slots=True)
-class BulkRecordingContext:
-    """In-memory caches threaded through ``record_categorization`` during a bulk loop.
+class RecordingContext:
+    """In-memory caches threaded through ``record_categorization`` during a batch loop.
 
     Owns the data that today's per-item helpers re-fetch from the database.
     Mutators (``register_new_merchant``) preserve the same ordering invariants
@@ -178,7 +178,7 @@ class AutoRuleService:
         *,
         subcategory: str | None = None,
         merchant_id: str | None = None,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> str | None:
         """Record a categorization event for auto-rule learning.
 
@@ -195,7 +195,7 @@ class AutoRuleService:
         description fallback for every fresh categorization.
 
         ``context`` supplies pre-loaded transaction rows, active rules, and
-        merchant mappings for the bulk path so no read queries are issued
+        merchant mappings for the batch path so no read queries are issued
         per-transaction. When ``None``, the existing DB-backed behavior is used.
         """
         extracted = self._extract_pattern(
@@ -703,7 +703,7 @@ class AutoRuleService:
         transaction_id: str,
         *,
         merchant_id: str | None = None,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> tuple[str, str] | None:
         """Extract a (pattern, match_type) tuple for the given transaction.
 
@@ -718,7 +718,7 @@ class AutoRuleService:
         pre-loaded ``TxnRow`` instead of querying ``fct_transactions``.
         """
         if merchant_id is None and context is None:
-            # Bulk path passes merchant_id explicitly; this lookup is only needed
+            # Batch path passes merchant_id explicitly; this lookup is only needed
             # on the single-item path where no context is provided.
             row = self._db.execute(
                 f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
@@ -759,7 +759,7 @@ class AutoRuleService:
         category: str,
         subcategory: str | None,
         *,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> bool:
         """True when some active rule already matches this transaction with the same category.
 
@@ -793,7 +793,7 @@ class AutoRuleService:
         category: str,
         subcategory: str | None,
         *,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> bool:
         """True when a merchant mapping already produces this (category, subcategory) for this pattern.
 
@@ -803,7 +803,7 @@ class AutoRuleService:
         and ``regex`` merchants and ignored ``subcategory`` differences.
 
         When ``context`` is provided, delegates to
-        ``BulkRecordingContext.merchant_mapping_covers`` against the cached
+        ``RecordingContext.merchant_mapping_covers`` against the cached
         merchant list so no DB read is issued.
         """
         if context is not None:
