@@ -49,6 +49,7 @@ _SCHEMA_FILES: list[str] = [
     "raw_tabular_transactions.sql",
     "raw_tabular_accounts.sql",
     "raw_import_log.sql",
+    "raw_manual_transactions.sql",
     "app_categories.sql",
     "app_user_merchants.sql",
     "app_merchant_overrides.sql",
@@ -66,6 +67,10 @@ _SCHEMA_FILES: list[str] = [
     "app_rule_deactivations.sql",
     "app_account_settings.sql",
     "app_balance_assertions.sql",
+    "app_audit_log.sql",
+    "app_transaction_tags.sql",
+    "app_transaction_splits.sql",
+    "app_imports.sql",
 ]
 
 

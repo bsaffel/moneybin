@@ -71,6 +71,62 @@ EXAMPLES: dict[str, list[Example]] = {
                 ORDER BY transaction_year_month
             """,
         ),
+        Example(
+            question="Notes on a specific transaction "
+            "(substitute YOUR_TRANSACTION_ID; LIST(STRUCT) column)",
+            sql="""
+                SELECT notes
+                FROM core.fct_transactions
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Transactions tagged 'tax:business' "
+            "(use ANY(tags), not len(tags) > 0, for NULL-safe filtering)",
+            sql="""
+                SELECT transaction_id, transaction_date, amount, description, tags
+                FROM core.fct_transactions
+                WHERE 'tax:business' = ANY(tags)
+                ORDER BY transaction_date DESC
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Transactions that have at least one note "
+            "(use note_count > 0, not len(notes) > 0, to avoid 3-valued logic)",
+            sql="""
+                SELECT transaction_id, transaction_date, amount, description, note_count
+                FROM core.fct_transactions
+                WHERE note_count > 0
+                ORDER BY transaction_date DESC
+                LIMIT 50
+            """,
+        ),
+    ],
+    "core.fct_transaction_lines": [
+        Example(
+            question="Split-line rows only "
+            "(parent transaction is excluded for split transactions)",
+            sql="""
+                SELECT transaction_id, line_id, line_amount, line_category, line_kind
+                FROM core.fct_transaction_lines
+                WHERE line_kind = 'split'
+                ORDER BY transaction_id, line_id
+                LIMIT 50
+            """,
+        ),
+        Example(
+            question="Spending by category at the line grain "
+            "(splits expand to N rows; unsplit transactions count once as 'whole')",
+            sql="""
+                SELECT line_category, SUM(ABS(line_amount)) AS total
+                FROM core.fct_transaction_lines
+                WHERE line_amount < 0
+                GROUP BY line_category
+                ORDER BY total DESC
+            """,
+        ),
     ],
     "core.dim_accounts": [
         Example(
@@ -128,10 +184,57 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Notes for a specific transaction "
             "(substitute YOUR_TRANSACTION_ID)",
             sql="""
-                SELECT transaction_id, note, created_at
+                SELECT note_id, transaction_id, text, author, created_at
                 FROM app.transaction_notes
                 WHERE transaction_id = 'YOUR_TRANSACTION_ID'
                 ORDER BY created_at
+            """,
+        ),
+    ],
+    "app.transaction_tags": [
+        Example(
+            question="Tags applied to a specific transaction "
+            "(substitute YOUR_TRANSACTION_ID)",
+            sql="""
+                SELECT transaction_id, tag, applied_at, applied_by
+                FROM app.transaction_tags
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                ORDER BY tag
+            """,
+        ),
+    ],
+    "app.transaction_splits": [
+        Example(
+            question="Split children of a parent transaction "
+            "(substitute YOUR_TRANSACTION_ID)",
+            sql="""
+                SELECT split_id, transaction_id, amount, category, subcategory, ord
+                FROM app.transaction_splits
+                WHERE transaction_id = 'YOUR_TRANSACTION_ID'
+                ORDER BY ord, split_id
+            """,
+        ),
+    ],
+    "app.imports": [
+        Example(
+            question="User-applied labels on import batches",
+            sql="""
+                SELECT import_id, labels, updated_at, updated_by
+                FROM app.imports
+                ORDER BY updated_at DESC
+                LIMIT 50
+            """,
+        ),
+    ],
+    "app.audit_log": [
+        Example(
+            question="Most recent audit events across all actions",
+            sql="""
+                SELECT audit_id, occurred_at, actor, action,
+                       target_schema, target_table, target_id
+                FROM app.audit_log
+                ORDER BY occurred_at DESC
+                LIMIT 50
             """,
         ),
     ],

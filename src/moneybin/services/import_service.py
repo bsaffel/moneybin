@@ -8,6 +8,7 @@ MCP tools call this same service — no duplication.
 import dataclasses
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +29,8 @@ from moneybin.metrics.registry import (
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
+from moneybin.services._validators import validate_slug
+from moneybin.services.audit_service import AuditService
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +180,45 @@ class ImportService:
     duplication.
     """
 
-    def __init__(self, db: Database) -> None:
-        """Initialize ImportService with an open Database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Initialize ImportService with an open Database connection.
+
+        ``audit`` is keyword-only so existing positional callers
+        (``ImportService(db)``) continue to work unchanged. Used by the label
+        methods below to emit ``import_label.*`` events alongside the
+        ``app.imports`` write inside one txn.
+        """
         self._db = db
+        self._audit = audit if audit is not None else AuditService(db)
+
+    def allocate_import_log(
+        self,
+        *,
+        source_type: str,
+        format_name: str,
+        actor: str,
+    ) -> str:
+        """Allocate a fresh ``raw.import_log`` row and return its ``import_id``.
+
+        Thin wrapper around :func:`moneybin.loaders.import_log.begin_import`
+        that exposes the lifecycle to callers (manual entry, future API
+        connectors) that don't have a source file but still need an
+        ``import_id`` to attribute their raw rows. ``source_type`` must be
+        in the loader's allowlist (see ``_REVERT_TABLES``); ``actor`` is
+        recorded as the ``account_names`` payload so audit consumers can
+        trace which surface (cli/mcp) initiated the batch.
+        """
+        from moneybin.loaders import import_log
+
+        return import_log.begin_import(
+            self._db,
+            source_file=f"<{source_type}:{actor}>",
+            source_type=source_type,  # type: ignore[arg-type]  # runtime-validated
+            source_origin=actor,
+            account_names=[actor],
+            format_name=format_name,
+            format_source="manual",
+        )
 
     def _query_date_range(
         self,
@@ -1116,3 +1155,153 @@ class ImportService:
                 "Categorization skipped (tables may not exist yet)",
                 exc_info=True,
             )
+
+    # ------------------------------------------------------------------
+    # Import labels (spec Req 22–24).
+    # ------------------------------------------------------------------
+
+    _LABEL_AUDIT_TARGET = ("app", "imports")
+
+    def list_labels(self, import_id: str) -> list[str]:
+        """Return the labels currently attached to ``import_id`` (or empty)."""
+        row = self._db.conn.execute(
+            "SELECT labels FROM app.imports WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+        if row is None or row[0] is None:
+            return []
+        return list(row[0])
+
+    def list_distinct_labels(self) -> list[tuple[str, int]]:
+        """Return ``(label, usage_count)`` across all import rows, sorted desc."""
+        rows = self._db.conn.execute(
+            """
+            SELECT label, COUNT(*) AS n
+              FROM (SELECT UNNEST(labels) AS label FROM app.imports)
+             WHERE label IS NOT NULL
+             GROUP BY label
+             ORDER BY n DESC, label ASC
+            """
+        ).fetchall()
+        return [(str(r[0]), int(r[1])) for r in rows]
+
+    def add_labels(self, import_id: str, labels: list[str], *, actor: str) -> list[str]:
+        """Append ``labels`` to the import's set; emit one audit event per added label."""
+        for label in labels:
+            validate_slug(label)
+        return self._mutate_labels(
+            import_id=import_id,
+            actor=actor,
+            mutate=lambda prior: _merge_unique(prior, labels),
+            audit_action="import_label.add",
+            changed_only=lambda prior, new: [x for x in labels if x not in prior],
+        )
+
+    def remove_labels(
+        self, import_id: str, labels: list[str], *, actor: str
+    ) -> list[str]:
+        """Drop ``labels`` from the import's set; emit one audit event per removed label."""
+        for label in labels:
+            validate_slug(label)
+        drop = set(labels)
+        return self._mutate_labels(
+            import_id=import_id,
+            actor=actor,
+            mutate=lambda prior: [x for x in prior if x not in drop],
+            audit_action="import_label.remove",
+            changed_only=lambda prior, new: [x for x in labels if x in prior],
+        )
+
+    def set_labels(self, import_id: str, labels: list[str], *, actor: str) -> list[str]:
+        """Replace the import's labels declaratively in one transaction.
+
+        Validates every requested label, then computes the add/remove diff
+        against the prior set and emits one ``import_label.add`` /
+        ``import_label.remove`` event per changed label inside the same
+        DuckDB transaction as the row write.
+        """
+        for label in labels:
+            validate_slug(label)
+        # Dedup while preserving order so the stored list is canonical.
+        canonical = _merge_unique([], labels)
+        self._db.begin()
+        try:
+            prior = self.list_labels(import_id)
+            added = [x for x in canonical if x not in prior]
+            removed = [x for x in prior if x not in canonical]
+            self._upsert_labels(import_id, canonical, actor)
+            for label in added:
+                self._audit.record_audit_event(
+                    action="import_label.add",
+                    target=(*self._LABEL_AUDIT_TARGET, import_id),
+                    before={"labels": prior},
+                    after={"labels": canonical, "label": label},
+                    actor=actor,
+                )
+            for label in removed:
+                self._audit.record_audit_event(
+                    action="import_label.remove",
+                    target=(*self._LABEL_AUDIT_TARGET, import_id),
+                    before={"labels": prior, "label": label},
+                    after={"labels": canonical},
+                    actor=actor,
+                )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        return canonical
+
+    def _mutate_labels(
+        self,
+        *,
+        import_id: str,
+        actor: str,
+        mutate: Callable[[list[str]], list[str]],
+        audit_action: str,
+        changed_only: Callable[[list[str], list[str]], list[str]],
+    ) -> list[str]:
+        """Atomic read-modify-write helper for add/remove."""
+        self._db.begin()
+        try:
+            prior = self.list_labels(import_id)
+            new = mutate(prior)
+            self._upsert_labels(import_id, new, actor)
+            for label in changed_only(prior, new):
+                self._audit.record_audit_event(
+                    action=audit_action,
+                    target=(*self._LABEL_AUDIT_TARGET, import_id),
+                    before={"labels": prior},
+                    after={"labels": new, "label": label},
+                    actor=actor,
+                )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+        return new
+
+    def _upsert_labels(self, import_id: str, labels: list[str], actor: str) -> None:
+        """INSERT or UPDATE the single ``app.imports`` row for ``import_id``."""
+        self._db.conn.execute(
+            """
+            INSERT INTO app.imports (import_id, labels, updated_at, updated_by)
+            VALUES (?, ?, NOW(), ?)
+            ON CONFLICT (import_id) DO UPDATE SET
+                labels = EXCLUDED.labels,
+                updated_at = NOW(),
+                updated_by = EXCLUDED.updated_by
+            """,
+            [import_id, labels, actor],
+        )
+
+
+def _merge_unique(prior: list[str], additions: list[str]) -> list[str]:
+    """Return ``prior + additions`` with duplicates dropped, order preserved."""
+    seen = set(prior)
+    out = list(prior)
+    for label in additions:
+        if label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out

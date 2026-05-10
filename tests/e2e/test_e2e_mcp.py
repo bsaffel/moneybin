@@ -198,6 +198,40 @@ class TestReportsNetworthTools:
                 assert "reports_networth_history" in tool_names
 
 
+class TestCurationTools:
+    """Curation MCP tools (notes, tags, splits, manual create, audit) are registered."""
+
+    async def test_curation_tools_registered(self, mcp_env: dict[str, str]) -> None:
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                tool_names = {t.name for t in tools_result.tools}
+
+                expected = {
+                    "transactions_create",
+                    "transactions_notes_add",
+                    "transactions_notes_edit",
+                    "transactions_notes_delete",
+                    "transactions_tags_set",
+                    "transactions_tags_rename",
+                    "transactions_splits_set",
+                    "import_labels_set",
+                    "system_audit_list",
+                }
+                missing = expected - tool_names
+                assert not missing, f"Missing curation tools: {missing}"
+
+
 class TestNamespaceResources:
     """MCP resource registration smoke tests."""
 
@@ -220,6 +254,26 @@ class TestNamespaceResources:
                 resources_result = await session.list_resources()
                 resource_uris = {str(r.uri) for r in resources_result.resources}
                 assert "accounts://summary" in resource_uris
+
+    async def test_recent_curation_resource_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """moneybin://recent-curation resource is registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resources_result = await session.list_resources()
+                resource_uris = {str(r.uri) for r in resources_result.resources}
+                assert "moneybin://recent-curation" in resource_uris
 
     async def test_networth_summary_resource_registered(
         self, mcp_env: dict[str, str]

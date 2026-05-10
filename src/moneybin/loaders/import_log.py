@@ -15,6 +15,7 @@ from typing import Literal
 from moneybin.database import Database
 from moneybin.tables import (
     IMPORT_LOG,
+    MANUAL_TRANSACTIONS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_INSTITUTIONS,
@@ -27,7 +28,9 @@ from moneybin.tables import (
 logger = logging.getLogger(__name__)
 
 
-_SourceType = Literal["csv", "tsv", "excel", "parquet", "feather", "pipe", "ofx"]
+_SourceType = Literal[
+    "csv", "tsv", "excel", "parquet", "feather", "pipe", "ofx", "manual"
+]
 
 
 # Allowlist mapping source_type → raw tables that carry rows for that type.
@@ -42,6 +45,7 @@ _REVERT_TABLES: dict[str, list[TableRef]] = {
     "feather": _TABULAR_RAW_TABLES,
     "pipe": _TABULAR_RAW_TABLES,
     "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES, OFX_INSTITUTIONS],
+    "manual": [MANUAL_TRANSACTIONS],
 }
 
 
