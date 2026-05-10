@@ -31,6 +31,7 @@ from moneybin.metrics.registry import (
     CATEGORIZE_BULK_DURATION_SECONDS,
     CATEGORIZE_BULK_ERRORS_TOTAL,
     CATEGORIZE_BULK_ITEMS_TOTAL,
+    CATEGORIZE_MATCH_OUTCOME_TOTAL,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import (
@@ -129,7 +130,7 @@ class RedactedTransaction:
     is_transfer: bool
     transfer_pair_id: str | None
     payment_channel: str | None
-    amount_sign: str  # '+' or '-'
+    amount_sign: Literal["+", "-"]
 
 
 @dataclass(slots=True)
@@ -403,8 +404,6 @@ def _match_text(
     description_present and memo_present control the "shape" label on the
     match-outcome metric so callers can attribute matches by signal source.
     """
-    from moneybin.metrics.registry import CATEGORIZE_MATCH_OUTCOME_TOTAL
-
     if description_present and memo_present:
         shape = "both"
     elif memo_present:
@@ -1113,7 +1112,10 @@ class CategorizationService:
         queries during a bulk loop. Both default to ``None`` for non-bulk callers.
         ``txn_row_override`` is ``(description, amount, account_id, memo)``.
         """
-        memo: str | None = None
+        description: str
+        amount: float | None
+        account_id: str | None
+        memo: str | None
         if txn_row_override is not None:
             description, amount, account_id, memo = txn_row_override
         else:
@@ -1125,9 +1127,15 @@ class CategorizationService:
                 ).fetchone()
             except duckdb.CatalogException:
                 return None
-            if not txn_row or not (txn_row[0] or txn_row[3]):
+            if not txn_row:
                 return None
-            description, amount, account_id, memo = txn_row
+            # DuckDB row values are dynamically typed; normalize to the shapes
+            # match_first_rule expects.
+            raw_desc, raw_amt, raw_acct, raw_memo = txn_row
+            description = str(raw_desc) if raw_desc else ""
+            amount = float(raw_amt) if raw_amt is not None else None
+            account_id = str(raw_acct) if raw_acct is not None else None
+            memo = str(raw_memo) if raw_memo else None
         if not description and not memo:
             return None
         rules = (
@@ -1135,13 +1143,7 @@ class CategorizationService:
         )
         if not rules:
             return None
-        return self.match_first_rule(
-            rules,
-            str(description) if description else "",
-            float(amount) if amount is not None else None,
-            str(account_id) if account_id is not None else None,
-            str(memo) if memo else None,
-        )
+        return self.match_first_rule(rules, description, amount, account_id, memo)
 
     def apply_rules(self) -> int:
         """Apply active categorization rules to uncategorized transactions.
