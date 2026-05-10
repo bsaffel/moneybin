@@ -189,7 +189,7 @@ class RuleCreationResult:
 
 
 class BulkCategorizationItem(BaseModel):
-    """One row of input for ``CategorizationService.bulk_categorize``.
+    """One row of input for ``CategorizationService.categorize_items``.
 
     Validated at every boundary (CLI, MCP). The service refuses untyped dicts.
     """
@@ -233,7 +233,7 @@ def _validate_items[T: BaseModel](
     Shared by ``validate_bulk_items`` and ``validate_rule_items``: per-item
     failures contribute an ``error_details`` entry but do not abort the batch.
     The ``id_field`` is the per-row identity surfaced in error dicts so callers
-    can correlate failures (e.g., ``transaction_id`` for bulk_categorize,
+    can correlate failures (e.g., ``transaction_id`` for categorize_items,
     ``name`` for rule creation).
     """
     if not isinstance(raw, list):
@@ -660,7 +660,7 @@ class CategorizationService:
 
     # -- Categorization core --
 
-    def bulk_categorize(
+    def categorize_items(
         self, items: Sequence[BulkCategorizationItem]
     ) -> CategorizationResult:
         """Assign categories to multiple transactions with merchant auto-creation.
@@ -682,14 +682,14 @@ class CategorizationService:
         """
         _start = perf_counter()
         try:
-            return self._bulk_categorize_inner(items)
+            return self._categorize_items_inner(items)
         except Exception:
             CATEGORIZE_BULK_ERRORS_TOTAL.inc()
             raise
         finally:
             CATEGORIZE_BULK_DURATION_SECONDS.observe(perf_counter() - _start)
 
-    def _bulk_categorize_inner(
+    def _categorize_items_inner(
         self, items: Sequence[BulkCategorizationItem]
     ) -> CategorizationResult:
         applied = 0
@@ -895,7 +895,7 @@ class CategorizationService:
                 applied += 1
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 errors += 1
-                logger.exception(f"bulk_categorize failed for transaction {txn_id!r}")
+                logger.exception(f"categorize_items failed for transaction {txn_id!r}")
                 error_details.append({
                     "transaction_id": txn_id,
                     "reason": "Failed to apply category — check logs for details.",

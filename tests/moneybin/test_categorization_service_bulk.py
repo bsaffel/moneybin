@@ -125,7 +125,7 @@ class TestValidateItems:
 
 @pytest.fixture
 def db_mock_bulk_friendly() -> MagicMock:
-    """Mock Database returning plausible empty results for bulk_categorize."""
+    """Mock Database returning plausible empty results for categorize_items."""
     db = MagicMock()
     cursor = MagicMock()
     cursor.fetchall.return_value = []
@@ -148,7 +148,7 @@ class TestBulkQueryCount:
             for i in range(5)
         ]
         svc = CategorizationService(db_mock_bulk_friendly)
-        result = svc.bulk_categorize(items)
+        result = svc.categorize_items(items)
         assert result.applied + result.errors + result.skipped == len(items)
 
         rule_queries = sum(

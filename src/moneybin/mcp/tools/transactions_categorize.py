@@ -116,7 +116,7 @@ def transactions_categorize_apply(
         ).to_envelope(0)
 
     validated, parse_errors = validate_bulk_items(items)
-    result = CategorizationService(get_database()).bulk_categorize(validated)
+    result = CategorizationService(get_database()).categorize_items(validated)
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(items))
 

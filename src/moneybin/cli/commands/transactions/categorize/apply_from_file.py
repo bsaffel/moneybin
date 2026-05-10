@@ -104,7 +104,7 @@ def categorize_apply_from_file(
         with handle_cli_errors() as db:
             from moneybin.services.categorization_service import CategorizationService
 
-            result = CategorizationService(db).bulk_categorize(items)
+            result = CategorizationService(db).categorize_items(items)
     else:
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
     result.merge_parse_errors(parse_errors)

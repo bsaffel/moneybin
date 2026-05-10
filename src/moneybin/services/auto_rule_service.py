@@ -1,6 +1,6 @@
 """Auto-rule lifecycle service: pattern extraction, proposal tracking, override detection.
 
-Observes user/AI categorizations recorded via ``CategorizationService.bulk_categorize``,
+Observes user/AI categorizations recorded via ``CategorizationService.categorize_items``,
 stages pattern → category proposals in ``app.proposed_rules``, promotes approved
 proposals into active rules in ``app.categorization_rules`` with
 ``created_by='auto_rule'``, and deactivates rules whose categories the user has
@@ -154,7 +154,7 @@ class AutoRuleService:
 
     All public methods are independent of ``CategorizationService``'s public
     surface; callers wire them up through their own command/tool layer (CLI,
-    MCP). Hooks called from ``CategorizationService.bulk_categorize`` use a
+    MCP). Hooks called from ``CategorizationService.categorize_items`` use a
     lazy import on the categorization side to keep imports one-directional.
     """
 
@@ -190,7 +190,7 @@ class AutoRuleService:
         ``merchant_id`` lets callers pass an already-resolved merchant so the
         merchant's ``(raw_pattern, match_type)`` is used as the proposal
         pattern. Without it, ``_extract_pattern`` looks up the merchant from
-        ``transaction_categories``, but ``bulk_categorize`` calls this hook
+        ``transaction_categories``, but ``categorize_items`` calls this hook
         before that row exists — so omitting the parameter forces the
         description fallback for every fresh categorization.
 
@@ -217,7 +217,7 @@ class AutoRuleService:
 
         # Merchant coverage is only a reason to skip when there is no
         # in-progress proposal for this pattern. Otherwise tracking proposals
-        # could be permanently stuck below threshold once bulk_categorize
+        # could be permanently stuck below threshold once categorize_items
         # creates the merchant mapping during the first categorization.
         if existing is None and self._merchant_mapping_covers(
             pattern, category, subcategory, context=context
@@ -438,7 +438,7 @@ class AutoRuleService:
         sample_cap = settings.auto_rule_sample_txn_cap
 
         # Fast-path: skip the override scan entirely when no auto-rules exist.
-        # bulk_categorize calls this on every batch, so a one-row probe avoids
+        # categorize_items calls this on every batch, so a one-row probe avoids
         # an unnecessary aggregate scan in the common pre-promotion case.
         if not self._db.execute(
             f"""
