@@ -33,7 +33,6 @@ FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="inte
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
-AGG_NET_WORTH = TableRef("core", "agg_net_worth", audience="interface")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")

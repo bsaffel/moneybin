@@ -6,7 +6,6 @@ import pytest
 
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
-    AGG_NET_WORTH,
     AUDIT_LOG,
     BALANCE_ASSERTIONS,
     BRIDGE_TRANSFERS,
@@ -52,7 +51,6 @@ EXPECTED_INTERFACE = {
     TRANSACTION_CATEGORIES.full_name,
     FCT_BALANCES.full_name,
     FCT_BALANCES_DAILY.full_name,
-    AGG_NET_WORTH.full_name,
     ACCOUNT_SETTINGS.full_name,
     BALANCE_ASSERTIONS.full_name,
     TRANSACTION_TAGS.full_name,

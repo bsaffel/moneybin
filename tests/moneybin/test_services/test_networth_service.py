@@ -11,17 +11,18 @@ from moneybin.database import Database
 from moneybin.services.networth_service import NetworthService
 
 
-def _seed_agg_net_worth(db: Database, rows: list[dict[str, object]]) -> None:
-    """Manually CREATE TABLE + INSERT rows into core.agg_net_worth.
+def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None:
+    """Manually CREATE TABLE + INSERT rows into reports.net_worth.
 
     Bypasses SQLMesh for unit-test speed. The SQLMesh model is actually a VIEW
     over fct_balances_daily JOIN dim_accounts; we substitute a TABLE with the
-    same shape. Schema must match `sqlmesh/models/core/agg_net_worth.sql`'s
+    same shape. Schema must match `sqlmesh/models/reports/net_worth.sql`'s
     SELECT projection.
     """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(
         """
-        CREATE TABLE IF NOT EXISTS core.agg_net_worth (
+        CREATE TABLE IF NOT EXISTS reports.net_worth (
             balance_date DATE,
             net_worth DECIMAL(18, 2),
             account_count INTEGER,
@@ -33,7 +34,7 @@ def _seed_agg_net_worth(db: Database, rows: list[dict[str, object]]) -> None:
     for r in rows:
         db.execute(
             """
-            INSERT INTO core.agg_net_worth
+            INSERT INTO reports.net_worth
             (balance_date, net_worth, account_count, total_assets, total_liabilities)
             VALUES (?, ?, ?, ?, ?)
             """,
@@ -111,7 +112,7 @@ class TestCurrent:
 
     @pytest.mark.unit
     def test_current_returns_latest_snapshot(self, db: Database) -> None:
-        _seed_agg_net_worth(
+        _seed_reports_net_worth(
             db,
             [
                 {
@@ -140,7 +141,7 @@ class TestCurrent:
 
     @pytest.mark.unit
     def test_current_as_of_date(self, db: Database) -> None:
-        _seed_agg_net_worth(
+        _seed_reports_net_worth(
             db,
             [
                 {
@@ -168,7 +169,7 @@ class TestCurrent:
 
     @pytest.mark.unit
     def test_current_empty_returns_zero(self, db: Database) -> None:
-        _seed_agg_net_worth(db, [])
+        _seed_reports_net_worth(db, [])
         _seed_dim_accounts(db, [])
         _seed_fct_balances_daily(db, [])
         svc = NetworthService(db)
@@ -179,7 +180,7 @@ class TestCurrent:
 
     @pytest.mark.unit
     def test_current_per_account_breakdown(self, db: Database) -> None:
-        _seed_agg_net_worth(
+        _seed_reports_net_worth(
             db,
             [
                 {
@@ -252,7 +253,7 @@ class TestHistory:
 
     @pytest.mark.unit
     def test_history_monthly(self, db: Database) -> None:
-        _seed_agg_net_worth(
+        _seed_reports_net_worth(
             db,
             [
                 {
@@ -289,7 +290,7 @@ class TestHistory:
 
     @pytest.mark.unit
     def test_history_first_period_change_is_none(self, db: Database) -> None:
-        _seed_agg_net_worth(
+        _seed_reports_net_worth(
             db,
             [
                 {

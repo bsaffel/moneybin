@@ -333,12 +333,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "core.agg_net_worth": [
+    "reports.net_worth": [
         Example(
             question="Net worth today",
             sql="""
                 SELECT balance_date, net_worth, account_count, total_assets, total_liabilities
-                FROM core.agg_net_worth
+                FROM reports.net_worth
                 ORDER BY balance_date DESC
                 LIMIT 1
             """,
@@ -349,7 +349,7 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT
                     STRFTIME(balance_date, '%Y-%m') AS month,
                     MAX(net_worth) AS end_of_month_net_worth
-                FROM core.agg_net_worth
+                FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
                 GROUP BY month
                 ORDER BY month

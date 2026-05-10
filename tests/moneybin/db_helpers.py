@@ -152,8 +152,8 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
 );
 """
 
-CORE_AGG_NET_WORTH_DDL = """\
-CREATE VIEW IF NOT EXISTS core.agg_net_worth AS
+REPORTS_NET_WORTH_DDL = """\
+CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
     CURRENT_DATE AS balance_date,
     0.00::DECIMAL(18, 2) AS net_worth,
@@ -179,7 +179,7 @@ def create_core_tables(db: Database) -> None:
     db.execute(CORE_FCT_TRANSACTION_LINES_DDL)
     db.execute(CORE_FCT_BALANCES_DDL)
     db.execute(CORE_FCT_BALANCES_DAILY_DDL)
-    db.execute(CORE_AGG_NET_WORTH_DDL)
+    db.execute(REPORTS_NET_WORTH_DDL)
 
 
 def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
@@ -197,7 +197,7 @@ def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(CORE_FCT_TRANSACTION_LINES_DDL)
     conn.execute(CORE_FCT_BALANCES_DDL)
     conn.execute(CORE_FCT_BALANCES_DAILY_DDL)
-    conn.execute(CORE_AGG_NET_WORTH_DDL)
+    conn.execute(REPORTS_NET_WORTH_DDL)
 
 
 # Table and column comments for core tables — mirror the SQLMesh model

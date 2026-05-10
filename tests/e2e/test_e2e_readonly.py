@@ -223,7 +223,7 @@ class TestDBReadOnlyCommands:
     # ── accounts ─────────────────────────────────────────────────────────
     # Subprocess-level boot tests: verify the commands wire and parse flags
     # correctly. The shared e2e_profile has no transforms run yet so
-    # core.dim_accounts / fct_balances_daily / agg_net_worth do not exist;
+    # core.dim_accounts / fct_balances_daily / reports.net_worth do not exist;
     # read commands that require those tables are covered at help-tier only.
     # Write commands (rename, include, archive, set, balance assert/delete/list)
     # are covered in test_e2e_mutating.py which uses isolated envs.
