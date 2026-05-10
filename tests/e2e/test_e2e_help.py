@@ -104,6 +104,16 @@ _HELP_COMMANDS: list[list[str]] = [
     ["accounts", "balance", "reconcile"],
     ["reports", "networth", "show"],
     ["reports", "networth", "history"],
+    ["reports", "recurring"],
+    ["reports", "recurring", "show"],
+    ["reports", "merchants"],
+    ["reports", "merchants", "show"],
+    ["reports", "uncategorized"],
+    ["reports", "uncategorized", "show"],
+    ["reports", "large-transactions"],
+    ["reports", "large-transactions", "show"],
+    ["reports", "balance-drift"],
+    ["reports", "balance-drift", "show"],
     ["export"],
 ]
 

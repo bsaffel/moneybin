@@ -17,6 +17,11 @@ from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.services.networth_service import NetworthService
 
 from ..stubs import _not_implemented
+from .balance_drift import balance_drift_app
+from .large_transactions import large_transactions_app
+from .merchants import merchants_app
+from .recurring import recurring_app
+from .uncategorized import uncategorized_app
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,11 @@ app = typer.Typer(
 
 networth_app = typer.Typer(help="Net worth reports", no_args_is_help=True)
 app.add_typer(networth_app, name="networth")
+app.add_typer(recurring_app, name="recurring")
+app.add_typer(merchants_app, name="merchants")
+app.add_typer(uncategorized_app, name="uncategorized")
+app.add_typer(large_transactions_app, name="large-transactions")
+app.add_typer(balance_drift_app, name="balance-drift")
 
 
 @networth_app.command("show")
