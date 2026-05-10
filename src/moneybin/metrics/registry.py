@@ -249,3 +249,11 @@ DB_QUERY_DURATION_SECONDS = Histogram(
     "Duration of database queries in seconds",
     ["operation"],
 )
+
+# ── Audit log ────────────────────────────────────────────────────────────────
+
+audit_events_emitted_total = Counter(
+    "moneybin_audit_events_emitted_total",
+    "Audit log events written to app.audit_log.",
+    ["action", "actor"],
+)

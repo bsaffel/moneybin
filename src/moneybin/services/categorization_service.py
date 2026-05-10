@@ -42,6 +42,7 @@ from moneybin.services._text import (
     build_match_text,
     redact_for_llm,
 )
+from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -631,9 +632,136 @@ class CategorizationService:
     behavior is consistent across surfaces.
     """
 
-    def __init__(self, db: Database) -> None:
-        """Bind the service to a database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Bind the service to a database connection.
+
+        ``audit`` is keyword-only so existing positional callers continue
+        unchanged. Used by ``set_category`` / ``clear_category`` to emit
+        ``category.set`` / ``category.clear`` audit events alongside the
+        ``app.transaction_categories`` mutation.
+        """
         self._db = db
+        self._audit = audit if audit is not None else AuditService(db)
+
+    # -- Per-transaction category writes (Req 25–31 audit emission) --
+
+    _CATEGORY_AUDIT_TARGET = ("app", "transaction_categories")
+
+    def set_category(
+        self,
+        transaction_id: str,
+        *,
+        category: str,
+        subcategory: str | None = None,
+        categorized_by: str = "user",
+        actor: str,
+    ) -> None:
+        """Upsert a transaction's user category and emit ``category.set`` audit.
+
+        Captures the prior row (or NULL) as ``before`` and the new shape as
+        ``after`` so the audit trail can reconstruct overwrites. Mutation +
+        audit row commit atomically.
+        """
+        self._db.begin()
+        try:
+            self.set_category_in_active_txn(
+                transaction_id,
+                category=category,
+                subcategory=subcategory,
+                categorized_by=categorized_by,
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def set_category_in_active_txn(
+        self,
+        transaction_id: str,
+        *,
+        category: str,
+        subcategory: str | None,
+        categorized_by: str,
+        actor: str,
+    ) -> None:
+        """``set_category`` body without txn boundaries.
+
+        Use when the caller already owns a transaction and wants to batch
+        multiple category writes atomically with their own audit chain.
+        """
+        prior = self._fetch_category_row(transaction_id)
+        self._db.conn.execute(
+            f"""
+            INSERT INTO {TRANSACTION_CATEGORIES.full_name}
+              (transaction_id, category, subcategory,
+               categorized_at, categorized_by)
+            VALUES (?, ?, ?, NOW(), ?)
+            ON CONFLICT (transaction_id) DO UPDATE SET
+                category = EXCLUDED.category,
+                subcategory = EXCLUDED.subcategory,
+                categorized_at = NOW(),
+                categorized_by = EXCLUDED.categorized_by
+            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
+            [transaction_id, category, subcategory, categorized_by],
+        )
+        after = {
+            "category": category,
+            "subcategory": subcategory,
+            "categorized_by": categorized_by,
+        }
+        self._audit.record_audit_event(
+            action="category.set",
+            target=(*self._CATEGORY_AUDIT_TARGET, transaction_id),
+            before=prior,
+            after=after,
+            actor=actor,
+        )
+
+    def clear_category(self, transaction_id: str, *, actor: str) -> None:
+        """Delete a transaction's category row and emit ``category.clear`` audit.
+
+        No-op (and no audit event) when no row exists.
+        """
+        self._db.begin()
+        try:
+            prior = self._fetch_category_row(transaction_id)
+            if prior is None:
+                self._db.commit()
+                return
+            self._db.conn.execute(
+                f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",  # noqa: S608  # TableRef constant
+                [transaction_id],
+            )
+            self._audit.record_audit_event(
+                action="category.clear",
+                target=(*self._CATEGORY_AUDIT_TARGET, transaction_id),
+                before=prior,
+                after=None,
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def _fetch_category_row(self, transaction_id: str) -> dict[str, Any] | None:
+        """Return the current category row for ``transaction_id`` as a JSON-safe dict."""
+        row = self._db.conn.execute(
+            f"""
+            SELECT category, subcategory, categorized_by
+              FROM {TRANSACTION_CATEGORIES.full_name}
+             WHERE transaction_id = ?
+            """,  # noqa: S608  # TableRef constant
+            [transaction_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "category": row[0],
+            "subcategory": row[1],
+            "categorized_by": row[2],
+        }
 
     # -- Merchant lookup / management --
 
@@ -1164,7 +1292,8 @@ class CategorizationService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT transaction_id, description, amount, account_id, memo
+                SELECT transaction_id, description, amount, account_id,
+                       memo, source_type
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE transaction_id IN ({placeholders})
                 """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
@@ -1176,6 +1305,7 @@ class CategorizationService:
                     amount=float(row[2]) if row[2] is not None else None,
                     account_id=str(row[3]) if row[3] is not None else None,
                     memo=row[4],
+                    source_type=str(row[5]) if row[5] is not None else None,
                 )
                 for row in rows
             }

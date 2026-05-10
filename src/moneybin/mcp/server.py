@@ -58,6 +58,14 @@ mcp = FastMCP(
 
         Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_summary.
 
+        Curation surface (visible at connect):
+        - transactions_create — bulk manual entry (1..100 atomic)
+        - transactions_notes_{add,edit,delete} — note threads on a transaction
+        - transactions_tags_set, transactions_tags_rename — declarative tagging + global rename
+        - transactions_splits_set — declarative split replacement
+        - import_labels_set — declarative labels on an import_id
+        - system_audit_list — unified audit log (filter by actor, action_pattern, target, time)
+
         Getting oriented:
         - system_status — what data exists, freshness, pending review queues
         - reports_spending_summary — income vs expenses snapshot by month
@@ -168,6 +176,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.accounts import register_accounts_tools
     from moneybin.mcp.tools.budget import register_budget_tools
     from moneybin.mcp.tools.categories import register_categories_tools
+    from moneybin.mcp.tools.curation import register_curation_tools
     from moneybin.mcp.tools.discover import register_discover_tool
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
@@ -192,6 +201,7 @@ def register_core_tools() -> None:
     register_transactions_tools(mcp)
     register_transactions_categorize_tools(mcp)
     register_transactions_categorize_assist_tools(mcp)
+    register_curation_tools(mcp)
     register_categories_tools(mcp)
     register_merchants_tools(mcp)
     register_import_tools(mcp)

@@ -2,11 +2,11 @@
 
 ## Status
 
-draft
+implemented
 
 ## Goal
 
-Establish the user-state layer on top of MoneyBin's canonical transaction store: manual transaction entry (CLI single, MCP bulk), free-text multi-note threads, multi-tag annotations, split-via-annotation as an interim before first-class splits, import-batch labels, and a unified edit-history audit log. All on a new and growing `app.*` user-state schema. The existing `raw → prep → core` ingestion contract — its matching, dedup, merge, and categorization behaviors — is unchanged: manual transactions enter via one new raw source. `core.fct_transactions` is extended *additively* with curation-presentation columns (LIST/STRUCT joins from `app.*`), and a sibling `core.vw_transaction_lines` view is added; see §Data Model.
+Establish the user-state layer on top of MoneyBin's canonical transaction store: manual transaction entry (CLI single, MCP bulk), free-text multi-note threads, multi-tag annotations, split-via-annotation as an interim before first-class splits, import-batch labels, and a unified edit-history audit log. All on a new and growing `app.*` user-state schema. The existing `raw → prep → core` ingestion contract — its matching, dedup, merge, and categorization behaviors — is unchanged: manual transactions enter via one new raw source. `core.fct_transactions` is extended *additively* with curation-presentation columns (LIST/STRUCT joins from `app.*`), and a sibling `core.fct_transaction_lines` view is added; see §Data Model.
 
 This spec is the curator's surface — the row-by-row grooming that turns "data MoneyBin has" into "data the user trusts and uses."
 
@@ -38,7 +38,7 @@ This spec ships the bundle as a single coherent surface. It is the lead M2A spec
 
 | Decision | Rationale | Documented in |
 |---|---|---|
-| Verified curator flag dropped | Overlaps with future transaction-level reconciliation; deferred to avoid inventing a parallel marker | §Out of Scope; cross-spec edit to `net-worth.md` |
+| Verified curator flag dropped | Primary reason: conflicts with the brand's "integrity by construction" claim — a per-row `verified` flag creates an implicit "unverified" category that the user must worry about, and per-row grooming is a poor curator workflow at any meaningful volume. Trophy metrics belong on system-asserted invariants (`moneybin doctor` in M2C), not user assertions. Secondary reason: overlap with future transaction-level reconciliation. | §Out of Scope; cross-spec edit to `net-worth.md` |
 | `app.audit_log` is unified (subsumes `app.ai_audit_log` table) | One audit surface, one retention story; AI-specific fields ride `context_json` | §Data Model; cross-spec edit to `privacy-and-ai-trust.md`, `mcp-architecture.md` |
 | Manual transactions live in `raw.manual_transactions` (mirror tabular shape) | Existing pipeline runs unchanged; `source_type='manual'` discriminator drives matcher and auto-rule exemptions | §Data Model, §Pipeline Integration |
 | Curation tables stored relationally in `app.*`, presented as DuckDB nested types in `core.fct_transactions` | Write ergonomics from flat tables, consumer ergonomics from `LIST`/`LIST(STRUCT)` | §Architectural Pattern |
@@ -80,7 +80,7 @@ A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) i
 
 1. Users can create one or more manual transactions via CLI (`transactions create`, single-txn) or MCP (`transactions_create`, bulk 1–100 per call).
 2. Manual transactions land in a new `raw.manual_transactions` table mirroring the `raw.tabular_transactions` column shape.
-3. A new `prep.stg_manual__transactions` staging view is added to the existing `prep.int_transactions__unioned` model. No prep or core models *on the manual-ingestion path* change shape beyond adding this staging view. (Curation-presentation columns added to `core.fct_transactions` and the new `core.vw_transaction_lines` view are described in §Data Model — additive joins from `app.*`, not changes to the ingestion contract.)
+3. A new `prep.stg_manual__transactions` staging view is added to the existing `prep.int_transactions__unioned` model. No prep or core models *on the manual-ingestion path* change shape beyond adding this staging view. (Curation-presentation columns added to `core.fct_transactions` and the new `core.fct_transaction_lines` view are described in §Data Model — additive joins from `app.*`, not changes to the ingestion contract.)
 4. Each manual-entry CLI invocation or MCP bulk call writes exactly one row to `raw.import_log` with `source_type='manual'`, `format_name='manual_entry'`, and the resulting `import_id` is reusable for batch labeling and reversal.
 5. Manual transactions enter the standard pipeline: transform → match → categorize. They are reversible via the existing `import revert <import_id>` flow.
 6. Manual transactions are excluded from cross-source dedup (Tier 3) candidate selection. They are never proposed as matches against imported rows in either direction. Explicit user merge via `transactions matches confirm` is the only path that pairs them.
@@ -106,7 +106,7 @@ A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) i
 17. Each transaction can be split into 1+ child rows recorded in `app.transaction_splits(split_id, transaction_id, amount, category, subcategory, note, ord, created_at, created_by)`.
 18. The sum of child amounts is **not** strictly enforced equal to parent amount on every write. Real curator workflow is iterative ("split off the $60 supplies portion now, come back tomorrow when I remember the gas"). The CLI prints a warning when sum is unbalanced after each `add`/`remove`. Strict reconciliation is deferred to the future transaction-reconciliation spec.
 19. `core.fct_transactions` exposes splits as `LIST(STRUCT(split_id, amount, category, subcategory, note))` ordered by `ord`, plus `split_count` and `has_splits` scalars. The parent row stays at full amount — splits never replace the parent in this view.
-20. A new convenience view `core.vw_transaction_lines` flattens splits via `UNNEST(t.splits)` from `core.fct_transactions`, producing 1 row per non-split transaction and N rows per split transaction. Spending-by-category reports use this view; consumers wanting transaction-level grain stay on `core.fct_transactions`.
+20. A new convenience view `core.fct_transaction_lines` flattens splits via `UNNEST(t.splits)` from `core.fct_transactions`, producing 1 row per non-split transaction and N rows per split transaction. Spending-by-category reports use this view; consumers wanting transaction-level grain stay on `core.fct_transactions`.
 21. The view reads through `core.fct_transactions` (not directly from `app.transaction_splits`) — preserving the rule that consumers don't touch `app.*` directly.
 
 ### Import labels
@@ -331,13 +331,13 @@ FROM enriched;
 
 **NULL semantics.** When no curation rows exist, the LIST columns are NULL (not empty list). DuckDB's `UNNEST(NULL)` produces zero rows, so iterating consumers work without ceremony. `'x' = ANY(NULL)` is NULL, which filters out untagged rows correctly in WHERE clauses. Use the `_count` scalars (`note_count > 0`, `tag_count > 0`, `split_count > 0`) for "is anything there?" predicates to avoid 3-valued logic on `len(...)`.
 
-### New SQLMesh model: `core.vw_transaction_lines`
+### New SQLMesh model: `core.fct_transaction_lines`
 
 Split-expanded grain. 1 row per unsplit transaction, N rows per split transaction.
 
 ```sql
 MODEL (
-  name core.vw_transaction_lines,
+  name core.fct_transaction_lines,
   kind VIEW,
   grain (transaction_id, line_id)
 );
@@ -471,7 +471,7 @@ transactions splits remove <split_id>                 [--yes]
 transactions splits clear <txn_id>                    [--yes]   Removes all splits on a transaction
 ```
 
-The sum invariant is warn-not-block by design — real curator workflow is iterative. Reports using `core.vw_transaction_lines` tolerate partial splits gracefully (the unsplit remainder shows under the parent's category).
+The sum invariant is warn-not-block by design — real curator workflow is iterative. Reports using `core.fct_transaction_lines` tolerate partial splits gracefully (the unsplit remainder shows under the parent's category).
 
 ### `transactions audit` — entity-scoped audit query
 
@@ -552,7 +552,7 @@ Nine new tools, two prompts, one new resource and two extended. Catalog grows fr
 |---|---|---|
 | `moneybin://recent-curation` | Last 50 audit events across any target. For "what did I touch this week?" ambient awareness. | medium |
 | `moneybin://uncategorized-queue` (extended) | Existing planned resource. This spec adds `notes`, `tags` to the per-row payload so the LLM can see prior curator context when proposing categorizations. | medium |
-| `moneybin://schema` (extended) | Existing resource. This spec registers new curation columns and tables: `core.fct_transactions.{notes, note_count, tags, tag_count, splits, split_count, has_splits}`, `core.vw_transaction_lines`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`, `app.imports`, `app.audit_log`. Includes example queries demonstrating LIST/STRUCT use (`'tax:business' = ANY(tags)`, `UNNEST(notes)`, `note_count > 0` rather than `len(notes) > 0`). | low |
+| `moneybin://schema` (extended) | Existing resource. This spec registers new curation columns and tables: `core.fct_transactions.{notes, note_count, tags, tag_count, splits, split_count, has_splits}`, `core.fct_transaction_lines`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`, `app.imports`, `app.audit_log`. Includes example queries demonstrating LIST/STRUCT use (`'tax:business' = ANY(tags)`, `UNNEST(notes)`, `note_count > 0` rather than `len(notes) > 0`). | low |
 
 Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. Critical reads have a tool path: `system_audit_list` is the tool equivalent of `moneybin://recent-curation`. The schema catalog has its `sql_schema` tool mirror per `mcp-sql-discoverability.md`.
 
@@ -619,7 +619,7 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 - `src/moneybin/sql/schema/app_imports.sql`
 - `src/moneybin/sql/schema/app_audit_log.sql`
 - `sqlmesh/models/prep/stg_manual__transactions.sql` — staging view feeding `int_transactions__unioned`
-- `sqlmesh/models/core/vw_transaction_lines.sql` — split-expanded grain
+- `sqlmesh/models/core/fct_transaction_lines.sql` — split-expanded grain
 - `src/moneybin/services/audit_service.py` — `AuditService.record_audit_event`, query methods
 - `src/moneybin/cli/transactions.py` (new commands) — `transactions_create`, `transactions_notes_*`, `transactions_tags_*`, `transactions_splits_*`, `transactions_audit`
 - `src/moneybin/cli/system.py` (new commands) — `system_audit_list`, `system_audit_show`
@@ -664,7 +664,7 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 | Manual storage location | `raw.manual_transactions` (mirrors tabular shape, runs through standard pipeline) |
 | Curation presentation | DuckDB nested types (`LIST`, `LIST(STRUCT)`) on `core.fct_transactions` |
 | NULL vs empty list | NULL when no curation data; consumers use `_count > 0` predicates |
-| Splits view source | `core.vw_transaction_lines` reads from `core.fct_transactions` (not `app.*` directly) |
+| Splits view source | `core.fct_transaction_lines` reads from `core.fct_transactions` (not `app.*` directly) |
 | Notes shape | Multi-note (extending existing single-note table) |
 | Tag table shape | Flat M:N with slug-pattern VARCHAR (`namespace:value` optional) |
 | Import labels shape | Single consolidated `app.imports` row with `LIST(VARCHAR)` labels column |
@@ -727,7 +727,7 @@ Four new scenario YAMLs:
 - **`scenario_manual_entry_dedup.yaml`** — manual transaction created on same date/amount as a Plaid import row. Assertion: `core.fct_transactions` shows two distinct rows (no auto-merge); `app.match_decisions` has no candidate pair for them.
 - **`scenario_manual_entry_auto_rule_training.yaml`** — manual transaction with user-supplied category. Assertion: auto-rule generator does NOT propose a rule based on it. Contrast scenario where same category edit on an imported row DOES generate a proposal.
 - **`scenario_audit_log_idempotency.yaml`** — sequence of curation operations (add note, edit note, add tag, rename tag, add split). Assertion: re-running the exact sequence produces the same final state but doubles the audit log row count (audit captures every event, with idempotent re-applications marked `context_json.noop=true`).
-- **`scenario_split_via_annotation.yaml`** — import known-amount transaction → add 3 splits → query `core.vw_transaction_lines` → assert 3 rows with correct amounts and categories. Also verify parent row in `core.fct_transactions` keeps full amount and `has_splits=true`.
+- **`scenario_split_via_annotation.yaml`** — import known-amount transaction → add 3 splits → query `core.fct_transaction_lines` → assert 3 rows with correct amounts and categories. Also verify parent row in `core.fct_transactions` keeps full amount and `has_splits=true`.
 
 All four scenarios use the new `curator` persona where applicable.
 
@@ -745,7 +745,7 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 
 ## Out of Scope
 
-- **Verified curator flag.** Per-transaction trusted-data markers (cleared / reconciled / curator-attested) are deferred to a future transaction-level reconciliation spec. The verified-flag concept was considered here and dropped to avoid inventing a parallel marker that overlaps with reconciliation. When transaction-level reconciliation is designed, decisions about "does cleared count as trusted?" / "do auto-rule training and re-cat protection ride on cleared, reconciled, or a separate curator badge?" should be made together. Cross-link from `net-worth.md` Out of Scope.
+- **Verified curator flag.** Per-transaction trusted-data markers (cleared / reconciled / curator-attested) are dropped from this spec. The primary reason is brand-narrative: a per-row `verified` flag creates an implicit "unverified" category that the user must worry about, undermining MoneyBin's "integrity by construction" claim. Manually grooming each row to assert correctness is also a poor workflow at any meaningful volume. The trust-narrative work belongs on system-asserted invariants surfaced through `moneybin doctor` (M2C) — continuous integrity checks (FK, sign convention, balanced transfers, reconciliation deltas) producing a "✅ N invariants passing across M transactions" artifact. The secondary reason for dropping the flag is overlap with future transaction-level reconciliation: when *that* spec is designed, decisions about "does cleared count as trusted?" / "do auto-rule training and re-cat protection ride on cleared, reconciled, or a separate curator badge?" should be made together with a different vocabulary (`reconciled` / `matched_to_statement`) that doesn't collide with the integrity-by-construction framing. Cross-link from `net-worth.md` Out of Scope.
 - **First-class splits.** `app.transaction_splits` and the `core.fct_transactions.splits LIST(STRUCT)` shape are designed to evolve into first-class splits without a schema fork. The evolution itself is its own spec — owned by whichever future work surfaces split-aware imports (e.g., Plaid line items) or split-aware budgeting.
 - **Transaction attachments / receipts.** Deferred until a UI surface exists. Receipt blob storage outside the encrypted DuckDB file is its own design problem.
 - **Category-id migration.** `app.transaction_splits.category` stays VARCHAR, matching how `app.transaction_categories` stores categories today. A future spec migrates both to `category_id` references when categories become first-class entities.

@@ -351,6 +351,7 @@ class MatchingSettings(BaseModel):
     )
     source_priority: list[str] = Field(
         default=[
+            "manual",
             "plaid",
             "csv",
             "excel",

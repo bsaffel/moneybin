@@ -29,6 +29,7 @@ class TableRef(NamedTuple):
 # -- Core layer (canonical tables built by SQLMesh transforms) --
 DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")
+FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="interface")
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
@@ -45,6 +46,7 @@ W2_FORMS = TableRef("raw", "w2_forms")
 TABULAR_TRANSACTIONS = TableRef("raw", "tabular_transactions")
 TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
 IMPORT_LOG = TableRef("raw", "import_log")
+MANUAL_TRANSACTIONS = TableRef("raw", "manual_transactions")
 
 # -- App tables (application-managed data) --
 ACCOUNT_SETTINGS = TableRef("app", "account_settings", audience="interface")
@@ -52,6 +54,10 @@ BALANCE_ASSERTIONS = TableRef("app", "balance_assertions", audience="interface")
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")
 BUDGETS = TableRef("app", "budgets", audience="interface")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
+TRANSACTION_TAGS = TableRef("app", "transaction_tags", audience="interface")
+TRANSACTION_SPLITS = TableRef("app", "transaction_splits", audience="interface")
+IMPORTS = TableRef("app", "imports", audience="interface")
+AUDIT_LOG = TableRef("app", "audit_log", audience="interface")
 # view: seeds.categories ∪ app.user_categories, with overrides applied
 CATEGORIES = TableRef("app", "categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")

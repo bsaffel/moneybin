@@ -90,11 +90,12 @@ def _seed_transaction(
     txn_id: str,
     description: str = "STARBUCKS",
     merchant_id: str | None = None,
+    source_type: str = "csv",
 ) -> None:
     db.execute(
         "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES (?, 'a1', DATE '2026-01-01', -5.00, ?, 'csv')",
-        [txn_id, description],
+        "VALUES (?, 'a1', DATE '2026-01-01', -5.00, ?, ?)",
+        [txn_id, description, source_type],
     )
     db.execute(
         "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by, merchant_id) "
@@ -415,3 +416,73 @@ def test_auto_rule_results_are_pure_data_carriers(cls_name: str) -> None:
     assert not hasattr(cls, "to_envelope"), (
         f"{cls_name}.to_envelope must live in mcp/adapters/, not on the service dataclass"
     )
+
+
+# --- Manual-source exemption (transaction-curation spec Req 7) ---------------
+
+
+def test_manual_user_category_does_not_train_auto_rules(real_db: Database) -> None:
+    """User categorizations on manual rows must not seed auto-rule proposals."""
+    _seed_transaction(real_db, "t1", source_type="manual")
+    pid = AutoRuleService(real_db).record_categorization(
+        "t1", "Food & Drink", subcategory="Coffee"
+    )
+    assert pid is None
+    count_row = real_db.execute(
+        f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name}"  # noqa: S608  # building test input string, not executing SQL
+    ).fetchone()
+    assert count_row is not None and count_row[0] == 0
+
+
+def test_imported_user_category_still_trains_auto_rules(real_db: Database) -> None:
+    """Negative-control: same setup with an imported (csv) row still proposes."""
+    _seed_transaction(real_db, "t1", source_type="csv")
+    pid = AutoRuleService(real_db).record_categorization(
+        "t1", "Food & Drink", subcategory="Coffee"
+    )
+    assert pid is not None
+    rows = real_db.execute(
+        f"SELECT merchant_pattern, category, subcategory FROM {PROPOSED_RULES.full_name}"  # noqa: S608  # building test input string, not executing SQL
+    ).fetchall()
+    assert rows == [("STARBUCKS", "Food & Drink", "Coffee")]
+
+
+def test_manual_user_category_does_not_count_as_override(
+    real_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manual-row corrections do not count toward override threshold.
+
+    User corrections on manual rows must not deactivate auto-rules.
+    """
+    monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+    clear_settings_cache()
+    monkeypatch.setattr(config_module, "_current_profile", None)
+    monkeypatch.setattr(config_module, "_current_settings", None)
+    set_current_profile("test")
+
+    # Approve an auto-rule for STARBUCKS -> Food & Drink (from an imported row).
+    _seed_transaction(real_db, "t1", source_type="csv")
+    svc = AutoRuleService(real_db)
+    pid = svc.record_categorization("t1", "Food & Drink")
+    assert pid is not None
+    svc.accept(accept=[pid])
+
+    # Two override corrections — but on MANUAL rows. These should be ignored.
+    for tid in ("m1", "m2"):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'manual')",
+            [tid],
+        )
+        real_db.execute(
+            "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
+            "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+            [tid],
+        )
+
+    deactivated = svc.check_overrides()
+    assert deactivated == 0
+    active_row = real_db.execute(
+        "SELECT is_active FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()
+    assert active_row == (True,)

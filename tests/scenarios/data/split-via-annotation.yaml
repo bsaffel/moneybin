@@ -1,0 +1,23 @@
+scenario: split-via-annotation
+description: >
+  Importing a known-amount transaction and adding 3 splits to it must
+  surface as 3 split rows in ``core.fct_transaction_lines`` (line_kind =
+  'split') while the parent row in ``core.fct_transactions`` retains
+  the full amount and ``has_splits = TRUE``. Splits sum to the parent
+  amount (test fixture is balanced — sum-of-children == parent.amount).
+  This is the smoke test for Task 9's SQLMesh fact extension and the
+  ``app.transaction_splits → core.fct_transaction_lines`` UNNEST view:
+  it covers both the LIST(STRUCT) presentation column on the parent
+  fact and the split-grain consumer view that downstream analytics
+  read.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+
+pipeline: []
+assertions: []
+gates:
+  required_assertions: all
