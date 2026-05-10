@@ -81,6 +81,40 @@ def score_match_shape(match_type: str) -> int:
     return _MATCH_SHAPE_SCORES.get(match_type, 0)
 
 
+# Categorization source priority — single source of truth. Lower number =
+# higher authority. See categorization-matching-mechanics.md §Source
+# precedence. The SQL CASE expression in write_categorization is generated
+# from this dict via _priority_case_sql() so the Python dict stays the
+# canonical reference and SQL cannot drift from it.
+CategorizedBy = Literal[
+    "user", "rule", "auto_rule", "migration", "ml", "plaid", "seed", "ai"
+]
+
+_SOURCE_PRIORITY: dict[str, int] = {
+    "user": 1,
+    "rule": 2,
+    "auto_rule": 3,
+    "migration": 4,
+    "ml": 5,
+    "plaid": 6,
+    "seed": 7,
+    "ai": 8,
+}
+
+
+def _priority_case_sql(column_expr: str) -> str:
+    """Render a SQL CASE expression mapping categorized_by → numeric priority.
+
+    Used by write_categorization's ON CONFLICT DO UPDATE WHERE clause to
+    compare the EXCLUDED row's priority against the existing row's. Reading
+    from _SOURCE_PRIORITY guarantees the SQL and Python ladders never drift.
+    """
+    branches = " ".join(
+        f"WHEN '{src}' THEN {prio}" for src, prio in _SOURCE_PRIORITY.items()
+    )
+    return f"CASE {column_expr} {branches} END"
+
+
 def validate_match_type(match_type: str) -> MatchType:
     """Validate and narrow a match_type string at a service-boundary call site."""
     if match_type not in _VALID_MATCH_TYPES:
@@ -118,7 +152,7 @@ class WriteOutcome:
     """
 
     written: bool
-    skipped_reason: str | None = None
+    skipped_reason: Literal["lower_priority_source"] | None = None
 
 
 @dataclass(slots=True)
@@ -451,6 +485,20 @@ def _fetch_merchants(
         return None
 
 
+def _match_shape_label(description_present: bool, memo_present: bool) -> str:
+    """Return the ``shape`` metric label for a matcher call.
+
+    Both ``_match_exemplar`` and ``_match_text`` fire
+    ``CATEGORIZE_MATCH_OUTCOME_TOTAL`` with a label describing which input
+    signals were present. Extracted so the mapping lives in one place.
+    """
+    if description_present and memo_present:
+        return "both"
+    if memo_present:
+        return "memo_only"
+    return "description_only"
+
+
 def _match_exemplar(
     match_text: str,
     merchants: list[MerchantRow],
@@ -465,12 +513,7 @@ def _match_exemplar(
     first), so user merchants win and exact-string membership fires before
     pattern-based shapes. Records ``outcome='exemplar'`` on a hit.
     """
-    if description_present and memo_present:
-        shape = "both"
-    elif memo_present:
-        shape = "memo_only"
-    else:
-        shape = "description_only"
+    shape = _match_shape_label(description_present, memo_present)
 
     if not match_text:
         return None
@@ -517,12 +560,7 @@ def _match_text(
     skipped — exemplar lookup is handled by :func:`_match_exemplar`, which
     callers invoke first.
     """
-    if description_present and memo_present:
-        shape = "both"
-    elif memo_present:
-        shape = "memo_only"
-    else:
-        shape = "description_only"
+    shape = _match_shape_label(description_present, memo_present)
 
     if not match_text:
         CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
@@ -713,18 +751,16 @@ class CategorizationService:
         leaves the set unchanged. Updates the per-merchant gauge to surface
         any merchant whose set is approaching the soft-cap signal (200).
         """
-        self._db.execute(
+        # Single round-trip: DuckDB supports RETURNING on UPDATE, so the
+        # post-update size flows back without a separate SELECT.
+        row = self._db.execute(
             f"""
             UPDATE {USER_MERCHANTS.full_name}
             SET exemplars = list_distinct(list_append(exemplars, ?))
             WHERE merchant_id = ?
+            RETURNING len(exemplars)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant
             [match_text, merchant_id],
-        )
-        row = self._db.execute(
-            f"SELECT len(exemplars) FROM {USER_MERCHANTS.full_name} "
-            "WHERE merchant_id = ?",  # noqa: S608  # TableRef constant
-            [merchant_id],
         ).fetchone()
         new_size = int(row[0]) if row and row[0] is not None else 0
         MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(new_size)
@@ -950,14 +986,14 @@ class CategorizationService:
             permitted update); ``False`` with ``skipped_reason='lower_priority_source'``
             if a higher-priority categorization already exists.
         """
-        # The CASE block is duplicated by design — the precedence comparison is
-        # needed at exactly this one call site, and a SQL/Python UDF would be
-        # over-abstraction (per categorization-matching-mechanics.md
-        # §Source precedence). Promote to a UDF only if a second call site
-        # appears.
+        # The SQL CASE expression is generated from _SOURCE_PRIORITY so the
+        # ladder lives in exactly one place. See _priority_case_sql.
+        existing_table = TRANSACTION_CATEGORIES.full_name
+        excluded_priority = _priority_case_sql("EXCLUDED.categorized_by")
+        existing_priority = _priority_case_sql(f"{existing_table}.categorized_by")
         cursor = self._db.execute(
             f"""
-            INSERT INTO {TRANSACTION_CATEGORIES.full_name}
+            INSERT INTO {existing_table}
                 (transaction_id, category, subcategory, categorized_at,
                  categorized_by, merchant_id, rule_id, confidence)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
@@ -969,19 +1005,9 @@ class CategorizationService:
                 merchant_id = EXCLUDED.merchant_id,
                 rule_id = EXCLUDED.rule_id,
                 confidence = EXCLUDED.confidence
-            WHERE
-                (CASE EXCLUDED.categorized_by
-                   WHEN 'user' THEN 1 WHEN 'rule' THEN 2
-                   WHEN 'auto_rule' THEN 3 WHEN 'migration' THEN 4
-                   WHEN 'ml' THEN 5 WHEN 'plaid' THEN 6
-                   WHEN 'seed' THEN 7 WHEN 'ai' THEN 8 END)
-                <= (CASE {TRANSACTION_CATEGORIES.full_name}.categorized_by
-                      WHEN 'user' THEN 1 WHEN 'rule' THEN 2
-                      WHEN 'auto_rule' THEN 3 WHEN 'migration' THEN 4
-                      WHEN 'ml' THEN 5 WHEN 'plaid' THEN 6
-                      WHEN 'seed' THEN 7 WHEN 'ai' THEN 8 END)
+            WHERE {excluded_priority} <= {existing_priority}
             RETURNING transaction_id
-            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
+            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant; CASE built from _SOURCE_PRIORITY
             [
                 transaction_id,
                 category,

@@ -183,6 +183,10 @@ CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS = Histogram(
 CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED = Histogram(
     "moneybin_categorize_apply_post_commit_rows_affected",
     "Number of rows the snowball fan-out categorized per batch.",
+    # Default Prometheus buckets target seconds (max 10) and collapse all
+    # batch sizes >10 into +Inf. These buckets span the expected 0–50k row
+    # range so the distribution stays useful on dashboards.
+    buckets=(0, 1, 5, 25, 100, 500, 2_500, 10_000, 50_000, float("inf")),
 )
 
 # Per-merchant labels can grow with the number of system-created merchants

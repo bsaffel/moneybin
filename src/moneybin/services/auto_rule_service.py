@@ -153,10 +153,9 @@ class BulkRecordingContext:
     ) -> bool:
         """Mirror of ``AutoRuleService._merchant_mapping_covers`` against the cached list."""
         for merchant in self.merchant_mappings:
-            # Tolerate either the legacy 6-tuple or the post-exemplars 7-tuple
-            # shape from _fetch_merchants. exemplars is unused here — coverage
-            # is asked about pattern matches, not exact-string membership.
-            _mid = merchant[0]
+            # _fetch_merchants always returns 7-tuples; exemplars (index 6) is
+            # unused here — coverage is about pattern matches, not exact-string
+            # membership.
             raw_pattern = merchant[1]
             match_type = merchant[2]
             m_cat = merchant[4]

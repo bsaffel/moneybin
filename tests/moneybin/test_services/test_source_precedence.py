@@ -15,7 +15,12 @@ from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.services.auto_rule_service import AutoRuleService
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization_service import (
+    _SOURCE_PRIORITY as _PRIORITY,  # pyright: ignore[reportPrivateUsage]  # test reads the canonical ladder
+)
+from moneybin.services.categorization_service import (
+    CategorizationService,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -128,18 +133,6 @@ def test_same_source_overwrites_itself(real_db: Database, fresh_txn: str) -> Non
     ).fetchone()
     assert row is not None
     assert row[0] == "Second"
-
-
-_PRIORITY = {
-    "user": 1,
-    "rule": 2,
-    "auto_rule": 3,
-    "migration": 4,
-    "ml": 5,
-    "plaid": 6,
-    "seed": 7,
-    "ai": 8,
-}
 
 
 def test_full_precedence_ladder(real_db: Database, fresh_txn: str) -> None:
