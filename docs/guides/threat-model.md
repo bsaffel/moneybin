@@ -56,7 +56,7 @@ This one matters specifically because MoneyBin is AI-native. **When you ask Clau
 
 Concretely:
 
-- Local stdio MCP (`moneybin mcp config generate --client claude-desktop`) sends data to Anthropic when you ask Claude.
+- Local stdio MCP (`moneybin mcp install --client claude-desktop`) sends data to Anthropic when you ask Claude.
 - ChatGPT Desktop's MCP equivalent sends data to OpenAI.
 - The hosted Streamable HTTP MCP (M3D + M3E) authenticates via Bearer token, but the AI vendor still sees the data needed to answer your prompt.
 

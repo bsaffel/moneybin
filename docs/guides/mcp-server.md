@@ -5,11 +5,11 @@ The MCP ([Model Context Protocol](https://modelcontextprotocol.io)) server expos
 ## Connecting to AI Clients
 
 ```bash
-# Generate config for a specific client (prints JSON)
-moneybin mcp config generate --client claude-desktop
+# Print the config snippet for a specific client (no write)
+moneybin mcp install --client claude-desktop --print
 
 # Install directly into the client's config file
-moneybin mcp config generate --client claude-desktop --install
+moneybin mcp install --client claude-desktop
 ```
 
 Supported clients: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), and ChatGPT Desktop. See [Configuring MCP Clients](mcp-clients.md) for install paths, the concurrency model, and Claude Code's per-session opt-in.
@@ -144,8 +144,8 @@ Every tool returns the standard response envelope: `summary` (row counts, trunca
 # Start the MCP server (used by AI clients, not typically run manually)
 moneybin mcp serve
 
-# Generate or inspect MCP config
-moneybin mcp config generate --help
+# Install MoneyBin into an MCP client's config (or print the snippet with --print)
+moneybin mcp install --help
 ```
 
 The MCP server uses stdio transport by default — the AI client starts and communicates with it through stdin/stdout. You don't normally need to run `mcp serve` directly; the client handles this based on the generated config.

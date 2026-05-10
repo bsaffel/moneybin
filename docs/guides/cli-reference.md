@@ -163,7 +163,7 @@ moneybin db shell
 ### Connect an AI assistant
 
 ```bash
-moneybin mcp config generate --client claude-desktop --install
+moneybin mcp install --client claude-desktop
 ```
 
 ### Verify the pipeline (developer)
