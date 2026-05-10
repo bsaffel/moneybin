@@ -129,3 +129,37 @@ class TestMCPToolDecorator:
 
         with pytest.raises(TypeError, match="expected ResponseEnvelope"):
             await my_tool()
+
+
+@pytest.mark.unit
+def test_mcp_tool_default_annotations() -> None:
+    """Defaults: read_only=True, destructive=False, idempotent=True, open_world=False."""
+
+    @mcp_tool(sensitivity="low")
+    def example() -> ResponseEnvelope:  # type: ignore[return]
+        ...
+
+    assert example._mcp_read_only is True  # type: ignore[attr-defined]
+    assert example._mcp_destructive is False  # type: ignore[attr-defined]
+    assert example._mcp_idempotent is True  # type: ignore[attr-defined]
+    assert example._mcp_open_world is False  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+def test_mcp_tool_explicit_annotations() -> None:
+    """Explicit kwargs override defaults."""
+
+    @mcp_tool(
+        sensitivity="medium",
+        read_only=False,
+        destructive=True,
+        idempotent=False,
+        open_world=True,
+    )
+    def example() -> ResponseEnvelope:  # type: ignore[return]
+        ...
+
+    assert example._mcp_read_only is False  # type: ignore[attr-defined]
+    assert example._mcp_destructive is True  # type: ignore[attr-defined]
+    assert example._mcp_idempotent is False  # type: ignore[attr-defined]
+    assert example._mcp_open_world is True  # type: ignore[attr-defined]

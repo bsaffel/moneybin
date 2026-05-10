@@ -37,11 +37,33 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 logger = logging.getLogger(__name__)
 
 
+class _UnsetType:
+    """Sentinel for distinguishing 'inherit settings default' from 'explicit None'."""
+
+    _singleton: _UnsetType | None = None
+
+    def __new__(cls) -> _UnsetType:
+        if cls._singleton is None:
+            cls._singleton = super().__new__(cls)
+        return cls._singleton
+
+    def __repr__(self) -> str:
+        return "_UNSET"
+
+
+_UNSET = _UnsetType()
+
+
 def _get_timeout_seconds() -> float:
     """Read the configured timeout. Indirected for test monkeypatching."""
     from moneybin.config import get_settings
 
     return get_settings().mcp.tool_timeout_seconds
+
+
+def _find_list_params(fn: Callable[..., Any]) -> list[str]:
+    """Find parameters annotated as list/Sequence/Collection (filled in Task 1.6)."""
+    return []
 
 
 def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
@@ -82,8 +104,23 @@ def mcp_tool(
     *,
     sensitivity: Literal["low", "medium", "high"],
     domain: str | None = None,
+    read_only: bool = True,
+    destructive: bool = False,
+    idempotent: bool = True,
+    open_world: bool = False,
+    max_items: int | None | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool with a sensitivity tier and optional domain.
+
+    Args:
+        sensitivity: Sensitivity tier (low/medium/high).
+        domain: Optional progressive-disclosure tag.
+        read_only: MCP readOnlyHint — default True (most MoneyBin tools are queries).
+        destructive: MCP destructiveHint — irreversible state change.
+        idempotent: MCP idempotentHint — safe to retry without side effects.
+        open_world: MCP openWorldHint — defaults to False (closed-world).
+        max_items: Per-tool override for ``MCPConfig.max_items``. ``None``
+            disables the cap. Sentinel ``_UNSET`` inherits from settings.
 
     Tools with a ``domain`` start hidden; ``moneybin_discover`` enables them
     per-session via FastMCP tag visibility. Every tool is wrapped in a
@@ -101,6 +138,8 @@ def mcp_tool(
             raise TypeError(
                 f"{fn.__name__} is a sync generator — MCP tools must return ResponseEnvelope directly"
             )
+
+        list_params = _find_list_params(fn)
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
@@ -147,6 +186,12 @@ def mcp_tool(
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]
+        wrapper._mcp_read_only = read_only  # type: ignore[attr-defined]
+        wrapper._mcp_destructive = destructive  # type: ignore[attr-defined]
+        wrapper._mcp_idempotent = idempotent  # type: ignore[attr-defined]
+        wrapper._mcp_open_world = open_world  # type: ignore[attr-defined]
+        wrapper._mcp_max_items = max_items  # type: ignore[attr-defined]
+        wrapper._mcp_list_params = list_params  # type: ignore[attr-defined]
         return wrapper
 
     return decorator
