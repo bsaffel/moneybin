@@ -38,7 +38,7 @@ def _uncategorized_count() -> int:
         return 0
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
 def inbox_sync() -> ResponseEnvelope:
     """Drain the active profile's import inbox."""
     from moneybin.config import get_settings
@@ -85,7 +85,8 @@ def register_inbox_tools(mcp: FastMCP) -> None:
         inbox_sync,
         "import_inbox_sync",
         "Drain the active profile's import inbox; move successes to "
-        "processed/ and failures to failed/ with structured error sidecars.",
+        "processed/ and failures to failed/ with structured error sidecars. "
+        "Writes to raw.* source tables and moves files within the inbox directory; revert by manually moving processed files back into inbox/<account-slug>/ and accepting that already-imported source rows are deduplicated on the next sync.",
     )
     register(
         mcp,
