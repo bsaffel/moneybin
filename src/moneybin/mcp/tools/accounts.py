@@ -356,6 +356,42 @@ def accounts_balance_assertion_delete(
     )
 
 
+# ─── Resolution (free-text → account_id) ───────────────────────────────────
+
+
+@mcp_tool(sensitivity="low")
+def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
+    """Resolve a free-text account reference to an account_id.
+
+    Fuzzy-matches against display_name, account_subtype, and institution_name
+    from core.dim_accounts. Use this to convert natural-language references
+    ("my Chase account", "checking", "Schwab brokerage") into an account_id
+    before calling tools that require one.
+
+    Args:
+        query: Free-text account reference.
+        limit: Maximum number of candidates to return (default 5).
+
+    Returns ranked candidates with confidence scores in [0, 1]. Empty result
+    or low top-match confidence (< 0.6) emits an action hint.
+    """
+    matches = AccountService(get_database()).resolve(query=query, limit=limit)
+    actions: list[str] = []
+    if not matches:
+        actions.append(
+            f"No accounts matched '{query}'. Try a broader query or use accounts_list."
+        )
+    elif matches[0].confidence < 0.6:
+        actions.append(
+            "Top match has low confidence; verify with the user before taking action."
+        )
+    return build_envelope(
+        data=[m.to_dict() for m in matches],
+        sensitivity="low",
+        actions=actions,
+    )
+
+
 # ─── Registration ──────────────────────────────────────────────────────────
 
 
@@ -459,4 +495,13 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "accounts_balance_assertion_delete",
         "Delete a manual balance assertion. "
         "Hard-deletes from app.balance_assertions — permanent, no revert; re-create with accounts_balance_assert.",
+    )
+    register(
+        mcp,
+        accounts_resolve,
+        "accounts_resolve",
+        "Resolve a free-text account reference (e.g., 'my Chase account', "
+        "'checking') to an account_id. Returns ranked candidates with "
+        "confidence scores. Use this before tools that require an account_id "
+        "when you only have a natural-language reference.",
     )
