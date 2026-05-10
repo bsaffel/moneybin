@@ -16,6 +16,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
     CLEAR,
     AccountService,
@@ -278,6 +279,47 @@ def accounts_set(
         f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}",
         err=True,
     )
+
+
+@app.command("resolve")
+def accounts_resolve(
+    query: str = typer.Argument(
+        ..., help="Free-text account reference (e.g., 'my Chase account')"
+    ),
+    limit: int = typer.Option(
+        5, "--limit", "-n", help="Maximum number of candidates to return"
+    ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
+    """Resolve a free-text account reference to ranked account_id candidates.
+
+    Fuzzy-matches against display_name, account_subtype, and institution_name.
+    Use this before commands that need an account_id when you only have a
+    natural-language reference.
+    """
+    with handle_cli_errors() as db:
+        matches = AccountService(db).resolve(query=query, limit=limit)
+
+    if output == OutputFormat.JSON:
+        envelope = build_envelope(
+            data=[m.to_dict() for m in matches],
+            sensitivity="low",
+        )
+        typer.echo(envelope.to_json())
+        return
+
+    if not matches:
+        if not quiet:
+            typer.echo(f"No accounts matched '{query}'.", err=True)
+        return
+    for m in matches:
+        subtype = m.account_subtype or "-"
+        institution = m.institution_name or "-"
+        typer.echo(
+            f"{m.account_id}\t{m.display_name}\t{subtype}\t{institution}\t"
+            f"{m.confidence:.3f}"
+        )
 
 
 app.add_typer(balance.app, name="balance")

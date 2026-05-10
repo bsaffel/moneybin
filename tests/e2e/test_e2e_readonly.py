@@ -238,6 +238,12 @@ class TestDBReadOnlyCommands:
         result.assert_success()
         assert "account_id" in result.stdout.lower() or "ACCOUNT_ID" in result.stdout
 
+    def test_accounts_resolve_help(self) -> None:
+        result = run_cli("accounts", "resolve", "--help")
+        result.assert_success()
+        assert "--limit" in result.stdout
+        assert "--output" in result.stdout
+
     def test_accounts_balance_show_help(self) -> None:
         result = run_cli("accounts", "balance", "show", "--help")
         result.assert_success()

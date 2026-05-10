@@ -72,6 +72,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["accounts", "archive"],
     ["accounts", "unarchive"],
     ["accounts", "set"],
+    ["accounts", "resolve"],
     ["accounts", "balance", "show"],
     ["accounts", "balance", "history"],
     ["accounts", "balance", "assert"],
