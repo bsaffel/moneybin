@@ -56,7 +56,7 @@ mcp = FastMCP(
         - import, sync — data ingestion (sync_pull/status/connect available; OAuth flows return URLs the client opens)
         - privacy — consent and audit
 
-        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_summary.
+        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_get.
 
         Curation surface (visible at connect):
         - transactions_create — bulk manual entry (1..100 atomic)
@@ -68,7 +68,7 @@ mcp = FastMCP(
 
         Getting oriented:
         - system_status — what data exists, freshness, pending review queues
-        - reports_spending_summary — income vs expenses snapshot by month
+        - reports_spending_get — monthly spending trend with MoM/YoY/trailing deltas
 
         Conventions:
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.

@@ -1,6 +1,6 @@
 """Net worth service.
 
-Cross-account daily aggregation reads from core.agg_net_worth (which already
+Cross-account daily aggregation reads from reports.net_worth (which already
 filters by include_in_net_worth and archived). History supports daily/weekly/
 monthly intervals with period-over-period change.
 """
@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
-from moneybin.tables import AGG_NET_WORTH, DIM_ACCOUNTS, FCT_BALANCES_DAILY
+from moneybin.tables import DIM_ACCOUNTS, FCT_BALANCES_DAILY, REPORTS_NET_WORTH
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class NetworthService:
     ) -> NetWorthSnapshot:
         """Latest net worth snapshot, optionally as-of a date.
 
-        Returns a zero-snapshot if no agg_net_worth rows exist.
+        Returns a zero-snapshot if no reports.net_worth rows exist.
         """
         as_of_clause = ""
         params: list[object] = []
@@ -69,7 +69,7 @@ class NetworthService:
             params.append(as_of_date)
         sql = f"""
             SELECT balance_date, net_worth, total_assets, total_liabilities, account_count
-            FROM {AGG_NET_WORTH.full_name}
+            FROM {REPORTS_NET_WORTH.full_name}
             {as_of_clause}
             ORDER BY balance_date DESC
             LIMIT 1
@@ -142,7 +142,7 @@ class NetworthService:
                 SELECT
                     {bucket_expr} AS period,
                     LAST(net_worth ORDER BY balance_date) AS end_net_worth
-                FROM {AGG_NET_WORTH.full_name}
+                FROM {REPORTS_NET_WORTH.full_name}
                 WHERE balance_date BETWEEN ? AND ?
                 GROUP BY 1
             ),

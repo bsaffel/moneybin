@@ -3,7 +3,7 @@
    Reads from the resolved view in core.dim_accounts (per the canonical-dim
    rule in .claude/rules/database.md). */
 MODEL (
-  name core.agg_net_worth,
+  name reports.net_worth,
   kind VIEW
 );
 

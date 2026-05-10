@@ -160,12 +160,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "app.categories": [
+    "core.dim_categories": [
         Example(
             question="All active categories",
             sql="""
                 SELECT category_id, category, subcategory, description
-                FROM app.categories
+                FROM core.dim_categories
                 WHERE is_active
                 ORDER BY category, subcategory
             """,
@@ -238,12 +238,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "app.merchants": [
+    "core.dim_merchants": [
         Example(
             question="Merchants with their canonical names",
             sql="""
                 SELECT merchant_id, canonical_name, raw_pattern
-                FROM app.merchants
+                FROM core.dim_merchants
                 ORDER BY canonical_name
             """,
         ),
@@ -333,12 +333,12 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
-    "core.agg_net_worth": [
+    "reports.net_worth": [
         Example(
             question="Net worth today",
             sql="""
                 SELECT balance_date, net_worth, account_count, total_assets, total_liabilities
-                FROM core.agg_net_worth
+                FROM reports.net_worth
                 ORDER BY balance_date DESC
                 LIMIT 1
             """,
@@ -349,10 +349,106 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT
                     STRFTIME(balance_date, '%Y-%m') AS month,
                     MAX(net_worth) AS end_of_month_net_worth
-                FROM core.agg_net_worth
+                FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
                 GROUP BY month
                 ORDER BY month
+            """,
+        ),
+    ],
+    "reports.cash_flow": [
+        Example(
+            question="Monthly net cash flow across all accounts",
+            sql="""
+                SELECT year_month, SUM(net) AS total_net
+                FROM reports.cash_flow
+                GROUP BY year_month
+                ORDER BY year_month
+            """,
+        ),
+        Example(
+            question="Top outflow categories over the last 12 months",
+            sql="""
+                SELECT category, SUM(outflow) AS total_outflow
+                FROM reports.cash_flow
+                WHERE year_month >= date_trunc('month', current_date - INTERVAL 12 MONTH)
+                GROUP BY category
+                ORDER BY total_outflow ASC
+            """,
+        ),
+    ],
+    "reports.spending_trend": [
+        Example(
+            question="Latest month's spending with MoM/YoY deltas",
+            sql="""
+                SELECT year_month, category, total_spend, mom_pct, yoy_pct
+                FROM reports.spending_trend
+                WHERE year_month = (SELECT MAX(year_month) FROM reports.spending_trend)
+                ORDER BY total_spend DESC
+            """,
+        ),
+    ],
+    "reports.recurring_subscriptions": [
+        Example(
+            question="Active high-confidence subscriptions ordered by annualized cost",
+            sql="""
+                SELECT merchant_normalized, cadence, avg_amount, annualized_cost, confidence
+                FROM reports.recurring_subscriptions
+                WHERE status = 'active' AND confidence >= 0.7
+                ORDER BY annualized_cost DESC
+            """,
+        ),
+    ],
+    "reports.uncategorized_queue": [
+        Example(
+            question="Highest-impact uncategorized transactions",
+            sql="""
+                SELECT account_name, txn_date, amount, description, age_days, priority_score
+                FROM reports.uncategorized_queue
+                ORDER BY priority_score DESC
+                LIMIT 25
+            """,
+        ),
+    ],
+    "reports.merchant_activity": [
+        Example(
+            question="Top merchants by lifetime spend",
+            sql="""
+                SELECT merchant_normalized, total_spend, txn_count, top_category
+                FROM reports.merchant_activity
+                ORDER BY total_spend DESC
+                LIMIT 25
+            """,
+        ),
+    ],
+    "reports.large_transactions": [
+        Example(
+            question="Top 100 transactions by absolute amount",
+            sql="""
+                SELECT account_name, txn_date, amount, merchant_normalized, category
+                FROM reports.large_transactions
+                WHERE is_top_100
+                ORDER BY ABS(amount) DESC
+            """,
+        ),
+        Example(
+            question="Account-level outliers (modified z-score > 2.5)",
+            sql="""
+                SELECT account_name, txn_date, amount, amount_zscore_account
+                FROM reports.large_transactions
+                WHERE amount_zscore_account > 2.5
+                ORDER BY amount_zscore_account DESC
+            """,
+        ),
+    ],
+    "reports.balance_drift": [
+        Example(
+            question="Reconciliation drift sorted by absolute delta",
+            sql="""
+                SELECT account_name, assertion_date, asserted_balance, computed_balance, drift, status
+                FROM reports.balance_drift
+                WHERE status IN ('drift', 'warning')
+                ORDER BY drift_abs DESC
             """,
         ),
     ],
@@ -382,7 +478,7 @@ def build_schema_doc() -> dict[str, Any]:
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
     # Union tables and views — `duckdb_tables()` excludes views, but
-    # interface objects like `app.categories` are views (see seeds.py).
+    # interface objects like `core.dim_categories` are SQLMesh-managed views.
     rows = db.execute(
         f"""
         WITH interface_objects AS (

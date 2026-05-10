@@ -91,12 +91,12 @@ def test_build_schema_doc_includes_interface_views(
 
     Regression test: `duckdb_tables()` excludes views, so the catalog
     query must union it with `duckdb_views()` to surface objects like
-    `app.categories` (a view normally created via SQLMesh seeds; stubbed
-    in the fixture for tests).
+    `core.dim_categories` (a SQLMesh-managed view; stubbed in the fixture
+    for tests).
     """
     doc = build_schema_doc()
     names = {t["name"] for t in doc["tables"]}
-    assert "app.categories" in names
+    assert "core.dim_categories" in names
 
 
 def test_beyond_the_interface_query_executes(

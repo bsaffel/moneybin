@@ -53,6 +53,18 @@ def emit_json(key: str, payload: object) -> None:
     typer.echo(json.dumps({key: payload}, indent=2, default=str))
 
 
+def render_rich_table(cols: list[str], rows: list[tuple[object, ...]]) -> None:
+    """Render ``rows`` as a Rich table to stdout, with headers ``cols``."""
+    from rich.console import Console  # noqa: PLC0415 — defer heavy import
+    from rich.table import Table  # noqa: PLC0415 — defer heavy import
+
+    console = Console()
+    table = Table(*cols)
+    for row in rows:
+        table.add_row(*[str(v) if v is not None else "" for v in row])
+    console.print(table)
+
+
 @contextmanager
 def sqlmesh_command(
     operation: str, *, success: str | None = None

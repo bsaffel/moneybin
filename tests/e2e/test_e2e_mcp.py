@@ -60,7 +60,7 @@ class TestMCPServerBoot:
                 assert len(tool_names) > 0, "No tools registered"
 
                 # Core tools that should always be present (v2 names)
-                assert "reports_spending_summary" in tool_names
+                assert "reports_spending_get" in tool_names
                 assert "accounts_list" in tool_names
                 assert "system_status" in tool_names
                 assert "moneybin_discover" in tool_names
@@ -195,7 +195,43 @@ class TestReportsNetworthTools:
                 tool_names = {t.name for t in tools_result.tools}
 
                 assert "reports_networth_get" in tool_names
-                assert "reports_networth_history" in tool_names
+                assert "reports_networth_history_get" in tool_names
+
+    async def test_reports_view_backed_tools_registered(
+        self, mcp_env: dict[str, str]
+    ) -> None:
+        """The seven new reports_*_get tools backed by reports.* views are registered."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(mcp_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                tool_names = {t.name for t in tools_result.tools}
+
+                expected = {
+                    "reports_spending_get",
+                    "reports_cashflow_get",
+                    "reports_recurring_get",
+                    "reports_merchants_get",
+                    "reports_uncategorized_get",
+                    "reports_large_transactions_get",
+                    "reports_balance_drift_get",
+                }
+                missing = expected - tool_names
+                assert not missing, f"Missing reports view-backed tools: {missing}"
+
+                # v1 tools removed
+                assert "reports_spending_summary" not in tool_names
+                assert "reports_spending_by_category" not in tool_names
+                assert "reports_networth_history" not in tool_names
 
 
 class TestCurationTools:

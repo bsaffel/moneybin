@@ -44,7 +44,7 @@ class BudgetSetResult:
             sensitivity="low",
             actions=[
                 "Use reports_budget_status to see spending vs budget",
-                "Use reports_spending_by_category for category breakdown",
+                "Use reports_spending_get for category breakdown",
             ],
         )
 
@@ -85,7 +85,7 @@ class BudgetStatusResult:
             period=self.month,
             actions=[
                 "Use budget_set to adjust a budget target",
-                "Use reports_spending_by_category for detailed category breakdown",
+                "Use reports_spending_get for detailed category breakdown",
             ],
         )
 

@@ -92,7 +92,7 @@ enriched AS (
   FROM prep.int_transactions__merged AS t
   LEFT JOIN app.transaction_categories AS c
     ON t.transaction_id = c.transaction_id
-  LEFT JOIN app.merchants AS m
+  LEFT JOIN core.dim_merchants AS m
     ON c.merchant_id = m.merchant_id
   LEFT JOIN core.bridge_transfers AS bt_debit
     ON t.transaction_id = bt_debit.debit_transaction_id
@@ -114,7 +114,7 @@ SELECT
   amount_absolute, /* Absolute value of amount; avoids sign handling in aggregations */
   transaction_direction, /* Derived from amount sign: expense, income, or zero */
   description, /* Payee or merchant description from highest-priority source */
-  merchant_name, /* Normalized merchant name from app.merchants; falls back to source value */
+  merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
   memo, /* Additional notes from highest-priority source */
   category, /* Spending category; from app.transaction_categories when categorized, else source value */
   subcategory, /* Spending subcategory; from app.transaction_categories when categorized, else source value */
