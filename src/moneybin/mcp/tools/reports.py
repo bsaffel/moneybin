@@ -247,7 +247,6 @@ def register_reports_tools(mcp: FastMCP) -> None:
         reports_networth_get,
         "reports_networth_get",
         "Current or historical net worth snapshot with per-account breakdown. "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
@@ -255,7 +254,6 @@ def register_reports_tools(mcp: FastMCP) -> None:
         reports_networth_history_get,
         "reports_networth_history_get",
         "Net worth time series with period-over-period change (daily/weekly/monthly). "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(

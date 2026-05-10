@@ -834,6 +834,19 @@ class TestAccountServiceResolve:
         assert len(matches) == 2
 
     @pytest.mark.unit
+    def test_negative_limit_returns_empty(self, extended_db: Database) -> None:
+        """Negative limit returns empty.
+
+        Never the Python slice semantics ('all but the last N') that callers
+        would not expect from a max-candidates parameter.
+        """
+        _insert_dim_account(extended_db, "a1", display_name="Account One")
+        _insert_dim_account(extended_db, "a2", display_name="Account Two")
+        _insert_dim_account(extended_db, "a3", display_name="Account Three")
+        assert AccountService(extended_db).resolve("account", limit=-1) == []
+        assert AccountService(extended_db).resolve("account", limit=0) == []
+
+    @pytest.mark.unit
     def test_matches_against_subtype(self, extended_db: Database) -> None:
         """Match against account_subtype, not just display_name."""
         _insert_dim_account(

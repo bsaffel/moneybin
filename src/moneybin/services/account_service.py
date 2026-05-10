@@ -635,12 +635,14 @@ class AccountService:
 
         Scores each account against display_name, account_subtype, and
         institution_name using difflib.SequenceMatcher. Returns the top-`limit`
-        matches sorted by confidence descending.
+        matches sorted by confidence descending. ``limit < 1`` returns an empty
+        list — slicing with a negative value would silently return "all but the
+        last N" matches, which violates the documented max-candidates semantics.
 
         See docs/specs/mcp-tool-surface.md §accounts_resolve.
         """
         query_clean = query.lower().strip()
-        if not query_clean:
+        if not query_clean or limit < 1:
             return []
 
         rows = self._db.execute(

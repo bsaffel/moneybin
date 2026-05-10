@@ -287,7 +287,11 @@ def accounts_resolve(
         ..., help="Free-text account reference (e.g., 'my Chase account')"
     ),
     limit: int = typer.Option(
-        5, "--limit", "-n", help="Maximum number of candidates to return"
+        5,
+        "--limit",
+        "-n",
+        min=1,
+        help="Maximum number of candidates to return",
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
