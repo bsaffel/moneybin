@@ -127,26 +127,26 @@ class TestMCPConfig:
         assert "max_rows" in result.output or "rows" in result.output.lower()
 
 
-class TestMCPConfigGenerate:
-    """Tests for the mcp config generate command."""
+class TestMCPInstall:
+    """Tests for the mcp install command."""
 
-    def test_generate_claude_desktop(self, tmp_path: Path) -> None:
-        """Generates valid config for claude-desktop."""
+    def test_install_print_claude_desktop(self, tmp_path: Path) -> None:
+        """--print emits a valid snippet for claude-desktop without writing."""
         result = runner.invoke(
-            app, ["config", "generate", "--client", "claude-desktop"]
+            app, ["install", "--client", "claude-desktop", "--print"]
         )
         assert result.exit_code == 0
         assert "moneybin" in result.output.lower() or "MoneyBin" in result.output
 
-    def test_generate_default_client(self, tmp_path: Path) -> None:
-        """Generates config with default client when none specified."""
-        result = runner.invoke(app, ["config", "generate"])
+    def test_install_print_default_client(self, tmp_path: Path) -> None:
+        """--print works with the default client when none specified."""
+        result = runner.invoke(app, ["install", "--print"])
         assert result.exit_code == 0
 
-    def test_generate_with_install(
+    def test_install_default_writes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """--install writes config to client config file."""
+        """Install (no --print) writes config to client config file after confirm."""
         config_file = tmp_path / "claude_desktop_config.json"
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp._get_client_config_path",
@@ -154,15 +154,15 @@ class TestMCPConfigGenerate:
         )
         result = runner.invoke(
             app,
-            ["config", "generate", "--client", "claude-desktop", "--install"],
+            ["install", "--client", "claude-desktop"],
             input="y\n",
         )
         assert result.exit_code == 0
 
-    def test_generate_with_install_yes_flag(
+    def test_install_yes_skips_prompt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """--install --yes writes config without prompting."""
+        """--yes writes config without prompting."""
         config_file = tmp_path / "claude_desktop_config.json"
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp._get_client_config_path",
@@ -170,14 +170,14 @@ class TestMCPConfigGenerate:
         )
         result = runner.invoke(
             app,
-            ["config", "generate", "--client", "claude-desktop", "--install", "--yes"],
+            ["install", "--client", "claude-desktop", "--yes"],
         )
         assert result.exit_code == 0
 
-    def test_generate_with_install_creates_file(
+    def test_install_creates_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """--install actually writes the config file."""
+        """Install actually writes the config file by default."""
         config_file = tmp_path / "claude_desktop_config.json"
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp._get_client_config_path",
@@ -185,50 +185,64 @@ class TestMCPConfigGenerate:
         )
         runner.invoke(
             app,
-            ["config", "generate", "--client", "claude-desktop", "--install", "--yes"],
+            ["install", "--client", "claude-desktop", "--yes"],
         )
         assert config_file.exists()
 
-    def test_generate_with_profile(self, tmp_path: Path) -> None:
-        """--profile flag is accepted for generate command."""
+    def test_install_print_does_not_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--print emits the snippet but never touches the config file."""
+        config_file = tmp_path / "claude_desktop_config.json"
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp._get_client_config_path",
+            lambda client: config_file,  # type: ignore[reportUnknownLambdaType]
+        )
         result = runner.invoke(
             app,
-            ["config", "generate", "--client", "claude-desktop", "--profile", "work"],
+            ["install", "--client", "claude-desktop", "--print"],
+        )
+        assert result.exit_code == 0
+        assert not config_file.exists()
+
+    def test_install_with_profile(self, tmp_path: Path) -> None:
+        """--profile flag is accepted for the install command."""
+        result = runner.invoke(
+            app,
+            ["install", "--client", "claude-desktop", "--profile", "work", "--print"],
         )
         assert result.exit_code == 0
 
-    def test_generate_unknown_client_errors(
+    def test_install_unknown_client_errors(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Unknown client → usage error (exit 2), matching `mcp config path`."""
-        result = runner.invoke(app, ["config", "generate", "--client", "bogus"])
+        result = runner.invoke(app, ["install", "--client", "bogus", "--print"])
         assert result.exit_code == 2
         assert "Unknown client" in caplog.text
 
-    def test_generate_claude_code_prints_launch_hint(self, tmp_path: Path) -> None:
-        """claude-code emits the snippet plus the `claude --mcp-config` launch line."""
-        result = runner.invoke(app, ["config", "generate", "--client", "claude-code"])
+    def test_install_claude_code_print_emits_launch_hint(self, tmp_path: Path) -> None:
+        """claude-code --print emits the snippet plus the `claude --mcp-config` launch line."""
+        result = runner.invoke(app, ["install", "--client", "claude-code", "--print"])
         assert result.exit_code == 0
         assert "mcpServers" in result.output
         assert "--strict-mcp-config" in result.output
         assert "--mcp-config" in result.output
         assert "claude-code-mcp.json" in result.output
 
-    def test_generate_claude_code_install_writes_to_profile_dir(
+    def test_install_claude_code_writes_to_profile_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """claude-code --install writes to <base>/profiles/<profile>/claude-code-mcp.json."""
+        """claude-code install writes to <base>/profiles/<profile>/claude-code-mcp.json."""
         monkeypatch.setattr("moneybin.cli.commands.mcp.get_base_dir", lambda: tmp_path)
         result = runner.invoke(
             app,
             [
-                "config",
-                "generate",
+                "install",
                 "--client",
                 "claude-code",
                 "--profile",
                 "work",
-                "--install",
                 "--yes",
             ],
         )
@@ -240,28 +254,27 @@ class TestMCPConfigGenerate:
         payload = _json.loads(expected.read_text())
         assert "mcpServers" in payload
 
-    def test_generate_chatgpt_desktop_prints_instructions(self) -> None:
+    def test_install_chatgpt_desktop_prints_instructions(self) -> None:
         """chatgpt-desktop emits the snippet plus Connector setup steps."""
-        result = runner.invoke(
-            app, ["config", "generate", "--client", "chatgpt-desktop"]
-        )
+        result = runner.invoke(app, ["install", "--client", "chatgpt-desktop"])
         assert result.exit_code == 0
         assert "mcpServers" in result.output
         assert "Connectors" in result.output
         assert "Command:" in result.output
         assert "Arguments:" in result.output
 
-    def test_generate_chatgpt_desktop_install_errors(self) -> None:
-        """chatgpt-desktop --install exits non-zero (no JSON file to write)."""
+    def test_install_chatgpt_desktop_print_implicit(self) -> None:
+        """chatgpt-desktop has no programmatic install — --print is implicit (no error)."""
         result = runner.invoke(
-            app,
-            ["config", "generate", "--client", "chatgpt-desktop", "--install", "--yes"],
+            app, ["install", "--client", "chatgpt-desktop", "--print"]
         )
-        assert result.exit_code == 1
-        assert (
-            "not supported" in result.output.lower()
-            or "connectors" in result.output.lower()
-        )
+        assert result.exit_code == 0
+        assert "Connectors" in result.output
+
+    def test_old_config_generate_command_removed(self) -> None:
+        """The old `mcp config generate` command no longer exists."""
+        result = runner.invoke(app, ["config", "generate", "--help"])
+        assert result.exit_code != 0
 
 
 class TestMCPConfigPath:
@@ -318,12 +331,13 @@ class TestMCPConfigPath:
         assert result.exit_code == 1
 
 
-class TestMCPConfigGenerateCodex:
+class TestMCPInstallCodex:
     """Codex emits a TOML [mcp_servers] block and installs via tomlkit round-trip."""
 
-    def test_generate_codex_emits_toml_block(self) -> None:
+    def test_install_codex_print_emits_toml_block(self) -> None:
         result = runner.invoke(
-            app, ["config", "generate", "--client", "codex", "--profile", "alice"]
+            app,
+            ["install", "--client", "codex", "--profile", "alice", "--print"],
         )
         assert result.exit_code == 0
         assert "[mcp_servers." in result.output
@@ -332,7 +346,7 @@ class TestMCPConfigGenerateCodex:
         # No mcpServers JSON header — codex output is TOML, not JSON.
         assert "mcpServers" not in result.output
 
-    def test_generate_codex_install_writes_toml(
+    def test_install_codex_writes_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target = tmp_path / "config.toml"
@@ -343,13 +357,11 @@ class TestMCPConfigGenerateCodex:
         result = runner.invoke(
             app,
             [
-                "config",
-                "generate",
+                "install",
                 "--client",
                 "codex",
                 "--profile",
                 "alice",
-                "--install",
                 "--yes",
             ],
         )
@@ -367,7 +379,7 @@ class TestMCPConfigGenerateCodex:
         # Concurrency guardrail must fire on per-invocation client installs.
         assert "auto-loads" in result.output
 
-    def test_generate_codex_install_cancelled_skips_warning(
+    def test_install_codex_cancelled_skips_warning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Declining the install prompt suppresses the auto-load warning."""
@@ -379,13 +391,11 @@ class TestMCPConfigGenerateCodex:
         result = runner.invoke(
             app,
             [
-                "config",
-                "generate",
+                "install",
                 "--client",
                 "codex",
                 "--profile",
                 "alice",
-                "--install",
             ],
             input="n\n",
         )
@@ -394,7 +404,7 @@ class TestMCPConfigGenerateCodex:
         assert not target.exists()
         assert "auto-loads" not in result.output
 
-    def test_generate_codex_install_preserves_existing_keys_and_comments(
+    def test_install_codex_preserves_existing_keys_and_comments(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Round-trip merge keeps unrelated settings and inline comments intact."""
@@ -414,13 +424,11 @@ class TestMCPConfigGenerateCodex:
         result = runner.invoke(
             app,
             [
-                "config",
-                "generate",
+                "install",
                 "--client",
                 "codex",
                 "--profile",
                 "alice",
-                "--install",
                 "--yes",
             ],
         )
@@ -434,12 +442,13 @@ class TestMCPConfigGenerateCodex:
         assert "MoneyBin (alice)" in text or '"MoneyBin (alice)"' in text
 
 
-class TestMCPConfigGenerateVSCode:
+class TestMCPInstallVSCode:
     """VS Code uses workspace-local .vscode/mcp.json with `servers` key."""
 
-    def test_generate_vscode_uses_servers_key(self) -> None:
+    def test_install_vscode_print_uses_servers_key(self) -> None:
         result = runner.invoke(
-            app, ["config", "generate", "--client", "vscode", "--profile", "alice"]
+            app,
+            ["install", "--client", "vscode", "--profile", "alice", "--print"],
         )
         assert result.exit_code == 0
         assert '"servers"' in result.output
@@ -447,7 +456,7 @@ class TestMCPConfigGenerateVSCode:
         # Standard `mcpServers` key must NOT be present in vscode output.
         assert "mcpServers" not in result.output
 
-    def test_generate_vscode_install_writes_workspace_file(
+    def test_install_vscode_writes_workspace_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
@@ -456,13 +465,11 @@ class TestMCPConfigGenerateVSCode:
         result = runner.invoke(
             app,
             [
-                "config",
-                "generate",
+                "install",
                 "--client",
                 "vscode",
                 "--profile",
                 "alice",
-                "--install",
                 "--yes",
             ],
         )
@@ -477,29 +484,29 @@ class TestMCPConfigGenerateVSCode:
         assert entry["type"] == "stdio"
         assert entry["command"] == "uv"
 
-    def test_generate_vscode_install_outside_repo_errors(
+    def test_install_vscode_outside_repo_errors(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
         result = runner.invoke(
             app,
-            ["config", "generate", "--client", "vscode", "--install", "--yes"],
+            ["install", "--client", "vscode", "--yes"],
         )
         assert result.exit_code == 1
 
 
-class TestMCPConfigGenerateGeminiCLI:
+class TestMCPInstallGeminiCLI:
     """gemini-cli installs to a fixed user-level path with the standard `mcpServers` shape."""
 
-    def test_generate_gemini_cli_emits_mcp_servers(self) -> None:
+    def test_install_gemini_cli_print_emits_mcp_servers(self) -> None:
         result = runner.invoke(
             app,
-            ["config", "generate", "--client", "gemini-cli", "--profile", "alice"],
+            ["install", "--client", "gemini-cli", "--profile", "alice", "--print"],
         )
         assert result.exit_code == 0
         assert "mcpServers" in result.output
 
-    def test_generate_gemini_cli_install_writes_settings(
+    def test_install_gemini_cli_writes_settings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target = tmp_path / "settings.json"
@@ -510,13 +517,11 @@ class TestMCPConfigGenerateGeminiCLI:
         result = runner.invoke(
             app,
             [
-                "config",
-                "generate",
+                "install",
                 "--client",
                 "gemini-cli",
                 "--profile",
                 "alice",
-                "--install",
                 "--yes",
             ],
         )

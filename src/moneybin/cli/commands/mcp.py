@@ -1,9 +1,10 @@
 """MCP server commands for MoneyBin CLI.
 
 `moneybin mcp serve` starts the Model Context Protocol server that exposes
-DuckDB financial data to MCP-compatible clients. `moneybin mcp config
-generate --client <c>` produces install snippets for the supported clients
-(see `_SUPPORTED_CLIENTS`); `docs/guides/mcp-clients.md` documents per-client
+DuckDB financial data to MCP-compatible clients. `moneybin mcp install
+--client <c>` writes the install snippet into the client's config file (use
+`--print` to emit the snippet without writing); see `_SUPPORTED_CLIENTS` for
+the supported clients. `docs/guides/mcp-clients.md` documents per-client
 behavior, the concurrency model, and per-session opt-in for Claude Code.
 """
 
@@ -150,14 +151,14 @@ def mcp_config_path(
     typer.echo(str(path))
 
 
-@config_app.command("generate")
-def mcp_config_generate(
+@app.command("install")
+def mcp_install(
     client: Annotated[
         str,
         typer.Option(
             "--client",
             "-c",
-            help=f"MCP client to generate config for. Supported: {', '.join(_SUPPORTED_CLIENTS)}",
+            help=f"MCP client to install for. Supported: {', '.join(_SUPPORTED_CLIENTS)}",
         ),
     ] = _DEFAULT_CLIENT,
     profile: Annotated[
@@ -165,14 +166,14 @@ def mcp_config_generate(
         typer.Option(
             "--profile",
             "-p",
-            help="MoneyBin profile to use in the generated config.",
+            help="MoneyBin profile to embed in the generated config.",
         ),
     ] = None,
-    install: Annotated[
+    print_only: Annotated[
         bool,
         typer.Option(
-            "--install",
-            help="Write the generated config directly into the client's config file.",
+            "--print",
+            help="Print the snippet to stdout instead of writing to the client's config file.",
         ),
     ] = False,
     yes: Annotated[
@@ -180,43 +181,48 @@ def mcp_config_generate(
         typer.Option(
             "--yes",
             "-y",
-            help="Skip confirmation prompt when --install is set.",
+            help="Skip the install confirmation prompt.",
         ),
     ] = False,
 ) -> None:
-    """Generate an MCP server config snippet for an AI client.
+    """Install MoneyBin into a client's MCP config.
 
-    Prints a JSON snippet that registers MoneyBin as an MCP server.
-    With --install, merges the snippet into the client's existing
-    config file (creating it if absent).
+    Default behavior writes the config snippet directly into the client's
+    config file (with a confirmation prompt unless --yes is set). Use
+    --print to emit the snippet to stdout without writing — useful for
+    inspection or for clients with no programmatic install path.
+
+    For chatgpt-desktop there is no JSON config to write; the command
+    always prints the snippet plus step-by-step Connector setup
+    instructions (--print is implicit).
 
     Args:
         client: Target MCP client identifier.
         profile: MoneyBin profile to embed in the config.
-        install: Write directly to the client's config file.
+        print_only: Emit the snippet to stdout instead of writing it.
         yes: Bypass install confirmation prompt.
 
     Examples:
-        # Print config snippet for Claude Desktop
-        moneybin mcp config generate --client claude-desktop
-
-        # Install directly without prompting
-        moneybin mcp config generate --client claude-desktop --install --yes
+        # Install for Claude Desktop without prompting
+        moneybin mcp install --client claude-desktop --yes
 
         # Profile-scoped Claude Code config (loaded only with `claude --mcp-config`)
-        moneybin mcp config generate --client claude-code --install --yes
+        moneybin mcp install --client claude-code --profile alice --yes
+
+        # Print the snippet without writing
+        moneybin mcp install --client claude-desktop --print
 
         # Print snippet + step-by-step Connector setup for ChatGPT Desktop
-        moneybin mcp config generate --client chatgpt-desktop
+        moneybin mcp install --client chatgpt-desktop
 
         # Codex (CLI / Desktop app / IDE extension all share ~/.codex/config.toml)
-        moneybin mcp config generate --client codex --install --yes
+        moneybin mcp install --client codex --yes
 
         # Workspace-local .vscode/mcp.json
-        moneybin mcp config generate --client vscode --install --yes
+        moneybin mcp install --client vscode --yes
 
         # User-level ~/.gemini/settings.json
-        moneybin mcp config generate --client gemini-cli --install --yes
+        moneybin mcp install --client gemini-cli --yes
     """
     from moneybin.config import get_current_profile
 
@@ -262,16 +268,10 @@ def mcp_config_generate(
     snippet, snippet_text = _build_snippet(client, entry_name, server_entry)
     typer.echo(snippet_text)
 
+    # chatgpt-desktop has no programmatic install path — always print + show
+    # manual Connector setup instructions. --print is implicit; no error if
+    # the user explicitly passed it.
     if client == "chatgpt-desktop":
-        if install:
-            logger.error(
-                "❌ --install is not supported for chatgpt-desktop. "
-                "ChatGPT Desktop adds MCP servers through its Connectors UI, "
-                "not a JSON config file. Follow the instructions below to add "
-                "MoneyBin as a custom connector."
-            )
-            _print_chatgpt_desktop_instructions(server_entry, entry_name)
-            raise typer.Exit(1)
         _print_chatgpt_desktop_instructions(server_entry, entry_name)
         return
 
@@ -279,7 +279,7 @@ def mcp_config_generate(
         config_path = _client_install_path(client, resolved_profile)
         if config_path is None:  # unreachable — claude-code always resolves a path
             raise typer.Exit(1)
-        if not install:
+        if print_only:
             _print_claude_code_launch_hint(config_path)
             return
         _confirm_and_merge(config_path, snippet, yes=yes)
@@ -287,19 +287,19 @@ def mcp_config_generate(
         return
 
     if client == "vscode":
+        if print_only:
+            return
         vscode_path = _client_install_path(client, resolved_profile)
         if vscode_path is None:
             logger.error(
-                "❌ vscode --install requires running inside a repo "
+                "❌ vscode install requires running inside a repo "
                 "(creates .vscode/mcp.json in the repo root)."
             )
             raise typer.Exit(1)
-        if not install:
-            return
         _confirm_and_merge(vscode_path, snippet, yes=yes)
         return
 
-    if not install:
+    if print_only:
         return
 
     config_path = _get_client_config_path(client)
@@ -422,7 +422,7 @@ def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
         except TOMLKitError:
             logger.error(
                 f"❌ Cannot parse existing TOML at {config_path}. "
-                "Fix the file manually before running --install again."
+                "Fix the file manually before running `mcp install` again."
             )
             raise typer.Exit(1) from None
     else:
@@ -446,7 +446,7 @@ def _get_client_config_path(client: str) -> Path:
     """Return the fixed-path config file for clients in `_CLIENT_CONFIG_PATHS`.
 
     Profile-scoped (`claude-code`) and no-install (`chatgpt-desktop`) clients are
-    handled inline in `config_generate` and never reach this helper.
+    handled inline in `mcp_install` and never reach this helper.
     """
     if client not in _CLIENT_CONFIG_PATHS:
         supported = ", ".join(_CLIENT_CONFIG_PATHS)
@@ -554,7 +554,7 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
         except json.JSONDecodeError:
             logger.error(
                 f"❌ Cannot parse existing config at {config_path}. "
-                "Fix the JSON manually before running --install again."
+                "Fix the JSON manually before running `mcp install` again."
             )
             raise typer.Exit(1) from None
 
