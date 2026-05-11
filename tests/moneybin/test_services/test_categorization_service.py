@@ -27,9 +27,11 @@ def create_merchant(db: Database, *args: object, **kwargs: object) -> str:
     return CategorizationService(db).create_merchant(*args, **kwargs)  # type: ignore[arg-type]
 
 
-def match_merchant(db: Database, description: str) -> dict[str, str | None] | None:
+def match_merchant(
+    db: Database, description: str, *, memo: str | None = None
+) -> dict[str, str | None] | None:
     """Test shim — delegates to CategorizationService.match_merchant."""
-    return CategorizationService(db).match_merchant(description)
+    return CategorizationService(db).match_merchant(description, memo=memo)
 
 
 def apply_rules(db: Database) -> int:
@@ -264,6 +266,37 @@ class TestMatchesPattern:
         assert result is not None
         # exact match should win
         assert result["canonical_name"] == "Amazon Marketplace"
+
+    @pytest.mark.unit
+    def test_exact_matches_description_when_memo_present(self, db: Database) -> None:
+        r"""Regression: exact patterns must hit the field, not the concat.
+
+        With ``match_text = description + "\n" + memo`` an exact pattern
+        ``"STARBUCKS"`` would never equal ``"STARBUCKS\nREF123"``. The matcher
+        compares each candidate text (match_text, normalized description,
+        normalized memo) so user-authored exact patterns keep working when
+        OFX/aggregator rows carry a non-empty memo.
+        """
+        create_merchant(db, "STARBUCKS", "Starbucks", match_type="exact")
+        result = match_merchant(db, "STARBUCKS", memo="REF123")
+        assert result is not None
+        assert result["canonical_name"] == "Starbucks"
+
+    @pytest.mark.unit
+    def test_anchored_regex_matches_memo_when_description_unrelated(
+        self, db: Database
+    ) -> None:
+        """Anchored regex on memo must hit even though description differs."""
+        create_merchant(
+            db,
+            r"^GOOGLE\s+YOUTUBE$",
+            "YouTube",
+            match_type="regex",
+            category="Entertainment",
+        )
+        result = match_merchant(db, "PAYPAL INST XFER", memo="GOOGLE YOUTUBE")
+        assert result is not None
+        assert result["canonical_name"] == "YouTube"
 
 
 # ---------------------------------------------------------------------------

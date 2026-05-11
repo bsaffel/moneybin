@@ -20,7 +20,7 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
-from moneybin.services._text import build_match_text, normalize_description
+from moneybin.services._text import build_match_inputs, normalize_description
 from moneybin.services.categorization_service import (
     CategorizationService,
     matches_pattern,
@@ -536,11 +536,14 @@ class AutoRuleService:
             ).fetchall()
             buckets: dict[tuple[str, str | None], list[str]] = {}
             for txn_id, description, memo, c_cat, c_subcat, _at in candidate_rows:
-                match_text = build_match_text(
+                match_text, norm_desc, norm_memo = build_match_inputs(
                     str(description) if description else None,
                     str(memo) if memo else None,
                 )
-                if not matches_pattern(match_text, pattern, rule_match_type):
+                candidates = [t for t in (match_text, norm_desc, norm_memo) if t]
+                if not any(
+                    matches_pattern(c, pattern, rule_match_type) for c in candidates
+                ):
                     continue
                 key = (str(c_cat), c_subcat if c_subcat is None else str(c_subcat))
                 buckets.setdefault(key, []).append(str(txn_id))

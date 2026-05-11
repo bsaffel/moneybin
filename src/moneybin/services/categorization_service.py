@@ -39,7 +39,7 @@ from moneybin.metrics.registry import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._text import (
-    build_match_text,
+    build_match_inputs,
     redact_for_llm,
 )
 from moneybin.services.audit_service import AuditService
@@ -565,13 +565,19 @@ def _match_text(
     match_text: str,
     merchants: list[MerchantRow],
     *,
+    normalized_description: str = "",
+    normalized_memo: str = "",
     description_present: bool = True,
     memo_present: bool = False,
 ) -> dict[str, str | None] | None:
-    r"""Match the canonical match_text against a pre-fetched merchant list.
+    r"""Match a pre-fetched merchant list against the per-field candidate texts.
 
-    match_text is description + "\n" + memo (per build_match_text); the matcher
-    runs against this concatenation directly, without re-normalizing.
+    ``match_text`` is ``description + "\n" + memo`` (per ``build_match_text``);
+    ``normalized_description`` and ``normalized_memo`` are the individual
+    normalized fields. Patterns are tried against each non-empty candidate so
+    ``exact`` and anchored-``regex`` shapes (which can't span the concatenation
+    boundary) still match the original field, while ``contains`` and unanchored
+    ``regex`` shapes can still hit cross-boundary substrings via ``match_text``.
 
     description_present and memo_present control the "shape" label on the
     match-outcome metric so callers can attribute matches by signal source.
@@ -582,7 +588,12 @@ def _match_text(
     """
     shape = _match_shape_label(description_present, memo_present)
 
-    if not match_text:
+    candidates: list[str] = []
+    for text in (match_text, normalized_description, normalized_memo):
+        if text and text not in candidates:
+            candidates.append(text)
+
+    if not candidates:
         CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
         return None
 
@@ -599,7 +610,7 @@ def _match_text(
         if match_type == "oneOf" or not raw_pattern:
             # Exemplar-only merchants are handled by _match_exemplar.
             continue
-        if matches_pattern(match_text, raw_pattern, match_type):
+        if any(matches_pattern(c, raw_pattern, match_type) for c in candidates):
             CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(
                 outcome=str(match_type or "contains"), shape=shape
             ).inc()
@@ -618,14 +629,17 @@ def _match_merchants(
     match_text: str,
     merchants: list[MerchantRow],
     *,
+    normalized_description: str = "",
+    normalized_memo: str = "",
     description_present: bool = True,
     memo_present: bool = False,
 ) -> dict[str, str | None] | None:
-    """Resolve a merchant for ``match_text`` against the cached merchant list.
+    """Resolve a merchant against the cached merchant list.
 
     Two-stage lookup per categorization-matching-mechanics.md §Matcher
-    algorithm: oneOf exemplar membership first (most-specific match shape),
-    then pattern-based (exact / contains / regex) fallback.
+    algorithm: oneOf exemplar membership against ``match_text`` first (most
+    specific shape), then pattern-based (exact / contains / regex) per-field
+    fallback (see :func:`_match_text` for why per-field is required).
     """
     hit = _match_exemplar(
         match_text,
@@ -638,6 +652,8 @@ def _match_merchants(
     return _match_text(
         match_text,
         merchants,
+        normalized_description=normalized_description,
+        normalized_memo=normalized_memo,
         description_present=description_present,
         memo_present=memo_present,
     )
@@ -799,10 +815,12 @@ class CategorizationService:
         merchants = _fetch_merchants(self._db)
         if merchants is None:
             return None
-        match_text = build_match_text(description, memo)
+        match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
         return _match_merchants(
             match_text,
             merchants,
+            normalized_description=norm_desc,
+            normalized_memo=norm_memo,
             description_present=bool(description and description.strip()),
             memo_present=bool(memo and memo.strip()),
         )
@@ -1392,12 +1410,14 @@ class CategorizationService:
                 existing: dict[str, Any] | None = None
                 description = ctx.description_for(txn_id)
                 memo = ctx.memo_for(txn_id)
-                match_text = build_match_text(description, memo)
+                match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
                 if match_text and ctx.merchant_mappings:
                     try:
                         existing = _match_merchants(
                             match_text,
                             ctx.merchant_mappings,
+                            normalized_description=norm_desc,
+                            normalized_memo=norm_memo,
                             description_present=bool(
                                 description and description.strip()
                             ),
@@ -1558,12 +1578,14 @@ class CategorizationService:
 
         categorized_count = 0
         for txn_id, description, memo in uncategorized:
-            match_text = build_match_text(description, memo)
+            match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
             if not match_text:
                 continue
             merchant = _match_merchants(
                 match_text,
                 merchants,
+                normalized_description=norm_desc,
+                normalized_memo=norm_memo,
                 description_present=bool(description and str(description).strip()),
                 memo_present=bool(memo and str(memo).strip()),
             )
@@ -1616,14 +1638,19 @@ class CategorizationService:
     ) -> tuple[str, str, str | None, str] | None:
         """Return ``(rule_id, category, subcategory, created_by)`` for the first rule that matches.
 
-        Evaluates the pattern against the canonical ``match_text`` only —
-        ``build_match_text(description, memo)``, each side normalized via
-        ``normalize_description`` per the matching spec
-        (``categorization-matching-mechanics.md`` §Match input). Amount bounds
-        and account filter are applied as before. Returns ``None`` when no
-        rule matches.
+        Evaluates each pattern against the canonical ``match_text``
+        (``build_match_text(description, memo)``) plus the individual normalized
+        fields, so ``contains`` / unanchored ``regex`` patterns can hit
+        cross-boundary substrings while ``exact`` and anchored-``regex``
+        patterns still match the original field they were authored against.
+        Amount bounds and account filter are applied as before. Returns
+        ``None`` when no rule matches.
         """
-        match_text = build_match_text(description, memo)
+        match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
+        candidates: list[str] = []
+        for text in (match_text, norm_desc, norm_memo):
+            if text and text not in candidates:
+                candidates.append(text)
         for rule in rules:
             (
                 rule_id,
@@ -1636,7 +1663,7 @@ class CategorizationService:
                 subcategory,
                 created_by,
             ) = rule
-            if not matches_pattern(match_text, pattern, match_type):
+            if not any(matches_pattern(c, pattern, match_type) for c in candidates):
                 continue
             if (
                 min_amount is not None

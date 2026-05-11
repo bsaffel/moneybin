@@ -20,6 +20,7 @@ from moneybin.services.categorization_service import (
 )
 from moneybin.services.categorization_service import (
     BulkCategorizationItem,
+    CategorizationRuleInput,
     CategorizationService,
 )
 from tests.moneybin.db_helpers import create_core_tables
@@ -344,3 +345,93 @@ def test_blocked_write_does_not_mutate_merchant_or_proposal_state(
         "SELECT proposed_rule_id, trigger_count FROM app.proposed_rules"
     ).fetchall()
     assert proposals_after == proposals_before
+
+
+def test_deactivate_rule_with_reapply_re_evaluates_categorized_rows(
+    real_db: Database, fresh_txn: str
+) -> None:
+    """``deactivate_rule(reapply=True)`` strips and re-evaluates the rule's writes.
+
+    Setup: a rule categorizes the transaction. Deactivating the rule with
+    ``reapply=True`` should DELETE the rule's categorization (so the row
+    becomes pending) and then run ``categorize_pending`` — since the rule was
+    the only matcher, the row should remain uncategorized afterward.
+    """
+    cat_svc = CategorizationService(real_db)
+    creation = cat_svc.create_rules([
+        CategorizationRuleInput(
+            name="Starbucks",
+            merchant_pattern="STARBUCKS",
+            match_type="contains",
+            category="Food & Dining",
+            subcategory="Coffee Shops",
+            priority=100,
+        ),
+    ])
+    assert creation.created == 1
+    rule_id = creation.rule_ids[0]
+
+    cat_svc.apply_rules()
+    row = real_db.execute(
+        "SELECT category, categorized_by, rule_id FROM app.transaction_categories "
+        "WHERE transaction_id = ?",
+        [fresh_txn],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "Food & Dining"
+    assert row[1] == "rule"
+    assert row[2] == rule_id
+
+    deactivated = cat_svc.deactivate_rule(rule_id, reapply=True)
+    assert deactivated is True
+
+    # No remaining matcher → the row is uncategorized.
+    after = real_db.execute(
+        "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+        [fresh_txn],
+    ).fetchone()
+    assert after is None
+
+
+def test_deactivate_rule_with_reapply_preserves_user_writes(
+    real_db: Database, fresh_txn: str
+) -> None:
+    """User edits on a rule-categorized row survive ``deactivate_rule(reapply=True)``.
+
+    The DELETE inside ``deactivate_rule`` is scoped to
+    ``categorized_by IN ('rule', 'auto_rule')``, so a higher-priority user
+    write that happens to reference this ``rule_id`` is left intact.
+    """
+    cat_svc = CategorizationService(real_db)
+    creation = cat_svc.create_rules([
+        CategorizationRuleInput(
+            name="Starbucks",
+            merchant_pattern="STARBUCKS",
+            match_type="contains",
+            category="Food & Dining",
+            subcategory="Coffee Shops",
+            priority=100,
+        ),
+    ])
+    rule_id = creation.rule_ids[0]
+    cat_svc.apply_rules()
+
+    # User overwrites the rule's categorization.
+    cat_svc.write_categorization(
+        transaction_id=fresh_txn,
+        category="Personal",
+        subcategory="Treats",
+        categorized_by="user",
+        rule_id=rule_id,
+    )
+
+    cat_svc.deactivate_rule(rule_id, reapply=True)
+
+    row = real_db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories "
+        "WHERE transaction_id = ?",
+        [fresh_txn],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "Personal"
+    assert row[1] == "user"
