@@ -30,9 +30,9 @@ from moneybin.errors import UserError
 from moneybin.metrics.registry import (
     CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS,
     CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED,
-    CATEGORIZE_BULK_DURATION_SECONDS,
-    CATEGORIZE_BULK_ERRORS_TOTAL,
-    CATEGORIZE_BULK_ITEMS_TOTAL,
+    CATEGORIZE_DURATION_SECONDS,
+    CATEGORIZE_ERRORS_TOTAL,
+    CATEGORIZE_ITEMS_TOTAL,
     CATEGORIZE_MATCH_OUTCOME_TOTAL,
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
     MERCHANT_EXEMPLAR_COUNT,
@@ -64,7 +64,7 @@ MatchType = Literal["exact", "contains", "regex"]
 
 # Internal match types — adds `oneOf` for the exemplar accumulator. Used by
 # the in-memory matcher pipeline (`_match_exemplar`, `_fetch_merchants`) and
-# the exemplar-merchant creation path in `_bulk_categorize_inner`.
+# the exemplar-merchant creation path in `_categorize_items_inner`.
 InternalMatchType = Literal["exact", "contains", "regex", "oneOf"]
 
 _VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
@@ -244,8 +244,8 @@ def _amount_sign_label(amount: float | None) -> Literal["+", "-", "0"]:
 
 
 @dataclass(slots=True)
-class BulkCategorizationResult:
-    """Typed result for bulk categorization operations."""
+class CategorizationResult:
+    """Typed result for categorization operations."""
 
     applied: int
     skipped: int
@@ -254,7 +254,7 @@ class BulkCategorizationResult:
     merchants_created: int = 0
 
     def to_envelope(self, input_count: int) -> ResponseEnvelope:
-        """Build a ResponseEnvelope from this bulk categorization result."""
+        """Build a ResponseEnvelope from this categorization result."""
         return build_envelope(
             data={
                 "applied": self.applied,
@@ -284,6 +284,7 @@ class RuleCreationResult:
     """Typed result for CategorizationService.create_rules."""
 
     created: int
+    existing: int
     skipped: int
     error_details: list[dict[str, str]]
     rule_ids: list[str]
@@ -293,6 +294,7 @@ class RuleCreationResult:
         return build_envelope(
             data={
                 "created": self.created,
+                "existing": self.existing,
                 "skipped": self.skipped,
                 "rule_ids": self.rule_ids,
                 "error_details": self.error_details,
@@ -312,8 +314,8 @@ class RuleCreationResult:
         self.skipped += len(parse_errors)
 
 
-class BulkCategorizationItem(BaseModel):
-    """One row of input for ``CategorizationService.bulk_categorize``.
+class CategorizationItem(BaseModel):
+    """One row of input for ``CategorizationService.categorize_items``.
 
     Validated at every boundary (CLI, MCP). The service refuses untyped dicts.
     """
@@ -364,10 +366,10 @@ def _validate_items[T: BaseModel](
 ) -> tuple[list[T], list[dict[str, str]]]:
     """Validate raw decoded JSON dicts into typed Pydantic items + per-row errors.
 
-    Shared by ``validate_bulk_items`` and ``validate_rule_items``: per-item
+    Shared by ``validate_items`` and ``validate_rule_items``: per-item
     failures contribute an ``error_details`` entry but do not abort the batch.
     The ``id_field`` is the per-row identity surfaced in error dicts so callers
-    can correlate failures (e.g., ``transaction_id`` for bulk_categorize,
+    can correlate failures (e.g., ``transaction_id`` for categorize_items,
     ``name`` for rule creation).
     """
     if not isinstance(raw, list):
@@ -401,19 +403,19 @@ def _validate_items[T: BaseModel](
     return items, errors
 
 
-def validate_bulk_items(
+def validate_items(
     raw: object,
-) -> tuple[list[BulkCategorizationItem], list[dict[str, str]]]:
+) -> tuple[list[CategorizationItem], list[dict[str, str]]]:
     """Validate a raw decoded JSON array into typed items + per-row errors.
 
     Per-item validation: a malformed row contributes an ``error_details`` entry
     but does not abort the batch. Callers merge ``parse_errors`` into the
-    final ``BulkCategorizationResult.error_details`` so the response envelope
+    final ``CategorizationResult.error_details`` so the response envelope
     surfaces every failure together.
     """
     return _validate_items(
         raw,
-        BulkCategorizationItem,
+        CategorizationItem,
         id_field="transaction_id",
         list_error_msg="Input must be a JSON array of categorization items",
     )
@@ -424,7 +426,7 @@ def validate_rule_items(
 ) -> tuple[list[CategorizationRuleInput], list[dict[str, str]]]:
     """Validate raw rule dicts into typed inputs + per-row errors.
 
-    Mirrors ``validate_bulk_items``: malformed rows contribute an
+    Mirrors ``validate_items``: malformed rows contribute an
     ``error_details`` entry but do not abort the batch.
     """
     return _validate_items(
@@ -867,8 +869,8 @@ class CategorizationService:
                 oneOf merchants. Defaults to ``[]``.
             reapply: When ``True``, runs ``categorize_pending`` after the
                 insert so the new merchant fans out to uncategorized rows.
-                Default ``False`` — callers inside a bulk flow (e.g.,
-                ``bulk_categorize``) skip this and let the enclosing snowball
+                Default ``False`` — callers inside a batch flow (e.g.,
+                ``categorize_items``) skip this and let the enclosing snowball
                 pass do the work instead.
 
         Returns:
@@ -978,26 +980,68 @@ class CategorizationService:
         *,
         reapply: bool = False,
     ) -> RuleCreationResult:
-        """Create multiple categorization rules in one call.
+        """Create multiple categorization rules in one call (idempotent).
 
-        Each item is INSERTed into ``app.categorization_rules`` with a fresh
-        12-char UUID hex ``rule_id``, ``is_active=true``, and
-        ``created_by='ai'``. Per-row insertion failures are caught so a
-        single bad row does not abort the batch — they appear in
-        ``error_details``.
+        For each item, looks up an active rule with the same matcher and
+        output (``merchant_pattern``, ``match_type``, ``min_amount``,
+        ``max_amount``, ``account_id``, ``category``, ``subcategory``);
+        ``name`` and ``priority`` are treated as metadata and excluded
+        from the dedup key. If found, returns the existing ``rule_id``
+        and bumps the ``existing`` counter; otherwise INSERTs a fresh
+        12-char UUID hex ``rule_id`` with ``is_active=true`` and
+        ``created_by='ai'``.
+
+        Same matcher with a *different* category output is currently
+        treated as a new rule, not a conflict — see
+        ``docs/specs/mcp-tool-surface.md`` "Rule-conflict detection
+        (follow-up)" for the deferred conflict-resolution work.
 
         When ``reapply=True``, ``categorize_pending`` runs after the writes so
         the new rules fan out to uncategorized rows immediately. Source-priority
         enforcement keeps user manual edits safe regardless.
+
+        Per-row insertion failures are caught so a single bad row does
+        not abort the batch — they appear in ``error_details``.
         """
         created = 0
+        existing = 0
         skipped = 0
         error_details: list[dict[str, str]] = []
         rule_ids: list[str] = []
 
         for item in items:
-            rule_id = uuid.uuid4().hex[:12]
             try:
+                # DuckDB IS NOT DISTINCT FROM treats NULL = NULL as true,
+                # so optional fields (min/max_amount, account_id, subcategory)
+                # match on NULL across calls.
+                found = self._db.execute(
+                    f"""
+                    SELECT rule_id FROM {CATEGORIZATION_RULES.full_name}
+                    WHERE is_active = true
+                      AND merchant_pattern = ?
+                      AND match_type = ?
+                      AND min_amount IS NOT DISTINCT FROM ?
+                      AND max_amount IS NOT DISTINCT FROM ?
+                      AND account_id IS NOT DISTINCT FROM ?
+                      AND category = ?
+                      AND subcategory IS NOT DISTINCT FROM ?
+                    LIMIT 1
+                    """,  # noqa: S608  # TableRef constant, no user input interpolated
+                    [
+                        item.merchant_pattern,
+                        item.match_type,
+                        item.min_amount,
+                        item.max_amount,
+                        item.account_id,
+                        item.category,
+                        item.subcategory,
+                    ],
+                ).fetchone()
+                if found is not None:
+                    existing += 1
+                    rule_ids.append(found[0])
+                    continue
+                rule_id = uuid.uuid4().hex[:12]
                 self._db.execute(
                     f"""
                     INSERT INTO {CATEGORIZATION_RULES.full_name}
@@ -1036,6 +1080,7 @@ class CategorizationService:
 
         return RuleCreationResult(
             created=created,
+            existing=existing,
             skipped=skipped,
             error_details=error_details,
             rule_ids=rule_ids,
@@ -1262,9 +1307,9 @@ class CategorizationService:
         ).inc()
         return WriteOutcome(written=False, skipped_reason="lower_priority_source")
 
-    def bulk_categorize(
-        self, items: Sequence[BulkCategorizationItem]
-    ) -> BulkCategorizationResult:
+    def categorize_items(
+        self, items: Sequence[CategorizationItem]
+    ) -> CategorizationResult:
         """Assign categories to multiple transactions with merchant auto-creation.
 
         For each item, looks up the transaction description, resolves or creates
@@ -1281,16 +1326,16 @@ class CategorizationService:
         keeps user manual edits safe.
 
         Args:
-            items: Validated list of BulkCategorizationItem (transaction_id, category,
+            items: Validated list of CategorizationItem (transaction_id, category,
                 optional subcategory). Validation is the caller's responsibility —
-                use ``validate_bulk_items`` at the CLI/MCP boundary before calling this.
+                use ``validate_items`` at the CLI/MCP boundary before calling this.
 
         Returns:
-            BulkCategorizationResult with applied/skipped/error counts.
+            CategorizationResult with applied/skipped/error counts.
         """
         _start = perf_counter()
         try:
-            result = self._bulk_categorize_inner(items)
+            result = self._categorize_items_inner(items)
             # Snowball: fan newly-created merchants/exemplars out to remaining
             # uncategorized rows. Skipped on no-op batches so we don't churn a
             # pending sweep when nothing committed.
@@ -1305,14 +1350,14 @@ class CategorizationService:
                     )
             return result
         except Exception:
-            CATEGORIZE_BULK_ERRORS_TOTAL.inc()
+            CATEGORIZE_ERRORS_TOTAL.inc()
             raise
         finally:
-            CATEGORIZE_BULK_DURATION_SECONDS.observe(perf_counter() - _start)
+            CATEGORIZE_DURATION_SECONDS.observe(perf_counter() - _start)
 
-    def _bulk_categorize_inner(
-        self, items: Sequence[BulkCategorizationItem]
-    ) -> BulkCategorizationResult:
+    def _categorize_items_inner(
+        self, items: Sequence[CategorizationItem]
+    ) -> CategorizationResult:
         applied = 0
         skipped = 0
         errors = 0
@@ -1320,7 +1365,7 @@ class CategorizationService:
         error_details: list[dict[str, Any]] = []
 
         if not items:
-            return BulkCategorizationResult(
+            return CategorizationResult(
                 applied=applied,
                 skipped=skipped,
                 errors=errors,
@@ -1343,7 +1388,7 @@ class CategorizationService:
 
         if valid_category_set:
             valid_sorted = sorted(valid_category_set)
-            validated_items: list[BulkCategorizationItem] = []
+            validated_items: list[CategorizationItem] = []
             for item in items:
                 if item.category not in valid_category_set:
                     errors += 1
@@ -1367,8 +1412,8 @@ class CategorizationService:
             items = validated_items
 
             if not items:
-                CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
-                return BulkCategorizationResult(
+                CATEGORIZE_ITEMS_TOTAL.labels(outcome="error").inc(errors)
+                return CategorizationResult(
                     applied=applied,
                     skipped=skipped,
                     errors=errors,
@@ -1383,7 +1428,7 @@ class CategorizationService:
         # (auto_rule_service → categorization_service).
         from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
             AutoRuleService,
-            BulkRecordingContext,
+            RecordingContext,
             TxnRow,
         )
 
@@ -1429,7 +1474,7 @@ class CategorizationService:
             logger.warning("Could not batch-fetch active rules", exc_info=True)
             cached_rules = []
 
-        ctx = BulkRecordingContext(
+        ctx = RecordingContext(
             txn_rows=txn_rows,
             active_rules=cached_rules,
             merchant_mappings=cached_merchants,
@@ -1562,7 +1607,7 @@ class CategorizationService:
                         )
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 errors += 1
-                logger.exception(f"bulk_categorize failed for transaction {txn_id!r}")
+                logger.exception(f"categorize_items failed for transaction {txn_id!r}")
                 error_details.append({
                     "transaction_id": txn_id,
                     "reason": "Failed to apply category — check logs for details.",
@@ -1577,10 +1622,10 @@ class CategorizationService:
             except Exception:  # noqa: BLE001 — override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
 
-        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
-        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="skipped").inc(skipped)
-        CATEGORIZE_BULK_ITEMS_TOTAL.labels(outcome="error").inc(errors)
-        return BulkCategorizationResult(
+        CATEGORIZE_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
+        CATEGORIZE_ITEMS_TOTAL.labels(outcome="skipped").inc(skipped)
+        CATEGORIZE_ITEMS_TOTAL.labels(outcome="error").inc(errors)
+        return CategorizationResult(
             applied=applied,
             skipped=skipped,
             errors=errors,
@@ -1743,9 +1788,9 @@ class CategorizationService:
         covered by an existing rule?" using the canonical match semantics
         instead of re-implementing them.
 
-        The bulk path supplies pre-loaded rule rows and txn metadata via
+        The batch path supplies pre-loaded rule rows and txn metadata via
         ``rules_override`` and ``txn_row_override`` so this function issues no
-        queries during a bulk loop. Both default to ``None`` for non-bulk callers.
+        queries during a batch loop. Both default to ``None`` for non-batch callers.
         ``txn_row_override`` is ``(description, amount, account_id, memo)``.
         """
         description: str

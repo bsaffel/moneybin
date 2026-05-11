@@ -316,7 +316,7 @@ class TestCategorizeMutating:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # Insert a pending proposal directly — bulk_categorize is MCP-only and
+        # Insert a pending proposal directly — categorize_items is MCP-only and
         # has no CLI surface, so seed app.proposed_rules via db query. The
         # CLI we exercise is auto-review / auto-accept / auto-stats /
         # auto-rules; how the proposal got there is irrelevant.

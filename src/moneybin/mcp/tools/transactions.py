@@ -126,13 +126,17 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         transactions_search,
         "transactions_search",
         "Search transactions with flexible filtering by date, "
-        "amount, description, account, and category.",
+        "amount, description, account, and category. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         transactions_recurring_list,
         "transactions_recurring_list",
-        "Detect recurring transaction patterns like subscriptions and regular charges.",
+        "Detect recurring transaction patterns like subscriptions and regular charges. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,

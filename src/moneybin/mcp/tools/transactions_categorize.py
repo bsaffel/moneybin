@@ -1,4 +1,4 @@
-"""Transactions categorize namespace tools — rules, bulk categorization, auto-rules."""
+"""Transactions categorize namespace tools — rules, categorization, auto-rules."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization_service import (
-    BulkCategorizationResult,
+    CategorizationResult,
     CategorizationService,
-    validate_bulk_items,
+    validate_items,
     validate_rule_items,
 )
 
@@ -90,15 +90,11 @@ def transactions_categorize_pending_list(
     )
 
 
-@mcp_tool(sensitivity="medium", domain="categorize")
+@mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
 def transactions_categorize_apply(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
     """Assign categories to multiple transactions in one call.
-
-    Renamed from transactions_categorize_bulk_apply — the _bulk suffix was
-    redundant per mcp-server.md batch-first principle (all collection ops accept
-    lists by default).
 
     Each item should have ``transaction_id``, ``category``, and
     optionally ``subcategory`` and ``canonical_merchant_name``.
@@ -119,17 +115,17 @@ def transactions_categorize_apply(
             LLM-proposed display name used to merge exemplars).
     """
     if not items:
-        return BulkCategorizationResult(
+        return CategorizationResult(
             applied=0, skipped=0, errors=0, error_details=[]
         ).to_envelope(0)
 
-    validated, parse_errors = validate_bulk_items(items)
-    result = CategorizationService(get_database()).bulk_categorize(validated)
+    validated, parse_errors = validate_items(items)
+    result = CategorizationService(get_database()).categorize_items(validated)
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(items))
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
+@mcp_tool(sensitivity="low", domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
     reapply: bool = False,
@@ -154,7 +150,7 @@ def transactions_categorize_rules_create(
     return result.to_envelope(len(rules))
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
+@mcp_tool(sensitivity="low", domain="categorize", read_only=False)
 def transactions_categorize_rule_delete(
     rule_id: str, reapply: bool = False
 ) -> ResponseEnvelope:
@@ -197,7 +193,7 @@ def transactions_categorize_auto_review(limit: int | None = None) -> ResponseEnv
     return auto_review_envelope(result)
 
 
-@mcp_tool(sensitivity="medium", domain="categorize")
+@mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
 def transactions_categorize_auto_accept(
     accept: list[str] | None = None,
     reject: list[str] | None = None,
@@ -248,27 +244,35 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_categorize_pending_list,
         "transactions_categorize_pending_list",
-        "Find transactions that have not been categorized yet.",
+        "Find transactions that have not been categorized yet. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         transactions_categorize_apply,
         "transactions_categorize_apply",
         "Assign categories to multiple transactions in one call. "
-        "Auto-creates merchant mappings for future auto-categorization.",
+        "Auto-creates merchant mappings for future auto-categorization. "
+        "Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category, or by clearing via a follow-up apply.",
     )
     register(
         mcp,
         transactions_categorize_rules_create,
         "transactions_categorize_rules_create",
         "Create multiple categorization rules for automatic "
-        "transaction categorization.",
+        "transaction categorization. Idempotent: rules are deduped against "
+        "active rules by matcher+output (merchant_pattern, match_type, "
+        "min/max_amount, account_id, category, subcategory); name and "
+        "priority are metadata. Retries return the existing rule_id. "
+        "Writes app.categorization_rules; revert with transactions_categorize_rule_delete (soft-delete sets active=False).",
     )
     register(
         mcp,
         transactions_categorize_rule_delete,
         "transactions_categorize_rule_delete",
-        "Soft-delete a categorization rule (set inactive).",
+        "Soft-delete a categorization rule (set inactive). "
+        "Updates app.categorization_rules.active=False; the rule row is preserved and can be reactivated by re-creating with the same fields (no built-in reactivate tool).",
     )
     register(
         mcp,
@@ -282,7 +286,8 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "transactions_categorize_auto_accept",
         "Batch accept/reject auto-rule proposals. Accepted "
         "proposals become active rules and immediately categorize "
-        "matching transactions.",
+        "matching transactions. "
+        "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rule_delete (rejected proposals cannot be un-rejected).",
     )
     register(
         mcp,

@@ -2,7 +2,7 @@
 
 Tools:
     - merchants_list — List all merchant name mappings (low sensitivity)
-    - merchants_create — Create merchant name mappings in bulk (low sensitivity)
+    - merchants_create — Create merchant name mappings (low sensitivity)
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def merchants_list() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
 def merchants_create(
     merchants: list[dict[str, str | None]],
 ) -> ResponseEnvelope:
@@ -135,5 +135,6 @@ def register_merchants_tools(mcp: FastMCP) -> None:
         merchants_create,
         "merchants_create",
         "Create multiple merchant name mappings for description "
-        "normalization and auto-categorization.",
+        "normalization and auto-categorization. "
+        "Writes app.user_merchants; no built-in delete tool — revert by editing or repointing the row directly via SQL.",
     )

@@ -232,7 +232,7 @@ Each provider gets a loader class that owns the translation from server JSON to 
 
 The `SyncClient` doesn't know about raw tables or DuckDB. The loader doesn't know about HTTP. Clean separation — each component is testable independently.
 
-**Loading pattern:** Provider loaders use `Database.ingest_dataframe()` for bulk inserts (Polars → Arrow → DuckDB, zero-copy) or DuckDB's `read_json()` for direct JSON ingestion. The choice is per-loader based on data shape. Both paths go through the encrypted `Database` connection.
+**Loading pattern:** Provider loaders use `Database.ingest_dataframe()` for batch inserts (Polars → Arrow → DuckDB, zero-copy) or DuckDB's `read_json()` for direct JSON ingestion. The choice is per-loader based on data shape. Both paths go through the encrypted `Database` connection.
 
 ---
 

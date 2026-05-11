@@ -19,7 +19,7 @@ from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.budget_service import BudgetService
 
 
-@mcp_tool(sensitivity="low", domain="budget")
+@mcp_tool(sensitivity="low", domain="budget", read_only=False)
 def budget_set(
     category: str,
     monthly_amount: str,
@@ -50,5 +50,7 @@ def register_budget_tools(mcp: FastMCP) -> None:
         mcp,
         budget_set,
         "budget_set",
-        "Create or update a monthly budget target for a spending category.",
+        "Create or update a monthly budget target for a spending category. "
+        "Amounts are in the currency named by `summary.display_currency`. "
+        "Writes app.budgets (insert or update on date-range overlap); revert by calling again with the prior monthly_amount, or by setting monthly_amount to 0 to disable the target.",
     )

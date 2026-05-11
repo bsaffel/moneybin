@@ -19,7 +19,7 @@ from moneybin.services.categorization_service import (
     _SOURCE_PRIORITY as _PRIORITY,  # pyright: ignore[reportPrivateUsage]  # test reads the canonical ladder
 )
 from moneybin.services.categorization_service import (
-    BulkCategorizationItem,
+    CategorizationItem,
     CategorizationRuleInput,
     CategorizationService,
 )
@@ -270,7 +270,7 @@ def test_blocked_write_does_not_mutate_merchant_or_proposal_state(
 ) -> None:
     """A precedence-blocked bulk write must not touch downstream learning state.
 
-    Regression guard: ``_bulk_categorize_inner`` resolves the merchant, writes
+    Regression guard: ``_categorize_items_inner`` resolves the merchant, writes
     the categorization, and only then records the auto-rule proposal and
     appends to the exemplar set. If the write is rejected by the precedence
     guard (higher-priority source already covers the row), the suggestion was
@@ -305,8 +305,8 @@ def test_blocked_write_does_not_mutate_merchant_or_proposal_state(
     # rejected-suggestion path: ai (priority 8) is lower than the existing
     # user write, so the write_categorization call should return written=False
     # and no downstream state should change.
-    result = cat_svc.bulk_categorize([
-        BulkCategorizationItem(
+    result = cat_svc.categorize_items([
+        CategorizationItem(
             transaction_id=fresh_txn,
             category="Different",
             subcategory=None,

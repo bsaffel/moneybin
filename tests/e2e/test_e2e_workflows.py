@@ -225,10 +225,10 @@ class TestCategorizationPipeline:
 
 
 class TestAutoRulePipeline:
-    """Workflow 6: import → transform → categorize bulk → auto-accept → verify rule promoted.
+    """Workflow 6: import → transform → categorize apply → auto-accept → verify rule promoted.
 
     This test drives the full auto-rule pipeline through the CLI:
-    import → transform → categorize bulk → auto-review → auto-accept → re-apply.
+    import → transform → categorize apply → auto-review → auto-accept → re-apply.
 
     Promotion is verified by inspecting both the active categorization_rules table
     (created_by='auto_rule' after approval) and re-running apply-rules — the rule
@@ -248,7 +248,7 @@ class TestAutoRulePipeline:
 
         # Import the fixture twice under different account IDs so the same
         # merchant description appears in two separate transactions. The first
-        # import's COFFEE SHOP row will be categorized via `categorize bulk`;
+        # import's COFFEE SHOP row will be categorized via `categorize apply`;
         # the second import's COFFEE SHOP row will remain uncategorized and be
         # picked up by the auto-rule back-fill on approval.
         result = run_cli(
@@ -299,8 +299,8 @@ class TestAutoRulePipeline:
         )
         txn_id = lines[1]
 
-        # Write a JSON bulk-categorization payload to the workflow tmp dir.
-        json_path = e2e_home / "wf-autorule-bulk.json"
+        # Write a JSON categorization payload to the workflow tmp dir.
+        json_path = e2e_home / "wf-autorule-apply.json"
         json_path.write_text(
             json.dumps([
                 {
@@ -312,7 +312,7 @@ class TestAutoRulePipeline:
             encoding="utf-8",
         )
 
-        # bulk categorize — this records a user categorization and triggers the
+        # apply categorize — this records a user categorization and triggers the
         # auto-rule pipeline to create a pending proposal (threshold default = 1).
         result = run_cli(
             "transactions",

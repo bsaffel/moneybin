@@ -128,7 +128,7 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   +-- include <account_id>       -- Toggle include_in_net_worth [--no]
 |   +-- archive <account_id>       -- Mark archived; cascades exclude_in_net_worth=FALSE
 |   +-- unarchive <account_id>     -- Clear archived flag (does NOT restore include)
-|   +-- set <account_id>           -- Bulk metadata update
+|   +-- set <account_id>           -- Metadata update
 |   |   [--official-name NAME] [--last-four XXXX] [--subtype TYPE]
 |   |   [--holder-category CAT] [--currency CODE] [--credit-limit AMT]
 |   |   [--clear-official-name] [--clear-last-four] [--clear-subtype]
@@ -163,7 +163,7 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |   +-- undo <match_id>
 |   |   +-- backfill
 |   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at transactions review)
-|   |   +-- bulk <category_id> --txn-ids ...
+|   |   +-- apply <category_id> --txn-ids ...
 |   |   +-- stats                  -- Coverage metrics
 |   |   +-- rules                  -- Rule management (list, create, apply, delete)
 |   |   |   +-- list
@@ -238,11 +238,12 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |     (catches DB lock error -> recommends db ps / db kill)
 |   +-- list-tools                 -- Show available MCP tools
 |   +-- list-prompts               -- Show available MCP prompts
-|   +-- config                     -- Show current MCP server config
-|   +-- config generate            -- Generate client config
-|         [--client claude-desktop|claude-code|cursor|vscode]
+|   +-- config path                -- Print the install-target config path for a client
+|   +-- install                    -- Install MoneyBin into a client's MCP config
+|         [--client claude-desktop|claude-code|cursor|vscode|chatgpt-desktop|codex|gemini-cli]
 |         [--profile NAME]           Profile to configure (default: active)
-|         [--install]                Write config to client's config file
+|         [--print]                  Print the snippet instead of writing
+|         [--yes]                    Skip the install confirmation prompt
 |
 +-- transform
     +-- plan [--apply]             -- Preview pending SQLMesh changes
@@ -455,23 +456,36 @@ $ moneybin mcp serve
 
 Enumerate registered MCP tools and prompts from the server. Essential for debugging "why can't Claude see this tool?" scenarios.
 
-### `mcp config generate`
+### `mcp install`
 
-Generate and optionally install MCP client configuration:
+Install MoneyBin into a client's MCP config (default behavior). The verb matches user intent — the previous `mcp config generate --install` invocation surfaced the install action as a flag on a generation command, which obscured the dominant use case.
 
 ```
-$ moneybin mcp config generate --client claude-desktop --profile alice --install
+$ moneybin mcp install --client claude-desktop --profile alice
 This will add MoneyBin (alice) to ~/.config/claude/claude_desktop_config.json
 Proceed? [y/N]: y
 ✅ MoneyBin (alice) added to Claude Desktop config
 💡 Restart Claude Desktop to pick up the change
 ```
 
-Supported clients: `claude-desktop`, `claude-code`, `cursor`, `vscode`. Each profile generates a separate MCP server entry in the client config (e.g., "MoneyBin (alice)" and "MoneyBin (business)"). The server receives `--profile` as an argument, baked into the generated config.
+Supported clients: `claude-desktop`, `claude-code`, `cursor`, `vscode`, `chatgpt-desktop`, `codex`, `gemini-cli`. Each profile generates a separate MCP server entry in the client config (e.g., "MoneyBin (alice)" and "MoneyBin (business)"). The server receives `--profile` as an argument, baked into the generated config.
 
-Interactive mode (no `--client` flag) prompts the user to select a client and profile.
+**Flags:**
 
-Scope: generate and install only. Does not edit or remove existing entries — that's the user's responsibility.
+- `--print` — emit the snippet to stdout without writing to a config file. Use when scripting, when inspecting before installing, or for clients (`chatgpt-desktop`) that have no programmatic install path. The latter case auto-falls back to print + manual setup instructions when no `--print` is passed.
+- `--yes` / `-y` — skip the install confirmation prompt.
+- Interactive mode (no `--client` flag) prompts the user to select a client and profile.
+
+Scope: install only. Does not edit or remove existing entries — that's the user's responsibility. Re-running `--install` for a different profile **adds** an additional entry rather than replacing the previous one.
+
+### `mcp config path`
+
+Print the install-target config file path for a given client + profile, without modifying anything. Lookup-only; useful for scripting or for hand-editing a config file the user already controls.
+
+```
+$ moneybin mcp config path --client claude-desktop --profile alice
+/Users/alice/Library/Application Support/Claude/claude_desktop_config.json
+```
 
 ## Migration v1 → v2
 
@@ -576,7 +590,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Move `track investments` → `accounts investments` (still stub) | Reparent |
 | Dissolve `track` group | Delete CLI module |
 | Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `tax`, `budget`) | New CLI module, all stubs |
-| Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs |
+| Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs via `mcp install` |
 | Collapse `transactions matches review` and `transactions categorize review` into unified `transactions review` (CLI). Add MCP `transactions_review_status` orientation tool | New CLI command + new MCP tool |
 | Rename `import_csv_preview` → `import_file_preview` (format-agnostic) | MCP tool rename + service method rename |
 | Expose `sync_*` to MCP (all except `sync_rotate_key`) — login, logout, connect, disconnect, pull, status, schedule_set/show/remove | New MCP tools wrapping existing CLI sync surface |
@@ -584,7 +598,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Update `mcp-tool-surface.md` with new names + new MCP exposures | Doc edit |
 | Update specs that reference v1 CLI paths | Doc edits across specs (see [Specs Requiring CLI Section Updates](#specs-requiring-cli-section-updates)) |
 
-Hard cut. v1 paths break in the same release. Tests, scripts, docs, and `mcp config generate` output all update together.
+Hard cut. v1 paths break in the same release. Tests, scripts, docs, and `mcp install` output all update together.
 
 ### v1 phasing (historical, completed)
 
@@ -607,7 +621,7 @@ Structural changes, profile system, and thin wrappers around existing tools.
 | `db lock` / `db unlock` / `db rotate-key` | Per privacy-data-protection spec |
 | `mcp serve` DB lock error handling | Add try/catch with helpful message |
 | `mcp list-tools` / `mcp list-prompts` | Enumerate from tool registry |
-| `mcp config` / `mcp config generate --install` | Template generation + file write |
+| `mcp install` / `mcp config path` | Template generation + file write (install); install-target lookup (config path) |
 | `transform status` | Thin wrapper: `sqlmesh info` |
 | `transform validate` | Thin wrapper: `sqlmesh plan --no-prompts` (dry) |
 | `transform audit` | Thin wrapper: `sqlmesh audit` |
@@ -702,9 +716,9 @@ These were identified during design and should be added to the spec index:
 ### MCP enhancements
 - `mcp serve` with locked DB shows helpful error
 - `mcp list-tools/list-prompts` enumerate correctly
-- `mcp config generate` produces valid config for each supported client
-- `mcp config generate --install` writes to correct location
-- `mcp config generate --profile` bakes profile into server args
+- `mcp install --print` produces valid config for each supported client
+- `mcp install` writes to the correct location for the named client
+- `mcp install --profile` bakes profile into server args
 
 ### Transform wrappers
 - Each wrapper invokes the correct `sqlmesh` primitive
@@ -722,7 +736,7 @@ These were identified during design and should be added to the spec index:
 ## Out of Scope
 
 - **Runtime profile switching in MCP sessions.** One profile per session by design. Each MCP server instance is scoped to one profile via `--profile` arg in client config.
-- **Editing other tools' MCP configs.** `mcp config generate --install` adds entries only. Removal and modification are the user's responsibility.
+- **Editing other tools' MCP configs.** `mcp install` adds entries only. Removal and modification are the user's responsibility.
 - **CLI UX standards** (progressive disclosure, review queue patterns, output formatting). Deferred to `cli-ux-standards.md` — learn from real usage first.
 - **MCP UX standards** (tool naming, error surfaces, prompt design). Deferred to `mcp-ux-standards.md`.
 - **`stats` implementation.** Depends on `observability.md` metrics tables. Stubbed only.

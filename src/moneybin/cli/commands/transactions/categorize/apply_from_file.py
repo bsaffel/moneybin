@@ -13,10 +13,10 @@ from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 
-# Keys the BulkCategorizationItem model accepts (extra="forbid"). Used to strip
+# Keys the CategorizationItem model accepts (extra="forbid"). Used to strip
 # export-shape extras (description_redacted, source_type) from rows fed to
 # apply-from-file.
-_ALLOWED_BULK_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
+_ALLOWED_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
 
 
 def categorize_apply_from_file(
@@ -47,8 +47,8 @@ def categorize_apply_from_file(
     """
     from moneybin.cli.output import render_or_json
     from moneybin.services.categorization_service import (
-        BulkCategorizationResult,
-        validate_bulk_items,
+        CategorizationResult,
+        validate_items,
     )
 
     use_stdin = str(input_path) == "-"
@@ -73,7 +73,7 @@ def categorize_apply_from_file(
         typer.echo(f"❌ Invalid JSON: {e}", err=True)
         raise typer.Exit(1) from e
 
-    # Map export-shape rows into BulkCategorizationItem-shape rows. The export
+    # Map export-shape rows into CategorizationItem-shape rows. The export
     # command emits {transaction_id, description_redacted, source_type} for the
     # LLM to annotate with category/subcategory; the service model is
     # {transaction_id, category, subcategory} with extra="forbid", so we must
@@ -85,14 +85,14 @@ def categorize_apply_from_file(
             if isinstance(row, dict):
                 row_dict: dict[str, object] = {str(k): v for k, v in row.items()}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
                 remapped.append({
-                    k: v for k, v in row_dict.items() if k in _ALLOWED_BULK_ITEM_KEYS
+                    k: v for k, v in row_dict.items() if k in _ALLOWED_ITEM_KEYS
                 })
             else:
                 remapped.append(row)  # pyright: ignore[reportUnknownArgumentType]
         normalized = remapped
 
     try:
-        items, parse_errors = validate_bulk_items(normalized)
+        items, parse_errors = validate_items(normalized)
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e
@@ -101,11 +101,9 @@ def categorize_apply_from_file(
         with handle_cli_errors() as db:
             from moneybin.services.categorization_service import CategorizationService
 
-            result = CategorizationService(db).bulk_categorize(items)
+            result = CategorizationService(db).categorize_items(items)
     else:
-        result = BulkCategorizationResult(
-            applied=0, skipped=0, errors=0, error_details=[]
-        )
+        result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
     result.merge_parse_errors(parse_errors)
 
     input_count = len(items) + len(parse_errors)

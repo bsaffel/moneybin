@@ -230,12 +230,13 @@ class TestValidateRuleItems:
 
 
 class TestCreateRules:
-    """CategorizationService.create_rules — bulk INSERT into app.categorization_rules."""
+    """CategorizationService.create_rules — batch INSERT into app.categorization_rules."""
 
     @pytest.mark.unit
     def test_empty_input_returns_zero_counts(self, db: Database) -> None:
         result = CategorizationService(db).create_rules([])
         assert result.created == 0
+        assert result.existing == 0
         assert result.skipped == 0
         assert result.error_details == []
         assert result.rule_ids == []
@@ -357,6 +358,118 @@ class TestCreateRules:
         assert len(result.error_details) == 1
         assert result.error_details[0]["name"] == "R1"
         assert "Failed to create rule" in result.error_details[0]["reason"]
+
+    @pytest.mark.unit
+    def test_retry_same_payload_is_idempotent(self, db: Database) -> None:
+        """Re-running create_rules with the same payload reuses the existing rule_id."""
+        svc = CategorizationService(db)
+        items = [
+            CategorizationRuleInput(
+                name="Starbucks",
+                merchant_pattern="STARBUCKS",
+                category="Food & Drink",
+                subcategory="Coffee",
+                min_amount=5,
+                max_amount=50,
+                account_id="ACC001",
+            )
+        ]
+        first = svc.create_rules(items)
+        second = svc.create_rules(items)
+
+        assert first.created == 1
+        assert first.existing == 0
+        assert second.created == 0
+        assert second.existing == 1
+        assert first.rule_ids == second.rule_ids  # same rule_id returned
+        row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
+        assert row == (1,)  # no duplicate row
+
+    @pytest.mark.unit
+    def test_name_and_priority_excluded_from_dedup_key(self, db: Database) -> None:
+        """Same matcher+output with different name/priority is treated as same rule."""
+        svc = CategorizationService(db)
+        first = svc.create_rules([
+            CategorizationRuleInput(
+                name="Starbucks v1",
+                merchant_pattern="STARBUCKS",
+                category="Food & Drink",
+                priority=100,
+            )
+        ])
+        second = svc.create_rules([
+            CategorizationRuleInput(
+                name="Starbucks renamed",
+                merchant_pattern="STARBUCKS",
+                category="Food & Drink",
+                priority=50,
+            )
+        ])
+
+        assert first.created == 1
+        assert second.existing == 1
+        assert first.rule_ids == second.rule_ids
+        row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
+        assert row == (1,)
+
+    @pytest.mark.unit
+    def test_different_category_output_is_new_rule(self, db: Database) -> None:
+        """Same matcher with a different category is currently treated as a new rule.
+
+        Conflict detection (same matcher, divergent output) is a deferred
+        follow-up — see docs/specs/mcp-tool-surface.md "Rule-conflict
+        detection (follow-up)".
+        """
+        svc = CategorizationService(db)
+        first = svc.create_rules([
+            CategorizationRuleInput(
+                name="r1",
+                merchant_pattern="AMZN",
+                category="Shopping",
+            )
+        ])
+        second = svc.create_rules([
+            CategorizationRuleInput(
+                name="r2",
+                merchant_pattern="AMZN",
+                category="Business",
+            )
+        ])
+
+        assert first.created == 1
+        assert second.created == 1
+        assert first.rule_ids != second.rule_ids
+        row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
+        assert row == (2,)
+
+    @pytest.mark.unit
+    def test_deactivated_rule_does_not_dedup(self, db: Database) -> None:
+        """A deactivated rule with the same content does not block re-creation.
+
+        Dedup is scoped to ``is_active = true`` so users can re-create a
+        rule they previously soft-deleted.
+        """
+        svc = CategorizationService(db)
+        first = svc.create_rules([
+            CategorizationRuleInput(
+                name="r1",
+                merchant_pattern="STARBUCKS",
+                category="Food & Drink",
+            )
+        ])
+        svc.deactivate_rule(first.rule_ids[0])
+
+        second = svc.create_rules([
+            CategorizationRuleInput(
+                name="r1",
+                merchant_pattern="STARBUCKS",
+                category="Food & Drink",
+            )
+        ])
+
+        assert second.created == 1
+        assert second.existing == 0
+        assert first.rule_ids != second.rule_ids
 
 
 class TestDeactivateRule:

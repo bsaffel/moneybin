@@ -15,7 +15,7 @@ import yaml
 from moneybin.database import Database
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
-    BulkCategorizationItem,
+    CategorizationItem,
     CategorizationService,
     _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
     score_match_shape,
@@ -632,33 +632,33 @@ def real_db(tmp_path: Path) -> Database:
     return db
 
 
-def test_service_bulk_categorize_applies_categorization(
+def test_service_categorize_items_applies_categorization(
     real_db: Database,
 ) -> None:
-    """Service.bulk_categorize writes a category row for the given transaction."""
+    """Service.categorize_items writes a category row for the given transaction."""
     real_db.execute(
         "INSERT INTO core.fct_transactions "
         "(transaction_id, account_id, transaction_date, amount, description, source_type) "
         "VALUES ('ts1', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
     )
     svc = CategorizationService(real_db)
-    result = svc.bulk_categorize([
-        BulkCategorizationItem(transaction_id="ts1", category="Food & Drink")
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="ts1", category="Food & Drink")
     ])
     assert result.applied == 1
 
 
-def test_bulk_categorize_returns_did_you_mean_on_invalid_category(
+def test_categorize_items_returns_did_you_mean_on_invalid_category(
     real_db: Database,
 ) -> None:
-    """bulk_categorize rejects an invalid category with a structured did_you_mean field."""
+    """categorize_items rejects an invalid category with a structured did_you_mean field."""
     real_db.execute(
         "INSERT INTO app.user_categories (category_id, category, subcategory) "
         "VALUES ('cat001', 'Food & Dining', NULL)"
     )
     svc = CategorizationService(real_db)
-    result = svc.bulk_categorize([
-        BulkCategorizationItem(transaction_id="txn_dym", category="FOOD"),
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="txn_dym", category="FOOD"),
     ])
 
     assert result.errors == 1
@@ -706,7 +706,7 @@ def test_no_public_module_level_categorization_functions() -> None:
     import moneybin.services.categorization_service as mod
 
     forbidden = {
-        "bulk_categorize",
+        "categorize_items",
         "apply_rules",
         "seed_categories",
         "get_stats",
@@ -729,7 +729,7 @@ def test_service_exposes_consolidated_methods(real_db: Database) -> None:
     asserted in ``test_auto_rule_service.py``.
     """
     expected = {
-        "bulk_categorize",
+        "categorize_items",
         "apply_rules",
         "categorize_pending",
         "stats",
@@ -834,8 +834,8 @@ def test_list_auto_rules_returns_active_auto_rules(real_db: Database) -> None:
     assert any(r["merchant_pattern"] == "CHIPOTLE" for r in rules)
 
 
-def test_bulk_categorize_creates_auto_rule_proposal(real_db: Database) -> None:
-    """bulk_categorize records a pending proposal for novel txn → category mappings."""
+def test_categorize_items_creates_auto_rule_proposal(real_db: Database) -> None:
+    """categorize_items records a pending proposal for novel txn → category mappings."""
     from moneybin.services.categorization_service import CategorizationService
 
     real_db.execute(
@@ -843,9 +843,9 @@ def test_bulk_categorize_creates_auto_rule_proposal(real_db: Database) -> None:
         "VALUES ('tb1', 'a1', DATE '2026-02-01', -4.50, 'STARBUCKS RESERVE', 'csv')"
     )
     svc = CategorizationService(real_db)
-    svc.bulk_categorize(
+    svc.categorize_items(
         [
-            BulkCategorizationItem(
+            CategorizationItem(
                 transaction_id="tb1",
                 category="Food & Drink",
                 subcategory="Coffee",
@@ -860,16 +860,16 @@ def test_bulk_categorize_creates_auto_rule_proposal(real_db: Database) -> None:
 
 
 # ---------------------------------------------------------------------------
-# bulk_categorize — perf shape and in-batch dedup
+# categorize_items — perf shape and in-batch dedup
 # ---------------------------------------------------------------------------
 
 
-def test_bulk_categorize_uses_constant_number_of_db_calls(
+def test_categorize_items_uses_constant_number_of_db_calls(
     monkeypatch: pytest.MonkeyPatch,
     mock_secret_store: MagicMock,
     tmp_path: Path,
 ) -> None:
-    """bulk_categorize should not scale DB round-trips with item count.
+    """categorize_items should not scale DB round-trips with item count.
 
     With N items, the number of read queries (description fetch + merchant
     fetch) must be O(1), not O(N).
@@ -893,7 +893,7 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
             [f"txn_{i}", f"Coffee shop {i}"],
         )
     items = [
-        BulkCategorizationItem(
+        CategorizationItem(
             transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
         )
         for i in range(25)
@@ -909,10 +909,10 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
 
     monkeypatch.setattr(db, "execute", counting_execute)
 
-    result = CategorizationService(db).bulk_categorize(items)
+    result = CategorizationService(db).categorize_items(items)
 
     assert result.applied == 25
-    # The bulk_categorize merchant-resolution read path must be batched.
+    # The categorize_items merchant-resolution read path must be batched.
     # Verify a single batched description fetch (WHERE transaction_id IN (...))
     # ran for the whole input, regardless of N. Per-row fetches inside
     # _auto_rule recording are a separate concern and are out of scope here.
@@ -927,7 +927,7 @@ def test_bulk_categorize_uses_constant_number_of_db_calls(
     )
 
 
-def test_bulk_categorize_dedupes_merchant_creation_within_batch(
+def test_categorize_items_dedupes_merchant_creation_within_batch(
     mock_secret_store: MagicMock,
     tmp_path: Path,
 ) -> None:
@@ -951,13 +951,13 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
         )
 
     items = [
-        BulkCategorizationItem(
+        CategorizationItem(
             transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
         )
         for i in range(3)
     ]
 
-    result = CategorizationService(db).bulk_categorize(items)
+    result = CategorizationService(db).categorize_items(items)
 
     assert result.applied == 3
     assert result.merchants_created == 1, (
@@ -972,10 +972,10 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
     assert merchant_count[0] == 1
 
 
-def test_bulk_categorize_snowball_fans_out_to_siblings(real_db: Database) -> None:
-    """Snowball fan-out after bulk_categorize commits.
+def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> None:
+    """Snowball fan-out after categorize_items commits.
 
-    After bulk_categorize commits, categorize_pending runs automatically and
+    After categorize_items commits, categorize_pending runs automatically and
     fans the new merchant out to siblings sharing the same match_text.
 
     Fixes bug 4 from categorization-matching-mechanics.md.
@@ -999,8 +999,8 @@ def test_bulk_categorize_snowball_fans_out_to_siblings(real_db: Database) -> Non
 
     # Categorize batch 1 (just t1) with a canonical name so an exemplar-merchant
     # is created.
-    result = svc.bulk_categorize([
-        BulkCategorizationItem(
+    result = svc.categorize_items([
+        CategorizationItem(
             transaction_id="t1",
             category="Food & Dining",
             subcategory="Coffee Shops",
@@ -1009,7 +1009,7 @@ def test_bulk_categorize_snowball_fans_out_to_siblings(real_db: Database) -> Non
     ])
     assert result.applied == 1
 
-    # SNOWBALL: t2 and t3 should now be categorized too because bulk_categorize
+    # SNOWBALL: t2 and t3 should now be categorized too because categorize_items
     # invoked categorize_pending() after committing, which applied the new
     # exemplar to remaining uncategorized rows.
     assert svc.count_uncategorized() == 0
@@ -1028,7 +1028,7 @@ def test_bulk_categorize_snowball_fans_out_to_siblings(real_db: Database) -> Non
 
 
 # ---------------------------------------------------------------------------
-# find_matching_rule override tests (Task 3 — bulk path preparation)
+# find_matching_rule override tests (Task 3 — batch path preparation)
 # ---------------------------------------------------------------------------
 
 

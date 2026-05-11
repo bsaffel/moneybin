@@ -39,7 +39,7 @@ def _validate_file_path(file_path: str) -> Path:
     return resolved
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
 def import_file(
     file_path: str,
     account_id: str | None = None,
@@ -199,7 +199,7 @@ def import_status(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False, destructive=True, idempotent=False)
 def import_revert(import_id: str) -> ResponseEnvelope:
     """Undo an import batch by deleting all rows it produced.
 
@@ -285,7 +285,8 @@ def register_import_tools(mcp: FastMCP) -> None:
         import_file,
         "import_file",
         "Import a financial data file (OFX, QFX, QBO, CSV, TSV, Excel, "
-        "Parquet, PDF) into MoneyBin.",
+        "Parquet, PDF) into MoneyBin. "
+        "Writes raw.* source tables, raw.import_log, and rebuilds core/* downstream tables; revert via import_revert with the returned import_id.",
     )
     register(
         mcp,
@@ -305,7 +306,8 @@ def register_import_tools(mcp: FastMCP) -> None:
         import_revert,
         "import_revert",
         "Undo an import batch by import_id (deletes the rows it produced and "
-        "marks the batch as reverted).",
+        "marks the batch as reverted). "
+        "Hard-deletes from raw.* source tables and updates raw.import_log.status='reverted'; the deletion is permanent — re-import the original file via import_file to restore the rows.",
     )
     register(
         mcp,

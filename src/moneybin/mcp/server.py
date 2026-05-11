@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # by the Visibility transform installed in register_core_tools() and is
 # re-enabled per-session via moneybin_discover.
 EXTENDED_DOMAIN_DESCRIPTIONS: dict[str, str] = {
-    "categorize": "Rules, merchant mappings, bulk categorization",
+    "categorize": "Rules, merchant mappings, categorization",
     "budget": "Budget targets, status, rollovers",
     "tax": "W-2 data, deductible expense search",
     "privacy": "Consent status, grants, revocations, audit log",
@@ -72,7 +72,7 @@ mcp = FastMCP(
 
         Conventions:
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
-        - Prefer bulk tools (transactions_categorize_apply, transactions_categorize_rules_create).
+        - Prefer batch tools (transactions_categorize_apply, transactions_categorize_rules_create).
         - Sensitivity tiers: low / medium / high. Without consent, tools degrade to aggregates — they never fail.
 
         Cold-start workflow:

@@ -105,7 +105,7 @@ def _step_seed_merchants(setup: SetupSpec, db: Database, env: dict[str, str]) ->
 
 def _step_categorize(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
     # categorize_pending runs rules first, then merchant-mapping fallback.
-    # bulk_categorize is the wrong API here — it expects pre-decided
+    # categorize_items is the wrong API here — it expects pre-decided
     # categories per transaction (used by the agent/UI flow), not auto-
     # classification from descriptions.
     CategorizationService(db).categorize_pending()

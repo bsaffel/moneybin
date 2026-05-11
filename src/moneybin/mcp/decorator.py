@@ -27,7 +27,7 @@ import inspect
 import logging
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from moneybin.database import interrupt_and_reset_database
 from moneybin.errors import UserError, classify_user_error
@@ -37,11 +37,131 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 logger = logging.getLogger(__name__)
 
 
+class _UnsetType:
+    """Sentinel for distinguishing 'inherit settings default' from 'explicit None'."""
+
+    _singleton: _UnsetType | None = None
+
+    def __new__(cls) -> _UnsetType:
+        if cls._singleton is None:
+            cls._singleton = super().__new__(cls)
+        return cls._singleton
+
+    def __repr__(self) -> str:
+        return "_UNSET"
+
+
+_UNSET = _UnsetType()
+
+
 def _get_timeout_seconds() -> float:
     """Read the configured timeout. Indirected for test monkeypatching."""
     from moneybin.config import get_settings
 
     return get_settings().mcp.tool_timeout_seconds
+
+
+def _get_max_items() -> int | None:
+    """Read the configured collection cap. Indirected for test monkeypatching."""
+    from moneybin.config import get_settings
+
+    return get_settings().mcp.max_items
+
+
+def _check_collection_caps(
+    fn_name: str,
+    list_params: list[str],
+    bound_args: dict[str, Any],
+    cap: int | None,
+) -> ResponseEnvelope | None:
+    """Return an error envelope if any list param exceeds ``cap``, else None."""
+    if cap is None:
+        return None
+    for param_name in list_params:
+        value = bound_args.get(param_name)
+        if value is None:
+            continue
+        try:
+            length = len(value)
+        except TypeError:
+            continue
+        if length > cap:
+            err = UserError(
+                f"{fn_name}: parameter '{param_name}' has {length} items; max is {cap}",
+                code="too_many_items",
+                details={
+                    "limit": cap,
+                    "received": length,
+                    "parameter": param_name,
+                },
+            )
+            return build_error_envelope(error=err, sensitivity="low")
+    return None
+
+
+def _find_list_params(fn: Callable[..., Any]) -> list[str]:
+    """Return parameter names whose annotation is a list/tuple/Sequence.
+
+    Restricted to ``Sequence`` so that ``dict``/``set``/``frozenset`` —
+    which are ``Collection`` but not ``Sequence`` — are not treated as
+    list-capped. ``len()`` on a dict counts keys, not items, which would
+    surface confusing ``too_many_items`` errors. ``str``/``bytes`` are
+    also excluded (technically ``Sequence`` but list-cap semantics don't
+    apply). ``X | None`` (Optional) annotations are unwrapped first.
+    """
+    import typing
+    from collections.abc import Sequence
+    from types import UnionType
+
+    sig = inspect.signature(fn)
+    try:
+        type_hints = typing.get_type_hints(fn)
+    except Exception:  # noqa: BLE001 — eval failure shouldn't block decoration
+        return []
+    list_params: list[str] = []
+
+    for param_name in sig.parameters:
+        annotation: Any = type_hints.get(param_name)
+        if annotation is None:
+            continue
+        # Unwrap Optional[X] / X | None.
+        origin = typing.get_origin(annotation)
+        if origin is typing.Union or origin is UnionType:
+            args = [a for a in typing.get_args(annotation) if a is not type(None)]
+            if len(args) == 1:
+                annotation = args[0]
+                origin = typing.get_origin(annotation)
+        # str/bytes are explicitly excluded.
+        if annotation is str or annotation is bytes:
+            continue
+        # Direct origin match (covers list[X], Sequence[X], tuple[X, ...]).
+        if origin in (list, tuple, Sequence):
+            list_params.append(param_name)
+            continue
+        # Bare list/tuple type without subscript.
+        if (
+            isinstance(annotation, type)
+            and annotation
+            not in (
+                str,
+                bytes,
+            )
+            and issubclass(annotation, (list, tuple))
+        ):
+            list_params.append(param_name)
+            continue
+        # Generic alias with a non-builtin origin (e.g. custom Sequence subclass).
+        if origin is not None and isinstance(origin, type):
+            origin_type = cast(type, origin)
+            try:
+                if origin_type not in (str, bytes) and issubclass(
+                    origin_type, Sequence
+                ):
+                    list_params.append(param_name)
+            except TypeError:
+                pass
+
+    return list_params
 
 
 def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
@@ -82,8 +202,23 @@ def mcp_tool(
     *,
     sensitivity: Literal["low", "medium", "high"],
     domain: str | None = None,
+    read_only: bool = True,
+    destructive: bool = False,
+    idempotent: bool = True,
+    open_world: bool = False,
+    max_items: int | None | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool with a sensitivity tier and optional domain.
+
+    Args:
+        sensitivity: Sensitivity tier (low/medium/high).
+        domain: Optional progressive-disclosure tag.
+        read_only: MCP readOnlyHint — default True (most MoneyBin tools are queries).
+        destructive: MCP destructiveHint — irreversible state change.
+        idempotent: MCP idempotentHint — safe to retry without side effects.
+        open_world: MCP openWorldHint — defaults to False (closed-world).
+        max_items: Per-tool override for ``MCPConfig.max_items``. ``None``
+            disables the cap. Sentinel ``_UNSET`` inherits from settings.
 
     Tools with a ``domain`` start hidden; ``moneybin_discover`` enables them
     per-session via FastMCP tag visibility. Every tool is wrapped in a
@@ -102,9 +237,32 @@ def mcp_tool(
                 f"{fn.__name__} is a sync generator — MCP tools must return ResponseEnvelope directly"
             )
 
+        list_params = _find_list_params(fn)
+        # Cache the signature at decoration time. inspect.signature is not cheap,
+        # and tools with list_params would otherwise rebuild it on every call.
+        cached_sig = inspect.signature(fn) if list_params else None
+
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
             log_tool_call(fn.__name__, tier)
+            # Resolve cap: explicit per-tool override wins; otherwise inherit settings.
+            cap_attr = cast(
+                "int | None | _UnsetType",
+                wrapper._mcp_max_items,  # type: ignore[attr-defined]
+            )
+            if isinstance(cap_attr, _UnsetType):
+                cap: int | None = _get_max_items()
+            else:
+                cap = cap_attr
+            if list_params and cached_sig is not None:
+                bound: dict[str, Any]
+                try:
+                    bound = dict(cached_sig.bind_partial(*args, **kwargs).arguments)
+                except TypeError:
+                    bound = {}
+                cap_error = _check_collection_caps(fn.__name__, list_params, bound, cap)
+                if cap_error is not None:
+                    return cap_error
             timeout_s = _get_timeout_seconds()
             started = time.monotonic()
             # asyncio.timeout()'s .expired() lets us distinguish a cap-fired
@@ -147,6 +305,12 @@ def mcp_tool(
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]
+        wrapper._mcp_read_only = read_only  # type: ignore[attr-defined]
+        wrapper._mcp_destructive = destructive  # type: ignore[attr-defined]
+        wrapper._mcp_idempotent = idempotent  # type: ignore[attr-defined]
+        wrapper._mcp_open_world = open_world  # type: ignore[attr-defined]
+        wrapper._mcp_max_items = max_items  # type: ignore[attr-defined]
+        wrapper._mcp_list_params = list_params  # type: ignore[attr-defined]
         return wrapper
 
     return decorator

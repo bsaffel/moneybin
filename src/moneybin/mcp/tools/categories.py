@@ -28,7 +28,7 @@ def categories_list(include_inactive: bool = False) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
 def categories_create(
     category: str,
     subcategory: str | None = None,
@@ -53,7 +53,7 @@ def categories_create(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False)
 def categories_toggle(
     category_id: str,
     is_active: bool,
@@ -82,11 +82,13 @@ def register_categories_tools(mcp: FastMCP) -> None:
         mcp,
         categories_create,
         "categories_create",
-        "Create a custom category or subcategory.",
+        "Create a custom category or subcategory. "
+        "Writes app.user_categories; revert with categories_toggle (set is_active=False) — there is no hard-delete.",
     )
     register(
         mcp,
         categories_toggle,
         "categories_toggle",
-        "Enable or disable a category in the taxonomy.",
+        "Enable or disable a category in the taxonomy. "
+        "Writes app.user_categories.is_active for user-created categories or app.category_overrides for seeded ones; revert by calling again with the opposite is_active value.",
     )

@@ -16,7 +16,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.services.categorization_service import (
-    BulkCategorizationItem,
+    CategorizationItem,
     CategorizationService,
 )
 from tests.moneybin.db_helpers import create_core_tables
@@ -50,9 +50,9 @@ def _seed_txn(
 
 def _items(
     *triples: tuple[str, str, str | None],
-) -> list[BulkCategorizationItem]:
+) -> list[CategorizationItem]:
     return [
-        BulkCategorizationItem(
+        CategorizationItem(
             transaction_id=tid,
             category="Subscriptions",
             subcategory="Streaming",
@@ -67,7 +67,7 @@ def test_first_categorization_creates_merchant_with_one_exemplar(
 ) -> None:
     _seed_txn(real_db, "t1", "PAYPAL INST XFER", "GOOGLE YOUTUBE BRANDON SAFFEL")
     svc = CategorizationService(real_db)
-    svc.bulk_categorize(_items(("t1", "Subscriptions", "YouTube")))
+    svc.categorize_items(_items(("t1", "Subscriptions", "YouTube")))
     row = real_db.execute(
         "SELECT canonical_name, raw_pattern, match_type, exemplars "
         "FROM app.user_merchants ORDER BY created_at DESC LIMIT 1"
@@ -87,7 +87,7 @@ def test_lookup_via_oneof_exemplar_match(real_db: Database) -> None:
     """A row whose match_text equals an existing merchant's exemplar matches via oneOf."""
     _seed_txn(real_db, "t1", "PAYPAL INST XFER", "GOOGLE YOUTUBE PREMIUM")
     svc = CategorizationService(real_db)
-    svc.bulk_categorize(_items(("t1", "Subscriptions", "YouTube")))
+    svc.categorize_items(_items(("t1", "Subscriptions", "YouTube")))
     # New row with identical description+memo
     _seed_txn(real_db, "t2", "PAYPAL INST XFER", "GOOGLE YOUTUBE PREMIUM")
     # Run the deterministic matcher
@@ -107,7 +107,7 @@ def test_aggregator_strings_do_not_overgeneralize(real_db: Database) -> None:
     _seed_txn(real_db, "t2", "PAYPAL INST XFER", "ARBORIST CONSULTATION")
     svc = CategorizationService(real_db)
     # User categorizes the first as Subscriptions
-    svc.bulk_categorize(_items(("t1", "Subscriptions", "YouTube")))
+    svc.categorize_items(_items(("t1", "Subscriptions", "YouTube")))
     # Run categorize_pending — t2 must NOT inherit Subscriptions because its
     # match_text differs (different memo)
     svc.categorize_pending()
@@ -127,8 +127,8 @@ def test_second_categorization_appends_exemplar_to_existing_canonical(
     _seed_txn(real_db, "t1", "PAYPAL INST XFER", "GOOGLE YOUTUBE")
     _seed_txn(real_db, "t2", "PAYPAL INST XFER", "GOOGLE YOUTUBE PREMIUM")
     svc = CategorizationService(real_db)
-    svc.bulk_categorize(_items(("t1", "Subscriptions", "YouTube")))
-    svc.bulk_categorize(_items(("t2", "Subscriptions", "YouTube")))
+    svc.categorize_items(_items(("t1", "Subscriptions", "YouTube")))
+    svc.categorize_items(_items(("t2", "Subscriptions", "YouTube")))
     rows = real_db.execute(
         "SELECT canonical_name, exemplars FROM app.user_merchants "
         "WHERE canonical_name = 'YouTube'"
@@ -144,8 +144,8 @@ def test_append_exemplar_is_idempotent(real_db: Database) -> None:
     """Re-categorizing the same row with the same canonical name does not duplicate the exemplar."""
     _seed_txn(real_db, "t1", "PAYPAL INST XFER", "GOOGLE YOUTUBE")
     svc = CategorizationService(real_db)
-    svc.bulk_categorize(_items(("t1", "Subscriptions", "YouTube")))
-    svc.bulk_categorize(_items(("t1", "Subscriptions", "YouTube")))
+    svc.categorize_items(_items(("t1", "Subscriptions", "YouTube")))
+    svc.categorize_items(_items(("t1", "Subscriptions", "YouTube")))
     rows = real_db.execute(
         "SELECT exemplars FROM app.user_merchants WHERE canonical_name = 'YouTube'"
     ).fetchall()
@@ -168,16 +168,16 @@ def test_canonical_name_collision_with_different_category_does_not_merge(
     _seed_txn(real_db, "t2", "AMZN PRIME VIDEO")
     svc = CategorizationService(real_db)
 
-    svc.bulk_categorize([
-        BulkCategorizationItem(
+    svc.categorize_items([
+        CategorizationItem(
             transaction_id="t1",
             category="Shopping",
             subcategory="Online",
             canonical_merchant_name="Amazon",
         ),
     ])
-    svc.bulk_categorize([
-        BulkCategorizationItem(
+    svc.categorize_items([
+        CategorizationItem(
             transaction_id="t2",
             category="Subscriptions",
             subcategory="Streaming",

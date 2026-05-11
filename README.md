@@ -54,7 +54,7 @@ moneybin import file path/to/transactions.csv  # CSV/TSV/Excel/Parquet/Feather
 moneybin import file path/to/checking.qfx      # OFX/QFX/QBO
 moneybin import inbox                          # drain ~/Documents/MoneyBin/<profile>/inbox/
 
-moneybin mcp config generate --client claude-desktop --install
+moneybin mcp install --client claude-desktop
 ```
 
 Once Claude (or any MCP client) is connected, ask:

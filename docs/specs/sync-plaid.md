@@ -444,7 +444,7 @@ No other code path should ever flip the sign. If a test or query reads from raw,
 
 Plaid provides a `personal_finance_category.primary` value (e.g., `FOOD_AND_DRINK`, `TRANSFER`, `INCOME`). These are preserved in `raw.plaid_transactions.category` and flow through staging to core.
 
-In the categorization priority hierarchy (`categorization-overview.md`), Plaid categories sit at priority 5 — below user, rules, auto-rules, and ML, but above LLM bulk categorization. They serve as a bootstrap signal: useful for new users before they've built up rules and ML training data, but overridable by every other categorization source.
+In the categorization priority hierarchy (`categorization-overview.md`), Plaid categories sit at priority 5 — below user, rules, auto-rules, and ML, but above LLM batch categorization. They serve as a bootstrap signal: useful for new users before they've built up rules and ML training data, but overridable by every other categorization source.
 
 The category mapping from Plaid's PFCv2 taxonomy to MoneyBin's category system uses the existing `app.categories.plaid_detailed` column. If a second provider is integrated in the future, this should be extracted to a generic `app.category_mappings` table (see `categorization-overview.md` future directions §3).
 

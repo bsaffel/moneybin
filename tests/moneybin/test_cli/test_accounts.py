@@ -584,3 +584,101 @@ class TestAccountsSet:
                 )
         assert result.exit_code == 2
         mock_service_class.return_value.settings_update.assert_not_called()
+
+
+class TestAccountsResolve:
+    """Tests for the `moneybin accounts resolve` CLI command."""
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_text_output_prints_match(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Text mode prints account_id and display_name for each match."""
+        mock_get_db.return_value = MagicMock()
+        from moneybin.services.account_service import AccountResolution
+
+        svc = mock_svc_cls.return_value
+        svc.resolve.return_value = [
+            AccountResolution(
+                account_id="a1",
+                display_name="Chase Checking",
+                account_subtype="checking",
+                institution_name="Chase",
+                confidence=1.0,
+            )
+        ]
+        result = runner.invoke(app, ["accounts", "resolve", "chase"])
+        assert result.exit_code == 0, result.stderr
+        assert "a1" in result.stdout
+        assert "Chase Checking" in result.stdout
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_json_output_returns_envelope(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """`--output json` returns the same envelope shape MCP returns."""
+        mock_get_db.return_value = MagicMock()
+        from moneybin.services.account_service import AccountResolution
+
+        svc = mock_svc_cls.return_value
+        svc.resolve.return_value = [
+            AccountResolution(
+                account_id="a1",
+                display_name="Chase Checking",
+                account_subtype="checking",
+                institution_name="Chase",
+                confidence=1.0,
+            )
+        ]
+        result = runner.invoke(
+            app, ["accounts", "resolve", "chase", "--output", "json"]
+        )
+        assert result.exit_code == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["sensitivity"] == "low"
+        assert payload["data"][0]["account_id"] == "a1"
+        assert payload["data"][0]["confidence"] == 1.0
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_limit_flag_passed_to_service(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """--limit caps the number of results requested from the service."""
+        mock_get_db.return_value = MagicMock()
+        svc = mock_svc_cls.return_value
+        svc.resolve.return_value = []
+        result = runner.invoke(app, ["accounts", "resolve", "account", "--limit", "1"])
+        assert result.exit_code == 0
+        svc.resolve.assert_called_once_with(query="account", limit=1)
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_no_matches_text_mode_writes_to_stderr(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """No matches in text mode emits a stderr message and exits 0."""
+        mock_get_db.return_value = MagicMock()
+        svc = mock_svc_cls.return_value
+        svc.resolve.return_value = []
+        result = runner.invoke(app, ["accounts", "resolve", "zzz"])
+        assert result.exit_code == 0
+        assert "no accounts" in result.stderr.lower() or "zzz" in result.stderr

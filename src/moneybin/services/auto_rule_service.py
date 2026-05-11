@@ -1,6 +1,6 @@
 """Auto-rule lifecycle service: pattern extraction, proposal tracking, override detection.
 
-Observes user/AI categorizations recorded via ``CategorizationService.bulk_categorize``,
+Observes user/AI categorizations recorded via ``CategorizationService.categorize_items``,
 stages pattern → category proposals in ``app.proposed_rules``, promotes approved
 proposals into active rules in ``app.categorization_rules`` with
 ``created_by='auto_rule'``, and deactivates rules whose categories the user has
@@ -85,7 +85,7 @@ class AutoStatsResult:
 
 @dataclass(slots=True, frozen=True)
 class TxnRow:
-    """Pre-loaded transaction columns needed by the bulk path."""
+    """Pre-loaded transaction columns needed by the batch path."""
 
     description: str | None
     amount: float | None
@@ -95,8 +95,8 @@ class TxnRow:
 
 
 @dataclass(slots=True)
-class BulkRecordingContext:
-    """In-memory caches threaded through ``record_categorization`` during a bulk loop.
+class RecordingContext:
+    """In-memory caches threaded through ``record_categorization`` during a batch loop.
 
     Owns the data that today's per-item helpers re-fetch from the database.
     Mutators (``register_new_merchant``) preserve the same ordering invariants
@@ -181,7 +181,7 @@ class AutoRuleService:
 
     All public methods are independent of ``CategorizationService``'s public
     surface; callers wire them up through their own command/tool layer (CLI,
-    MCP). Hooks called from ``CategorizationService.bulk_categorize`` use a
+    MCP). Hooks called from ``CategorizationService.categorize_items`` use a
     lazy import on the categorization side to keep imports one-directional.
     """
 
@@ -205,7 +205,7 @@ class AutoRuleService:
         *,
         subcategory: str | None = None,
         merchant_id: str | None = None,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> str | None:
         """Record a categorization event for auto-rule learning.
 
@@ -217,12 +217,12 @@ class AutoRuleService:
         ``merchant_id`` lets callers pass an already-resolved merchant so the
         merchant's ``(raw_pattern, match_type)`` is used as the proposal
         pattern. Without it, ``_extract_pattern`` looks up the merchant from
-        ``transaction_categories``, but ``bulk_categorize`` calls this hook
+        ``transaction_categories``, but ``categorize_items`` calls this hook
         before that row exists — so omitting the parameter forces the
         description fallback for every fresh categorization.
 
         ``context`` supplies pre-loaded transaction rows, active rules, and
-        merchant mappings for the bulk path so no read queries are issued
+        merchant mappings for the batch path so no read queries are issued
         per-transaction. When ``None``, the existing DB-backed behavior is used.
         """
         # Manual-source exemption: per transaction-curation spec Req 7, user
@@ -250,7 +250,7 @@ class AutoRuleService:
 
         # Merchant coverage is only a reason to skip when there is no
         # in-progress proposal for this pattern. Otherwise tracking proposals
-        # could be permanently stuck below threshold once bulk_categorize
+        # could be permanently stuck below threshold once categorize_items
         # creates the merchant mapping during the first categorization.
         if existing is None and self._merchant_mapping_covers(
             pattern, category, subcategory, context=context
@@ -472,7 +472,7 @@ class AutoRuleService:
         sample_cap = settings.auto_rule_sample_txn_cap
 
         # Fast-path: skip the override scan entirely when no auto-rules exist.
-        # bulk_categorize calls this on every batch, so a one-row probe avoids
+        # categorize_items calls this on every batch, so a one-row probe avoids
         # an unnecessary aggregate scan in the common pre-promotion case.
         if not self._db.execute(
             f"""
@@ -745,7 +745,7 @@ class AutoRuleService:
         self,
         transaction_id: str,
         *,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> bool:
         """Return True if the transaction's source_type is 'manual'.
 
@@ -768,7 +768,7 @@ class AutoRuleService:
         transaction_id: str,
         *,
         merchant_id: str | None = None,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> tuple[str, str] | None:
         """Extract a (pattern, match_type) tuple for the given transaction.
 
@@ -783,7 +783,7 @@ class AutoRuleService:
         pre-loaded ``TxnRow`` instead of querying ``fct_transactions``.
         """
         if merchant_id is None and context is None:
-            # Bulk path passes merchant_id explicitly; this lookup is only needed
+            # Batch path passes merchant_id explicitly; this lookup is only needed
             # on the single-item path where no context is provided.
             row = self._db.execute(
                 f"SELECT merchant_id FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",
@@ -830,7 +830,7 @@ class AutoRuleService:
         category: str,
         subcategory: str | None,
         *,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> bool:
         """True when some active rule already matches this transaction with the same category.
 
@@ -869,7 +869,7 @@ class AutoRuleService:
         category: str,
         subcategory: str | None,
         *,
-        context: BulkRecordingContext | None = None,
+        context: RecordingContext | None = None,
     ) -> bool:
         """True when a merchant mapping already produces this (category, subcategory) for this pattern.
 
@@ -879,7 +879,7 @@ class AutoRuleService:
         and ``regex`` merchants and ignored ``subcategory`` differences.
 
         When ``context`` is provided, delegates to
-        ``BulkRecordingContext.merchant_mapping_covers`` against the cached
+        ``RecordingContext.merchant_mapping_covers`` against the cached
         merchant list so no DB read is issued.
         """
         if context is not None:

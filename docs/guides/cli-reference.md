@@ -59,7 +59,7 @@ moneybin
 │   ├── matches      Dedup + transfer matching
 │   │   ├── run / history / undo / backfill
 │   └── categorize   Categorization workflow
-│       ├── bulk     Bulk-assign categories from JSON
+│       ├── apply    Assign categories from JSON
 │       ├── stats    Coverage statistics
 │       ├── rules    Manual rule sub-group {list, apply, create, delete}
 │       ├── auto     Auto-rule sub-group {review, confirm, rules, stats}
@@ -163,7 +163,7 @@ moneybin db shell
 ### Connect an AI assistant
 
 ```bash
-moneybin mcp config generate --client claude-desktop --install
+moneybin mcp install --client claude-desktop
 ```
 
 ### Verify the pipeline (developer)

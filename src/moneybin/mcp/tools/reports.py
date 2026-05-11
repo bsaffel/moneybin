@@ -246,13 +246,15 @@ def register_reports_tools(mcp: FastMCP) -> None:
         mcp,
         reports_networth_get,
         "reports_networth_get",
-        "Current or historical net worth snapshot with per-account breakdown.",
+        "Current or historical net worth snapshot with per-account breakdown. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         reports_networth_history_get,
         "reports_networth_history_get",
-        "Net worth time series with period-over-period change (daily/weekly/monthly).",
+        "Net worth time series with period-over-period change (daily/weekly/monthly). "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
@@ -308,5 +310,7 @@ def register_reports_tools(mcp: FastMCP) -> None:
         reports_budget_status,
         "reports_budget_status",
         "Get budget vs actual spending comparison for a month. "
-        "Shows target, spent, remaining, and status for each category.",
+        "Shows target, spent, remaining, and status for each category. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )

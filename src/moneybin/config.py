@@ -250,6 +250,17 @@ class MCPConfig(BaseModel):
             "visible at connect."
         ),
     )
+    max_items: int = Field(
+        default=500,
+        ge=1,
+        description=(
+            "Maximum length of any list-typed parameter accepted by an MCP tool. "
+            "Validated at the decorator level for any tool whose signature includes "
+            "list[X] / Sequence[X] / tuple[X, ...]. Exceeding returns a "
+            "ResponseEnvelope.error with code='too_many_items'. Parallels max_rows "
+            "for read responses. See docs/specs/mcp-tool-surface.md §Collection size cap."
+        ),
+    )
     tool_timeout_seconds: float = Field(
         default=30.0,
         gt=0.0,

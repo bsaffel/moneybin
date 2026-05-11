@@ -110,7 +110,7 @@ def accounts_summary() -> ResponseEnvelope:
 # ─── Write tools (entity) ──────────────────────────────────────────────────
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def accounts_rename(account_id: str, display_name: str) -> ResponseEnvelope:
     """Rename an account by setting app.account_settings.display_name.
 
@@ -124,7 +124,7 @@ def accounts_rename(account_id: str, display_name: str) -> ResponseEnvelope:
     return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def accounts_include(account_id: str, include: bool = True) -> ResponseEnvelope:
     """Toggle account inclusion in net worth.
 
@@ -140,7 +140,7 @@ def accounts_include(account_id: str, include: bool = True) -> ResponseEnvelope:
     return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def accounts_archive(account_id: str) -> ResponseEnvelope:
     """Archive an account. Cascades include_in_net_worth=False in the same write.
 
@@ -156,7 +156,7 @@ def accounts_archive(account_id: str) -> ResponseEnvelope:
     return build_envelope(data=data, sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def accounts_unarchive(account_id: str) -> ResponseEnvelope:
     """Unarchive an account. Does NOT restore include_in_net_worth.
 
@@ -179,7 +179,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
 })
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def accounts_settings_update(
     account_id: str,
     official_name: str | None = None,
@@ -311,7 +311,7 @@ def accounts_balance_assertions_list(
 # ─── Write tools (balance) ──────────────────────────────────────────────────
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def accounts_balance_assert(
     account_id: str,
     assertion_date: str,
@@ -337,7 +337,7 @@ def accounts_balance_assert(
     return build_envelope(data=result.to_dict(), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False, destructive=True)
 def accounts_balance_assertion_delete(
     account_id: str,
     assertion_date: str,
@@ -356,6 +356,47 @@ def accounts_balance_assertion_delete(
     )
 
 
+# ─── Resolution (free-text → account_id) ───────────────────────────────────
+
+
+@mcp_tool(sensitivity="low")
+def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
+    """Resolve a free-text account reference to an account_id.
+
+    Fuzzy-matches against display_name, account_subtype, and institution_name
+    from core.dim_accounts. Use this to convert natural-language references
+    ("my Chase account", "checking", "Schwab brokerage") into an account_id
+    before calling tools that require one.
+
+    Args:
+        query: Free-text account reference.
+        limit: Maximum number of candidates to return (default 5).
+
+    Returns ranked candidates with confidence scores in [0, 1]. Empty result
+    or a top-match confidence below ``TabularConfig.account_match_threshold``
+    (the shared fuzzy-match cutoff used by the tabular importer) emits an
+    action hint suggesting the agent verify with the user.
+    """
+    from moneybin.config import get_settings
+
+    matches = AccountService(get_database()).resolve(query=query, limit=limit)
+    threshold = get_settings().data.tabular.account_match_threshold
+    actions: list[str] = []
+    if not matches:
+        actions.append(
+            "No accounts matched the query. Try a broader query or use accounts_list."
+        )
+    elif matches[0].confidence < threshold:
+        actions.append(
+            "Top match has low confidence; verify with the user before taking action."
+        )
+    return build_envelope(
+        data=[m.to_dict() for m in matches],
+        sensitivity="low",
+        actions=actions,
+    )
+
+
 # ─── Registration ──────────────────────────────────────────────────────────
 
 
@@ -365,13 +406,15 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_list,
         "accounts_list",
-        "List accounts (default hides archived; supports type filter and redacted mode).",
+        "List accounts (default hides archived; supports type filter and redacted mode). "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         accounts_get,
         "accounts_get",
-        "Get one account's full settings + dim record. Returns {found: false} if not found.",
+        "Get one account's full settings + dim record. Returns {found: false} if not found. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
@@ -383,65 +426,87 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_rename,
         "accounts_rename",
-        "Rename an account (writes app.account_settings.display_name; empty clears).",
+        "Rename an account (writes app.account_settings.display_name; empty clears). "
+        "Writes app.account_settings; revert by calling accounts_rename again with the prior value (or empty string to clear).",
     )
     register(
         mcp,
         accounts_include,
         "accounts_include",
-        "Toggle include_in_net_worth on an account.",
+        "Toggle include_in_net_worth on an account. "
+        "Writes app.account_settings.include_in_net_worth; revert by calling with the inverse `include` value.",
     )
     register(
         mcp,
         accounts_archive,
         "accounts_archive",
-        "Archive an account; cascades include_in_net_worth=False in the same write.",
+        "Archive an account; cascades include_in_net_worth=False in the same write. "
+        "Writes app.account_settings (archived, include_in_net_worth); revert with accounts_unarchive (does NOT auto-restore include_in_net_worth).",
     )
     register(
         mcp,
         accounts_unarchive,
         "accounts_unarchive",
-        "Unarchive an account. Does NOT auto-restore include_in_net_worth.",
+        "Unarchive an account. Does NOT auto-restore include_in_net_worth. "
+        "Writes app.account_settings.archived=False; revert with accounts_archive.",
     )
     register(
         mcp,
         accounts_settings_update,
         "accounts_settings_update",
-        "Partial update of Plaid-parity metadata (subtype, holder_category, currency, credit_limit, etc.).",
+        "Partial update of Plaid-parity metadata (subtype, holder_category, currency, credit_limit, etc.). "
+        "Writes app.account_settings; revert by calling again with the prior values (no built-in undo). "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         accounts_balance_list,
         "accounts_balance_list",
-        "Latest balance per account from fct_balances_daily (or as-of a date).",
+        "Latest balance per account from fct_balances_daily (or as-of a date). "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         accounts_balance_history,
         "accounts_balance_history",
-        "Per-account balance history (daily series with carry-forward + reconciliation deltas).",
+        "Per-account balance history (daily series with carry-forward + reconciliation deltas). "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         accounts_balance_reconcile,
         "accounts_balance_reconcile",
-        "Days with non-zero reconciliation delta above threshold.",
+        "Days with non-zero reconciliation delta above threshold. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         accounts_balance_assertions_list,
         "accounts_balance_assertions_list",
-        "List user-entered balance assertions.",
+        "List user-entered balance assertions. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         accounts_balance_assert,
         "accounts_balance_assert",
-        "Upsert a manual balance assertion.",
+        "Upsert a manual balance assertion. "
+        "Writes app.balance_assertions; revert with accounts_balance_assertion_delete (permanent — no undo). "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
         accounts_balance_assertion_delete,
         "accounts_balance_assertion_delete",
-        "Delete a manual balance assertion.",
+        "Delete a manual balance assertion. "
+        "Hard-deletes from app.balance_assertions — permanent, no revert; re-create with accounts_balance_assert.",
+    )
+    register(
+        mcp,
+        accounts_resolve,
+        "accounts_resolve",
+        "Resolve a free-text account reference (e.g., 'my Chase account', "
+        "'checking') to an account_id. Returns ranked candidates with "
+        "confidence scores. Use this before tools that require an account_id "
+        "when you only have a natural-language reference.",
     )

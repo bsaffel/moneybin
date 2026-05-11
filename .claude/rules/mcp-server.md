@@ -38,15 +38,19 @@ Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-9
 | `accounts.*` | Account listing, balances, net worth |
 | `transactions.*` | Search, corrections, annotations, recurring |
 | `import.*` | File import, status |
-| `categorize.*` | Rules, merchant mappings, bulk categorization |
+| `categorize.*` | Rules, merchant mappings, categorization |
 | `budget.*` | Targets, status, rollovers |
 | `tax.*` | W-2 data, future capital gains |
 | `privacy.*` | Consent status, grants, revocations, audit log |
 | `overview.*` | Cross-domain summaries, system info |
 
-Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_bulk`). No CRUD naming.
+Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_apply`). No CRUD naming.
 
-**Progressive disclosure:** Per-session, tag-based visibility. All tools are registered at boot; extended-namespace tools carry `tags={domain}` and are hidden by `Visibility(False, tags={domain})` transforms. Core namespaces (~19 tools) are visible at connect; extended namespaces (`categorize`, `budget`, `tax`, `privacy`, `transactions_matches`) are revealed for the calling session only via the `moneybin_discover` meta-tool. Each tool stays single-purpose — no consolidation into action-parameter tools. See `mcp-architecture.md` §3.
+**Progressive disclosure** is a desired future state, not the current operational reality. The mechanism (tag-based visibility + `moneybin_discover` meta-tool + `tools/list_changed` notification) is wired and tested, but **`MoneyBinSettings.mcp.progressive_disclosure` defaults `False`** because client support for `tools/list_changed` is unreliable in practice (Claude Desktop has spotty support; only Claude Code reliably honors it). In default deployment **every registered tool is visible at connect** — the `tags={domain}` markers on extended-namespace tools are dormant metadata until the flag is flipped on.
+
+**Design implication:** When adding a new MCP tool, assume the **full tool surface is always visible** to the agent. Do not rely on progressive disclosure to keep a tool out of the context window. The agent-attention budget for tool descriptions and schemas is set by the total registered surface, not by any "core vs. extended" split. Each tool's description, parameter schema, and namespace placement must justify itself against the full-surface bar.
+
+See `mcp-architecture.md` §3 for the design rationale and `MoneyBinSettings.mcp.progressive_disclosure` field description for the current flag state.
 
 ## Response Envelope
 
@@ -83,7 +87,7 @@ The `detail` parameter (`summary`, `standard`, `full`) lets the AI self-select v
 Default: every operation is MCP-exposed. CLI-only status requires a justified exception. Two acceptable justifications:
 
 1. **Secret material through the LLM context window.** Tools that accept passphrases or encryption keys (`db_unlock`, `db_rotate_key`, `sync_rotate_key`, `db_init`). Routing those through an LLM-mediated channel is a security model violation, not a capability gap.
-2. **Hands-on operator territory.** Bootstrapping, troubleshooting, and developer-tooling operations that require physical operator presence (`db_init/lock/ps/kill/migrate/shell/ui`, `mcp_serve`, `mcp_config_*`, `profile_*`, `transform_restate`). The MCP server can't even start when the database is locked, so exposing recovery/lifecycle tools to MCP would be meaningless.
+2. **Hands-on operator territory.** Bootstrapping, troubleshooting, and developer-tooling operations that require physical operator presence (`db_init/lock/ps/kill/migrate/shell/ui`, `mcp_serve`, `mcp_install`, `mcp_config_path`, `profile_*`, `transform_restate`). The MCP server can't even start when the database is locked, so exposing recovery/lifecycle tools to MCP would be meaningless.
 
 What is NOT a valid CLI-only justification:
 - "Long-running" — MCP supports progress notifications.
@@ -99,7 +103,7 @@ When adding a new operation, the default is "expose to MCP." Apply this filter a
 The `FastMCP(instructions=...)` argument in `src/moneybin/mcp/server.py` is the canonical onboarding text injected into the LLM's system prompt at session start. Treat it as a load-bearing surface, not a comment.
 
 - **Keep in sync with taxonomy.** Any rename, new top-level group, or change to orientation tools (`system_status`, `reports_health`) must update the instructions text in the same change.
-- **Required content:** one-line product description, top-level group enumeration, naming convention with examples, orientation pointers, response envelope shape, bulk-tool preference, sensitivity tiers / degraded-response behavior.
+- **Required content:** one-line product description, top-level group enumeration, naming convention with examples, orientation pointers, response envelope shape, collection-cap convention (list-typed parameters are capped per-call), sensitivity tiers / degraded-response behavior.
 - **Length budget:** ~150–300 tokens. Loaded once per session, but competes with conversation and tool descriptions for working memory.
 - **Style:** triple-quoted string via `textwrap.dedent(...)` — not concatenated string literals.
 - See [`docs/specs/mcp-tool-surface.md`](../../docs/specs/mcp-tool-surface.md) §1 for required-content rationale.
@@ -118,3 +122,23 @@ All tools use `get_database()` from `src/moneybin/database.py` — a single long
 ## Error Messages
 
 - **Minimize data in errors** — no account numbers, balances, or PII in error messages. Privacy enforcement (consent, redaction, audit) is handled by the middleware, not tool code.
+
+## Surface change discipline
+
+Any PR that adds, renames, or removes an `@mcp_tool`-decorated function MUST update [`docs/specs/mcp-tool-surface.md`](../../docs/specs/mcp-tool-surface.md) in the same change. The spec is the authoritative documented surface; PR review is the enforcement mechanism.
+
+- Reviewers grep for `@mcp_tool` diffs and verify each touches the spec.
+- Removed tools require both a spec entry removal AND a CHANGELOG.md `Removed` entry under `Unreleased`.
+- Renamed tools require updating every `### tool_name` reference in `mcp-tool-surface.md` plus tests, plus a `Changed` entry in the CHANGELOG.
+
+This rule replaces the proposed automated drift test (see `mcp-tool-surface.md` §18). Automated enforcement was rejected because a fixture-based test detects code-vs-fixture drift but not code-vs-spec drift, and a spec-parsing test is fragile to spec restructuring. Revisit this decision if PR review proves insufficient.
+
+## Description requirements
+
+The MCP description string passed to `register(mcp, fn, name, description)` is the only schema-attached prose the agent sees at tool-selection time. Tool descriptions MUST state, when applicable:
+
+- **Sign convention** — for tools accepting or returning amount-shaped data: "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt." Tools that intentionally flip the convention (e.g., presentation aggregations that show expenses as positive values) MUST state the override explicitly.
+- **Currency** — for tools returning currency-bearing data: amounts are in the currency named by `summary.display_currency`, never inferred from context (per `architecture-shared-primitives.md` Invariant 7).
+- **Mutation surface** — for tools with `read_only=False`: the `app.*` table written and the revert path (audit log reference, paired undo tool, or "permanent — no revert").
+
+Reviewer responsibility on every PR adding or modifying an `@mcp_tool` decoration. The `.claude/rules/database.md` and `AGENTS.md` files document these invariants for human contributors, but the agent never sees those — invariants the agent must apply correctly belong in the tool description itself.

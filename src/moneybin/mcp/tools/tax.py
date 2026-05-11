@@ -41,5 +41,6 @@ def register_tax_tools(mcp: FastMCP) -> None:
         tax_w2,
         "tax_w2",
         "Retrieve W-2 form data (wages, taxes, deductions). "
+        "Amounts are in the currency named by `summary.display_currency`. "
         "PII fields (SSN, EIN) are excluded.",
     )

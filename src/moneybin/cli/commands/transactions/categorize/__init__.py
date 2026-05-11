@@ -68,9 +68,9 @@ def categorize_apply(
 
     from moneybin.cli.output import render_or_json
     from moneybin.services.categorization_service import (
-        BulkCategorizationResult,
+        CategorizationResult,
         CategorizationService,
-        validate_bulk_items,
+        validate_items,
     )
 
     use_stdin = stdin_sentinel == "-"
@@ -103,18 +103,16 @@ def categorize_apply(
         raise typer.Exit(1) from e
 
     try:
-        items, parse_errors = validate_bulk_items(raw)
+        items, parse_errors = validate_items(raw)
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e
 
     if items:
         with handle_cli_errors() as db:
-            result = CategorizationService(db).bulk_categorize(items)
+            result = CategorizationService(db).categorize_items(items)
     else:
-        result = BulkCategorizationResult(
-            applied=0, skipped=0, errors=0, error_details=[]
-        )
+        result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
     result.merge_parse_errors(parse_errors)
 
     input_count = len(items) + len(parse_errors)

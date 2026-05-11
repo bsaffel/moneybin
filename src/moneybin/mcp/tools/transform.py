@@ -53,7 +53,7 @@ def transform_audit(start: str, end: str) -> ResponseEnvelope:  # noqa: ARG001 â
     return _stub("transform_audit")
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False)
 def transform_apply() -> ResponseEnvelope:
     """Apply pending SQLMesh changes."""
     return _stub("transform_apply")

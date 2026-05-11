@@ -127,20 +127,20 @@ CATEGORIZATION_RULES_FIRED_TOTAL = Counter(
     ["rule_id"],
 )
 
-CATEGORIZE_BULK_ITEMS_TOTAL = Counter(
-    "moneybin_categorize_bulk_items_total",
-    "Number of items processed by bulk_categorize, by outcome",
+CATEGORIZE_ITEMS_TOTAL = Counter(
+    "moneybin_categorize_items_total",
+    "Number of items processed by categorize_items, by outcome",
     ["outcome"],
 )
 
-CATEGORIZE_BULK_DURATION_SECONDS = Histogram(
-    "moneybin_categorize_bulk_duration_seconds",
-    "Wall-clock duration of CategorizationService.bulk_categorize calls",
+CATEGORIZE_DURATION_SECONDS = Histogram(
+    "moneybin_categorize_duration_seconds",
+    "Wall-clock duration of CategorizationService.categorize_items calls",
 )
 
-CATEGORIZE_BULK_ERRORS_TOTAL = Counter(
-    "moneybin_categorize_bulk_errors_total",
-    "Number of bulk_categorize calls that raised before returning a result",
+CATEGORIZE_ERRORS_TOTAL = Counter(
+    "moneybin_categorize_errors_total",
+    "Number of categorize_items calls that raised before returning a result",
 )
 
 CATEGORIZE_ASSIST_CALLS_TOTAL = Counter(

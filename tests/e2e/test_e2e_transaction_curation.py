@@ -306,7 +306,7 @@ class TestImportLabelsGoldenPath:
 @pytest.mark.skip(
     reason=(
         "CategorizationService.set_category emits category.set audit events, "
-        "but the only CLI/MCP surface today (bulk_categorize via "
+        "but the only CLI/MCP surface today (categorize_items via "
         "transactions categorize apply-from-file) does not invoke set_category — "
         "it inserts via direct SQL UPSERT without audit emission. Wiring that "
         "is out of scope for Task 14 (polish/docs only)."
