@@ -20,8 +20,10 @@ Snapshot of MoneyBin's shipped capabilities, with links to the per-feature guide
 
 ## Categorization
 
-- **Rule-based** (exact / contains / regex) with priority hierarchy (user > rule > auto_rule > ml > plaid > ai).
-- **Merchant normalization.**
+- **Rule-based** (exact / contains / regex / `oneOf` exemplars) with priority hierarchy (user > rule > auto_rule > migration > ml > plaid > seed > ai). Source precedence is enforced on write — user manual edits are immune to subsequent rule, merchant, or LLM-assist runs.
+- **Merchant normalization** with `match_text = description + memo` so aggregator transactions (PayPal, Venmo, Zelle, generic ACH) match on the wrapped merchant identity in memo. Structural fields (`transaction_type`, `check_number`, `is_transfer`, `payment_channel`) are matcher signals and LLM-assist signals.
+- **Exemplar accumulation.** System-generated merchants (from LLM-assist) store the exact normalized `match_text` of each categorized row as a `oneOf` exemplar — they never invent a generalized `contains` pattern from one row's description, so aggregator strings don't over-match.
+- **Snowball auto-apply.** Every `transactions_categorize_apply` commit fires `categorize_pending()` to fan newly-created merchants and exemplars out to remaining uncategorized rows in the same dataset. The cold-start vision ("by the third or fourth import, the LLM is barely involved") works because of this.
 - **Auto-rule learning** from user edits (`app.proposed_rules` review queue with four-state lifecycle, promotion to `app.categorization_rules` at priority 200, correction-handling threshold).
 - **Bulk operations** (CLI + MCP + service parity).
 

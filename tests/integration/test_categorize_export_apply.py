@@ -46,8 +46,14 @@ def _make_db_with_uncategorized(
             account_id      VARCHAR,
             transaction_date DATE,
             description     VARCHAR,
+            memo            VARCHAR,
             amount          DECIMAL(18,2),
-            source_type     VARCHAR
+            source_type     VARCHAR,
+            transaction_type VARCHAR,
+            check_number    VARCHAR,
+            payment_channel VARCHAR,
+            is_transfer     BOOLEAN,
+            transfer_pair_id VARCHAR
         )
         """
     )
@@ -111,9 +117,9 @@ class TestExportApplyRoundTrip:
 
         exported = json.loads(export_file.read_text())
         assert len(exported) == 3
-        # Verify redacted shape: opaque_id, description_redacted, source_type present
+        # Verify redacted shape: transaction_id, description_redacted, source_type present
         for item in exported:
-            assert "opaque_id" in item
+            assert "transaction_id" in item
             assert "description_redacted" in item
             assert "source_type" in item
             # No PII fields
@@ -147,14 +153,14 @@ class TestExportApplyRoundTrip:
 
         payload = json.dumps([
             {
-                "opaque_id": "txn_export_000",
+                "transaction_id": "txn_export_000",
                 "description_redacted": "STARBUCKS",
                 "source_type": "csv",
                 "category": "Food",
                 "subcategory": "Coffee",
             },
             {
-                "opaque_id": "txn_export_001",
+                "transaction_id": "txn_export_001",
                 "description_redacted": "STARBUCKS",
                 "source_type": "csv",
                 "category": "Food",

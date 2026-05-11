@@ -159,6 +159,47 @@ CATEGORIZE_ASSIST_DURATION_SECONDS = Histogram(
     "Duration of categorize_assist server-side processing (excludes LLM time)",
 )
 
+CATEGORIZE_MATCH_OUTCOME_TOTAL = Counter(
+    "moneybin_categorize_match_outcome_total",
+    "Categorization matcher outcome by lookup shape and signal source.",
+    # outcome: exemplar | exact | contains | regex | none
+    # shape: description_only | memo_only | both
+    ["outcome", "shape"],
+)
+
+CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
+    "moneybin_categorize_write_skipped_precedence_total",
+    "Categorization writes skipped because a higher-priority source already "
+    "categorized the row.",
+    ["src_existing", "src_attempted"],
+)
+
+CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS = Histogram(
+    "moneybin_categorize_apply_post_commit_duration_seconds",
+    "Latency of the snowball categorize_pending call triggered after every "
+    "transactions_categorize_apply commit.",
+)
+
+CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED = Histogram(
+    "moneybin_categorize_apply_post_commit_rows_affected",
+    "Number of rows the snowball fan-out categorized per batch.",
+    # Default Prometheus buckets target seconds (max 10) and collapse all
+    # batch sizes >10 into +Inf. These buckets span the expected 0–50k row
+    # range so the distribution stays useful on dashboards.
+    buckets=(0, 1, 5, 25, 100, 500, 2_500, 10_000, 50_000, float("inf")),
+)
+
+# Per-merchant labels can grow with the number of system-created merchants
+# (categorization-matching-mechanics.md §Open questions: "no cap in v1"). The
+# metric is gauge-only and written only when an exemplar is appended, so
+# label cardinality is bounded by the merchant population — acceptable for v1.
+MERCHANT_EXEMPLAR_COUNT = Gauge(
+    "moneybin_merchant_exemplar_count",
+    "Per-merchant exemplar set size; alarm if any merchant exceeds 200 — "
+    "may indicate need for graduation to a generalized pattern.",
+    ["merchant_id"],
+)
+
 # ── Account matching ─────────────────────────────────────────────────────────
 
 ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(

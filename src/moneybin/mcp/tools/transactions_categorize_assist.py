@@ -65,17 +65,22 @@ def transactions_categorize_assist(
         metadata={
             "txn_count": len(redacted),
             "account_filter": account_filter,
-            "redaction_version": settings.redaction_version,
         },
     )
 
     return build_envelope(
         data=[
             {
-                "opaque_id": r.opaque_id,
+                "transaction_id": r.transaction_id,
                 "description_redacted": r.description_redacted,
+                "memo_redacted": r.memo_redacted,
                 "source_type": r.source_type,
-                "redaction_version": settings.redaction_version,
+                "transaction_type": r.transaction_type,
+                "check_number": r.check_number,
+                "is_transfer": r.is_transfer,
+                "transfer_pair_id": r.transfer_pair_id,
+                "payment_channel": r.payment_channel,
+                "amount_sign": r.amount_sign,
             }
             for r in redacted
         ],
@@ -83,8 +88,7 @@ def transactions_categorize_assist(
         actions=[
             "Propose (category, subcategory, canonical_merchant_name) per item",
             "Use transactions_categorize_apply to commit user-accepted proposals",
-            f"Redaction contract: {settings.redaction_version} "
-            "(descriptions only; no amounts, dates, or account IDs transmitted)",
+            "Redaction: description + memo redacted; structural fields exposed for matcher and LLM signal",
         ],
     )
 

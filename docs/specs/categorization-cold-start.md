@@ -3,6 +3,9 @@
 ## Status
 implemented
 
+> Last updated: 2026-05-10
+> Companion: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) — amends this spec's merchant-creation algorithm (exemplar accumulator replaces auto-generalized `contains` patterns), redaction contract (`v2` extends the LLM input to memo + structural fields), and apply order (auto-fan-out fires after every `categorize_apply` commit; this is the snowball mechanism the Vision section promises).
+
 ## Goal
 
 Design the first-run categorization experience: how a brand-new MoneyBin install reaches useful coverage on import #1, and how the system snowballs to near-zero LLM involvement by import #4–5. Resolves the "First-import prompt design" and partially the "CLI-only cold start" open questions from `categorization-overview.md`. Defines the PII redaction contract for what transaction data is sent to the user's MCP-connected LLM during cold-start sessions.
@@ -29,6 +32,8 @@ Three commitments:
 1. **Useful coverage on import #1.** Seed merchants + Plaid pass-through + migration imports cover 50–95% of transactions before any LLM is invoked, depending on data sources.
 2. **LLM as long-tail solver, not primary.** When LLM-assist runs, it categorizes what deterministic solvers couldn't — and every categorization seeds auto-rules that handle the same patterns automatically next time.
 3. **Privacy-by-architecture.** The LLM never sees amounts, dates, or accounts. Descriptions are redacted via a typed contract that makes accidental leakage a compile-time impossibility.
+
+The snowball is implemented as auto-apply post-commit: `transactions_categorize_apply` invokes `categorize_pending()` after writes commit, fanning newly-created merchants and exemplars out to remaining uncategorized rows in the same dataset. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order.
 
 ## The three jobs / mental model
 
@@ -134,12 +139,16 @@ flowchart TD
     C --> D[LLM proposes:<br/>category + canonical merchant name<br/>per description]
     D --> E[User reviews batch<br/>via MCP elicitation or CLI prompt]
     E --> F{User accepts?}
-    F -->|yes| G["For each accepted:<br/>1. Find or create merchant in app.user_merchants<br/>   created_by='ai'<br/>   canonical_name from LLM<br/>2. Write categorized_by='ai'<br/>   confidence=1.0"]
+    F -->|yes| G["For each accepted:<br/>1. Find or create merchant in app.user_merchants<br/>   created_by='ai', match_type='oneOf'<br/>   canonical_name from LLM<br/>   append match_text to exemplars (no contains-pattern invented)<br/>2. Write categorized_by='ai'<br/>   confidence=1.0"]
     F -->|partial| H[Apply accepted only<br/>leave rest uncategorized]
     G --> I[Auto-rule service mines patterns<br/>proposes rules for next import]
 ```
 
-**Mechanism:** Only solver doing *semantic judgment*. LLM sees a batch of redacted descriptions and proposes `(category, canonical_merchant_name)` for each. Detailed redaction contract below.
+**Mechanism:** Only solver doing *semantic judgment*. LLM sees a batch of redacted descriptions, redacted memos, and structural signals (`transaction_type`, `check_number`, `is_transfer`, `transfer_pair_id`, `payment_channel`, `amount_sign`) and proposes `(category, canonical_merchant_name)` for each. Detailed redaction contract below.
+
+**Redaction contract: v2** (extended from v1). Both `description` AND `memo` pass through `redact_for_llm()`. Structural fields (`transaction_type`, `check_number`, `is_transfer`, `transfer_pair_id`, `payment_channel`, `amount_sign`) are exposed to the LLM as signals without redaction (no PII surface — they are enums, booleans, opaque pair IDs, and a sign character). See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Match input for the full contract.
+
+**Auto-merchant via exemplar accumulator.** When the LLM proposes a `canonical_merchant_name`, the system creates (or appends to) a merchant with `match_type='oneOf'` and an exemplar set containing the exact normalized `match_text` of the categorized row. No generalized `contains` pattern is invented from one row's description. This replaces the original "create a merchant with `raw_pattern = normalize_description(description)`, `match_type = 'contains'`" approach — aggregator strings like `PAYPAL INST XFER` no longer over-match across unrelated transactions. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Matcher algorithm.
 
 ### Pipeline ordering — how all solvers compose
 
@@ -199,8 +208,8 @@ User-level stickiness is handled by the existing priority ladder:
 8. `app.merchants` becomes a view assembled from `app.user_merchants ∪ seeds.merchants_*`, with `app.merchant_overrides` applied. User merchants outrank seeds in lookup ordering.
 9. New `app.merchant_overrides` table mirrors `app.category_overrides` pattern (deactivation + category override).
 10. New `categorized_by` enum values: `'seed'`, `'migration'`. New `created_by` values on `app.user_merchants`: `'plaid'`, `'migration'`.
-11. New configuration settings: `assist_offer_threshold` (default 10), `assist_default_batch_size` (default 100), `assist_max_batch_size` (default 200), `redaction_version` (default `"v1"`), ML training weights for `migration` (0.85) and `seed` (0.5, TBD).
-12. Every `transactions_categorize_assist` call audit-logged with `txn_count`, `account_filter`, `redaction_version`, `timestamp`. No descriptions or transaction IDs in audit log.
+11. New configuration settings: `assist_offer_threshold` (default 10), `assist_default_batch_size` (default 100), `assist_max_batch_size` (default 200), ML training weights for `migration` (0.85) and `seed` (0.5, TBD).
+12. Every `transactions_categorize_assist` call audit-logged with `txn_count`, `account_filter`, `timestamp`. No descriptions or transaction IDs in audit log.
 13. Migration step preserves all existing `app.merchants` rows by moving them to `app.user_merchants`; existing `transaction_categories.merchant_id` references remain valid.
 14. Fuzz test suite generates synthetic transactions with embedded PII patterns and asserts no test value appears in `categorize_assist` output.
 
@@ -244,9 +253,10 @@ seed_global_netflix,NETFLIX,contains,Netflix,Subscriptions,Streaming,global
    Replaces today's app.merchants table. Exposed alongside seeds via the app.merchants view. */
 CREATE TABLE IF NOT EXISTS app.user_merchants (
     merchant_id VARCHAR PRIMARY KEY,            -- 12-char UUID hex from uuid.uuid4().hex[:12]
-    raw_pattern VARCHAR NOT NULL,               -- match pattern against normalized description
-    match_type VARCHAR NOT NULL,                -- 'exact' | 'contains' | 'regex'
+    raw_pattern VARCHAR,                        -- match pattern (user-authored); NULL when merchant exists only via exemplars
+    match_type VARCHAR NOT NULL DEFAULT 'oneOf',-- 'exact' | 'contains' | 'regex' | 'oneOf' (see categorization-matching-mechanics.md)
     canonical_name VARCHAR NOT NULL,            -- display name; LLM-proposed for created_by='ai'
+    exemplars VARCHAR[] DEFAULT [],             -- accumulated normalized match_text values; populated by system-generated merchants
     category VARCHAR,                           -- default category (joined to app.categories)
     subcategory VARCHAR,                        -- default subcategory
     created_by VARCHAR NOT NULL,                -- 'user' | 'ai' | 'plaid' | 'migration'
@@ -430,12 +440,21 @@ For every transaction sent via `transactions_categorize_assist`, the LLM receive
 ```python
 @dataclass(frozen=True)
 class RedactedTransaction:
-    opaque_id: str  # existing transaction_id (opaque hash/UUID)
+    transaction_id: (
+        str  # source-provided FITID or content hash; non-sensitive synthetic identifier
+    )
     description_redacted: str  # redact_for_llm(description)
+    memo_redacted: str  # redact_for_llm(memo) — added in v2
     source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf'
+    transaction_type: str | None
+    check_number: str | None
+    is_transfer: bool
+    transfer_pair_id: str | None
+    payment_channel: str | None
+    amount_sign: str  # '+' or '-' (no magnitude leaked)
 ```
 
-Never sent: `amount`, `date`, `account_id`, `currency`, `memo`, `check_number`, `payee`, prior categorizations, related transactions.
+Never sent: `amount`, `date`, `account_id`, `currency`, full `payee`, prior categorizations, related transactions. `memo` is sent **after** running through `redact_for_llm()` (same pipeline as `description`) — the v1 contract excluded memo entirely; v2 includes it because aggregator transactions (PayPal, Venmo, Zelle, generic ACH) carry their actual merchant identity in memo. Full v2 contract documented in [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Match input.
 
 Enforcement is **type-level**: the response type has no fields for amounts or dates. Leaking is a compile-time impossibility, not a runtime check.
 
@@ -490,7 +509,6 @@ Every `categorize_assist` call audit-logged via existing audit infrastructure:
 | `tool` | `transactions_categorize_assist` | Which tool |
 | `txn_count` | `42` | How many sent |
 | `account_filter` | `["acct_abc123"]` or `null` | Scope |
-| `redaction_version` | `v1` | Which redactor (so historical audits remain interpretable) |
 | `timestamp` | ISO timestamp | When |
 
 What is **not** in the audit log: actual descriptions sent, LLM response, transaction IDs. Audit records that a session occurred — not its contents.
@@ -542,7 +560,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
   - Register new `transactions_categorize_assist` tool
 - `src/moneybin/mcp/server.py` — update `FastMCP(instructions=...)` with first-run hint guidance
 - `src/moneybin/cli/commands/transactions/categorize/__init__.py` — wire new commands; rename `bulk` → `apply`
-- `src/moneybin/config.py` — add new categorization settings (`assist_*`, `redaction_version`, ML training weights)
+- `src/moneybin/config.py` — add new categorization settings (`assist_*`, ML training weights)
 - `src/moneybin/metrics/registry.py` — register `categorize_assist_*` metrics per `observability.md`
 - `docs/specs/categorization-overview.md` — apply 7 edits per "Edits to overview spec" section below
 - `docs/specs/INDEX.md` — add this spec at status `ready`
@@ -589,17 +607,17 @@ moneybin transactions categorize apply --input cats.json
 
 JSON contracts:
 
-**Export output / apply input first half (`opaque_id` is the existing `transaction_id`):**
+**Export output / apply input first half:**
 ```json
 [
-  {"opaque_id": "txn_abc123", "description_redacted": "STARBUCKS", "source_type": "csv"}
+  {"transaction_id": "txn_abc123", "description_redacted": "STARBUCKS", "source_type": "csv"}
 ]
 ```
 
 **Apply input format:**
 ```json
 [
-  {"opaque_id": "txn_abc123", "category": "Food & Dining", "subcategory": "Coffee Shops", "canonical_merchant_name": "Starbucks"}
+  {"transaction_id": "txn_abc123", "category": "Food & Dining", "subcategory": "Coffee Shops", "canonical_merchant_name": "Starbucks"}
 ]
 ```
 
@@ -771,7 +789,7 @@ Cross-cutting decisions deferred to implementation or future work.
 
 ### Auditability
 
-- Every `categorize_assist` call appears in audit log with `txn_count`, `account_filter`, `redaction_version`, `timestamp` — verifiable via `privacy_audit_list`
+- Every `categorize_assist` call appears in audit log with `txn_count`, `account_filter`, `timestamp` — verifiable via `privacy_audit_list`
 - Every cold-start solver writes its `categorized_by` value — verifiable via `SELECT categorized_by, COUNT(*) FROM app.transaction_categories GROUP BY categorized_by`
 
 ### Documentation

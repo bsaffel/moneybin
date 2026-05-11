@@ -175,12 +175,17 @@ def refresh_views(db: Database) -> None:
             SELECT
                 merchant_id, raw_pattern, match_type, canonical_name,
                 category, subcategory, created_by, created_at,
+                CAST([] AS VARCHAR[]) AS exemplars,
                 true AS is_user
             FROM app.merchants
             """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
         )
         return
 
+    # Seed rows have no exemplars — exemplar accumulation is a system-created
+    # merchant feature (categorization-matching-mechanics.md §Schema changes).
+    # CAST([] AS VARCHAR[]) gives the empty-list literal the correct typed
+    # element so the UNION ALL columns align across branches.
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
@@ -188,6 +193,7 @@ def refresh_views(db: Database) -> None:
         SELECT
             merchant_id, raw_pattern, match_type, canonical_name,
             category, subcategory, created_by,
+            exemplars,
             created_at,
             true AS is_user
         FROM {USER_MERCHANTS.full_name}
@@ -198,6 +204,7 @@ def refresh_views(db: Database) -> None:
             COALESCE(o.category, s.category) AS category,
             COALESCE(o.subcategory, s.subcategory) AS subcategory,
             'seed' AS created_by,
+            CAST([] AS VARCHAR[]) AS exemplars,
             NULL::TIMESTAMP AS created_at,
             false AS is_user
         FROM {SEED_MERCHANTS_GLOBAL.full_name} s
@@ -210,6 +217,7 @@ def refresh_views(db: Database) -> None:
             COALESCE(o.category, s.category) AS category,
             COALESCE(o.subcategory, s.subcategory) AS subcategory,
             'seed' AS created_by,
+            CAST([] AS VARCHAR[]) AS exemplars,
             NULL::TIMESTAMP AS created_at,
             false AS is_user
         FROM {SEED_MERCHANTS_US.full_name} s
@@ -222,6 +230,7 @@ def refresh_views(db: Database) -> None:
             COALESCE(o.category, s.category) AS category,
             COALESCE(o.subcategory, s.subcategory) AS subcategory,
             'seed' AS created_by,
+            CAST([] AS VARCHAR[]) AS exemplars,
             NULL::TIMESTAMP AS created_at,
             false AS is_user
         FROM {SEED_MERCHANTS_CA.full_name} s

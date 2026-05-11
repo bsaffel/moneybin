@@ -28,12 +28,20 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import (
+    CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS,
+    CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED,
     CATEGORIZE_DURATION_SECONDS,
     CATEGORIZE_ERRORS_TOTAL,
     CATEGORIZE_ITEMS_TOTAL,
+    CATEGORIZE_MATCH_OUTCOME_TOTAL,
+    CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
+    MERCHANT_EXEMPLAR_COUNT,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services._text import normalize_description, redact_for_llm
+from moneybin.services._text import (
+    build_match_inputs,
+    redact_for_llm,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     CATEGORIES,
@@ -48,8 +56,88 @@ from moneybin.tables import (
 
 logger = logging.getLogger(__name__)
 
+# Public match types — accepted by user-authored rules and the merchant API.
+# `oneOf` is intentionally excluded: it has no pattern branch in
+# `matches_pattern` and would be silently inert if exposed at a public
+# boundary. System-managed exemplar merchants use `InternalMatchType` below.
 MatchType = Literal["exact", "contains", "regex"]
+
+# Internal match types — adds `oneOf` for the exemplar accumulator. Used by
+# the in-memory matcher pipeline (`_match_exemplar`, `_fetch_merchants`) and
+# the exemplar-merchant creation path in `_categorize_items_inner`.
+InternalMatchType = Literal["exact", "contains", "regex", "oneOf"]
+
 _VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
+
+# OP_SCORES — adopted from Actual Budget's rules/rule-utils.ts. Higher score =
+# more specific match; specificity wins when multiple matchers fire on the same
+# row. See docs/specs/categorization-matching-mechanics.md §Matcher algorithm.
+# The SQL CASE expression in _fetch_merchants' ORDER BY is generated from this
+# dict via _match_shape_case_sql() so the Python dict stays the canonical
+# reference and SQL cannot drift from it.
+_MATCH_SHAPE_SCORES: dict[str, int] = {
+    "oneOf": 10,
+    "exact": 10,
+    "contains": 0,
+    "regex": 0,
+}
+
+
+def score_match_shape(match_type: str) -> int:
+    """Return the specificity score for a match type.
+
+    Higher = more specific. Used to order merchants in lookup precedence.
+    Unknown types return 0 (lowest specificity) — a forward-compat default.
+    """
+    return _MATCH_SHAPE_SCORES.get(match_type, 0)
+
+
+# Categorization source priority — single source of truth. Lower number =
+# higher authority. See categorization-matching-mechanics.md §Source
+# precedence. The SQL CASE expression in write_categorization is generated
+# from this dict via _priority_case_sql() so the Python dict stays the
+# canonical reference and SQL cannot drift from it.
+CategorizedBy = Literal[
+    "user", "rule", "auto_rule", "migration", "ml", "plaid", "seed", "ai"
+]
+
+_SOURCE_PRIORITY: dict[str, int] = {
+    "user": 1,
+    "rule": 2,
+    "auto_rule": 3,
+    "migration": 4,
+    "ml": 5,
+    "plaid": 6,
+    "seed": 7,
+    "ai": 8,
+}
+
+
+def _priority_case_sql(column_expr: str) -> str:
+    """Render a SQL CASE expression mapping categorized_by → numeric priority.
+
+    Used by write_categorization's ON CONFLICT DO UPDATE WHERE clause to
+    compare the EXCLUDED row's priority against the existing row's. Reading
+    from _SOURCE_PRIORITY guarantees the SQL and Python ladders never drift.
+    """
+    branches = " ".join(
+        f"WHEN '{src}' THEN {prio}" for src, prio in _SOURCE_PRIORITY.items()
+    )
+    return f"CASE {column_expr} {branches} END"
+
+
+def _match_shape_case_sql(column_expr: str) -> str:
+    """Render a SQL CASE expression mapping match_type → specificity score.
+
+    Used by _fetch_merchants' ORDER BY to put more-specific match types first.
+    Reading from _MATCH_SHAPE_SCORES guarantees the SQL and Python ladders
+    never drift. ELSE 0 mirrors :func:`score_match_shape`'s forward-compat
+    default for unknown types.
+    """
+    branches = " ".join(
+        f"WHEN '{mt}' THEN {score}" for mt, score in _MATCH_SHAPE_SCORES.items()
+    )
+    return f"CASE {column_expr} {branches} ELSE 0 END"
 
 
 def validate_match_type(match_type: str) -> MatchType:
@@ -76,6 +164,20 @@ def _did_you_mean(
         lower_invalid, list(lower_to_orig), n=n, cutoff=cutoff
     )
     return [lower_to_orig[m] for m in matches]
+
+
+@dataclass(slots=True, frozen=True)
+class WriteOutcome:
+    """Result of a guarded write to ``app.transaction_categories``.
+
+    Returned by :meth:`CategorizationService.write_categorization`. The
+    ``written`` flag distinguishes successful writes (insert or precedence-
+    permitted update) from precedence-blocked attempts. ``skipped_reason`` is
+    populated only when ``written`` is False.
+    """
+
+    written: bool
+    skipped_reason: Literal["lower_priority_source"] | None = None
 
 
 @dataclass(slots=True)
@@ -110,14 +212,35 @@ class CategorizationStats:
 class RedactedTransaction:
     """LLM-safe view of an uncategorized transaction.
 
-    Type-enforces the redaction contract: no amount, date, or account fields.
-    Adding any new field requires conscious code review — accidental PII leakage
-    is a compile-time impossibility enforced by the frozen dataclass shape.
+    Type-enforces the redaction contract: no full amount, no date, no account ID.
+    The v2 contract (per categorization-matching-mechanics.md §Match input) adds
+    memo and structural-field signals. Adding any new field requires conscious
+    code review — accidental PII leakage is a compile-time impossibility enforced
+    by the frozen dataclass shape.
     """
 
-    opaque_id: str  # transaction_id (opaque hash, never decoded by LLM)
-    description_redacted: str  # output of redact_for_llm()
-    source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf' — helps LLM judge quality
+    transaction_id: str
+    description_redacted: str
+    memo_redacted: str
+    source_type: str
+    transaction_type: str | None
+    check_number: str | None
+    is_transfer: bool
+    transfer_pair_id: str | None
+    payment_channel: str | None
+    amount_sign: Literal["+", "-", "0"]
+
+
+def _amount_sign_label(amount: float | None) -> Literal["+", "-", "0"]:
+    """Map a raw amount to the LLM-facing sign signal.
+
+    ``"0"`` covers both ``NULL`` (defective import) and zero amount (balance
+    adjustments, voided rows). Mapping both to ``"+"`` biases the LLM toward
+    income-side categories on rows that are neither income nor expense.
+    """
+    if amount is None or amount == 0:
+        return "0"
+    return "-" if amount < 0 else "+"
 
 
 @dataclass(slots=True)
@@ -202,6 +325,16 @@ class CategorizationItem(BaseModel):
     transaction_id: str = Field(min_length=1, max_length=64)
     category: str = Field(min_length=1, max_length=100)
     subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+    canonical_merchant_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description=(
+            "LLM-proposed canonical merchant name; merges this row's match_text "
+            "into an existing merchant's oneOf exemplar set rather than creating "
+            "a new merchant per row."
+        ),
+    )
 
 
 class CategorizationRuleInput(BaseModel):
@@ -340,14 +473,25 @@ def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return False
 
 
+# Merchant row shape used by the in-memory matcher: (merchant_id, raw_pattern,
+# match_type, canonical_name, category, subcategory, exemplars). raw_pattern is
+# None for exemplar-only merchants (match_type='oneOf'); exemplars is the set
+# of exact match_text values for oneOf set-membership lookup.
+MerchantRow = tuple[str, str | None, str, str, str, str | None, list[str]]
+
+
 def _fetch_merchants(
     db: Database,
-) -> list[tuple[str, str, str, str, str, str | None]] | None:
+) -> list[MerchantRow] | None:
     """Fetch all merchant mappings ordered for lookup precedence.
 
     Ordering:
     1. is_user DESC — user-created merchants outrank seed merchants
-    2. match_type — exact > contains > regex (existing precedence)
+    2. match-type OP_SCORE DESC — oneOf/exact (10) outrank contains/regex (0).
+       CASE expression generated from :data:`_MATCH_SHAPE_SCORES` via
+       :func:`_match_shape_case_sql` so SQL and Python ladders cannot drift.
+    3. created_at ASC — deterministic tie-break among same-score, same-author
+       merchants (NULL for seed rows; sorts last in DuckDB).
 
     User outranks seed regardless of match-type granularity. A user 'contains'
     rule beats a seed 'exact' rule because user authority over curated defaults
@@ -363,46 +507,127 @@ def _fetch_merchants(
         return db.execute(
             f"""
             SELECT merchant_id, raw_pattern, match_type,
-                   canonical_name, category, subcategory
+                   canonical_name, category, subcategory, exemplars
             FROM {MERCHANTS.full_name}
             ORDER BY
                 is_user DESC,
-                CASE match_type
-                    WHEN 'exact' THEN 1
-                    WHEN 'contains' THEN 2
-                    WHEN 'regex' THEN 3
-                END
-            """,  # noqa: S608  # MERCHANTS is a TableRef constant, not user input
+                {_match_shape_case_sql("match_type")} DESC,
+                created_at ASC
+            """,  # noqa: S608  # MERCHANTS is a TableRef constant; CASE generated from _MATCH_SHAPE_SCORES
         ).fetchall()
     except duckdb.CatalogException:
         return None
 
 
-def _match_description(
-    description: str,
-    merchants: list[tuple[str, str, str, str, str, str | None]],
-) -> dict[str, str | None] | None:
-    """Match a description against a pre-fetched merchant list.
+def _match_shape_label(description_present: bool, memo_present: bool) -> str:
+    """Return the ``shape`` metric label for a matcher call.
 
-    Args:
-        description: Transaction description to match.
-        merchants: Pre-fetched merchant rows from ``_fetch_merchants()``.
-
-    Returns:
-        Dict with merchant_id, canonical_name, category, subcategory
-        if found, otherwise None.
+    Both ``_match_exemplar`` and ``_match_text`` fire
+    ``CATEGORIZE_MATCH_OUTCOME_TOTAL`` with a label describing which input
+    signals were present. Extracted so the mapping lives in one place.
     """
-    normalized = normalize_description(description)
-    if not normalized:
+    if description_present and memo_present:
+        return "both"
+    if memo_present:
+        return "memo_only"
+    return "description_only"
+
+
+def _match_exemplar(
+    match_text: str,
+    merchants: list[MerchantRow],
+    *,
+    description_present: bool = True,
+    memo_present: bool = False,
+) -> dict[str, str | None] | None:
+    """Match match_text against merchants' oneOf exemplar sets (set membership).
+
+    Returns the first merchant whose exemplars contain ``match_text`` exactly.
+    Iteration order is the same as ``_fetch_merchants`` (is_user DESC, oneOf
+    first), so user merchants win and exact-string membership fires before
+    pattern-based shapes. Records ``outcome='exemplar'`` on a hit.
+    """
+    shape = _match_shape_label(description_present, memo_present)
+
+    if not match_text:
         return None
 
     for row in merchants:
-        merchant_id, raw_pattern, match_type, canonical_name, category, subcategory = (
-            row
-        )
-        if matches_pattern(description, raw_pattern, match_type) or matches_pattern(
-            normalized, raw_pattern, match_type
-        ):
+        (
+            merchant_id,
+            _raw_pattern,
+            match_type,
+            canonical_name,
+            category,
+            subcategory,
+            exemplars,
+        ) = row
+        if match_type != "oneOf":
+            continue
+        if exemplars and match_text in exemplars:
+            CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="exemplar", shape=shape).inc()
+            return {
+                "merchant_id": merchant_id,
+                "canonical_name": canonical_name,
+                "category": category,
+                "subcategory": subcategory,
+            }
+    return None
+
+
+def _match_text(
+    match_text: str,
+    merchants: list[MerchantRow],
+    *,
+    normalized_description: str = "",
+    normalized_memo: str = "",
+    description_present: bool = True,
+    memo_present: bool = False,
+) -> dict[str, str | None] | None:
+    r"""Match a pre-fetched merchant list against the per-field candidate texts.
+
+    ``match_text`` is ``description + "\n" + memo`` (per ``build_match_text``);
+    ``normalized_description`` and ``normalized_memo`` are the individual
+    normalized fields. Patterns are tried against each non-empty candidate so
+    ``exact`` and anchored-``regex`` shapes (which can't span the concatenation
+    boundary) still match the original field, while ``contains`` and unanchored
+    ``regex`` shapes can still hit cross-boundary substrings via ``match_text``.
+
+    description_present and memo_present control the "shape" label on the
+    match-outcome metric so callers can attribute matches by signal source.
+
+    Exemplar-only merchants (match_type='oneOf' with raw_pattern=None) are
+    skipped — exemplar lookup is handled by :func:`_match_exemplar`, which
+    callers invoke first.
+    """
+    shape = _match_shape_label(description_present, memo_present)
+
+    candidates: list[str] = []
+    for text in (match_text, normalized_description, normalized_memo):
+        if text and text not in candidates:
+            candidates.append(text)
+
+    if not candidates:
+        CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
+        return None
+
+    for row in merchants:
+        (
+            merchant_id,
+            raw_pattern,
+            match_type,
+            canonical_name,
+            category,
+            subcategory,
+            _exemplars,
+        ) = row
+        if match_type == "oneOf" or not raw_pattern:
+            # Exemplar-only merchants are handled by _match_exemplar.
+            continue
+        if any(matches_pattern(c, raw_pattern, match_type) for c in candidates):
+            CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(
+                outcome=str(match_type or "contains"), shape=shape
+            ).inc()
             return {
                 "merchant_id": merchant_id,
                 "canonical_name": canonical_name,
@@ -410,7 +635,42 @@ def _match_description(
                 "subcategory": subcategory,
             }
 
+    CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
     return None
+
+
+def _match_merchants(
+    match_text: str,
+    merchants: list[MerchantRow],
+    *,
+    normalized_description: str = "",
+    normalized_memo: str = "",
+    description_present: bool = True,
+    memo_present: bool = False,
+) -> dict[str, str | None] | None:
+    """Resolve a merchant against the cached merchant list.
+
+    Two-stage lookup per categorization-matching-mechanics.md §Matcher
+    algorithm: oneOf exemplar membership against ``match_text`` first (most
+    specific shape), then pattern-based (exact / contains / regex) per-field
+    fallback (see :func:`_match_text` for why per-field is required).
+    """
+    hit = _match_exemplar(
+        match_text,
+        merchants,
+        description_present=description_present,
+        memo_present=memo_present,
+    )
+    if hit is not None:
+        return hit
+    return _match_text(
+        match_text,
+        merchants,
+        normalized_description=normalized_description,
+        normalized_memo=normalized_memo,
+        description_present=description_present,
+        memo_present=memo_present,
+    )
 
 
 class CategorizationService:
@@ -554,51 +814,78 @@ class CategorizationService:
 
     # -- Merchant lookup / management --
 
-    def match_merchant(self, description: str) -> dict[str, str | None] | None:
-        """Look up a merchant by raw description.
+    def match_merchant(
+        self, description: str, memo: str | None = None
+    ) -> dict[str, str | None] | None:
+        """Look up a merchant by raw description (and optional memo).
 
-        Args:
-            description: Transaction description to match.
+        Two-stage lookup: oneOf exemplar membership first (most-specific shape),
+        then pattern-based exact/contains/regex (per
+        categorization-matching-mechanics.md §Matcher algorithm).
 
-        Returns:
-            Dict with merchant_id, canonical_name, category, subcategory
-            if found, otherwise None.
+        For OFX-sourced and aggregator-style transactions, memo carries the
+        wrapped merchant identity and is essential for accurate matching.
         """
         merchants = _fetch_merchants(self._db)
         if merchants is None:
             return None
-        return _match_description(description, merchants)
+        match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
+        return _match_merchants(
+            match_text,
+            merchants,
+            normalized_description=norm_desc,
+            normalized_memo=norm_memo,
+            description_present=bool(description and description.strip()),
+            memo_present=bool(memo and memo.strip()),
+        )
 
     def create_merchant(
         self,
-        raw_pattern: str,
+        raw_pattern: str | None,
         canonical_name: str,
         *,
-        match_type: MatchType = "contains",
+        match_type: InternalMatchType = "oneOf",
         category: str | None = None,
         subcategory: str | None = None,
         created_by: str = "ai",
+        exemplars: list[str] | None = None,
+        reapply: bool = False,
     ) -> str:
         """Create a merchant mapping.
 
         Args:
-            raw_pattern: Pattern to match in transaction descriptions.
+            raw_pattern: Pattern to match in transaction descriptions; pass
+                ``None`` for exemplar-only merchants (``match_type='oneOf'``).
             canonical_name: Clean merchant name for display.
-            match_type: How to match: 'exact', 'contains', or 'regex'.
+            match_type: How to match: 'exact', 'contains', 'regex', or 'oneOf'.
+                Defaults to ``'oneOf'`` — system-created merchants use the
+                exemplar accumulator (categorization-matching-mechanics.md
+                §Schema changes); user-authored merchants pick 'contains' or
+                'regex' explicitly.
             category: Optional default category for this merchant.
             subcategory: Optional default subcategory.
             created_by: Who created the mapping ('user', 'ai', 'rule').
+            exemplars: Initial exemplar set (exact match_text values) for
+                oneOf merchants. Defaults to ``[]``.
+            reapply: When ``True``, runs ``categorize_pending`` after the
+                insert so the new merchant fans out to uncategorized rows.
+                Default ``False`` — callers inside a batch flow (e.g.,
+                ``categorize_items``) skip this and let the enclosing snowball
+                pass do the work instead.
 
         Returns:
             The merchant_id of the created merchant.
         """
         merchant_id = uuid.uuid4().hex[:12]
+        # DuckDB binds Python lists to VARCHAR[]. An empty list keeps the
+        # column default semantics intact for non-exemplar merchants.
+        exemplars_param: list[str] = list(exemplars) if exemplars else []
         self._db.execute(
             f"""
             INSERT INTO {USER_MERCHANTS.full_name}
             (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+             category, subcategory, created_by, exemplars)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
             [
                 merchant_id,
@@ -608,15 +895,90 @@ class CategorizationService:
                 category,
                 subcategory,
                 created_by,
+                exemplars_param,
             ],
         )
+        if exemplars_param:
+            MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(
+                len(exemplars_param)
+            )
         logger.info(f"Created user merchant {merchant_id}")
+        if reapply:
+            self.categorize_pending()
         return merchant_id
+
+    def _find_merchant_by_canonical_name(
+        self,
+        canonical_name: str,
+        *,
+        category: str,
+        subcategory: str | None,
+    ) -> str | None:
+        """Return ``merchant_id`` for the oneOf merchant with this canonical name + category, or None.
+
+        Used by the exemplar accumulator to detect whether a previously-created
+        merchant should grow its exemplar set instead of spawning a duplicate.
+
+        Filters on ``match_type='oneOf'`` because exemplars are only consulted
+        for oneOf merchants (see :func:`_match_exemplar`); appending an
+        exemplar to a contains/exact/regex merchant is dead data. Also filters
+        on ``category``/``subcategory``: two ``oneOf`` merchants can legitimately
+        share a canonical name (e.g. an Amazon merchant mapped to ``Shopping``
+        and another mapped to ``Groceries``); merging exemplars across them
+        would cross-pollinate categorization. When the canonical name collides
+        with a different-category merchant, the caller creates a new oneOf
+        merchant alongside it — the two coexist, each doing its own job.
+        """
+        try:
+            if subcategory is None:
+                row = self._db.execute(
+                    f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
+                    "WHERE canonical_name = ? AND match_type = 'oneOf' "
+                    "AND category = ? AND subcategory IS NULL "
+                    "LIMIT 1",  # noqa: S608  # TableRef constant
+                    [canonical_name, category],
+                ).fetchone()
+            else:
+                row = self._db.execute(
+                    f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
+                    "WHERE canonical_name = ? AND match_type = 'oneOf' "
+                    "AND category = ? AND subcategory = ? "
+                    "LIMIT 1",  # noqa: S608  # TableRef constant
+                    [canonical_name, category, subcategory],
+                ).fetchone()
+        except duckdb.CatalogException:
+            return None
+        return row[0] if row else None
+
+    def _append_exemplar(self, merchant_id: str, match_text: str) -> int:
+        """Append ``match_text`` to a merchant's exemplar set; return new size.
+
+        Idempotent via ``list_distinct``: re-appending an existing exemplar
+        leaves the set unchanged. Updates the per-merchant gauge to surface
+        any merchant whose set is approaching the soft-cap signal (200).
+        """
+        # Single round-trip: DuckDB supports RETURNING on UPDATE, so the
+        # post-update size flows back without a separate SELECT.
+        row = self._db.execute(
+            f"""
+            UPDATE {USER_MERCHANTS.full_name}
+            SET exemplars = list_distinct(list_append(exemplars, ?))
+            WHERE merchant_id = ?
+            RETURNING len(exemplars)
+            """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant
+            [match_text, merchant_id],
+        ).fetchone()
+        new_size = int(row[0]) if row and row[0] is not None else 0
+        MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(new_size)
+        return new_size
 
     # -- Rule management --
 
     def create_rules(
-        self, items: Sequence[CategorizationRuleInput]
+        self,
+        items: Sequence[CategorizationRuleInput],
+        *,
+        reapply: bool = False,
     ) -> RuleCreationResult:
         """Create multiple categorization rules in one call (idempotent).
 
@@ -633,6 +995,10 @@ class CategorizationService:
         treated as a new rule, not a conflict — see
         ``docs/specs/mcp-tool-surface.md`` "Rule-conflict detection
         (follow-up)" for the deferred conflict-resolution work.
+
+        When ``reapply=True``, ``categorize_pending`` runs after the writes so
+        the new rules fan out to uncategorized rows immediately. Source-priority
+        enforcement keeps user manual edits safe regardless.
 
         Per-row insertion failures are caught so a single bad row does
         not abort the batch — they appear in ``error_details``.
@@ -709,6 +1075,9 @@ class CategorizationService:
                     "reason": "Failed to create rule — check logs for details.",
                 })
 
+        if reapply and created > 0:
+            self.categorize_pending()
+
         return RuleCreationResult(
             created=created,
             existing=existing,
@@ -717,11 +1086,19 @@ class CategorizationService:
             rule_ids=rule_ids,
         )
 
-    def deactivate_rule(self, rule_id: str) -> bool:
+    def deactivate_rule(self, rule_id: str, *, reapply: bool = False) -> bool:
         """Soft-delete a rule by setting ``is_active=false``.
 
         Returns ``True`` if the rule existed (and is now inactive),
         ``False`` if no rule with that ID was found.
+
+        When ``reapply=True`` and the rule was deactivated, strips any
+        categorizations the now-deactivated rule had written
+        (``categorized_by IN ('rule', 'auto_rule')`` with this rule_id) so
+        those rows become pending again, then runs ``categorize_pending`` to
+        re-evaluate them against the remaining active matchers. Writes from
+        higher-priority sources (user/migration/ml/plaid/seed) that happen to
+        share this rule_id reference are left intact.
         """
         row = self._db.execute(
             f"""
@@ -732,7 +1109,18 @@ class CategorizationService:
             """,  # noqa: S608  # TableRef constant, no user input interpolated
             [rule_id],
         ).fetchone()
-        return row is not None
+        deactivated = row is not None
+        if reapply and deactivated:
+            self._db.execute(
+                f"""
+                DELETE FROM {TRANSACTION_CATEGORIES.full_name}
+                WHERE rule_id = ?
+                  AND categorized_by IN ('rule', 'auto_rule')
+                """,  # noqa: S608  # TableRef constant, no user input interpolated
+                [rule_id],
+            )
+            self.categorize_pending()
+        return deactivated
 
     # -- Category management --
 
@@ -833,6 +1221,92 @@ class CategorizationService:
 
     # -- Categorization core --
 
+    def write_categorization(
+        self,
+        *,
+        transaction_id: str,
+        category: str,
+        subcategory: str | None,
+        categorized_by: str,
+        merchant_id: str | None = None,
+        rule_id: str | None = None,
+        confidence: float | None = None,
+    ) -> WriteOutcome:
+        """Insert or replace a categorization, respecting source precedence.
+
+        Single guarded write path for ``app.transaction_categories``. Lower
+        numeric priority = higher authority (per
+        ``categorization-matching-mechanics.md`` §Source precedence). A new
+        write succeeds only if its source priority is ≤ the existing row's;
+        otherwise the existing row stands and the
+        ``CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL`` metric is incremented.
+
+        Returns:
+            ``WriteOutcome.written=True`` if the write took effect (insert or
+            permitted update); ``False`` with ``skipped_reason='lower_priority_source'``
+            if a higher-priority categorization already exists.
+
+        Raises:
+            ValueError: if ``categorized_by`` is not in :data:`_SOURCE_PRIORITY`.
+                The generated SQL CASE has no ELSE branch (see
+                :func:`_priority_case_sql`), so an unknown source would silently
+                resolve to NULL priority and never overwrite — fail loudly
+                instead of letting a typo masquerade as a precedence skip.
+        """
+        if categorized_by not in _SOURCE_PRIORITY:
+            raise ValueError(
+                f"Unknown categorized_by={categorized_by!r}; "
+                f"must be one of {sorted(_SOURCE_PRIORITY)}"
+            )
+        # The SQL CASE expression is generated from _SOURCE_PRIORITY so the
+        # ladder lives in exactly one place. See _priority_case_sql.
+        existing_table = TRANSACTION_CATEGORIES.full_name
+        excluded_priority = _priority_case_sql("EXCLUDED.categorized_by")
+        existing_priority = _priority_case_sql(f"{existing_table}.categorized_by")
+        cursor = self._db.execute(
+            f"""
+            INSERT INTO {existing_table}
+                (transaction_id, category, subcategory, categorized_at,
+                 categorized_by, merchant_id, rule_id, confidence)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+            ON CONFLICT (transaction_id) DO UPDATE SET
+                category = EXCLUDED.category,
+                subcategory = EXCLUDED.subcategory,
+                categorized_at = EXCLUDED.categorized_at,
+                categorized_by = EXCLUDED.categorized_by,
+                merchant_id = EXCLUDED.merchant_id,
+                rule_id = EXCLUDED.rule_id,
+                confidence = EXCLUDED.confidence
+            WHERE {excluded_priority} <= {existing_priority}
+            RETURNING transaction_id
+            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant; CASE built from _SOURCE_PRIORITY
+            [
+                transaction_id,
+                category,
+                subcategory,
+                categorized_by,
+                merchant_id,
+                rule_id,
+                confidence,
+            ],
+        )
+        if cursor.fetchone() is not None:
+            return WriteOutcome(written=True)
+
+        # Row exists with a higher-priority source; record the skip with labels
+        # for both sides of the comparison so dashboards can distinguish "ai
+        # blocked by user" from "ai blocked by rule" etc.
+        existing = self._db.execute(
+            f"SELECT categorized_by FROM {TRANSACTION_CATEGORIES.full_name} "
+            "WHERE transaction_id = ?",  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
+            [transaction_id],
+        ).fetchone()
+        CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL.labels(
+            src_existing=existing[0] if existing else "unknown",
+            src_attempted=categorized_by,
+        ).inc()
+        return WriteOutcome(written=False, skipped_reason="lower_priority_source")
+
     def categorize_items(
         self, items: Sequence[CategorizationItem]
     ) -> CategorizationResult:
@@ -845,6 +1319,12 @@ class CategorizationService:
         Read-side cost is O(1) in the number of items: one batch description
         fetch and one merchant-table fetch, regardless of input size.
 
+        Auto-applies ``categorize_pending`` after writes commit so newly-created
+        merchants and exemplars immediately fan out to remaining uncategorized
+        rows (the "snowball" — categorization-matching-mechanics.md §Apply
+        order, bug 4). Source-priority enforcement from ``write_categorization``
+        keeps user manual edits safe.
+
         Args:
             items: Validated list of CategorizationItem (transaction_id, category,
                 optional subcategory). Validation is the caller's responsibility —
@@ -855,7 +1335,20 @@ class CategorizationService:
         """
         _start = perf_counter()
         try:
-            return self._categorize_items_inner(items)
+            result = self._categorize_items_inner(items)
+            # Snowball: fan newly-created merchants/exemplars out to remaining
+            # uncategorized rows. Skipped on no-op batches so we don't churn a
+            # pending sweep when nothing committed.
+            if result.applied > 0 or result.merchants_created > 0:
+                snowball_start = perf_counter()
+                try:
+                    counts = self.categorize_pending()
+                    CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED.observe(counts["total"])
+                finally:
+                    CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS.observe(
+                        perf_counter() - snowball_start
+                    )
+            return result
         except Exception:
             CATEGORIZE_ERRORS_TOTAL.inc()
             raise
@@ -943,7 +1436,8 @@ class CategorizationService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT transaction_id, description, amount, account_id, source_type
+                SELECT transaction_id, description, amount, account_id,
+                       memo, source_type
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE transaction_id IN ({placeholders})
                 """,  # noqa: S608 — FCT_TRANSACTIONS is a compile-time TableRef constant; values are parameterized
@@ -954,7 +1448,8 @@ class CategorizationService:
                     description=row[1],
                     amount=float(row[2]) if row[2] is not None else None,
                     account_id=str(row[3]) if row[3] is not None else None,
-                    source_type=str(row[4]) if row[4] is not None else None,
+                    memo=row[4],
+                    source_type=str(row[5]) if row[5] is not None else None,
                 )
                 for row in rows
             }
@@ -992,19 +1487,29 @@ class CategorizationService:
             category = item.category
             subcategory = item.subcategory
             try:
-                # Resolve pre-existing merchant first so auto-rule learning can
-                # use the merchant's raw_pattern (e.g., "AMZN") instead of
-                # falling back to the raw description. New merchants are
-                # deferred until after record_categorization — creating one
-                # first would let _merchant_mapping_covers short-circuit the
-                # proposal before it can be tracked.
+                # Resolve pre-existing merchant first (read-only) so the
+                # precedence-guarded write below can attach the matched
+                # merchant_id when one already exists. Side-effects
+                # (auto-rule recording + exemplar accumulation) are deferred
+                # until after a successful write so a rejected suggestion
+                # (lower-priority source) cannot poison merchant matching or
+                # auto-rule training.
                 merchant_id: str | None = None
                 existing: dict[str, Any] | None = None
                 description = ctx.description_for(txn_id)
-                if description and ctx.merchant_mappings:
+                memo = ctx.memo_for(txn_id)
+                match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
+                if match_text and ctx.merchant_mappings:
                     try:
-                        existing = _match_description(
-                            description, ctx.merchant_mappings
+                        existing = _match_merchants(
+                            match_text,
+                            ctx.merchant_mappings,
+                            normalized_description=norm_desc,
+                            normalized_memo=norm_memo,
+                            description_present=bool(
+                                description and description.strip()
+                            ),
+                            memo_present=bool(memo and memo.strip()),
                         )
                         if existing:
                             merchant_id = existing["merchant_id"]
@@ -1014,6 +1519,34 @@ class CategorizationService:
                             exc_info=True,
                         )
 
+                outcome = self.write_categorization(
+                    transaction_id=txn_id,
+                    category=category,
+                    subcategory=subcategory,
+                    categorized_by="ai",
+                    merchant_id=merchant_id,
+                )
+                if not outcome.written:
+                    # Higher-priority source already categorized this row;
+                    # leave it alone and surface as a skip. Skip auto-rule
+                    # learning and exemplar accumulation entirely — the
+                    # suggestion was rejected, so mutating downstream state
+                    # based on it would poison future matching.
+                    skipped += 1
+                    error_details.append({
+                        "transaction_id": txn_id,
+                        "reason": (
+                            "Skipped: a higher-priority categorization "
+                            "(user, rule, or other) already covers this transaction."
+                        ),
+                        "error": "lower_priority_source",
+                    })
+                    continue
+
+                applied += 1
+
+                # Side-effects gated on outcome.written — only fire when the
+                # categorization actually landed.
                 try:
                     auto_rule_svc.record_categorization(
                         txn_id,
@@ -1025,48 +1558,53 @@ class CategorizationService:
                 except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
                     logger.warning("auto-rule recording failed", exc_info=True)
 
-                if merchant_id is None and description:
+                # Exemplar accumulator (categorization-matching-mechanics.md
+                # §Schema changes). When no merchant matched this row, either
+                # grow the exemplar set of an existing oneOf merchant with
+                # the same LLM-proposed canonical_merchant_name, or create a
+                # new exemplar-only merchant. System-generated merchants
+                # never invent a contains pattern from the full description —
+                # that over-generalized aggregator strings (bug 3).
+                if merchant_id is None and match_text:
                     try:
-                        normalized = normalize_description(description)
-                        if normalized:
-                            merchant_id = self.create_merchant(
-                                normalized,
-                                normalized,
-                                match_type="contains",
+                        canonical_name = item.canonical_merchant_name or match_text
+                        existing_id = self._find_merchant_by_canonical_name(
+                            canonical_name,
+                            category=category,
+                            subcategory=subcategory,
+                        )
+                        if existing_id is not None:
+                            self._append_exemplar(existing_id, match_text)
+                        else:
+                            new_merchant_id = self.create_merchant(
+                                None,
+                                canonical_name,
+                                match_type="oneOf",
                                 category=category,
                                 subcategory=subcategory,
                                 created_by="ai",
+                                exemplars=[match_text],
                             )
                             merchants_created += 1
-                            # Register into context preserving _fetch_merchants()
-                            # ordering (exact → contains → regex) so subsequent
-                            # items in this batch match the just-created contains
-                            # rule before any pre-existing regex rule.
-                            new_row = (
-                                merchant_id,
-                                normalized,
-                                "contains",
-                                normalized,
+                            # Register into context so subsequent items in this
+                            # batch see the new exemplar-only merchant at the
+                            # head of the merchant list (oneOf is first per
+                            # _fetch_merchants ordering).
+                            new_row: MerchantRow = (
+                                new_merchant_id,
+                                None,
+                                "oneOf",
+                                canonical_name,
                                 category,
                                 subcategory,
+                                [match_text],
                             )
                             ctx.register_new_merchant(new_row)
-                    except Exception:  # noqa: BLE001 — merchant resolution is best-effort; categorization proceeds without it
+                    except Exception:  # noqa: BLE001 — exemplar accumulation is best-effort; categorization proceeds without it
                         logger.debug(
-                            f"Could not create merchant for {txn_id}",
+                            f"Could not accumulate exemplar for {txn_id}",
                             exc_info=True,
                         )
-
-                self._db.execute(
-                    f"""
-                    INSERT OR REPLACE INTO {TRANSACTION_CATEGORIES.full_name}
-                    (transaction_id, category, subcategory,
-                     categorized_at, categorized_by, merchant_id)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'ai', ?)
-                    """,
-                    [txn_id, category, subcategory, merchant_id],
-                )
-                applied += 1
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 errors += 1
                 logger.exception(f"categorize_items failed for transaction {txn_id!r}")
@@ -1111,13 +1649,15 @@ class CategorizationService:
         try:
             uncategorized = self._db.execute(
                 f"""
-                SELECT t.transaction_id, t.description
+                SELECT t.transaction_id, t.description, t.memo
                 FROM {FCT_TRANSACTIONS.full_name} t
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                     ON t.transaction_id = c.transaction_id
                 WHERE c.transaction_id IS NULL
-                    AND t.description IS NOT NULL
-                    AND t.description != ''
+                    AND (
+                        (t.description IS NOT NULL AND t.description != '')
+                        OR (t.memo IS NOT NULL AND t.memo != '')
+                    )
                 """,
             ).fetchall()
         except duckdb.CatalogException:
@@ -1126,27 +1666,35 @@ class CategorizationService:
         if not uncategorized:
             return 0
 
-        rows_to_insert: list[list[object]] = []
-        for txn_id, description in uncategorized:
-            merchant = _match_description(description, merchants)
-            if merchant and merchant.get("category"):
-                rows_to_insert.append([
-                    txn_id,
-                    merchant["category"],
-                    merchant["subcategory"],
-                    merchant["merchant_id"],
-                ])
-        if rows_to_insert:
-            self._db.executemany(
-                f"""
-                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, merchant_id, confidence)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'rule', ?, 1.0)
-                """,
-                rows_to_insert,
+        categorized_count = 0
+        for txn_id, description, memo in uncategorized:
+            match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
+            if not match_text:
+                continue
+            merchant = _match_merchants(
+                match_text,
+                merchants,
+                normalized_description=norm_desc,
+                normalized_memo=norm_memo,
+                description_present=bool(description and str(description).strip()),
+                memo_present=bool(memo and str(memo).strip()),
             )
-        categorized_count = len(rows_to_insert)
+            if merchant and merchant.get("category"):
+                # Merchants don't have a dedicated source-priority slot in the v1
+                # ladder (user/rule/auto_rule/migration/ml/plaid/seed/ai). Recording
+                # merchant matches as 'rule' preserves historical behavior; a
+                # follow-up spec may introduce a dedicated 'merchant' priority
+                # between auto_rule and migration.
+                outcome = self.write_categorization(
+                    transaction_id=txn_id,
+                    category=str(merchant["category"]),
+                    subcategory=merchant["subcategory"],
+                    categorized_by="rule",
+                    merchant_id=merchant["merchant_id"],
+                    confidence=1.0,
+                )
+                if outcome.written:
+                    categorized_count += 1
 
         if categorized_count:
             logger.info(
@@ -1176,15 +1724,23 @@ class CategorizationService:
         description: str,
         amount: float | None,
         account_id: str | None,
+        memo: str | None = None,
     ) -> tuple[str, str, str | None, str] | None:
         """Return ``(rule_id, category, subcategory, created_by)`` for the first rule that matches.
 
-        Evaluates pattern (against both raw and normalized description),
-        amount bounds, and account filter. Mirrors the rule engine semantics
-        so callers can ask "would any rule match this transaction?" without
-        duplicating logic. Returns ``None`` when no rule matches.
+        Evaluates each pattern against the canonical ``match_text``
+        (``build_match_text(description, memo)``) plus the individual normalized
+        fields, so ``contains`` / unanchored ``regex`` patterns can hit
+        cross-boundary substrings while ``exact`` and anchored-``regex``
+        patterns still match the original field they were authored against.
+        Amount bounds and account filter are applied as before. Returns
+        ``None`` when no rule matches.
         """
-        normalized = normalize_description(description)
+        match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
+        candidates: list[str] = []
+        for text in (match_text, norm_desc, norm_memo):
+            if text and text not in candidates:
+                candidates.append(text)
         for rule in rules:
             (
                 rule_id,
@@ -1197,10 +1753,7 @@ class CategorizationService:
                 subcategory,
                 created_by,
             ) = rule
-            if not (
-                matches_pattern(description, pattern, match_type)
-                or matches_pattern(normalized, pattern, match_type)
-            ):
+            if not any(matches_pattern(c, pattern, match_type) for c in candidates):
                 continue
             if (
                 min_amount is not None
@@ -1224,7 +1777,8 @@ class CategorizationService:
         transaction_id: str,
         *,
         rules_override: list[tuple[Any, ...]] | None = None,
-        txn_row_override: tuple[str, float | None, str | None] | None = None,
+        txn_row_override: tuple[str, float | None, str | None, str | None]
+        | None = None,
     ) -> tuple[str, str, str | None, str] | None:
         """Return the first active rule matching this transaction, or ``None``.
 
@@ -1237,39 +1791,45 @@ class CategorizationService:
         The batch path supplies pre-loaded rule rows and txn metadata via
         ``rules_override`` and ``txn_row_override`` so this function issues no
         queries during a batch loop. Both default to ``None`` for non-batch callers.
+        ``txn_row_override`` is ``(description, amount, account_id, memo)``.
         """
+        description: str
+        amount: float | None
+        account_id: str | None
+        memo: str | None
         if txn_row_override is not None:
-            description, amount, account_id = txn_row_override
+            description, amount, account_id, memo = txn_row_override
         else:
             try:
                 txn_row = self._db.execute(
-                    f"SELECT description, amount, account_id "
+                    f"SELECT description, amount, account_id, memo "
                     f"FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
                     [transaction_id],
                 ).fetchone()
             except duckdb.CatalogException:
                 return None
-            if not txn_row or not txn_row[0]:
+            if not txn_row:
                 return None
-            description, amount, account_id = txn_row
-        if not description:
+            # DuckDB row values are dynamically typed; normalize to the shapes
+            # match_first_rule expects.
+            raw_desc, raw_amt, raw_acct, raw_memo = txn_row
+            description = str(raw_desc) if raw_desc else ""
+            amount = float(raw_amt) if raw_amt is not None else None
+            account_id = str(raw_acct) if raw_acct is not None else None
+            memo = str(raw_memo) if raw_memo else None
+        if not description and not memo:
             return None
         rules = (
             rules_override if rules_override is not None else self.fetch_active_rules()
         )
         if not rules:
             return None
-        return self.match_first_rule(
-            rules,
-            str(description),
-            float(amount) if amount is not None else None,
-            str(account_id) if account_id is not None else None,
-        )
+        return self.match_first_rule(rules, description, amount, account_id, memo)
 
     def apply_rules(self) -> int:
         """Apply active categorization rules to uncategorized transactions.
 
-        Runs before merchant mapping in :meth:`apply_deterministic` so that
+        Runs before merchant mapping in :meth:`categorize_pending` so that
         explicit rules take priority. Rules are evaluated in priority order
         (lower number = higher priority); the first matching rule wins. Rules
         can filter by merchant pattern, amount range, and account ID.
@@ -1290,13 +1850,15 @@ class CategorizationService:
         try:
             uncategorized = self._db.execute(
                 f"""
-                SELECT t.transaction_id, t.description, t.amount, t.account_id
+                SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
                 FROM {FCT_TRANSACTIONS.full_name} t
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                     ON t.transaction_id = c.transaction_id
                 WHERE c.transaction_id IS NULL
-                    AND t.description IS NOT NULL
-                    AND t.description != ''
+                    AND (
+                        (t.description IS NOT NULL AND t.description != '')
+                        OR (t.memo IS NOT NULL AND t.memo != '')
+                    )
                 """,
             ).fetchall()
         except duckdb.CatalogException:
@@ -1305,47 +1867,43 @@ class CategorizationService:
         if not uncategorized:
             return 0
 
-        rows_to_insert: list[list[object]] = []
-        for txn_id, description, amount, account_id in uncategorized:
+        categorized_count = 0
+        for txn_id, description, amount, account_id, memo in uncategorized:
             match = self.match_first_rule(
                 rules,
-                str(description),
+                str(description) if description else "",
                 float(amount) if amount is not None else None,
                 str(account_id) if account_id is not None else None,
+                str(memo) if memo else None,
             )
             if match is None:
                 continue
             rule_id, category, subcategory, created_by = match
             categorized_by = "auto_rule" if created_by == "auto_rule" else "rule"
-            rows_to_insert.append([
-                txn_id,
-                category,
-                subcategory,
-                categorized_by,
-                rule_id,
-            ])
-        if rows_to_insert:
-            self._db.executemany(
-                f"""
-                INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, rule_id, confidence)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, 1.0)
-                """,
-                rows_to_insert,
+            outcome = self.write_categorization(
+                transaction_id=txn_id,
+                category=category,
+                subcategory=subcategory,
+                categorized_by=categorized_by,
+                rule_id=rule_id,
+                confidence=1.0,
             )
-        categorized_count = len(rows_to_insert)
+            if outcome.written:
+                categorized_count += 1
 
         if categorized_count:
             logger.info(f"Rule engine categorized {categorized_count} transactions")
         return categorized_count
 
-    def apply_deterministic(self) -> dict[str, int]:
-        """Run all deterministic categorization: rules first, then merchant fallback.
+    def categorize_pending(self) -> dict[str, int]:
+        """Categorize all pending (uncategorized) transactions.
 
+        Runs current rules and merchants against pending transactions.
         Rules run first in priority order so explicit user-defined rules (which can
         filter by amount, account, and pattern) take precedence over generic merchant
         mappings. Merchant mappings apply only to transactions not matched by any rule.
+
+        Idempotent: a second run on the same state writes nothing.
 
         Returns:
             Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
@@ -1356,8 +1914,8 @@ class CategorizationService:
 
         if total:
             logger.info(
-                f"Deterministic categorization: {merchant_count} merchant, "
-                f"{rule_count} rule, {total} total"
+                f"Categorized {total} pending transactions "
+                f"({merchant_count} merchant, {rule_count} rule)"
             )
 
         return {
@@ -1618,7 +2176,8 @@ class CategorizationService:
 
         Sensitivity: medium. Output is sent to the user's LLM via MCP or
         written to disk via the CLI bridge. The redaction contract is enforced
-        by RedactedTransaction's frozen dataclass shape.
+        by RedactedTransaction's frozen dataclass shape (v2: description + memo
+        redacted; structural fields exposed unredacted).
         """
         import time
 
@@ -1647,7 +2206,16 @@ class CategorizationService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT t.transaction_id, t.description, t.source_type
+                SELECT t.transaction_id,
+                       t.description,
+                       t.memo,
+                       t.source_type,
+                       t.transaction_type,
+                       t.check_number,
+                       t.is_transfer,
+                       t.transfer_pair_id,
+                       t.payment_channel,
+                       t.amount
                 FROM {FCT_TRANSACTIONS.full_name} t
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
                 WHERE {where_sql}
@@ -1658,9 +2226,16 @@ class CategorizationService:
 
             result = [
                 RedactedTransaction(
-                    opaque_id=row[0],
+                    transaction_id=row[0],
                     description_redacted=redact_for_llm(row[1] or ""),
-                    source_type=row[2] or "",
+                    memo_redacted=redact_for_llm(row[2] or ""),
+                    source_type=row[3] or "",
+                    transaction_type=row[4],
+                    check_number=row[5],
+                    is_transfer=bool(row[6]),
+                    transfer_pair_id=row[7],
+                    payment_channel=row[8],
+                    amount_sign=_amount_sign_label(row[9]),
                 )
                 for row in rows
             ]

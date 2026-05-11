@@ -1,9 +1,10 @@
-"""Categorization workflow command group.
+"""Categorize transactions: rules, bulk apply, auto-rules.
 
-Deterministic categorization operations — no LLM dependency.
-LLM-based auto-categorization is available through the MCP server.
-Per-transaction workflow tools live here. Category taxonomy and merchant
-mappings live in top-level `categories` and `merchants` groups respectively.
+Per-transaction categorization workflow — rules, bulk apply from JSON,
+auto-rule review/confirm, and stats. The matcher itself (rules + merchants)
+runs locally with no LLM dependency; LLM-assist for uncategorized rows is
+available via the MCP server. Category taxonomy and merchant mappings live
+in the top-level `categories` and `merchants` groups respectively.
 """
 
 import logging

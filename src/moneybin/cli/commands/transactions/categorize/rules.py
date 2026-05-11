@@ -74,7 +74,7 @@ def rules_apply() -> None:
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors() as db:
-        stats = CategorizationService(db).apply_deterministic()
+        stats = CategorizationService(db).categorize_pending()
         if stats["total"] > 0:
             logger.info(
                 f"✅ Categorized {stats['total']} transactions "

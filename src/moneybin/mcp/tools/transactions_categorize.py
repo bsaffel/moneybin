@@ -97,14 +97,22 @@ def transactions_categorize_apply(
     """Assign categories to multiple transactions in one call.
 
     Each item should have ``transaction_id``, ``category``, and
-    optionally ``subcategory``. Transactions that already have a
-    category are overwritten.
+    optionally ``subcategory`` and ``canonical_merchant_name``.
+    Transactions that already have a category are overwritten (subject
+    to source-precedence rules).
 
-    Also auto-creates merchant mappings from transaction descriptions
-    so future similar transactions are categorized automatically.
+    Also auto-creates exemplar-only merchant mappings from the row's
+    normalized match_text (description + memo) so future rows with the
+    same match_text are categorized automatically via the oneOf
+    set-membership matcher. When ``canonical_merchant_name`` is
+    provided, multiple rows with different match_text values are
+    merged under one merchant identity by appending exemplars rather
+    than spawning per-row merchants.
 
     Args:
-        items: List of dicts with transaction_id, category, subcategory.
+        items: List of dicts with transaction_id, category, optional
+            subcategory, and optional canonical_merchant_name (the
+            LLM-proposed display name used to merge exemplars).
     """
     if not items:
         return CategorizationResult(
@@ -120,6 +128,7 @@ def transactions_categorize_apply(
 @mcp_tool(sensitivity="low", domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
+    reapply: bool = False,
 ) -> ResponseEnvelope:
     """Create multiple categorization rules in one call.
 
@@ -129,15 +138,22 @@ def transactions_categorize_rules_create(
 
     Args:
         rules: List of rule dicts.
+        reapply: If True, retroactively apply the new rules to all
+            uncategorized transactions after the inserts commit. Default
+            False; only future categorizations are affected.
     """
     validated, parse_errors = validate_rule_items(rules)
-    result = CategorizationService(get_database()).create_rules(validated)
+    result = CategorizationService(get_database()).create_rules(
+        validated, reapply=reapply
+    )
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(rules))
 
 
 @mcp_tool(sensitivity="low", domain="categorize", read_only=False)
-def transactions_categorize_rule_delete(rule_id: str) -> ResponseEnvelope:
+def transactions_categorize_rule_delete(
+    rule_id: str, reapply: bool = False
+) -> ResponseEnvelope:
     """Soft-delete a categorization rule by setting it inactive.
 
     The rule remains in the database but will no longer be applied
@@ -145,8 +161,14 @@ def transactions_categorize_rule_delete(rule_id: str) -> ResponseEnvelope:
 
     Args:
         rule_id: The rule ID to deactivate.
+        reapply: If True, run categorize_pending after the deactivation so
+            rows previously covered by lower-priority sources have a chance
+            to be re-evaluated. Default False; existing categorizations are
+            left untouched.
     """
-    if not CategorizationService(get_database()).deactivate_rule(rule_id):
+    if not CategorizationService(get_database()).deactivate_rule(
+        rule_id, reapply=reapply
+    ):
         raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
     return build_envelope(
         data={"rule_id": rule_id, "action": "deactivated"},

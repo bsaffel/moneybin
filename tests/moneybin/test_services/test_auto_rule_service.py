@@ -48,17 +48,28 @@ def test_extract_pattern_falls_back_to_normalized_description() -> None:
     db = MagicMock()
     db.execute.return_value.fetchone.side_effect = [
         (None,),  # no merchant_id on the categorization row
-        ("SQ *STARBUCKS #1234 SEATTLE WA",),  # raw description
+        ("SQ *STARBUCKS #1234 SEATTLE WA", None),  # (raw description, memo)
     ]
     extracted = AutoRuleService(db)._extract_pattern("t_2")
     assert extracted == ("STARBUCKS", "contains")
 
 
 def test_extract_pattern_returns_none_when_description_empty() -> None:
-    """Extract pattern returns None when description is empty."""
+    """Extract pattern returns None when description and memo are empty."""
     db = MagicMock()
-    db.execute.return_value.fetchone.side_effect = [(None,), ("",)]
+    db.execute.return_value.fetchone.side_effect = [(None,), ("", None)]
     assert AutoRuleService(db)._extract_pattern("t_3") is None
+
+
+def test_extract_pattern_falls_back_to_normalized_memo_when_description_empty() -> None:
+    """Extract pattern falls back to normalized memo when description is empty."""
+    db = MagicMock()
+    db.execute.return_value.fetchone.side_effect = [
+        (None,),  # no merchant_id on the categorization row
+        ("", "ZELLE PAYMENT TO ALICE"),  # (description, memo) — description empty
+    ]
+    extracted = AutoRuleService(db)._extract_pattern("t_memo_only")
+    assert extracted == ("ZELLE PAYMENT TO ALICE", "contains")
 
 
 @pytest.fixture
@@ -284,6 +295,63 @@ def test_override_threshold_deactivates_rule_and_creates_new_proposal(
         "SELECT reason, override_count, new_category FROM app.rule_deactivations"
     ).fetchone()
     assert audit == ("override_threshold", 2, "Groceries")
+
+
+def test_check_overrides_matches_memo_when_description_is_empty(
+    real_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Override detection consumes match_text — patterns can match memo when description is empty."""
+    monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+    clear_settings_cache()
+    monkeypatch.setattr(config_module, "_current_profile", None)
+    monkeypatch.setattr(config_module, "_current_settings", None)
+    set_current_profile("test")
+
+    # Insert an active auto-rule directly so we control the pattern (no
+    # _seed_transaction priming needed). created_at is set well in the past so
+    # subsequent override categorizations satisfy the c.categorized_at > rule.created_at
+    # filter even when both timestamps land in the same second.
+    real_db.execute(
+        "INSERT INTO app.categorization_rules "
+        "(rule_id, name, merchant_pattern, match_type, category, subcategory, "
+        " priority, is_active, created_by, created_at, updated_at) "
+        "VALUES ('r1', 'Zelle Alice', 'ZELLE PAYMENT TO ALICE', 'contains', "
+        " 'Transfers', NULL, 200, true, 'auto_rule', "
+        " TIMESTAMP '2026-01-01 00:00:00', TIMESTAMP '2026-01-01 00:00:00')"
+    )
+    # Mirror the rule with an approved proposal so the supersede UPDATE has a row to touch.
+    real_db.execute(
+        "INSERT INTO app.proposed_rules "
+        "(proposed_rule_id, merchant_pattern, category, subcategory, "
+        " trigger_count, status, sample_txn_ids) "
+        "VALUES ('p1', 'ZELLE PAYMENT TO ALICE', 'Transfers', NULL, 1, 'approved', [])"
+    )
+
+    # Two override transactions: empty description, memo carries the merchant
+    # signal. Categorized 'user' with a different category (Friends & Family).
+    for tid in ("t_memo1", "t_memo2"):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            " memo, source_type) "
+            "VALUES (?, 'a1', DATE '2026-02-01', -25.00, '', "
+            " 'ZELLE PAYMENT TO ALICE', 'ofx')",
+            [tid],
+        )
+        real_db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_at, categorized_by) "
+            "VALUES (?, 'Friends & Family', CURRENT_TIMESTAMP, 'user')",
+            [tid],
+        )
+
+    deactivated = AutoRuleService(real_db).check_overrides()
+    assert deactivated == 1
+
+    active = real_db.execute(
+        "SELECT is_active FROM app.categorization_rules WHERE rule_id = 'r1'"
+    ).fetchone()
+    assert active == (False,)
 
 
 def test_reject_marks_proposal_rejected_without_creating_rule(

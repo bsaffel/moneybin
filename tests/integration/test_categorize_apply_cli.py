@@ -41,6 +41,7 @@ def _seed_one_transaction(db: Database) -> str:
             account_id      VARCHAR,
             transaction_date DATE,
             description     VARCHAR,
+            memo            VARCHAR,
             amount          DECIMAL(18,2),
             source_type     VARCHAR
         )
