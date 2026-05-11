@@ -140,11 +140,11 @@ def _prepare_splits(splits: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------- tools ----------
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
 def transactions_create(
     transactions: list[dict[str, Any]],
 ) -> ResponseEnvelope:
-    """Bulk-create 1..100 manual transactions atomically under one import_id.
+    """Create 1..100 manual transactions atomically under one import_id.
 
     Each entry requires ``account_id``, ``amount`` (Decimal-coerced), a
     ``transaction_date`` (ISO 8601 ``YYYY-MM-DD``), and ``description``.
@@ -179,7 +179,7 @@ def transactions_create(
     )
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
 def transactions_notes_add(transaction_id: str, text: str) -> ResponseEnvelope:
     """Append a note to a transaction. Returns the created note row."""
     note = TransactionService(get_database()).add_note(
@@ -188,21 +188,26 @@ def transactions_notes_add(transaction_id: str, text: str) -> ResponseEnvelope:
     return build_envelope(data=_note_dict(note), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope:
     """Update an existing note's text. Returns the updated row."""
     note = TransactionService(get_database()).edit_note(note_id, text, actor="mcp")
     return build_envelope(data=_note_dict(note), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(
+    sensitivity="medium",
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+)
 def transactions_notes_delete(note_id: str) -> ResponseEnvelope:
-    """Delete a note by ID."""
+    """Delete a note by ID. Hard-delete; raises LookupError if the note is gone."""
     TransactionService(get_database()).delete_note(note_id, actor="mcp")
     return build_envelope(data={"note_id": note_id}, sensitivity="low")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvelope:
     """Declarative target-state for a transaction's tags.
 
@@ -220,7 +225,7 @@ def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvel
     )
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
     """Rename a tag globally. Emits one parent + N child audit events."""
     res = TransactionService(get_database()).rename_tag(old_tag, new_tag, actor="mcp")
@@ -230,7 +235,7 @@ def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def transactions_splits_set(
     transaction_id: str, splits: list[dict[str, Any]]
 ) -> ResponseEnvelope:
@@ -249,7 +254,7 @@ def transactions_splits_set(
     )
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool(sensitivity="medium", read_only=False)
 def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope:
     """Declarative target-state for an import's labels.
 
@@ -302,51 +307,62 @@ def register_curation_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_create,
         "transactions_create",
-        "Bulk-create 1..100 manual transactions atomically under one import_id.",
+        "Create 1..100 manual transactions atomically under one import_id. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Amounts are in the currency named by `summary.display_currency`. "
+        "Writes raw.manual_transactions; revert with `moneybin import revert <import_id>`.",
     )
     register(
         mcp,
         transactions_notes_add,
         "transactions_notes_add",
-        "Append a note to a transaction.",
+        "Append a note to a transaction. Writes app.transaction_notes; "
+        "revert with transactions_notes_delete (hard-delete).",
     )
     register(
         mcp,
         transactions_notes_edit,
         "transactions_notes_edit",
-        "Update an existing note's text.",
+        "Update an existing note's text. Writes app.transaction_notes; "
+        "every edit is captured in app.audit_log.",
     )
     register(
         mcp,
         transactions_notes_delete,
         "transactions_notes_delete",
-        "Delete a note by ID.",
+        "Delete a note by ID. Hard-deletes from app.transaction_notes — permanent, "
+        "no revert; re-create with transactions_notes_add.",
     )
     register(
         mcp,
         transactions_tags_set,
         "transactions_tags_set",
         "Declarative target-state: replace a transaction's tag set; "
-        "emits per-tag audit events for the diff.",
+        "emits per-tag audit events for the diff. Writes app.transaction_tags; "
+        "revert by calling again with the prior tag list (diff captured in app.audit_log).",
     )
     register(
         mcp,
         transactions_tags_rename,
         "transactions_tags_rename",
-        "Rename a tag globally; emits one parent + per-row child audit events.",
+        "Rename a tag globally; emits one parent + per-row child audit events. "
+        "Writes app.transaction_tags; revert by calling with old_tag and new_tag swapped.",
     )
     register(
         mcp,
         transactions_splits_set,
         "transactions_splits_set",
-        "Declarative replace: set a transaction's splits; emits clear + per-split events.",
+        "Declarative replace: set a transaction's splits; emits clear + per-split events. "
+        "Amounts are in the currency named by `summary.display_currency`. "
+        "Writes app.transaction_splits; revert by calling again with the prior split sequence.",
     )
     register(
         mcp,
         import_labels_set,
         "import_labels_set",
         "Declarative target-state: replace an import's labels; "
-        "emits per-label add/remove audit events.",
+        "emits per-label add/remove audit events. Writes app.imports.labels; "
+        "revert by calling again with the prior label list (diff captured in app.audit_log).",
     )
     register(
         mcp,
