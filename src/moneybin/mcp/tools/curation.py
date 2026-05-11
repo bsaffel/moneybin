@@ -188,7 +188,7 @@ def transactions_notes_add(transaction_id: str, text: str) -> ResponseEnvelope:
     return build_envelope(data=_note_dict(note), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
+@mcp_tool(sensitivity="medium", read_only=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope:
     """Update an existing note's text. Returns the updated row."""
     note = TransactionService(get_database()).edit_note(note_id, text, actor="mcp")
@@ -225,7 +225,7 @@ def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvel
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
+@mcp_tool(sensitivity="medium", read_only=False)
 def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
     """Rename a tag globally. Emits one parent + N child audit events."""
     res = TransactionService(get_database()).rename_tag(old_tag, new_tag, actor="mcp")
@@ -235,7 +235,7 @@ def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
+@mcp_tool(sensitivity="medium", read_only=False)
 def transactions_splits_set(
     transaction_id: str, splits: list[dict[str, Any]]
 ) -> ResponseEnvelope:

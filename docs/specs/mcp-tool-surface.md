@@ -201,7 +201,7 @@ Audit pass required against the current tool surface; no new tool ships without 
 Tools that accept list-typed parameters obey a server-enforced upper bound on each list's length. The analog for reads is `MoneyBinSettings.mcp.max_rows` (default 1000); list inputs get a parallel cap that prevents unbounded write batches and oversized query inputs alike.
 
 - **Setting:** `MoneyBinSettings.mcp.max_items` (default 500). Read at call time so test monkeypatching works.
-- **Mechanism:** at decoration time, `@mcp_tool` walks `inspect.signature(fn).parameters` and records every parameter annotated as `list[X]` / `Sequence[X]` / `Collection[X]`. At call time, each such parameter's length is checked against the cap before the tool body runs.
+- **Mechanism:** at decoration time, `@mcp_tool` walks `inspect.signature(fn).parameters` and records every parameter annotated as `list[X]` / `Sequence[X]` / `tuple[X, ...]`. At call time, each such parameter's length is checked against the cap before the tool body runs. `Collection`/`dict`/`set` are deliberately excluded — `len()` on a dict returns key-count, not item-count, so cap-checking them would surface confusing `too_many_items` errors.
 - **Per-tool override:** `@mcp_tool(..., max_items=N)` sets a tool-specific cap. `max_items=None` disables the cap entirely (must be justified in the docstring). Default is to inherit from `MCPSettings.max_items`.
 - **Error path:** exceeding the cap on any list parameter returns `ResponseEnvelope.error` with `code="too_many_items"` and `details={"limit": <cap>, "received": <N>, "parameter": <name>}`; never partial-success. The agent's retry logic uses `details.parameter` to know which list to chunk.
 - **Empty lists** are not a cap violation. Tools that need to reject empty input handle that themselves (an empty list is sometimes a meaningful query, e.g., "no filters").
@@ -803,9 +803,13 @@ Create one or more categorization rules.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** `rules: list[object]` (required) — list of `{name, merchant_pattern, category, subcategory?, match_type?, min_amount?, max_amount?, account_id?, priority?}`.
-- **Behavior:** Validates patterns and categories. Returns `{created, skipped, errors, error_details}`.
-- **Service:** `CategorizationService.create_rules() -> CreateResult`
+- **Behavior:** Idempotent. Each item is deduped against active rules by the matcher+output tuple — `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`. `name` and `priority` are metadata and excluded from the dedup key, so renaming a rule or shuffling priorities does not create a new row. If an active rule with the same key exists, the existing `rule_id` is returned. Returns `{created, existing, skipped, errors, error_details, rule_ids}`.
+- **Service:** `CategorizationService.create_rules() -> RuleCreationResult`
 - **CLI:** `moneybin transactions categorize rules create --file rules.json`
+
+#### Rule-conflict detection (follow-up)
+
+Same matcher with a *divergent* category output — e.g. one active rule `AMZN → Shopping` and a new request `AMZN → Business` — is currently treated as a brand-new rule, not a conflict. Both rules coexist; whichever has lower `priority` fires first. A future iteration should detect this case at write time and let the caller pick: keep both (current behavior), supersede the older rule, or refuse the write. Tracked as a deferred follow-up because the right resolution UX is unclear and depends on the categorization workflow's overall ergonomics.
 
 ### `transactions_categorize_rule_delete`
 

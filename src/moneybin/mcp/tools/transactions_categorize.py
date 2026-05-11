@@ -90,7 +90,7 @@ def transactions_categorize_pending_list(
     )
 
 
-@mcp_tool(sensitivity="medium", domain="categorize", read_only=False, idempotent=False)
+@mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
 def transactions_categorize_apply(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
@@ -117,7 +117,7 @@ def transactions_categorize_apply(
     return result.to_envelope(len(items))
 
 
-@mcp_tool(sensitivity="low", domain="categorize", read_only=False, idempotent=False)
+@mcp_tool(sensitivity="low", domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
 ) -> ResponseEnvelope:
@@ -239,7 +239,10 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         transactions_categorize_rules_create,
         "transactions_categorize_rules_create",
         "Create multiple categorization rules for automatic "
-        "transaction categorization. "
+        "transaction categorization. Idempotent: rules are deduped against "
+        "active rules by matcher+output (merchant_pattern, match_type, "
+        "min/max_amount, account_id, category, subcategory); name and "
+        "priority are metadata. Retries return the existing rule_id. "
         "Writes app.categorization_rules; revert with transactions_categorize_rule_delete (soft-delete sets active=False).",
     )
     register(

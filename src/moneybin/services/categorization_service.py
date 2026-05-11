@@ -161,6 +161,7 @@ class RuleCreationResult:
     """Typed result for CategorizationService.create_rules."""
 
     created: int
+    existing: int
     skipped: int
     error_details: list[dict[str, str]]
     rule_ids: list[str]
@@ -170,6 +171,7 @@ class RuleCreationResult:
         return build_envelope(
             data={
                 "created": self.created,
+                "existing": self.existing,
                 "skipped": self.skipped,
                 "rule_ids": self.rule_ids,
                 "error_details": self.error_details,
@@ -616,22 +618,64 @@ class CategorizationService:
     def create_rules(
         self, items: Sequence[CategorizationRuleInput]
     ) -> RuleCreationResult:
-        """Create multiple categorization rules in one call.
+        """Create multiple categorization rules in one call (idempotent).
 
-        Each item is INSERTed into ``app.categorization_rules`` with a fresh
-        12-char UUID hex ``rule_id``, ``is_active=true``, and
-        ``created_by='ai'``. Per-row insertion failures are caught so a
-        single bad row does not abort the batch — they appear in
-        ``error_details``.
+        For each item, looks up an active rule with the same matcher and
+        output (``merchant_pattern``, ``match_type``, ``min_amount``,
+        ``max_amount``, ``account_id``, ``category``, ``subcategory``);
+        ``name`` and ``priority`` are treated as metadata and excluded
+        from the dedup key. If found, returns the existing ``rule_id``
+        and bumps the ``existing`` counter; otherwise INSERTs a fresh
+        12-char UUID hex ``rule_id`` with ``is_active=true`` and
+        ``created_by='ai'``.
+
+        Same matcher with a *different* category output is currently
+        treated as a new rule, not a conflict — see
+        ``docs/specs/mcp-tool-surface.md`` "Rule-conflict detection
+        (follow-up)" for the deferred conflict-resolution work.
+
+        Per-row insertion failures are caught so a single bad row does
+        not abort the batch — they appear in ``error_details``.
         """
         created = 0
+        existing = 0
         skipped = 0
         error_details: list[dict[str, str]] = []
         rule_ids: list[str] = []
 
         for item in items:
-            rule_id = uuid.uuid4().hex[:12]
             try:
+                # DuckDB IS NOT DISTINCT FROM treats NULL = NULL as true,
+                # so optional fields (min/max_amount, account_id, subcategory)
+                # match on NULL across calls.
+                found = self._db.execute(
+                    f"""
+                    SELECT rule_id FROM {CATEGORIZATION_RULES.full_name}
+                    WHERE is_active = true
+                      AND merchant_pattern = ?
+                      AND match_type = ?
+                      AND min_amount IS NOT DISTINCT FROM ?
+                      AND max_amount IS NOT DISTINCT FROM ?
+                      AND account_id IS NOT DISTINCT FROM ?
+                      AND category = ?
+                      AND subcategory IS NOT DISTINCT FROM ?
+                    LIMIT 1
+                    """,  # noqa: S608  # TableRef constant, no user input interpolated
+                    [
+                        item.merchant_pattern,
+                        item.match_type,
+                        item.min_amount,
+                        item.max_amount,
+                        item.account_id,
+                        item.category,
+                        item.subcategory,
+                    ],
+                ).fetchone()
+                if found is not None:
+                    existing += 1
+                    rule_ids.append(found[0])
+                    continue
+                rule_id = uuid.uuid4().hex[:12]
                 self._db.execute(
                     f"""
                     INSERT INTO {CATEGORIZATION_RULES.full_name}
@@ -667,6 +711,7 @@ class CategorizationService:
 
         return RuleCreationResult(
             created=created,
+            existing=existing,
             skipped=skipped,
             error_details=error_details,
             rule_ids=rule_ids,
