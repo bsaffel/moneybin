@@ -33,10 +33,14 @@ def categorize_export_uncategorized(
 ) -> None:
     """Export uncategorized transactions as redacted JSON for LLM review.
 
-    Output is a JSON array of objects with transaction_id, description_redacted,
-    and source_type — no amounts, dates, or account identifiers. Feed the
-    output to an LLM, fill in category/subcategory, then pipe back through
-    ``moneybin transactions categorize apply-from-file``.
+    Output is a JSON array of objects with the full ``RedactedTransaction``
+    shape — ``transaction_id``, ``description_redacted``, ``memo_redacted``,
+    ``source_type``, plus structural signals (``transaction_type``,
+    ``check_number``, ``is_transfer``, ``transfer_pair_id``,
+    ``payment_channel``, ``amount_sign``). No amounts, dates, or account
+    identifiers. Feed the output to an LLM, fill in category/subcategory,
+    then pipe back through ``moneybin transactions categorize apply-from-file``
+    (extra export keys are stripped at the apply boundary).
     """
     from moneybin.config import get_settings
     from moneybin.mcp.privacy import audit_log
@@ -70,7 +74,14 @@ def categorize_export_uncategorized(
         {
             "transaction_id": row.transaction_id,
             "description_redacted": row.description_redacted,
+            "memo_redacted": row.memo_redacted,
             "source_type": row.source_type,
+            "transaction_type": row.transaction_type,
+            "check_number": row.check_number,
+            "is_transfer": row.is_transfer,
+            "transfer_pair_id": row.transfer_pair_id,
+            "payment_channel": row.payment_channel,
+            "amount_sign": row.amount_sign,
         }
         for row in rows
     ]

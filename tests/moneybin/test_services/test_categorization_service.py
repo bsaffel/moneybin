@@ -17,6 +17,7 @@ from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
     BulkCategorizationItem,
     CategorizationService,
+    _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
     score_match_shape,
 )
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
@@ -177,6 +178,30 @@ def test_score_match_shape_unknown_returns_zero() -> None:
     """An unknown match type defaults to lowest specificity (forward-compat)."""
     assert score_match_shape("nonexistent_type") == 0
     assert score_match_shape("") == 0
+
+
+# ---------------------------------------------------------------------------
+# amount_sign labelling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_amount_sign_label_signs_real_amounts() -> None:
+    assert _amount_sign_label(-12.34) == "-"
+    assert _amount_sign_label(12.34) == "+"
+
+
+@pytest.mark.unit
+def test_amount_sign_label_zero_and_null_collapse_to_zero() -> None:
+    """Zero and NULL must surface as ``"0"`` — not ``"+"``.
+
+    Defaulting to ``"+"`` biases the LLM toward income-side categories on
+    balance adjustments, voided rows, and rows with missing amounts (which
+    are neither income nor expense).
+    """
+    assert _amount_sign_label(0) == "0"
+    assert _amount_sign_label(0.0) == "0"
+    assert _amount_sign_label(None) == "0"
 
 
 # ---------------------------------------------------------------------------

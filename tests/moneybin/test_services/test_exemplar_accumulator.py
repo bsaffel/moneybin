@@ -151,3 +151,53 @@ def test_append_exemplar_is_idempotent(real_db: Database) -> None:
     ).fetchall()
     assert len(rows) == 1
     assert len(rows[0][0]) == 1  # deduped via list_distinct
+
+
+def test_canonical_name_collision_with_different_category_does_not_merge(
+    real_db: Database,
+) -> None:
+    """Two oneOf merchants can share a canonical name across categories.
+
+    Without category/subcategory filtering, a second AMAZON row categorized
+    as Shopping would append its exemplar to the existing Subscriptions
+    AMAZON merchant — cross-polluting future matches. The lookup must
+    co-filter by (canonical_name, category, subcategory) so each category
+    gets its own merchant row and its own exemplar set.
+    """
+    _seed_txn(real_db, "t1", "AMZN GROCERY")
+    _seed_txn(real_db, "t2", "AMZN PRIME VIDEO")
+    svc = CategorizationService(real_db)
+
+    svc.bulk_categorize([
+        BulkCategorizationItem(
+            transaction_id="t1",
+            category="Shopping",
+            subcategory="Online",
+            canonical_merchant_name="Amazon",
+        ),
+    ])
+    svc.bulk_categorize([
+        BulkCategorizationItem(
+            transaction_id="t2",
+            category="Subscriptions",
+            subcategory="Streaming",
+            canonical_merchant_name="Amazon",
+        ),
+    ])
+
+    rows = real_db.execute(
+        "SELECT canonical_name, category, subcategory, exemplars "
+        "FROM app.user_merchants WHERE canonical_name = 'Amazon' "
+        "ORDER BY category"
+    ).fetchall()
+    # Two distinct Amazon merchants, one per category — not one merchant
+    # with both exemplars merged.
+    assert len(rows) == 2
+    shopping = next(r for r in rows if r[1] == "Shopping")
+    streaming = next(r for r in rows if r[1] == "Subscriptions")
+    assert shopping[2] == "Online"
+    assert streaming[2] == "Streaming"
+    assert len(shopping[3]) == 1
+    assert len(streaming[3]) == 1
+    assert "AMZN GROCERY" in shopping[3][0]
+    assert "AMZN PRIME VIDEO" in streaming[3][0]

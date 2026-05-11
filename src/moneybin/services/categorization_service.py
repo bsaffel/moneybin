@@ -228,7 +228,19 @@ class RedactedTransaction:
     is_transfer: bool
     transfer_pair_id: str | None
     payment_channel: str | None
-    amount_sign: Literal["+", "-"]
+    amount_sign: Literal["+", "-", "0"]
+
+
+def _amount_sign_label(amount: float | None) -> Literal["+", "-", "0"]:
+    """Map a raw amount to the LLM-facing sign signal.
+
+    ``"0"`` covers both ``NULL`` (defective import) and zero amount (balance
+    adjustments, voided rows). Mapping both to ``"+"`` biases the LLM toward
+    income-side categories on rows that are neither income nor expense.
+    """
+    if amount is None or amount == 0:
+        return "0"
+    return "-" if amount < 0 else "+"
 
 
 @dataclass(slots=True)
@@ -893,26 +905,45 @@ class CategorizationService:
             self.categorize_pending()
         return merchant_id
 
-    def _find_merchant_by_canonical_name(self, canonical_name: str) -> str | None:
-        """Return ``merchant_id`` for the oneOf merchant with this canonical name, or None.
+    def _find_merchant_by_canonical_name(
+        self,
+        canonical_name: str,
+        *,
+        category: str,
+        subcategory: str | None,
+    ) -> str | None:
+        """Return ``merchant_id`` for the oneOf merchant with this canonical name + category, or None.
 
         Used by the exemplar accumulator to detect whether a previously-created
         merchant should grow its exemplar set instead of spawning a duplicate.
 
         Filters on ``match_type='oneOf'`` because exemplars are only consulted
         for oneOf merchants (see :func:`_match_exemplar`); appending an
-        exemplar to a contains/exact/regex merchant is dead data. When a
-        canonical name collides with a pattern-typed merchant, the caller
-        creates a new oneOf merchant alongside it — the two coexist, each
-        doing its own job.
+        exemplar to a contains/exact/regex merchant is dead data. Also filters
+        on ``category``/``subcategory``: two ``oneOf`` merchants can legitimately
+        share a canonical name (e.g. an Amazon merchant mapped to ``Shopping``
+        and another mapped to ``Groceries``); merging exemplars across them
+        would cross-pollinate categorization. When the canonical name collides
+        with a different-category merchant, the caller creates a new oneOf
+        merchant alongside it — the two coexist, each doing its own job.
         """
         try:
-            row = self._db.execute(
-                f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
-                "WHERE canonical_name = ? AND match_type = 'oneOf' "
-                "LIMIT 1",  # noqa: S608  # TableRef constant
-                [canonical_name],
-            ).fetchone()
+            if subcategory is None:
+                row = self._db.execute(
+                    f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
+                    "WHERE canonical_name = ? AND match_type = 'oneOf' "
+                    "AND category = ? AND subcategory IS NULL "
+                    "LIMIT 1",  # noqa: S608  # TableRef constant
+                    [canonical_name, category],
+                ).fetchone()
+            else:
+                row = self._db.execute(
+                    f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
+                    "WHERE canonical_name = ? AND match_type = 'oneOf' "
+                    "AND category = ? AND subcategory = ? "
+                    "LIMIT 1",  # noqa: S608  # TableRef constant
+                    [canonical_name, category, subcategory],
+                ).fetchone()
         except duckdb.CatalogException:
             return None
         return row[0] if row else None
@@ -1169,7 +1200,19 @@ class CategorizationService:
             ``WriteOutcome.written=True`` if the write took effect (insert or
             permitted update); ``False`` with ``skipped_reason='lower_priority_source'``
             if a higher-priority categorization already exists.
+
+        Raises:
+            ValueError: if ``categorized_by`` is not in :data:`_SOURCE_PRIORITY`.
+                The generated SQL CASE has no ELSE branch (see
+                :func:`_priority_case_sql`), so an unknown source would silently
+                resolve to NULL priority and never overwrite — fail loudly
+                instead of letting a typo masquerade as a precedence skip.
         """
+        if categorized_by not in _SOURCE_PRIORITY:
+            raise ValueError(
+                f"Unknown categorized_by={categorized_by!r}; "
+                f"must be one of {sorted(_SOURCE_PRIORITY)}"
+            )
         # The SQL CASE expression is generated from _SOURCE_PRIORITY so the
         # ladder lives in exactly one place. See _priority_case_sql.
         existing_table = TRANSACTION_CATEGORIES.full_name
@@ -1481,7 +1524,9 @@ class CategorizationService:
                     try:
                         canonical_name = item.canonical_merchant_name or match_text
                         existing_id = self._find_merchant_by_canonical_name(
-                            canonical_name
+                            canonical_name,
+                            category=category,
+                            subcategory=subcategory,
                         )
                         if existing_id is not None:
                             self._append_exemplar(existing_id, match_text)
@@ -2145,7 +2190,7 @@ class CategorizationService:
                     is_transfer=bool(row[6]),
                     transfer_pair_id=row[7],
                     payment_channel=row[8],
-                    amount_sign="-" if (row[9] is not None and row[9] < 0) else "+",
+                    amount_sign=_amount_sign_label(row[9]),
                 )
                 for row in rows
             ]
