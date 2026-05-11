@@ -220,6 +220,30 @@ def test_find_list_params_str_not_a_list() -> None:
 
 
 @pytest.mark.unit
+def test_find_list_params_dict_set_not_lists() -> None:
+    """dict/set/frozenset are Collection but not Sequence — must not be cap-checked.
+
+    len(dict) returns key-count, not item-count, so applying the collection
+    cap to a dict-typed param surfaces confusing too_many_items errors.
+    Real callers: system_audit_list(filters: dict[...]),
+    transactions_categorize_assist(date_range: dict[...]).
+    """
+    from typing import Any
+
+    from moneybin.mcp.decorator import (
+        _find_list_params,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    def fn_dict(filters: dict[str, Any] | None = None) -> None: ...
+    def fn_set(values: set[str]) -> None: ...
+    def fn_frozenset(values: frozenset[str]) -> None: ...
+
+    assert _find_list_params(fn_dict) == []
+    assert _find_list_params(fn_set) == []
+    assert _find_list_params(fn_frozenset) == []
+
+
+@pytest.mark.unit
 def test_mcp_tool_explicit_annotations() -> None:
     """Explicit kwargs override defaults."""
 

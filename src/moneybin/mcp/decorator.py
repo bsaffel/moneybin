@@ -100,14 +100,17 @@ def _check_collection_caps(
 
 
 def _find_list_params(fn: Callable[..., Any]) -> list[str]:
-    """Return parameter names whose annotation is a list/Sequence/Collection.
+    """Return parameter names whose annotation is a list/tuple/Sequence.
 
-    Strings are excluded — ``str`` is technically a ``Sequence[str]``, but
-    list-cap semantics don't apply to it. ``X | None`` (Optional) annotations
-    are unwrapped before inspection.
+    Restricted to ``Sequence`` so that ``dict``/``set``/``frozenset`` —
+    which are ``Collection`` but not ``Sequence`` — are not treated as
+    list-capped. ``len()`` on a dict counts keys, not items, which would
+    surface confusing ``too_many_items`` errors. ``str``/``bytes`` are
+    also excluded (technically ``Sequence`` but list-cap semantics don't
+    apply). ``X | None`` (Optional) annotations are unwrapped first.
     """
     import typing
-    from collections.abc import Collection, Sequence
+    from collections.abc import Sequence
 
     sig = inspect.signature(fn)
     try:
@@ -131,8 +134,8 @@ def _find_list_params(fn: Callable[..., Any]) -> list[str]:
         # str/bytes are explicitly excluded.
         if annotation is str or annotation is bytes:
             continue
-        # Direct origin match (covers list[X], Sequence[X], Collection[X], tuple[X, ...]).
-        if origin in (list, tuple, Sequence, Collection):
+        # Direct origin match (covers list[X], Sequence[X], tuple[X, ...]).
+        if origin in (list, tuple, Sequence):
             list_params.append(param_name)
             continue
         # Bare list/tuple type without subscript.
@@ -152,7 +155,7 @@ def _find_list_params(fn: Callable[..., Any]) -> list[str]:
             origin_type = cast(type, origin)
             try:
                 if origin_type not in (str, bytes) and issubclass(
-                    origin_type, (Sequence, Collection)
+                    origin_type, Sequence
                 ):
                     list_params.append(param_name)
             except TypeError:
