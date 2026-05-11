@@ -117,7 +117,7 @@ def transactions_categorize_apply(
     return result.to_envelope(len(items))
 
 
-@mcp_tool(sensitivity="low", domain="categorize", read_only=False)
+@mcp_tool(sensitivity="low", domain="categorize", read_only=False, idempotent=False)
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
 ) -> ResponseEnvelope:

@@ -188,7 +188,7 @@ def transactions_notes_add(transaction_id: str, text: str) -> ResponseEnvelope:
     return build_envelope(data=_note_dict(note), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope:
     """Update an existing note's text. Returns the updated row."""
     note = TransactionService(get_database()).edit_note(note_id, text, actor="mcp")
