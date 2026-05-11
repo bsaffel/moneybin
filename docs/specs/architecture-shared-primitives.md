@@ -382,21 +382,13 @@ gates:
 
 These are deliberately *not* decided here. Listed so the next contributor knows what's hanging and what would force the conversation.
 
-### (a) When does an out-of-process writer become unavoidable?
+### (a) Writer coordination — settled by ADR-010
 
-DuckDB single-writer is the most consequential architectural constraint. It's currently honored: one process per profile, all writes serialized through one `Database`. The strategic review (§(b)) flagged this as an M2 issue — Plaid's daily background sync would naturally want to be a separate process while MCP is up — but the writer-coordination ADR was descoped. The trigger conditions that would re-open it:
+**This question is answered.** `web-ui-prototype.md` (FastAPI mutations) and `sync-plaid.md` (out-of-process batch writer) both triggered the condition. See [ADR-010: Writer Coordination](../decisions/010-writer-coordination.md) for the full decision record.
 
-- A separate-process **read-write** consumer is required (not read-only). Examples: a long-lived FastAPI server with mutating endpoints; a Plaid daemon that runs unattended outside the MCP server's process.
-- Hosted multi-tenant operation requires more than one writer per profile.
-- Two CLI invocations from the same user need to write concurrently more than occasionally.
+**Decision summary:** Replace the long-lived read-write singleton with short-lived, purpose-declared connections. `Database` gains a `read_only: bool = False` parameter. Read-only connections skip `init_schemas()` and `refresh_views()` (~14 ms overhead) and can coexist across any number of processes. Write connections are exclusive (~79 ms overhead) and acquired with an exponential-backoff retry up to 5 seconds. No IPC layer, no socket server, no dedicated daemon — each process is self-contained.
 
-Until then, the single-writer constraint holds. A separate-process **read-only** consumer (e.g., a `streamlit run` dashboard) only requires adding a `read_only=True` option to `Database.__init__()` — additive, not a coordination problem.
-
-When the trigger fires, the design space (per strategic review §(b) "Migration paths"):
-
-- Reader-writer separation: writes serialized through a `WriterQueue` with one connection.
-- Out-of-process writer with IPC via `ATTACH` of a write-only journal DB merged on demand.
-- MotherDuck or PG canonical with DuckDB as a read replica (hosted-only).
+The IPC socket-server pattern (first process becomes the write gateway for all others) is named in ADR-010 as the upgrade path if write contention becomes operationally noisy at higher access rates.
 
 ### (b) Multi-currency interaction with `reports.*`
 
