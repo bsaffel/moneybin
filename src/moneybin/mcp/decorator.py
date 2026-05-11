@@ -111,6 +111,7 @@ def _find_list_params(fn: Callable[..., Any]) -> list[str]:
     """
     import typing
     from collections.abc import Sequence
+    from types import UnionType
 
     sig = inspect.signature(fn)
     try:
@@ -125,8 +126,7 @@ def _find_list_params(fn: Callable[..., Any]) -> list[str]:
             continue
         # Unwrap Optional[X] / X | None.
         origin = typing.get_origin(annotation)
-        union_origin = type(int | str)
-        if origin is typing.Union or origin is union_origin:
+        if origin is typing.Union or origin is UnionType:
             args = [a for a in typing.get_args(annotation) if a is not type(None)]
             if len(args) == 1:
                 annotation = args[0]

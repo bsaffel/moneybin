@@ -337,7 +337,7 @@ def accounts_balance_assert(
     return build_envelope(data=result.to_dict(), sensitivity="medium")
 
 
-@mcp_tool(sensitivity="medium", read_only=False, destructive=True, idempotent=False)
+@mcp_tool(sensitivity="medium", read_only=False, destructive=True)
 def accounts_balance_assertion_delete(
     account_id: str,
     assertion_date: str,
@@ -384,7 +384,7 @@ def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
     actions: list[str] = []
     if not matches:
         actions.append(
-            f"No accounts matched '{query}'. Try a broader query or use accounts_list."
+            "No accounts matched the query. Try a broader query or use accounts_list."
         )
     elif matches[0].confidence < threshold:
         actions.append(
