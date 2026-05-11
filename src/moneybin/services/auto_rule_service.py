@@ -20,7 +20,7 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
-from moneybin.services._text import normalize_description
+from moneybin.services._text import build_match_inputs, normalize_description
 from moneybin.services.categorization_service import (
     CategorizationService,
     matches_pattern,
@@ -90,6 +90,7 @@ class TxnRow:
     description: str | None
     amount: float | None
     account_id: str | None
+    memo: str | None = None
     source_type: str | None = None
 
 
@@ -117,6 +118,11 @@ class BulkRecordingContext:
         row = self.txn_rows.get(transaction_id)
         return row.description if row else None
 
+    def memo_for(self, transaction_id: str) -> str | None:
+        """Return the memo for the given transaction_id, or None if not loaded."""
+        row = self.txn_rows.get(transaction_id)
+        return row.memo if row else None
+
     def merchant_row_for(self, merchant_id: str) -> tuple[Any, ...] | None:
         """Return the cached merchant tuple for the given merchant_id, or None."""
         for merchant in self.merchant_mappings:
@@ -125,11 +131,21 @@ class BulkRecordingContext:
         return None
 
     def register_new_merchant(self, merchant_row: tuple[Any, ...]) -> None:
-        """Insert at the canonical match-order position (before the first regex)."""
-        insert_at = next(
-            (i for i, m in enumerate(self.merchant_mappings) if m[2] == "regex"),
-            len(self.merchant_mappings),
-        )
+        """Insert at the canonical match-order position (before the first regex).
+
+        Preserves the ordering from ``_fetch_merchants``
+        (oneOf → exact → contains → regex). Exemplar-only merchants are
+        inserted at the front so they fire before pattern-based shapes for
+        subsequent items in the same bulk batch.
+        """
+        match_type = merchant_row[2] if len(merchant_row) > 2 else None
+        if match_type == "oneOf":
+            insert_at = 0
+        else:
+            insert_at = next(
+                (i for i, m in enumerate(self.merchant_mappings) if m[2] == "regex"),
+                len(self.merchant_mappings),
+            )
         self.merchant_mappings.insert(insert_at, merchant_row)
         self.new_merchant_count += 1
 
@@ -138,10 +154,20 @@ class BulkRecordingContext:
     ) -> bool:
         """Mirror of ``AutoRuleService._merchant_mapping_covers`` against the cached list."""
         for merchant in self.merchant_mappings:
-            _mid, raw_pattern, match_type, _canonical, m_cat, m_subcat = merchant
+            # _fetch_merchants always returns 7-tuples; exemplars (index 6) is
+            # unused here — coverage is about pattern matches, not exact-string
+            # membership.
+            raw_pattern = merchant[1]
+            match_type = merchant[2]
+            m_cat = merchant[4]
+            m_subcat = merchant[5]
             if str(m_cat) != category:
                 continue
             if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
+                continue
+            if match_type == "oneOf" or raw_pattern is None:
+                # Exemplar-only merchants cover exact match_text values rather
+                # than patterns; pattern-coverage doesn't apply.
                 continue
             if matches_pattern(
                 pattern, str(raw_pattern), str(match_type or "contains")
@@ -433,11 +459,12 @@ class AutoRuleService:
     def check_overrides(self) -> int:
         """Deactivate auto-rules with override count >= configured threshold; return number deactivated.
 
-        An override = a transaction whose description matches the auto-rule's pattern
-        but is currently categorized by 'user' with a different category. When the
-        threshold is reached we deactivate the rule, mark its source proposal superseded,
-        create a new pending proposal with the most common override category, and
-        append a row to ``app.rule_deactivations`` for the audit trail.
+        An override = a transaction whose canonical match_text (description +
+        memo, normalized) matches the auto-rule's pattern but is currently
+        categorized by 'user' with a different category. When the threshold is
+        reached we deactivate the rule, mark its source proposal superseded,
+        create a new pending proposal with the most common override category,
+        and append a row to ``app.rule_deactivations`` for the audit trail.
         """
         settings = get_settings().categorization
         threshold = settings.auto_rule_override_threshold
@@ -477,11 +504,10 @@ class AutoRuleService:
             # Excludes 'rule' and 'auto_rule' (machine-applied; counting them
             # would deactivate auto-rules due to overlapping rule engine output)
             # and predates legacy categorizations via the created_at filter.
-            # Pattern matching is done in Python via ``matches_pattern`` against
-            # both the raw and normalized description, mirroring how the rule
-            # engine itself selects rows. SQL-only matching cannot reproduce
-            # ``normalize_description`` (Python regex) and got case-sensitivity
-            # wrong on the regex branch.
+            # Pattern matching uses ``matches_pattern`` against the canonical
+            # ``match_text`` (description + memo, normalized) — same input as
+            # every other matcher per the spec's parity principle. SQL-only
+            # matching cannot reproduce ``normalize_description``.
             # Manual-source exemption: per transaction-curation spec Req 7,
             # user categorizations on manual rows do not feed auto-rule
             # training. Manual rows are user-curated by definition; using
@@ -489,13 +515,16 @@ class AutoRuleService:
             # rule-deactivation signal.
             candidate_rows = self._db.execute(
                 f"""
-                SELECT c.transaction_id, t.description, c.category, c.subcategory,
-                       c.categorized_at
+                SELECT c.transaction_id, t.description, t.memo, c.category,
+                       c.subcategory, c.categorized_at
                 FROM {TRANSACTION_CATEGORIES.full_name} c
                 JOIN {FCT_TRANSACTIONS.full_name} t ON c.transaction_id = t.transaction_id
                 WHERE c.categorized_by IN ('user', 'ai')
                   AND c.categorized_at > ?
-                  AND t.description IS NOT NULL
+                  AND (
+                    (t.description IS NOT NULL AND t.description != '')
+                    OR (t.memo IS NOT NULL AND t.memo != '')
+                  )
                   AND t.source_type != 'manual'
                   AND (
                     c.category != ?
@@ -506,13 +535,14 @@ class AutoRuleService:
                 [rule_created_at, rule_category, rule_subcategory],
             ).fetchall()
             buckets: dict[tuple[str, str | None], list[str]] = {}
-            for txn_id, description, c_cat, c_subcat, _at in candidate_rows:
-                desc = str(description)
-                if not (
-                    matches_pattern(desc, pattern, rule_match_type)
-                    or matches_pattern(
-                        normalize_description(desc), pattern, rule_match_type
-                    )
+            for txn_id, description, memo, c_cat, c_subcat, _at in candidate_rows:
+                match_text, norm_desc, norm_memo = build_match_inputs(
+                    str(description) if description else None,
+                    str(memo) if memo else None,
+                )
+                candidates = [t for t in (match_text, norm_desc, norm_memo) if t]
+                if not any(
+                    matches_pattern(c, pattern, rule_match_type) for c in candidates
                 ):
                     continue
                 key = (str(c_cat), c_subcat if c_subcat is None else str(c_subcat))
@@ -775,18 +805,24 @@ class AutoRuleService:
 
         if context is not None:
             description = context.description_for(transaction_id)
+            memo = context.memo_for(transaction_id)
         else:
             desc_row = self._db.execute(
-                f"SELECT description FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
+                f"SELECT description, memo FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",
                 [transaction_id],
             ).fetchone()
             description = str(desc_row[0]) if desc_row and desc_row[0] else None
-        if not description:
-            return None
-        cleaned = normalize_description(description)
-        if not cleaned:
-            return None
-        return cleaned, "contains"
+            memo = str(desc_row[1]) if desc_row and desc_row[1] else None
+        # Description is the preferred pattern source — it carries the merchant
+        # identity for most sources. Memo is the fallback for OFX-style rows
+        # where the merchant name is wrapped into the memo field.
+        cleaned_desc = normalize_description(description) if description else ""
+        if cleaned_desc:
+            return cleaned_desc, "contains"
+        cleaned_memo = normalize_description(memo) if memo else ""
+        if cleaned_memo:
+            return cleaned_memo, "contains"
+        return None
 
     def _active_rule_covers_transaction(
         self,
@@ -808,7 +844,12 @@ class AutoRuleService:
         rules_override = context.active_rules if context is not None else None
         txn_row = context.txn_row_for(transaction_id) if context is not None else None
         txn_row_override = (
-            (txn_row.description or "", txn_row.amount, txn_row.account_id)
+            (
+                txn_row.description or "",
+                txn_row.amount,
+                txn_row.account_id,
+                txn_row.memo,
+            )
             if txn_row is not None
             else None
         )
@@ -857,6 +898,9 @@ class AutoRuleService:
                 continue
             if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
                 continue
+            if raw_pattern is None or m_type == "oneOf":
+                # Exemplar-only merchants don't participate in pattern coverage.
+                continue
             if matches_pattern(pattern, str(raw_pattern), str(m_type or "contains")):
                 return True
         return False
@@ -899,36 +943,41 @@ class AutoRuleService:
         scan_cap = get_settings().categorization.auto_rule_backfill_scan_cap
         rows = self._db.execute(
             f"""
-            SELECT t.transaction_id, t.description, t.amount, t.account_id
+            SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
             FROM {FCT_TRANSACTIONS.full_name} t
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c ON t.transaction_id = c.transaction_id
             WHERE c.transaction_id IS NULL
-              AND t.description IS NOT NULL
+              AND (t.description IS NOT NULL OR t.memo IS NOT NULL)
             ORDER BY t.transaction_id
             LIMIT ?
             """,
             [scan_cap],
         ).fetchall()
-        matched_ids: list[str] = []
-        for txn_id, description, amount, account_id in rows:
+        # Route every write through write_categorization so the source-priority
+        # guard (categorization-matching-mechanics.md §Source precedence) fires
+        # on the auto-rule backfill path; a direct INSERT would let auto_rule
+        # silently overwrite a higher-priority existing categorization.
+        applied = 0
+        for txn_id, description, amount, account_id, memo in rows:
             winner = CategorizationService.match_first_rule(
                 active_rules,
-                str(description),
+                str(description) if description else "",
                 float(amount) if amount is not None else None,
                 str(account_id) if account_id is not None else None,
+                str(memo) if memo else None,
             )
             if winner is None:
                 continue
-            if winner[0] == rule_id:
-                matched_ids.append(str(txn_id))
-        if not matched_ids:
-            return 0
-        self._db.executemany(
-            f"""
-            INSERT OR IGNORE INTO {TRANSACTION_CATEGORIES.full_name}
-            (transaction_id, category, subcategory, categorized_at, categorized_by, rule_id, confidence)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'auto_rule', ?, 1.0)
-            """,
-            [[mid, category, subcategory, rule_id] for mid in matched_ids],
-        )
-        return len(matched_ids)
+            if winner[0] != rule_id:
+                continue
+            outcome = self._categorization.write_categorization(
+                transaction_id=str(txn_id),
+                category=category,
+                subcategory=subcategory,
+                categorized_by="auto_rule",
+                rule_id=rule_id,
+                confidence=1.0,
+            )
+            if outcome.written:
+                applied += 1
+        return applied

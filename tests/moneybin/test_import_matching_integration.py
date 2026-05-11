@@ -119,7 +119,7 @@ class TestApplyCategorizationProposalSummary:
         from moneybin.services.import_service import ImportService
 
         cat = mock_cat_cls.return_value
-        cat.apply_deterministic.return_value = {
+        cat.categorize_pending.return_value = {
             "total": 5,
             "merchant": 3,
             "rule": 2,
@@ -151,7 +151,7 @@ class TestApplyCategorizationProposalSummary:
         from moneybin.services.import_service import ImportService
 
         cat = mock_cat_cls.return_value
-        cat.apply_deterministic.return_value = {
+        cat.categorize_pending.return_value = {
             "total": 1,
             "merchant": 1,
             "rule": 0,

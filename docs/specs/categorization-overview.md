@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-19
 > Status: Ready — umbrella doc for the categorization initiative. Child specs listed in [Pillars](#pillars) are written separately.
-> Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: `match_text` construction, exemplar accumulation, source-precedence enforcement on write, snowball auto-apply), [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose
 
@@ -44,6 +44,8 @@ Every categorization source has a distinct `categorized_by` value for auditabili
 
 The deterministic pipeline respects this ordering — a transaction already categorized by a higher-priority source is never re-categorized by a lower one. See [`categorization-cold-start.md`](categorization-cold-start.md) for the full per-source mechanism description.
 
+**Enforcement is on write** via the `write_categorization` helper in `categorization_service.py` (see [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Source precedence). Every write to `app.transaction_categories` compares the incoming source's priority against the existing row's via an inlined `CASE` expression in an `INSERT ... ON CONFLICT ... DO UPDATE WHERE` shape — lower-priority sources cannot overwrite higher-priority assignments. The `categorized_by` column is the lock; there is no separate lock table.
+
 ## Deterministic categorization pipeline
 
 The pipeline runs automatically after every import. Source-attached categorizations (Plaid, migration imports) apply at import time before the pipeline runs. Steps 1–2 exist today. Steps 3–4 are added by this spec. The optional LLM-assist step (after the deterministic pipeline) is owned by [`categorization-cold-start.md`](categorization-cold-start.md).
@@ -69,6 +71,8 @@ flowchart TD
 ```
 
 Every step only operates on transactions not yet categorized by a higher-priority source. The pipeline is idempotent — running it twice produces the same result.
+
+**Pipeline triggers.** This pipeline runs after every import AND after every `transactions_categorize_apply` commit (the "snowball" auto-apply — see [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order). When the LLM-assist batch creates new merchants or exemplars, `categorize_pending()` fires immediately so newly-learned patterns fan out to remaining uncategorized rows in the same dataset. Source-priority enforcement keeps user manual edits safe across re-runs.
 
 ## Pillars
 

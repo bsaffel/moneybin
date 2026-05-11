@@ -1,7 +1,7 @@
 """Seed `app.merchants` from a synthetic persona's catalog data.
 
 Scenarios need merchant rules to evaluate categorization — without them
-``apply_deterministic`` finds no matches and writes zero categories. The
+``categorize_pending`` finds no matches and writes zero categories. The
 synthetic merchant catalogs already encode ``description_prefix → category``;
 this module materializes those mappings as `app.merchants` rows so the
 categorize step has something to work against.

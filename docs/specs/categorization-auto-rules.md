@@ -3,7 +3,7 @@
 > Last updated: 2026-04-26
 > Status: Implemented
 > Parent: [`categorization-overview.md`](categorization-overview.md) (pillar E)
-> Companions: [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: source-precedence enforcement on write, snowball auto-apply, `match_text` and exemplar accumulator that auto-rule writes interoperate with), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Goal
 
@@ -59,6 +59,7 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 14. Auto-rules sit at priority level 3 in the categorization hierarchy (user > user-rules > auto-rules > ML > plaid > ai). They use `categorized_by = 'auto_rule'`.
 15. Auto-rules are never evaluated for transactions already categorized by a higher-priority source.
 16. Auto-rules at `priority = 200` are evaluated after user-created rules at default `priority = 100`. Two auto-rules are ordered by their own priority values (first-created wins at equal priority).
+17. Auto-rule writes route through the `write_categorization` helper, which enforces the source-priority ladder defined in [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Source precedence. A user manual categorization (`'user'`) or user-authored rule (`'rule'`) categorization is never overwritten by an `'auto_rule'` write — the write is skipped at the SQL level, not after the fact.
 
 ## Data Model
 
@@ -141,6 +142,8 @@ The auto-rule engine hooks into the categorization service layer, which is share
 | `CategorizationService.bulk_categorize()` | Batch categorization via `transactions_categorize_bulk_apply` MCP tool or `moneybin categorize` CLI |
 
 **CLI parity:** CLI commands use the same service layer as MCP tools. Same code path, not a separate implementation.
+
+**Snowball trigger.** `categorize_pending()` (which invokes `apply_rules()` for auto-rule fan-out) is now called automatically by `bulk_categorize` after every LLM-assist commit. Newly-promoted auto-rules apply to remaining uncategorized rows in the same batch without waiting for the next import or an explicit `rules apply` invocation. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order.
 
 ### Hook logic (synchronous)
 

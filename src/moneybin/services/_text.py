@@ -135,3 +135,33 @@ def redact_for_llm(description: str) -> str:
     s = _BARE_DIGITS.sub("", s)
     s = _MULTI_SPACE.sub(" ", s).strip()
     return s
+
+
+def build_match_text(description: str | None, memo: str | None) -> str:
+    """Concatenate description and memo into the canonical matcher/LLM input.
+
+    Each side is passed through normalize_description first (deterministic;
+    same input → same output across calls). Empty or whitespace-only sides
+    are dropped along with their separator so a description-only row produces
+    just the description. The literal newline separator prevents accidental
+    cross-field token fusion (e.g. PAYPAL+INST → PAYPALINST).
+    """
+    match_text, _, _ = build_match_inputs(description, memo)
+    return match_text
+
+
+def build_match_inputs(
+    description: str | None, memo: str | None
+) -> tuple[str, str, str]:
+    """Return ``(match_text, normalized_description, normalized_memo)``.
+
+    The matcher needs both the concatenated ``match_text`` (for ``contains`` /
+    unanchored ``regex`` patterns that may span the field boundary) and the
+    individual normalized fields (for ``exact`` and anchored-``regex`` patterns
+    whose semantics break when memo is appended). Exposing both avoids
+    re-normalizing in the matcher loop.
+    """
+    norm_desc = normalize_description(description) if description else ""
+    norm_memo = normalize_description(memo) if memo else ""
+    parts = [s for s in (norm_desc, norm_memo) if s]
+    return "\n".join(parts), norm_desc, norm_memo

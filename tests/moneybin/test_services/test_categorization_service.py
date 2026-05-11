@@ -17,6 +17,8 @@ from moneybin.services._text import normalize_description
 from moneybin.services.categorization_service import (
     BulkCategorizationItem,
     CategorizationService,
+    _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
+    score_match_shape,
 )
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
@@ -26,9 +28,11 @@ def create_merchant(db: Database, *args: object, **kwargs: object) -> str:
     return CategorizationService(db).create_merchant(*args, **kwargs)  # type: ignore[arg-type]
 
 
-def match_merchant(db: Database, description: str) -> dict[str, str | None] | None:
+def match_merchant(
+    db: Database, description: str, *, memo: str | None = None
+) -> dict[str, str | None] | None:
     """Test shim — delegates to CategorizationService.match_merchant."""
-    return CategorizationService(db).match_merchant(description)
+    return CategorizationService(db).match_merchant(description, memo=memo)
 
 
 def apply_rules(db: Database) -> int:
@@ -41,9 +45,9 @@ def apply_merchant_categories(db: Database) -> int:
     return CategorizationService(db).apply_merchant_categories()
 
 
-def apply_deterministic_categorization(db: Database) -> dict[str, int]:
-    """Test shim — delegates to CategorizationService.apply_deterministic."""
-    return CategorizationService(db).apply_deterministic()
+def categorize_pending(db: Database) -> dict[str, int]:
+    """Test shim — delegates to CategorizationService.categorize_pending."""
+    return CategorizationService(db).categorize_pending()
 
 
 def get_categorization_stats(db: Database) -> dict[str, int | float]:
@@ -153,6 +157,54 @@ class TestNormalizeDescriptionGoldens:
 
 
 # ---------------------------------------------------------------------------
+# OP_SCORES specificity helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_score_match_shape_oneof_and_exact_tie_at_10() -> None:
+    assert score_match_shape("oneOf") == 10
+    assert score_match_shape("exact") == 10
+
+
+@pytest.mark.unit
+def test_score_match_shape_contains_and_regex_score_zero() -> None:
+    assert score_match_shape("contains") == 0
+    assert score_match_shape("regex") == 0
+
+
+@pytest.mark.unit
+def test_score_match_shape_unknown_returns_zero() -> None:
+    """An unknown match type defaults to lowest specificity (forward-compat)."""
+    assert score_match_shape("nonexistent_type") == 0
+    assert score_match_shape("") == 0
+
+
+# ---------------------------------------------------------------------------
+# amount_sign labelling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_amount_sign_label_signs_real_amounts() -> None:
+    assert _amount_sign_label(-12.34) == "-"
+    assert _amount_sign_label(12.34) == "+"
+
+
+@pytest.mark.unit
+def test_amount_sign_label_zero_and_null_collapse_to_zero() -> None:
+    """Zero and NULL must surface as ``"0"`` — not ``"+"``.
+
+    Defaulting to ``"+"`` biases the LLM toward income-side categories on
+    balance adjustments, voided rows, and rows with missing amounts (which
+    are neither income nor expense).
+    """
+    assert _amount_sign_label(0) == "0"
+    assert _amount_sign_label(0.0) == "0"
+    assert _amount_sign_label(None) == "0"
+
+
+# ---------------------------------------------------------------------------
 # Pattern matching
 # ---------------------------------------------------------------------------
 
@@ -239,6 +291,37 @@ class TestMatchesPattern:
         assert result is not None
         # exact match should win
         assert result["canonical_name"] == "Amazon Marketplace"
+
+    @pytest.mark.unit
+    def test_exact_matches_description_when_memo_present(self, db: Database) -> None:
+        r"""Regression: exact patterns must hit the field, not the concat.
+
+        With ``match_text = description + "\n" + memo`` an exact pattern
+        ``"STARBUCKS"`` would never equal ``"STARBUCKS\nREF123"``. The matcher
+        compares each candidate text (match_text, normalized description,
+        normalized memo) so user-authored exact patterns keep working when
+        OFX/aggregator rows carry a non-empty memo.
+        """
+        create_merchant(db, "STARBUCKS", "Starbucks", match_type="exact")
+        result = match_merchant(db, "STARBUCKS", memo="REF123")
+        assert result is not None
+        assert result["canonical_name"] == "Starbucks"
+
+    @pytest.mark.unit
+    def test_anchored_regex_matches_memo_when_description_unrelated(
+        self, db: Database
+    ) -> None:
+        """Anchored regex on memo must hit even though description differs."""
+        create_merchant(
+            db,
+            r"^GOOGLE\s+YOUTUBE$",
+            "YouTube",
+            match_type="regex",
+            category="Entertainment",
+        )
+        result = match_merchant(db, "PAYPAL INST XFER", memo="GOOGLE YOUTUBE")
+        assert result is not None
+        assert result["canonical_name"] == "YouTube"
 
 
 # ---------------------------------------------------------------------------
@@ -394,8 +477,8 @@ class TestApplyMerchantCategories:
 # ---------------------------------------------------------------------------
 
 
-class TestApplyDeterministicCategorization:
-    """Tests for the combined merchant + rules pipeline."""
+class TestCategorizePending:
+    """Tests for the combined merchant + rules pipeline (`categorize_pending`)."""
 
     @pytest.mark.unit
     def test_rules_then_merchants(self, db_with_transactions: Database) -> None:
@@ -417,7 +500,7 @@ class TestApplyDeterministicCategorization:
             VALUES ('R001', 'Amazon', 'AMZN', 'contains', 'Shopping',
                     10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """)
-        stats = apply_deterministic_categorization(db)
+        stats = categorize_pending(db)
         assert stats["merchant"] >= 1
         assert stats["rule"] >= 1
         assert stats["total"] >= 2
@@ -447,7 +530,7 @@ class TestApplyDeterministicCategorization:
             VALUES ('R001', 'Amazon Business', 'AMZN', 'contains', 'Business',
                     10, true, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """)
-        apply_deterministic_categorization(db)
+        categorize_pending(db)
         row = db.execute("""
             SELECT category FROM app.transaction_categories
             WHERE transaction_id = 'TXN003'
@@ -633,7 +716,7 @@ def test_no_public_module_level_categorization_functions() -> None:
         "ensure_seed_table",
         "get_active_categories",
         "create_merchant",
-        "apply_deterministic_categorization",
+        "categorize_pending",
     }
     leaked = {name for name in forbidden if hasattr(mod, name)}
     assert not leaked, f"These should be class methods only: {leaked}"
@@ -648,7 +731,7 @@ def test_service_exposes_consolidated_methods(real_db: Database) -> None:
     expected = {
         "bulk_categorize",
         "apply_rules",
-        "apply_deterministic",
+        "categorize_pending",
         "stats",
         "match_merchant",
         "apply_merchant_categories",
@@ -889,6 +972,61 @@ def test_bulk_categorize_dedupes_merchant_creation_within_batch(
     assert merchant_count[0] == 1
 
 
+def test_bulk_categorize_snowball_fans_out_to_siblings(real_db: Database) -> None:
+    """Snowball fan-out after bulk_categorize commits.
+
+    After bulk_categorize commits, categorize_pending runs automatically and
+    fans the new merchant out to siblings sharing the same match_text.
+
+    Fixes bug 4 from categorization-matching-mechanics.md.
+    """
+    # Seed 3 transactions with identical description+memo signatures so the
+    # exemplar created from t1 matches t2 and t3 on the snowball pass.
+    for txn_id in ["t1", "t2", "t3"]:
+        real_db.execute(
+            """
+            INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             description, memo, source_type, is_transfer)
+            VALUES (?, 'acct_test', '2026-05-10', -10.00,
+                    'STARBUCKS', 'STORE 1234', 'ofx', false)
+            """,  # noqa: S608  # test input, not executing SQL
+            [txn_id],
+        )
+
+    svc = CategorizationService(real_db)
+    assert svc.count_uncategorized() == 3
+
+    # Categorize batch 1 (just t1) with a canonical name so an exemplar-merchant
+    # is created.
+    result = svc.bulk_categorize([
+        BulkCategorizationItem(
+            transaction_id="t1",
+            category="Food & Dining",
+            subcategory="Coffee Shops",
+            canonical_merchant_name="Starbucks",
+        ),
+    ])
+    assert result.applied == 1
+
+    # SNOWBALL: t2 and t3 should now be categorized too because bulk_categorize
+    # invoked categorize_pending() after committing, which applied the new
+    # exemplar to remaining uncategorized rows.
+    assert svc.count_uncategorized() == 0
+
+    rows = real_db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories "
+        "ORDER BY transaction_id"
+    ).fetchall()
+    assert len(rows) == 3
+    assert all(r[0] == "Food & Dining" for r in rows)
+    # t1 was categorized by the LLM-assist commit ('ai'); t2/t3 by the
+    # snowball merchant fan-out, which writes 'rule' provenance.
+    assert rows[0][1] == "ai"
+    assert rows[1][1] == "rule"
+    assert rows[2][1] == "rule"
+
+
 # ---------------------------------------------------------------------------
 # find_matching_rule override tests (Task 3 — bulk path preparation)
 # ---------------------------------------------------------------------------
@@ -923,7 +1061,7 @@ def test_find_matching_rule_uses_txn_row_override(real_db: Database) -> None:
     match = svc.find_matching_rule(
         "ghost_txn",
         rules_override=override_rules,
-        txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1"),
+        txn_row_override=("AMZN MARKETPLACE", -42.0, "acct_1", None),
     )
     assert match is not None
 
@@ -978,7 +1116,7 @@ def test_categorize_assist_returns_redacted_uncategorized(
 
     assert all(isinstance(r, RedactedTransaction) for r in result)
     for r in result:
-        assert hasattr(r, "opaque_id")
+        assert hasattr(r, "transaction_id")
         assert hasattr(r, "description_redacted")
         assert hasattr(r, "source_type")
         # Confirm no amount/date/account fields

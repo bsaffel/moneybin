@@ -44,8 +44,14 @@ def _seed_uncategorized_transactions(db: Database, count: int = 3) -> None:
             account_id      VARCHAR,
             transaction_date DATE,
             description     VARCHAR,
+            memo            VARCHAR,
             amount          DECIMAL(18,2),
-            source_type     VARCHAR
+            source_type     VARCHAR,
+            transaction_type VARCHAR,
+            check_number    VARCHAR,
+            payment_channel VARCHAR,
+            is_transfer     BOOLEAN,
+            transfer_pair_id VARCHAR
         )
         """
     )
@@ -88,10 +94,9 @@ class TestCategorizeAssistMCPTool:
         assert isinstance(response.data, list)
         items: list[dict[str, object]] = response.data  # type: ignore[assignment]  # ResponseEnvelope.data is loosely typed; tighten in ResponseEnvelope.data followup
         for item in items:
-            assert "opaque_id" in item
+            assert "transaction_id" in item
             assert "description_redacted" in item
             assert "source_type" in item
-            assert "redaction_version" in item
             # Confirm no amount/date/account fields leaked
             assert "amount" not in item
             assert "date" not in item
@@ -169,7 +174,6 @@ class TestCategorizeAssistMCPTool:
         entry_msg = audit_entries[0].message
         assert "transactions_categorize_assist" in entry_msg
         assert "txn_count" in entry_msg
-        assert "redaction_version" in entry_msg
         # Confirm no per-record content leaked into the audit entry
         assert "description" not in entry_msg
         assert "MERCHANT" not in entry_msg

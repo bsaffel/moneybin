@@ -3,11 +3,12 @@
    core.dim_merchants resolved-dim view. */
 CREATE TABLE IF NOT EXISTS app.user_merchants (
     merchant_id VARCHAR PRIMARY KEY, -- 12-char UUID hex from uuid.uuid4().hex[:12]
-    raw_pattern VARCHAR NOT NULL, -- match pattern against normalized description
-    match_type VARCHAR NOT NULL, -- 'exact' | 'contains' | 'regex'
+    raw_pattern VARCHAR, -- match pattern; NULL when merchant is exemplar-only (match_type='oneOf')
+    match_type VARCHAR NOT NULL DEFAULT 'oneOf', -- 'exact' | 'contains' | 'regex' | 'oneOf'
     canonical_name VARCHAR NOT NULL, -- display name; LLM-proposed for created_by='ai'
     category VARCHAR, -- default category (joined to core.dim_categories)
     subcategory VARCHAR, -- default subcategory
     created_by VARCHAR NOT NULL, -- 'user' | 'ai' | 'plaid' | 'migration'
+    exemplars VARCHAR[] DEFAULT [], -- exact match_text values for oneOf set-membership lookup
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- when this entry was added
 );
