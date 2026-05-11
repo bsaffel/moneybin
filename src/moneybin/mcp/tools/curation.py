@@ -225,7 +225,7 @@ def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvel
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
 def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
     """Rename a tag globally. Emits one parent + N child audit events."""
     res = TransactionService(get_database()).rename_tag(old_tag, new_tag, actor="mcp")
@@ -235,7 +235,7 @@ def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
 def transactions_splits_set(
     transaction_id: str, splits: list[dict[str, Any]]
 ) -> ResponseEnvelope:

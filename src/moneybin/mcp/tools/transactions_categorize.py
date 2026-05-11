@@ -90,7 +90,7 @@ def transactions_categorize_pending_list(
     )
 
 
-@mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
+@mcp_tool(sensitivity="medium", domain="categorize", read_only=False, idempotent=False)
 def transactions_categorize_apply(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
