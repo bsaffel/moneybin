@@ -107,6 +107,7 @@ class TestResponseEnvelope:
     @pytest.mark.unit
     def test_to_dict_status_error_when_error_set(self) -> None:
         from moneybin.errors import UserError
+
         err = UserError("DB locked", code="database_locked")
         envelope = ResponseEnvelope(
             summary=SummaryMeta(total_count=0, returned_count=0),
@@ -120,6 +121,7 @@ class TestResponseEnvelope:
     @pytest.mark.unit
     def test_to_json_includes_status(self) -> None:
         import json
+
         envelope = ResponseEnvelope(
             summary=SummaryMeta(total_count=0, returned_count=0),
             data=[],
