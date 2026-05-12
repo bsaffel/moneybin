@@ -352,3 +352,59 @@ def test_categorization_coverage_warns_when_below_50pct(
     cat = next(r for r in report.invariants if r.name == "categorization_coverage")
     assert cat.status == "warn"
     assert "uncategorized" in (cat.detail or "").lower()
+
+
+@pytest.mark.unit
+def test_run_all_returns_5_invariants(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all()
+    assert len(report.invariants) == 5
+    names = [r.name for r in report.invariants]
+    assert "fct_transactions_fk_integrity" in names
+    assert "fct_transactions_sign_convention" in names
+    assert "bridge_transfers_balanced" in names
+    assert "staging_coverage" in names
+    assert "categorization_coverage" in names
+
+
+@pytest.mark.unit
+def test_fk_detail_message_contains_count(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    doctor_db.execute("""
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description,
+            transaction_type, is_pending, currency_code, source_type,
+            source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month, transaction_year_quarter
+        ) VALUES
+        ('BAD1', 'NONE', '2026-05-01', -1.00, 1.00, 'expense', 'Bad',
+         'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         2026, 5, 1, 4, '2026-05', '2026-Q2'),
+        ('BAD2', 'NONE', '2026-05-02', -2.00, 2.00, 'expense', 'Bad2',
+         'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         2026, 5, 2, 5, '2026-05', '2026-Q2')
+    """)  # noqa: S608 — test input, not user data
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all()
+    fk = next(r for r in report.invariants if r.name == "fct_transactions_fk_integrity")
+    assert fk.status == "fail"
+    assert "2" in (fk.detail or "")
