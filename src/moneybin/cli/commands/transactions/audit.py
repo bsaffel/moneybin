@@ -25,7 +25,7 @@ def transactions_audit(
     """List audit events for one transaction."""
     from moneybin.services.audit_service import AuditService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         events = AuditService(db).list_events(target_id=transaction_id, limit=limit)
 
     if output == OutputFormat.JSON:

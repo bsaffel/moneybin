@@ -45,7 +45,7 @@ def system_audit_list(
     """List audit events with filters."""
     from moneybin.services.audit_service import AuditService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         events = AuditService(db).list_events(
             actor=actor,
             action_pattern=action,
@@ -76,7 +76,7 @@ def system_audit_show(
     """Show one audit event plus any chained children (parent_audit_id matches)."""
     from moneybin.services.audit_service import AuditService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         events = AuditService(db).chain_for(audit_id)
 
     if not events:

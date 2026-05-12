@@ -74,7 +74,7 @@ def matches_history(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         entries = get_match_log(db, limit=limit, match_type=match_type)
 
         if output == OutputFormat.JSON:

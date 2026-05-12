@@ -30,7 +30,7 @@ def stats_command(
     quiet: bool = quiet_option,
 ) -> None:
     """Display lifetime metric aggregates."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         where_clauses: list[str] = []
         params: list[str | datetime] = []
 

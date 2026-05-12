@@ -27,7 +27,7 @@ def system_status(
     """Show data inventory and pending review queue counts."""
     from moneybin.services.system_service import SystemService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         s = SystemService(db).status()
 
     min_d, max_d = s.transactions_date_range

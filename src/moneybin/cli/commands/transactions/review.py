@@ -68,7 +68,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.review_service import ReviewService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         review_svc = ReviewService(
             match_service=MatchingService(db, get_settings().matching),
             categorize_service=CategorizationService(db),

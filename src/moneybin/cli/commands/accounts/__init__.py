@@ -53,7 +53,7 @@ def accounts_list(
     ),
 ) -> None:
     """List accounts. Hides archived accounts by default."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         result = AccountService(db).list_accounts(
             include_archived=include_archived, type_filter=type_filter
         )
@@ -74,7 +74,7 @@ def accounts_show(
     quiet: bool = quiet_option,  # noqa: ARG001
 ) -> None:
     """Show one account's full settings + dim record."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         record = AccountService(db).get_account(account_id)
     if record is None:
         logger.error(f"❌ Account not found: {account_id}")
@@ -302,7 +302,7 @@ def accounts_resolve(
     Use this before commands that need an account_id when you only have a
     natural-language reference.
     """
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         matches = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:

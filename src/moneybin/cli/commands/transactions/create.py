@@ -87,7 +87,7 @@ def transactions_create(
     tags = list(tag or [])
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             svc = TransactionService(db)
             batch = svc.create_manual_batch([entry], actor="cli")
             row = batch.results[0]

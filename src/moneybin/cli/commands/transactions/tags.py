@@ -31,7 +31,7 @@ def transactions_tags_add(
     from moneybin.services.transaction_service import TransactionService
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             added = TransactionService(db).add_tags(transaction_id, tags, actor="cli")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -55,7 +55,7 @@ def transactions_tags_remove(
     """Remove one or more tags from a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         removed = TransactionService(db).remove_tags(transaction_id, tags, actor="cli")
 
     if output == OutputFormat.JSON:
@@ -81,7 +81,7 @@ def transactions_tags_list(
     """List tags on a transaction, or all distinct tags with usage counts."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         svc = TransactionService(db)
         if transaction_id is not None:
             tags = svc.list_tags(transaction_id)
@@ -119,7 +119,7 @@ def transactions_tags_rename(
     from moneybin.services.transaction_service import TransactionService
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             result = TransactionService(db).rename_tag(old, new, actor="cli")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)

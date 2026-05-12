@@ -27,7 +27,7 @@ def rules_list(
     """Display all active categorization rules."""
     from moneybin.tables import CATEGORIZATION_RULES
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         rows = db.execute(
             f"""
             SELECT rule_id, name, merchant_pattern, match_type,

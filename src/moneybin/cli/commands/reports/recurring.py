@@ -47,7 +47,7 @@ def reports_recurring_show(
         raise typer.BadParameter(f"Unknown status: {status}")
     if cadence is not None and cadence not in RECURRING_CADENCES:
         raise typer.BadParameter(f"Unknown cadence: {cadence}")
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         cols, rows = ReportsService(db).recurring_subscriptions(
             min_confidence=min_confidence, status=status, cadence=cadence
         )

@@ -109,7 +109,7 @@ def categorize_apply(
         raise typer.Exit(1) from e
 
     if items:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             result = CategorizationService(db).categorize_items(items)
     else:
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
@@ -141,7 +141,7 @@ def stats(
     from moneybin.cli.utils import emit_json
     from moneybin.services.categorization_service import CategorizationService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         coverage = CategorizationService(db).categorization_stats()
 
     if output == OutputFormat.JSON:

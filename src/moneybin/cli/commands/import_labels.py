@@ -32,7 +32,7 @@ def import_labels_add(
     from moneybin.services.import_service import ImportService
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             updated = ImportService(db).add_labels(import_id, labels, actor="cli")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -54,7 +54,7 @@ def import_labels_remove(
     from moneybin.services.import_service import ImportService
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             updated = ImportService(db).remove_labels(import_id, labels, actor="cli")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -77,7 +77,7 @@ def import_labels_list(
     """List labels for one import, or all distinct labels with usage counts."""
     from moneybin.services.import_service import ImportService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         svc = ImportService(db)
         if import_id is not None:
             labels = svc.list_labels(import_id)

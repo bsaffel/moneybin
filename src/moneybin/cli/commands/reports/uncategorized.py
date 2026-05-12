@@ -40,7 +40,7 @@ def reports_uncategorized_show(
         min_amount_dec = Decimal(min_amount)
     except InvalidOperation as e:
         raise typer.BadParameter(f"Invalid --min-amount: {min_amount}") from e
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         cols, rows = ReportsService(db).uncategorized_queue(
             min_amount=min_amount_dec, account=account, limit=limit
         )

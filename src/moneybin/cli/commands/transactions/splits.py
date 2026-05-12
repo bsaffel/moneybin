@@ -58,7 +58,7 @@ def transactions_splits_add(
         raise typer.Exit(2) from e
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             svc = TransactionService(db)
             split = svc.add_split(
                 transaction_id,
@@ -93,7 +93,7 @@ def transactions_splits_list(
     """List splits on a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         splits = TransactionService(db).list_splits(transaction_id)
 
     if output == OutputFormat.JSON:
@@ -123,7 +123,7 @@ def transactions_splits_remove(
             raise typer.Exit(0)
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             svc = TransactionService(db)
             # Look up parent before delete so we can report residual after.
             parent = db.conn.execute(
@@ -171,7 +171,7 @@ def transactions_splits_clear(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         TransactionService(db).clear_splits(transaction_id, actor="cli")
 
     if output == OutputFormat.JSON:

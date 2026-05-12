@@ -39,7 +39,7 @@ def reports_balance_drift_show(
     """Show balance reconciliation drift, sorted by absolute drift."""
     if status not in DRIFT_STATUSES:
         raise typer.BadParameter(f"Unknown status: {status}")
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         cols, rows = ReportsService(db).balance_drift(
             account=account, status=status, since=since
         )

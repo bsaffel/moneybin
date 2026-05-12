@@ -32,7 +32,7 @@ def reports_large_transactions_show(
     """Show large transactions, optionally filtered to z-score outliers."""
     if anomaly not in LARGE_TXN_ANOMALIES:
         raise typer.BadParameter(f"Unknown anomaly mode: {anomaly}")
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         cols, rows = ReportsService(db).large_transactions(top=top, anomaly=anomaly)
     if output == OutputFormat.JSON:
         emit_json(

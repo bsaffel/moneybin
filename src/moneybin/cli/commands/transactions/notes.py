@@ -41,7 +41,7 @@ def transactions_notes_add(
     from moneybin.services.transaction_service import TransactionService
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             note = TransactionService(db).add_note(transaction_id, text, actor="cli")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -63,7 +63,7 @@ def transactions_notes_list(
     """List all notes on a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         notes = TransactionService(db).list_notes(transaction_id)
 
     payload = [_note_to_dict(n) for n in notes]
@@ -89,7 +89,7 @@ def transactions_notes_edit(
     from moneybin.services.transaction_service import TransactionService
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             note = TransactionService(db).edit_note(note_id, text, actor="cli")
     except LookupError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -120,7 +120,7 @@ def transactions_notes_delete(
             raise typer.Exit(0)
 
     try:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             TransactionService(db).delete_note(note_id, actor="cli")
     except LookupError as e:
         typer.echo(f"❌ {e}", err=True)
