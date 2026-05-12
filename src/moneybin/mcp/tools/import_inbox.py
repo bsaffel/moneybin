@@ -7,6 +7,7 @@ import logging
 
 from fastmcp import FastMCP
 
+from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -21,18 +22,17 @@ def _uncategorized_count() -> int:
     Returns 0 on any error so a DB hiccup never breaks the import summary.
     """
     try:
-        from moneybin.database import get_database
         from moneybin.tables import FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
-        db = get_database()
-        row = db.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
-            WHERE tc.transaction_id IS NULL
-            """,  # noqa: S608  # table names are TableRef constants, not user input
-        ).fetchone()
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
+                WHERE tc.transaction_id IS NULL
+                """,  # noqa: S608  # table names are TableRef constants, not user input
+            ).fetchone()
         return int(row[0]) if row else 0
     except Exception:  # noqa: BLE001 — never surface DB errors in summary hint
         return 0
@@ -43,8 +43,9 @@ def inbox_sync() -> ResponseEnvelope:
     """Drain the active profile's import inbox."""
     from moneybin.config import get_settings
 
-    service = InboxService.for_active_profile()
-    result = dataclasses.asdict(service.sync())
+    with get_database() as db:
+        service = InboxService(db=db, settings=get_settings())
+        result = dataclasses.asdict(service.sync())
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
     if result["failed"]:

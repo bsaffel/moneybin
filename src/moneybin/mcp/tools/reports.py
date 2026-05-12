@@ -62,9 +62,10 @@ def reports_networth_get(
             The headline net_worth total still reflects all included accounts.
     """
     parsed_date = _date.fromisoformat(as_of_date) if as_of_date else None
-    snapshot = NetworthService(get_database()).current(
-        as_of_date=parsed_date, account_ids=account_ids
-    )
+    with get_database(read_only=True) as db:
+        snapshot = NetworthService(db).current(
+            as_of_date=parsed_date, account_ids=account_ids
+        )
     return build_envelope(data=snapshot.to_dict(), sensitivity="medium")
 
 
@@ -86,9 +87,8 @@ def reports_networth_history_get(
     """
     parsed_from = _date.fromisoformat(from_date)
     parsed_to = _date.fromisoformat(to_date)
-    rows = NetworthService(get_database()).history(
-        parsed_from, parsed_to, interval=interval
-    )
+    with get_database(read_only=True) as db:
+        rows = NetworthService(db).history(parsed_from, parsed_to, interval=interval)
     return build_envelope(data=rows, sensitivity="medium")
 
 
@@ -108,9 +108,10 @@ def reports_spending_get(
         compare: yoy | mom | trailing — caller-side intent only; the view
             returns all three comparison columns regardless.
     """
-    cols, rows = ReportsService(get_database()).spending_trend(
-        from_month=from_month, to_month=to_month, category=category, compare=compare
-    )
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).spending_trend(
+            from_month=from_month, to_month=to_month, category=category, compare=compare
+        )
     return _envelope(cols, rows, sensitivity="low")
 
 
@@ -127,9 +128,10 @@ def reports_cashflow_get(
         to_month: ISO date YYYY-MM-01; upper bound (inclusive).
         by: account | category | account-and-category — how to group.
     """
-    cols, rows = ReportsService(get_database()).cash_flow(
-        from_month=from_month, to_month=to_month, by=by
-    )
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).cash_flow(
+            from_month=from_month, to_month=to_month, by=by
+        )
     return _envelope(cols, rows, sensitivity="low")
 
 
@@ -147,9 +149,10 @@ def reports_recurring_get(
         cadence: weekly | biweekly | monthly | quarterly | yearly | irregular
             (None returns all).
     """
-    cols, rows = ReportsService(get_database()).recurring_subscriptions(
-        min_confidence=min_confidence, status=status, cadence=cadence
-    )
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).recurring_subscriptions(
+            min_confidence=min_confidence, status=status, cadence=cadence
+        )
     return _envelope(cols, rows, sensitivity="low")
 
 
@@ -164,7 +167,8 @@ def reports_merchants_get(
         top: limit rows.
         sort: spend | count | recent.
     """
-    cols, rows = ReportsService(get_database()).merchant_activity(top=top, sort=sort)
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).merchant_activity(top=top, sort=sort)
     return _envelope(cols, rows, sensitivity="low")
 
 
@@ -181,9 +185,10 @@ def reports_uncategorized_get(
         account: filter to account name; None for all accounts.
         limit: max rows.
     """
-    cols, rows = ReportsService(get_database()).uncategorized_queue(
-        min_amount=min_amount, account=account, limit=limit
-    )
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).uncategorized_queue(
+            min_amount=min_amount, account=account, limit=limit
+        )
     return _envelope(cols, rows)
 
 
@@ -198,9 +203,8 @@ def reports_large_transactions_get(
         top: top N by ABS(amount).
         anomaly: account | category | none — filter to z>2.5 in the named scope.
     """
-    cols, rows = ReportsService(get_database()).large_transactions(
-        top=top, anomaly=anomaly
-    )
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).large_transactions(top=top, anomaly=anomaly)
     return _envelope(cols, rows)
 
 
@@ -217,9 +221,10 @@ def reports_balance_drift_get(
         status: drift | warning | clean | no-data | all.
         since: ISO date; only assertions on or after.
     """
-    cols, rows = ReportsService(get_database()).balance_drift(
-        account=account, status=status, since=since
-    )
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).balance_drift(
+            account=account, status=status, since=since
+        )
     return _envelope(cols, rows)
 
 
@@ -235,8 +240,8 @@ def reports_budget_status(
     Args:
         month: Month to check (YYYY-MM). Defaults to current month.
     """
-    service = BudgetService(get_database())
-    result = service.status(month=month)
+    with get_database(read_only=True) as db:
+        result = BudgetService(db).status(month=month)
     return result.to_envelope()
 
 

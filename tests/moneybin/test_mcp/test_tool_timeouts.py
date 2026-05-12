@@ -188,27 +188,48 @@ async def test_back_to_back_call_after_timeout_succeeds(
     import moneybin.database as db_module
     from moneybin.database import Database
 
-    db = Database(
-        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
-    )
-    monkeypatch.setattr(db_module, "_database_instance", db)
+    # Create the test DB once — quick_tool will open fresh connections to it.
+    db_path = tmp_path / "t.duckdb"
+    Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True).close()
+
+    # Patch get_database so both the decorator's interrupt path and quick_tool
+    # use per-call connections to db_path (with the mock secret store).
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_get_database(read_only: bool = False, **_: object):  # type: ignore[misc]
+        conn = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        if not read_only:
+            with db_module._active_write_lock:
+                db_module._active_write_conn = conn
+        try:
+            yield conn
+        finally:
+            conn.close()
+            if not read_only:
+                with db_module._active_write_lock:
+                    if db_module._active_write_conn is conn:
+                        db_module._active_write_conn = None
+
+    monkeypatch.setattr(db_module, "get_database", _fake_get_database)
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.1)
 
     @mcp_tool(sensitivity="low")
     def hang_tool() -> ResponseEnvelope:
-        # Spin without releasing GIL frequently to mimic a stuck native call.
-        time.sleep(2.0)
+        # Hold a write connection while sleeping so interrupt_and_reset_database()
+        # has something to interrupt when the timeout fires.
+        with _fake_get_database() as _db:
+            time.sleep(2.0)  # will be interrupted by the timeout
         return ResponseEnvelope(
             summary=SummaryMeta(total_count=0, returned_count=0), data=[]
         )
 
     @mcp_tool(sensitivity="low")
     def quick_tool() -> ResponseEnvelope:
-        # Touch the DB to prove the singleton is healthy after reset.
-        from moneybin.database import get_database
-
-        rows = get_database().execute("SELECT 42 AS x").fetchall()
+        # Open a fresh per-call connection to prove the write lock was released.
+        with _fake_get_database() as db:
+            rows = db.execute("SELECT 42 AS x").fetchall()
         return ResponseEnvelope(
             summary=SummaryMeta(total_count=len(rows), returned_count=len(rows)),
             data=[{"x": rows[0][0]}],
@@ -217,15 +238,9 @@ async def test_back_to_back_call_after_timeout_succeeds(
     first = await hang_tool()
     assert first.error is not None and first.error.code == "timed_out"
 
-    # The timeout path cleared _database_instance and force-closed the original
-    # connection, releasing its write lock.  Reopening the same DB file proves
-    # the lock was actually dropped — if interrupt_and_reset() had failed to
-    # release it, this Database() construction would hang or fail.
-    db2 = Database(
-        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
-    )
-    monkeypatch.setattr(db_module, "_database_instance", db2)
-
+    # The timeout path called interrupt_and_reset_database(), releasing the write
+    # lock. Opening a new write connection to the same file proves the lock was
+    # actually dropped — if interrupt_and_reset() had failed, this would block.
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
     second = await quick_tool()
     assert second.error is None

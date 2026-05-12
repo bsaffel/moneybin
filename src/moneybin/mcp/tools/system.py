@@ -21,7 +21,8 @@ def system_status() -> ResponseEnvelope:
     from moneybin.database import get_database
     from moneybin.services.system_service import SystemService
 
-    status = SystemService(get_database()).status()
+    with get_database(read_only=True) as db:
+        status = SystemService(db).status()
 
     min_date, max_date = status.transactions_date_range
     data: dict[str, Any] = {

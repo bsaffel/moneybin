@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -11,27 +12,33 @@ from moneybin.mcp.tools.import_inbox import inbox_list as inbox_list_tool
 from moneybin.mcp.tools.import_inbox import inbox_sync as inbox_sync_tool
 from moneybin.services.inbox_service import (
     InboxListResult,
-    InboxService,
     InboxSyncResult,
 )
 
 
 @pytest.fixture
 def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
-    """Patch InboxService factories so MCP tool tests don't open a real DB."""
+    """Patch InboxService and get_database so MCP tool tests don't open a real DB."""
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
 
-    def _factory(cls: type[InboxService]) -> MagicMock:
-        return fake
+    # Patch get_database used inside inbox_sync to return a dummy context manager.
+    @contextmanager
+    def _fake_get_database(*args, **kwargs):  # type: ignore[misc]
+        yield MagicMock()
 
     monkeypatch.setattr(
-        "moneybin.services.inbox_service.InboxService.for_active_profile",
-        classmethod(_factory),
+        "moneybin.mcp.tools.import_inbox.get_database",
+        _fake_get_database,
     )
+
+    # Patch InboxService in the tool module so both the constructor call in
+    # inbox_sync AND for_active_profile_no_db in inbox_list return `fake`.
+    fake_cls = MagicMock(return_value=fake)
+    fake_cls.for_active_profile_no_db = MagicMock(return_value=fake)
     monkeypatch.setattr(
-        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
-        classmethod(_factory),
+        "moneybin.mcp.tools.import_inbox.InboxService",
+        fake_cls,
     )
     return fake
 

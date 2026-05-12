@@ -193,7 +193,8 @@ def resource_accounts_summary() -> str:
     No per-account data, no balances, no PII.
     """
     logger.info("Resource read: accounts://summary")
-    return json.dumps(AccountService(get_database()).summary(), default=str)
+    with get_database(read_only=True) as db:
+        return json.dumps(AccountService(db).summary(), default=str)
 
 
 @mcp.resource("moneybin://recent-curation")
@@ -207,7 +208,8 @@ def resource_recent_curation() -> str:
     logger.info("Resource read: moneybin://recent-curation")
     from moneybin.services.audit_service import AuditService
 
-    events = AuditService(get_database()).list_events(limit=50)
+    with get_database(read_only=True) as db:
+        events = AuditService(db).list_events(limit=50)
     payload = [
         {
             "audit_id": e.audit_id,
@@ -236,5 +238,6 @@ def resource_networth_summary() -> str:
     reports_networth_get tool for that.
     """
     logger.info("Resource read: net-worth://summary")
-    snapshot = NetworthService(get_database()).current()
+    with get_database(read_only=True) as db:
+        snapshot = NetworthService(db).current()
     return json.dumps(snapshot.to_dict(include_per_account=False), default=str)

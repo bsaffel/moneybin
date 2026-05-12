@@ -29,8 +29,8 @@ def tax_w2(
     Args:
         tax_year: Filter to a specific tax year. Returns all years when omitted.
     """
-    service = TaxService(get_database())
-    result = service.w2(tax_year=tax_year)
+    with get_database(read_only=True) as db:
+        result = TaxService(db).w2(tax_year=tax_year)
     return result.to_envelope()
 
 

@@ -72,18 +72,18 @@ def import_file(
     """
     from moneybin.services.import_service import ImportService
 
-    db = get_database()
     validated = _validate_file_path(file_path)
     try:
-        result = ImportService(db).import_file(
-            str(validated),
-            account_id=account_id,
-            account_name=account_name,
-            institution=institution,
-            format_name=format_name,
-            force=force,
-            interactive=False,
-        )
+        with get_database() as db:
+            result = ImportService(db).import_file(
+                str(validated),
+                account_id=account_id,
+                account_name=account_name,
+                institution=institution,
+                format_name=format_name,
+                force=force,
+                interactive=False,
+            )
     except ValueError as e:
         return build_error_envelope(
             error=UserError(str(e), code="import_error"),
@@ -184,12 +184,12 @@ def import_status(
     """
     from moneybin.loaders import import_log
 
-    db = get_database()
-    records = import_log.get_import_history(
-        db,
-        limit=min(limit, 200),
-        import_id=import_id,
-    )
+    with get_database(read_only=True) as db:
+        records = import_log.get_import_history(
+            db,
+            limit=min(limit, 200),
+            import_id=import_id,
+        )
     return build_envelope(
         data=records,
         sensitivity="low",
@@ -213,8 +213,8 @@ def import_revert(import_id: str) -> ResponseEnvelope:
     """
     from moneybin.loaders import import_log
 
-    db = get_database()
-    result = import_log.revert_import(db, import_id)
+    with get_database() as db:
+        result = import_log.revert_import(db, import_id)
     status = result.get("status")
 
     if status == "reverted":
@@ -250,8 +250,8 @@ def import_list_formats() -> ResponseEnvelope:
 
     builtin = load_builtin_formats()
     try:
-        db = get_database()
-        formats = merge_formats(builtin, load_formats_from_db(db))
+        with get_database(read_only=True) as db:
+            formats = merge_formats(builtin, load_formats_from_db(db))
     except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in
         formats = builtin
 

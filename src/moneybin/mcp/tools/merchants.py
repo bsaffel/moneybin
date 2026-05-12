@@ -31,7 +31,8 @@ def merchants_list() -> ResponseEnvelope:
     and associated category. Merchant mappings normalize transaction
     descriptions and provide default categories.
     """
-    data = CategorizationService(get_database()).list_merchants()
+    with get_database(read_only=True) as db:
+        data = CategorizationService(db).list_merchants()
     return build_envelope(
         data=data,
         sensitivity="low",
@@ -60,53 +61,54 @@ def merchants_create(
             sensitivity="low",
         )
 
-    service = CategorizationService(get_database())
     created = 0
     skipped = 0
     error_details: list[dict[str, str]] = []
 
-    for item in merchants:
-        raw_pattern = str(item.get("raw_pattern", "")).strip()
-        canonical_name = str(item.get("canonical_name", "")).strip()
-        if not raw_pattern or not canonical_name:
-            skipped += 1
-            error_details.append({
-                "canonical_name": canonical_name or "(missing)",
-                "reason": "Missing raw_pattern or canonical_name",
-            })
-            continue
+    with get_database() as db:
+        service = CategorizationService(db)
+        for item in merchants:
+            raw_pattern = str(item.get("raw_pattern", "")).strip()
+            canonical_name = str(item.get("canonical_name", "")).strip()
+            if not raw_pattern or not canonical_name:
+                skipped += 1
+                error_details.append({
+                    "canonical_name": canonical_name or "(missing)",
+                    "reason": "Missing raw_pattern or canonical_name",
+                })
+                continue
 
-        raw_match_type = str(item.get("match_type", "contains")).strip()
-        try:
-            match_type = validate_match_type(raw_match_type)
-        except ValueError:
-            skipped += 1
-            error_details.append({
-                "canonical_name": canonical_name,
-                "reason": f"Invalid match_type: {raw_match_type}",
-            })
-            continue
+            raw_match_type = str(item.get("match_type", "contains")).strip()
+            try:
+                match_type = validate_match_type(raw_match_type)
+            except ValueError:
+                skipped += 1
+                error_details.append({
+                    "canonical_name": canonical_name,
+                    "reason": f"Invalid match_type: {raw_match_type}",
+                })
+                continue
 
-        category = str(item.get("category", "")).strip() or None
-        subcategory = str(item.get("subcategory", "")).strip() or None
+            category = str(item.get("category", "")).strip() or None
+            subcategory = str(item.get("subcategory", "")).strip() or None
 
-        try:
-            service.create_merchant(
-                raw_pattern,
-                canonical_name,
-                match_type=match_type,
-                category=category,
-                subcategory=subcategory,
-                created_by="ai",
-            )
-            created += 1
-        except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
-            skipped += 1
-            logger.exception("create_merchants failed")
-            error_details.append({
-                "canonical_name": canonical_name,
-                "reason": "Failed to create merchant — check logs for details.",
-            })
+            try:
+                service.create_merchant(
+                    raw_pattern,
+                    canonical_name,
+                    match_type=match_type,
+                    category=category,
+                    subcategory=subcategory,
+                    created_by="ai",
+                )
+                created += 1
+            except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+                skipped += 1
+                logger.exception("create_merchants failed")
+                error_details.append({
+                    "canonical_name": canonical_name,
+                    "reason": "Failed to create merchant — check logs for details.",
+                })
 
     return build_envelope(
         data={

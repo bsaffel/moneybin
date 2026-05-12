@@ -35,7 +35,8 @@ def transactions_categorize_rules_list() -> ResponseEnvelope:
     Returns rule ID, name, pattern, match type, category, priority,
     and active status. Rules are applied in priority order during import.
     """
-    data = CategorizationService(get_database()).list_rules()
+    with get_database(read_only=True) as db:
+        data = CategorizationService(db).list_rules()
     return build_envelope(
         data=data,
         sensitivity="low",
@@ -54,7 +55,8 @@ def transactions_categorize_stats() -> ResponseEnvelope:
     percentage categorized, and breakdown by categorization source
     (user, ai, rule, plaid).
     """
-    result = CategorizationService(get_database()).stats()
+    with get_database(read_only=True) as db:
+        result = CategorizationService(db).stats()
     return result.to_envelope()
 
 
@@ -71,9 +73,10 @@ def transactions_categorize_pending_list(
     Args:
         limit: Maximum number of results (default 50, max 1000).
     """
-    records = CategorizationService(get_database()).list_uncategorized_transactions(
-        limit=min(limit, 1000)
-    )
+    with get_database(read_only=True) as db:
+        records = CategorizationService(db).list_uncategorized_transactions(
+            limit=min(limit, 1000)
+        )
     if records is None:
         return build_envelope(
             data=[],
@@ -120,7 +123,8 @@ def transactions_categorize_apply(
         ).to_envelope(0)
 
     validated, parse_errors = validate_items(items)
-    result = CategorizationService(get_database()).categorize_items(validated)
+    with get_database() as db:
+        result = CategorizationService(db).categorize_items(validated)
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(items))
 
@@ -143,9 +147,8 @@ def transactions_categorize_rules_create(
             False; only future categorizations are affected.
     """
     validated, parse_errors = validate_rule_items(rules)
-    result = CategorizationService(get_database()).create_rules(
-        validated, reapply=reapply
-    )
+    with get_database() as db:
+        result = CategorizationService(db).create_rules(validated, reapply=reapply)
     result.merge_parse_errors(parse_errors)
     return result.to_envelope(len(rules))
 
@@ -166,9 +169,11 @@ def transactions_categorize_rule_delete(
             to be re-evaluated. Default False; existing categorizations are
             left untouched.
     """
-    if not CategorizationService(get_database()).deactivate_rule(
-        rule_id, reapply=reapply
-    ):
+    with get_database() as db:
+        deactivated = CategorizationService(db).deactivate_rule(
+            rule_id, reapply=reapply
+        )
+    if not deactivated:
         raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
     return build_envelope(
         data={"rule_id": rule_id, "action": "deactivated"},
@@ -189,7 +194,8 @@ def transactions_categorize_auto_review(limit: int | None = None) -> ResponseEnv
             ``summary.has_more`` flag indicates whether more proposals exist
             beyond the returned page.
     """
-    result = AutoRuleService(get_database()).review(limit=limit)
+    with get_database(read_only=True) as db:
+        result = AutoRuleService(db).review(limit=limit)
     return auto_review_envelope(result)
 
 
@@ -207,10 +213,11 @@ def transactions_categorize_auto_accept(
         accept: Proposal IDs to accept and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
     """
-    result = AutoRuleService(get_database()).accept(
-        accept=accept or [],
-        reject=reject or [],
-    )
+    with get_database() as db:
+        result = AutoRuleService(db).accept(
+            accept=accept or [],
+            reject=reject or [],
+        )
     return auto_accept_envelope(result)
 
 
@@ -221,7 +228,8 @@ def transactions_categorize_auto_stats() -> ResponseEnvelope:
     Returns counts of active auto-rules, pending proposals, and
     transactions categorized by auto-rules.
     """
-    data = AutoRuleService(get_database()).stats()
+    with get_database(read_only=True) as db:
+        data = AutoRuleService(db).stats()
     return auto_stats_envelope(data)
 
 

@@ -66,11 +66,12 @@ def accounts_list(
     iso_currency_code, archived, include_in_net_worth, plus last_four and
     credit_limit unless redacted.
     """
-    result = AccountService(get_database()).list_accounts(
-        include_archived=include_archived,
-        type_filter=type_filter,
-        redacted=redacted,
-    )
+    with get_database(read_only=True) as db:
+        result = AccountService(db).list_accounts(
+            include_archived=include_archived,
+            type_filter=type_filter,
+            redacted=redacted,
+        )
     return result.to_envelope()
 
 
@@ -86,7 +87,8 @@ def accounts_get(account_id: str) -> ResponseEnvelope:
 
     Returns {"found": true, ...fields} if found, {"found": false, "account_id": ...} if not.
     """
-    record = AccountService(get_database()).get_account(account_id)
+    with get_database(read_only=True) as db:
+        record = AccountService(db).get_account(account_id)
     if record is None:
         return build_envelope(
             data={"found": False, "account_id": account_id},
@@ -103,7 +105,8 @@ def accounts_summary() -> ResponseEnvelope:
     counts by type and subtype, count archived, count excluded from net worth,
     and count with recent activity (last 30 days).
     """
-    summary = AccountService(get_database()).summary()
+    with get_database(read_only=True) as db:
+        summary = AccountService(db).summary()
     return build_envelope(data=summary, sensitivity="low")
 
 
@@ -120,7 +123,8 @@ def accounts_rename(account_id: str, display_name: str) -> ResponseEnvelope:
 
     Returns the updated settings record.
     """
-    settings = AccountService(get_database()).rename(account_id, display_name)
+    with get_database() as db:
+        settings = AccountService(db).rename(account_id, display_name)
     return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
@@ -134,9 +138,8 @@ def accounts_include(account_id: str, include: bool = True) -> ResponseEnvelope:
 
     Returns the updated settings record.
     """
-    settings = AccountService(get_database()).set_include_in_net_worth(
-        account_id, include
-    )
+    with get_database() as db:
+        settings = AccountService(db).set_include_in_net_worth(account_id, include)
     return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
@@ -150,7 +153,8 @@ def accounts_archive(account_id: str) -> ResponseEnvelope:
     Returns the updated settings record. The data field includes
     cascaded_include_in_net_worth: false to surface the cascade.
     """
-    settings = AccountService(get_database()).archive(account_id)
+    with get_database() as db:
+        settings = AccountService(db).archive(account_id)
     data = settings.to_dict()
     data["cascaded_include_in_net_worth"] = False
     return build_envelope(data=data, sensitivity="medium")
@@ -165,7 +169,8 @@ def accounts_unarchive(account_id: str) -> ResponseEnvelope:
 
     Returns the updated settings record.
     """
-    settings = AccountService(get_database()).unarchive(account_id)
+    with get_database() as db:
+        settings = AccountService(db).unarchive(account_id)
     return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
@@ -219,10 +224,11 @@ def accounts_settings_update(
             )
         for field in clear_fields:
             kwargs[field] = CLEAR
-    settings, warnings = AccountService(get_database()).settings_update(
-        account_id,
-        **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
-    )
+    with get_database() as db:
+        settings, warnings = AccountService(db).settings_update(
+            account_id,
+            **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
+        )
     data = settings.to_dict()
     if warnings:
         data["warnings"] = warnings
@@ -244,9 +250,10 @@ def accounts_balance_list(
         as_of_date: ISO date (YYYY-MM-DD) — shows balance on or before this date
     """
     parsed_date = _date.fromisoformat(as_of_date) if as_of_date else None
-    observations = BalanceService(get_database()).current_balances(
-        account_ids=account_ids, as_of_date=parsed_date
-    )
+    with get_database(read_only=True) as db:
+        observations = BalanceService(db).current_balances(
+            account_ids=account_ids, as_of_date=parsed_date
+        )
     return build_envelope(
         data=[o.to_dict() for o in observations], sensitivity="medium"
     )
@@ -267,9 +274,10 @@ def accounts_balance_history(
     """
     parsed_from = _date.fromisoformat(from_date) if from_date else None
     parsed_to = _date.fromisoformat(to_date) if to_date else None
-    observations = BalanceService(get_database()).history(
-        account_id, from_date=parsed_from, to_date=parsed_to
-    )
+    with get_database(read_only=True) as db:
+        observations = BalanceService(db).history(
+            account_id, from_date=parsed_from, to_date=parsed_to
+        )
     return build_envelope(
         data=[o.to_dict() for o in observations], sensitivity="medium"
     )
@@ -287,9 +295,10 @@ def accounts_balance_reconcile(
         threshold: Minimum absolute delta to include (default: 0.01 = 1 cent)
     """
     parsed_threshold = Decimal(str(threshold))
-    observations = BalanceService(get_database()).reconcile(
-        account_ids=account_ids, threshold=parsed_threshold
-    )
+    with get_database(read_only=True) as db:
+        observations = BalanceService(db).reconcile(
+            account_ids=account_ids, threshold=parsed_threshold
+        )
     return build_envelope(
         data=[o.to_dict() for o in observations], sensitivity="medium"
     )
@@ -304,7 +313,8 @@ def accounts_balance_assertions_list(
     Args:
         account_id: Optional filter to a single account
     """
-    assertions = BalanceService(get_database()).list_assertions(account_id)
+    with get_database(read_only=True) as db:
+        assertions = BalanceService(db).list_assertions(account_id)
     return build_envelope(data=[a.to_dict() for a in assertions], sensitivity="medium")
 
 
@@ -328,12 +338,13 @@ def accounts_balance_assert(
     """
     parsed_date = _date.fromisoformat(assertion_date)
     parsed_balance = Decimal(str(balance))
-    result = BalanceService(get_database()).assert_balance(
-        account_id=account_id,
-        assertion_date=parsed_date,
-        balance=parsed_balance,
-        notes=notes,
-    )
+    with get_database() as db:
+        result = BalanceService(db).assert_balance(
+            account_id=account_id,
+            assertion_date=parsed_date,
+            balance=parsed_balance,
+            notes=notes,
+        )
     return build_envelope(data=result.to_dict(), sensitivity="medium")
 
 
@@ -349,7 +360,8 @@ def accounts_balance_assertion_delete(
         assertion_date: ISO date (YYYY-MM-DD)
     """
     parsed_date = _date.fromisoformat(assertion_date)
-    BalanceService(get_database()).delete_assertion(account_id, parsed_date)
+    with get_database() as db:
+        BalanceService(db).delete_assertion(account_id, parsed_date)
     return build_envelope(
         data={"account_id": account_id, "assertion_date": parsed_date.isoformat()},
         sensitivity="medium",
@@ -379,7 +391,8 @@ def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
     """
     from moneybin.config import get_settings
 
-    matches = AccountService(get_database()).resolve(query=query, limit=limit)
+    with get_database(read_only=True) as db:
+        matches = AccountService(db).resolve(query=query, limit=limit)
     threshold = get_settings().data.tabular.account_match_threshold
     actions: list[str] = []
     if not matches:

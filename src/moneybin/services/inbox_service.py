@@ -95,14 +95,6 @@ class InboxService:
         self._settings = settings
 
     @classmethod
-    def for_active_profile(cls) -> InboxService:
-        """Construct an InboxService against the active profile with a live DB."""
-        from moneybin.config import get_settings
-        from moneybin.database import get_database
-
-        return cls(db=get_database(), settings=get_settings())
-
-    @classmethod
     def for_active_profile_no_db(cls) -> InboxService:
         """Construct an InboxService for read-only filesystem operations.
 

@@ -116,7 +116,7 @@ def mock_secret_store() -> MagicMock:
 
 @pytest.fixture()
 def schema_catalog_db(
-    tmp_path: Path, mock_secret_store: MagicMock
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[Database, None, None]:
     """Database with core tables + the core.dim_categories view stub.
 
@@ -263,11 +263,20 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS status "
         "WHERE FALSE"
     )
-    db_module._database_instance = database  # type: ignore[attr-defined]
+
+    # Inject fixture DB so any call to get_database() returns it without
+    # opening a new connection (which would fail: no settings, no key).
+    @contextmanager
+    def _inject_db(*args: object, **kwargs: object) -> Generator[Database, None, None]:
+        yield database
+
+    import moneybin.services.schema_catalog as schema_catalog_module
+
+    monkeypatch.setattr(db_module, "get_database", _inject_db)
+    monkeypatch.setattr(schema_catalog_module, "get_database", _inject_db)
     try:
         yield database
     finally:
-        db_module._database_instance = None  # type: ignore[attr-defined]
         database.close()
 
 
