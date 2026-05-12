@@ -126,8 +126,7 @@ def transactions_splits_remove(
             [split_id],
         ).fetchone()
         if parent is None:
-            typer.echo(f"❌ split_id={split_id} not found", err=True)
-            raise typer.Exit(1)
+            raise LookupError(f"split_id={split_id} not found")
         transaction_id = parent[0]
         svc.remove_split(split_id, actor="cli")
         residual = svc.splits_balance(transaction_id)
