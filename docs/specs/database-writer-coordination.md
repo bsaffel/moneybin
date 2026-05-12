@@ -20,7 +20,7 @@ Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-l
 2. `Database(read_only=True)` raises `DatabaseNotInitializedError` before any DuckDB operation if `db_path` does not exist.
 3. `Database(read_only=False)` (default) behaves identically to the current `Database.__init__()` sequence.
 4. `get_database(read_only, max_wait)` creates a new `Database` per call; no singleton.
-5. `get_database()` retries on `DatabaseLockError` with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until `max_wait` is exhausted, then re-raises `DatabaseLockError` with the message: `"Could not acquire write lock after {max_wait}s. Another moneybin process may be writing. Check with 'moneybin db ps'."`
+5. `get_database()` retries on `DatabaseLockError` with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until `max_wait` is exhausted, then re-raises `DatabaseLockError` with a message that names the blocking process if `lsof` can identify it, falling back to a generic hint if not.
 6. The encryption key retrieved from `SecretStore` is cached in process memory after the first successful retrieval; never re-fetched within the process lifetime.
 7. All `get_database()` callers use the context-manager protocol to ensure connections are released immediately after use.
 8. MCP tool bodies declare `read_only=True` for pure-read tools and `read_only=False` for any tool that writes to `app.*` or `raw.*`.
@@ -156,12 +156,43 @@ def get_database(
             return db
         except DatabaseLockError:
             if time.monotonic() >= deadline:
-                raise
+                raise DatabaseLockError(
+                    _lock_error_message(db_path, max_wait)
+                ) from None
             time.sleep(delay)
             delay = min(delay * 1.5, 0.5)
 ```
 
 The `_active_write_conn` registration must appear after the successful `Database(...)` construction and before `return`, gated on `read_only=False` — this is what `interrupt_and_reset_database()` reads.
+
+**`_lock_error_message()` — friendly blocker identification**
+
+When `max_wait` is exhausted, call `lsof` (already used by `db ps`) to identify what is holding the lock, then construct a message that names it:
+
+```python
+def _lock_error_message(db_path: Path, max_wait: float) -> str:
+    blockers = _find_blocking_processes(db_path)  # reuse db ps logic
+    if blockers:
+        names = ", ".join(p["command"] for p in blockers)
+        return (
+            f"Could not acquire write lock after {max_wait:.0f}s "
+            f"(held by: {names}). "
+            f"Run 'moneybin db ps' for details."
+        )
+    return (
+        f"Could not acquire write lock after {max_wait:.0f}s. "
+        f"Another moneybin process may be writing. "
+        f"Run 'moneybin db ps' for details."
+    )
+```
+
+`_find_blocking_processes()` is extracted from `db ps` in `cli/commands/db.py` into a shared helper (e.g. `src/moneybin/database_utils.py` or inlined in `database.py`). It runs `lsof -F pcn <db_path>`, parses PIDs, and returns command-line strings. If `lsof` is unavailable (Windows) or times out, it returns an empty list — the fallback message is used. This function must not raise.
+
+Example error output when `transform apply` is the blocker:
+```
+❌ Could not acquire write lock after 5s (held by: moneybin transform apply).
+   Run 'moneybin db ps' for details.
+```
 
 **`interrupt_and_reset_database()`**
 
