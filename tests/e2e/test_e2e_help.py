@@ -41,6 +41,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["transactions", "review"],
     ["transactions", "create"],
     ["transactions", "audit"],
+    ["transactions", "list"],
     ["transactions", "notes"],
     ["transactions", "notes", "add"],
     ["transactions", "notes", "list"],

@@ -11,6 +11,7 @@ import typer
 from . import categorize, matches, notes, splits, tags
 from .audit import transactions_audit
 from .create import transactions_create
+from .list_ import transactions_list
 from .review import transactions_review
 
 app = typer.Typer(
@@ -29,3 +30,4 @@ app.add_typer(splits.app, name="splits")
 app.command("review")(transactions_review)
 app.command("create")(transactions_create)
 app.command("audit")(transactions_audit)
+app.command("list")(transactions_list)
