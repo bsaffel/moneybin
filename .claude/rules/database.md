@@ -7,18 +7,27 @@ paths: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.
 
 ## Connection Management
 
-**Never call `duckdb.connect()` directly.** Use the `Database` class (`src/moneybin/database.py`) via `get_database()` for all database access. The `Database` class handles encryption key retrieval, encrypted file attachment, extension loading, schema initialization, and migrations. One long-lived read-write connection per process.
+**Never call `duckdb.connect()` directly.** Use the `Database` class (`src/moneybin/database.py`) via `get_database()` for all database access. The `Database` class handles encryption key retrieval, encrypted file attachment, extension loading, schema initialization, and migrations.
+
+Connections are **short-lived and purpose-declared** — acquire, use, release immediately via the context manager. Declare read intent with `read_only=True` to allow concurrent cross-process reads (~14 ms overhead); write connections are exclusive (~79 ms) and retry automatically on lock contention.
+
+> **Target API — not yet implemented.** The usage below reflects the design from [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) (draft). The current `get_database()` takes no parameters, returns a singleton, and does not support context-manager use (exiting `__exit__` closes the singleton, leaving `_database_instance` pointing to a dead connection). Do not use either the `read_only` parameter or the context-manager pattern until that spec is implemented.
 
 ```python
 from moneybin.database import get_database
 
-db = get_database()
-result = db.execute(
-    "SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id]
-)
+# read path — lightweight, coexists with other read-only connections
+with get_database(read_only=True) as db:
+    result = db.execute(
+        "SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id]
+    )
+
+# write path — exclusive; retries up to max_wait seconds on contention
+with get_database() as db:
+    db.execute("INSERT INTO app.some_table ...")
 ```
 
-See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full design.
+See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [ADR-010](../../docs/decisions/010-writer-coordination.md) for the full design.
 
 ## Batch Data Loading
 
