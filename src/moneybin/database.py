@@ -21,6 +21,7 @@ import os
 import stat
 import sys
 import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -633,24 +634,57 @@ def database_key_error_hint() -> str:
 _database_instance: Database | None = None
 
 
-def get_database() -> Database:
-    """Get the singleton Database instance for the current profile.
+def _lock_error_message(db_path: Path, max_wait: float) -> str:
+    return (
+        f"Could not acquire write lock after {max_wait:.0f}s. "
+        f"Another process may be writing to the database. "
+        f"Run 'moneybin db ps' for details."
+    )
 
-    Creates the Database on first call, reuses on subsequent calls.
-    The database path comes from get_settings().database.path.
 
-    Returns:
-        The Database singleton instance.
+def database_was_accessed() -> bool:
+    """Return True if any Database connection was opened in this process."""
+    return _database_accessed
+
+
+def get_database(
+    read_only: bool = False,
+    max_wait: float = 5.0,
+) -> "Database":
+    """Create and return a new short-lived Database connection.
+
+    Each call opens a fresh connection; callers must close it when done
+    (``with get_database() as db: ...`` closes automatically).
+
+    Write connections retry on DatabaseLockError with exponential backoff
+    (start 50 ms, ×1.5, cap 500 ms) until max_wait is exhausted.
     """
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _database_instance is not None:
-        return _database_instance
-
-    settings = get_settings()
-    db = Database(settings.database.path)
-    _database_instance = db
-    return db
+    global _database_accessed, _migration_check_done, _active_write_conn  # noqa: PLW0603
+    db_path = get_settings().database.path
+    deadline = time.monotonic() + max_wait
+    delay = 0.05
+    skip_upgrade = read_only or _migration_check_done
+    while True:
+        try:
+            db = Database(
+                db_path,
+                read_only=read_only,
+                no_auto_upgrade=skip_upgrade,
+            )
+            if not read_only:
+                _migration_check_done = True
+            _database_accessed = True
+            if not read_only:
+                with _active_write_lock:
+                    _active_write_conn = db
+            return db
+        except DatabaseLockError:
+            if time.monotonic() >= deadline:
+                raise DatabaseLockError(
+                    _lock_error_message(db_path, max_wait)
+                ) from None
+            time.sleep(delay)
+            delay = min(delay * 1.5, 0.5)
 
 
 def get_database_if_initialized() -> Database | None:

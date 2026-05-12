@@ -10,7 +10,12 @@ import duckdb
 import pytest
 from pytest_mock import MockerFixture
 
-from moneybin.database import Database, DatabaseKeyError, get_database
+from moneybin.database import (
+    Database,
+    DatabaseKeyError,
+    DatabaseLockError,
+    get_database,
+)
 
 
 @pytest.fixture()
@@ -604,3 +609,163 @@ class TestTemporarySingleton:
             assert db_module._database_instance is local  # type: ignore[reportPrivateUsage]  # test-only
 
         assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only
+
+
+class TestGetDatabaseNew:
+    """get_database() per-call factory with retry logic."""
+
+    def test_returns_new_instance_each_call(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        monkeypatch.setattr(db_module, "_migration_check_done", False)
+        monkeypatch.setattr(db_module, "_database_accessed", False)
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+
+        db_path = tmp_path / "each.duckdb"
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+
+        db1 = get_database()
+        db1.close()  # close before opening second to avoid DuckDB single-writer conflict
+        db2 = get_database()
+        assert db1 is not db2  # no singleton — each call creates a new instance
+        db2.close()
+
+    def test_retries_on_lock_error_and_succeeds(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        # Set _migration_check_done=True so the successful third attempt uses
+        # no_auto_upgrade=True and avoids migrations.py calling time.monotonic,
+        # which would exhaust the patched iterator prematurely.
+        monkeypatch.setattr(db_module, "_migration_check_done", True)
+        monkeypatch.setattr(db_module, "_database_accessed", False)
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+
+        db_path = tmp_path / "retry.duckdb"
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+
+        call_count = 0
+        original_database_cls = Database
+
+        def mock_database_cls(*args: object, **kwargs: object) -> Database:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise DatabaseLockError("lock")
+            return original_database_cls(*args, **kwargs)
+
+        monkeypatch.setattr("moneybin.database.Database", mock_database_cls)
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(
+            "moneybin.database.time.sleep", lambda d: sleep_calls.append(d)
+        )
+        monkeypatch.setattr(
+            "moneybin.database.time.monotonic", iter([0.0, 0.1, 0.2, 1.0]).__next__
+        )
+
+        db = get_database(max_wait=5.0)
+        assert call_count == 3
+        assert len(sleep_calls) == 2
+        # Exponential backoff: 0.05 then 0.075
+        assert abs(sleep_calls[0] - 0.05) < 0.001
+        assert abs(sleep_calls[1] - 0.075) < 0.001
+        db.close()
+
+    def test_exhausts_max_wait_and_raises_lock_error(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        monkeypatch.setattr(db_module, "_migration_check_done", False)
+        monkeypatch.setattr(db_module, "_database_accessed", False)
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+
+        db_path = tmp_path / "exhaust.duckdb"
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+        monkeypatch.setattr(
+            "moneybin.database.Database",
+            lambda *a, **kw: (_ for _ in ()).throw(DatabaseLockError("lock")),
+        )
+
+        call_count = 0
+
+        def mock_monotonic() -> float:
+            nonlocal call_count
+            call_count += 1
+            return float(call_count * 10)  # each call returns 10s later
+
+        monkeypatch.setattr("moneybin.database.time.monotonic", mock_monotonic)
+        monkeypatch.setattr("moneybin.database.time.sleep", lambda d: None)
+
+        with pytest.raises(DatabaseLockError, match="Could not acquire"):
+            get_database(max_wait=5.0)
+
+    def test_registers_active_write_conn(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        monkeypatch.setattr(db_module, "_migration_check_done", False)
+        monkeypatch.setattr(db_module, "_database_accessed", False)
+        monkeypatch.setattr(db_module, "_active_write_conn", None)
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+
+        db_path = tmp_path / "slot.duckdb"
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+
+        db = get_database()
+        assert db_module._active_write_conn is db
+        db.close()
+        assert db_module._active_write_conn is None
+
+    def test_read_only_does_not_register_active_write_conn(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        # First create the DB in write mode
+        db_path = tmp_path / "ro_slot.duckdb"
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+        Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True).close()
+
+        monkeypatch.setattr(db_module, "_active_write_conn", None)
+        monkeypatch.setattr(db_module, "_database_accessed", False)
+
+        mock_settings = MagicMock()
+        mock_settings.database.path = db_path
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
+
+        db = get_database(read_only=True)
+        assert db_module._active_write_conn is None
+        db.close()
