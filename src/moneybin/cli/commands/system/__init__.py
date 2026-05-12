@@ -4,14 +4,9 @@ import logging
 
 import typer
 
-from moneybin.cli.output import (
-    OutputFormat,
-    output_option,
-    quiet_option,
-    render_or_json,
-)
-from moneybin.cli.utils import handle_cli_errors
-from moneybin.protocol.envelope import build_envelope
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.database import get_database
 
 from . import audit as _audit
 
@@ -33,29 +28,27 @@ def system_status(
     """Show data inventory and pending review queue counts."""
     from moneybin.services.system_service import SystemService
 
-    with handle_cli_errors(output=output) as db:
-        s = SystemService(db).status()
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            s = SystemService(db).status()
 
     min_d, max_d = s.transactions_date_range
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(
-                data={
-                    "accounts_count": s.accounts_count,
-                    "transactions_count": s.transactions_count,
-                    "transactions_date_range": [
-                        min_d.isoformat() if min_d else None,
-                        max_d.isoformat() if max_d else None,
-                    ],
-                    "last_import_at": s.last_import_at.isoformat()
-                    if s.last_import_at
-                    else None,
-                    "matches_pending": s.matches_pending,
-                    "categorize_pending": s.categorize_pending,
-                },
-                sensitivity="low",
-            ),
-            output,
+        emit_json(
+            "status",
+            {
+                "accounts_count": s.accounts_count,
+                "transactions_count": s.transactions_count,
+                "transactions_date_range": [
+                    min_d.isoformat() if min_d else None,
+                    max_d.isoformat() if max_d else None,
+                ],
+                "last_import_at": s.last_import_at.isoformat()
+                if s.last_import_at
+                else None,
+                "matches_pending": s.matches_pending,
+                "categorize_pending": s.categorize_pending,
+            },
         )
         return
 

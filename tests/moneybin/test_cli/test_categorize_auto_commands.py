@@ -78,9 +78,10 @@ def _confirm_result(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_accept_explicit_accept(
-    mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
     """Explicit --accept forwards exactly the given IDs to accept()."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
@@ -93,9 +94,10 @@ def test_auto_accept_explicit_accept(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_accept_explicit_reject(
-    mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
     """Explicit --reject forwards exactly the given IDs to accept()."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
@@ -108,9 +110,10 @@ def test_auto_accept_explicit_reject(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_accept_accept_all_expands_pending(
-    mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
     """--accept-all expands to every pending proposal ID."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
@@ -127,9 +130,10 @@ def test_auto_accept_accept_all_expands_pending(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_accept_reject_all_expands_pending(
-    mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
     """--reject-all expands to every pending proposal ID."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()
@@ -146,9 +150,10 @@ def test_auto_accept_reject_all_expands_pending(
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_accept_accept_all_with_explicit_reject_excludes_id(
-    mock_db_ctx: MagicMock, mock_svc_cls: MagicMock
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
     """--accept-all --reject <id> accepts all pending except <id>, which is rejected."""
     mock_db_ctx.return_value.__enter__.return_value = MagicMock()

@@ -1,12 +1,14 @@
 """Shared helpers for transaction-curation CLI tests.
 
 Provides ``make_curation_db`` to build a Database with core + app tables and
-one seeded transaction (T1), and ``patch_db`` to redirect
-``moneybin.cli.utils.get_database`` at that database.
+one seeded transaction (T1), and ``patch_db`` to redirect ``get_database``
+in all CLI command modules to return that database.
 """
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -51,5 +53,36 @@ def make_curation_db(tmp_path: Path) -> Database:
 
 
 def patch_db(monkeypatch: pytest.MonkeyPatch, database: Database) -> None:
-    """Patch ``moneybin.cli.utils.get_database`` to return ``database``."""
-    monkeypatch.setattr("moneybin.cli.utils.get_database", lambda: database)
+    """Patch ``get_database`` in all CLI command modules to return ``database``.
+
+    Each command module imports ``get_database`` at module level, so we must
+    patch the reference in each module's namespace rather than the source.
+    """
+    command_modules = [
+        "moneybin.cli.commands.transactions.notes",
+        "moneybin.cli.commands.transactions.audit",
+        "moneybin.cli.commands.transactions.create",
+        "moneybin.cli.commands.transactions.tags",
+        "moneybin.cli.commands.transactions.splits",
+        "moneybin.cli.commands.import_labels",
+        "moneybin.cli.commands.system.audit",
+        "moneybin.cli.commands.accounts",
+        "moneybin.cli.commands.accounts.balance",
+        "moneybin.cli.commands.reports",
+        "moneybin.cli.commands.migrate",
+        "moneybin.cli.commands.transactions.matches",
+        "moneybin.cli.commands.transactions.review",
+        "moneybin.cli.commands.transactions.categorize.auto",
+        "moneybin.cli.commands.system",
+    ]
+
+    @contextmanager
+    def _noop_cm(*_args: object, **_kwargs: object) -> Generator[Database, None, None]:
+        """Context manager that yields the shared database without closing it."""
+        yield database
+
+    for module in command_modules:
+        try:
+            monkeypatch.setattr(f"{module}.get_database", _noop_cm)
+        except AttributeError:
+            pass  # module not yet imported or doesn't use get_database at module level

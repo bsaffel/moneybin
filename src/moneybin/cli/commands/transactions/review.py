@@ -14,13 +14,9 @@ import logging
 
 import typer
 
-from moneybin.cli.output import (
-    OutputFormat,
-    output_option,
-    quiet_option,
-    render_or_json,
-)
-from moneybin.protocol.envelope import build_envelope
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json
+from moneybin.database import get_database
 
 from ..stubs import _not_implemented
 
@@ -73,12 +69,13 @@ def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.review_service import ReviewService
 
-    with handle_cli_errors(output=output) as db:
-        review_svc = ReviewService(
-            match_service=MatchingService(db, get_settings().matching),
-            categorize_service=CategorizationService(db),
-        )
-        s = review_svc.status()
+    with handle_cli_errors():
+        with get_database() as db:
+            review_svc = ReviewService(
+                match_service=MatchingService(db, get_settings().matching),
+                categorize_service=CategorizationService(db),
+            )
+            s = review_svc.status()
 
     if output == OutputFormat.JSON:
         payload: dict[str, int] = {}
@@ -88,7 +85,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
             payload["categorize_pending"] = s.categorize_pending
         if type_ == "all":
             payload["total"] = s.total
-        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
+        emit_json("status", payload)
         return
 
     if type_ == "matches":

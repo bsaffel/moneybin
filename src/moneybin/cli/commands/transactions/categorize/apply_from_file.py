@@ -9,6 +9,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
@@ -98,8 +99,11 @@ def categorize_apply_from_file(
         raise typer.Exit(1) from e
 
     if items:
-        with handle_cli_errors(output=output) as db:
-            from moneybin.services.categorization_service import CategorizationService
+        with handle_cli_errors():
+            with get_database() as db:
+                from moneybin.services.categorization_service import (
+                    CategorizationService,
+                )
 
             result = CategorizationService(db).categorize_items(items)
     else:

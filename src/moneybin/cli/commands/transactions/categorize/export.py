@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +48,18 @@ def categorize_export_uncategorized(
     from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
     from moneybin.services.categorization_service import CategorizationService
 
-    with handle_cli_errors() as db:
-        svc = CategorizationService(db)
-        effective_limit = (
-            limit
-            if limit is not None
-            else get_settings().categorization.assist_default_batch_size
-        )
-        rows = svc.categorize_assist(
-            limit=effective_limit,
-            account_filter=account_filter or None,
-        )
+    with handle_cli_errors():
+        with get_database() as db:
+            svc = CategorizationService(db)
+            effective_limit = (
+                limit
+                if limit is not None
+                else get_settings().categorization.assist_default_batch_size
+            )
+            rows = svc.categorize_assist(
+                limit=effective_limit,
+                account_filter=account_filter or None,
+            )
 
     CATEGORIZE_ASSIST_CALLS_TOTAL.labels(surface="cli").inc()
 

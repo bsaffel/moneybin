@@ -69,7 +69,7 @@ class TestAccountsList:
     """Tests for the accounts list command."""
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_list_json_returns_accounts(
         self,
@@ -93,7 +93,7 @@ class TestAccountsList:
         assert len(data["data"]) == 2
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_list_hides_archived_by_default(
         self,
@@ -115,7 +115,7 @@ class TestAccountsList:
         )
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_list_include_archived_passes_flag(
         self,
@@ -142,7 +142,7 @@ class TestAccountsList:
         assert "acct_archived" in ids
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_list_type_filter_passed_through(
         self,
@@ -169,7 +169,7 @@ class TestAccountsShow:
     """Tests for the accounts show command."""
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_show_returns_full_record(
         self,
@@ -193,7 +193,7 @@ class TestAccountsShow:
         assert data["data"]["account_id"] == "acct_a"
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_show_unknown_exits_1(
         self,
@@ -216,7 +216,7 @@ class TestAccountsRename:
     """Tests for the accounts rename command."""
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_rename_writes_display_name(
         self,
@@ -237,7 +237,7 @@ class TestAccountsRename:
         assert "Checking" in result.stderr or "Renamed" in result.stderr
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_rename_with_empty_string(
         self,
@@ -264,7 +264,7 @@ class TestAccountsInclude:
     """Tests for the accounts include command."""
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_include_default_true(
         self,
@@ -282,7 +282,7 @@ class TestAccountsInclude:
         mock_service.set_include_in_net_worth.assert_called_once_with("acct_a", True)
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_include_no_flag_sets_false(
         self,
@@ -304,7 +304,7 @@ class TestAccountsArchive:
     """Tests for the accounts archive command."""
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_archive_announces_cascade(
         self,
@@ -330,7 +330,7 @@ class TestAccountsUnarchive:
     """Tests for the accounts unarchive command."""
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_unarchive_warns_if_include_still_false(
         self,
@@ -351,7 +351,7 @@ class TestAccountsUnarchive:
         assert "include" in combined
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_unarchive_no_warning_if_include_true(
         self,
@@ -385,7 +385,7 @@ class TestAccountsSet:
         from unittest.mock import MagicMock, patch
 
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
@@ -410,7 +410,7 @@ class TestAccountsSet:
         from moneybin.services.account_service import CLEAR
 
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
@@ -451,7 +451,7 @@ class TestAccountsSet:
         from unittest.mock import MagicMock, patch
 
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
@@ -495,7 +495,7 @@ class TestAccountsSet:
         from unittest.mock import MagicMock, patch
 
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
@@ -517,7 +517,7 @@ class TestAccountsSet:
         from unittest.mock import MagicMock, patch
 
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
@@ -543,7 +543,7 @@ class TestAccountsSet:
         with patch("moneybin.cli.commands.accounts.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = True
             with (
-                patch("moneybin.cli.utils.get_database"),
+                patch("moneybin.cli.commands.accounts.get_database"),
                 patch(
                     "moneybin.cli.commands.accounts.AccountService"
                 ) as mock_service_class,
@@ -591,7 +591,7 @@ class TestAccountsResolve:
     """Tests for the `moneybin accounts resolve` CLI command."""
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_text_output_prints_match(
         self,
@@ -619,7 +619,7 @@ class TestAccountsResolve:
         assert "Chase Checking" in result.stdout
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_json_output_returns_envelope(
         self,
@@ -651,7 +651,7 @@ class TestAccountsResolve:
         assert payload["data"][0]["confidence"] == 1.0
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_limit_flag_passed_to_service(
         self,
@@ -668,7 +668,7 @@ class TestAccountsResolve:
         svc.resolve.assert_called_once_with(query="account", limit=1)
 
     @pytest.mark.unit
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
     def test_no_matches_text_mode_writes_to_stderr(
         self,

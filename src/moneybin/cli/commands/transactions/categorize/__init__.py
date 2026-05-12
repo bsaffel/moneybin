@@ -17,6 +17,7 @@ from moneybin.cli.output import (
     quiet_option,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope
 
 from . import auto, ml, rules
@@ -109,8 +110,9 @@ def categorize_apply(
         raise typer.Exit(1) from e
 
     if items:
-        with handle_cli_errors(output=output) as db:
-            result = CategorizationService(db).categorize_items(items)
+        with handle_cli_errors():
+            with get_database() as db:
+                result = CategorizationService(db).categorize_items(items)
     else:
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
     result.merge_parse_errors(parse_errors)
@@ -138,15 +140,15 @@ def stats(
     quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
 ) -> None:
     """Show categorization coverage summary."""
-    from moneybin.cli.output import render_or_json
-    from moneybin.protocol.envelope import build_envelope
+    from moneybin.cli.utils import emit_json
     from moneybin.services.categorization_service import CategorizationService
 
-    with handle_cli_errors(output=output) as db:
-        coverage = CategorizationService(db).categorization_stats()
+    with handle_cli_errors():
+        with get_database() as db:
+            coverage = CategorizationService(db).categorization_stats()
 
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=coverage, sensitivity="low"), output)
+        emit_json("summary", coverage)
         return
 
     total = coverage["total"]

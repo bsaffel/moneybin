@@ -10,10 +10,9 @@ from moneybin.cli.output import (
     OutputFormat,
     output_option,
     quiet_option,
-    render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
-from moneybin.protocol.envelope import build_envelope
+from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +37,9 @@ def review(
     from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    with handle_cli_errors(output=output) as db:
-        result = AutoRuleService(db).review(limit=limit)
+    with handle_cli_errors():
+        with get_database() as db:
+            result = AutoRuleService(db).review(limit=limit)
 
     proposals = result.proposals
     if output == OutputFormat.JSON:
@@ -87,23 +87,25 @@ def categorize_auto_accept(
         logger.error("❌ --accept-all and --reject-all are mutually exclusive")
         raise typer.Exit(2)
 
-    with handle_cli_errors() as db:
-        svc = AutoRuleService(db)
-        if accept_all or reject_all:
-            pending_ids = [
-                cast(str, p["proposed_rule_id"]) for p in svc.list_pending_proposals()
-            ]
-            if accept_all:
-                accept = (accept or []) + pending_ids
-            if reject_all:
-                reject = (reject or []) + pending_ids
+    with handle_cli_errors():
+        with get_database() as db:
+            svc = AutoRuleService(db)
+            if accept_all or reject_all:
+                pending_ids = [
+                    cast(str, p["proposed_rule_id"])
+                    for p in svc.list_pending_proposals()
+                ]
+                if accept_all:
+                    accept = (accept or []) + pending_ids
+                if reject_all:
+                    reject = (reject or []) + pending_ids
 
-        # Explicit reject wins over --accept-all: a user passing
-        # --accept-all --reject <id> means "accept all except <id>".
-        accept_set = set(accept or [])
-        reject_set = set(reject or [])
-        accept_set -= reject_set
-        result = svc.accept(accept=sorted(accept_set), reject=sorted(reject_set))
+            # Explicit reject wins over --accept-all: a user passing
+            # --accept-all --reject <id> means "accept all except <id>".
+            accept_set = set(accept or [])
+            reject_set = set(reject or [])
+            accept_set -= reject_set
+            result = svc.accept(accept=sorted(accept_set), reject=sorted(reject_set))
 
     logger.info(
         f"✅ Accepted {result.approved} "
@@ -121,20 +123,18 @@ def stats(
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    with handle_cli_errors(output=output) as db:
-        result = AutoRuleService(db).stats()
+    with handle_cli_errors():
+        with get_database() as db:
+            result = AutoRuleService(db).stats()
 
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(
-                data={
-                    "active_auto_rules": result.active_auto_rules,
-                    "pending_proposals": result.pending_proposals,
-                    "transactions_categorized": result.transactions_categorized,
-                },
-                sensitivity="low",
-            ),
-            output,
+        emit_json(
+            "stats",
+            {
+                "active_auto_rules": result.active_auto_rules,
+                "pending_proposals": result.pending_proposals,
+                "transactions_categorized": result.transactions_categorized,
+            },
         )
         return
 
@@ -158,18 +158,14 @@ def rules(
     """List active auto-rules (rules with created_by='auto_rule')."""
     from moneybin.services.auto_rule_service import AutoRuleService
 
-    with handle_cli_errors(output=output) as db:
-        svc = AutoRuleService(db)
-        active_rules = svc.list_active_rules(limit=limit)
-        total = svc.count_active_rules()
+    with handle_cli_errors():
+        with get_database() as db:
+            svc = AutoRuleService(db)
+            active_rules = svc.list_active_rules(limit=limit)
+            total = svc.count_active_rules()
 
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(
-                data={"rules": active_rules, "total": total}, sensitivity="low"
-            ),
-            output,
-        )
+        emit_json("rules", {"rules": active_rules, "total": total})
         return
 
     if not active_rules:

@@ -10,14 +10,9 @@ import logging
 
 import typer
 
-from moneybin.cli.output import (
-    OutputFormat,
-    output_option,
-    quiet_option,
-    render_or_json,
-)
-from moneybin.cli.utils import handle_cli_errors
-from moneybin.protocol.envelope import build_envelope
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +31,18 @@ def transactions_tags_add(
     """Apply one or more tags to a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        added = TransactionService(db).add_tags(transaction_id, tags, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                added = TransactionService(db).add_tags(
+                    transaction_id, tags, actor="cli"
+                )
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(
-                data={"transaction_id": transaction_id, "added": added},
-                sensitivity="low",
-            ),
-            output,
-        )
+        emit_json("tags_added", {"transaction_id": transaction_id, "added": added})
         return
     if added:
         logger.info(f"✅ Added tags to {transaction_id}: {', '.join(added)}")
@@ -63,16 +59,15 @@ def transactions_tags_remove(
     """Remove one or more tags from a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        removed = TransactionService(db).remove_tags(transaction_id, tags, actor="cli")
+    with handle_cli_errors():
+        with get_database() as db:
+            removed = TransactionService(db).remove_tags(
+                transaction_id, tags, actor="cli"
+            )
 
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(
-                data={"transaction_id": transaction_id, "removed": removed},
-                sensitivity="low",
-            ),
-            output,
+        emit_json(
+            "tags_removed", {"transaction_id": transaction_id, "removed": removed}
         )
         return
     if removed:
@@ -93,37 +88,26 @@ def transactions_tags_list(
     """List tags on a transaction, or all distinct tags with usage counts."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        svc = TransactionService(db)
-        if transaction_id is not None:
-            tags = svc.list_tags(transaction_id)
-            if output == OutputFormat.JSON:
-                render_or_json(
-                    build_envelope(
-                        data={"transaction_id": transaction_id, "tags": tags},
-                        sensitivity="low",
-                    ),
-                    output,
-                )
+    with handle_cli_errors():
+        with get_database() as db:
+            svc = TransactionService(db)
+            if transaction_id is not None:
+                tags = svc.list_tags(transaction_id)
+                if output == OutputFormat.JSON:
+                    emit_json("tags", {"transaction_id": transaction_id, "tags": tags})
+                    return
+                if not tags:
+                    if not quiet:
+                        logger.info(f"No tags on {transaction_id}")
+                    return
+                for t in tags:
+                    typer.echo(t)
                 return
-            if not tags:
-                if not quiet:
-                    logger.info(f"No tags on {transaction_id}")
-                return
-            for t in tags:
-                typer.echo(t)
-            return
 
-        rows = svc.list_distinct_tags()
+            rows = svc.list_distinct_tags()
 
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(
-                data=[{"tag": t, "usage_count": n} for t, n in rows],
-                sensitivity="low",
-            ),
-            output,
-        )
+        emit_json("tags", [{"tag": t, "usage_count": n} for t, n in rows])
         return
     if not rows:
         if not quiet:
@@ -142,21 +126,23 @@ def transactions_tags_rename(
     """Rename a tag globally (all transactions). Emits a parent audit event."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        result = TransactionService(db).rename_tag(old, new, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                result = TransactionService(db).rename_tag(old, new, actor="cli")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(
-                data={
-                    "old": old,
-                    "new": new,
-                    "row_count": result.row_count,
-                    "parent_audit_id": result.parent_audit_id,
-                },
-                sensitivity="low",
-            ),
-            output,
+        emit_json(
+            "tag_rename",
+            {
+                "old": old,
+                "new": new,
+                "row_count": result.row_count,
+                "parent_audit_id": result.parent_audit_id,
+            },
         )
         return
     logger.info(

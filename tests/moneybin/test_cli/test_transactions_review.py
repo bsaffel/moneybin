@@ -27,14 +27,14 @@ def test_review_type_invalid() -> None:
     assert result.exit_code != 0
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
 def test_review_status_flag(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
     """--status returns counts of both queues without entering interactive mode."""
     mock_db = MagicMock()
-    mock_get_db.return_value = mock_db
+    mock_get_db.return_value.__enter__.return_value = mock_db
     mock_get_settings.return_value = MagicMock()
     # count_pending: 0 rows from app.match_decisions; count_uncategorized: 0 rows
     mock_db.execute.return_value.fetchone.return_value = (0,)
@@ -46,14 +46,14 @@ def test_review_status_flag(
     assert "categori" in out
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
 def test_review_type_filter_matches(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
     """--type matches limits output to match queue count."""
     mock_db = MagicMock()
-    mock_get_db.return_value = mock_db
+    mock_get_db.return_value.__enter__.return_value = mock_db
     mock_get_settings.return_value = MagicMock()
     mock_db.execute.return_value.fetchone.return_value = (0,)
 
@@ -66,14 +66,14 @@ def test_review_type_filter_matches(
     assert "categori" not in out
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
 def test_review_type_filter_categorize(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
     """--type categorize limits output to categorize queue count."""
     mock_db = MagicMock()
-    mock_get_db.return_value = mock_db
+    mock_get_db.return_value.__enter__.return_value = mock_db
     mock_get_settings.return_value = MagicMock()
     mock_db.execute.return_value.fetchone.return_value = (0,)
 
@@ -86,14 +86,14 @@ def test_review_type_filter_categorize(
     assert "match" not in out
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
 def test_review_status_json_output(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
     """--status --output json emits a structured envelope."""
     mock_db = MagicMock()
-    mock_get_db.return_value = mock_db
+    mock_get_db.return_value.__enter__.return_value = mock_db
     mock_get_settings.return_value = MagicMock()
     mock_db.execute.return_value.fetchone.return_value = (0,)
 
@@ -110,14 +110,14 @@ def test_review_status_json_output(
     }
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
 def test_review_status_json_type_filter(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
     """--type matches --output json includes only the matches key."""
     mock_db = MagicMock()
-    mock_get_db.return_value = mock_db
+    mock_get_db.return_value.__enter__.return_value = mock_db
     mock_get_settings.return_value = MagicMock()
     mock_db.execute.return_value.fetchone.return_value = (0,)
 

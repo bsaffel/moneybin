@@ -5,16 +5,11 @@ import logging
 import duckdb as duckdb_mod
 import typer
 
-from moneybin.cli.output import (
-    OutputFormat,
-    output_option,
-    quiet_option,
-    render_or_json,
-)
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.database import get_database
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import VALID_MATCH_TYPES, get_match_log, undo_match
-from moneybin.protocol.envelope import build_envelope
 
 app = typer.Typer(
     help="Review and manage transaction matches (dedup, transfers)",
@@ -43,24 +38,25 @@ def matches_run(
     from moneybin.matching.priority import seed_source_priority
 
     try:
-        with handle_cli_errors() as db:
-            settings = get_settings().matching
-            seed_source_priority(db, settings)
-            matcher = TransactionMatcher(db, settings)
-            result = matcher.run(auto_accept_transfers=auto_accept_transfers)
-            if result.has_matches:
-                logger.info(f"Matching: {result.summary()}")
-                if result.has_pending:
-                    logger.info(
-                        "Run 'moneybin transactions review --type matches' when ready"
-                    )
-            else:
-                logger.info("No new matches found")
+        with handle_cli_errors():
+            with get_database() as db:
+                settings = get_settings().matching
+                seed_source_priority(db, settings)
+                matcher = TransactionMatcher(db, settings)
+                result = matcher.run(auto_accept_transfers=auto_accept_transfers)
+                if result.has_matches:
+                    logger.info(f"Matching: {result.summary()}")
+                    if result.has_pending:
+                        logger.info(
+                            "Run 'moneybin transactions review --type matches' when ready"
+                        )
+                else:
+                    logger.info("No new matches found")
 
-            if not skip_transform and result.auto_merged:
-                from moneybin.services.import_service import ImportService
+                if not skip_transform and result.auto_merged:
+                    from moneybin.services.import_service import ImportService
 
-                ImportService(db).run_transforms()
+                    ImportService(db).run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None
@@ -80,35 +76,36 @@ def matches_history(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    with handle_cli_errors(output=output) as db:
-        entries = get_match_log(db, limit=limit, match_type=match_type)
+    with handle_cli_errors():
+        with get_database() as db:
+            entries = get_match_log(db, limit=limit, match_type=match_type)
 
-        if output == OutputFormat.JSON:
-            render_or_json(build_envelope(data=entries, sensitivity="low"), output)
-            return
+            if output == OutputFormat.JSON:
+                emit_json("matches", entries)
+                return
 
-        if not entries:
-            if not quiet:
-                logger.info("No match decisions found")
-            return
+            if not entries:
+                if not quiet:
+                    logger.info("No match decisions found")
+                return
 
-        typer.echo(
-            f"\n{'Match ID':<14} {'Type':<9} {'Status':<10} {'Tier':<5} {'Score':>6} "
-            f"{'Decided By':<10} {'Type A':<6} {'Type B':<6}"
-        )
-        typer.echo("-" * 80)
-        for entry in entries:
             typer.echo(
-                f"{entry['match_id'][:12]:<14} "
-                f"{entry.get('match_type', 'dedup'):<9} "
-                f"{entry['match_status']:<10} "
-                f"{(entry.get('match_tier') or '-'):<5} "
-                f"{float(entry.get('confidence_score') or 0):>6.2f} "
-                f"{entry['decided_by']:<10} "
-                f"{entry['source_type_a']:<6} "
-                f"{entry['source_type_b']:<6}"
+                f"\n{'Match ID':<14} {'Type':<9} {'Status':<10} {'Tier':<5} {'Score':>6} "
+                f"{'Decided By':<10} {'Type A':<6} {'Type B':<6}"
             )
-        typer.echo()
+            typer.echo("-" * 80)
+            for entry in entries:
+                typer.echo(
+                    f"{entry['match_id'][:12]:<14} "
+                    f"{entry.get('match_type', 'dedup'):<9} "
+                    f"{entry['match_status']:<10} "
+                    f"{(entry.get('match_tier') or '-'):<5} "
+                    f"{float(entry.get('confidence_score') or 0):>6.2f} "
+                    f"{entry['decided_by']:<10} "
+                    f"{entry['source_type_a']:<6} "
+                    f"{entry['source_type_b']:<6}"
+                )
+            typer.echo()
 
 
 @app.command("undo")
@@ -124,9 +121,10 @@ def matches_undo(
             raise typer.Exit(0)
 
     try:
-        with handle_cli_errors() as db:
-            undo_match(db, match_id, reversed_by="user")
-            logger.info(f"Reversed match {match_id[:8]}...")
+        with handle_cli_errors():
+            with get_database() as db:
+                undo_match(db, match_id, reversed_by="user")
+                logger.info(f"Reversed match {match_id[:8]}...")
     except ValueError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
@@ -148,31 +146,32 @@ def matches_backfill(
     from moneybin.matching.priority import seed_source_priority
 
     try:
-        with handle_cli_errors() as db:
-            settings = get_settings().matching
+        with handle_cli_errors():
+            with get_database() as db:
+                settings = get_settings().matching
 
-            count = db.execute(
-                "SELECT COUNT(*) FROM prep.int_transactions__unioned"
-            ).fetchone()
-            total = count[0] if count else 0
-            logger.info(
-                f"Scanning {total:,} existing transactions for duplicates and transfers..."
-            )
-
-            seed_source_priority(db, settings)
-            matcher = TransactionMatcher(db, settings)
-            result = matcher.run(auto_accept_transfers=auto_accept_transfers)
-
-            logger.info(f"Backfill complete: {result.summary()}")
-            if result.has_pending:
+                count = db.execute(
+                    "SELECT COUNT(*) FROM prep.int_transactions__unioned"
+                ).fetchone()
+                total = count[0] if count else 0
                 logger.info(
-                    "Run 'moneybin transactions review --type matches' when ready"
+                    f"Scanning {total:,} existing transactions for duplicates and transfers..."
                 )
 
-            if not skip_transform and result.auto_merged:
-                from moneybin.services.import_service import ImportService
+                seed_source_priority(db, settings)
+                matcher = TransactionMatcher(db, settings)
+                result = matcher.run(auto_accept_transfers=auto_accept_transfers)
 
-                ImportService(db).run_transforms()
+                logger.info(f"Backfill complete: {result.summary()}")
+                if result.has_pending:
+                    logger.info(
+                        "Run 'moneybin transactions review --type matches' when ready"
+                    )
+
+                if not skip_transform and result.auto_merged:
+                    from moneybin.services.import_service import ImportService
+
+                    ImportService(db).run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None

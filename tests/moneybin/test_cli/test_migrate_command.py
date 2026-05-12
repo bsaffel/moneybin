@@ -33,7 +33,7 @@ def _migration(
 class TestMigrateApply:
     """moneybin db migrate apply command."""
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     def test_apply_runs_pending(
         self, mock_runner_cls: MagicMock, mock_get_db: MagicMock
@@ -49,7 +49,7 @@ class TestMigrateApply:
         assert result.exit_code == 0
         mock_runner.apply_all.assert_called_once()
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     def test_apply_no_pending_exits_0(
         self, mock_runner_cls: MagicMock, mock_get_db: MagicMock
@@ -64,7 +64,7 @@ class TestMigrateApply:
         result = runner.invoke(app, ["apply"])
         assert result.exit_code == 0
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     def test_apply_dry_run(
         self, mock_runner_cls: MagicMock, mock_get_db: MagicMock
@@ -77,7 +77,7 @@ class TestMigrateApply:
         assert result.exit_code == 0
         mock_runner.apply_all.assert_not_called()
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     def test_apply_dry_run_no_pending(
         self, mock_runner_cls: MagicMock, mock_get_db: MagicMock
@@ -90,7 +90,7 @@ class TestMigrateApply:
         assert result.exit_code == 0
         mock_runner.apply_all.assert_not_called()
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     def test_apply_failure_exits_1(
         self, mock_runner_cls: MagicMock, mock_get_db: MagicMock
@@ -108,7 +108,7 @@ class TestMigrateApply:
         result = runner.invoke(app, ["apply"])
         assert result.exit_code == 1
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     def test_apply_database_key_error_exits_1(self, mock_get_db: MagicMock) -> None:
         """DatabaseKeyError causes exit 1."""
         from moneybin.database import DatabaseKeyError
@@ -118,7 +118,7 @@ class TestMigrateApply:
         result = runner.invoke(app, ["apply"])
         assert result.exit_code == 1
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     def test_apply_drift_warnings_shown(
         self,
@@ -149,7 +149,7 @@ class TestMigrateApply:
 class TestMigrateStatus:
     """moneybin db migrate status command."""
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     @patch("moneybin.cli.commands.migrate.get_current_versions")
     def test_status_shows_applied_and_pending(
@@ -191,7 +191,7 @@ class TestMigrateStatus:
         assert "V001__init.sql" in messages
         assert "V002__new.sql" in messages
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
     @patch("moneybin.cli.commands.migrate.get_current_versions")
     def test_status_no_applied(
@@ -216,7 +216,7 @@ class TestMigrateStatus:
         assert result.exit_code == 0
         assert any("No applied migrations" in r.message for r in caplog.records)
 
-    @patch("moneybin.cli.utils.get_database")
+    @patch("moneybin.cli.commands.migrate.get_database")
     def test_status_database_key_error_exits_1(self, mock_get_db: MagicMock) -> None:
         """DatabaseKeyError on status causes exit 1."""
         from moneybin.database import DatabaseKeyError
