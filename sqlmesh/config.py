@@ -29,11 +29,7 @@ if "MONEYBIN_HOME" not in os.environ:
 from moneybin.config import (  # noqa: E402 — must follow sys.path setup above
     get_database_path,
     get_settings,
-    set_current_profile,
 )
-
-# Set default profile if not already set by CLI (e.g. when using sqlmesh format)
-set_current_profile("default")
 
 _sqlmesh_dir = os.path.dirname(os.path.abspath(__file__))
 
