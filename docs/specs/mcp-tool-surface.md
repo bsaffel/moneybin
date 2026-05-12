@@ -1095,6 +1095,16 @@ Data status dashboard — what data exists, how fresh it is, what's pending acti
 - **Service:** `OverviewService.status() -> SystemStatus`
 - **CLI:** `moneybin system status`
 
+### `system_doctor`
+
+Pipeline integrity check — confirms the data pipeline is self-consistent before analysis.
+
+- **Sensitivity:** `low` — counts and status labels only.
+- **Unique parameters:** None.
+- **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus two hardcoded checks (staging coverage, categorization coverage). Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
+- **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
+- **CLI:** `moneybin doctor [--verbose] [--output json]`
+
 ### `reports_health`
 
 Financial health snapshot — high-level summary across all domains.

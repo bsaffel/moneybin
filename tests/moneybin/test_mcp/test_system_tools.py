@@ -76,3 +76,46 @@ async def test_register_system_tools() -> None:
     register_system_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert "system_status" in names
+
+
+# ── system_doctor ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+async def test_system_doctor_returns_envelope(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_doctor
+
+    result = await system_doctor()
+    parsed = result.to_dict()
+    assert "summary" in parsed
+    assert "data" in parsed
+
+
+@pytest.mark.unit
+async def test_system_doctor_data_has_required_keys(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_doctor
+
+    result = await system_doctor()
+    data = result.to_dict()["data"]
+    assert "passing" in data
+    assert "failing" in data
+    assert "warning" in data
+    assert "transaction_count" in data
+    assert "invariants" in data
+
+
+@pytest.mark.unit
+async def test_system_doctor_transaction_count_is_int(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_doctor
+
+    result = await system_doctor()
+    data = result.to_dict()["data"]
+    assert isinstance(data["transaction_count"], int)
+
+
+@pytest.mark.unit
+async def test_system_doctor_sensitivity_is_low(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_doctor
+
+    result = await system_doctor()
+    assert result.to_dict()["summary"]["sensitivity"] == "low"
