@@ -234,7 +234,7 @@ class TestTagRenameAuditChain:
             env=env,
         )
         result.assert_success()
-        events: list[dict[str, Any]] = _loads(result.stdout)["audit_events"]
+        events: list[dict[str, Any]] = _loads(result.stdout)["data"]
         assert isinstance(events, list)
 
         rename_parents = [
@@ -376,7 +376,7 @@ class TestCategoryEditAudit:
             env=env,
         )
         result.assert_success()
-        events: list[dict[str, Any]] = _loads(result.stdout)["audit_events"]
+        events: list[dict[str, Any]] = _loads(result.stdout)["data"]
         cat_sets = [e for e in events if str(e.get("action")) == "category.set"]
         assert cat_sets, events
         # At least one event should carry an after_value referencing a category name.
