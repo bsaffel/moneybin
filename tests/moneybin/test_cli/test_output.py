@@ -21,22 +21,30 @@ def _make_envelope(rows: list[dict[str, Any]] | None = None) -> ResponseEnvelope
 
 
 class TestRenderOrJson:
+    """Tests for render_or_json helper."""
+
     @pytest.mark.unit
-    def test_json_mode_emits_full_envelope(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_json_mode_emits_full_envelope(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         render_or_json(_make_envelope(), OutputFormat.JSON)
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "ok"
         assert out["data"][0]["id"] == "a1"
 
     @pytest.mark.unit
-    def test_json_fields_filters_data_keys(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_json_fields_filters_data_keys(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         rows = [{"id": "a1", "amount": "10.00", "description": "Coffee"}]
         render_or_json(_make_envelope(rows), OutputFormat.JSON, json_fields="id,amount")
         out = json.loads(capsys.readouterr().out)
         assert out["data"] == [{"id": "a1", "amount": "10.00"}]
 
     @pytest.mark.unit
-    def test_json_fields_ignored_for_dict_data(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_json_fields_ignored_for_dict_data(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         envelope = ResponseEnvelope(
             summary=SummaryMeta(total_count=1, returned_count=1),
             data={"applied": 3, "errors": 0},
@@ -47,7 +55,9 @@ class TestRenderOrJson:
         assert out["data"] == {"applied": 3, "errors": 0}
 
     @pytest.mark.unit
-    def test_json_fields_none_returns_all_fields(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_json_fields_none_returns_all_fields(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         rows = [{"id": "a1", "amount": "10.00", "description": "Coffee"}]
         render_or_json(_make_envelope(rows), OutputFormat.JSON)
         out = json.loads(capsys.readouterr().out)
@@ -56,7 +66,9 @@ class TestRenderOrJson:
     @pytest.mark.unit
     def test_text_mode_calls_render_fn(self) -> None:
         called: list[Any] = []
-        render_or_json(_make_envelope(), OutputFormat.TEXT, render_fn=lambda e: called.append(e))
+        render_or_json(
+            _make_envelope(), OutputFormat.TEXT, render_fn=lambda e: called.append(e)
+        )
         assert len(called) == 1
 
     @pytest.mark.unit
@@ -67,10 +79,25 @@ class TestRenderOrJson:
         out = capsys.readouterr().out
         assert json.loads(out)["status"] == "ok"
 
+    @pytest.mark.unit
+    def test_json_fields_missing_field_silently_skipped(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rows = [{"id": "a1", "amount": "10.00"}]
+        render_or_json(
+            _make_envelope(rows), OutputFormat.JSON, json_fields="id,nonexistent"
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"] == [{"id": "a1"}]
+
 
 class TestEmitJsonError:
+    """Tests for emit_json_error helper."""
+
     @pytest.mark.unit
-    def test_emits_error_envelope_to_stdout(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_emits_error_envelope_to_stdout(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         err = UserError("DB locked", code="database_locked")
         emit_json_error(err)
         out = json.loads(capsys.readouterr().out)

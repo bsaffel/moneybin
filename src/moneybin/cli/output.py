@@ -75,14 +75,17 @@ def render_or_json(
 ) -> None:
     """Render a response envelope as text or JSON.
 
-    When ``json_fields`` is supplied and ``output`` is JSON, only those
-    comma-separated keys are kept in each ``data`` list item. Silently
-    skipped when ``data`` is a dict (write-result shape).
+    When ``json_fields`` is supplied (and non-empty) and ``output`` is JSON,
+    only those comma-separated keys are kept in each ``data`` list item.
+    An empty string ``""`` is treated the same as ``None`` — no filtering.
+    Silently skipped when ``data`` is a dict (write-result shape).
     """
     if output == OutputFormat.JSON:
         if json_fields and isinstance(envelope.data, list):
             fields = set(json_fields.split(","))
-            filtered = [{k: v for k, v in row.items() if k in fields} for row in envelope.data]
+            filtered = [
+                {k: v for k, v in row.items() if k in fields} for row in envelope.data
+            ]
             envelope = dataclasses.replace(envelope, data=filtered)
         typer.echo(envelope.to_json())
     elif render_fn is not None:
