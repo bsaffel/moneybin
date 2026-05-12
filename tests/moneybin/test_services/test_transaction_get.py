@@ -233,6 +233,19 @@ class TestTransactionGet:
             TransactionService(txn_db).get(limit=0)
 
     @pytest.mark.unit
+    def test_malformed_cursor_raises(self, txn_db: Database) -> None:
+        with pytest.raises(ValueError, match="invalid cursor"):
+            TransactionService(txn_db).get(cursor="not-valid-base64!!!")
+
+    @pytest.mark.unit
+    def test_negative_cursor_raises(self, txn_db: Database) -> None:
+        import base64
+
+        bad = base64.b64encode(b"-10").decode()
+        with pytest.raises(ValueError, match="invalid cursor"):
+            TransactionService(txn_db).get(cursor=bad)
+
+    @pytest.mark.unit
     def test_uncategorized_only_includes_source_categorized(
         self, tmp_path: Path
     ) -> None:

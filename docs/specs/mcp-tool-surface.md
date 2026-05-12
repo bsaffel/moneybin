@@ -298,105 +298,81 @@ Default output is a table with period, income, expenses, net, and count columns.
 
 ### 2.2 `transactions_get` — medium sensitivity, cursor pagination, curation fields
 
-> **Note:** `transactions_search` was removed and superseded by `transactions_get` in M3E. The exemplar below reflects the current implementation.
-
-
-
 **Service layer**
 
 ```python
 class TransactionService:
-    def search(
+    def get(
         self,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        months: int | None = None,
-        min_amount: float | None = None,
-        max_amount: float | None = None,
+        *,
+        accounts: list[str] | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        categories: list[str] | None = None,
+        amount_min: Decimal | None = None,
+        amount_max: Decimal | None = None,
         description: str | None = None,
-        category: str | None = None,
-        account_id: list[str] | None = None,
         uncategorized_only: bool = False,
-        limit: int = 100,
-        offset: int = 0,
-        detail: str = "standard",
-    ) -> TransactionSearchResult: ...
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> TransactionGetResult: ...
 ```
 
-`TransactionSearchResult` contains a list of `Transaction` records and pagination metadata. At `detail=summary`, the service returns category/period aggregates instead of rows (the degraded path reuses this).
+`TransactionGetResult` contains a list of `Transaction` records and an optional `next_cursor` string. `Transaction` includes curation fields (`notes`, `tags`, `splits`) joined from the app schema in `core.fct_transactions`. `accounts` entries are resolved: exact `account_id` matches are used directly; anything else is fuzzy-matched by display name via `AccountService`. Unresolvable entries are silently skipped.
 
 **MCP tool**
 
-- **Name:** `transactions_search`
-- **Description:** "Search transactions with filters. Returns row-level transaction data. For aggregate summaries without consent requirements, use `detail=summary` or the `spending.*` tools instead."
-- **Sensitivity:** `medium` — row-level data (descriptions, amounts, dates) at `standard`/`full` detail. `detail=summary` returns aggregates and does not trigger consent.
+- **Name:** `transactions_get`
+- **Description:** "Fetch transactions with optional filters and cursor pagination. Returns row-level data including curation fields (notes, tags, splits). Amounts use the accounting convention: negative = expense, positive = income. Amount filter parameters accept decimal strings (e.g., `\"-50.00\"`) to preserve precision."
+- **Sensitivity:** `medium` — row-level data (descriptions, amounts, dates).
 - **Parameters:**
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `start_date` | `str?` | — | ISO 8601 start date |
-| `end_date` | `str?` | — | ISO 8601 end date |
-| `months` | `int?` | — | Recent months lookback (overridden by explicit dates) |
-| `min_amount` | `float?` | — | Minimum amount (negative for expenses) |
-| `max_amount` | `float?` | — | Maximum amount |
-| `description` | `str?` | — | ILIKE pattern for description/memo (e.g., `%AMAZON%`) |
-| `category` | `str?` | — | Filter by category name |
-| `account_id` | `list[str]?` | — | Filter to specific accounts |
-| `uncategorized_only` | `bool` | `false` | Only return uncategorized transactions |
-| `limit` | `int` | `100` | Max results (capped at `MAX_ROWS`) |
-| `offset` | `int` | `0` | Pagination offset |
-| `detail` | `str` | `"standard"` | `summary` (aggregates), `standard` (core fields), `full` (all fields including memo, source_type, merchant_name) |
+| `accounts` | `list[str]?` | — | Account IDs or display names (fuzzy-matched) |
+| `date_from` | `str?` | — | ISO 8601 start date, inclusive |
+| `date_to` | `str?` | — | ISO 8601 end date, inclusive |
+| `categories` | `list[str]?` | — | Filter to specific category names |
+| `amount_min` | `str?` | — | Minimum amount as decimal string (e.g., `"-50.00"`) |
+| `amount_max` | `str?` | — | Maximum amount as decimal string |
+| `description` | `str?` | — | ILIKE pattern matched against description and memo |
+| `uncategorized_only` | `bool` | `false` | Only rows with no user/AI/rule categorization (`categorized_by IS NULL`) |
+| `limit` | `int` | `50` | Max results per page |
+| `cursor` | `str?` | — | Opaque pagination token from `next_cursor` in a prior response |
 
-- **Response `data` shape (`standard`):**
+- **Response `data` shape:**
 
 ```json
 [
   {
-    "transaction_id": "tx_abc123",
-    "date": "2026-04-15",
+    "transaction_id": "abc123def456",
+    "account_id": "chase-checking-1234",
+    "transaction_date": "2026-04-15",
     "amount": -42.50,
     "description": "WHOLEFDS MKT #10234",
+    "source_type": "ofx",
     "category": "Food & Drink",
     "subcategory": "Groceries",
-    "account_id": "chase-checking-1234"
+    "tags": ["grocery", "weekly"],
+    "notes": null,
+    "splits": null
   }
 ]
 ```
 
-- **Degraded response** (no consent): Same envelope with `summary.degraded: true`. `data` contains category/period aggregates instead of transaction rows:
-
-```json
-{
-  "summary": {
-    "total_count": 247,
-    "returned_count": 5,
-    "has_more": false,
-    "sensitivity": "low",
-    "degraded": true,
-    "degraded_reason": "Transaction-level data requires data-sharing consent"
-  },
-  "data": [
-    {"category": "Food & Drink", "total": 1245.67, "transaction_count": 42},
-    {"category": "Shopping", "total": 892.30, "transaction_count": 23}
-  ],
-  "actions": [
-    "Run 'moneybin privacy grant mcp-data-sharing' to enable full transaction details"
-  ]
-}
-```
-
-- **Actions (consented):** `["Use transactions_categorize_apply to categorize selected transactions", "Use transactions_correct to fix a transaction's amount or description"]`
+- **Pagination:** `next_cursor` appears at the top level of the envelope when more pages exist. Pass it back as `cursor` to fetch the next page. Absent when all results fit in one page.
+- **Actions:** `["Use transactions_get with the next_cursor value to fetch the next page", "Use reports_spending_get for category breakdowns", "Use transactions_categorize_apply to categorize uncategorized transactions"]`
 
 **CLI command**
 
 ```
-moneybin transactions search [--start-date DATE] [--end-date DATE] [--months N]
-                             [--min-amount N] [--max-amount N] [--description PATTERN]
-                             [--category NAME] [--account-id ID ...] [--uncategorized-only]
-                             [--limit 100] [--offset 0] [--detail standard] [--output json]
+moneybin transactions list [--account ID_OR_NAME] [--from DATE] [--to DATE]
+                           [--category NAME] [--amount-min N] [--amount-max N]
+                           [--description PATTERN] [--uncategorized]
+                           [--limit 50] [--cursor TOKEN] [--output text|json]
 ```
 
-Default output is a table with date, amount, description, category, and account columns. `--output json` returns the response envelope.
+Default output is a table with date, description, amount, category, and account columns. `--output json` returns the response envelope. `--account` is repeatable and resolves by account ID or fuzzy display-name match.
 
 ---
 

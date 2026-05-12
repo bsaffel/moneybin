@@ -99,7 +99,7 @@ class CategoryBreakdown:
             period=self.period_label,
             actions=[
                 "Use reports_spending_merchants for merchant-level breakdown",
-                "Use transactions_search to see individual transactions in a category",
+                "Use transactions_get to see individual transactions in a category",
             ],
         )
 

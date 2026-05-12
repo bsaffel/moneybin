@@ -8,6 +8,7 @@ detection. Consumed by both MCP tools and CLI commands.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import logging
 import uuid
@@ -289,7 +290,15 @@ class TransactionService:
         """
         if limit < 1:
             raise ValueError(f"limit must be >= 1, got {limit}")
-        offset = int(base64.b64decode(cursor.encode()).decode()) if cursor else 0
+        if cursor is not None:
+            try:
+                offset = int(base64.b64decode(cursor.encode()).decode())
+            except (binascii.Error, UnicodeDecodeError, ValueError) as e:
+                raise ValueError(f"invalid cursor: {cursor!r}") from e
+            if offset < 0:
+                raise ValueError(f"invalid cursor (negative offset): {cursor!r}")
+        else:
+            offset = 0
 
         conditions: list[str] = []
         params: list[object] = []
