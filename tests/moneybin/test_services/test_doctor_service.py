@@ -292,3 +292,63 @@ def test_verbose_false_returns_empty_affected_ids(
     fk = next(r for r in report.invariants if r.name == "fct_transactions_fk_integrity")
     assert fk.status == "fail"
     assert fk.affected_ids == []  # verbose=False → no IDs
+
+
+@pytest.mark.unit
+def test_staging_coverage_is_always_skipped(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all()
+    staging = next(r for r in report.invariants if r.name == "staging_coverage")
+    assert staging.status == "skipped"
+    assert staging.detail is not None
+
+
+@pytest.mark.unit
+def test_categorization_coverage_passes_when_all_categorized(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Set category on all non-transfer transactions
+    doctor_db.execute("""
+        UPDATE core.fct_transactions
+        SET category = 'Food & Drink'
+        WHERE transaction_id IN ('T1', 'T2')
+    """)  # noqa: S608 — test input, not user data
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all()
+    cat = next(r for r in report.invariants if r.name == "categorization_coverage")
+    assert cat.status == "pass"
+
+
+@pytest.mark.unit
+def test_categorization_coverage_warns_when_below_50pct(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # T1 and T2 have no category (default NULL) — 0% categorized → warn
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all()
+    cat = next(r for r in report.invariants if r.name == "categorization_coverage")
+    assert cat.status == "warn"
+    assert "uncategorized" in (cat.detail or "").lower()
