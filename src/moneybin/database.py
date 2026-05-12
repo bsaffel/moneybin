@@ -150,6 +150,7 @@ class Database:
         self,
         db_path: Path,
         *,
+        read_only: bool = False,
         secret_store: SecretStore | None = None,
         no_auto_upgrade: bool | None = None,
     ) -> None:
@@ -157,6 +158,9 @@ class Database:
 
         Args:
             db_path: Path to the DuckDB database file.
+            read_only: If True, open the database in read-only mode. The
+                database must already exist. Skips schema init, migrations,
+                and view refresh.
             secret_store: SecretStore instance for key retrieval. If None,
                 creates a new one.
             no_auto_upgrade: If True, skip versioned migrations and SQLMesh
@@ -164,6 +168,10 @@ class Database:
 
         Raises:
             DatabaseKeyError: If the encryption key cannot be retrieved.
+            DatabaseNotInitializedError: If read_only=True and db_path does
+                not exist.
+            DatabaseLockError: If DuckDB reports a conflicting lock or
+                configuration mismatch on ATTACH.
         """
         self._db_path = db_path
         self._conn: duckdb.DuckDBPyConnection | None = None
@@ -171,14 +179,39 @@ class Database:
 
         store = secret_store or SecretStore()
 
-        try:
-            encryption_key = store.get_key(_KEY_NAME)
-        except SecretNotFoundError as e:
-            raise DatabaseKeyError(
-                f"Cannot open database — encryption key not found. "
-                f"Run 'moneybin db init' to create a new database, or set "
-                f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
-            ) from e
+        global _cached_encryption_key  # noqa: PLW0603
+        if _cached_encryption_key is not None:
+            encryption_key = _cached_encryption_key
+        else:
+            try:
+                encryption_key = store.get_key(_KEY_NAME)
+            except SecretNotFoundError as e:
+                raise DatabaseKeyError(
+                    f"Cannot open database — encryption key not found. "
+                    f"Run 'moneybin db init' to create a new database, or set "
+                    f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
+                ) from e
+            _cached_encryption_key = encryption_key
+
+        if read_only:
+            if not db_path.exists():
+                raise DatabaseNotInitializedError(
+                    f"Database not found at {db_path}.\n"
+                    f"Run 'moneybin db init' to initialize it first."
+                )
+            self._conn = duckdb.connect()
+            try:
+                self._conn.execute(
+                    build_attach_sql(db_path, encryption_key, read_only=True)
+                )
+            except duckdb.CatalogException as e:
+                self._conn.close()
+                self._conn = None
+                if "different configuration" in str(e):
+                    raise DatabaseLockError(str(e)) from e
+                raise
+            self._conn.execute(f"USE {_DATABASE_ALIAS}")
+            return
 
         # Ensure parent directory exists — parents=False so we don't
         # recreate a deleted profile's directory tree. The profile root
@@ -189,7 +222,20 @@ class Database:
 
         self._conn = duckdb.connect()
 
-        self._conn.execute(build_attach_sql(db_path, encryption_key))
+        try:
+            self._conn.execute(build_attach_sql(db_path, encryption_key))
+        except duckdb.CatalogException as e:
+            self._conn.close()
+            self._conn = None
+            if "different configuration" in str(e):
+                raise DatabaseLockError(str(e)) from e
+            raise
+        except duckdb.IOException as e:
+            self._conn.close()
+            self._conn = None
+            if "Conflicting lock" in str(e):
+                raise DatabaseLockError(str(e)) from e
+            raise
         self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
         # Set file permissions on new databases (macOS/Linux)

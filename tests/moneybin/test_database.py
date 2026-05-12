@@ -136,8 +136,14 @@ class TestDatabaseInit:
         finally:
             db.close()
 
-    def test_raises_database_key_error_when_no_key(self, db_dir: Path) -> None:
+    def test_raises_database_key_error_when_no_key(
+        self, db_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """DatabaseKeyError raised when SecretStore cannot find the key."""
+        import moneybin.database as db_module
+
+        # Clear the key cache so the store is actually consulted.
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
         store = MagicMock()
         from moneybin.secrets import SecretNotFoundError
 
@@ -435,6 +441,71 @@ class TestGetDatabase:
         assert db_module._database_instance is db  # type: ignore[reportPrivateUsage]  # test-only: verify singleton state
         close_database()
         assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only: verify singleton reset
+
+
+class TestDatabaseReadOnly:
+    """Database read_only=True path — missing file detection and schema skip."""
+
+    def test_raises_not_initialized_when_path_missing(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        from moneybin.database import DatabaseNotInitializedError
+
+        db_path = tmp_path / "nonexistent.duckdb"
+        assert not db_path.exists()
+        with pytest.raises(DatabaseNotInitializedError, match="db init"):
+            Database(db_path, read_only=True, secret_store=mock_secret_store)
+
+    def test_skips_init_schemas_on_read_only(
+        self, tmp_path: Path, mock_secret_store: MagicMock, mocker: MockerFixture
+    ) -> None:
+        db_path = tmp_path / "ro.duckdb"
+        # Create a real DB first (write mode)
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        db.close()
+        # Open read-only; init_schemas should NOT be called
+        mock_init = mocker.patch("moneybin.schema.init_schemas")
+        with Database(db_path, read_only=True, secret_store=mock_secret_store):
+            pass
+        mock_init.assert_not_called()
+
+    def test_read_only_can_query_existing_table(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        db_path = tmp_path / "rw.duckdb"
+        with Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        ) as db:
+            db.execute("CREATE TABLE test_ro (id INTEGER)")
+            db.execute("INSERT INTO test_ro VALUES (42)")
+        with Database(db_path, read_only=True, secret_store=mock_secret_store) as ro_db:
+            result = ro_db.execute("SELECT id FROM test_ro").fetchone()
+        assert result == (42,)
+
+
+class TestEncryptionKeyCache:
+    """_cached_encryption_key module-level cache avoids repeated SecretStore lookups."""
+
+    def test_second_init_skips_store_get_key(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+        db_path = tmp_path / "cached.duckdb"
+        # First open — calls store.get_key once
+        db1 = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        db1.close()
+        call_count_after_first = mock_secret_store.get_key.call_count
+        # Second open — key is cached; store.get_key NOT called again
+        db2 = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        db2.close()
+        assert mock_secret_store.get_key.call_count == call_count_after_first
+        # Cleanup cache
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
 
 
 class TestTemporarySingleton:
