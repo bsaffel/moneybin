@@ -100,6 +100,9 @@ def test_handle_cli_errors_json_mode_no_log_output(
 
     # error must NOT appear in log (it went to stdout JSON instead)
     assert "gone.csv" not in caplog.text
+    # error goes to stdout JSON, not stderr log
+    captured = capsys.readouterr()
+    assert captured.out.strip()  # some JSON was emitted to stdout
 
 
 def test_handle_cli_errors_text_mode_unchanged(

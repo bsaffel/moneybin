@@ -92,6 +92,7 @@ def sqlmesh_command(
     """
     logger.info(f"⚙️  {operation}...")
     try:
+        # TODO: forward output param when sqlmesh_command callers gain --output json support
         with handle_cli_errors() as db:
             yield db
         logger.info(f"✅ {success or f'{operation} completed'}")
