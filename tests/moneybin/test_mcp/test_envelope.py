@@ -69,6 +69,7 @@ class TestResponseEnvelope:
         d = envelope.to_dict()
         assert set(d.keys()) == {"status", "summary", "data", "actions"}
         assert d["status"] == "ok"
+        assert list(d.keys())[0] == "status"
         assert d["summary"]["total_count"] == 3
         assert d["summary"]["returned_count"] == 3
         assert d["summary"]["has_more"] is False
