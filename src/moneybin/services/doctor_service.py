@@ -6,6 +6,9 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from moneybin.database import Database, sqlmesh_context
+from moneybin.tables import FCT_TRANSACTIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,3 +28,108 @@ class DoctorReport:
 
     invariants: list[InvariantResult]
     transaction_count: int
+
+
+class DoctorService:
+    """Run pipeline integrity invariants and aggregate results."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    def run_all(self, verbose: bool = False) -> DoctorReport:
+        """Run all invariants and return a DoctorReport."""
+        transaction_count = self._get_transaction_count()
+        sqlmesh_results = self._run_sqlmesh_audits(verbose)
+        staging = self._run_staging_coverage()
+        categorization = self._run_categorization_coverage()
+        invariants = [*sqlmesh_results, staging, categorization]
+        return DoctorReport(invariants=invariants, transaction_count=transaction_count)
+
+    def _get_transaction_count(self) -> int:
+        try:
+            row = self._db.execute(
+                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+            return 0
+
+    def _run_sqlmesh_audits(self, verbose: bool) -> list[InvariantResult]:
+        """Discover and run all named SQLMesh standalone audits."""
+        results: list[InvariantResult] = []
+        try:
+            with sqlmesh_context() as ctx:
+                for name, audit in ctx.standalone_audits.items():
+                    sql = audit.render_audit_query().sql(dialect="duckdb")
+                    rows = self._db.execute(sql).fetchall()  # noqa: S608 — rendered from trusted audit files
+                    if rows:
+                        affected = [str(r[0]) for r in rows] if verbose else []
+                        results.append(InvariantResult(
+                            name=name,
+                            status="fail",
+                            detail=f"{len(rows)} violation(s)",
+                            affected_ids=affected,
+                        ))
+                    else:
+                        results.append(InvariantResult(
+                            name=name,
+                            status="pass",
+                            detail=None,
+                            affected_ids=[],
+                        ))
+        except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+            logger.warning(f"SQLMesh audit discovery failed: {e}")
+        return results
+
+    def _run_staging_coverage(self) -> InvariantResult:
+        # app.match_decisions has no is_primary column — cannot compute
+        # dedup secondary count. Mark skipped rather than silently wrong.
+        # Revisit when match_decisions gains a primary/secondary designation.
+        return InvariantResult(
+            name="staging_coverage",
+            status="skipped",
+            detail="requires is_primary column in app.match_decisions — schema not yet available",
+            affected_ids=[],
+        )
+
+    def _run_categorization_coverage(self) -> InvariantResult:
+        """Warn (not fail) when <50% of non-transfer transactions are categorized."""
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT
+                    COUNT(*) FILTER (WHERE category IS NULL) AS uncategorized,
+                    COUNT(*) AS total
+                FROM {FCT_TRANSACTIONS.full_name}
+                WHERE NOT COALESCE(is_transfer, FALSE)
+                """  # noqa: S608 — TableRef constant, not user input
+            ).fetchone()
+        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+            return InvariantResult(
+                name="categorization_coverage",
+                status="skipped",
+                detail="fct_transactions not available",
+                affected_ids=[],
+            )
+        if not row or row[1] == 0:
+            return InvariantResult(
+                name="categorization_coverage",
+                status="pass",
+                detail=None,
+                affected_ids=[],
+            )
+        uncategorized, total = int(row[0]), int(row[1])
+        pct_categorized = round((total - uncategorized) / total * 100)
+        if pct_categorized < 50:
+            return InvariantResult(
+                name="categorization_coverage",
+                status="warn",
+                detail=f"{100 - pct_categorized}% of non-transfer transactions are uncategorized",
+                affected_ids=[],
+            )
+        return InvariantResult(
+            name="categorization_coverage",
+            status="pass",
+            detail=None,
+            affected_ids=[],
+        )
