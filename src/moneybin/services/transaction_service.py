@@ -66,6 +66,9 @@ class Transaction:
     source_type: str
     category: str | None
     subcategory: str | None
+    notes: list[dict[str, Any]] | None = None
+    tags: list[str] | None = None
+    splits: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""
@@ -83,6 +86,12 @@ class Transaction:
             d["category"] = self.category
         if self.subcategory:
             d["subcategory"] = self.subcategory
+        if self.notes is not None:
+            d["notes"] = self.notes
+        if self.tags is not None:
+            d["tags"] = self.tags
+        if self.splits is not None:
+            d["splits"] = self.splits
         return d
 
 

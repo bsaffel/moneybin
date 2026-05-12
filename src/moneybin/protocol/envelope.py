@@ -87,12 +87,14 @@ class ResponseEnvelope:
     - ``actions``: contextual next-step hints
     - ``error``: populated when the tool failed with a classified user error;
       ``data`` is empty in this case
+    - ``next_cursor``: opaque pagination token when more results are available
     """
 
     summary: SummaryMeta
     data: list[dict[str, Any]] | dict[str, Any]
     actions: list[str] = field(default_factory=list)
     error: UserError | None = None
+    next_cursor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization."""
@@ -103,6 +105,8 @@ class ResponseEnvelope:
         }
         if self.error is not None:
             d["error"] = self.error.to_dict()
+        if self.next_cursor is not None:
+            d["next_cursor"] = self.next_cursor
         return d
 
     def to_json(self) -> str:
