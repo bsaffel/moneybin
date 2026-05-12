@@ -441,10 +441,10 @@ def import_preview(
         from moneybin.database import get_database
 
         try:
-            preview_db: Database | None = get_database()
+            with get_database(read_only=True) as preview_db:
+                all_formats, _ = _load_all_formats(preview_db)
         except Exception:  # noqa: BLE001 — DB may not exist yet; use built-in only
-            preview_db = None
-        all_formats, _ = _load_all_formats(preview_db)
+            all_formats, _ = _load_all_formats(None)
         if format_name:
             matched_format = all_formats.get(format_name)
             if matched_format is None:
@@ -520,11 +520,10 @@ def formats_list(
     from moneybin.database import get_database
 
     try:
-        db: Database | None = get_database()
+        with get_database(read_only=True) as db:
+            all_formats, builtin = _load_all_formats(db)
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
-        db = None
-
-    all_formats, builtin = _load_all_formats(db)
+        all_formats, builtin = _load_all_formats(None)
 
     if output == OutputFormat.JSON:
         formats_payload = [
@@ -578,11 +577,10 @@ def formats_show(
     from moneybin.database import get_database
 
     try:
-        db: Database | None = get_database()
+        with get_database(read_only=True) as db:
+            all_formats, _ = _load_all_formats(db)
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
-        db = None
-
-    all_formats, _ = _load_all_formats(db)
+        all_formats, _ = _load_all_formats(None)
     fmt = all_formats.get(name)
 
     if fmt is None:
