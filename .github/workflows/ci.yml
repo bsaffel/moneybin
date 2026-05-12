@@ -6,8 +6,39 @@ on:
   pull_request:
 
 jobs:
-  ci:
-    name: Lint, Type Check & Test
+  # Detect whether any non-docs files changed. For pushes to main we always
+  # run the full suite; for PRs we skip lint/type/test when only docs changed.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.check.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for non-docs changes
+        id: check
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git fetch origin "$BASE_REF" --depth=1
+            CHANGED=$(git diff --name-only "origin/$BASE_REF" HEAD)
+            echo "Changed files:"
+            echo "$CHANGED"
+            if echo "$CHANGED" | grep -qvE '^(docs/|CHANGELOG\.md|README\.md)'; then
+              echo "code=true" >> $GITHUB_OUTPUT
+            else
+              echo "code=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "code=true" >> $GITHUB_OUTPUT
+          fi
+
+  format:
+    name: Format Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -22,6 +53,27 @@ jobs:
 
       - name: Check formatting
         run: uv run ruff format --check .
+
+  ci:
+    name: Lint, Type Check & Test
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://install.duckdb.org | sh
+          echo "$HOME/.duckdb/bin" >> $GITHUB_PATH
 
       - name: Lint
         run: uv run ruff check .

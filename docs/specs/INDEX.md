@@ -125,7 +125,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Reports Recipe Library](reports-recipe-library.md) | Feature | in-progress | Eight `reports.*` SQLMesh views (`net_worth`, `cash_flow`, `spending_trend`, `recurring_subscriptions`, `uncategorized_queue`, `merchant_activity`, `large_transactions`, `balance_drift`) inaugurating the `reports` schema; one-time migration of `core.agg_net_worth → reports.net_worth`; CLI/MCP `reports_*` surfaces extended; `moneybin://schema` discoverability extended. M2C entry. |
+| [Reports Recipe Library](reports-recipe-library.md) | Feature | implemented | Eight `reports.*` SQLMesh views (`net_worth`, `cash_flow`, `spending_trend`, `recurring_subscriptions`, `uncategorized_queue`, `merchant_activity`, `large_transactions`, `balance_drift`) inaugurating the `reports` schema; one-time migration of `core.agg_net_worth → reports.net_worth`; CLI/MCP `reports_*` surfaces extended; `moneybin://schema` discoverability extended. M2C entry. |
 
 ## Standalone
 | [Account Management](account-management.md) | Feature | implemented | Owns the `accounts` entity namespace: list/show/rename/archive/include, reversible account merging via bridge model, per-account settings (`app.account_settings`), display preferences. CLI per `cli-restructure.md` v2 (extends with archive/merge/unmerge): top-level `accounts` (entity ops; balance lives nested under `accounts balance` per `net-worth.md`). Bundles with `net-worth.md`. |
