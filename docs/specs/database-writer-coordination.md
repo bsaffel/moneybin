@@ -82,20 +82,24 @@ def __init__(
 ) -> None:
 ```
 
-When `read_only=True`:
-1. Check `db_path.exists()` before touching DuckDB — raise `DatabaseNotInitializedError` if missing:
-   ```
-   Database not found at <path>.
-   Run 'moneybin db init' to initialize it first.
-   ```
-2. Skip `db_path.parent.mkdir()`.
-3. Skip file permission set/check.
-4. Use `build_attach_sql(db_path, key, read_only=True)`.
-5. Skip `init_schemas()`, all migrations, and `refresh_views()`.
+When `read_only=True`: check `db_path.exists()` first — raise `DatabaseNotInitializedError` if missing:
+```
+Database not found at <path>.
+Run 'moneybin db init' to initialize it first.
+```
+If the file exists, skip the entire write-mode bootstrap: no `mkdir`, no permission set/check, no `init_schemas()`, no migrations, no `refresh_views()`. Use `build_attach_sql(db_path, key, read_only=True)`.
 
 When `read_only=False`: current behaviour unchanged (full init sequence).
 
-Wrap DuckDB's `IOException` containing "Conflicting lock" or "already open" in `DatabaseLockError`. Wrap `duckdb.CatalogException` on missing tables in `DatabaseNotInitializedError` (catches the partial-init case where the file exists but `db init` was interrupted).
+**Exception classification — two distinct `CatalogException` cases:**
+
+`duckdb.CatalogException` is raised in two unrelated situations that need different wrappers:
+
+1. **ATTACH-time config mismatch** (`CatalogException: different configuration`) — signals a lock-contention condition: another process holds an incompatible (e.g. read-only) connection. Classify as `DatabaseLockError` by catching in `Database.__init__` at the `ATTACH` call and pattern-matching on `"different configuration"` in the message.
+
+2. **Query-time missing table** (`CatalogException: ... does not exist`) — signals a partially initialised database (crashed `db init`). Classify as `DatabaseNotInitializedError` by catching at the CLI/service boundary when a query fails, pattern-matching on `"does not exist"` in the message.
+
+Wrap DuckDB's `IOException` containing `"Conflicting lock"` in `DatabaseLockError`. (The observed message from DuckDB 1.5.2 is `"Conflicting lock is held"` — match on `"Conflicting lock"`; do not add `"already open"` until confirmed against DuckDB 1.5.2.)
 
 **Active write connection slot**
 
@@ -121,22 +125,34 @@ with _active_write_lock:
 
 **`get_database()` — new signature**
 
+Migrations run on the **first write-mode open** of the process, then skipped for all subsequent opens (read or write). This preserves correct upgrade behaviour without re-running the migration check on every short-lived write connection.
+
 ```python
+_migration_check_done: bool = False
+
+
 def get_database(
     read_only: bool = False,
     max_wait: float = 5.0,
 ) -> Database:
-    global _database_accessed
+    global _database_accessed, _migration_check_done
     deadline = time.monotonic() + max_wait
     delay = 0.05
+    skip_upgrade = read_only or _migration_check_done
     while True:
         try:
             db = Database(
                 get_settings().database.path,
                 read_only=read_only,
-                no_auto_upgrade=True,
+                no_auto_upgrade=skip_upgrade,
             )
+            if not read_only:
+                _migration_check_done = True
             _database_accessed = True
+            if not read_only:
+                with _active_write_lock:
+                    global _active_write_conn
+                    _active_write_conn = db
             return db
         except DatabaseLockError:
             if time.monotonic() >= deadline:
@@ -145,7 +161,7 @@ def get_database(
             delay = min(delay * 1.5, 0.5)
 ```
 
-Note: `no_auto_upgrade=True` is the per-call default. The `db init` path (`init_db()` in `database.py`) still passes `no_auto_upgrade=False` explicitly to run migrations on first open.
+The `_active_write_conn` registration must appear after the successful `Database(...)` construction and before `return`, gated on `read_only=False` — this is what `interrupt_and_reset_database()` reads.
 
 **`interrupt_and_reset_database()`**
 

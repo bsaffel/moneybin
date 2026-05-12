@@ -29,6 +29,8 @@ implies. Tested against DuckDB 1.5.2 with `ATTACH (TYPE DUCKDB, ENCRYPTION_KEY
 | Process A holds read-only → Process B opens write | ❌ `CatalogException: different configuration` |
 | Process A holds read-only → Process B opens read-only | ✅ succeeds |
 
+Note: the `CatalogException: different configuration` in row 3 is a **lock-contention signal** — DuckDB rejects opening a write connection when a read-only connection is already attached with a different configuration. It is not a missing-tables error. The implementation must classify this exception as `DatabaseLockError` (at ATTACH time), not `DatabaseNotInitializedError`.
+
 The constraint is: **at most one process holds a connection of any kind, unless
 all open connections are read-only.** A long-lived read-write singleton (the
 current model) permanently blocks every other process from connecting.
@@ -286,6 +288,6 @@ FastAPI, MCP server, and Plaid sync share a single process and the existing
 - [ADR-004: End-to-End Encryption](004-e2e-encryption.md)
 - [ADR-009: Encryption Key Management](009-encryption-key-management.md)
 - [`architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md) §(a)
-- [`web-ui-prototype.md`](../specs/web-ui-prototype.md) — first consumer of the write coordination contract
+- `web-ui-prototype.md` — first consumer of the write coordination contract (spec forthcoming)
 - [`sync-plaid.md`](../specs/sync-plaid.md) — out-of-process writer that triggered this ADR
 - [DuckDB concurrency documentation](https://duckdb.org/docs/stable/connect/concurrency)

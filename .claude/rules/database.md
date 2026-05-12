@@ -11,6 +11,8 @@ paths: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.
 
 Connections are **short-lived and purpose-declared** — acquire, use, release immediately via the context manager. Declare read intent with `read_only=True` to allow concurrent cross-process reads (~14 ms overhead); write connections are exclusive (~79 ms) and retry automatically on lock contention.
 
+> **Target API — not yet implemented.** The usage below reflects the design from [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) (draft). The current `get_database()` takes no parameters and returns a singleton. Do not pass `read_only=True` until that spec is implemented.
+
 ```python
 from moneybin.database import get_database
 
