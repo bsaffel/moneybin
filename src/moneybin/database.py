@@ -634,7 +634,17 @@ def database_key_error_hint() -> str:
 _database_instance: Database | None = None
 
 
-def _lock_error_message(db_path: Path, max_wait: float) -> str:
+def _lock_error_message(db_path: "Path", max_wait: float) -> str:
+    from moneybin.utils.db_processes import _describe_process, _find_blocking_processes  # type: ignore[reportPrivateUsage]  # module-private helpers shared via __all__
+
+    blockers = _find_blocking_processes(db_path)
+    if blockers:
+        names = ", ".join(_describe_process(str(p["cmdline"])) for p in blockers)
+        return (
+            f"Could not acquire write lock after {max_wait:.0f}s "
+            f"(held by: {names}). "
+            f"Run 'moneybin db ps' for details."
+        )
     return (
         f"Could not acquire write lock after {max_wait:.0f}s. "
         f"Another process may be writing to the database. "

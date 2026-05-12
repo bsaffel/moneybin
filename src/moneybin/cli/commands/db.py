@@ -802,57 +802,9 @@ def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     Returns:
         List of dicts with keys: pid (int), command (str), cmdline (str).
     """
-    own_pid = os.getpid()
-    try:
-        result = subprocess.run(  # noqa: S603 — lsof with static args, db_path is a validated Path
-            ["lsof", "-F", "pcn", str(db_path)],  # noqa: S607 — lsof is a standard system utility
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except FileNotFoundError:
-        logger.error("❌ lsof not found — cannot inspect file locks")
-        return []
-    except subprocess.TimeoutExpired:
-        logger.error("❌ lsof timed out")
-        return []
+    from moneybin.utils.db_processes import _find_blocking_processes  # type: ignore[reportPrivateUsage]  # module-private helper shared via __all__
 
-    if not result.stdout:
-        return []
-
-    # lsof -F output: each process block starts with p<pid>, then c<cmd>, then n<file>
-    processes: list[dict[str, str | int]] = []
-    seen_pids: set[int] = set()
-    current_pid: int | None = None
-    current_cmd: str = ""
-
-    for line in result.stdout.splitlines():
-        if line.startswith("p"):
-            current_pid = int(line[1:])
-            current_cmd = ""
-        elif line.startswith("c") and current_pid is not None:
-            current_cmd = line[1:]
-        elif (
-            line.startswith("n")
-            and current_pid is not None
-            and current_pid not in seen_pids
-        ):
-            seen_pids.add(current_pid)
-            if current_pid == own_pid:
-                continue
-            ps_result = subprocess.run(  # noqa: S603 — ps with static args and validated int PID
-                ["ps", "-p", str(current_pid), "-o", "args="],  # noqa: S607 — ps is a standard system utility
-                capture_output=True,
-                text=True,
-            )
-            cmdline = ps_result.stdout.strip()
-            processes.append({
-                "pid": current_pid,
-                "command": current_cmd,
-                "cmdline": cmdline,
-            })
-
-    return processes
+    return _find_blocking_processes(db_path)
 
 
 def _list_db_processes(db_path: Path) -> list[dict[str, str | int]]:
