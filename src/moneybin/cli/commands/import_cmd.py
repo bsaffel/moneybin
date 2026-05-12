@@ -286,7 +286,7 @@ def import_history(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.loaders.tabular_loader import TabularLoader
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         loader = TabularLoader(db)
         records = loader.get_import_history(limit=limit, import_id=import_id)
 
