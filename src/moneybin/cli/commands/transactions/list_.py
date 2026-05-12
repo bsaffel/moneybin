@@ -52,12 +52,22 @@ def transactions_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    json_fields: str | None = typer.Option(
+        None,
+        "--json-fields",
+        help=(
+            "Comma-separated fields to include in --output json. "
+            "Available fields: transaction_id, account_id, transaction_date, "
+            "amount, description, source_type, memo, category, subcategory, "
+            "notes, tags, splits."
+        ),
+    ),
 ) -> None:
     """List transactions with optional filters."""
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         service = TransactionService(db)
         result = service.get(
             accounts=accounts or None,
@@ -102,4 +112,4 @@ def transactions_list(
         if result.next_cursor and not quiet:
             typer.echo(f"Next page: --cursor {result.next_cursor}", err=True)
 
-    render_or_json(envelope, output, render_fn=_render_text)
+    render_or_json(envelope, output, render_fn=_render_text, json_fields=json_fields)

@@ -46,7 +46,7 @@ def _mock_result(
 
 
 @contextmanager
-def _mock_db_ctx():
+def _mock_db_ctx(**_kwargs: object):
     """Context manager that yields a mock database — replaces handle_cli_errors."""
     yield MagicMock()
 
@@ -156,3 +156,27 @@ def test_list_cursor_forwarded() -> None:
         ) as mock_get:
             runner.invoke(app, ["transactions", "list", "--cursor", "dGVzdA=="])
     assert mock_get.call_args.kwargs["cursor"] == "dGVzdA=="
+
+
+@pytest.mark.unit
+def test_list_json_fields_projection() -> None:
+    """--json-fields projects the requested fields from the JSON envelope data."""
+    import json
+
+    txns = [_make_txn()]
+    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+        with patch.object(TransactionService, "get", return_value=_mock_result(txns)):
+            result = runner.invoke(
+                app,
+                [
+                    "transactions",
+                    "list",
+                    "--output",
+                    "json",
+                    "--json-fields",
+                    "transaction_id,amount",
+                ],
+            )
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed["data"] == [{"transaction_id": "T1", "amount": "-50.00"}]
