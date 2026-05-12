@@ -296,7 +296,11 @@ Default output is a table with period, income, expenses, net, and count columns.
 
 ---
 
-### 2.2 `transactions_search` — medium sensitivity, pagination, degraded response
+### 2.2 `transactions_get` — medium sensitivity, cursor pagination, curation fields
+
+> **Note:** `transactions_search` was removed and superseded by `transactions_get` in M3E. The exemplar below reflects the current implementation.
+
+
 
 **Service layer**
 
@@ -584,9 +588,17 @@ Net worth across all accounts over time.
 
 **Service class:** `TransactionService` (search, correct, annotate, recurring), `MatchService` (matches sub-domain)
 
-### `transactions_search`
+### `transactions_get`
 
-*Exemplar — see section 2.2.*
+Primary transaction read tool. Returns full transaction records with curation metadata.
+
+- **Sensitivity:** `medium`
+- **Parameters:** `accounts: list[str]?`, `date_from: str?`, `date_to: str?`, `categories: list[str]?`, `amount_min: float?`, `amount_max: float?`, `description: str?`, `uncategorized_only: bool = false`, `limit: int = 50`, `cursor: str?`
+- **Behavior:** Reads from `core.fct_transactions`. `accounts` accepts exact account IDs or display names (resolved internally). `cursor` is an opaque pagination token from `next_cursor` in a previous response. Returns `list[Transaction]` with optional `notes`, `tags`, `splits` fields.
+- **Sign convention:** negative = expense, positive = income.
+- **Service:** `TransactionService.get() -> TransactionGetResult`
+- **CLI:** `moneybin transactions list`
+- **read_only:** true
 
 ### `transactions_correct`
 
@@ -1205,7 +1217,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Parameters:** `tax_year: str` (defaults to prior year).
 
-**Relevant tools:** `tax_w2`, `tax_deductions`, `reports_spending_by_category`, `reports_cashflow_income`, `transactions_search`
+**Relevant tools:** `tax_w2`, `tax_deductions`, `reports_spending_by_category`, `reports_cashflow_income`, `transactions_get`
 
 **Guardrails:**
 
@@ -1315,7 +1327,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `describe_table` | `moneybin://schema` resource | Tool → resource |
 | `list_accounts` | `accounts_list` | |
 | `get_account_balances` | `accounts_balances` | |
-| `query_transactions` | `transactions_search` | Richer filters, pagination |
+| `query_transactions` | `transactions_get` | Richer filters, curation fields, cursor pagination |
 | `get_w2_summary` | `tax_w2` | |
 | `list_categories` | `categorize_categories` | |
 | `list_categorization_rules` | `categorize_rules` | |
@@ -1355,7 +1367,7 @@ All prototype prompts are replaced by the four v1 prompts. The prototype's step-
 | `moneybin://schema/tables` | `moneybin://schema` | Consolidated |
 | `moneybin://schema/{table_name}` | `moneybin://schema` | Consolidated |
 | `moneybin://accounts/summary` | `moneybin://accounts` | Simplified |
-| `moneybin://transactions/recent` | Removed | Too dynamic for ambient context; use `transactions_search` |
+| `moneybin://transactions/recent` | Removed | Too dynamic for ambient context; use `transactions_get` |
 | `moneybin://w2/{tax_year}` | Removed | Parameterized data belongs as a tool (`tax_w2`) |
 
 ---
@@ -1389,7 +1401,7 @@ Per [`cli-restructure.md`](cli-restructure.md) v2. Hard cut: rename in place, no
 
 | v1 | v2 | Notes |
 |---|---|---|
-| `transactions_search` | `transactions_search` | Verb already trailing |
+| `transactions_get` | `transactions_get` | Verb already trailing |
 | `transactions_correct` | `transactions_correct` | Verb already trailing |
 | `transactions_annotate` | `transactions_annotate` | Verb already trailing |
 | `transactions_recurring` | `transactions_recurring_list` | Add explicit `_list` |

@@ -58,6 +58,9 @@ mcp = FastMCP(
 
         Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_get.
 
+        Read surface:
+        - transactions_get — primary transaction read tool; filter by account, date, category, amount, description; returns notes/tags/splits; cursor pagination
+
         Curation surface (visible at connect):
         - transactions_create — bulk manual entry (1..100 atomic)
         - transactions_notes_{add,edit,delete} — note threads on a transaction
