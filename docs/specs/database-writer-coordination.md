@@ -167,13 +167,13 @@ The `_active_write_conn` registration must appear after the successful `Database
 
 **`_lock_error_message()` — friendly blocker identification**
 
-When `max_wait` is exhausted, call `lsof` (already used by `db ps`) to identify what is holding the lock, then construct a message that names it:
+When `max_wait` is exhausted, call `lsof` (already used by `db ps`) to identify what is holding the lock, interpret the raw process argv into a human-readable name, then construct a message:
 
 ```python
 def _lock_error_message(db_path: Path, max_wait: float) -> str:
     blockers = _find_blocking_processes(db_path)  # reuse db ps logic
     if blockers:
-        names = ", ".join(p["command"] for p in blockers)
+        names = ", ".join(_describe_process(p["cmdline"]) for p in blockers)
         return (
             f"Could not acquire write lock after {max_wait:.0f}s "
             f"(held by: {names}). "
@@ -181,16 +181,40 @@ def _lock_error_message(db_path: Path, max_wait: float) -> str:
         )
     return (
         f"Could not acquire write lock after {max_wait:.0f}s. "
-        f"Another moneybin process may be writing. "
+        f"Another process may be writing to the database. "
         f"Run 'moneybin db ps' for details."
     )
 ```
 
-`_find_blocking_processes()` is extracted from `db ps` in `cli/commands/db.py` into a shared helper (e.g. `src/moneybin/database_utils.py` or inlined in `database.py`). It runs `lsof -F pcn <db_path>`, parses PIDs, and returns command-line strings. If `lsof` is unavailable (Windows) or times out, it returns an empty list — the fallback message is used. This function must not raise.
+`_find_blocking_processes()` is extracted from `db ps` in `cli/commands/db.py` into a shared helper (e.g. `src/moneybin/utils/db_processes.py`). It runs `lsof -F pcn <db_path>`, parses PIDs, and returns command-line strings. If `lsof` is unavailable (Windows) or times out, it returns an empty list — the fallback message is used. This function must not raise.
 
-Example error output when `transform apply` is the blocker:
+**`_describe_process()` — argv → friendly name**
+
+Match the full command-line string in priority order (first match wins):
+
+| Pattern | Friendly name |
+|---|---|
+| `moneybin mcp serve` | `"MCP server"` |
+| `moneybin transform apply` | `"transform pipeline"` |
+| `moneybin import inbox sync` | `"inbox sync"` |
+| `moneybin import` | `"import command"` |
+| `moneybin sync` | `"Plaid sync"` |
+| `moneybin web` or (`uvicorn` + `moneybin`) | `"Web UI server"` |
+| `moneybin` (any other subcommand) | `"moneybin {subcommand}"` (extract next token after `moneybin`) |
+| `duckdb-ui` or `duckdb --ui` | `"DuckDB UI"` |
+| starts with `duckdb` | `"DuckDB shell"` |
+| anything else | first 40 characters of argv (raw fallback) |
+
+Example messages:
+
 ```
-❌ Could not acquire write lock after 5s (held by: moneybin transform apply).
+❌ Could not acquire write lock after 5s (held by: MCP server).
+   Run 'moneybin db ps' for details.
+
+❌ Could not acquire write lock after 5s (held by: transform pipeline, DuckDB shell).
+   Run 'moneybin db ps' for details.
+
+❌ Could not acquire write lock after 5s (held by: Plaid sync).
    Run 'moneybin db ps' for details.
 ```
 
@@ -457,6 +481,7 @@ The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchang
 | `src/moneybin/services/inbox_service.py` | `InboxService.create()` class method |
 | `src/moneybin/services/schema_catalog.py` | Read-only |
 | `src/moneybin/errors.py` | Add `DatabaseNotInitializedError` classification |
+| `src/moneybin/utils/db_processes.py` | New: `_find_blocking_processes()` and `_describe_process()` extracted from `db ps`; used by both `db ps` and `_lock_error_message()` |
 | `.claude/rules/database.md` | Update connection-management section |
 
 ### Key Decisions
