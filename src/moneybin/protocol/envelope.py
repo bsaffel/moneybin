@@ -182,11 +182,20 @@ def not_implemented_envelope(
 
     Used by tool surfaces (e.g., sync_*, transform_*) that exist for v2
     discoverability but whose business logic is owned by a downstream spec.
+    Returns status="error" with code="not_implemented" so agents can branch
+    on the top-level status field consistently.
     """
-    return build_envelope(
-        data={"status": "not_implemented", "action": action, "spec": spec},
-        sensitivity="low",
-        actions=actions or [f"See {spec} for the design"],
+    from moneybin.errors import (
+        UserError,  # noqa: PLC0415 — avoid circular at module level
+    )
+
+    return build_error_envelope(
+        error=UserError(
+            f"{action} is not yet implemented",
+            code="not_implemented",
+            hint=f"See {spec} for the design",
+            details={"spec": spec},
+        )
     )
 
 

@@ -30,12 +30,8 @@ def transactions_tags_add(
     """Apply one or more tags to a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            added = TransactionService(db).add_tags(transaction_id, tags, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        added = TransactionService(db).add_tags(transaction_id, tags, actor="cli")
 
     if output == OutputFormat.JSON:
         emit_json("tags_added", {"transaction_id": transaction_id, "added": added})
@@ -118,12 +114,8 @@ def transactions_tags_rename(
     """Rename a tag globally (all transactions). Emits a parent audit event."""
     from moneybin.services.transaction_service import TransactionService
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            result = TransactionService(db).rename_tag(old, new, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        result = TransactionService(db).rename_tag(old, new, actor="cli")
 
     if output == OutputFormat.JSON:
         emit_json(

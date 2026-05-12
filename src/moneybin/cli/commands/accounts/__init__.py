@@ -76,9 +76,8 @@ def accounts_show(
     """Show one account's full settings + dim record."""
     with handle_cli_errors(output=output) as db:
         record = AccountService(db).get_account(account_id)
-    if record is None:
-        logger.error(f"❌ Account not found: {account_id}")
-        raise typer.Exit(1)
+        if record is None:
+            raise LookupError(f"Account not found: {account_id}")
     if output == OutputFormat.JSON:
         emit_json("account", record)
         return

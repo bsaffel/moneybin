@@ -86,22 +86,18 @@ def transactions_create(
 
     tags = list(tag or [])
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            svc = TransactionService(db)
-            batch = svc.create_manual_batch([entry], actor="cli")
-            row = batch.results[0]
-            transaction_id = row.transaction_id
-            note_id: str | None = None
-            if note:
-                created = svc.add_note(transaction_id, note, actor="cli")
-                note_id = created.note_id
-            applied_tags: list[str] = []
-            if tags:
-                applied_tags = svc.add_tags(transaction_id, tags, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        svc = TransactionService(db)
+        batch = svc.create_manual_batch([entry], actor="cli")
+        row = batch.results[0]
+        transaction_id = row.transaction_id
+        note_id: str | None = None
+        if note:
+            created = svc.add_note(transaction_id, note, actor="cli")
+            note_id = created.note_id
+        applied_tags: list[str] = []
+        if tags:
+            applied_tags = svc.add_tags(transaction_id, tags, actor="cli")
 
     payload = {
         "transaction_id": transaction_id,

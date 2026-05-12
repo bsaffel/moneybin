@@ -71,6 +71,7 @@ async def test_sync_tool_returns_not_implemented_envelope(
 ) -> None:
     """Every sync tool returns a stub envelope pointing at the spec."""
     parsed = (await fn()).to_dict()
+    assert parsed["status"] == "error"
     assert parsed["summary"]["sensitivity"] == "low"
-    assert parsed["data"]["status"] == "not_implemented"
-    assert parsed["data"]["spec"] == "docs/specs/sync-overview.md"
+    assert parsed["error"]["code"] == "not_implemented"
+    assert parsed["error"]["details"]["spec"] == "docs/specs/sync-overview.md"

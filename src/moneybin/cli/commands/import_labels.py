@@ -31,12 +31,8 @@ def import_labels_add(
     """Add one or more labels to an import."""
     from moneybin.services.import_service import ImportService
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            updated = ImportService(db).add_labels(import_id, labels, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        updated = ImportService(db).add_labels(import_id, labels, actor="cli")
 
     if output == OutputFormat.JSON:
         emit_json("import_labels", {"import_id": import_id, "labels": updated})
@@ -53,12 +49,8 @@ def import_labels_remove(
     """Remove one or more labels from an import."""
     from moneybin.services.import_service import ImportService
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            updated = ImportService(db).remove_labels(import_id, labels, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        updated = ImportService(db).remove_labels(import_id, labels, actor="cli")
 
     if output == OutputFormat.JSON:
         emit_json("import_labels", {"import_id": import_id, "labels": updated})
