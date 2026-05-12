@@ -137,6 +137,13 @@ class TestTransactionGet:
         assert result.transactions[0].transaction_id == "T2"
 
     @pytest.mark.unit
+    def test_filter_by_amount_max(self, txn_db: Database) -> None:
+        # expenses only (negative) — excludes T2 (income, 5000.00)
+        result = TransactionService(txn_db).get(amount_max=Decimal("0"))
+        assert len(result.transactions) == 3
+        assert all(t.transaction_id != "T2" for t in result.transactions)
+
+    @pytest.mark.unit
     def test_filter_by_categories(self, txn_db: Database) -> None:
         result = TransactionService(txn_db).get(categories=["Food & Drink"])
         assert len(result.transactions) == 2

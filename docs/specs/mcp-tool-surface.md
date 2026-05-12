@@ -593,7 +593,7 @@ Net worth across all accounts over time.
 Primary transaction read tool. Returns full transaction records with curation metadata.
 
 - **Sensitivity:** `medium`
-- **Parameters:** `accounts: list[str]?`, `date_from: str?`, `date_to: str?`, `categories: list[str]?`, `amount_min: float?`, `amount_max: float?`, `description: str?`, `uncategorized_only: bool = false`, `limit: int = 50`, `cursor: str?`
+- **Parameters:** `accounts: list[str]?`, `date_from: str?`, `date_to: str?`, `categories: list[str]?`, `amount_min: str?` (decimal string e.g. `"-50.00"`), `amount_max: str?` (decimal string), `description: str?`, `uncategorized_only: bool = false`, `limit: int = 50`, `cursor: str?`
 - **Behavior:** Reads from `core.fct_transactions`. `accounts` accepts exact account IDs or display names (resolved internally). `cursor` is an opaque pagination token from `next_cursor` in a previous response. Returns `list[Transaction]` with optional `notes`, `tags`, `splits` fields.
 - **Sign convention:** negative = expense, positive = income.
 - **Service:** `TransactionService.get() -> TransactionGetResult`

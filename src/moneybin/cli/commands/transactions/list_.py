@@ -27,6 +27,12 @@ def transactions_list(
     categories: list[str] = typer.Option(
         [], "--category", help="Category filter (repeatable)."
     ),
+    amount_min: str | None = typer.Option(
+        None, "--amount-min", help="Minimum amount as decimal string (e.g. '-50.00')."
+    ),
+    amount_max: str | None = typer.Option(
+        None, "--amount-max", help="Maximum amount as decimal string."
+    ),
     description: str | None = typer.Option(
         None, "--description", help="ILIKE pattern against description and memo."
     ),
@@ -53,6 +59,8 @@ def transactions_list(
             date_from=date_from,
             date_to=date_to,
             categories=categories or None,
+            amount_min=Decimal(amount_min) if amount_min is not None else None,
+            amount_max=Decimal(amount_max) if amount_max is not None else None,
             description=description,
             uncategorized_only=uncategorized,
             limit=limit,
@@ -73,7 +81,7 @@ def transactions_list(
     rows: list[tuple[object, ...]] = []
     for t in result.transactions:
         amt = t.amount
-        amount_str = f"-${abs(amt):,.2f}" if amt < Decimal("0") else f"${amt:,.2f}"
+        amount_str = f"{amt:,.2f}"
         desc = t.description[:49] + "…" if len(t.description) > 50 else t.description
         rows.append((
             t.transaction_date,
