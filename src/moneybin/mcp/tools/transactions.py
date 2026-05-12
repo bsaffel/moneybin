@@ -1,10 +1,10 @@
 # src/moneybin/mcp/tools/transactions.py
-"""Transactions namespace tools — search, recurring patterns, review orientation.
+"""Transactions namespace tools.
 
 Tools:
-    - transactions_search — Search transactions with filters (medium sensitivity)
-    - transactions_recurring_list — Detect recurring transaction patterns (medium sensitivity)
-    - transactions_review_status — Pending counts across matches and categorize queues (low)
+    - transactions_get — Fetch transactions with filters (medium sensitivity)
+    - transactions_recurring_list — Detect recurring patterns (medium sensitivity)
+    - transactions_review_status — Pending counts across queues (low)
 """
 
 from __future__ import annotations
@@ -20,51 +20,51 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.transaction_service import TransactionService
 
 
-@mcp_tool(sensitivity="medium")
-def transactions_search(
-    start_date: str | None = None,
-    end_date: str | None = None,
-    min_amount: str | None = None,
-    max_amount: str | None = None,
+@mcp_tool(sensitivity="medium", read_only=True)
+def transactions_get(
+    accounts: list[str] | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    categories: list[str] | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
     description: str | None = None,
-    account_id: str | None = None,
-    category: str | None = None,
     uncategorized_only: bool = False,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = 50,
+    cursor: str | None = None,
 ) -> ResponseEnvelope:
-    """Search transactions with flexible filtering.
+    """Fetch transactions with optional filtering and cursor-based pagination.
 
-    Supports filtering by date range, amount range, description pattern,
-    account, category, and categorization status. Results are ordered by
-    date descending.
+    Returns full transaction records including curation metadata (notes, tags,
+    splits) from core.fct_transactions. All filters are combinable.
 
     Args:
-        start_date: ISO 8601 start date (inclusive).
-        end_date: ISO 8601 end date (inclusive).
-        min_amount: Minimum amount as string (use negative for expenses).
-        max_amount: Maximum amount as string (use negative for expenses).
-        description: Pattern matched against description and memo (case-insensitive).
-        account_id: Filter to a specific account.
-        category: Filter by assigned category.
-        uncategorized_only: Only return uncategorized transactions.
-        limit: Maximum rows to return (default 100).
-        offset: Number of rows to skip for pagination.
+        accounts: Account IDs or display names to filter by. Accepts exact
+            account_id values or fuzzy display names — use accounts_list to
+            discover IDs. Multiple values are OR-combined.
+        date_from: ISO 8601 start date, inclusive (e.g. '2026-01-01').
+        date_to: ISO 8601 end date, inclusive.
+        categories: Category names to filter by. Multiple values are OR-combined.
+        amount_min: Minimum amount filter. Negative = expense, positive = income.
+        amount_max: Maximum amount filter.
+        description: Case-insensitive pattern matched against description and memo.
+        uncategorized_only: Only return transactions with no category assigned.
+        limit: Maximum rows to return (default 50).
+        cursor: Opaque pagination token from a previous response's next_cursor.
     """
     service = TransactionService(get_database())
-    result = service.search(
-        start_date=start_date,
-        end_date=end_date,
-        min_amount=Decimal(min_amount) if min_amount is not None else None,
-        max_amount=Decimal(max_amount) if max_amount is not None else None,
+    return service.get(
+        accounts=accounts,
+        date_from=date_from,
+        date_to=date_to,
+        categories=categories,
+        amount_min=Decimal(str(amount_min)) if amount_min is not None else None,
+        amount_max=Decimal(str(amount_max)) if amount_max is not None else None,
         description=description,
-        account_id=account_id,
-        category=category,
         uncategorized_only=uncategorized_only,
         limit=limit,
-        offset=offset,
-    )
-    return result.to_envelope()
+        cursor=cursor,
+    ).to_envelope()
 
 
 @mcp_tool(sensitivity="medium")
@@ -123,12 +123,15 @@ def register_transactions_tools(mcp: FastMCP) -> None:
     """Register all transactions namespace tools with the FastMCP server."""
     register(
         mcp,
-        transactions_search,
-        "transactions_search",
-        "Search transactions with flexible filtering by date, "
-        "amount, description, account, and category. "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
-        "Amounts are in the currency named by `summary.display_currency`.",
+        transactions_get,
+        "transactions_get",
+        "Fetch transactions with optional filtering by account, date range, category, "
+        "amount, and description pattern. Returns full transaction records including "
+        "curation fields (notes, tags, splits). "
+        "Amounts use the accounting convention: negative = expense, positive = income; "
+        "transfers exempt. Amounts are in the currency named by `summary.display_currency`. "
+        "`accounts` accepts display names or exact account IDs — use `accounts_list` to "
+        "discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
     )
     register(
         mcp,
