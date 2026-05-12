@@ -410,3 +410,68 @@ def test_fk_detail_message_contains_count(
     fk = next(r for r in report.invariants if r.name == "fct_transactions_fk_integrity")
     assert fk.status == "fail"
     assert "2" in (fk.detail or "")
+
+
+@pytest.mark.unit
+def test_bridge_transfers_balanced_fails_unbalanced_pair(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Insert a debit+credit pair where |debit.amount + credit.amount| > 0.01.
+    # Debit: -100.00, Credit: +99.00 → net = -1.00 → imbalanced.
+    doctor_db.execute("""
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description,
+            transaction_type, is_pending, currency_code, source_type,
+            source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month, transaction_year_quarter
+        ) VALUES
+        ('DEBIT1', 'ACC1', '2026-04-01', -100.00, 100.00, 'expense', 'Transfer out',
+         'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         2026, 4, 1, 2, '2026-04', '2026-Q2'),
+        ('CREDIT1', 'ACC1', '2026-04-01', 99.00, 99.00, 'income', 'Transfer in',
+         'CREDIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         2026, 4, 1, 2, '2026-04', '2026-Q2')
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        INSERT INTO core.bridge_transfers (
+            transfer_id, debit_transaction_id, credit_transaction_id,
+            date_offset_days, amount
+        ) VALUES ('XFR1', 'DEBIT1', 'CREDIT1', 0, 100.00)
+    """)  # noqa: S608 — test input, not user data
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all(verbose=True)
+    xfr = next(r for r in report.invariants if r.name == "bridge_transfers_balanced")
+    assert xfr.status == "fail"
+    assert "DEBIT1" in xfr.affected_ids
+
+
+@pytest.mark.unit
+def test_sqlmesh_discovery_failure_emits_skipped_invariant(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    @contextmanager
+    def _failing_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        msg = "SQLMesh config not found"
+        raise RuntimeError(msg)
+        yield  # noqa: unreachable — satisfies generator type
+
+    monkeypatch.setattr(
+        "moneybin.services.doctor_service.sqlmesh_context", _failing_ctx
+    )
+    svc = DoctorService(doctor_db)
+    report = svc.run_all()
+    skipped = next(
+        (r for r in report.invariants if r.name == "sqlmesh_audits_unavailable"), None
+    )
+    assert skipped is not None
+    assert skipped.status == "skipped"
+    assert "SQLMesh" in (skipped.detail or "")

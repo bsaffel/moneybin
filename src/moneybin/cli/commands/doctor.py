@@ -40,6 +40,7 @@ def doctor_command(
     failing = report.failing
     warning = report.warning
     passing = report.passing
+    skipped = report.skipped
 
     from moneybin.metrics.registry import (
         DOCTOR_RUNS_TOTAL,  # noqa: PLC0415 — defer import
@@ -52,6 +53,7 @@ def doctor_command(
             "passing": passing,
             "failing": failing,
             "warning": warning,
+            "skipped": skipped,
             "transaction_count": report.transaction_count,
             "invariants": [
                 {
@@ -69,7 +71,6 @@ def doctor_command(
         envelope = build_envelope(
             data=data,
             sensitivity="low",
-            total_count=len(report.invariants),
             actions=actions,
         )
         typer.echo(envelope.to_json())
@@ -93,8 +94,12 @@ def doctor_command(
         )
         if failing:
             summary += f" — {failing} failing"
+            if warning or skipped:
+                summary += f" ({warning} warn, {skipped} skipped)"
             if not verbose:
                 summary += " — run --verbose for affected IDs"
+        elif warning or skipped:
+            summary += f" — {passing} passing, {warning} warn, {skipped} skipped"
         else:
             summary += " — all passing"
         typer.echo(summary)

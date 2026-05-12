@@ -80,6 +80,7 @@ def system_doctor() -> ResponseEnvelope:
             "passing": passing,
             "failing": failing,
             "warning": warning,
+            "skipped": report.skipped,
             "transaction_count": report.transaction_count,
             "invariants": [
                 {
@@ -92,7 +93,6 @@ def system_doctor() -> ResponseEnvelope:
             ],
         },
         sensitivity="low",
-        total_count=len(report.invariants),
         actions=actions,
     )
 

@@ -44,6 +44,11 @@ class DoctorReport:
         """Count of invariants with status 'pass'."""
         return sum(1 for r in self.invariants if r.status == "pass")
 
+    @property
+    def skipped(self) -> int:
+        """Count of invariants with status 'skipped'."""
+        return sum(1 for r in self.invariants if r.status == "skipped")
+
 
 class DoctorService:
     """Run pipeline integrity invariants and aggregate results."""
@@ -114,6 +119,14 @@ class DoctorService:
                         )
         except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
             logger.warning(f"SQLMesh audit discovery failed: {e}")
+            results.append(
+                InvariantResult(
+                    name="sqlmesh_audits_unavailable",
+                    status="skipped",
+                    detail=f"SQLMesh audit discovery failed: {e}",
+                    affected_ids=[],
+                )
+            )
         return results
 
     def _run_staging_coverage(self) -> InvariantResult:
