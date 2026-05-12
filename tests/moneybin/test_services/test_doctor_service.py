@@ -13,7 +13,11 @@ import pytest
 
 import moneybin.database as db_module
 from moneybin.database import Database
-from moneybin.services.doctor_service import DoctorReport, DoctorService, InvariantResult
+from moneybin.services.doctor_service import (
+    DoctorReport,
+    DoctorService,
+    InvariantResult,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 

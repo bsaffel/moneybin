@@ -34,6 +34,7 @@ class DoctorService:
     """Run pipeline integrity invariants and aggregate results."""
 
     def __init__(self, db: Database) -> None:
+        """Store the open database connection for invariant queries."""
         self._db = db
 
     def run_all(self, verbose: bool = False) -> DoctorReport:
