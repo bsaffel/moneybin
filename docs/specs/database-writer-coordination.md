@@ -41,6 +41,7 @@ Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-l
 class DatabaseLockError(Exception):
     """DuckDB file lock held by another process; caller may retry."""
 
+
 class DatabaseNotInitializedError(Exception):
     """Database file missing or incomplete; run 'moneybin db init'."""
 ```
@@ -161,6 +162,7 @@ def interrupt_and_reset_database() -> None:
 ```python
 _database_accessed: bool = False
 
+
 def database_was_accessed() -> bool:
     return _database_accessed
 ```
@@ -264,6 +266,7 @@ with get_database() as db:
   ```python
   def close_db() -> None:
       from moneybin.database import database_was_accessed
+
       if database_was_accessed():
           flush_metrics()
   ```
