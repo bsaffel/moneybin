@@ -635,7 +635,10 @@ _database_instance: Database | None = None
 
 
 def _lock_error_message(db_path: "Path", max_wait: float) -> str:
-    from moneybin.utils.db_processes import _describe_process, _find_blocking_processes  # type: ignore[reportPrivateUsage]  # module-private helpers shared via __all__
+    from moneybin.utils.db_processes import (  # type: ignore[reportPrivateUsage]  # module-private helpers shared via __all__
+        _describe_process,
+        _find_blocking_processes,
+    )
 
     blockers = _find_blocking_processes(db_path)
     if blockers:
@@ -717,27 +720,15 @@ def close_database() -> None:
 
 
 def interrupt_and_reset_database() -> None:
-    """Interrupt and clear the singleton Database, if one exists.
+    """Interrupt and close the active write connection, if any.
 
-    The next ``get_database()`` call will reopen a fresh connection. No-op
-    if no Database has been initialized yet (e.g., timeout before any
-    tool actually touched the DB).
-
-    Known limitation — thread-survivor race: when this is called from the
-    MCP timeout path, ``asyncio.timeout()`` cancels the awaited task but
-    the underlying ``asyncio.to_thread`` worker keeps running until the
-    sync tool body returns. If that surviving thread later touches the DB,
-    it will see the closed connection and raise — that exception surfaces
-    via ``ThreadPoolExecutor``'s unhandled-exception path (stderr), not
-    the MCP envelope. Occasional stderr noise after a timeout is expected.
-    Forcing termination would require cooperative cancellation in tool
-    bodies; out of scope for this iteration.
+    Called from the MCP timeout path to release the write lock before the
+    dispatcher returns. No-op if no write connection is currently active.
     """
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _database_instance is not None:
-        _database_instance.interrupt_and_reset()
-        _database_instance = None
+    with _active_write_lock:
+        conn = _active_write_conn
+    if conn is not None:
+        conn.interrupt_and_reset()
 
 
 @contextmanager
