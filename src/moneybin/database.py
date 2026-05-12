@@ -62,7 +62,11 @@ _database_accessed: bool = False
 
 
 def build_attach_sql(
-    db_path: Path, encryption_key: str, *, alias: str = _DATABASE_ALIAS
+    db_path: Path,
+    encryption_key: str,
+    *,
+    alias: str = _DATABASE_ALIAS,
+    read_only: bool = False,
 ) -> str:
     """Build a DuckDB ATTACH statement for an encrypted database.
 
@@ -76,6 +80,8 @@ def build_attach_sql(
         encryption_key: AES-256-GCM encryption key.
         alias: Database alias in DuckDB (default "moneybin"). Must be a
             simple identifier — callers should only pass hardcoded literals.
+        read_only: If True, append READ_ONLY to the ATTACH options so the
+            connection cannot write to the database file.
 
     Returns:
         ATTACH SQL string ready for execution.
@@ -85,9 +91,12 @@ def build_attach_sql(
     safe_path = escape_sql_literal(str(db_path))
     safe_key = escape_sql_literal(encryption_key)
     safe_alias = exp.to_identifier(alias, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+    options = f"TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}'"
+    if read_only:
+        options += ", READ_ONLY"
     return (
         f"ATTACH '{safe_path}' AS {safe_alias} "  # noqa: S608 — trusted internal values, single-quote escaped, alias sqlglot-quoted
-        f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"
+        f"({options})"
     )
 
 
