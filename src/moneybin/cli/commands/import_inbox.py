@@ -52,7 +52,7 @@ def inbox_default(
         return
     from moneybin.cli.utils import handle_cli_errors
 
-    with handle_cli_errors():
+    with handle_cli_errors(output=output):
         result = InboxService.for_active_profile().sync()
 
     if output == OutputFormat.JSON:
