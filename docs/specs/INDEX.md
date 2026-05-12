@@ -120,7 +120,8 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Data Pipeline Reconciliation](data-reconciliation.md) | Feature | draft | Automated pipeline integrity checks: raw→prep→core row accounting, import batch validation, temporal coverage gaps, orphan detection. Complements financial balance reconciliation in `net-worth.md`. |
+| [MoneyBin Doctor](moneybin-doctor.md) | Feature | implemented | Pipeline integrity command: `moneybin doctor` runs SQLMesh named audits (FK integrity, sign convention, balanced transfers) + staging coverage + categorization coverage warning. Produces a "✅ N invariants passing" trust artifact. Top-level CLI + `system_doctor` MCP tool. |
+| [Data Pipeline Reconciliation](data-reconciliation.md) | Feature | draft | Broader ETL integrity checks: raw→prep→core row accounting, import batch validation, temporal coverage gaps, orphan detection. `moneybin-doctor.md` is the user-facing subset; this spec covers the full warehouse-grade reconciliation surface. |
 
 ## Reports & Health
 

@@ -86,6 +86,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["db", "key"],
     ["db", "migrate"],
     ["logs"],
+    ["doctor"],
     ["mcp"],
     ["mcp", "config"],
     ["stats"],

@@ -50,6 +50,53 @@ def system_status() -> ResponseEnvelope:
     )
 
 
+@mcp_tool(sensitivity="low", read_only=True)
+def system_doctor() -> ResponseEnvelope:
+    """Run pipeline integrity checks across all SQLMesh named audits.
+
+    Returns pass/fail/warn per invariant plus a transaction count.
+    Read-only — never writes. Call before relying on analytical results
+    to confirm the pipeline is self-consistent.
+    """
+    from moneybin.database import get_database
+    from moneybin.metrics.registry import DOCTOR_RUNS_TOTAL  # noqa: PLC0415
+    from moneybin.services.doctor_service import DoctorService
+
+    db = get_database()
+    report = DoctorService(db).run_all(verbose=False)
+
+    failing = report.failing
+    warning = report.warning
+    passing = report.passing
+
+    DOCTOR_RUNS_TOTAL.labels(outcome="fail" if failing > 0 else "pass").inc()
+
+    actions: list[str] = []
+    if failing > 0:
+        actions.append("Run moneybin doctor --verbose for affected transaction IDs")
+
+    return build_envelope(
+        data={
+            "passing": passing,
+            "failing": failing,
+            "warning": warning,
+            "skipped": report.skipped,
+            "transaction_count": report.transaction_count,
+            "invariants": [
+                {
+                    "name": r.name,
+                    "status": r.status,
+                    "detail": r.detail,
+                    "affected_ids": r.affected_ids,
+                }
+                for r in report.invariants
+            ],
+        },
+        sensitivity="low",
+        actions=actions,
+    )
+
+
 def register_system_tools(mcp: FastMCP) -> None:
     """Register all system namespace tools with the FastMCP server."""
     register(
@@ -58,4 +105,12 @@ def register_system_tools(mcp: FastMCP) -> None:
         "system_status",
         "Return data inventory (accounts, transactions, freshness) and pending review queue counts. "
         "Call this first to orient before suggesting analytical queries.",
+    )
+    register(
+        mcp,
+        system_doctor,
+        "system_doctor",
+        "Run pipeline integrity checks across all SQLMesh named audits. "
+        "Returns pass/fail/warn per invariant plus transaction count. "
+        "Read-only. Call before relying on analytical results to confirm the pipeline is self-consistent.",
     )
