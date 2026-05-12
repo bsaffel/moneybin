@@ -96,15 +96,10 @@ _tools_registered = False
 
 
 def get_db_path() -> Path:
-    """Get the path to the DuckDB database file.
+    """Get the path to the DuckDB database file."""
+    from moneybin.config import get_settings
 
-    Returns:
-        The database file path from settings.
-    """
-    from moneybin.database import get_database
-
-    with get_database(read_only=True) as db:
-        return Path(db.path)
+    return get_settings().database.path
 
 
 def table_exists(table: TableRef) -> bool:

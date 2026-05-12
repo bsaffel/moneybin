@@ -802,11 +802,9 @@ def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     Returns:
         List of dicts with keys: pid (int), command (str), cmdline (str).
     """
-    from moneybin.utils.db_processes import (
-        _find_blocking_processes,  # type: ignore[reportPrivateUsage]  # module-private helper shared via __all__
-    )
+    from moneybin.utils.db_processes import find_blocking_processes
 
-    return _find_blocking_processes(db_path)
+    return find_blocking_processes(db_path)
 
 
 def _list_db_processes(db_path: Path) -> list[dict[str, str | int]]:

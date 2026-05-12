@@ -124,6 +124,26 @@ class DatabaseNotInitializedError(Exception):
     """Database file missing or incomplete; run 'moneybin db init'."""
 
 
+def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
+    """Execute an ATTACH statement, mapping lock/config errors to DatabaseLockError.
+
+    Closes `conn` and raises `DatabaseLockError` if DuckDB reports a conflicting
+    lock or configuration mismatch. Re-raises other DuckDB exceptions unchanged.
+    """
+    try:
+        conn.execute(sql)
+    except duckdb.CatalogException as e:
+        conn.close()
+        if "different configuration" in str(e):
+            raise DatabaseLockError(str(e)) from e
+        raise
+    except duckdb.IOException as e:
+        conn.close()
+        if "Conflicting lock" in str(e):
+            raise DatabaseLockError(str(e)) from e
+        raise
+
+
 class Database:
     """Encrypted DuckDB connection manager.
 
@@ -201,16 +221,9 @@ class Database:
                     f"Run 'moneybin db init' to initialize it first."
                 )
             self._conn = duckdb.connect()
-            try:
-                self._conn.execute(
-                    build_attach_sql(db_path, encryption_key, read_only=True)
-                )
-            except duckdb.CatalogException as e:
-                self._conn.close()
-                self._conn = None
-                if "different configuration" in str(e):
-                    raise DatabaseLockError(str(e)) from e
-                raise
+            _attach_encrypted(
+                self._conn, build_attach_sql(db_path, encryption_key, read_only=True)
+            )
             self._conn.execute(f"USE {_DATABASE_ALIAS}")
             return
 
@@ -222,31 +235,15 @@ class Database:
         is_new = not db_path.exists()
 
         self._conn = duckdb.connect()
-
-        try:
-            self._conn.execute(build_attach_sql(db_path, encryption_key))
-        except duckdb.CatalogException as e:
-            self._conn.close()
-            self._conn = None
-            if "different configuration" in str(e):
-                raise DatabaseLockError(str(e)) from e
-            raise
-        except duckdb.IOException as e:
-            self._conn.close()
-            self._conn = None
-            if "Conflicting lock" in str(e):
-                raise DatabaseLockError(str(e)) from e
-            raise
+        _attach_encrypted(self._conn, build_attach_sql(db_path, encryption_key))
         self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
-        # Set file permissions on new databases (macOS/Linux)
         if is_new and sys.platform != "win32":
             try:
                 db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
             except OSError:
                 logger.warning(f"Could not set file permissions on {db_path}")
 
-        # Validate permissions on existing databases
         if not is_new and sys.platform != "win32":
             self._check_permissions(db_path)
 
@@ -580,7 +577,6 @@ class Database:
 
     def close(self) -> None:
         """Close the database connection and release resources."""
-        # Deregister from the active-write slot if we are the current holder.
         global _active_write_conn  # noqa: PLW0603
         with _active_write_lock:
             if _active_write_conn is self:
@@ -631,14 +627,11 @@ def database_key_error_hint() -> str:
 
 
 def _lock_error_message(db_path: "Path", max_wait: float) -> str:
-    from moneybin.utils.db_processes import (  # type: ignore[reportPrivateUsage]  # module-private helpers shared via __all__
-        _describe_process,
-        _find_blocking_processes,
-    )
+    from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
-    blockers = _find_blocking_processes(db_path)
+    blockers = find_blocking_processes(db_path)
     if blockers:
-        names = ", ".join(_describe_process(str(p["cmdline"])) for p in blockers)
+        names = ", ".join(describe_process(str(p["cmdline"])) for p in blockers)
         return (
             f"Could not acquire write lock after {max_wait:.0f}s "
             f"(held by: {names}). "
@@ -680,10 +673,9 @@ def get_database(
                 read_only=read_only,
                 no_auto_upgrade=skip_upgrade,
             )
-            if not read_only:
-                _migration_check_done = True
             _database_accessed = True
             if not read_only:
+                _migration_check_done = True
                 with _active_write_lock:
                     _active_write_conn = db
             return db

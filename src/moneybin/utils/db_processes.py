@@ -13,10 +13,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["_describe_process", "_find_blocking_processes"]
 
-
-def _find_blocking_processes(db_path: Path) -> list[dict[str, str | int]]:
+def find_blocking_processes(db_path: Path) -> list[dict[str, str | int]]:
     """Find processes that have db_path open, excluding the current process.
 
     Returns list of dicts with keys: pid (int), command (str), cmdline (str).
@@ -77,7 +75,7 @@ def _find_blocking_processes(db_path: Path) -> list[dict[str, str | int]]:
     return processes
 
 
-def _describe_process(cmdline: str) -> str:
+def describe_process(cmdline: str) -> str:
     """Convert a process argv string to a human-readable name (first match wins)."""
     c = cmdline.strip()
     # Strip leading path prefix (e.g., /home/user/.venv/bin/moneybin → moneybin ...)

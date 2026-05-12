@@ -5,12 +5,12 @@ import pytest
 
 @pytest.mark.unit
 class TestDescribeProcess:
-    """Tests for _describe_process process-name classification."""
+    """Tests for describe_process process-name classification."""
 
     def _desc(self, cmdline: str) -> str:
-        from moneybin.utils.db_processes import _describe_process
+        from moneybin.utils.db_processes import describe_process
 
-        return _describe_process(cmdline)
+        return describe_process(cmdline)
 
     def test_mcp_serve(self) -> None:
         assert self._desc("moneybin mcp serve") == "MCP server"
