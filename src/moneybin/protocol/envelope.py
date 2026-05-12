@@ -97,6 +97,7 @@ class ResponseEnvelope:
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization."""
         d: dict[str, Any] = {
+            "status": "error" if self.error is not None else "ok",
             "summary": self.summary.to_dict(),
             "data": self.data,
             "actions": self.actions,
