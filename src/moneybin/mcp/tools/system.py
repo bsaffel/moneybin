@@ -65,9 +65,9 @@ def system_doctor() -> ResponseEnvelope:
     db = get_database()
     report = DoctorService(db).run_all(verbose=False)
 
-    failing = sum(1 for r in report.invariants if r.status == "fail")
-    warning = sum(1 for r in report.invariants if r.status == "warn")
-    passing = sum(1 for r in report.invariants if r.status == "pass")
+    failing = report.failing
+    warning = report.warning
+    passing = report.passing
 
     DOCTOR_RUNS_TOTAL.labels(outcome="fail" if failing > 0 else "pass").inc()
 

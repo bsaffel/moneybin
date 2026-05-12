@@ -29,6 +29,21 @@ class DoctorReport:
     invariants: list[InvariantResult]
     transaction_count: int
 
+    @property
+    def failing(self) -> int:
+        """Count of invariants with status 'fail'."""
+        return sum(1 for r in self.invariants if r.status == "fail")
+
+    @property
+    def warning(self) -> int:
+        """Count of invariants with status 'warn'."""
+        return sum(1 for r in self.invariants if r.status == "warn")
+
+    @property
+    def passing(self) -> int:
+        """Count of invariants with status 'pass'."""
+        return sum(1 for r in self.invariants if r.status == "pass")
+
 
 class DoctorService:
     """Run pipeline integrity invariants and aggregate results."""

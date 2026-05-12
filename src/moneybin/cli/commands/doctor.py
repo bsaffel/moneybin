@@ -37,9 +37,9 @@ def doctor_command(
 
     status_icon = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}
 
-    failing = sum(1 for r in report.invariants if r.status == "fail")
-    warning = sum(1 for r in report.invariants if r.status == "warn")
-    passing = sum(1 for r in report.invariants if r.status == "pass")
+    failing = report.failing
+    warning = report.warning
+    passing = report.passing
 
     from moneybin.metrics.registry import (
         DOCTOR_RUNS_TOTAL,  # noqa: PLC0415 — defer import
