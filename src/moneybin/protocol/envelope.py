@@ -195,7 +195,8 @@ def not_implemented_envelope(
             code="not_implemented",
             hint=f"See {spec} for the design",
             details={"spec": spec},
-        )
+        ),
+        actions=actions,
     )
 
 
@@ -203,12 +204,14 @@ def build_error_envelope(
     *,
     error: UserError,
     sensitivity: Literal["low", "medium", "high"] = "low",
+    actions: list[str] | None = None,
 ) -> ResponseEnvelope:
     """Build a ResponseEnvelope carrying a classified user error.
 
-    ``data`` is an empty list and ``actions`` is empty — the ``error`` field
-    is the canonical signal that the tool failed. Sensitivity defaults to
-    ``low`` because error messages must not leak row-level data.
+    ``data`` is an empty list — the ``error`` field is the canonical signal
+    that the tool failed. Sensitivity defaults to ``low`` because error
+    messages must not leak row-level data. ``actions`` preserves any
+    caller-provided next-step hints (e.g. CLI fallbacks on stub tools).
     """
     summary = SummaryMeta(
         total_count=0,
@@ -216,4 +219,6 @@ def build_error_envelope(
         has_more=False,
         sensitivity=sensitivity,
     )
-    return ResponseEnvelope(summary=summary, data=[], actions=[], error=error)
+    return ResponseEnvelope(
+        summary=summary, data=[], actions=actions or [], error=error
+    )

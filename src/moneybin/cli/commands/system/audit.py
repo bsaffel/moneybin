@@ -78,10 +78,8 @@ def system_audit_show(
 
     with handle_cli_errors(output=output) as db:
         events = AuditService(db).chain_for(audit_id)
-
-    if not events:
-        typer.echo(f"❌ audit_id={audit_id} not found", err=True)
-        raise typer.Exit(1)
+        if not events:
+            raise LookupError(f"audit_id={audit_id} not found")
 
     if output == OutputFormat.JSON:
         emit_json("audit_chain", [e.to_dict() for e in events])

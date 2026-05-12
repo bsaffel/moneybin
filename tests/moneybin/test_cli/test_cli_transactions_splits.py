@@ -100,6 +100,8 @@ def test_splits_clear_with_yes(runner: CliRunner, db: Database) -> None:
     assert rows is not None and rows[0] == 0
 
 
-def test_splits_add_invalid_amount_exits_2(runner: CliRunner, db: Database) -> None:
+def test_splits_add_invalid_amount_exits_1(runner: CliRunner, db: Database) -> None:
+    # InvalidOperation is classified as invalid_input by handle_cli_errors → exit 1,
+    # not exit 2 (usage error), because the error is a runtime data problem.
     result = runner.invoke(app, ["transactions", "splits", "add", "T1", "notanumber"])
-    assert result.exit_code == 2
+    assert result.exit_code == 1

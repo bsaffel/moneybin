@@ -10,7 +10,7 @@ M2 work in flight; M2A `transaction-curation.md` spec published (PR #115). Doc s
 
 ### Added
 - `ResponseEnvelope`-based responses (all MCP tools and `categorize`-family CLI commands) now include a top-level `status` field (`"ok"` or `"error"`), giving agents a consistent signal without testing for presence of the `error` key. Other `--output json` commands will adopt the envelope shape incrementally.
-- `--json-fields` option added to all read-only CLI commands (infrastructure in place; per-command field lists added as commands are extended). Comma-separated projection: `moneybin <cmd> --output json --json-fields id,date,amount`.
+- `--json-fields` field-projection added to `moneybin transactions list` as the reference implementation (shared `json_fields_option` + `render_or_json` infrastructure; other read-only commands will adopt progressively). Comma-separated projection: `moneybin transactions list --output json --json-fields transaction_id,date,amount`.
 - Shell completion enabled: `moneybin --install-completion` and `moneybin --show-completion` now work.
 - Structured JSON error envelopes: when `--output json` is active, runtime errors (DB locked, file not found, etc.) emit a machine-readable error envelope to stdout instead of plain stderr text.
 - `moneybin doctor` command — read-only pipeline integrity check that runs SQLMesh named audits (FK integrity, sign convention, transfer balance), staging coverage, and categorization coverage. Exits 0 on pass/warn, 1 on fail. Supports `--verbose` for affected IDs and `--output json` for agent consumption. Registered as `system_doctor` MCP tool.

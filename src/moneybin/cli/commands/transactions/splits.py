@@ -9,7 +9,7 @@ error (per spec — splits are warn-not-block).
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 import typer
 
@@ -51,13 +51,8 @@ def transactions_splits_add(
     """Append a split to a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    try:
-        amount_dec = Decimal(amount)
-    except InvalidOperation as e:
-        typer.echo(f"❌ Invalid amount {amount!r}", err=True)
-        raise typer.Exit(2) from e
-
     with handle_cli_errors(output=output) as db:
+        amount_dec = Decimal(amount)
         svc = TransactionService(db)
         split = svc.add_split(
             transaction_id,

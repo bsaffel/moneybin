@@ -62,3 +62,4 @@ async def test_transform_tool_returns_not_implemented_envelope(
     assert parsed["summary"]["sensitivity"] == "low"
     assert parsed["error"]["code"] == "not_implemented"
     assert parsed["error"]["details"]["spec"] == "docs/specs/mcp-tool-surface.md"
+    assert any("moneybin transform" in a for a in parsed["actions"])
