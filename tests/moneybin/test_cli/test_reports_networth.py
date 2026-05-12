@@ -77,8 +77,8 @@ class TestReportsNetworthShow:
             )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        assert "networth" in payload
-        assert payload["networth"]["account_count"] == 3
+        assert payload["status"] == "ok"
+        assert payload["data"]["account_count"] == 3
 
     @pytest.mark.unit
     def test_show_as_of_date(self, runner: CliRunner) -> None:
@@ -202,8 +202,8 @@ class TestReportsNetworthHistory:
             )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        assert "history" in payload
-        assert len(payload["history"]) == 2
+        assert payload["status"] == "ok"
+        assert len(payload["data"]) == 2
 
     @pytest.mark.unit
     def test_history_default_interval_monthly(self, runner: CliRunner) -> None:

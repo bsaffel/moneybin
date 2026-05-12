@@ -39,7 +39,9 @@ def test_transactions_audit_lists_events_for_txn(
 
     result = runner.invoke(app, ["transactions", "audit", "T1", "--output", "json"])
     assert result.exit_code == 0, result.output
-    events = json.loads(result.stdout)["audit_events"]
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    events = payload["data"]
     actions = {e["action"] for e in events}
     assert "note.add" in actions
     assert "tag.add" in actions
@@ -53,5 +55,7 @@ def test_transactions_audit_empty_returns_empty_list(
         app, ["transactions", "audit", "NEVER_EXISTED", "--output", "json"]
     )
     assert result.exit_code == 0
-    events = json.loads(result.stdout)["audit_events"]
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    events = payload["data"]
     assert events == []
