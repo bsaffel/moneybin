@@ -91,9 +91,6 @@ def transactions_notes_edit(
     try:
         with handle_cli_errors(output=output) as db:
             note = TransactionService(db).edit_note(note_id, text, actor="cli")
-    except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e
@@ -119,12 +116,8 @@ def transactions_notes_delete(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            TransactionService(db).delete_note(note_id, actor="cli")
-    except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        TransactionService(db).delete_note(note_id, actor="cli")
 
     if output == OutputFormat.JSON:
         emit_json("note_delete", {"note_id": note_id, "deleted": True})

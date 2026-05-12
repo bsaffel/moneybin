@@ -57,21 +57,17 @@ def transactions_splits_add(
         typer.echo(f"❌ Invalid amount {amount!r}", err=True)
         raise typer.Exit(2) from e
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            svc = TransactionService(db)
-            split = svc.add_split(
-                transaction_id,
-                amount_dec,
-                category=category,
-                subcategory=subcategory,
-                note=note,
-                actor="cli",
-            )
-            residual = svc.splits_balance(transaction_id)
-    except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        svc = TransactionService(db)
+        split = svc.add_split(
+            transaction_id,
+            amount_dec,
+            category=category,
+            subcategory=subcategory,
+            note=note,
+            actor="cli",
+        )
+        residual = svc.splits_balance(transaction_id)
 
     payload = {"split": _split_to_dict(split), "residual": str(residual)}
     if output == OutputFormat.JSON:
@@ -122,23 +118,19 @@ def transactions_splits_remove(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            svc = TransactionService(db)
-            # Look up parent before delete so we can report residual after.
-            parent = db.conn.execute(
-                "SELECT transaction_id FROM app.transaction_splits WHERE split_id = ?",
-                [split_id],
-            ).fetchone()
-            if parent is None:
-                typer.echo(f"❌ split_id={split_id} not found", err=True)
-                raise typer.Exit(1)
-            transaction_id = parent[0]
-            svc.remove_split(split_id, actor="cli")
-            residual = svc.splits_balance(transaction_id)
-    except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        svc = TransactionService(db)
+        # Look up parent before delete so we can report residual after.
+        parent = db.conn.execute(
+            "SELECT transaction_id FROM app.transaction_splits WHERE split_id = ?",
+            [split_id],
+        ).fetchone()
+        if parent is None:
+            typer.echo(f"❌ split_id={split_id} not found", err=True)
+            raise typer.Exit(1)
+        transaction_id = parent[0]
+        svc.remove_split(split_id, actor="cli")
+        residual = svc.splits_balance(transaction_id)
 
     if output == OutputFormat.JSON:
         emit_json(

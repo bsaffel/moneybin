@@ -90,6 +90,28 @@ class TestRenderOrJson:
         out = json.loads(capsys.readouterr().out)
         assert out["data"] == [{"id": "a1"}]
 
+    @pytest.mark.unit
+    def test_json_fields_strips_whitespace(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rows = [{"id": "a1", "amount": "10.00", "description": "Coffee"}]
+        render_or_json(
+            _make_envelope(rows), OutputFormat.JSON, json_fields="id, amount"
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"] == [{"id": "a1", "amount": "10.00"}]
+
+    @pytest.mark.unit
+    def test_json_fields_skips_empty_segments(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rows = [{"id": "a1", "amount": "10.00", "description": "Coffee"}]
+        render_or_json(
+            _make_envelope(rows), OutputFormat.JSON, json_fields="id,,amount"
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert out["data"] == [{"id": "a1", "amount": "10.00"}]
+
 
 class TestEmitJsonError:
     """Tests for emit_json_error helper."""

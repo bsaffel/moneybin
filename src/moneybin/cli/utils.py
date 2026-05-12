@@ -46,6 +46,9 @@ def handle_cli_errors(
         if user_error is None:
             raise
         if output == OutputFormat.JSON:
+            # JSON-mode errors bypass logger.error intentionally: stdout stays
+            # machine-readable for agents and the structured envelope carries
+            # the full error context. The agent's transcript is the audit trail.
             emit_json_error(user_error)
         else:
             logger.error(f"❌ {user_error.message}")

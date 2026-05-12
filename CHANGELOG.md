@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 work in flight; M2A `transaction-curation.md` spec published (PR #115). Doc surface tightened for the personas reachable today. MCP surface hardened: protocol-standard annotations, `accounts_resolve` for fuzzy account lookup, list-parameter cap, de-bulking renames.
 
 ### Added
-- CLI `--output json` responses and MCP tool responses now include a top-level `status` field (`"ok"` or `"error"`), giving agents a consistent signal without testing for presence of the `error` key.
+- `ResponseEnvelope`-based responses (all MCP tools and `categorize`-family CLI commands) now include a top-level `status` field (`"ok"` or `"error"`), giving agents a consistent signal without testing for presence of the `error` key. Other `--output json` commands will adopt the envelope shape incrementally.
 - `--json-fields` option added to all read-only CLI commands (infrastructure in place; per-command field lists added as commands are extended). Comma-separated projection: `moneybin <cmd> --output json --json-fields id,date,amount`.
 - Shell completion enabled: `moneybin --install-completion` and `moneybin --show-completion` now work.
 - Structured JSON error envelopes: when `--output json` is active, runtime errors (DB locked, file not found, etc.) emit a machine-readable error envelope to stdout instead of plain stderr text.

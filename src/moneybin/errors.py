@@ -82,4 +82,6 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         return UserError(str(exc), code="invalid_input")
     if isinstance(exc, InvalidOperation):
         return UserError(f"invalid decimal value: {exc}", code="invalid_input")
+    if isinstance(exc, LookupError):
+        return UserError(str(exc), code="not_found")
     return None
