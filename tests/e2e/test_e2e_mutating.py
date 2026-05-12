@@ -8,7 +8,6 @@ other tests. Tests that need a fresh MONEYBIN_HOME use tmp_path
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -22,8 +21,6 @@ from tests.e2e.conftest import (
     make_workflow_env_fast,
     run_cli,
 )
-
-_has_duckdb_cli = shutil.which("duckdb") is not None
 
 pytestmark = pytest.mark.e2e
 
@@ -303,7 +300,6 @@ class TestCategorizeMutating:
         result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
 
-    @pytest.mark.skipif(not _has_duckdb_cli, reason="DuckDB CLI not installed")
     def test_categorize_auto_review_and_confirm(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:

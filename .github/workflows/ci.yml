@@ -73,7 +73,7 @@ jobs:
       - name: Install DuckDB CLI
         run: |
           curl -fsSL https://install.duckdb.org | sh
-          echo "$HOME/.duckdb/bin" >> $GITHUB_PATH
+          echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Lint
         run: uv run ruff check .

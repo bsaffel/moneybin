@@ -11,7 +11,6 @@ and ``app.audit_log`` via ``moneybin db query`` so the entire pipeline (manual w
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -24,11 +23,6 @@ from tests.e2e.conftest import (
 )
 
 pytestmark = pytest.mark.e2e
-
-_has_duckdb_cli = shutil.which("duckdb") is not None
-_skip_no_duckdb = pytest.mark.skipif(
-    not _has_duckdb_cli, reason="duckdb CLI required for SQL verification"
-)
 
 
 def _loads(s: str) -> Any:
@@ -68,7 +62,6 @@ def _bootstrap_account(env: dict[str, str], account_id: str) -> None:
     run_cli("transform", "apply", env=env, timeout=180).assert_success()
 
 
-@_skip_no_duckdb
 class TestManualEntryGoldenPath:
     """Manual entry → transform → query confirms row in core.fct_transactions."""
 
@@ -109,7 +102,6 @@ class TestManualEntryGoldenPath:
         assert "Coffee shop" in str(row["description"])
 
 
-@_skip_no_duckdb
 class TestNotesTagsSplitsGoldenPath:
     """Add notes/tags/splits to a manual transaction → visible via fct LIST columns."""
 
@@ -255,7 +247,6 @@ class TestTagRenameAuditChain:
         )
 
 
-@_skip_no_duckdb
 class TestImportLabelsGoldenPath:
     """CSV import → import labels add → list shows the label."""
 
@@ -302,7 +293,6 @@ class TestImportLabelsGoldenPath:
         assert "needs-review" in labels
 
 
-@_skip_no_duckdb
 @pytest.mark.skip(
     reason=(
         "CategorizationService.set_category emits category.set audit events, "
@@ -383,7 +373,6 @@ class TestCategoryEditAudit:
         assert any(e.get("after_value") for e in cat_sets), cat_sets
 
 
-@_skip_no_duckdb
 @pytest.mark.asyncio
 class TestMCPBulkCreate:
     """MCP transactions_create with 5 entries → all 5 land in core.fct_transactions."""
