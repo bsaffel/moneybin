@@ -82,18 +82,16 @@ def render_or_json(
     Leading/trailing whitespace around each field name is stripped; empty
     segments (e.g. from ``"id,,amount"``) are silently ignored.
     """
-    if output == OutputFormat.JSON:
-        if json_fields and isinstance(envelope.data, list):
-            fields = {f.strip() for f in json_fields.split(",") if f.strip()}
-            filtered = [
-                {k: v for k, v in row.items() if k in fields} for row in envelope.data
-            ]
-            envelope = dataclasses.replace(envelope, data=filtered)
-        typer.echo(envelope.to_json())
-    elif render_fn is not None:
+    if output == OutputFormat.TEXT and render_fn is not None:
         render_fn(envelope)
-    else:
-        typer.echo(envelope.to_json())
+        return
+    if output == OutputFormat.JSON and json_fields and isinstance(envelope.data, list):
+        fields = {f.strip() for f in json_fields.split(",") if f.strip()}
+        filtered = [
+            {k: v for k, v in row.items() if k in fields} for row in envelope.data
+        ]
+        envelope = dataclasses.replace(envelope, data=filtered)
+    typer.echo(envelope.to_json())
 
 
 def emit_json_error(user_error: UserError) -> None:

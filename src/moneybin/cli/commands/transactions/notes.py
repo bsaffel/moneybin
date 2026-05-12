@@ -40,12 +40,8 @@ def transactions_notes_add(
     """Add a new note to a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            note = TransactionService(db).add_note(transaction_id, text, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        note = TransactionService(db).add_note(transaction_id, text, actor="cli")
 
     payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
@@ -88,12 +84,8 @@ def transactions_notes_edit(
     """Edit an existing note's text."""
     from moneybin.services.transaction_service import TransactionService
 
-    try:
-        with handle_cli_errors(output=output) as db:
-            note = TransactionService(db).edit_note(note_id, text, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        note = TransactionService(db).edit_note(note_id, text, actor="cli")
 
     payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
