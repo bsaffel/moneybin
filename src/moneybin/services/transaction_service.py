@@ -104,17 +104,16 @@ class TransactionGetResult:
 
     def to_envelope(self) -> ResponseEnvelope:
         """Build a ResponseEnvelope for MCP/CLI output."""
-        envelope = build_envelope(
+        return build_envelope(
             data=[t.to_dict() for t in self.transactions],
             sensitivity="medium",
+            next_cursor=self.next_cursor,
             actions=[
                 "Use transactions_get with the next_cursor value to fetch the next page",
                 "Use spending_summary for category breakdowns",
                 "Use transactions_categorize_apply to categorize uncategorized transactions",
             ],
         )
-        envelope.next_cursor = self.next_cursor
-        return envelope
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,8 +235,9 @@ class TransactionService:
     def _resolve_account_ids(self, accounts: list[str]) -> list[str]:
         """Resolve display names or IDs to account_id strings.
 
-        Tries exact account_id match first; falls back to fuzzy name match.
-        Unresolvable entries are silently skipped.
+        Batches exact account_id lookups in one query, then fuzzy-matches any
+        remaining entries via AccountService. Unresolvable entries are silently
+        skipped.
         """
         from moneybin.services.account_service import AccountService
 
@@ -246,16 +246,19 @@ class TransactionService:
         # characters, so without a threshold every query resolves to something.
         _min_confidence = 0.4
 
-        resolved: list[str] = []
-        for entry in accounts:
-            row = self._db.execute(
-                f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",
-                [entry],
-            ).fetchone()
-            if row:
-                resolved.append(str(row[0]))
-            else:
-                matches = AccountService(self._db).resolve(entry, limit=1)
+        placeholders = ", ".join("?" * len(accounts))
+        exact_rows = self._db.execute(
+            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id IN ({placeholders})",  # noqa: S608  # TableRef constant
+            accounts,
+        ).fetchall()
+        exact_ids = {str(r[0]) for r in exact_rows}
+
+        resolved: list[str] = list(exact_ids)
+        unmatched = [a for a in accounts if a not in exact_ids]
+        if unmatched:
+            service = AccountService(self._db)
+            for entry in unmatched:
+                matches = service.resolve(entry, limit=1)
                 if matches and matches[0].confidence >= _min_confidence:
                     resolved.append(matches[0].account_id)
         return resolved

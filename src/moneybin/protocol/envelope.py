@@ -119,6 +119,7 @@ def build_envelope(
     data: list[dict[str, Any]] | dict[str, Any],
     sensitivity: Literal["low", "medium", "high"],
     total_count: int | None = None,
+    next_cursor: str | None = None,
     period: str | None = None,
     display_currency: str = "USD",
     actions: list[str] | None = None,
@@ -132,6 +133,8 @@ def build_envelope(
         sensitivity: Sensitivity tier of the response.
         total_count: Total matching records (if known and different from
             returned count). When None, inferred from data length.
+        next_cursor: Opaque pagination token. When provided, ``summary.has_more``
+            is forced to ``True`` regardless of count comparison.
         period: Human-readable period string (e.g., ``"2026-01 to 2026-04"``).
         display_currency: Currency for all amounts in the response.
         actions: Contextual next-step hints.
@@ -147,7 +150,7 @@ def build_envelope(
         returned = 1
 
     actual_total = total_count if total_count is not None else returned
-    has_more = actual_total > returned
+    has_more = next_cursor is not None or actual_total > returned
 
     summary = SummaryMeta(
         total_count=actual_total,
@@ -164,6 +167,7 @@ def build_envelope(
         summary=summary,
         data=data,
         actions=actions or [],
+        next_cursor=next_cursor,
     )
 
 

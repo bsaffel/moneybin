@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 import typer
 
@@ -69,8 +70,6 @@ def transactions_list(
 
     rows: list[tuple[object, ...]] = []
     for t in result.transactions:
-        from decimal import Decimal
-
         amt = t.amount
         amount_str = f"-${abs(amt):,.2f}" if amt < Decimal("0") else f"${amt:,.2f}"
         rows.append((
