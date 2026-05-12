@@ -508,6 +508,46 @@ class TestEncryptionKeyCache:
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)
 
 
+class TestActiveWriteSlot:
+    """Database.close() deregistration from the _active_write_conn slot."""
+
+    def test_close_deregisters_active_write_conn(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        monkeypatch.setattr(db_module, "_active_write_conn", None)
+        db_path = tmp_path / "wslot.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        # Manually register (get_database() will do this; testing close() cleanup)
+        with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]  # test-only: verify deregistration
+            db_module._active_write_conn = db  # type: ignore[reportPrivateUsage]  # test-only
+        assert db_module._active_write_conn is db  # type: ignore[reportPrivateUsage]  # test-only
+        db.close()
+        assert db_module._active_write_conn is None  # type: ignore[reportPrivateUsage]  # test-only
+
+    def test_close_does_not_deregister_different_conn(
+        self,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import moneybin.database as db_module
+
+        other = MagicMock(name="other_conn")
+        monkeypatch.setattr(db_module, "_active_write_conn", other)
+        db_path = tmp_path / "wslot2.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        db.close()
+        # Some other conn was registered — our close() shouldn't clear it
+        assert db_module._active_write_conn is other  # type: ignore[reportPrivateUsage]  # test-only
+        # Cleanup
+        monkeypatch.setattr(db_module, "_active_write_conn", None)
+
+
 class TestTemporarySingleton:
     """_temporary_singleton must restore prior state on both clean exit and exception."""
 

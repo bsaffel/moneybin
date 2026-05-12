@@ -579,6 +579,12 @@ class Database:
 
     def close(self) -> None:
         """Close the database connection and release resources."""
+        # Deregister from the active-write slot if we are the current holder.
+        global _active_write_conn  # noqa: PLW0603
+        with _active_write_lock:
+            if _active_write_conn is self:
+                _active_write_conn = None
+
         if self._conn is not None:
             try:
                 self._conn.close()
