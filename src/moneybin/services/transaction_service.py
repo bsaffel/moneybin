@@ -253,7 +253,7 @@ class TransactionService:
         ).fetchall()
         exact_ids = {str(r[0]) for r in exact_rows}
 
-        resolved: list[str] = list(exact_ids)
+        resolved = [a for a in accounts if a in exact_ids]
         unmatched = [a for a in accounts if a not in exact_ids]
         if unmatched:
             service = AccountService(self._db)
@@ -288,6 +288,8 @@ class TransactionService:
         Pagination is offset-based internally; the cursor is base64(str(offset))
         so callers treat it as opaque.
         """
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
         offset = int(base64.b64decode(cursor.encode()).decode()) if cursor else 0
 
         conditions: list[str] = []
@@ -326,7 +328,7 @@ class TransactionService:
             params.extend([like, like])
 
         if uncategorized_only:
-            conditions.append("category IS NULL")
+            conditions.append("categorized_by IS NULL")
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 

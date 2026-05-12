@@ -50,28 +50,28 @@ def txn_db(tmp_path: Path) -> Generator[Database, None, None]:
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month,
             transaction_year_quarter,
-            category, notes, tags, splits
+            category, categorized_by, notes, tags, splits
         ) VALUES
         ('T1', 'A1', '2026-04-10', -50.00, 50.00, 'expense',
          'Coffee Shop', 'DEBIT', false, 'USD', 'ofx',
          '2026-04-10', CURRENT_TIMESTAMP,
          2026, 4, 10, 3, '2026-04', '2026-Q2',
-         'Food & Drink', NULL, ['work', 'lunch'], NULL),
+         'Food & Drink', 'user', NULL, ['work', 'lunch'], NULL),
         ('T2', 'A1', '2026-04-15', 5000.00, 5000.00, 'income',
          'Employer Inc', 'CREDIT', false, 'USD', 'ofx',
          '2026-04-15', CURRENT_TIMESTAMP,
          2026, 4, 15, 1, '2026-04', '2026-Q2',
-         NULL, NULL, NULL, NULL),
+         NULL, NULL, NULL, NULL, NULL),
         ('T3', 'A2', '2026-03-10', -50.00, 50.00, 'expense',
          'Coffee Shop', 'DEBIT', false, 'USD', 'ofx',
          '2026-03-10', CURRENT_TIMESTAMP,
          2026, 3, 10, 1, '2026-03', '2026-Q1',
-         'Food & Drink', NULL, NULL, NULL),
+         'Food & Drink', 'user', NULL, NULL, NULL),
         ('T4', 'A1', '2026-02-10', -200.00, 200.00, 'expense',
          'Rent Payment', 'DEBIT', false, 'USD', 'ofx',
          '2026-02-10', CURRENT_TIMESTAMP,
          2026, 2, 10, 1, '2026-02', '2026-Q1',
-         NULL, NULL, NULL, NULL)
+         NULL, NULL, NULL, NULL, NULL)
     """)  # noqa: S608  # test input, not executing SQL
 
     db_module._database_instance = database  # type: ignore[attr-defined]
@@ -219,3 +219,75 @@ class TestTransactionGet:
         d = result.to_envelope().to_dict()
         assert "next_cursor" in d
         assert d["next_cursor"] == result.next_cursor
+
+    @pytest.mark.unit
+    def test_limit_zero_raises(self, txn_db: Database) -> None:
+        with pytest.raises(ValueError, match="limit"):
+            TransactionService(txn_db).get(limit=0)
+
+    @pytest.mark.unit
+    def test_uncategorized_only_includes_source_categorized(
+        self, tmp_path: Path
+    ) -> None:
+        """uncategorized_only returns rows with source-provided category but no user categorization."""
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+        db = Database(
+            tmp_path / "src_cat.duckdb", secret_store=mock_store, no_auto_upgrade=True
+        )
+        create_core_tables_raw(db.conn)
+        # T_src: source-provided category ('Groceries'), categorized_by=NULL (no user/AI/rule)
+        db.conn.execute("""
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at,
+                transaction_year, transaction_month, transaction_day,
+                transaction_day_of_week, transaction_year_month,
+                transaction_year_quarter,
+                category, categorized_by, notes, tags, splits
+            ) VALUES
+            ('T_src', 'A1', '2026-04-01', -25.00, 25.00, 'expense',
+             'Grocery Run', 'DEBIT', false, 'USD', 'plaid',
+             '2026-04-01', CURRENT_TIMESTAMP,
+             2026, 4, 1, 2, '2026-04', '2026-Q2',
+             'Groceries', NULL, NULL, NULL, NULL)
+        """)  # noqa: S608  # test input, not executing SQL
+        result = TransactionService(db).get(uncategorized_only=True)
+        assert len(result.transactions) == 1
+        assert result.transactions[0].transaction_id == "T_src"
+        assert result.transactions[0].category == "Groceries"
+        db.close()
+
+    @pytest.mark.unit
+    def test_filter_by_memo(self, tmp_path: Path) -> None:
+        """Description filter matches via the memo OR branch."""
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+        db = Database(
+            tmp_path / "memo.duckdb", secret_store=mock_store, no_auto_upgrade=True
+        )
+        create_core_tables_raw(db.conn)
+        db.conn.execute("""
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at,
+                transaction_year, transaction_month, transaction_day,
+                transaction_day_of_week, transaction_year_month,
+                transaction_year_quarter,
+                memo, notes, tags, splits
+            ) VALUES
+            ('M1', 'A1', '2026-04-10', -10.00, 10.00, 'expense',
+             'Acme Corp', 'DEBIT', false, 'USD', 'ofx',
+             '2026-04-10', CURRENT_TIMESTAMP,
+             2026, 4, 10, 3, '2026-04', '2026-Q2',
+             'coffee shop', NULL, NULL, NULL)
+        """)  # noqa: S608  # test input, not executing SQL
+        result = TransactionService(db).get(description="coffee")
+        assert len(result.transactions) == 1
+        assert result.transactions[0].transaction_id == "M1"
+        assert result.transactions[0].memo == "coffee shop"
+        db.close()

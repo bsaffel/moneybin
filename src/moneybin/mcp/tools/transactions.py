@@ -26,8 +26,8 @@ def transactions_get(
     date_from: str | None = None,
     date_to: str | None = None,
     categories: list[str] | None = None,
-    amount_min: float | None = None,
-    amount_max: float | None = None,
+    amount_min: str | None = None,
+    amount_max: str | None = None,
     description: str | None = None,
     uncategorized_only: bool = False,
     limit: int = 50,
@@ -45,10 +45,12 @@ def transactions_get(
         date_from: ISO 8601 start date, inclusive (e.g. '2026-01-01').
         date_to: ISO 8601 end date, inclusive.
         categories: Category names to filter by. Multiple values are OR-combined.
-        amount_min: Minimum amount filter. Negative = expense, positive = income.
-        amount_max: Maximum amount filter.
+        amount_min: Minimum amount as a decimal string (e.g. '-50.00'). Negative
+            = expense, positive = income.
+        amount_max: Maximum amount as a decimal string.
         description: Case-insensitive pattern matched against description and memo.
-        uncategorized_only: Only return transactions with no category assigned.
+        uncategorized_only: Only return transactions with no user/AI/rule
+            categorization assigned (includes source-provided categories).
         limit: Maximum rows to return (default 50).
         cursor: Opaque pagination token from a previous response's next_cursor.
     """
@@ -58,8 +60,8 @@ def transactions_get(
         date_from=date_from,
         date_to=date_to,
         categories=categories,
-        amount_min=Decimal(str(amount_min)) if amount_min is not None else None,
-        amount_max=Decimal(str(amount_max)) if amount_max is not None else None,
+        amount_min=Decimal(amount_min) if amount_min is not None else None,
+        amount_max=Decimal(amount_max) if amount_max is not None else None,
         description=description,
         uncategorized_only=uncategorized_only,
         limit=limit,

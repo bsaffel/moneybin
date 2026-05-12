@@ -31,7 +31,9 @@ def transactions_list(
         None, "--description", help="ILIKE pattern against description and memo."
     ),
     uncategorized: bool = typer.Option(
-        False, "--uncategorized", help="Only uncategorized transactions."
+        False,
+        "--uncategorized",
+        help="Only transactions with no user/AI/rule categorization assigned.",
     ),
     limit: int = typer.Option(50, "--limit", help="Maximum rows to return."),
     cursor: str | None = typer.Option(
@@ -72,9 +74,10 @@ def transactions_list(
     for t in result.transactions:
         amt = t.amount
         amount_str = f"-${abs(amt):,.2f}" if amt < Decimal("0") else f"${amt:,.2f}"
+        desc = t.description[:49] + "…" if len(t.description) > 50 else t.description
         rows.append((
             t.transaction_date,
-            t.description[:50],
+            desc,
             amount_str,
             t.category or "",
             t.account_id,
