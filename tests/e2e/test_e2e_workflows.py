@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -15,8 +14,6 @@ from tests.e2e.conftest import (
     make_workflow_env_fast,
     run_cli,
 )
-
-_has_duckdb_cli = shutil.which("duckdb") is not None
 
 pytestmark = pytest.mark.e2e
 
@@ -47,19 +44,18 @@ class TestSyntheticPipeline:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # Verify core tables have data (requires DuckDB CLI)
-        if _has_duckdb_cli:
-            result = run_cli(
-                "db",
-                "query",
-                "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--output",
-                "csv",
-                env=env,
-            )
-            result.assert_success()
-            count = int(result.stdout.strip().split("\n")[-1].strip())
-            assert count > 0, f"Expected rows in core.fct_transactions, got {count}"
+        # Verify core tables have data
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM core.fct_transactions",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, f"Expected rows in core.fct_transactions, got {count}"
 
 
 class TestCSVImportPipeline:
@@ -88,19 +84,18 @@ class TestCSVImportPipeline:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # Verify core tables have data (requires DuckDB CLI)
-        if _has_duckdb_cli:
-            result = run_cli(
-                "db",
-                "query",
-                "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--output",
-                "csv",
-                env=env,
-            )
-            result.assert_success()
-            count = int(result.stdout.strip().split("\n")[-1].strip())
-            assert count > 0, f"Expected rows after CSV import, got {count}"
+        # Verify core tables have data
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM core.fct_transactions",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, f"Expected rows after CSV import, got {count}"
 
 
 class TestOFXImportPipeline:
@@ -127,19 +122,18 @@ class TestOFXImportPipeline:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # Verify core tables have data (requires DuckDB CLI)
-        if _has_duckdb_cli:
-            result = run_cli(
-                "db",
-                "query",
-                "SELECT COUNT(*) AS n FROM core.fct_transactions",
-                "--output",
-                "csv",
-                env=env,
-            )
-            result.assert_success()
-            count = int(result.stdout.strip().split("\n")[-1].strip())
-            assert count > 0, f"Expected rows after OFX import, got {count}"
+        # Verify core tables have data
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM core.fct_transactions",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, f"Expected rows after OFX import, got {count}"
 
 
 class TestLockUnlockCycle:
@@ -238,9 +232,6 @@ class TestAutoRulePipeline:
     def test_import_then_promote_proposal(
         self, _mutating_profile_template: Path, e2e_home: Path
     ) -> None:
-        if not _has_duckdb_cli:
-            pytest.skip("DuckDB CLI required to verify rule promotion")
-
         env = make_workflow_env_fast(
             e2e_home, "wf-autorule", _mutating_profile_template
         )
