@@ -295,18 +295,23 @@ with get_database() as db:
 
 **`cli/utils.py` `handle_cli_errors()`**
 
-Add `read_only: bool = False` parameter. Open the connection inside the try block:
+Remove the `read_only` parameter and stop yielding `Database`. `handle_cli_errors()` becomes a pure error-handler — it wraps error classification and exit-code logic, nothing more:
+
 ```python
 @contextmanager
-def handle_cli_errors(read_only: bool = False) -> Generator[Database, None, None]:
+def handle_cli_errors() -> Generator[None, None, None]:
     try:
-        with get_database(read_only=read_only) as db:
-            yield db
+        yield
     except typer.Exit:
         raise
     except Exception as e:
         user_error = classify_user_error(e)
-        ...
+        if user_error is None:
+            raise
+        logger.error(f"❌ {user_error.message}")
+        if user_error.hint:
+            logger.info(user_error.hint)
+        raise typer.Exit(1) from e
 ```
 
 Add `DatabaseNotInitializedError` to `classify_user_error()` (in `moneybin/errors.py`), producing a one-line message:
@@ -314,24 +319,54 @@ Add `DatabaseNotInitializedError` to `classify_user_error()` (in `moneybin/error
 ❌ Database not found. Run 'moneybin db init' to initialize it first.
 ```
 
-**CLI read-only commands**
+**CLI command pattern**
 
-Commands that only query data pass `read_only=True` to `handle_cli_errors()`:
+Each command explicitly acquires its own connection with the mode it needs, nested inside `handle_cli_errors()`:
 
-- `reports *` (all report commands)
-- `accounts list`, `accounts show`, `accounts balance history`, `accounts balance list`
-- `transactions list`, `transactions search`
-- `categories list`
-- `merchants list`
-- `system status`, `db ps`, `db query` (SELECT-only query tool)
+```python
+# read-only command
+with handle_cli_errors():
+    with get_database(read_only=True) as db:
+        result = SomeService(db).read_operation()
 
-All remaining CLI commands (imports, categorize, curation, transform, db init/lock/unlock/migrate) use the default `read_only=False`.
+# write command
+with handle_cli_errors():
+    with get_database() as db:
+        SomeService(db).write_operation()
+```
+
+Read-only commands: `reports *`, `accounts list/show/balance history/balance list`, `transactions list/search`, `categories list`, `merchants list`, `system status`, `db ps`, `db query`.
+
+Write commands: all imports, categorize, curation, transform, `db init/lock/unlock/migrate`.
 
 **`sqlmesh_command()` in `cli/utils.py`**
 
-`transform apply` and `import inbox sync` hold a write connection for the full SQLMesh run. `sqlmesh_command()` stays as-is conceptually (yields a `Database`), but its body now uses `handle_cli_errors()` which opens a proper write connection that stays open for the duration of the block. No structural change needed — the connection is held open as long as the `with sqlmesh_command()` block is active.
+`sqlmesh_command()` still yields a `Database` (callers pass it to `sqlmesh_context(db)`), but it now opens the write connection itself rather than inheriting one from `handle_cli_errors()`. It also takes over both error-classification paths — classified user errors and SQLMesh's broad exceptions — since it no longer wraps `handle_cli_errors()`:
 
-The call site for `transform apply`:
+```python
+@contextmanager
+def sqlmesh_command(
+    operation: str, *, success: str | None = None
+) -> Generator[Database, None, None]:
+    logger.info(f"⚙️  {operation}...")
+    try:
+        with get_database() as db:
+            yield db
+        logger.info(f"✅ {success or f'{operation} completed'}")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        user_error = classify_user_error(e)
+        if user_error is not None:
+            logger.error(f"❌ {user_error.message}")
+            if user_error.hint:
+                logger.info(user_error.hint)
+        else:
+            logger.error(f"❌ {operation} failed: {e}")  # noqa: BLE001 — SQLMesh raises broad exceptions
+        raise typer.Exit(1) from e
+```
+
+Call site for `transform apply` is unchanged:
 ```python
 with sqlmesh_command("SQLMesh transform") as db:
     with sqlmesh_context(db) as ctx:
@@ -385,8 +420,8 @@ The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchang
 | `src/moneybin/mcp/tools/transactions_categorize.py` | Mixed |
 | `src/moneybin/mcp/tools/transactions_categorize_assist.py` | Read-only |
 | `src/moneybin/mcp/tools/budget.py` | Write |
-| `src/moneybin/cli/utils.py` | `handle_cli_errors(read_only=False)` |
-| `src/moneybin/cli/commands/import_cmd.py` | Already write; verify context-manager pattern |
+| `src/moneybin/cli/utils.py` | `handle_cli_errors()` becomes error-only (no `db` yield); `sqlmesh_command()` opens its own write connection |
+| `src/moneybin/cli/commands/import_cmd.py` | Add explicit `get_database()` calls inside `handle_cli_errors()` blocks |
 | `src/moneybin/observability.py` | Phase 4 changes |
 | `src/moneybin/services/inbox_service.py` | `InboxService.create()` class method |
 | `src/moneybin/services/schema_catalog.py` | Read-only |
@@ -395,7 +430,7 @@ The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchang
 
 ### Key Decisions
 
-**Why `no_auto_upgrade=True` in `get_database()`**: Migrations run at most once per process, on the first write-mode open (`db init` or the first CLI command). Subsequent calls — including during the same session — skip migrations. This matches current behaviour for the singleton (migrations ran once at first open); it just applies to every fresh connection now.
+**Why `_migration_check_done` instead of hardcoding `no_auto_upgrade=True`**: Migrations must run when a new version of MoneyBin is installed. Hardcoding `no_auto_upgrade=True` in `get_database()` would skip them entirely, regressing upgrade behaviour. The flag ensures migrations run exactly once per process — on the first write-mode open — then are skipped for all subsequent opens (read or write), avoiding the overhead on every short-lived write connection.
 
 **Why the `_active_write_conn` slot instead of removing `interrupt_and_reset_database()`**: The MCP decorator's timeout path (`mcp/decorator.py`) needs to interrupt a mid-flight DuckDB query and release the write lock before another tool can proceed. Without a global reference to the current write connection, the interrupt can't fire. The slot gives `interrupt_and_reset_database()` a target without re-introducing a singleton.
 
