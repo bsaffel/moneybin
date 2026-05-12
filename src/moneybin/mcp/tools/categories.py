@@ -59,10 +59,11 @@ def categories_toggle(
     is_active: bool,
 ) -> ResponseEnvelope:
     """Enable or disable a category. Existing categorizations are preserved."""
-    CategorizationService(get_database()).toggle_category(
-        category_id,
-        is_active=is_active,
-    )
+    with get_database() as db:
+        CategorizationService(db).toggle_category(
+            category_id,
+            is_active=is_active,
+        )
     action = "enabled" if is_active else "disabled"
     return build_envelope(
         data={"category_id": category_id, "action": action},

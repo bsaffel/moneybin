@@ -20,7 +20,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from tests.moneybin.db_helpers import create_core_tables_raw
 
@@ -85,21 +84,45 @@ def _mcp_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture
 
 
 @pytest.fixture()
-def mcp_db(tmp_path: Path, _mcp_db_template: Path) -> Generator[Database, None, None]:
-    """Per-test Database initialized from a snapshot of the session template.
+def mcp_db(
+    tmp_path: Path,
+    _mcp_db_template: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[Path, None, None]:
+    """Per-test Database path initialized from a snapshot of the session template.
 
-    Copies the baseline encrypted DuckDB file into the test's tmp_path,
-    opens it, and injects the singleton so MCP server functions resolve
-    against this DB. Restores the singleton on teardown.
+    Copies the baseline encrypted DuckDB file into the test's tmp_path, then
+    patches ``get_settings`` and ``SecretStore`` so ``get_database()`` opens
+    the test DB at the right path with the right key.
+
+    Yields the ``db_path`` (a ``Path``) rather than an open ``Database``
+    connection.  DuckDB raises a conflict if two connections to the same file
+    are open simultaneously in the same process — so the fixture never holds
+    a connection open during test body execution.
+
+    Tests that need per-test setup (INSERTs, CREATE VIEW, etc.) must use the
+    ``get_database()`` context manager and close it before calling any MCP
+    tool:
+
+        with get_database() as db:
+            db.execute("INSERT ...")
+        result = await some_tool()
     """
     db_path = tmp_path / "test.duckdb"
     shutil.copy(_mcp_db_template, db_path)
 
-    database = Database(db_path, secret_store=_make_mock_store(), no_auto_upgrade=True)
+    mock_store = _make_mock_store()
+    mock_settings = MagicMock()
+    mock_settings.database.path = db_path
+    monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_store)
 
-    db_module._database_instance = database  # type: ignore[reportPrivateUsage] — test fixture
-    try:
-        yield database
-    finally:
-        db_module._database_instance = None  # type: ignore[reportPrivateUsage] — test fixture
-        database.close()
+    # Reset per-process state so each test starts clean.
+    import moneybin.database as db_module
+
+    monkeypatch.setattr(db_module, "_migration_check_done", False)
+    monkeypatch.setattr(db_module, "_database_accessed", False)
+    monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+    monkeypatch.setattr(db_module, "_active_write_conn", None)
+
+    yield db_path

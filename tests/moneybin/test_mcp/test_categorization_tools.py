@@ -5,9 +5,14 @@ Individual categorization logic is tested in test_categorization_service.py.
 These tests verify the MCP tool wiring, envelope format, and basic end-to-end.
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+
 import pytest
 from fastmcp import FastMCP
 
+from moneybin.database import get_database
 from moneybin.mcp.tools.categories import (
     categories_list,
     categories_toggle,
@@ -83,44 +88,40 @@ class TestToggleCategoryWritePath:
     """categories_toggle routes writes to the right backing table."""
 
     @pytest.mark.unit
-    async def test_toggle_default_category_writes_override(
-        self, mcp_db: object
-    ) -> None:
-        from moneybin.database import Database
-
-        assert isinstance(mcp_db, Database)
-        seed_categories_view(mcp_db)
+    async def test_toggle_default_category_writes_override(self, mcp_db: Path) -> None:
+        with get_database() as db:
+            seed_categories_view(db)
 
         await categories_toggle(category_id="FND", is_active=False)
 
-        rows = mcp_db.execute(
-            "SELECT category_id, is_active FROM app.category_overrides"
-        ).fetchall()
+        with get_database() as db:
+            rows = db.execute(
+                "SELECT category_id, is_active FROM app.category_overrides"
+            ).fetchall()
         assert rows == [("FND", False)]
 
     @pytest.mark.unit
     async def test_toggle_user_category_updates_user_categories(
-        self, mcp_db: object
+        self, mcp_db: Path
     ) -> None:
-        from moneybin.database import Database
-
-        assert isinstance(mcp_db, Database)
-        seed_categories_view(mcp_db)
-        mcp_db.execute("""
-            INSERT INTO app.user_categories
-            (category_id, category, subcategory, is_active)
-            VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
-        """)
+        with get_database() as db:
+            seed_categories_view(db)
+            db.execute("""
+                INSERT INTO app.user_categories
+                (category_id, category, subcategory, is_active)
+                VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
+            """)
 
         await categories_toggle(category_id="CUSTOM1", is_active=False)
 
-        rows = mcp_db.execute(
-            "SELECT is_active FROM app.user_categories WHERE category_id = ?",
-            ["CUSTOM1"],
-        ).fetchall()
+        with get_database() as db:
+            rows = db.execute(
+                "SELECT is_active FROM app.user_categories WHERE category_id = ?",
+                ["CUSTOM1"],
+            ).fetchall()
+            # Override table is for defaults only — user toggles must not write here.
+            override_count = db.execute(
+                "SELECT COUNT(*) FROM app.category_overrides"
+            ).fetchone()
         assert rows == [(False,)]
-        # Override table is for defaults only — user toggles must not write here.
-        override_count = mcp_db.execute(
-            "SELECT COUNT(*) FROM app.category_overrides"
-        ).fetchone()
         assert override_count == (0,)

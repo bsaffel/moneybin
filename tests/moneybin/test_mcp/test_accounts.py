@@ -8,17 +8,18 @@ free-text resolution tool added per docs/specs/mcp-tool-surface.md
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.database import Database
+from moneybin.database import get_database
 from moneybin.mcp.tools.accounts import accounts_resolve, register_accounts_tools
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
 def _seed_named_account(
-    db: Database,
     account_id: str,
     display_name: str | None,
     account_subtype: str | None = None,
@@ -26,21 +27,23 @@ def _seed_named_account(
 ) -> None:
     """Insert a fully-named row directly into core.dim_accounts.
 
-    The mcp_db template inserts ACC001/ACC002 with display_name=NULL, so
-    resolve tests need to seed their own rows to exercise display_name and
-    institution_name matches.
+    Opens and closes its own write connection so the caller doesn't hold an
+    open connection when the MCP tool runs.  The mcp_db template inserts
+    ACC001/ACC002 with display_name=NULL, so resolve tests need to seed their
+    own rows to exercise display_name and institution_name matches.
     """
-    db.execute(
-        """
-        INSERT INTO core.dim_accounts (
-            account_id, routing_number, account_type, institution_name,
-            institution_fid, source_type, source_file, extracted_at,
-            loaded_at, updated_at, display_name, account_subtype
-        ) VALUES (?, NULL, 'CHECKING', ?, NULL, 'ofx', 'test.qfx',
-                  '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)
-        """,
-        [account_id, institution_name, display_name, account_subtype],
-    )
+    with get_database() as db:
+        db.execute(
+            """
+            INSERT INTO core.dim_accounts (
+                account_id, routing_number, account_type, institution_name,
+                institution_fid, source_type, source_file, extracted_at,
+                loaded_at, updated_at, display_name, account_subtype
+            ) VALUES (?, NULL, 'CHECKING', ?, NULL, 'ofx', 'test.qfx',
+                      '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)
+            """,
+            [account_id, institution_name, display_name, account_subtype],
+        )
 
 
 class TestAccountsResolveRegistration:
@@ -58,12 +61,9 @@ class TestAccountsResolve:
     """Tests for the accounts_resolve MCP tool envelope and action hints."""
 
     @pytest.mark.unit
-    async def test_envelope_shape_returns_low_sensitivity(
-        self, mcp_db: Database
-    ) -> None:
+    async def test_envelope_shape_returns_low_sensitivity(self, mcp_db: Path) -> None:
         """accounts_resolve returns envelope with low sensitivity and sorted results."""
         _seed_named_account(
-            mcp_db,
             "a1",
             display_name="Chase Checking",
             account_subtype="checking",
@@ -80,48 +80,50 @@ class TestAccountsResolve:
         assert "display_name" in parsed["data"][0]
 
     @pytest.mark.unit
-    async def test_no_matches_returns_action_hint(self, tmp_path: object) -> None:
+    async def test_no_matches_returns_action_hint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """No matches → action hint suggests broadening or accounts_list.
 
         Uses an isolated empty DB rather than the mcp_db template (whose seed
         accounts have institution names that fuzzy-match almost anything via
         SequenceMatcher).
         """
-        from pathlib import Path
         from unittest.mock import MagicMock
 
-        import moneybin.database as db_module
         from moneybin.database import Database
         from tests.moneybin.db_helpers import create_core_tables_raw
 
         store = MagicMock()
         store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-        assert isinstance(tmp_path, Path)
-        empty = Database(
-            tmp_path / "empty.duckdb", secret_store=store, no_auto_upgrade=True
-        )
+        empty_path = tmp_path / "empty.duckdb"
+
+        # Set up an empty DB at the path
+        empty = Database(empty_path, secret_store=store, no_auto_upgrade=True)
         create_core_tables_raw(empty.conn)
-        prior = db_module._database_instance  # type: ignore[attr-defined]
-        db_module._database_instance = empty  # type: ignore[attr-defined]
-        try:
-            result = await accounts_resolve(query="anything")
-            parsed = result.to_dict()
-            assert parsed["data"] == []
-            assert any(
-                "accounts_list" in a or "broader" in a.lower()
-                for a in parsed["actions"]
-            )
-        finally:
-            db_module._database_instance = prior  # type: ignore[attr-defined]
-            empty.close()
+        empty.close()
+
+        # Redirect get_database() to the empty path
+        mock_settings = MagicMock()
+        mock_settings.database.path = empty_path
+        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
+        monkeypatch.setattr("moneybin.database.SecretStore", lambda: store)
+
+        result = await accounts_resolve(query="anything")
+        parsed = result.to_dict()
+        assert parsed["data"] == []
+        assert any(
+            "accounts_list" in a or "broader" in a.lower() for a in parsed["actions"]
+        )
 
     @pytest.mark.unit
     async def test_low_confidence_top_match_emits_verify_hint(
-        self, mcp_db: Database
+        self, mcp_db: Path
     ) -> None:
         """Top match below 0.6 confidence triggers a verify-with-user hint."""
         _seed_named_account(
-            mcp_db,
             "a1",
             display_name="XYZ Account",
             institution_name="XYZ Bank",
@@ -137,10 +139,10 @@ class TestAccountsResolve:
             )
 
     @pytest.mark.unit
-    async def test_limit_caps_returned_candidates(self, mcp_db: Database) -> None:
+    async def test_limit_caps_returned_candidates(self, mcp_db: Path) -> None:
         """Limit parameter caps the number of returned candidates."""
         for i in range(4):
-            _seed_named_account(mcp_db, f"acct_{i}", display_name=f"Account {i}")
+            _seed_named_account(f"acct_{i}", display_name=f"Account {i}")
         result = await accounts_resolve(query="account", limit=2)
         parsed = result.to_dict()
         assert len(parsed["data"]) == 2

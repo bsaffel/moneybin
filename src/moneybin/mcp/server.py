@@ -1,10 +1,8 @@
 """MCP server definition with DuckDB connection management.
 
-This module creates the FastMCP server instance and manages the DuckDB
-connection used by all tools and resources. The server uses the shared
-``Database`` singleton from ``moneybin.database``, which provides a single
-long-lived read-write connection per process with encryption, schema init,
-and migrations handled transparently.
+This module creates the FastMCP server instance. Each tool call opens a
+short-lived ``Database`` connection via ``get_database()`` and closes it
+when done. There is no long-lived singleton held by the server.
 
 Documentation: https://modelcontextprotocol.github.io/python-sdk/
 """
@@ -15,7 +13,6 @@ import logging
 import textwrap
 from pathlib import Path
 
-import duckdb
 from fastmcp import FastMCP
 from fastmcp.server.transforms import Visibility
 
@@ -98,26 +95,16 @@ mcp = FastMCP(
 _tools_registered = False
 
 
-def get_db() -> duckdb.DuckDBPyConnection:
-    """Get the DuckDB connection for queries.
-
-    Returns:
-        The active DuckDB connection from the Database singleton.
-    """
-    from moneybin.database import get_database
-
-    return get_database().conn
-
-
 def get_db_path() -> Path:
     """Get the path to the DuckDB database file.
 
     Returns:
-        The database file path from the Database singleton.
+        The database file path from settings.
     """
     from moneybin.database import get_database
 
-    return get_database().path
+    with get_database(read_only=True) as db:
+        return Path(db.path)
 
 
 def table_exists(table: TableRef) -> bool:
@@ -129,39 +116,38 @@ def table_exists(table: TableRef) -> bool:
     Returns:
         True if the table exists.
     """
-    db = get_db()
+    from moneybin.database import get_database
+
     try:
-        result = db.execute(
-            """
-            SELECT COUNT(*)
-            FROM information_schema.tables
-            WHERE table_schema = ? AND table_name = ?
-            """,
-            [table.schema, table.name],
-        ).fetchone()
-        return bool(result and result[0] > 0)
-    except Exception:
+        with get_database(read_only=True) as db:
+            result = db.execute(
+                """
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_schema = ? AND table_name = ?
+                """,
+                [table.schema, table.name],
+            ).fetchone()
+            return bool(result and result[0] > 0)
+    except Exception:  # noqa: BLE001
         return False
 
 
 def init_db() -> None:
-    """Initialize the database and register MCP tools."""
-    from moneybin.database import get_database
-
-    db = get_database()
-    logger.info(f"Database initialized: {db.path}")
+    """Register MCP tools."""
     register_core_tools()
 
 
 def close_db() -> None:
-    """Log that the database connection lifecycle is ending.
+    """Flush metrics if the database was accessed during the session."""
+    from moneybin.database import database_was_accessed
 
-    Under the per-call connection model, each tool opens and closes its own
-    short-lived Database.  The MCP server no longer holds a long-lived
-    singleton to close here.
-    """
+    if database_was_accessed():
+        from moneybin.observability import flush_metrics
+
+        flush_metrics()
     try:
-        logger.info("DuckDB connection closed")
+        logger.info("MCP session closing")
     except ValueError:
         pass  # stderr already closed during MCP stdio shutdown
 
