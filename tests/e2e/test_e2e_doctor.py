@@ -18,6 +18,7 @@ pytestmark = pytest.mark.e2e
 
 
 class TestDoctorCommand:
+    """E2E tests for the `moneybin doctor` command."""
     def test_doctor_help(self) -> None:
         result = run_cli("doctor", "--help")
         result.assert_success()
