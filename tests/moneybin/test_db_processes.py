@@ -6,6 +6,7 @@ import pytest
 @pytest.mark.unit
 class TestDescribeProcess:
     """Tests for _describe_process process-name classification."""
+
     def _desc(self, cmdline: str) -> str:
         from moneybin.utils.db_processes import _describe_process
 

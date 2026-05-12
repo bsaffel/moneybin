@@ -77,6 +77,10 @@ def clean_profile_state() -> Generator[None, None, None]:
     - Resets the module-level ``_CLIFlags`` singleton in ``cli.utils`` so
       a stale ``--profile`` value from one test cannot leak into the
       next via ``resolve_profile()``.
+    - Resets per-process database module state (``_cached_encryption_key``,
+      ``_active_write_conn``, ``_migration_check_done``, ``_database_accessed``)
+      so a key cached by one test is never reused by the next test in the same
+      xdist worker.
 
     This ensures tests are isolated and don't affect each other.
 
@@ -84,12 +88,19 @@ def clean_profile_state() -> Generator[None, None, None]:
     """
     from moneybin.cli import utils as cli_utils
 
+    def _reset_db_state() -> None:
+        db_module._cached_encryption_key = None  # pyright: ignore[reportPrivateUsage]
+        db_module._active_write_conn = None  # pyright: ignore[reportPrivateUsage]
+        db_module._migration_check_done = False  # pyright: ignore[reportPrivateUsage]
+        db_module._database_accessed = False  # pyright: ignore[reportPrivateUsage]
+
     # Setup: clean state before test
     register_profile_resolver(None)
     clear_settings_cache()
     set_current_profile("test")
     cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
     cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
+    _reset_db_state()
 
     # Yield to run the test
     yield
@@ -100,6 +111,7 @@ def clean_profile_state() -> Generator[None, None, None]:
     set_current_profile("test")
     cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
     cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
+    _reset_db_state()
 
 
 @pytest.fixture()
