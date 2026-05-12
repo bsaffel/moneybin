@@ -52,7 +52,7 @@ def test_import_labels_add_then_list_for_id(runner: CliRunner, db: Database) -> 
         ],
     )
     assert result.exit_code == 0, result.output
-    body = json.loads(result.stdout)["import_labels"]
+    body = json.loads(result.stdout)["data"]
     assert sorted(body["labels"]) == sorted(["tax-2026", "personal"])
 
     listed = runner.invoke(
@@ -60,7 +60,7 @@ def test_import_labels_add_then_list_for_id(runner: CliRunner, db: Database) -> 
         ["import", "labels", "list", "--import-id", import_id, "--output", "json"],
     )
     assert listed.exit_code == 0
-    body = json.loads(listed.stdout)["import_labels"]
+    body = json.loads(listed.stdout)["data"]
     assert sorted(body["labels"]) == sorted(["tax-2026", "personal"])
 
 
@@ -72,7 +72,7 @@ def test_import_labels_remove(runner: CliRunner, db: Database) -> None:
         ["import", "labels", "remove", import_id, "x", "--output", "json"],
     )
     assert result.exit_code == 0, result.output
-    body = json.loads(result.stdout)["import_labels"]
+    body = json.loads(result.stdout)["data"]
     assert body["labels"] == ["y"]
 
 
@@ -85,7 +85,7 @@ def test_import_labels_list_distinct_with_counts(
     ImportService(db).add_labels(i2, ["shared"], actor="cli")
     result = runner.invoke(app, ["import", "labels", "list", "--output", "json"])
     assert result.exit_code == 0
-    body = json.loads(result.stdout)["import_labels"]
+    body = json.loads(result.stdout)["data"]
     counts = {entry["label"]: entry["usage_count"] for entry in body}
     assert counts["shared"] == 2
     assert counts["only-i1"] == 1

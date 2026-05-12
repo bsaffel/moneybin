@@ -10,8 +10,14 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +40,13 @@ def transactions_tags_add(
         added = TransactionService(db).add_tags(transaction_id, tags, actor="cli")
 
     if output == OutputFormat.JSON:
-        emit_json("tags_added", {"transaction_id": transaction_id, "added": added})
+        render_or_json(
+            build_envelope(
+                data={"transaction_id": transaction_id, "added": added},
+                sensitivity="low",
+            ),
+            output,
+        )
         return
     if added:
         logger.info(f"✅ Added tags to {transaction_id}: {', '.join(added)}")
@@ -55,8 +67,12 @@ def transactions_tags_remove(
         removed = TransactionService(db).remove_tags(transaction_id, tags, actor="cli")
 
     if output == OutputFormat.JSON:
-        emit_json(
-            "tags_removed", {"transaction_id": transaction_id, "removed": removed}
+        render_or_json(
+            build_envelope(
+                data={"transaction_id": transaction_id, "removed": removed},
+                sensitivity="low",
+            ),
+            output,
         )
         return
     if removed:
@@ -82,7 +98,13 @@ def transactions_tags_list(
         if transaction_id is not None:
             tags = svc.list_tags(transaction_id)
             if output == OutputFormat.JSON:
-                emit_json("tags", {"transaction_id": transaction_id, "tags": tags})
+                render_or_json(
+                    build_envelope(
+                        data={"transaction_id": transaction_id, "tags": tags},
+                        sensitivity="low",
+                    ),
+                    output,
+                )
                 return
             if not tags:
                 if not quiet:
@@ -95,7 +117,13 @@ def transactions_tags_list(
         rows = svc.list_distinct_tags()
 
     if output == OutputFormat.JSON:
-        emit_json("tags", [{"tag": t, "usage_count": n} for t, n in rows])
+        render_or_json(
+            build_envelope(
+                data=[{"tag": t, "usage_count": n} for t, n in rows],
+                sensitivity="low",
+            ),
+            output,
+        )
         return
     if not rows:
         if not quiet:
@@ -118,14 +146,17 @@ def transactions_tags_rename(
         result = TransactionService(db).rename_tag(old, new, actor="cli")
 
     if output == OutputFormat.JSON:
-        emit_json(
-            "tag_rename",
-            {
-                "old": old,
-                "new": new,
-                "row_count": result.row_count,
-                "parent_audit_id": result.parent_audit_id,
-            },
+        render_or_json(
+            build_envelope(
+                data={
+                    "old": old,
+                    "new": new,
+                    "row_count": result.row_count,
+                    "parent_audit_id": result.parent_audit_id,
+                },
+                sensitivity="low",
+            ),
+            output,
         )
         return
     logger.info(

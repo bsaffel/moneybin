@@ -205,7 +205,7 @@ class TestAccountsBalanceList:
             )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        assert "assertions" in payload
+        assert "data" in payload
 
 
 class TestAccountsBalanceDelete:

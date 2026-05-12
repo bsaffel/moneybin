@@ -56,9 +56,12 @@ def inbox_default(
         result = InboxService.for_active_profile().sync()
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.utils import emit_json
+        from moneybin.cli.output import render_or_json
+        from moneybin.protocol.envelope import build_envelope
 
-        emit_json("sync", dataclasses.asdict(result))
+        render_or_json(
+            build_envelope(data=dataclasses.asdict(result), sensitivity="low"), output
+        )
         return
     if quiet:
         return
@@ -80,9 +83,12 @@ def inbox_list(
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.utils import emit_json
+        from moneybin.cli.output import render_or_json
+        from moneybin.protocol.envelope import build_envelope
 
-        emit_json("list", dataclasses.asdict(result))
+        render_or_json(
+            build_envelope(data=dataclasses.asdict(result), sensitivity="low"), output
+        )
         return
     if quiet:
         return
@@ -110,11 +116,15 @@ def inbox_path(
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.utils import emit_json
+        from moneybin.cli.output import render_or_json
+        from moneybin.protocol.envelope import build_envelope
 
-        emit_json(
-            "path",
-            {"path": str(service.root), "inbox": str(service.inbox_dir)},
+        render_or_json(
+            build_envelope(
+                data={"path": str(service.root), "inbox": str(service.inbox_dir)},
+                sensitivity="low",
+            ),
+            output,
         )
         return
     if quiet:

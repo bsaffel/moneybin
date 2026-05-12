@@ -138,14 +138,15 @@ def stats(
     quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
 ) -> None:
     """Show categorization coverage summary."""
-    from moneybin.cli.utils import emit_json
+    from moneybin.cli.output import render_or_json
+    from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors(output=output) as db:
         coverage = CategorizationService(db).categorization_stats()
 
     if output == OutputFormat.JSON:
-        emit_json("summary", coverage)
+        render_or_json(build_envelope(data=coverage, sensitivity="low"), output)
         return
 
     total = coverage["total"]

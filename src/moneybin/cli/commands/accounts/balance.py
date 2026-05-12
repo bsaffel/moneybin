@@ -18,7 +18,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import BalanceService
 
@@ -133,7 +133,10 @@ def accounts_balance_list(
     with handle_cli_errors(output=output) as db:
         assertions = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
-        emit_json("assertions", [a.to_dict() for a in assertions])
+        render_or_json(
+            build_envelope(data=[a.to_dict() for a in assertions], sensitivity="low"),
+            output,
+        )
         return
     for assertion in assertions:
         d = assertion.to_dict()
@@ -174,7 +177,10 @@ def accounts_balance_reconcile(
             account_ids=account_ids, threshold=parsed_threshold
         )
     if output == OutputFormat.JSON:
-        emit_json("reconcile", [o.to_dict() for o in observations])
+        render_or_json(
+            build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),
+            output,
+        )
         return
     for obs in observations:
         d = obs.to_dict()

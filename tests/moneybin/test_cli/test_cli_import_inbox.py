@@ -100,7 +100,7 @@ def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> N
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["sync"]["processed"][0]["filename"] == "a.csv"
+    assert payload["data"]["processed"][0]["filename"] == "a.csv"
 
 
 def test_inbox_list_prints_would_process(

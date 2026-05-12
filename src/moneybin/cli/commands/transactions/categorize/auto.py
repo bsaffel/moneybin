@@ -10,8 +10,10 @@ from moneybin.cli.output import (
     OutputFormat,
     output_option,
     quiet_option,
+    render_or_json,
 )
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -123,13 +125,16 @@ def stats(
         result = AutoRuleService(db).stats()
 
     if output == OutputFormat.JSON:
-        emit_json(
-            "stats",
-            {
-                "active_auto_rules": result.active_auto_rules,
-                "pending_proposals": result.pending_proposals,
-                "transactions_categorized": result.transactions_categorized,
-            },
+        render_or_json(
+            build_envelope(
+                data={
+                    "active_auto_rules": result.active_auto_rules,
+                    "pending_proposals": result.pending_proposals,
+                    "transactions_categorized": result.transactions_categorized,
+                },
+                sensitivity="low",
+            ),
+            output,
         )
         return
 
@@ -159,7 +164,12 @@ def rules(
         total = svc.count_active_rules()
 
     if output == OutputFormat.JSON:
-        emit_json("rules", {"rules": active_rules, "total": total})
+        render_or_json(
+            build_envelope(
+                data={"rules": active_rules, "total": total}, sensitivity="low"
+            ),
+            output,
+        )
         return
 
     if not active_rules:

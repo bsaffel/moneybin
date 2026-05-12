@@ -35,7 +35,7 @@ def test_notes_add_then_list(runner: CliRunner, db: Database) -> None:
         app, ["transactions", "notes", "add", "T1", "first", "--output", "json"]
     )
     assert add.exit_code == 0, add.output
-    payload = json.loads(add.stdout)["note"]
+    payload = json.loads(add.stdout)["data"]
     assert payload["text"] == "first"
     assert payload["transaction_id"] == "T1"
 
@@ -43,7 +43,7 @@ def test_notes_add_then_list(runner: CliRunner, db: Database) -> None:
         app, ["transactions", "notes", "list", "T1", "--output", "json"]
     )
     assert listed.exit_code == 0
-    notes = json.loads(listed.stdout)["notes"]
+    notes = json.loads(listed.stdout)["data"]
     assert len(notes) == 1
     assert notes[0]["text"] == "first"
 
@@ -55,7 +55,7 @@ def test_notes_edit_changes_text(runner: CliRunner, db: Database) -> None:
         ["transactions", "notes", "edit", note.note_id, "after", "--output", "json"],
     )
     assert result.exit_code == 0, result.output
-    body = json.loads(result.stdout)["note"]
+    body = json.loads(result.stdout)["data"]
     assert body["text"] == "after"
 
 

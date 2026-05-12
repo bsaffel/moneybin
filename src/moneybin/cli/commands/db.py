@@ -17,8 +17,13 @@ from typing import Annotated, Literal, cast
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.protocol.envelope import build_envelope
 
 app = typer.Typer(help="Database management commands", no_args_is_help=True)
 key_app = typer.Typer(
@@ -657,7 +662,7 @@ def db_key_show(
     )
 
     if output == OutputFormat.JSON:
-        emit_json("encryption_key", key)
+        render_or_json(build_envelope(data={"key": key}, sensitivity="high"), output)
         return
 
     typer.echo(key)

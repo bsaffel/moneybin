@@ -49,7 +49,7 @@ def test_splits_add_balanced(runner: CliRunner, db: Database) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    body = json.loads(result.stdout)["split"]
+    body = json.loads(result.stdout)["data"]
     assert body["split"]["amount"] == "-100.00"
     assert Decimal(body["residual"]) == Decimal("0")
 
@@ -61,7 +61,7 @@ def test_splits_add_unbalanced_warns(runner: CliRunner, db: Database) -> None:
     )
     assert result.exit_code == 0
     # T1 amount=-100, child=-25 → residual = -100 - (-25) = -75
-    body = json.loads(result.stdout)["split"]
+    body = json.loads(result.stdout)["data"]
     assert Decimal(body["residual"]) == Decimal("-75.00")
 
 
@@ -71,7 +71,7 @@ def test_splits_list(runner: CliRunner, db: Database) -> None:
         app, ["transactions", "splits", "list", "T1", "--output", "json"]
     )
     assert result.exit_code == 0
-    splits = json.loads(result.stdout)["splits"]
+    splits = json.loads(result.stdout)["data"]
     assert len(splits) == 1
     assert splits[0]["category"] == "Food"
 

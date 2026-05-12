@@ -36,14 +36,14 @@ def test_tags_add_and_list(runner: CliRunner, db: Database) -> None:
         ["transactions", "tags", "add", "T1", "personal", "food", "--output", "json"],
     )
     assert add.exit_code == 0, add.output
-    payload = json.loads(add.stdout)["tags_added"]
+    payload = json.loads(add.stdout)["data"]
     assert sorted(payload["added"]) == ["food", "personal"]
 
     listed = runner.invoke(
         app, ["transactions", "tags", "list", "T1", "--output", "json"]
     )
     assert listed.exit_code == 0
-    body = json.loads(listed.stdout)["tags"]
+    body = json.loads(listed.stdout)["data"]
     assert sorted(body["tags"]) == ["food", "personal"]
 
 
@@ -53,7 +53,7 @@ def test_tags_remove(runner: CliRunner, db: Database) -> None:
         app, ["transactions", "tags", "remove", "T1", "personal", "--output", "json"]
     )
     assert result.exit_code == 0, result.output
-    body = json.loads(result.stdout)["tags_removed"]
+    body = json.loads(result.stdout)["data"]
     assert body["removed"] == ["personal"]
     rows = db.conn.execute(
         "SELECT COUNT(*) FROM app.transaction_tags WHERE transaction_id = 'T1'"
@@ -65,7 +65,7 @@ def test_tags_list_distinct(runner: CliRunner, db: Database) -> None:
     TransactionService(db).add_tags("T1", ["food", "fun"], actor="cli")
     result = runner.invoke(app, ["transactions", "tags", "list", "--output", "json"])
     assert result.exit_code == 0
-    payload = json.loads(result.stdout)["tags"]
+    payload = json.loads(result.stdout)["data"]
     assert {entry["tag"] for entry in payload} == {"food", "fun"}
 
 
@@ -76,7 +76,7 @@ def test_tags_rename_emits_parent_audit(runner: CliRunner, db: Database) -> None
         ["transactions", "tags", "rename", "old", "new", "--output", "json"],
     )
     assert result.exit_code == 0, result.output
-    body = json.loads(result.stdout)["tag_rename"]
+    body = json.loads(result.stdout)["data"]
     assert body["row_count"] == 1
     assert body["parent_audit_id"]
 

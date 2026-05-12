@@ -694,7 +694,7 @@ class TestBalanceAssertions:
             env=env,
         )
         result.assert_success()
-        assert '"assertions": []' in result.stdout or "assertions" in result.stdout
+        assert '"data": []' in result.stdout or "data" in result.stdout
 
     def test_balance_delete_nonexistent_is_noop(self, tmp_path: Path) -> None:
         """Balance delete for a nonexistent row exits 0 (silent no-op per spec)."""

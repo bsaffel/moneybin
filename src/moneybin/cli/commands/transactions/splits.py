@@ -13,8 +13,14 @@ from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Split
 
 logger = logging.getLogger(__name__)
@@ -66,7 +72,7 @@ def transactions_splits_add(
 
     payload = {"split": _split_to_dict(split), "residual": str(residual)}
     if output == OutputFormat.JSON:
-        emit_json("split", payload)
+        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
     else:
         logger.info(f"✅ Added split {split.split_id} to {transaction_id}")
     if residual != Decimal("0"):
@@ -88,7 +94,10 @@ def transactions_splits_list(
         splits = TransactionService(db).list_splits(transaction_id)
 
     if output == OutputFormat.JSON:
-        emit_json("splits", [_split_to_dict(s) for s in splits])
+        render_or_json(
+            build_envelope(data=[_split_to_dict(s) for s in splits], sensitivity="low"),
+            output,
+        )
         return
     if not splits:
         if not quiet:
@@ -127,13 +136,16 @@ def transactions_splits_remove(
         residual = svc.splits_balance(transaction_id)
 
     if output == OutputFormat.JSON:
-        emit_json(
-            "split_remove",
-            {
-                "split_id": split_id,
-                "transaction_id": transaction_id,
-                "residual": str(residual),
-            },
+        render_or_json(
+            build_envelope(
+                data={
+                    "split_id": split_id,
+                    "transaction_id": transaction_id,
+                    "residual": str(residual),
+                },
+                sensitivity="low",
+            ),
+            output,
         )
     else:
         logger.info(f"✅ Removed split {split_id}")
@@ -161,6 +173,12 @@ def transactions_splits_clear(
         TransactionService(db).clear_splits(transaction_id, actor="cli")
 
     if output == OutputFormat.JSON:
-        emit_json("split_clear", {"transaction_id": transaction_id, "cleared": True})
+        render_or_json(
+            build_envelope(
+                data={"transaction_id": transaction_id, "cleared": True},
+                sensitivity="low",
+            ),
+            output,
+        )
         return
     logger.info(f"✅ Cleared splits on {transaction_id}")

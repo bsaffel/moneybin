@@ -102,7 +102,7 @@ def test_review_status_json_output(
     )
     assert result.exit_code == 0
     envelope = json.loads(result.stdout)
-    payload = envelope["status"]
+    payload = envelope["data"]
     assert payload == {
         "matches_pending": 0,
         "categorize_pending": 0,
@@ -126,7 +126,7 @@ def test_review_status_json_type_filter(
         ["transactions", "review", "--type", "matches", "--status", "--output", "json"],
     )
     assert result.exit_code == 0
-    payload = json.loads(result.stdout)["status"]
+    payload = json.loads(result.stdout)["data"]
     assert "matches_pending" in payload
     assert "categorize_pending" not in payload
     assert "total" not in payload
