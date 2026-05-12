@@ -20,7 +20,7 @@ Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-l
 2. `Database(read_only=True)` raises `DatabaseNotInitializedError` before any DuckDB operation if `db_path` does not exist.
 3. `Database(read_only=False)` (default) behaves identically to the current `Database.__init__()` sequence.
 4. `get_database(read_only, max_wait)` creates a new `Database` per call; no singleton.
-5. `get_database()` retries on `DatabaseLockError` with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until `max_wait` is exhausted, then re-raises `DatabaseLockError`.
+5. `get_database()` retries on `DatabaseLockError` with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until `max_wait` is exhausted, then re-raises `DatabaseLockError` with the message: `"Could not acquire write lock after {max_wait}s. Another moneybin process may be writing. Check with 'moneybin db ps'."`
 6. The encryption key retrieved from `SecretStore` is cached in process memory after the first successful retrieval; never re-fetched within the process lifetime.
 7. All `get_database()` callers use the context-manager protocol to ensure connections are released immediately after use.
 8. MCP tool bodies declare `read_only=True` for pure-read tools and `read_only=False` for any tool that writes to `app.*` or `raw.*`.
@@ -423,9 +423,22 @@ Scenarios 1–4 are fully deterministic. Scenario 5 is timing-sensitive; use a t
 
 No new packages. All changes use stdlib (`threading`, `time`) and existing dependencies (`duckdb`, `sqlmesh`).
 
+## Writer identity and `db ps`
+
+Writers do not need to publish identity explicitly. `moneybin db ps` (already implemented in `src/moneybin/cli/commands/db.py`) uses `lsof -F pcn <db_path>` + `ps -p <pid> -o args=` to find all processes with the database file open and display their command lines. This gives sufficient identity for the meaningful contention cases:
+
+- `moneybin transform apply` — the only long-duration write-lock holder; fully identifiable by argv
+- `moneybin mcp serve` — short-lived per-tool-call writes in the new model; rarely visible during contention
+- `moneybin import inbox sync` — batch duration (1–3 s); argv identifies it
+
+The `DatabaseLockError` message should include a hint: `"Another moneybin process may be writing. Check with 'moneybin db ps'."` No lockfile, no `setproctitle`, no new dependencies.
+
+The one gap — knowing which *tool* within an MCP session holds the lock — is not worth addressing. Sub-second write ops are gone before `db ps` could observe them; only `transform apply` holds the lock long enough to inspect.
+
 ## Out of Scope
 
 - IPC socket server (named in ADR-010 as the upgrade path if retry-based contention becomes unacceptable at higher write rates).
 - ATTACH journal pattern for background writers.
 - Connection pooling within a single process.
 - `transform apply` progress notifications to unblock other writers mid-run.
+- Lockfile-based writer identity visible during retry — `moneybin db ps` is the inspection path.
