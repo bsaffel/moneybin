@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 app = typer.Typer(
     name="moneybin",
     help="MoneyBin: Personal financial data aggregation and analysis tool",
-    add_completion=False,
+    add_completion=True,
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
