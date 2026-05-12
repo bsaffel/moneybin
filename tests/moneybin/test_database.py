@@ -396,56 +396,7 @@ class TestRunSqlmeshMigrate:
         assert cache_key not in cache
 
 
-class TestGetDatabase:
-    """get_database() singleton behavior."""
-
-    def test_returns_same_instance(
-        self,
-        db_dir: Path,
-        mock_secret_store: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Repeated calls return the same Database instance."""
-        from moneybin import database as db_module
-
-        db_path = db_dir / "moneybin.duckdb"
-
-        # Patch get_settings to return our test path
-        mock_settings = MagicMock()
-        mock_settings.database.path = db_path
-        mock_settings.database.temp_directory = db_dir / "temp"
-        monkeypatch.setattr(db_module, "_database_instance", None)
-        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
-        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
-
-        db1 = get_database()
-        db2 = get_database()
-        assert db1 is db2
-        db1.close()
-        monkeypatch.setattr(db_module, "_database_instance", None)
-
-    def test_close_database_resets_singleton(
-        self,
-        db_dir: Path,
-        mock_secret_store: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """close_database() closes the connection and resets the singleton."""
-        from moneybin import database as db_module
-        from moneybin.database import close_database
-
-        db_path = db_dir / "moneybin.duckdb"
-
-        mock_settings = MagicMock()
-        mock_settings.database.path = db_path
-        monkeypatch.setattr(db_module, "_database_instance", None)
-        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
-        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
-
-        db = get_database()
-        assert db_module._database_instance is db  # type: ignore[reportPrivateUsage]  # test-only: verify singleton state
-        close_database()
-        assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only: verify singleton reset
+# Note: get_database() no longer returns a singleton. See TestGetDatabaseNew.
 
 
 class TestDatabaseReadOnly:
@@ -551,64 +502,6 @@ class TestActiveWriteSlot:
         assert db_module._active_write_conn is other  # type: ignore[reportPrivateUsage]  # test-only
         # Cleanup
         monkeypatch.setattr(db_module, "_active_write_conn", None)
-
-
-class TestTemporarySingleton:
-    """_temporary_singleton must restore prior state on both clean exit and exception."""
-
-    def test_restores_prior_singleton_on_clean_exit(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from moneybin import database as db_module
-        from moneybin.database import (
-            _temporary_singleton,  # pyright: ignore[reportPrivateUsage]  # test-only: verify state-restoration contract
-        )
-
-        prior = MagicMock(name="prior_singleton")
-        monkeypatch.setattr(db_module, "_database_instance", prior)
-
-        local = MagicMock(name="local_db")
-        with _temporary_singleton(local):
-            assert db_module._database_instance is local  # type: ignore[reportPrivateUsage]  # test-only
-
-        assert db_module._database_instance is prior  # type: ignore[reportPrivateUsage]  # test-only
-
-    def test_restores_prior_singleton_on_exception(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from moneybin import database as db_module
-        from moneybin.database import (
-            _temporary_singleton,  # pyright: ignore[reportPrivateUsage]  # test-only: verify state-restoration contract
-        )
-
-        prior = MagicMock(name="prior_singleton")
-        monkeypatch.setattr(db_module, "_database_instance", prior)
-
-        local = MagicMock(name="local_db")
-        with pytest.raises(RuntimeError, match="boom"):
-            with _temporary_singleton(local):
-                raise RuntimeError("boom")
-
-        assert db_module._database_instance is prior  # type: ignore[reportPrivateUsage]  # test-only
-
-    def test_restores_none_when_no_prior_singleton(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from moneybin import database as db_module
-        from moneybin.database import (
-            _temporary_singleton,  # pyright: ignore[reportPrivateUsage]  # test-only: verify state-restoration contract
-        )
-
-        monkeypatch.setattr(db_module, "_database_instance", None)
-
-        local = MagicMock(name="local_db")
-        with _temporary_singleton(local):
-            assert db_module._database_instance is local  # type: ignore[reportPrivateUsage]  # test-only
-
-        assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only
 
 
 class TestSqlmeshContext:

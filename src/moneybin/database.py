@@ -630,10 +630,6 @@ def database_key_error_hint() -> str:
         return "💡 Run 'moneybin db init' to create the database"
 
 
-# Singleton instance
-_database_instance: Database | None = None
-
-
 def _lock_error_message(db_path: "Path", max_wait: float) -> str:
     from moneybin.utils.db_processes import (  # type: ignore[reportPrivateUsage]  # module-private helpers shared via __all__
         _describe_process,
@@ -700,25 +696,6 @@ def get_database(
             delay = min(delay * 1.5, 0.5)
 
 
-def get_database_if_initialized() -> Database | None:
-    """Return the singleton Database if it exists, otherwise None.
-
-    Unlike ``get_database()``, this never creates a new connection.
-    Used by the atexit handler to flush metrics only when a database
-    was actually used during the session.
-    """
-    return _database_instance
-
-
-def close_database() -> None:
-    """Close and clear the singleton Database instance."""
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _database_instance is not None:
-        _database_instance.close()
-        _database_instance = None
-
-
 def interrupt_and_reset_database() -> None:
     """Interrupt and close the active write connection, if any.
 
@@ -729,22 +706,6 @@ def interrupt_and_reset_database() -> None:
         conn = _active_write_conn
     if conn is not None:
         conn.interrupt_and_reset()
-
-
-@contextmanager
-def _temporary_singleton(db: Database) -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # kept for Task 9 cleanup
-    """Register ``db`` as the singleton for the duration of the block.
-
-    No longer called by init_db (sqlmesh_context now takes an explicit db).
-    Retained for any external callers; remove in Task 9.
-    """
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-    prior = _database_instance
-    _database_instance = db
-    try:
-        yield
-    finally:
-        _database_instance = prior
 
 
 # ---------------------------------------------------------------------------

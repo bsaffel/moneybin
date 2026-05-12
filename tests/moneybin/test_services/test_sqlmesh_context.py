@@ -10,31 +10,17 @@ from moneybin.database import DatabaseKeyError
 
 
 class TestSQLMeshContext:
-    """sqlmesh_context injects the singleton's adapter into SQLMesh's cache."""
-
-    def test_raises_when_no_singleton(self) -> None:
-        """sqlmesh_context requires an active Database singleton."""
-        from moneybin.database import sqlmesh_context
-
-        with (
-            patch("moneybin.database._database_instance", None),
-            pytest.raises(DatabaseKeyError, match="Database not initialized"),
-        ):
-            with sqlmesh_context():
-                pass
+    """sqlmesh_context injects the explicit db's adapter into SQLMesh's cache."""
 
     def test_raises_when_conn_is_none(self) -> None:
-        """sqlmesh_context raises if the singleton's connection was closed."""
+        """sqlmesh_context raises if the db's connection was closed."""
         from moneybin.database import sqlmesh_context
 
         mock_db = MagicMock()
         mock_db._conn = None
 
-        with (
-            patch("moneybin.database._database_instance", mock_db),
-            pytest.raises(DatabaseKeyError, match="Database not initialized"),
-        ):
-            with sqlmesh_context():
+        with pytest.raises(DatabaseKeyError, match="closed"):
+            with sqlmesh_context(mock_db):
                 pass
 
     @patch("sqlmesh.core.engine_adapter.duckdb.DuckDBEngineAdapter")
@@ -50,21 +36,17 @@ class TestSQLMeshContext:
         mock_db = MagicMock()
         mock_db._conn = mock_conn
         db_path = tmp_path / "test.duckdb"
-        # sqlmesh_context derives db_path from _database_instance._db_path.
         mock_db._db_path = db_path
 
         cache: dict[str, object] = {}
 
-        with (
-            patch("moneybin.database._database_instance", mock_db),
-            patch(
-                "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
-                cache,
-            ),
+        with patch(
+            "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
+            cache,
         ):
             from moneybin.database import sqlmesh_context
 
-            with sqlmesh_context() as ctx:
+            with sqlmesh_context(mock_db) as ctx:
                 # Adapter is in cache during context
                 assert str(db_path) in cache
                 ctx.plan(auto_apply=True, no_prompts=True)
@@ -94,17 +76,14 @@ class TestSQLMeshContext:
 
         cache: dict[str, object] = {}
 
-        with (
-            patch("moneybin.database._database_instance", mock_db),
-            patch(
-                "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
-                cache,
-            ),
+        with patch(
+            "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
+            cache,
         ):
             from moneybin.database import sqlmesh_context
 
             with pytest.raises(RuntimeError, match="SQLMesh boom"):
-                with sqlmesh_context() as ctx:
+                with sqlmesh_context(mock_db) as ctx:
                     ctx.plan(auto_apply=True, no_prompts=True)
 
             # Cache cleaned up despite error

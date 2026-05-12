@@ -121,12 +121,9 @@ def _step_transform_via_subprocess(
     setup: SetupSpec, db: Database, env: dict[str, str]
 ) -> None:
     # DuckDB enforces a single-writer file lock. The subprocess can't open
-    # the encrypted DB while we hold a connection — close the singleton
-    # before invoking. The runner re-fetches the singleton after each step
-    # so the assertion phase opens a fresh connection.
-    from moneybin.database import close_database
-
-    close_database()
+    # the encrypted DB while we hold a connection — close before invoking.
+    # The runner re-fetches a fresh connection after each step.
+    db.close()
     proc = subprocess.run(
         ["uv", "run", "moneybin", "transform", "apply"],  # noqa: S603, S607  # explicit command list; uv resolved via PATH
         env={**os.environ, **env},

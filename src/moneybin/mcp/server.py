@@ -154,10 +154,12 @@ def init_db() -> None:
 
 
 def close_db() -> None:
-    """Close the DuckDB connection if open."""
-    from moneybin.database import close_database
+    """Log that the database connection lifecycle is ending.
 
-    close_database()
+    Under the per-call connection model, each tool opens and closes its own
+    short-lived Database.  The MCP server no longer holds a long-lived
+    singleton to close here.
+    """
     try:
         logger.info("DuckDB connection closed")
     except ValueError:

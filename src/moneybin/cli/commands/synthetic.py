@@ -53,7 +53,6 @@ def _run_generate(
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_current_profile, set_current_profile
-    from moneybin.database import close_database
     from moneybin.services.import_service import ImportService
     from moneybin.testing.synthetic.engine import GeneratorEngine
     from moneybin.testing.synthetic.writer import SyntheticWriter
@@ -71,7 +70,6 @@ def _run_generate(
         # Synthetic commands skip main.py's set_current_profile (see
         # cli/main.py is_synthetic_cmd), so there may be nothing to restore.
         original_profile = None
-    close_database()
     set_current_profile(profile)
 
     try:
@@ -140,7 +138,6 @@ def _run_generate(
                 f"Use --profile={profile} with any moneybin command."
             )
     finally:
-        close_database()
         # When called from reset(), original_profile == profile (reset already
         # switched), so set_current_profile is a no-op; reset()'s own finally
         # does the real restore.
@@ -193,7 +190,6 @@ def synthetic_reset(
     """Wipe a generated profile and regenerate from scratch."""
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_current_profile, set_current_profile
-    from moneybin.database import close_database
 
     target_profile = profile or _PERSONA_PROFILES.get(persona, persona)
 
@@ -201,7 +197,6 @@ def synthetic_reset(
         original_profile: str | None = get_current_profile(auto_resolve=False)
     except RuntimeError:
         original_profile = None
-    close_database()
     set_current_profile(target_profile)
 
     try:
@@ -246,8 +241,6 @@ def synthetic_reset(
                     pass
 
             db.close()
-            # Close the singleton so _run_generate gets a fresh connection
-            close_database()
 
         # Regenerate
         _run_generate(
@@ -258,6 +251,5 @@ def synthetic_reset(
             skip_transform=skip_transform,
         )
     finally:
-        close_database()
         if original_profile is not None:
             set_current_profile(original_profile)

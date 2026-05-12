@@ -112,13 +112,13 @@ def flush_metrics() -> None:
     closing the database connection.
     """
     try:
-        from moneybin.database import get_database_if_initialized
+        from moneybin.database import database_was_accessed, get_database
         from moneybin.metrics.persistence import flush_to_duckdb
 
-        db = get_database_if_initialized()
-        if db is None:
+        if not database_was_accessed():
             return
-        flush_to_duckdb(db)
+        with get_database() as db:
+            flush_to_duckdb(db)
     except Exception:  # noqa: BLE001  # best-effort shutdown flush; DB may be unavailable
         logger.debug("Metrics flush on exit failed", exc_info=True)
 

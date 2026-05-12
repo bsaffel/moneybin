@@ -21,7 +21,7 @@ def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
     mock_ctx.state_reader.get_environment.return_value = None
 
     @contextmanager
-    def _ctx(**kwargs: Any) -> Generator[MagicMock, None, None]:  # noqa: ARG001 — absorb sqlmesh_root kwarg
+    def _ctx(db: Any, **kwargs: Any) -> Generator[MagicMock, None, None]:  # noqa: ARG001 — absorb db and sqlmesh_root kwarg
         yield mock_ctx
 
     return _ctx, mock_ctx
