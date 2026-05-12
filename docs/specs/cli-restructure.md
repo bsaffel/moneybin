@@ -73,6 +73,7 @@ All commands support these flags (per `mcp-architecture.md` CLI symmetry):
 | `--profile NAME` / `-p` | Specify active profile (ephemeral, does not change default) |
 | `--verbose` / `-v` | Enable debug logging |
 | `--output json\|table` | Output format (default: `table` for humans, `json` for AI/script consumers) |
+| `--json-fields FIELDS` | Comma-separated field projection for `--output json` (read-only commands only). Available fields documented per-command in `--help`. |
 | `--yes` / `-y` | Non-interactive mode — auto-accept confirmations |
 
 ### `--validate` not `--dry-run`
