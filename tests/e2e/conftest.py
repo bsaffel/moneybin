@@ -75,6 +75,10 @@ FAST_ARGON2_ENV = {
     # (e.g., "--output" appears verbatim, not split across colour escape codes).
     "NO_COLOR": "1",
     "TERM": "dumb",
+    # Suppress fastmcp's PyPI version check. It calls stat() on a path under
+    # ~/Library/Application Support/ which is blocked by the sandbox; with the
+    # check off, no filesystem access happens at all.
+    "FASTMCP_CHECK_FOR_UPDATES": "off",
 }
 
 TEST_ENCRYPTION_KEY = (

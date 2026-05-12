@@ -220,3 +220,87 @@ def test_user_error_carries_structured_details() -> None:
     assert d["code"] == "timed_out"
     assert d["details"]["tool"] == "import_inbox_sync"
     assert d["details"]["timeout_s"] == 30.0
+
+
+@pytest.mark.unit
+def test_transaction_curation_fields_in_to_dict() -> None:
+    """Transaction.to_dict() includes curation fields when set."""
+    from moneybin.services.transaction_service import Transaction
+
+    t = Transaction(
+        transaction_id="T1",
+        account_id="A1",
+        transaction_date="2026-04-10",
+        amount=Decimal("-50.00"),
+        description="Coffee Shop",
+        memo=None,
+        source_type="ofx",
+        category="Food & Drink",
+        subcategory=None,
+        notes=[
+            {
+                "note_id": "N1",
+                "text": "my note",
+                "author": "user",
+                "created_at": "2026-04-10T00:00:00",
+            }
+        ],
+        tags=["personal", "recurring"],
+        splits=None,
+    )
+    d = t.to_dict()
+    assert d["notes"] == [
+        {
+            "note_id": "N1",
+            "text": "my note",
+            "author": "user",
+            "created_at": "2026-04-10T00:00:00",
+        }
+    ]
+    assert d["tags"] == ["personal", "recurring"]
+    assert "splits" not in d
+
+
+@pytest.mark.unit
+def test_transaction_curation_fields_absent_when_none() -> None:
+    """Transaction.to_dict() omits curation fields when None."""
+    from moneybin.services.transaction_service import Transaction
+
+    t = Transaction(
+        transaction_id="T1",
+        account_id="A1",
+        transaction_date="2026-04-10",
+        amount=Decimal("-50.00"),
+        description="Coffee Shop",
+        memo=None,
+        source_type="ofx",
+        category=None,
+        subcategory=None,
+    )
+    d = t.to_dict()
+    assert "notes" not in d
+    assert "tags" not in d
+    assert "splits" not in d
+
+
+@pytest.mark.unit
+def test_response_envelope_next_cursor_in_to_dict() -> None:
+    """build_envelope sets next_cursor and has_more when next_cursor is provided."""
+    from moneybin.protocol.envelope import build_envelope
+
+    envelope = build_envelope(data=[], sensitivity="low", next_cursor="dGVzdA==")
+    assert envelope.next_cursor == "dGVzdA=="
+    assert envelope.summary.has_more is True
+    d = envelope.to_dict()
+    assert d["next_cursor"] == "dGVzdA=="
+    assert d["summary"]["has_more"] is True
+
+
+@pytest.mark.unit
+def test_response_envelope_next_cursor_absent_when_none() -> None:
+    """ResponseEnvelope.to_dict() omits next_cursor when None."""
+    from moneybin.protocol.envelope import build_envelope
+
+    envelope = build_envelope(data=[], sensitivity="low")
+    d = envelope.to_dict()
+    assert "next_cursor" not in d

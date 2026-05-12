@@ -107,7 +107,7 @@ def import_file(
             f"Use import_revert with import_id={import_id} to undo this import"
             if import_id
             else "Use import_status to view recent imports",
-            "Use transactions_search to view imported transactions",
+            "Use transactions_get to view imported transactions",
             "Use transactions_categorize_pending_list to categorize new transactions",
         ],
     )

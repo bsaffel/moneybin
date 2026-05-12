@@ -7,6 +7,8 @@ detection. Consumed by both MCP tools and CLI commands.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import logging
 import uuid
@@ -23,7 +25,6 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
-    TRANSACTION_CATEGORIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ _AUDIT_TARGET_MANUAL = ("raw", "manual_transactions")
 _MANUAL_BATCH_MAX = 100
 _MANUAL_FORMAT_NAME = "manual_entry"
 _MANUAL_SOURCE_TYPE = "manual"
+_MIN_ACCOUNT_FUZZY_CONFIDENCE = 0.4
 
 
 def _predict_manual_gold_key(source_transaction_id: str, account_id: str) -> str:
@@ -66,6 +68,9 @@ class Transaction:
     source_type: str
     category: str | None
     subcategory: str | None
+    notes: list[dict[str, Any]] | None = None
+    tags: list[str] | None = None
+    splits: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""
@@ -77,30 +82,37 @@ class Transaction:
             "description": self.description,
             "source_type": self.source_type,
         }
-        if self.memo:
+        if self.memo is not None:
             d["memo"] = self.memo
-        if self.category:
+        if self.category is not None:
             d["category"] = self.category
-        if self.subcategory:
+        if self.subcategory is not None:
             d["subcategory"] = self.subcategory
+        if self.notes is not None:
+            d["notes"] = self.notes
+        if self.tags is not None:
+            d["tags"] = self.tags
+        if self.splits is not None:
+            d["splits"] = self.splits
         return d
 
 
 @dataclass(slots=True)
-class TransactionSearchResult:
-    """Result of transaction search query."""
+class TransactionGetResult:
+    """Result of TransactionService.get()."""
 
     transactions: list[Transaction]
-    total_count: int
+    next_cursor: str | None
 
     def to_envelope(self) -> ResponseEnvelope:
         """Build a ResponseEnvelope for MCP/CLI output."""
         return build_envelope(
             data=[t.to_dict() for t in self.transactions],
             sensitivity="medium",
-            total_count=self.total_count,
+            next_cursor=self.next_cursor,
             actions=[
-                "Use transactions_recurring_list to find subscription patterns",
+                "Use transactions_get with the next_cursor value to fetch the next page",
+                "Use reports_spending_get for category breakdowns",
                 "Use transactions_categorize_apply to categorize uncategorized transactions",
             ],
         )
@@ -139,7 +151,7 @@ class RecurringResult:
             data=[t.to_dict() for t in self.transactions],
             sensitivity="medium",
             actions=[
-                "Use transactions_search to see individual occurrences",
+                "Use transactions_get to see individual occurrences",
                 "Use budget_set to create a budget for a recurring expense",
             ],
         )
@@ -222,100 +234,126 @@ class TransactionService:
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
 
-    def search(
+    def _resolve_account_ids(self, accounts: list[str]) -> list[str]:
+        """Resolve display names or IDs to account_id strings.
+
+        Batches exact account_id lookups in one query, then fuzzy-matches any
+        remaining entries via AccountService. Unresolvable entries are silently
+        skipped.
+        """
+        from moneybin.services.account_service import AccountService
+
+        placeholders = ", ".join("?" * len(accounts))
+        exact_rows = self._db.execute(
+            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id IN ({placeholders})",  # noqa: S608  # TableRef constant
+            accounts,
+        ).fetchall()
+        exact_ids = {str(r[0]) for r in exact_rows}
+
+        resolved: list[str] = []
+        unmatched: list[str] = []
+        for a in accounts:
+            (resolved if a in exact_ids else unmatched).append(a)
+
+        if unmatched:
+            service = AccountService(self._db)
+            for entry in unmatched:
+                matches = service.resolve(entry, limit=1)
+                if matches and matches[0].confidence >= _MIN_ACCOUNT_FUZZY_CONFIDENCE:
+                    resolved.append(matches[0].account_id)
+        return resolved
+
+    def get(
         self,
         *,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        min_amount: Decimal | None = None,
-        max_amount: Decimal | None = None,
+        accounts: list[str] | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        categories: list[str] | None = None,
+        amount_min: Decimal | None = None,
+        amount_max: Decimal | None = None,
         description: str | None = None,
-        account_id: str | None = None,
-        category: str | None = None,
         uncategorized_only: bool = False,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> TransactionSearchResult:
-        """Search transactions with flexible filtering.
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> TransactionGetResult:
+        """Fetch transactions with optional filtering and cursor-based pagination.
 
-        Args:
-            start_date: ISO 8601 start date (inclusive).
-            end_date: ISO 8601 end date (inclusive).
-            min_amount: Minimum amount filter.
-            max_amount: Maximum amount filter.
-            description: ILIKE pattern matched against description and memo.
-            account_id: Filter to a specific account.
-            category: Filter by category (from transaction_categories).
-            uncategorized_only: Only return uncategorized transactions.
-            limit: Maximum rows to return.
-            offset: Number of rows to skip.
+        Reads from core.fct_transactions, which already joins curation columns
+        (notes, tags, splits) from the app schema. Account entries in `accounts`
+        are resolved: exact account_id matches are used directly; everything else
+        is fuzzy-matched against display names via AccountService. Unresolvable
+        entries are silently skipped.
 
-        Returns:
-            TransactionSearchResult with matching transactions and total count.
+        Pagination is offset-based internally; the cursor is base64(str(offset))
+        so callers treat it as opaque.
         """
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        if cursor is not None:
+            try:
+                offset = int(base64.b64decode(cursor.encode()).decode())
+            except (binascii.Error, UnicodeDecodeError, ValueError) as e:
+                raise ValueError(f"invalid cursor: {cursor!r}") from e
+            if offset < 0:
+                raise ValueError(f"invalid cursor (negative offset): {cursor!r}")
+        else:
+            offset = 0
+
         conditions: list[str] = []
         params: list[object] = []
 
-        if start_date:
-            conditions.append("t.transaction_date >= ?")
-            params.append(start_date)
-        if end_date:
-            conditions.append("t.transaction_date <= ?")
-            params.append(end_date)
-        if min_amount is not None:
-            conditions.append("t.amount >= ?")
-            params.append(min_amount)
-        if max_amount is not None:
-            conditions.append("t.amount <= ?")
-            params.append(max_amount)
+        if accounts:
+            account_ids = self._resolve_account_ids(accounts)
+            if not account_ids:
+                return TransactionGetResult(transactions=[], next_cursor=None)
+            placeholders = ", ".join("?" * len(account_ids))
+            conditions.append(f"account_id IN ({placeholders})")
+            params.extend(account_ids)
+
+        if date_from:
+            conditions.append("transaction_date >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("transaction_date <= ?")
+            params.append(date_to)
+
+        if categories:
+            placeholders = ", ".join("?" * len(categories))
+            conditions.append(f"category IN ({placeholders})")
+            params.extend(categories)
+
+        if amount_min is not None:
+            conditions.append("amount >= ?")
+            params.append(amount_min)
+        if amount_max is not None:
+            conditions.append("amount <= ?")
+            params.append(amount_max)
+
         if description:
-            conditions.append("(t.description ILIKE ? OR t.memo ILIKE ?)")
-            like_pattern = f"%{description}%"
-            params.extend([like_pattern, like_pattern])
-        if account_id:
-            conditions.append("t.account_id = ?")
-            params.append(account_id)
-        if category:
-            conditions.append("c.category = ?")
-            params.append(category)
+            conditions.append("(description ILIKE ? OR memo ILIKE ?)")
+            like = f"%{description}%"
+            params.extend([like, like])
+
         if uncategorized_only:
-            conditions.append("c.transaction_id IS NULL")
+            conditions.append("categorized_by IS NULL")
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-        # Count query (same conditions, no limit/offset)
-        count_sql = f"""
-            SELECT COUNT(*)
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                ON t.transaction_id = c.transaction_id
-            {where}
-        """
-        count_result = self._db.execute(count_sql, params)
-        total_count = int(count_result.fetchone()[0])  # type: ignore[index]
-
-        # Data query
         sql = f"""
             SELECT
-                t.transaction_id,
-                t.account_id,
-                t.transaction_date,
-                t.amount,
-                t.description,
-                t.memo,
-                t.source_type,
-                c.category,
-                c.subcategory
-            FROM {FCT_TRANSACTIONS.full_name} t
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                ON t.transaction_id = c.transaction_id
+                transaction_id, account_id, transaction_date, amount,
+                description, memo, source_type, category, subcategory,
+                notes, tags, splits
+            FROM {FCT_TRANSACTIONS.full_name}
             {where}
-            ORDER BY t.transaction_date DESC, t.transaction_id
+            ORDER BY transaction_date DESC, transaction_id
             LIMIT ? OFFSET ?
-        """
+        """  # noqa: S608  # TableRef constant, not user input
 
-        result = self._db.execute(sql, [*params, limit, offset])
-        rows = result.fetchall()
+        rows = self._db.execute(sql, [*params, limit + 1, offset]).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
 
         transactions = [
             Transaction(
@@ -328,16 +366,23 @@ class TransactionService:
                 source_type=str(row[6]),
                 category=str(row[7]) if row[7] else None,
                 subcategory=str(row[8]) if row[8] else None,
+                notes=[dict(n) for n in row[9]] if row[9] else None,
+                tags=list(row[10]) if row[10] else None,
+                splits=[dict(s) for s in row[11]] if row[11] else None,
             )
             for row in rows
         ]
 
+        next_cursor = (
+            base64.b64encode(str(offset + limit).encode()).decode()
+            if has_more
+            else None
+        )
+
         logger.info(
-            f"Search returned {len(transactions)} of {total_count} transactions"
+            f"transactions_get returned {len(transactions)} rows (offset={offset}, has_more={has_more})"
         )
-        return TransactionSearchResult(
-            transactions=transactions, total_count=total_count
-        )
+        return TransactionGetResult(transactions=transactions, next_cursor=next_cursor)
 
     def recurring(self, min_occurrences: int = 3) -> RecurringResult:
         """Detect recurring expense transaction patterns (amount < 0).

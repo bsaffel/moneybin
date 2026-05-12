@@ -162,14 +162,14 @@ def curate_recent_transactions() -> str:
         next analysis pass has consistent metadata.
 
         **Relevant tools:**
-        - transactions_search — fetch recent rows; pair with system_audit_list to
+        - transactions_get — fetch recent rows; pair with system_audit_list to
           spot gaps (no note.add / tag.add events on a transaction_id).
         - transactions_tags_set — declarative tag replacement (idempotent).
         - transactions_notes_add — append a curator note.
         - system_audit_list — sanity check what already happened.
 
         **Workflow:**
-        1. Call transactions_search with a recent date window (e.g., last 30 days,
+        1. Call transactions_get with a recent date window (e.g., last 30 days,
            limit 50). Preserve transaction_id, description, amount, account_id.
         2. For each row, propose a small set of slug-pattern tags
            (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
@@ -232,7 +232,7 @@ def tax_prep() -> str:
         **Relevant tools:**
         - tax_w2 — retrieve W-2 wage and tax data
         - reports_spending_get — find deduction-eligible categories
-        - transactions_search — search for specific deductible expenses
+        - transactions_get — search for specific deductible expenses
         - categories_list — review tax-relevant categories
 
         **Workflow:**
@@ -240,7 +240,7 @@ def tax_prep() -> str:
         2. Pull W-2 data with tax_w2 for that year
         3. Review reports_spending_get for deduction-eligible categories
            (charitable, medical, business expenses, etc.)
-        4. If needed, search for specific transactions with transactions_search
+        4. If needed, search for specific transactions with transactions_get
         5. Summarize totals by deduction category
 
         **Guardrails:**

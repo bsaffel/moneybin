@@ -257,3 +257,11 @@ audit_events_emitted_total = Counter(
     "Audit log events written to app.audit_log.",
     ["action", "actor"],
 )
+
+# ── Doctor ───────────────────────────────────────────────────────────────────
+
+DOCTOR_RUNS_TOTAL = Counter(
+    "moneybin_doctor_runs_total",
+    "Doctor command invocations by outcome",
+    ["outcome"],  # "pass", "fail"
+)
