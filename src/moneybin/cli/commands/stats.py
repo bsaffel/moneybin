@@ -35,11 +35,7 @@ def stats_command(
         params: list[str | datetime] = []
 
         if since:
-            try:
-                delta = parse_duration(since)
-            except ValueError as e:
-                logger.error(f"❌ {e}")
-                raise typer.Exit(1) from e
+            delta = parse_duration(since)
             cutoff = datetime.now(tz=UTC) - delta
             where_clauses.append("recorded_at >= ?")
             params.append(cutoff)

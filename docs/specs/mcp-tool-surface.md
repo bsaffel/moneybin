@@ -65,7 +65,7 @@ Every tool returns:
 }
 ```
 
-This contract applies to both MCP tool responses and CLI `--output json` responses.
+This contract applies to all MCP tool responses and to CLI `--output json` responses on commands that use `render_or_json`; remaining CLI commands adopt the envelope shape incrementally.
 
 Write tools return a result object in `data` (not an array). Currency lives in `summary.display_currency`, not per-row.
 

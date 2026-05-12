@@ -75,3 +75,4 @@ async def test_sync_tool_returns_not_implemented_envelope(
     assert parsed["summary"]["sensitivity"] == "low"
     assert parsed["error"]["code"] == "not_implemented"
     assert parsed["error"]["details"]["spec"] == "docs/specs/sync-overview.md"
+    assert any("moneybin sync" in a for a in parsed["actions"])

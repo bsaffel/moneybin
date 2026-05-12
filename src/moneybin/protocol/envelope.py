@@ -185,10 +185,6 @@ def not_implemented_envelope(
     Returns status="error" with code="not_implemented" so agents can branch
     on the top-level status field consistently.
     """
-    from moneybin.errors import (
-        UserError,  # noqa: PLC0415 — avoid circular at module level
-    )
-
     return build_error_envelope(
         error=UserError(
             f"{action} is not yet implemented",

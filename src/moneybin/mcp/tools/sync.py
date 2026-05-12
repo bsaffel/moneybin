@@ -16,7 +16,15 @@ _SPEC = "docs/specs/sync-overview.md"
 
 
 def _stub(action: str) -> ResponseEnvelope:
-    return not_implemented_envelope(action=action, spec=_SPEC)
+    cli_verb = action.removeprefix("sync_")
+    return not_implemented_envelope(
+        action=action,
+        spec=_SPEC,
+        actions=[
+            f"Use the CLI: moneybin sync {cli_verb}",
+            f"See {_SPEC} for the planned MCP surface",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low", read_only=False, idempotent=False, open_world=True)
