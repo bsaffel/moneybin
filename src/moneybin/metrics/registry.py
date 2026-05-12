@@ -263,5 +263,5 @@ audit_events_emitted_total = Counter(
 DOCTOR_RUNS_TOTAL = Counter(
     "moneybin_doctor_runs_total",
     "Doctor command invocations by outcome",
-    ["outcome"],  # "pass", "fail", "error"
+    ["outcome"],  # "pass", "fail"
 )

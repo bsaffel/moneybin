@@ -75,7 +75,7 @@ class DoctorReport:
     transaction_count: int  # total rows in fct_transactions; used in summary line
 ```
 
-`DoctorService.run_all(verbose=False) -> DoctorReport`. The transaction count comes from the FK integrity query's `COUNT(*)` so no extra query is needed.
+`DoctorService.run_all(verbose=False) -> DoctorReport`. The transaction count is fetched by a dedicated `_get_transaction_count()` query against `core.fct_transactions`; returns `0` if the schema doesn't exist yet (pre-first-transform).
 
 ## CLI Interface
 

@@ -6,7 +6,7 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.doctor_service import DoctorService
@@ -24,6 +24,7 @@ verbose_option: bool = typer.Option(
 def doctor_command(
     verbose: bool = verbose_option,
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Run pipeline integrity checks across all invariants.
 
@@ -84,18 +85,19 @@ def doctor_command(
         typer.echo(line)
         if verbose and result.affected_ids:
             typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
-        elif result.status == "fail" and not verbose:
-            typer.echo("   Run with --verbose for affected IDs")
 
-    n = len(report.invariants)
-    summary = (
-        f"\n{n} invariants checked across {report.transaction_count:,} transactions"
-    )
-    if failing:
-        summary += f" — {failing} failing"
-    else:
-        summary += " — all passing"
-    typer.echo(summary)
+    if not quiet:
+        n = len(report.invariants)
+        summary = (
+            f"\n{n} invariants checked across {report.transaction_count:,} transactions"
+        )
+        if failing:
+            summary += f" — {failing} failing"
+            if not verbose:
+                summary += " — run --verbose for affected IDs"
+        else:
+            summary += " — all passing"
+        typer.echo(summary)
 
     if failing > 0:
         raise typer.Exit(1)

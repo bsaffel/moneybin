@@ -53,6 +53,9 @@ class DoctorService:
             ).fetchone()
             return int(row[0]) if row else 0
         except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+            logger.debug(
+                "core.fct_transactions not available; transaction count unavailable"
+            )
             return 0
 
     def _run_sqlmesh_audits(self, verbose: bool) -> list[InvariantResult]:
@@ -61,8 +64,20 @@ class DoctorService:
         try:
             with sqlmesh_context() as ctx:
                 for name, audit in ctx.standalone_audits.items():
-                    sql = audit.render_audit_query().sql(dialect="duckdb")
-                    rows = self._db.execute(sql).fetchall()  # noqa: S608 — rendered from trusted audit files
+                    try:
+                        sql = audit.render_audit_query().sql(dialect="duckdb")
+                        # Audit SQL must return the violation entity ID in column 0.
+                        rows = self._db.execute(sql).fetchall()  # noqa: S608 — rendered from trusted audit files
+                    except Exception as e:  # noqa: BLE001 — per-audit isolation
+                        results.append(
+                            InvariantResult(
+                                name=name,
+                                status="skipped",
+                                detail=f"audit failed: {e}",
+                                affected_ids=[],
+                            )
+                        )
+                        continue
                     if rows:
                         affected = [str(r[0]) for r in rows] if verbose else []
                         results.append(
@@ -124,12 +139,15 @@ class DoctorService:
                 affected_ids=[],
             )
         uncategorized, total = int(row[0]), int(row[1])
-        pct_categorized = round((total - uncategorized) / total * 100)
+        # Use unrounded ratio for the threshold so values like 49.6% categorized
+        # correctly trigger the warning instead of rounding up to 50 and passing.
+        pct_categorized = (total - uncategorized) / total * 100
         if pct_categorized < 50:
+            pct_uncategorized = round(uncategorized / total * 100)
             return InvariantResult(
                 name="categorization_coverage",
                 status="warn",
-                detail=f"{100 - pct_categorized}% of non-transfer transactions are uncategorized",
+                detail=f"{pct_uncategorized}% of non-transfer transactions are uncategorized",
                 affected_ids=[],
             )
         return InvariantResult(
