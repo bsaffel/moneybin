@@ -246,27 +246,16 @@ class TestAutoRulePipeline:
         )
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
-        # Import the fixture twice under different account IDs so the same
-        # merchant description appears in two separate transactions. The first
-        # import's COFFEE SHOP row will be categorized via `categorize apply`;
-        # the second import's COFFEE SHOP row will remain uncategorized and be
-        # picked up by the auto-rule back-fill on approval.
+        # Import acct-a only first so that categorize apply's post-commit snowball
+        # (categorize_pending) sees no other uncategorized COFFEE SHOP rows — which
+        # would pre-categorize them via merchant mapping and leave nothing for the
+        # back-fill in approve() to exercise.
         result = run_cli(
             "import",
             "file",
             str(fixture),
             "--account-id",
             "wf-autorule-acct-a",
-            "--skip-transform",
-            env=env,
-        )
-        result.assert_success()
-        result = run_cli(
-            "import",
-            "file",
-            str(fixture),
-            "--account-id",
-            "wf-autorule-acct-b",
             "--skip-transform",
             env=env,
         )
@@ -278,9 +267,7 @@ class TestAutoRulePipeline:
         result = run_cli("transform", "seed", env=env)
         result.assert_success()
 
-        # Find the COFFEE SHOP transaction ID for account-a only — categorizing
-        # just this one leaves account-b's COFFEE SHOP row uncategorized for
-        # the back-fill step to exercise after approval.
+        # Find the COFFEE SHOP transaction ID for account-a.
         result = run_cli(
             "db",
             "query",
@@ -314,6 +301,8 @@ class TestAutoRulePipeline:
 
         # apply categorize — this records a user categorization and triggers the
         # auto-rule pipeline to create a pending proposal (threshold default = 1).
+        # The post-commit snowball runs categorize_pending here, but acct-b has not
+        # been imported yet so no other COFFEE SHOP rows are in fct_transactions.
         result = run_cli(
             "transactions",
             "categorize",
@@ -322,6 +311,22 @@ class TestAutoRulePipeline:
             str(json_path),
             env=env,
         )
+        result.assert_success()
+
+        # Import acct-b after categorize apply so its COFFEE SHOP row lands in
+        # fct_transactions before approval but after the snowball ran. The back-fill
+        # inside approve() will then find and categorize it as 'auto_rule'.
+        result = run_cli(
+            "import",
+            "file",
+            str(fixture),
+            "--account-id",
+            "wf-autorule-acct-b",
+            "--skip-transform",
+            env=env,
+        )
+        result.assert_success()
+        result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
         # auto-review surfaces the seeded proposal
@@ -363,11 +368,10 @@ class TestAutoRulePipeline:
         result.assert_success()
         assert "Active auto-rules" in result.output
 
-        # Approval back-fills the matching tabular transaction with
-        # categorized_by='auto_rule'. This guards against a regression where
-        # tabular descriptions land NULL in core.fct_transactions and the
-        # back-fill SELECT (`WHERE t.description IS NOT NULL`) silently
-        # returns zero rows.
+        # Approval back-fills the acct-b COFFEE SHOP row (imported after the
+        # snowball ran) with categorized_by='auto_rule'. This guards against a
+        # regression where tabular descriptions land NULL in core.fct_transactions
+        # and the back-fill SELECT silently returns zero rows.
         result = run_cli(
             "db",
             "query",
