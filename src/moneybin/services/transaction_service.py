@@ -37,6 +37,7 @@ _AUDIT_TARGET_MANUAL = ("raw", "manual_transactions")
 _MANUAL_BATCH_MAX = 100
 _MANUAL_FORMAT_NAME = "manual_entry"
 _MANUAL_SOURCE_TYPE = "manual"
+_MIN_ACCOUNT_FUZZY_CONFIDENCE = 0.4
 
 
 def _predict_manual_gold_key(source_transaction_id: str, account_id: str) -> str:
@@ -80,11 +81,11 @@ class Transaction:
             "description": self.description,
             "source_type": self.source_type,
         }
-        if self.memo:
+        if self.memo is not None:
             d["memo"] = self.memo
-        if self.category:
+        if self.category is not None:
             d["category"] = self.category
-        if self.subcategory:
+        if self.subcategory is not None:
             d["subcategory"] = self.subcategory
         if self.notes is not None:
             d["notes"] = self.notes
@@ -241,11 +242,6 @@ class TransactionService:
         """
         from moneybin.services.account_service import AccountService
 
-        # Minimum confidence to accept a fuzzy name match. SequenceMatcher
-        # returns a non-zero score for any two non-empty strings that share
-        # characters, so without a threshold every query resolves to something.
-        _min_confidence = 0.4
-
         placeholders = ", ".join("?" * len(accounts))
         exact_rows = self._db.execute(
             f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id IN ({placeholders})",  # noqa: S608  # TableRef constant
@@ -253,13 +249,16 @@ class TransactionService:
         ).fetchall()
         exact_ids = {str(r[0]) for r in exact_rows}
 
-        resolved = [a for a in accounts if a in exact_ids]
-        unmatched = [a for a in accounts if a not in exact_ids]
+        resolved: list[str] = []
+        unmatched: list[str] = []
+        for a in accounts:
+            (resolved if a in exact_ids else unmatched).append(a)
+
         if unmatched:
             service = AccountService(self._db)
             for entry in unmatched:
                 matches = service.resolve(entry, limit=1)
-                if matches and matches[0].confidence >= _min_confidence:
+                if matches and matches[0].confidence >= _MIN_ACCOUNT_FUZZY_CONFIDENCE:
                     resolved.append(matches[0].account_id)
         return resolved
 

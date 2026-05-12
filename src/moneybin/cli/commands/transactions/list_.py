@@ -8,7 +8,12 @@ from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import render_rich_table
 
 logger = logging.getLogger(__name__)
@@ -69,29 +74,32 @@ def transactions_list(
 
     envelope = result.to_envelope()
 
-    if output == OutputFormat.JSON:
-        typer.echo(envelope.to_json())
-        return
+    def _render_text(_: object) -> None:
+        if not result.transactions:
+            if not quiet:
+                typer.echo("No transactions found.")
+            return
 
-    if not result.transactions:
-        if not quiet:
-            typer.echo("No transactions found.")
-        return
+        rows: list[tuple[object, ...]] = []
+        for t in result.transactions:
+            amt = t.amount
+            amount_str = f"{amt:,.2f}"
+            desc = (
+                t.description[:49] + "…" if len(t.description) > 50 else t.description
+            )
+            rows.append((
+                t.transaction_date,
+                desc,
+                amount_str,
+                t.category or "",
+                t.account_id,
+            ))
 
-    rows: list[tuple[object, ...]] = []
-    for t in result.transactions:
-        amt = t.amount
-        amount_str = f"{amt:,.2f}"
-        desc = t.description[:49] + "…" if len(t.description) > 50 else t.description
-        rows.append((
-            t.transaction_date,
-            desc,
-            amount_str,
-            t.category or "",
-            t.account_id,
-        ))
+        render_rich_table(
+            ["date", "description", "amount", "category", "account"], rows
+        )
 
-    render_rich_table(["date", "description", "amount", "category", "account"], rows)
+        if result.next_cursor and not quiet:
+            typer.echo(f"Next page: --cursor {result.next_cursor}", err=True)
 
-    if result.next_cursor and not quiet:
-        typer.echo(f"Next page: --cursor {result.next_cursor}", err=True)
+    render_or_json(envelope, output, render_fn=_render_text)
