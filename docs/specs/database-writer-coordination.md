@@ -78,7 +78,7 @@ def __init__(
     *,
     read_only: bool = False,
     secret_store: SecretStore | None = None,
-    no_auto_upgrade: bool | None = None,
+    no_auto_upgrade: bool = False,
 ) -> None:
 ```
 
@@ -136,13 +136,14 @@ def get_database(
     max_wait: float = 5.0,
 ) -> Database:
     global _database_accessed, _migration_check_done
+    db_path = get_settings().database.path
     deadline = time.monotonic() + max_wait
     delay = 0.05
     skip_upgrade = read_only or _migration_check_done
     while True:
         try:
             db = Database(
-                get_settings().database.path,
+                db_path,
                 read_only=read_only,
                 no_auto_upgrade=skip_upgrade,
             )
@@ -390,9 +391,9 @@ with handle_cli_errors():
         SomeService(db).write_operation()
 ```
 
-Read-only commands: `reports *`, `accounts list/show/balance history/balance list`, `transactions list/search`, `categories list`, `merchants list`, `system status`, `db ps`, `db query`.
+Read-only commands: `reports *`, `accounts list/show/balance history/balance list`, `transactions list/search`, `categories list`, `merchants list`, `system status`, `db ps`.
 
-Write commands: all imports, categorize, curation, transform, `db init/lock/unlock/migrate`.
+Write commands: all imports, categorize, curation, transform, `db init/lock/unlock/migrate`, `db query` (accepts arbitrary SQL — same reasoning as `sql.py` at line 303).
 
 **`sqlmesh_command()` in `cli/utils.py`**
 
@@ -488,11 +489,13 @@ The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchang
 
 **Why `_migration_check_done` instead of hardcoding `no_auto_upgrade=True`**: Migrations must run when a new version of MoneyBin is installed. Hardcoding `no_auto_upgrade=True` in `get_database()` would skip them entirely, regressing upgrade behaviour. The flag ensures migrations run exactly once per process — on the first write-mode open — then are skipped for all subsequent opens (read or write), avoiding the overhead on every short-lived write connection.
 
+`_migration_check_done` is read/written without a lock, while the adjacent `_active_write_conn` slot does use `_active_write_lock`. This is safe: migrations are idempotent, and DuckDB's exclusive write lock naturally serializes concurrent first-write attempts — a second thread cannot execute migrations at the same time as the first because it cannot hold the write connection simultaneously. The flag is a performance optimization, not a correctness gate.
+
 **Why the `_active_write_conn` slot instead of removing `interrupt_and_reset_database()`**: The MCP decorator's timeout path (`mcp/decorator.py`) needs to interrupt a mid-flight DuckDB query and release the write lock before another tool can proceed. Without a global reference to the current write connection, the interrupt can't fire. The slot gives `interrupt_and_reset_database()` a target without re-introducing a singleton.
 
 **`sql.py` always uses write mode**: `execute_sql` accepts arbitrary SQL. Parsing statement type to pick the mode adds fragile complexity. Write mode is safe; the ~65 ms extra overhead is acceptable for a developer/power-user tool.
 
-**`no_auto_upgrade` on `get_database()` vs on `init_db()`**: `get_database()` always passes `no_auto_upgrade=True`. `init_db()` (the `db init` entry point) constructs `Database` directly with `no_auto_upgrade=False`. This keeps migrations strictly in the init path, not triggered by normal app operations.
+**`init_db()` constructs `Database` directly, not via `get_database()`**: `init_db()` opens `Database(db_path, no_auto_upgrade=False)` directly, bypassing the `_migration_check_done` flag entirely. This gives the explicit init path unconditional priority — migrations always run during `db init` regardless of flag state.
 
 ## Testing Strategy
 

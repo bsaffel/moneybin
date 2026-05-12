@@ -87,9 +87,12 @@ def get_database(
 ) -> Database:
     deadline = time.monotonic() + max_wait
     delay = 0.05
+    # skip_upgrade uses a _migration_check_done flag so migrations run on the
+    # first write-mode open per process; see database-writer-coordination.md
+    skip_upgrade = read_only or _migration_check_done
     while True:
         try:
-            return Database(db_path, read_only=read_only, no_auto_upgrade=True)
+            return Database(db_path, read_only=read_only, no_auto_upgrade=skip_upgrade)
         except DatabaseLockError:
             if time.monotonic() >= deadline:
                 raise
