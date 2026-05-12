@@ -1,7 +1,7 @@
 # Feature: Database Writer Coordination
 
 ## Status
-draft
+implemented
 
 ## Goal
 
