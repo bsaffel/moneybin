@@ -17,8 +17,12 @@ def transactions_list(
     accounts: list[str] = typer.Option(
         [], "--account", help="Account ID or display name (repeatable)."
     ),
-    date_from: str | None = typer.Option(None, "--from", help="Start date ISO 8601, inclusive."),
-    date_to: str | None = typer.Option(None, "--to", help="End date ISO 8601, inclusive."),
+    date_from: str | None = typer.Option(
+        None, "--from", help="Start date ISO 8601, inclusive."
+    ),
+    date_to: str | None = typer.Option(
+        None, "--to", help="End date ISO 8601, inclusive."
+    ),
     categories: list[str] = typer.Option(
         [], "--category", help="Category filter (repeatable)."
     ),
@@ -29,7 +33,9 @@ def transactions_list(
         False, "--uncategorized", help="Only uncategorized transactions."
     ),
     limit: int = typer.Option(50, "--limit", help="Maximum rows to return."),
-    cursor: str | None = typer.Option(None, "--cursor", help="Pagination token from previous call."),
+    cursor: str | None = typer.Option(
+        None, "--cursor", help="Pagination token from previous call."
+    ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -61,7 +67,7 @@ def transactions_list(
             typer.echo("No transactions found.")
         return
 
-    rows = []
+    rows: list[tuple[object, ...]] = []
     for t in result.transactions:
         from decimal import Decimal
 

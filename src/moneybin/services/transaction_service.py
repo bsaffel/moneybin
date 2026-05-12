@@ -244,7 +244,7 @@ class TransactionService:
         # Minimum confidence to accept a fuzzy name match. SequenceMatcher
         # returns a non-zero score for any two non-empty strings that share
         # characters, so without a threshold every query resolves to something.
-        _MIN_CONFIDENCE = 0.4
+        _min_confidence = 0.4
 
         resolved: list[str] = []
         for entry in accounts:
@@ -256,7 +256,7 @@ class TransactionService:
                 resolved.append(str(row[0]))
             else:
                 matches = AccountService(self._db).resolve(entry, limit=1)
-                if matches and matches[0].confidence >= _MIN_CONFIDENCE:
+                if matches and matches[0].confidence >= _min_confidence:
                     resolved.append(matches[0].account_id)
         return resolved
 
@@ -361,7 +361,9 @@ class TransactionService:
         ]
 
         next_cursor = (
-            base64.b64encode(str(offset + limit).encode()).decode() if has_more else None
+            base64.b64encode(str(offset + limit).encode()).decode()
+            if has_more
+            else None
         )
 
         logger.info(

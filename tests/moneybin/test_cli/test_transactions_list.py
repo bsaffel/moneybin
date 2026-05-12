@@ -10,32 +10,38 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.services.transaction_service import Transaction, TransactionGetResult, TransactionService
+from moneybin.services.transaction_service import (
+    Transaction,
+    TransactionGetResult,
+    TransactionService,
+)
 
 runner = CliRunner()
 
 
 def _make_txn(**overrides: object) -> Transaction:
     """Build a Transaction with sensible defaults."""
-    defaults: dict[str, object] = dict(
-        transaction_id="T1",
-        account_id="A1",
-        transaction_date="2026-04-10",
-        amount=Decimal("-50.00"),
-        description="Coffee Shop",
-        memo=None,
-        source_type="ofx",
-        category="Food & Drink",
-        subcategory=None,
-        notes=None,
-        tags=None,
-        splits=None,
-    )
+    defaults: dict[str, object] = {
+        "transaction_id": "T1",
+        "account_id": "A1",
+        "transaction_date": "2026-04-10",
+        "amount": Decimal("-50.00"),
+        "description": "Coffee Shop",
+        "memo": None,
+        "source_type": "ofx",
+        "category": "Food & Drink",
+        "subcategory": None,
+        "notes": None,
+        "tags": None,
+        "splits": None,
+    }
     defaults.update(overrides)
     return Transaction(**defaults)  # type: ignore[arg-type]
 
 
-def _mock_result(transactions: list[Transaction], next_cursor: str | None = None) -> TransactionGetResult:
+def _mock_result(
+    transactions: list[Transaction], next_cursor: str | None = None
+) -> TransactionGetResult:
     return TransactionGetResult(transactions=transactions, next_cursor=next_cursor)
 
 
@@ -88,7 +94,9 @@ def test_list_empty_text_output() -> None:
 def test_list_passes_account_to_service() -> None:
     """--account is forwarded to TransactionService.get()."""
     with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result([])) as mock_get:
+        with patch.object(
+            TransactionService, "get", return_value=_mock_result([])
+        ) as mock_get:
             runner.invoke(app, ["transactions", "list", "--account", "Test Bank"])
     mock_get.assert_called_once()
     assert mock_get.call_args.kwargs["accounts"] == ["Test Bank"]
@@ -98,8 +106,12 @@ def test_list_passes_account_to_service() -> None:
 def test_list_repeatable_account_flag() -> None:
     """Multiple --account flags accumulate into a list."""
     with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result([])) as mock_get:
-            runner.invoke(app, ["transactions", "list", "--account", "A1", "--account", "A2"])
+        with patch.object(
+            TransactionService, "get", return_value=_mock_result([])
+        ) as mock_get:
+            runner.invoke(
+                app, ["transactions", "list", "--account", "A1", "--account", "A2"]
+            )
     assert mock_get.call_args.kwargs["accounts"] == ["A1", "A2"]
 
 
@@ -107,10 +119,19 @@ def test_list_repeatable_account_flag() -> None:
 def test_list_repeatable_category_flag() -> None:
     """Multiple --category flags accumulate into a list."""
     with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result([])) as mock_get:
+        with patch.object(
+            TransactionService, "get", return_value=_mock_result([])
+        ) as mock_get:
             runner.invoke(
                 app,
-                ["transactions", "list", "--category", "Food & Drink", "--category", "Travel"],
+                [
+                    "transactions",
+                    "list",
+                    "--category",
+                    "Food & Drink",
+                    "--category",
+                    "Travel",
+                ],
             )
     assert mock_get.call_args.kwargs["categories"] == ["Food & Drink", "Travel"]
 
@@ -119,7 +140,9 @@ def test_list_repeatable_category_flag() -> None:
 def test_list_uncategorized_flag() -> None:
     """--uncategorized sets uncategorized_only=True."""
     with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result([])) as mock_get:
+        with patch.object(
+            TransactionService, "get", return_value=_mock_result([])
+        ) as mock_get:
             runner.invoke(app, ["transactions", "list", "--uncategorized"])
     assert mock_get.call_args.kwargs["uncategorized_only"] is True
 
@@ -128,6 +151,8 @@ def test_list_uncategorized_flag() -> None:
 def test_list_cursor_forwarded() -> None:
     """--cursor is forwarded to TransactionService.get()."""
     with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result([])) as mock_get:
+        with patch.object(
+            TransactionService, "get", return_value=_mock_result([])
+        ) as mock_get:
             runner.invoke(app, ["transactions", "list", "--cursor", "dGVzdA=="])
     assert mock_get.call_args.kwargs["cursor"] == "dGVzdA=="
