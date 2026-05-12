@@ -164,10 +164,11 @@ def run_scenario(
         try:
             for step in scenario.pipeline:
                 run_step(step, scenario.setup, db, env=env)
-                # Steps may close the singleton (e.g., to release the
-                # DuckDB file lock for a subprocess). Re-fetch so the
-                # next step / assertion phase has a live connection.
-                db = get_database()
+                # Some steps close the connection to release the DuckDB file
+                # lock (e.g. transform_via_subprocess spawns a subprocess that
+                # needs the write lock). Re-open only when that happens.
+                if db._closed:  # pyright: ignore[reportPrivateUsage]
+                    db = get_database()
         except Exception as exc:  # noqa: BLE001 — surface as halted result
             # Don't use logger.exception — tracebacks may include local
             # variables holding amounts/descriptions (PII rule).

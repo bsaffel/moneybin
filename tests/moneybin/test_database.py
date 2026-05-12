@@ -599,7 +599,8 @@ class TestGetDatabaseNew:
         monkeypatch.setattr("moneybin.database.Database", mock_database_cls)
         sleep_calls: list[float] = []
         monkeypatch.setattr(
-            "moneybin.database.time.sleep", lambda d: sleep_calls.append(d)  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+            "moneybin.database.time.sleep",
+            lambda d: sleep_calls.append(d),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
         )
         monkeypatch.setattr(
             "moneybin.database.time.monotonic", iter([0.0, 0.1, 0.2, 1.0]).__next__
