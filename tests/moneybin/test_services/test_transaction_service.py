@@ -22,7 +22,6 @@ from moneybin.services.transaction_service import (
     RecurringTransaction,
     Split,
     TagRenameResult,
-    Transaction,
     TransactionService,
 )
 from tests.moneybin.db_helpers import create_core_tables_raw

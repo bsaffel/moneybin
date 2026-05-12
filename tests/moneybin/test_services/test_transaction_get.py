@@ -11,7 +11,11 @@ import pytest
 
 import moneybin.database as db_module
 from moneybin.database import Database
-from moneybin.services.transaction_service import Transaction, TransactionGetResult, TransactionService
+from moneybin.services.transaction_service import (
+    Transaction,
+    TransactionGetResult,
+    TransactionService,
+)
 from tests.moneybin.db_helpers import create_core_tables_raw
 
 
@@ -20,7 +24,9 @@ def txn_db(tmp_path: Path) -> Generator[Database, None, None]:
     """Database with core+app tables and 4 test transactions."""
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True)
+    database = Database(
+        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+    )
     conn = database.conn
     create_core_tables_raw(conn)
 
@@ -184,7 +190,9 @@ class TestTransactionGet:
         assert len(second.transactions) == 2
         assert second.next_cursor is None
 
-        all_ids = {t.transaction_id for t in first.transactions} | {t.transaction_id for t in second.transactions}
+        all_ids = {t.transaction_id for t in first.transactions} | {
+            t.transaction_id for t in second.transactions
+        }
         assert all_ids == {"T1", "T2", "T3", "T4"}
 
     @pytest.mark.unit

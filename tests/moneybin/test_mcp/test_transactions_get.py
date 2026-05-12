@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.mcp.tools.transactions import register_transactions_tools, transactions_get
+from moneybin.mcp.tools.transactions import (
+    register_transactions_tools,
+    transactions_get,
+)
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -23,7 +26,7 @@ async def test_transactions_get_returns_envelope(mcp_db: object) -> None:
 
 @pytest.mark.unit
 async def test_transactions_get_data_is_list(mcp_db: object) -> None:
-    """data field is a list (may be empty on fresh DB)."""
+    """Data field is a list (may be empty on fresh DB)."""
     result = await transactions_get()
     d = result.to_dict()
     assert isinstance(d["data"], list)
