@@ -65,19 +65,23 @@ class DoctorService:
                     rows = self._db.execute(sql).fetchall()  # noqa: S608 — rendered from trusted audit files
                     if rows:
                         affected = [str(r[0]) for r in rows] if verbose else []
-                        results.append(InvariantResult(
-                            name=name,
-                            status="fail",
-                            detail=f"{len(rows)} violation(s)",
-                            affected_ids=affected,
-                        ))
+                        results.append(
+                            InvariantResult(
+                                name=name,
+                                status="fail",
+                                detail=f"{len(rows)} violation(s)",
+                                affected_ids=affected,
+                            )
+                        )
                     else:
-                        results.append(InvariantResult(
-                            name=name,
-                            status="pass",
-                            detail=None,
-                            affected_ids=[],
-                        ))
+                        results.append(
+                            InvariantResult(
+                                name=name,
+                                status="pass",
+                                detail=None,
+                                affected_ids=[],
+                            )
+                        )
         except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
             logger.warning(f"SQLMesh audit discovery failed: {e}")
         return results

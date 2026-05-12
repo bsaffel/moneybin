@@ -65,13 +65,14 @@ No new tables or migrations. All checks are read-only queries against existing s
 class InvariantResult:
     name: str
     status: Literal["pass", "fail", "warn", "skipped"]
-    detail: str | None       # human-readable description; None on pass
+    detail: str | None  # human-readable description; None on pass
     affected_ids: list[str]  # populated only when verbose=True; empty otherwise
+
 
 @dataclass(frozen=True)
 class DoctorReport:
     invariants: list[InvariantResult]
-    transaction_count: int   # total rows in fct_transactions; used in summary line
+    transaction_count: int  # total rows in fct_transactions; used in summary line
 ```
 
 `DoctorService.run_all(verbose=False) -> DoctorReport`. The transaction count comes from the FK integrity query's `COUNT(*)` so no extra query is needed.

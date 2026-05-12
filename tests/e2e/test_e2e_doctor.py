@@ -19,6 +19,7 @@ pytestmark = pytest.mark.e2e
 
 class TestDoctorCommand:
     """E2E tests for the `moneybin doctor` command."""
+
     def test_doctor_help(self) -> None:
         result = run_cli("doctor", "--help")
         result.assert_success()
@@ -51,7 +52,9 @@ class TestDoctorCommand:
         result = run_cli("doctor", "--verbose", env=e2e_profile)
         assert "Traceback" not in result.stderr
 
-    def test_doctor_json_verbose_flag_accepted(self, e2e_profile: dict[str, str]) -> None:
+    def test_doctor_json_verbose_flag_accepted(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
         result = run_cli("doctor", "--output", "json", "--verbose", env=e2e_profile)
         assert "Traceback" not in result.stderr
         envelope = json.loads(result.stdout)

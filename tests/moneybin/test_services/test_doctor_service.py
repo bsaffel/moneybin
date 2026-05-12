@@ -257,7 +257,9 @@ def test_sign_convention_fails_zero_amount(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all(verbose=True)
-    sign = next(r for r in report.invariants if r.name == "fct_transactions_sign_convention")
+    sign = next(
+        r for r in report.invariants if r.name == "fct_transactions_sign_convention"
+    )
     assert sign.status == "fail"
     assert "ZERO" in sign.affected_ids
 

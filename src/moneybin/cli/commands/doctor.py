@@ -88,7 +88,9 @@ def doctor_command(
             typer.echo("   Run with --verbose for affected IDs")
 
     n = len(report.invariants)
-    summary = f"\n{n} invariants checked across {report.transaction_count:,} transactions"
+    summary = (
+        f"\n{n} invariants checked across {report.transaction_count:,} transactions"
+    )
     if failing:
         summary += f" — {failing} failing"
     else:

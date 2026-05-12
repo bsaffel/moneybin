@@ -27,7 +27,9 @@ _PASSING_REPORT = DoctorReport(
 _FAILING_REPORT = DoctorReport(
     invariants=[
         InvariantResult("fct_transactions_fk_integrity", "pass", None, []),
-        InvariantResult("fct_transactions_sign_convention", "fail", "1 violation(s)", []),
+        InvariantResult(
+            "fct_transactions_sign_convention", "fail", "1 violation(s)", []
+        ),
         InvariantResult("bridge_transfers_balanced", "pass", None, []),
         InvariantResult("categorization_coverage", "warn", "80% uncategorized", []),
         InvariantResult("staging_coverage", "skipped", "no is_primary column", []),
@@ -125,8 +127,7 @@ def test_doctor_json_verbose_includes_affected_ids(
     verbose_report = DoctorReport(
         invariants=[
             InvariantResult(
-                "fct_transactions_fk_integrity", "fail",
-                "1 violation(s)", ["abc123"]
+                "fct_transactions_fk_integrity", "fail", "1 violation(s)", ["abc123"]
             ),
         ],
         transaction_count=5,
