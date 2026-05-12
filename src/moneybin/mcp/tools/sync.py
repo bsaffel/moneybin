@@ -16,7 +16,7 @@ _SPEC = "docs/specs/sync-overview.md"
 
 
 def _stub(action: str) -> ResponseEnvelope:
-    cli_verb = action.removeprefix("sync_")
+    cli_verb = action.removeprefix("sync_").replace("_", " ")
     return not_implemented_envelope(
         action=action,
         spec=_SPEC,
