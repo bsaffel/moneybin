@@ -696,3 +696,74 @@ class TestGetDatabaseNew:
         db = get_database(read_only=True)
         assert db_module._active_write_conn is None
         db.close()
+
+
+@pytest.mark.integration
+class TestDatabaseIntegration:
+    """Integration tests with a real encrypted DuckDB file."""
+
+    def test_read_only_can_query_existing_table(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """read_only=True opens successfully and can query existing tables."""
+        db_path = tmp_path / "int_ro.duckdb"
+        # Create DB and add data
+        with Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        ) as db:
+            db.execute("CREATE TABLE test_int (id INTEGER, val VARCHAR)")
+            db.execute("INSERT INTO test_int VALUES (1, 'hello')")
+
+        # Read-only access
+        with Database(db_path, read_only=True, secret_store=mock_secret_store) as ro_db:
+            row = ro_db.execute("SELECT val FROM test_int WHERE id = ?", [1]).fetchone()
+        assert row == ("hello",)
+
+    def test_write_then_read_sees_change(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """Write connection writes; subsequent read-only connection sees the change."""
+        db_path = tmp_path / "int_rw.duckdb"
+        with Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        ) as db:
+            db.execute("CREATE TABLE tracked (n INTEGER)")
+
+        with Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        ) as db:
+            db.execute("INSERT INTO tracked VALUES (42)")
+
+        with Database(db_path, read_only=True, secret_store=mock_secret_store) as ro:
+            row = ro.execute("SELECT n FROM tracked").fetchone()
+        assert row == (42,)
+
+    def test_context_manager_releases_write_lock(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """After 'with Database(...) as db: pass', opening a new write connection succeeds."""
+        db_path = tmp_path / "int_ctx.duckdb"
+        with Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True):
+            pass
+
+        # Open and close via context manager
+        with Database(
+            db_path, secret_store=mock_secret_store, no_auto_upgrade=True
+        ) as db1:
+            pass
+        assert db1._closed  # pyright: ignore[reportPrivateUsage]
+
+        # Second write connection opens immediately (no lock held)
+        db2 = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        db2.close()
+
+    def test_read_only_on_missing_file_raises_not_initialized(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """DatabaseNotInitializedError before DuckDB connect when file is absent."""
+        from moneybin.database import DatabaseNotInitializedError
+
+        db_path = tmp_path / "nonexistent_int.duckdb"
+        assert not db_path.exists()
+        with pytest.raises(DatabaseNotInitializedError):
+            Database(db_path, read_only=True, secret_store=mock_secret_store)
