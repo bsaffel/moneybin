@@ -60,3 +60,59 @@ def test_handle_cli_errors_lets_other_exceptions_propagate() -> None:
         with pytest.raises(RuntimeError, match="boom"):
             with handle_cli_errors():
                 raise RuntimeError("boom")
+
+
+def test_handle_cli_errors_json_mode_emits_envelope_on_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With output=JSON, classified errors emit a JSON envelope to stdout."""
+    import json
+
+    from moneybin.cli.output import OutputFormat
+    from moneybin.cli.utils import handle_cli_errors
+
+    fake_db = MagicMock()
+    with patch("moneybin.cli.utils.get_database", return_value=fake_db):
+        with pytest.raises(typer.Exit) as exc_info:
+            with handle_cli_errors(output=OutputFormat.JSON):
+                raise FileNotFoundError("missing.csv")
+
+    assert exc_info.value.exit_code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "error"
+    assert out["error"]["code"] == "file_not_found"
+    assert "missing.csv" in out["error"]["message"]
+
+
+def test_handle_cli_errors_json_mode_no_log_output(
+    capsys: pytest.CaptureFixture[str],
+    caplog: LogCaptureFixture,
+) -> None:
+    """With output=JSON, error goes to stdout envelope — not to stderr log."""
+    from moneybin.cli.output import OutputFormat
+    from moneybin.cli.utils import handle_cli_errors
+
+    fake_db = MagicMock()
+    with patch("moneybin.cli.utils.get_database", return_value=fake_db):
+        with caplog.at_level("ERROR"), pytest.raises(typer.Exit):
+            with handle_cli_errors(output=OutputFormat.JSON):
+                raise FileNotFoundError("gone.csv")
+
+    # error must NOT appear in log (it went to stdout JSON instead)
+    assert "gone.csv" not in caplog.text
+
+
+def test_handle_cli_errors_text_mode_unchanged(
+    caplog: LogCaptureFixture,
+) -> None:
+    """Default (text) mode still logs and does not emit JSON."""
+    from moneybin.cli.output import OutputFormat
+    from moneybin.cli.utils import handle_cli_errors
+
+    fake_db = MagicMock()
+    with patch("moneybin.cli.utils.get_database", return_value=fake_db):
+        with caplog.at_level("ERROR"), pytest.raises(typer.Exit):
+            with handle_cli_errors(output=OutputFormat.TEXT):
+                raise FileNotFoundError("also.csv")
+
+    assert "also.csv" in caplog.text
