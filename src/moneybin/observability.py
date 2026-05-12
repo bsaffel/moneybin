@@ -117,7 +117,7 @@ def flush_metrics() -> None:
 
         if not database_was_accessed():
             return
-        with get_database() as db:
+        with get_database(max_wait=2.0) as db:
             flush_to_duckdb(db)
     except Exception:  # noqa: BLE001  # best-effort shutdown flush; DB may be unavailable
         logger.debug("Metrics flush on exit failed", exc_info=True)

@@ -69,3 +69,24 @@ def test_user_error_to_dict_includes_hint() -> None:
     """UserError.to_dict includes the hint when populated."""
     err = UserError("m", code="c", hint="h")
     assert err.to_dict() == {"message": "m", "code": "c", "hint": "h"}
+
+
+def test_classify_database_not_initialized_error() -> None:
+    from moneybin.database import DatabaseNotInitializedError
+    from moneybin.errors import classify_user_error
+
+    err = DatabaseNotInitializedError("db missing")
+    result = classify_user_error(err)
+    assert result is not None
+    assert "db init" in (result.message + (result.hint or "")).lower()
+    assert result.code == "database_not_initialized"
+
+
+def test_classify_database_lock_error() -> None:
+    from moneybin.database import DatabaseLockError
+    from moneybin.errors import classify_user_error
+
+    err = DatabaseLockError("Could not acquire write lock after 5s")
+    result = classify_user_error(err)
+    assert result is not None
+    assert result.code == "database_locked"
