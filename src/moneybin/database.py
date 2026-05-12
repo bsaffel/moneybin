@@ -605,6 +605,14 @@ class Database:
                 self._conn.interrupt()
             except Exception:  # noqa: BLE001, S110 — interrupt is best-effort; pass is correct here
                 pass
+            try:
+                # Explicit DETACH ensures DuckDB's process-level file registry
+                # releases the path entry even if interrupt() left the connection
+                # in a partial state. Without this, a subsequent ATTACH to the
+                # same file raises "already attached".
+                self._conn.execute(f'DETACH "{_DATABASE_ALIAS}"')  # noqa: S608 — alias is a hardcoded internal literal
+            except Exception:  # noqa: BLE001, S110 — DETACH is best-effort; pass is correct here
+                pass
         self.close()
 
 

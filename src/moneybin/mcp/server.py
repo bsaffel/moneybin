@@ -97,7 +97,7 @@ _tools_registered = False
 
 def get_db_path() -> Path:
     """Get the path to the DuckDB database file."""
-    from moneybin.config import get_settings
+    from moneybin.database import get_settings
 
     return get_settings().database.path
 

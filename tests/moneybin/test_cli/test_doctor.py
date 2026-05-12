@@ -46,7 +46,7 @@ def test_doctor_help_exits_cleanly() -> None:
     assert "--output" in result.output
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.doctor.get_database")
 @patch("moneybin.cli.commands.doctor.DoctorService")
 def test_doctor_exits_0_when_all_pass(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
@@ -58,7 +58,7 @@ def test_doctor_exits_0_when_all_pass(
     assert "✅" in result.output
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.doctor.get_database")
 @patch("moneybin.cli.commands.doctor.DoctorService")
 def test_doctor_exits_1_when_any_fail(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
@@ -69,7 +69,7 @@ def test_doctor_exits_1_when_any_fail(
     assert result.exit_code == 1
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.doctor.get_database")
 @patch("moneybin.cli.commands.doctor.DoctorService")
 def test_doctor_json_output_shape(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
@@ -90,7 +90,7 @@ def test_doctor_json_output_shape(
     assert len(data["invariants"]) == 5
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.doctor.get_database")
 @patch("moneybin.cli.commands.doctor.DoctorService")
 def test_doctor_verbose_passes_flag_to_service(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
@@ -101,7 +101,7 @@ def test_doctor_verbose_passes_flag_to_service(
     mock_svc_cls.return_value.run_all.assert_called_once_with(verbose=True)
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.doctor.get_database")
 @patch("moneybin.cli.commands.doctor.DoctorService")
 def test_doctor_warn_only_exits_0(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
@@ -119,7 +119,7 @@ def test_doctor_warn_only_exits_0(
     assert result.exit_code == 0
 
 
-@patch("moneybin.cli.utils.get_database")
+@patch("moneybin.cli.commands.doctor.get_database")
 @patch("moneybin.cli.commands.doctor.DoctorService")
 def test_doctor_json_verbose_includes_affected_ids(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock

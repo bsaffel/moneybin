@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -77,6 +78,17 @@ def _seed_uncategorized_transactions(db: Database, count: int = 3) -> None:
         )
 
 
+def _wire_db_to_assist(monkeypatch: pytest.MonkeyPatch, db: Database) -> None:
+    """Patch get_database in the assist tool module to yield the given db without closing it."""
+    import moneybin.mcp.tools.transactions_categorize_assist as _mod
+
+    @contextmanager
+    def _db_ctx(*_a: object, **_kw: object):
+        yield db  # noqa: B023 — db is loop-invariant; test owns lifecycle
+
+    monkeypatch.setattr(_mod, "get_database", _db_ctx)
+
+
 class TestCategorizeAssistMCPTool:
     """Integration tests for the transactions_categorize_assist MCP tool."""
 
@@ -86,7 +98,7 @@ class TestCategorizeAssistMCPTool:
         """Tool returns envelope; descriptions pass through redact_for_llm."""
         db, _store = _make_db(tmp_path)
         _seed_uncategorized_transactions(db, count=3)
-        monkeypatch.setattr("moneybin.database._database_instance", db)
+        _wire_db_to_assist(monkeypatch, db)
 
         response = await transactions_categorize_assist(limit=10)
 
@@ -108,7 +120,7 @@ class TestCategorizeAssistMCPTool:
         """Response actions reference transactions_categorize_apply for commit."""
         db, _store = _make_db(tmp_path)
         _seed_uncategorized_transactions(db, count=2)
-        monkeypatch.setattr("moneybin.database._database_instance", db)
+        _wire_db_to_assist(monkeypatch, db)
 
         response = await transactions_categorize_assist(limit=10)
 
@@ -120,7 +132,7 @@ class TestCategorizeAssistMCPTool:
         """Passing account_filter scopes results without raising."""
         db, _store = _make_db(tmp_path)
         _seed_uncategorized_transactions(db, count=5)
-        monkeypatch.setattr("moneybin.database._database_instance", db)
+        _wire_db_to_assist(monkeypatch, db)
 
         response = await transactions_categorize_assist(
             limit=10, account_filter=["acct_test"]
@@ -146,7 +158,7 @@ class TestCategorizeAssistMCPTool:
                    ('txn_assist_001', 'Food', 'Coffee', 'user')
             """
         )
-        monkeypatch.setattr("moneybin.database._database_instance", db)
+        _wire_db_to_assist(monkeypatch, db)
 
         response = await transactions_categorize_assist(limit=10)
 
@@ -164,7 +176,7 @@ class TestCategorizeAssistMCPTool:
 
         db, _store = _make_db(tmp_path)
         _seed_uncategorized_transactions(db, count=3)
-        monkeypatch.setattr("moneybin.database._database_instance", db)
+        _wire_db_to_assist(monkeypatch, db)
 
         with caplog.at_level(logging.INFO, logger="moneybin.mcp.privacy"):
             await transactions_categorize_assist(limit=5)
