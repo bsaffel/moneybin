@@ -67,9 +67,14 @@ class InvariantResult:
     status: Literal["pass", "fail", "warn", "skipped"]
     detail: str | None       # human-readable description; None on pass
     affected_ids: list[str]  # populated only when verbose=True; empty otherwise
+
+@dataclass(frozen=True)
+class DoctorReport:
+    invariants: list[InvariantResult]
+    transaction_count: int   # total rows in fct_transactions; used in summary line
 ```
 
-`DoctorService.run_all()` also returns the total transaction count (from the FK integrity query) for the summary line.
+`DoctorService.run_all(verbose=False) -> DoctorReport`. The transaction count comes from the FK integrity query's `COUNT(*)` so no extra query is needed.
 
 ## CLI Interface
 
@@ -100,7 +105,7 @@ With `--verbose`, affected IDs appear under each failing line:
 
 **Exit codes:** `0` = all pass or warn-only, `1` = any invariant fails.
 
-**`--output json`** returns the standard `ResponseEnvelope`:
+**`--output json`** returns the standard `ResponseEnvelope` with all invariants included (agents need the full picture, not just failures):
 
 ```json
 {
@@ -109,15 +114,18 @@ With `--verbose`, affected IDs appear under each failing line:
     "passing": 3, "failing": 1, "warning": 1,
     "transaction_count": 14203,
     "invariants": [
-      {"name": "bridge_transfers_balanced", "status": "fail",
-       "detail": "2 transfer pairs sum to > $0.01", "affected_ids": []}
+      {"name": "fct_transactions_fk_integrity", "status": "pass", "detail": null, "affected_ids": []},
+      {"name": "fct_transactions_sign_convention", "status": "pass", "detail": null, "affected_ids": []},
+      {"name": "bridge_transfers_balanced", "status": "fail", "detail": "2 transfer pairs sum to > $0.01", "affected_ids": []},
+      {"name": "categorization_coverage", "status": "warn", "detail": "43% of non-transfer transactions are uncategorized", "affected_ids": []},
+      {"name": "staging_coverage", "status": "pass", "detail": null, "affected_ids": []}
     ]
   },
   "actions": ["Run with --verbose to see affected transaction IDs"]
 }
 ```
 
-`affected_ids` is always `[]` in JSON mode unless `--verbose` is also passed.
+`affected_ids` is always `[]` unless `--verbose` is also passed.
 
 ## MCP Interface
 
