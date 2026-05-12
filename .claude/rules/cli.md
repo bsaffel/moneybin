@@ -118,7 +118,7 @@ A **leaf command** is a top-level command with no subcommands (e.g., `moneybin s
 |---|---|
 | `0` | Success |
 | `1` | Runtime error (operation ran and failed: file not found, DB locked, API 500) |
-| `2` | Usage error (missing arg, invalid flag, unknown subcommand) |
+| `2` | Usage error (missing arg, invalid flag, unknown subcommand, bad argument value) |
 
 Diagnostic output (errors, warnings, progress, status) goes to **stderr** (fd 2). Data output (rows, JSON, the thing the user asked for) goes to **stdout** (fd 1). Help text from `--help` goes to stdout — it's documentation the user requested, and pipes (`| less`) must work.
 

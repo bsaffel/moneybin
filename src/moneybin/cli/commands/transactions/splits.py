@@ -57,8 +57,12 @@ def transactions_splits_add(
     """Append a split to a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
+    try:
         amount_dec = Decimal(amount)
+    except Exception as e:
+        raise typer.BadParameter(f"Invalid decimal: {amount!r}") from e
+
+    with handle_cli_errors(output=output) as db:
         svc = TransactionService(db)
         split = svc.add_split(
             transaction_id,
