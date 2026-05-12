@@ -23,7 +23,6 @@ from moneybin.services.transaction_service import (
     Split,
     TagRenameResult,
     Transaction,
-    TransactionSearchResult,
     TransactionService,
 )
 from tests.moneybin.db_helpers import create_core_tables_raw
@@ -86,69 +85,6 @@ def transaction_db(tmp_path: Path) -> Generator[Database, None, None]:
     database.close()
 
 
-class TestTransactionSearch:
-    """Tests for TransactionService.search()."""
-
-    @pytest.mark.unit
-    def test_returns_search_result(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.search()
-        assert isinstance(result, TransactionSearchResult)
-        assert result.total_count == 4
-        assert len(result.transactions) == 4
-
-    @pytest.mark.unit
-    def test_transaction_fields(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.search()
-        txn = next(t for t in result.transactions if t.transaction_id == "T1")
-        assert isinstance(txn, Transaction)
-        assert txn.account_id == "A1"
-        assert txn.amount == Decimal("-50.00")
-        assert txn.description == "Coffee Shop"
-        assert txn.category == "Food & Drink"
-
-    @pytest.mark.unit
-    def test_filter_by_description(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.search(description="coffee")
-        assert result.total_count == 3
-        for txn in result.transactions:
-            assert "Coffee" in txn.description
-
-    @pytest.mark.unit
-    def test_filter_by_date_range(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.search(start_date="2026-04-01", end_date="2026-04-30")
-        assert result.total_count == 2
-
-    @pytest.mark.unit
-    def test_filter_uncategorized_only(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.search(uncategorized_only=True)
-        # T1 is categorized, T2/T3/T4 are not
-        assert result.total_count == 3
-        for txn in result.transactions:
-            assert txn.category is None
-
-    @pytest.mark.unit
-    def test_limit_and_offset(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.search(limit=2, offset=0)
-        assert len(result.transactions) == 2
-        assert result.total_count == 4
-
-    @pytest.mark.unit
-    def test_to_envelope_sensitivity_medium(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.search()
-        envelope = result.to_envelope()
-        d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "medium"
-        assert d["summary"]["total_count"] == 4
-        assert isinstance(d["data"], list)
-
-
 class TestRecurring:
     """Tests for TransactionService.recurring()."""
 
@@ -204,12 +140,14 @@ class TestEmptyResults:
         database.close()
 
     @pytest.mark.unit
-    def test_search_empty_db(self, empty_db: Database) -> None:
+    def test_get_empty_db(self, empty_db: Database) -> None:
+        from moneybin.services.transaction_service import TransactionGetResult
+
         service = TransactionService(empty_db)
-        result = service.search()
-        assert isinstance(result, TransactionSearchResult)
-        assert result.total_count == 0
+        result = service.get()
+        assert isinstance(result, TransactionGetResult)
         assert result.transactions == []
+        assert result.next_cursor is None
 
     @pytest.mark.unit
     def test_recurring_empty_db(self, empty_db: Database) -> None:
