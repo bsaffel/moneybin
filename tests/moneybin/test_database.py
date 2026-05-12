@@ -594,12 +594,12 @@ class TestGetDatabaseNew:
             call_count += 1
             if call_count < 3:
                 raise DatabaseLockError("lock")
-            return original_database_cls(*args, **kwargs)
+            return original_database_cls(*args, **kwargs)  # pyright: ignore[reportArgumentType]
 
         monkeypatch.setattr("moneybin.database.Database", mock_database_cls)
         sleep_calls: list[float] = []
         monkeypatch.setattr(
-            "moneybin.database.time.sleep", lambda d: sleep_calls.append(d)
+            "moneybin.database.time.sleep", lambda d: sleep_calls.append(d)  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
         )
         monkeypatch.setattr(
             "moneybin.database.time.monotonic", iter([0.0, 0.1, 0.2, 1.0]).__next__
@@ -632,7 +632,7 @@ class TestGetDatabaseNew:
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
         monkeypatch.setattr(
             "moneybin.database.Database",
-            lambda *a, **kw: (_ for _ in ()).throw(DatabaseLockError("lock")),
+            lambda *a, **kw: (_ for _ in ()).throw(DatabaseLockError("lock")),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
         )
 
         call_count = 0
@@ -643,7 +643,7 @@ class TestGetDatabaseNew:
             return float(call_count * 10)  # each call returns 10s later
 
         monkeypatch.setattr("moneybin.database.time.monotonic", mock_monotonic)
-        monkeypatch.setattr("moneybin.database.time.sleep", lambda d: None)
+        monkeypatch.setattr("moneybin.database.time.sleep", lambda d: None)  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
 
         with pytest.raises(DatabaseLockError, match="Could not acquire"):
             get_database(max_wait=5.0)
@@ -668,9 +668,9 @@ class TestGetDatabaseNew:
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
 
         db = get_database()
-        assert db_module._active_write_conn is db
+        assert db_module._active_write_conn is db  # pyright: ignore[reportPrivateUsage]
         db.close()
-        assert db_module._active_write_conn is None
+        assert db_module._active_write_conn is None  # pyright: ignore[reportPrivateUsage]
 
     def test_read_only_does_not_register_active_write_conn(
         self,
@@ -694,7 +694,7 @@ class TestGetDatabaseNew:
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
 
         db = get_database(read_only=True)
-        assert db_module._active_write_conn is None
+        assert db_module._active_write_conn is None  # pyright: ignore[reportPrivateUsage]
         db.close()
 
 

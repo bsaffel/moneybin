@@ -6,13 +6,9 @@ import logging
 
 import typer
 
-from moneybin.cli.output import (
-    OutputFormat,
-    output_option,
-    quiet_option,
-    render_or_json,
-)
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.doctor_service import DoctorService
 
@@ -37,8 +33,9 @@ def doctor_command(
     are non-zero, transfer pairs balance, and categorization is healthy.
     Exits 0 when all invariants pass or warn; exits 1 when any fail.
     """
-    with handle_cli_errors(output=output) as db:
-        report = DoctorService(db).run_all(verbose=verbose)
+    with handle_cli_errors():
+        with get_database() as db:
+            report = DoctorService(db).run_all(verbose=verbose)
 
     status_icon = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}
 
@@ -78,7 +75,7 @@ def doctor_command(
             sensitivity="low",
             actions=actions,
         )
-        render_or_json(envelope, output)
+        typer.echo(envelope.to_json())
         if failing > 0:
             raise typer.Exit(1)
         return

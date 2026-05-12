@@ -98,7 +98,7 @@ def test_archive_cascade_excludes_from_networth() -> None:
         # re-run even though SQLMesh already covered today's interval on the first
         # transform. Without restate_models, SQLMesh's interval optimizer skips all
         # FULL-kind core models because intervals are already satisfied for today.
-        with sqlmesh_context() as ctx:
+        with sqlmesh_context(db) as ctx:
             ctx.plan(
                 restate_models=_ARCHIVE_RESTATE_MODELS,
                 auto_apply=True,

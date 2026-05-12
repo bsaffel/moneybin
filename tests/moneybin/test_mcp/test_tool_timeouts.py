@@ -200,16 +200,16 @@ async def test_back_to_back_call_after_timeout_succeeds(
     def _fake_get_database(read_only: bool = False, **_: object):  # type: ignore[misc]
         conn = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
         if not read_only:
-            with db_module._active_write_lock:
-                db_module._active_write_conn = conn
+            with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
+                db_module._active_write_conn = conn  # pyright: ignore[reportPrivateUsage]
         try:
             yield conn
         finally:
             conn.close()
             if not read_only:
-                with db_module._active_write_lock:
-                    if db_module._active_write_conn is conn:
-                        db_module._active_write_conn = None
+                with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
+                    if db_module._active_write_conn is conn:  # pyright: ignore[reportPrivateUsage]
+                        db_module._active_write_conn = None  # pyright: ignore[reportPrivateUsage]
 
     monkeypatch.setattr(db_module, "get_database", _fake_get_database)
 

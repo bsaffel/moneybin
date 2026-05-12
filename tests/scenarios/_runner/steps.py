@@ -84,7 +84,7 @@ def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> No
 
 
 def _step_transform(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
-    with sqlmesh_context() as ctx:
+    with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
 

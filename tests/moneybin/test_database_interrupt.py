@@ -39,12 +39,12 @@ def test_module_helper_fires_on_active_write_conn(
         tmp_path / "t2.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
     )
     # Register as active write conn
-    with db_module._active_write_lock:
-        db_module._active_write_conn = db
+    with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
+        db_module._active_write_conn = db  # pyright: ignore[reportPrivateUsage]
 
     interrupt_and_reset_database()
 
-    assert db_module._active_write_conn is None
+    assert db_module._active_write_conn is None  # pyright: ignore[reportPrivateUsage]
     assert db._closed is True  # pyright: ignore[reportPrivateUsage]
 
 
@@ -55,4 +55,4 @@ def test_module_helper_is_noop_when_no_active_conn(
     monkeypatch.setattr(db_module, "_active_write_conn", None)
     # Should not raise
     interrupt_and_reset_database()
-    assert db_module._active_write_conn is None
+    assert db_module._active_write_conn is None  # pyright: ignore[reportPrivateUsage]

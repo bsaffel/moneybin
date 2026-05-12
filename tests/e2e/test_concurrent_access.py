@@ -40,21 +40,6 @@ def _make_env(db_path: Path, encryption_key: str) -> dict[str, str]:
     return env
 
 
-def _run_script(
-    script: str,
-    env: dict[str, str],
-    timeout: int = 30,
-) -> subprocess.CompletedProcess[str]:
-    """Run a Python script in a subprocess using the current venv's python."""
-    return subprocess.run(  # noqa: S603 — input is controlled test script, not user input
-        [sys.executable, "-c", textwrap.dedent(script)],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
 
     monkeypatch.setattr(
         "moneybin.mcp.tools.import_inbox.get_database",
-        _fake_get_database,
+        _fake_get_database,  # pyright: ignore[reportUnknownArgumentType]
     )
 
     # Patch InboxService in the tool module so both the constructor call in
