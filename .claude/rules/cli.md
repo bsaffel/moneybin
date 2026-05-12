@@ -130,6 +130,7 @@ Every command that **reads but does not mutate** state MUST accept:
 
 - `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same data the text branch displays.
 - `-q, --quiet` — suppress informational output (status lines, progress, `✅`). Result rows are NEVER suppressed by `-q` — they are the data.
+- `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. The `--help` text for `--json-fields` MUST enumerate the available field names for that command (e.g. `"Available fields: id, date, amount, description, category, account_id"`). Declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`.
 
 `db query` extends `--output` to `text|json|csv|markdown|box` since DuckDB's CLI supports all five natively.
 
