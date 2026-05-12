@@ -743,6 +743,14 @@ def db_key_rotate(
         raise typer.Exit(1) from e
     old_backup.unlink(missing_ok=True)
 
+    # Rotation changes the encryption key, so the in-process cache is stale.
+    # Clear it so subsequent Database() calls fetch the new key from the keychain.
+    from moneybin.database import (  # noqa: PLC0415 — defer to avoid cold-start cost
+        invalidate_encryption_key_cache,
+    )
+
+    invalidate_encryption_key_cache()
+
     logger.info("✅ Database re-encrypted with new key")
     logger.info("💡 Existing backups are still encrypted with the old key")
 

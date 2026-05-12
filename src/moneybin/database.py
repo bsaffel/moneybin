@@ -605,15 +605,31 @@ class Database:
                 self._conn.interrupt()
             except Exception:  # noqa: BLE001, S110 — interrupt is best-effort; pass is correct here
                 pass
+            # Explicit DETACH so DuckDB's process-level file registry releases
+            # the path entry before close(). USE memory first: DuckDB prohibits
+            # detaching the active catalog, and connection setup calls USE moneybin.
+            # These execute() calls survive interrupt() when no DuckDB statement
+            # was running (the common case for Python-level sleeps); even if they
+            # fail, the subsequent close() releases the handle.
             try:
-                # Explicit DETACH ensures DuckDB's process-level file registry
-                # releases the path entry even if interrupt() left the connection
-                # in a partial state. Without this, a subsequent ATTACH to the
-                # same file raises "already attached".
+                self._conn.execute("USE memory")  # noqa: S608 — hardcoded literal, not user input
+            except Exception:  # noqa: BLE001, S110 — best-effort; pass is correct here
+                pass
+            try:
                 self._conn.execute(f'DETACH "{_DATABASE_ALIAS}"')  # noqa: S608 — alias is a hardcoded internal literal
             except Exception:  # noqa: BLE001, S110 — DETACH is best-effort; pass is correct here
                 pass
         self.close()
+
+
+def invalidate_encryption_key_cache() -> None:
+    """Clear the in-process encryption key cache.
+
+    Called by key rotation so subsequent Database() calls fetch the new key
+    from the keychain instead of reusing the pre-rotation cached value.
+    """
+    global _cached_encryption_key  # noqa: PLW0603
+    _cached_encryption_key = None
 
 
 def database_key_error_hint() -> str:
