@@ -611,6 +611,40 @@ class TestTemporarySingleton:
         assert db_module._database_instance is None  # type: ignore[reportPrivateUsage]  # test-only
 
 
+class TestSqlmeshContext:
+    """sqlmesh_context() — explicit db parameter and connection check."""
+
+    def test_accepts_explicit_db_parameter(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """sqlmesh_context() signature accepts (db, ...) without TypeError."""
+        import inspect
+
+        import moneybin.database as db_module
+
+        sig = inspect.signature(db_module.sqlmesh_context)
+        params = list(sig.parameters)
+        # First parameter must be named "db", not "sqlmesh_root"
+        assert params[0] == "db", f"Expected first param to be 'db', got '{params[0]}'"
+
+        db_path = tmp_path / "sqm.duckdb"
+        db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        # Verify the new signature doesn't raise TypeError — that's the key assertion.
+        # We don't actually run SQLMesh (no config); just check the call shape.
+        try:
+            ctx_mgr = db_module.sqlmesh_context(db)
+            # Attempting to enter the context will fail (no sqlmesh config), but
+            # calling sqlmesh_context(db) itself must not raise TypeError.
+            with ctx_mgr:
+                pass
+        except TypeError as e:
+            pytest.fail(f"sqlmesh_context signature mismatch: {e}")
+        except Exception:  # noqa: BLE001, S110 — expected: no sqlmesh project in test env
+            pass
+        finally:
+            db.close()
+
+
 class TestGetDatabaseNew:
     """get_database() per-call factory with retry logic."""
 

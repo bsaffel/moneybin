@@ -387,7 +387,7 @@ class ImportService:
 
         t0 = time.monotonic()
         try:
-            with sqlmesh_context() as ctx:
+            with sqlmesh_context(self._db) as ctx:
                 ctx.plan(auto_apply=True, no_prompts=True)
             # Full plan rebuilds seeds.* too, so refresh the views that read them.
             refresh_views(self._db)

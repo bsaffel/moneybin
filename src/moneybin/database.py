@@ -732,11 +732,11 @@ def interrupt_and_reset_database() -> None:
 
 
 @contextmanager
-def _temporary_singleton(db: Database) -> Generator[None, None, None]:
+def _temporary_singleton(db: Database) -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # kept for Task 9 cleanup
     """Register ``db`` as the singleton for the duration of the block.
 
-    Used by ``init_db`` to let ``sqlmesh_context()`` find the locally-opened
-    Database. Restores the prior state on exit.
+    No longer called by init_db (sqlmesh_context now takes an explicit db).
+    Retained for any external callers; remove in Task 9.
     """
     global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
     prior = _database_instance
@@ -756,6 +756,7 @@ _SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
 
 @contextmanager
 def sqlmesh_context(
+    db: "Database",
     sqlmesh_root: Path | None = None,
 ) -> Generator[Any, None, None]:
     """Create a SQLMesh Context that can open the encrypted database.
@@ -765,18 +766,14 @@ def sqlmesh_context(
     SQLMesh's internal adapter cache. SQLMesh then reuses our encrypted
     connection instead of opening its own unencrypted one.
 
-    Requires the Database singleton to be initialized via
-    ``get_database()`` before calling.  Callers should NOT close the
-    database before invoking this — ``sqlmesh_context()`` borrows the
-    singleton's connection.
-
     Usage::
 
-        db = get_database()          # ensure singleton is open
-        with sqlmesh_context() as ctx:
-            ctx.plan(auto_apply=True, no_prompts=True)
+        with get_database() as db:
+            with sqlmesh_context(db) as ctx:
+                ctx.plan(auto_apply=True, no_prompts=True)
 
     Args:
+        db: Open Database instance whose connection SQLMesh will borrow.
         sqlmesh_root: Path to the sqlmesh/ directory. Defaults to the
             project's ``sqlmesh/`` directory.
 
@@ -784,7 +781,7 @@ def sqlmesh_context(
         A ``sqlmesh.Context`` connected to the encrypted database.
 
     Raises:
-        DatabaseKeyError: If the Database singleton is not initialized.
+        DatabaseKeyError: If the database connection is closed.
     """
     from sqlmesh.core.config import Config, GatewayConfig
     from sqlmesh.core.config.connection import (
@@ -806,21 +803,19 @@ def sqlmesh_context(
 
     root = sqlmesh_root or _SQLMESH_ROOT
 
-    # Reuse the singleton's connection — DuckDB only allows one
-    # connection per file.  Callers must call get_database() first.
+    # Reuse the caller-supplied connection — DuckDB only allows one
+    # connection per file.
     # httpfs is NOT loaded — no SQLMesh models use remote file access.
     # If a future model needs read_parquet over HTTP or s3://, add
     # conn.execute("INSTALL httpfs; LOAD httpfs;") to Database.__init__.
-    if _database_instance is None or _database_instance._conn is None:  # type: ignore[reportPrivateUsage]  # must check singleton's connection state
+    if db._conn is None:  # pyright: ignore[reportPrivateUsage]
         raise DatabaseKeyError(
-            "Database not initialized — call get_database() before "
-            "sqlmesh_context(). If the database was explicitly closed, "
-            "re-open it first."
+            "Database connection is closed — cannot create SQLMesh context."
         )
-    conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
-    # Use the singleton's actual path, not settings — during `profile create`
+    conn = db._conn  # pyright: ignore[reportPrivateUsage]
+    # Use the supplied db's actual path, not settings — during `profile create`
     # the new profile isn't yet the active one, so get_settings() would fail.
-    db_path = _database_instance._db_path  # type: ignore[reportPrivateUsage]
+    db_path = db._db_path  # pyright: ignore[reportPrivateUsage]
 
     cache_key = str(db_path)
     try:
@@ -976,8 +971,7 @@ def init_db(
             with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
                 from moneybin.seeds import materialize_seeds
 
-                with _temporary_singleton(db):
-                    materialize_seeds(db)
+                materialize_seeds(db)
         except Exception:
             # Roll back keychain to previous state so the existing DB
             # remains accessible with its original key.
@@ -1039,8 +1033,7 @@ def init_db(
             with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
                 from moneybin.seeds import materialize_seeds
 
-                with _temporary_singleton(db):
-                    materialize_seeds(db)
+                materialize_seeds(db)
         except Exception:
             # Roll back the freshly persisted key and any orphan DB file.
             # We only undo persistence we just performed — a pre-existing
