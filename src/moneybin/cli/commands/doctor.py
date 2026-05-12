@@ -34,7 +34,7 @@ def doctor_command(
     with handle_cli_errors() as db:
         report = DoctorService(db).run_all(verbose=verbose)
 
-    _STATUS_ICON = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}
+    status_icon = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}
 
     failing = sum(1 for r in report.invariants if r.status == "fail")
     warning = sum(1 for r in report.invariants if r.status == "warn")
@@ -56,7 +56,7 @@ def doctor_command(
                 for r in report.invariants
             ],
         }
-        actions = []
+        actions: list[str] = []
         if failing > 0:
             actions.append("Run with --verbose to see affected transaction IDs")
         envelope = build_envelope(
@@ -71,7 +71,7 @@ def doctor_command(
         return
 
     for result in report.invariants:
-        icon = _STATUS_ICON.get(result.status, "?")
+        icon = status_icon.get(result.status, "?")
         line = f"{icon} {result.name}"
         if result.detail:
             line += f" — {result.detail}"
