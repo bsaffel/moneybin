@@ -20,6 +20,7 @@ import logging
 import os
 import stat
 import sys
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -50,6 +51,14 @@ logger = logging.getLogger(__name__)
 _KEY_NAME = "DATABASE__ENCRYPTION_KEY"
 SALT_NAME = "DATABASE__PASSPHRASE_SALT"
 _DATABASE_ALIAS = "moneybin"
+
+_cached_encryption_key: str | None = None
+
+_active_write_conn: "Database | None" = None
+_active_write_lock: threading.Lock = threading.Lock()
+
+_migration_check_done: bool = False
+_database_accessed: bool = False
 
 
 def build_attach_sql(
@@ -95,6 +104,14 @@ def escape_sql_literal(value: str) -> str:
 
 class DatabaseKeyError(Exception):
     """Raised when the database encryption key cannot be retrieved."""
+
+
+class DatabaseLockError(Exception):
+    """DuckDB file lock held by another process; caller may retry."""
+
+
+class DatabaseNotInitializedError(Exception):
+    """Database file missing or incomplete; run 'moneybin db init'."""
 
 
 class Database:

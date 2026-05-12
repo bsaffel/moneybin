@@ -35,6 +35,24 @@ def mock_secret_store(encryption_key: str) -> MagicMock:
     return store
 
 
+class TestNewExceptions:
+    """New exception classes introduced for writer coordination."""
+
+    def test_database_lock_error_is_exception(self) -> None:
+        from moneybin.database import DatabaseLockError
+
+        err = DatabaseLockError("lock held")
+        assert isinstance(err, Exception)
+        assert str(err) == "lock held"
+
+    def test_database_not_initialized_error_is_exception(self) -> None:
+        from moneybin.database import DatabaseNotInitializedError
+
+        err = DatabaseNotInitializedError("db missing")
+        assert isinstance(err, Exception)
+        assert str(err) == "db missing"
+
+
 class TestDatabaseInit:
     """Database initialization and encrypted attachment."""
 
