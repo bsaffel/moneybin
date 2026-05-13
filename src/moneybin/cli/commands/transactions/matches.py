@@ -77,7 +77,7 @@ def matches_history(
         raise typer.Exit(2)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             entries = get_match_log(db, limit=limit, match_type=match_type)
 
             if output == OutputFormat.JSON:

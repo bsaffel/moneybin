@@ -29,7 +29,7 @@ def rules_list(
     from moneybin.tables import CATEGORIZATION_RULES
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             rows = db.execute(
                 f"""
                 SELECT rule_id, name, merchant_pattern, match_type,

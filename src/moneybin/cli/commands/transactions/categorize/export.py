@@ -49,7 +49,7 @@ def categorize_export_uncategorized(
     from moneybin.services.categorization_service import CategorizationService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             svc = CategorizationService(db)
             effective_limit = (
                 limit

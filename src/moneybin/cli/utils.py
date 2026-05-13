@@ -105,14 +105,14 @@ def sqlmesh_command(
         logger.info(f"✅ {success or f'{operation} completed'}")
     except typer.Exit:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         user_error = classify_user_error(e)
         if user_error is not None:
             logger.error(f"❌ {user_error.message}")
             if user_error.hint:
                 logger.info(user_error.hint)
         else:
-            logger.error(f"❌ {operation} failed: {e}")  # noqa: BLE001
+            logger.error(f"❌ {operation} failed: {e}")
         raise typer.Exit(1) from e
 
 

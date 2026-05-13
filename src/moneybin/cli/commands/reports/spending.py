@@ -36,7 +36,7 @@ def reports_spending_show(
     """Show spending trend with MoM/YoY/trailing comparisons."""
     if compare not in SPENDING_COMPARES:
         raise typer.BadParameter(f"Unknown comparison: {compare}")
-    with handle_cli_errors():
+    with handle_cli_errors(output=output):
         with get_database(read_only=True) as db:
             cols, rows = ReportsService(db).spending_trend(
                 from_month=from_month,
