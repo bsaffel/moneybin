@@ -10,9 +10,15 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +36,16 @@ def transactions_audit(
         with get_database(read_only=True) as db:
             events = AuditService(db).list_events(target_id=transaction_id, limit=limit)
 
-    if output == OutputFormat.JSON:
-        emit_json("audit_events", [e.to_dict() for e in events])
-        return
-    if not events:
-        if not quiet:
-            logger.info(f"No audit events for {transaction_id}")
-        return
-    for e in events:
-        typer.echo(f"  [{e.audit_id}] {e.occurred_at} {e.actor} {e.action}")
+    def _render_text(_: object) -> None:
+        if not events:
+            if not quiet:
+                logger.info(f"No audit events for {transaction_id}")
+            return
+        for e in events:
+            typer.echo(f"  [{e.audit_id}] {e.occurred_at} {e.actor} {e.action}")
+
+    render_or_json(
+        build_envelope(data=[e.to_dict() for e in events], sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )

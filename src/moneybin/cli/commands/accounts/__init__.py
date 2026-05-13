@@ -14,8 +14,14 @@ from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import emit_json as emit_json
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
@@ -60,7 +66,9 @@ def accounts_list(
                 include_archived=include_archived, type_filter=type_filter
             )
     if output == OutputFormat.JSON:
-        emit_json("data", result.accounts)
+        render_or_json(
+            build_envelope(data=result.accounts, sensitivity="medium"), output
+        )
         return
     for acct in result.accounts:
         display = acct.get("display_name") or acct.get("account_id")
@@ -83,7 +91,7 @@ def accounts_show(
         logger.error(f"❌ Account not found: {account_id}")
         raise typer.Exit(1)
     if output == OutputFormat.JSON:
-        emit_json("account", record)
+        render_or_json(build_envelope(data=record, sensitivity="medium"), output)
         return
     for k, v in record.items():
         typer.echo(f"  {k}: {v}")
@@ -315,11 +323,10 @@ def accounts_resolve(
             matches = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:
-        envelope = build_envelope(
-            data=[m.to_dict() for m in matches],
-            sensitivity="low",
+        render_or_json(
+            build_envelope(data=[m.to_dict() for m in matches], sensitivity="low"),
+            output,
         )
-        typer.echo(envelope.to_json())
         return
 
     if not matches:

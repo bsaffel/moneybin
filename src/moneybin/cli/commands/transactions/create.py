@@ -13,9 +13,10 @@ from decimal import Decimal, InvalidOperation
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import OutputFormat, output_option, render_or_json
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ def transactions_create(
         "tags": applied_tags,
     }
     if output == OutputFormat.JSON:
-        emit_json("manual_create", payload)
+        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
         return
 
     logger.info(

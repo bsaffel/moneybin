@@ -12,9 +12,15 @@ from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import BalanceService
 
 logger = logging.getLogger(__name__)
@@ -44,16 +50,21 @@ def accounts_balance_show(
             observations = BalanceService(db).current_balances(
                 account_ids=account_ids, as_of_date=as_of_date
             )
-    if output == OutputFormat.JSON:
-        emit_json("balances", [o.to_dict() for o in observations])
-        return
-    for obs in observations:
-        d = obs.to_dict()
-        typer.echo(
-            f"  {d['account_id']}  {d['balance_date']}  {d['balance']}"
-            f"  observed={d['is_observed']}  source={d['observation_source']}"
-            f"  delta={d['reconciliation_delta']}"
-        )
+
+    def _render_text(_: object) -> None:
+        for obs in observations:
+            d = obs.to_dict()
+            typer.echo(
+                f"  {d['account_id']}  {d['balance_date']}  {d['balance']}"
+                f"  observed={d['is_observed']}  source={d['observation_source']}"
+                f"  delta={d['reconciliation_delta']}"
+            )
+
+    render_or_json(
+        build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("history")
@@ -72,16 +83,21 @@ def accounts_balance_history(
             observations = BalanceService(db).history(
                 account, from_date=from_d, to_date=to_d
             )
-    if output == OutputFormat.JSON:
-        emit_json("history", [o.to_dict() for o in observations])
-        return
-    for obs in observations:
-        d = obs.to_dict()
-        typer.echo(
-            f"  {d['balance_date']}  {d['balance']}"
-            f"  observed={d['is_observed']}  source={d['observation_source']}"
-            f"  delta={d['reconciliation_delta']}"
-        )
+
+    def _render_text(_: object) -> None:
+        for obs in observations:
+            d = obs.to_dict()
+            typer.echo(
+                f"  {d['balance_date']}  {d['balance']}"
+                f"  observed={d['is_observed']}  source={d['observation_source']}"
+                f"  delta={d['reconciliation_delta']}"
+            )
+
+    render_or_json(
+        build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("assert")
@@ -122,7 +138,10 @@ def accounts_balance_list(
         with get_database(read_only=True) as db:
             assertions = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
-        emit_json("assertions", [a.to_dict() for a in assertions])
+        render_or_json(
+            build_envelope(data=[a.to_dict() for a in assertions], sensitivity="low"),
+            output,
+        )
         return
     for assertion in assertions:
         d = assertion.to_dict()
@@ -165,7 +184,10 @@ def accounts_balance_reconcile(
                 account_ids=account_ids, threshold=parsed_threshold
             )
     if output == OutputFormat.JSON:
-        emit_json("reconcile", [o.to_dict() for o in observations])
+        render_or_json(
+            build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),
+            output,
+        )
         return
     for obs in observations:
         d = obs.to_dict()

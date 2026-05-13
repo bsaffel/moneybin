@@ -35,16 +35,8 @@ def patch_inbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
 
-    # Patch get_database in the CLI module so the `with get_database() as db:` in
-    # inbox_default doesn't open a real encrypted database.
-    monkeypatch.setattr(
-        "moneybin.cli.commands.import_inbox.get_database",
-        _fake_db_ctx,
-    )
-
-    # Patch InboxService in the CLI module so both constructor call and
-    # for_active_profile_no_db return `fake`.
     fake_cls = MagicMock(return_value=fake)
+    fake_cls.for_active_profile = MagicMock(return_value=fake)
     fake_cls.for_active_profile_no_db = MagicMock(return_value=fake)
     monkeypatch.setattr(
         "moneybin.cli.commands.import_inbox.InboxService",

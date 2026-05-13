@@ -9,9 +9,15 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Note
 
 logger = logging.getLogger(__name__)
@@ -53,7 +59,7 @@ def transactions_notes_add(
 
     payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
-        emit_json("note", payload)
+        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
         return
     logger.info(f"✅ Added note {note.note_id} to {transaction_id}")
 
@@ -73,7 +79,7 @@ def transactions_notes_list(
 
     payload = [_note_to_dict(n) for n in notes]
     if output == OutputFormat.JSON:
-        emit_json("notes", payload)
+        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
         return
 
     if not notes:
@@ -106,7 +112,7 @@ def transactions_notes_edit(
 
     payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
-        emit_json("note", payload)
+        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
         return
     logger.info(f"✅ Updated note {note.note_id}")
 
@@ -134,6 +140,11 @@ def transactions_notes_delete(
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        emit_json("note_delete", {"note_id": note_id, "deleted": True})
+        render_or_json(
+            build_envelope(
+                data={"note_id": note_id, "deleted": True}, sensitivity="low"
+            ),
+            output,
+        )
         return
     logger.info(f"✅ Deleted note {note_id}")

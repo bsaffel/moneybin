@@ -11,9 +11,15 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +47,12 @@ def import_labels_add(
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        emit_json("import_labels", {"import_id": import_id, "labels": updated})
+        render_or_json(
+            build_envelope(
+                data={"import_id": import_id, "labels": updated}, sensitivity="low"
+            ),
+            output,
+        )
         return
     logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
 
@@ -66,7 +77,12 @@ def import_labels_remove(
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
-        emit_json("import_labels", {"import_id": import_id, "labels": updated})
+        render_or_json(
+            build_envelope(
+                data={"import_id": import_id, "labels": updated}, sensitivity="low"
+            ),
+            output,
+        )
         return
     logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
 
@@ -88,8 +104,12 @@ def import_labels_list(
             if import_id is not None:
                 labels = svc.list_labels(import_id)
                 if output == OutputFormat.JSON:
-                    emit_json(
-                        "import_labels", {"import_id": import_id, "labels": labels}
+                    render_or_json(
+                        build_envelope(
+                            data={"import_id": import_id, "labels": labels},
+                            sensitivity="low",
+                        ),
+                        output,
                     )
                     return
                 if not labels:
@@ -101,15 +121,19 @@ def import_labels_list(
                 return
 
             rows = svc.list_distinct_labels()
-            if output == OutputFormat.JSON:
-                emit_json(
-                    "import_labels",
-                    [{"label": label, "usage_count": n} for label, n in rows],
-                )
-                return
-            if not rows:
-                if not quiet:
-                    logger.info("No labels in use")
-                return
-            for label, count in rows:
-                typer.echo(f"  {label}\t{count}")
+
+    if output == OutputFormat.JSON:
+        render_or_json(
+            build_envelope(
+                data=[{"label": label, "usage_count": n} for label, n in rows],
+                sensitivity="low",
+            ),
+            output,
+        )
+        return
+    if not rows:
+        if not quiet:
+            logger.info("No labels in use")
+        return
+    for label, count in rows:
+        typer.echo(f"  {label}\t{count}")

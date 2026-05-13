@@ -6,10 +6,16 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.protocol.envelope import build_envelope
+from moneybin.errors import UserError
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.doctor_service import DoctorService
 
 logger = logging.getLogger(__name__)
@@ -64,12 +70,21 @@ def doctor_command(
         actions: list[str] = []
         if failing > 0:
             actions.append("Run with --verbose to see affected transaction IDs")
-        envelope = build_envelope(
-            data=data,
-            sensitivity="low",
-            actions=actions,
+        base = build_envelope(data=data, sensitivity="low", actions=actions)
+        envelope = (
+            ResponseEnvelope(
+                summary=base.summary,
+                data=data,
+                actions=base.actions,
+                error=UserError(
+                    f"{failing} invariant(s) failing",
+                    code="invariant_failure",
+                ),
+            )
+            if failing > 0
+            else base
         )
-        typer.echo(envelope.to_json())
+        render_or_json(envelope, output)
         if failing > 0:
             raise typer.Exit(1)
         return

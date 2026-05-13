@@ -19,8 +19,14 @@ from typing import TYPE_CHECKING, get_args
 import typer
 
 from moneybin.cli.commands import import_inbox, import_labels
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_json_error,
+    output_option,
+    quiet_option,
+)
 from moneybin.cli.utils import emit_json
+from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 
 if TYPE_CHECKING:
@@ -588,9 +594,18 @@ def formats_show(
     fmt = all_formats.get(name)
 
     if fmt is None:
-        logger.error(f"❌ Format not found: {name!r}")
         available = ", ".join(sorted(all_formats.keys())) or "(none)"
-        logger.info(f"💡 Available formats: {available}")
+        if output == OutputFormat.JSON:
+            emit_json_error(
+                UserError(
+                    f"Format not found: {name!r}",
+                    code="not_found",
+                    hint=f"Available formats: {available}",
+                )
+            )
+        else:
+            logger.error(f"❌ Format not found: {name!r}")
+            logger.info(f"💡 Available formats: {available}")
         raise typer.Exit(1)
 
     if output == OutputFormat.JSON:
