@@ -18,6 +18,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -37,8 +38,13 @@ def import_labels_add(
     """Add one or more labels to an import."""
     from moneybin.services.import_service import ImportService
 
-    with handle_cli_errors(output=output) as db:
-        updated = ImportService(db).add_labels(import_id, labels, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                updated = ImportService(db).add_labels(import_id, labels, actor="cli")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -60,8 +66,15 @@ def import_labels_remove(
     """Remove one or more labels from an import."""
     from moneybin.services.import_service import ImportService
 
-    with handle_cli_errors(output=output) as db:
-        updated = ImportService(db).remove_labels(import_id, labels, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                updated = ImportService(db).remove_labels(
+                    import_id, labels, actor="cli"
+                )
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -85,28 +98,29 @@ def import_labels_list(
     """List labels for one import, or all distinct labels with usage counts."""
     from moneybin.services.import_service import ImportService
 
-    with handle_cli_errors(output=output) as db:
-        svc = ImportService(db)
-        if import_id is not None:
-            labels = svc.list_labels(import_id)
-            if output == OutputFormat.JSON:
-                render_or_json(
-                    build_envelope(
-                        data={"import_id": import_id, "labels": labels},
-                        sensitivity="low",
-                    ),
-                    output,
-                )
+    with handle_cli_errors():
+        with get_database() as db:
+            svc = ImportService(db)
+            if import_id is not None:
+                labels = svc.list_labels(import_id)
+                if output == OutputFormat.JSON:
+                    render_or_json(
+                        build_envelope(
+                            data={"import_id": import_id, "labels": labels},
+                            sensitivity="low",
+                        ),
+                        output,
+                    )
+                    return
+                if not labels:
+                    if not quiet:
+                        logger.info(f"No labels on {import_id}")
+                    return
+                for label in labels:
+                    typer.echo(label)
                 return
-            if not labels:
-                if not quiet:
-                    logger.info(f"No labels on {import_id}")
-                return
-            for label in labels:
-                typer.echo(label)
-            return
 
-        rows = svc.list_distinct_labels()
+            rows = svc.list_distinct_labels()
 
     if output == OutputFormat.JSON:
         render_or_json(

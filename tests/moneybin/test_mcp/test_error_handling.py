@@ -34,7 +34,7 @@ async def test_mcp_tool_converts_database_key_error_to_envelope() -> None:
     result = await failing_tool()
     assert isinstance(result, ResponseEnvelope)
     assert result.error is not None
-    assert result.error.code == "database_locked"
+    assert result.error.code == "wrong_key"
 
 
 async def test_mcp_tool_lets_unclassified_exceptions_propagate() -> None:

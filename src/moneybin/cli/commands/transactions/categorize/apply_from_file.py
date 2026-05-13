@@ -1,5 +1,6 @@
 """Apply LLM-generated categorizations from a JSON file or stdin."""
 
+import dataclasses
 import json
 import logging
 import sys
@@ -9,6 +10,8 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
@@ -98,8 +101,11 @@ def categorize_apply_from_file(
         raise typer.Exit(1) from e
 
     if items:
-        with handle_cli_errors(output=output) as db:
-            from moneybin.services.categorization_service import CategorizationService
+        with handle_cli_errors():
+            with get_database() as db:
+                from moneybin.services.categorization_service import (
+                    CategorizationService,
+                )
 
             result = CategorizationService(db).categorize_items(items)
     else:
@@ -115,7 +121,16 @@ def categorize_apply_from_file(
         for err in result.error_details:
             logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
 
-    render_or_json(result.to_envelope(input_count), output, render_fn=_render_table)
+    envelope = result.to_envelope(input_count)
+    if result.errors > 0:
+        envelope = dataclasses.replace(
+            envelope,
+            error=UserError(
+                f"{result.errors} item(s) failed to categorize",
+                code="categorization_errors",
+            ),
+        )
+    render_or_json(envelope, output, render_fn=_render_table)
 
     if result.errors > 0 or result.skipped > 0:
         raise typer.Exit(1)

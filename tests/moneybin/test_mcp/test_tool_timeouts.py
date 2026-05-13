@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -186,29 +188,68 @@ async def test_back_to_back_call_after_timeout_succeeds(
 ) -> None:
     """A call that times out must release the DB lock so the next call works."""
     import moneybin.database as db_module
+    import moneybin.mcp.decorator as dec_module
     from moneybin.database import Database
 
-    db = Database(
-        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
-    )
-    monkeypatch.setattr(db_module, "_database_instance", db)
+    # Create the test DB once — quick_tool will open fresh connections to it.
+    db_path = tmp_path / "t.duckdb"
+    Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True).close()
 
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_get_database(read_only: bool = False, **_: object):  # type: ignore[misc]
+        conn = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        if not read_only:
+            with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
+                db_module._active_write_conn = conn  # pyright: ignore[reportPrivateUsage]
+        try:
+            yield conn
+        finally:
+            conn.close()
+            if not read_only:
+                with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
+                    if db_module._active_write_conn is conn:  # pyright: ignore[reportPrivateUsage]
+                        db_module._active_write_conn = None  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(db_module, "get_database", _fake_get_database)
+
+    # Events for deterministic connection handoff.
+    # DuckDB connections are not thread-safe: closing from a different thread
+    # than the creator is unreliable under high scheduler load (n=6+ xdist
+    # workers). Instead, we signal hang_tool's background thread to exit its
+    # with-block so it closes the connection on the owning thread, then gate
+    # quick_tool on that release.
+    _stop = threading.Event()
+    _conn_released = threading.Event()
+
+    _real_irdb = dec_module.interrupt_and_reset_database
+
+    def _interrupt_and_signal(conn: Any = None) -> None:
+        _real_irdb(conn)  # run the real cleanup (clears _active_write_conn, etc.)
+        _stop.set()  # unblock hang_tool so it closes its own connection
+
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", _interrupt_and_signal
+    )
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.1)
 
     @mcp_tool(sensitivity="low")
     def hang_tool() -> ResponseEnvelope:
-        # Spin without releasing GIL frequently to mimic a stuck native call.
-        time.sleep(2.0)
+        with _fake_get_database() as _db:
+            _stop.wait(timeout=10.0)  # blocks until interrupt_and_reset fires
+        _conn_released.set()  # connection is now closed by this (owning) thread
         return ResponseEnvelope(
             summary=SummaryMeta(total_count=0, returned_count=0), data=[]
         )
 
     @mcp_tool(sensitivity="low")
     def quick_tool() -> ResponseEnvelope:
-        # Touch the DB to prove the singleton is healthy after reset.
-        from moneybin.database import get_database
-
-        rows = get_database().execute("SELECT 42 AS x").fetchall()
+        # Wait until hang_tool's background thread has closed its connection
+        # before opening a new one to the same file.
+        _conn_released.wait(timeout=5.0)
+        with _fake_get_database() as db:
+            rows = db.execute("SELECT 42 AS x").fetchall()
         return ResponseEnvelope(
             summary=SummaryMeta(total_count=len(rows), returned_count=len(rows)),
             data=[{"x": rows[0][0]}],
@@ -216,15 +257,6 @@ async def test_back_to_back_call_after_timeout_succeeds(
 
     first = await hang_tool()
     assert first.error is not None and first.error.code == "timed_out"
-
-    # The timeout path cleared _database_instance and force-closed the original
-    # connection, releasing its write lock.  Reopening the same DB file proves
-    # the lock was actually dropped — if interrupt_and_reset() had failed to
-    # release it, this Database() construction would hang or fail.
-    db2 = Database(
-        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
-    )
-    monkeypatch.setattr(db_module, "_database_instance", db2)
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
     second = await quick_tool()

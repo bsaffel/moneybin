@@ -158,8 +158,8 @@ def transactions_create(
     batch before any insert — a single bad row aborts the whole batch.
     """
     prepared = _prepare_manual_entries(transactions)
-    service = TransactionService(get_database())
-    result = service.create_manual_batch(prepared, actor="mcp")
+    with get_database() as db:
+        result = TransactionService(db).create_manual_batch(prepared, actor="mcp")
     return build_envelope(
         data={
             "batch_id": result.import_id,
@@ -182,16 +182,16 @@ def transactions_create(
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
 def transactions_notes_add(transaction_id: str, text: str) -> ResponseEnvelope:
     """Append a note to a transaction. Returns the created note row."""
-    note = TransactionService(get_database()).add_note(
-        transaction_id, text, actor="mcp"
-    )
+    with get_database() as db:
+        note = TransactionService(db).add_note(transaction_id, text, actor="mcp")
     return build_envelope(data=_note_dict(note), sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium", read_only=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope:
     """Update an existing note's text. Returns the updated row."""
-    note = TransactionService(get_database()).edit_note(note_id, text, actor="mcp")
+    with get_database() as db:
+        note = TransactionService(db).edit_note(note_id, text, actor="mcp")
     return build_envelope(data=_note_dict(note), sensitivity="medium")
 
 
@@ -203,7 +203,8 @@ def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope:
 )
 def transactions_notes_delete(note_id: str) -> ResponseEnvelope:
     """Delete a note by ID. Hard-delete; raises LookupError if the note is gone."""
-    TransactionService(get_database()).delete_note(note_id, actor="mcp")
+    with get_database() as db:
+        TransactionService(db).delete_note(note_id, actor="mcp")
     return build_envelope(data={"note_id": note_id}, sensitivity="low")
 
 
@@ -216,9 +217,8 @@ def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvel
     a single DuckDB transaction. The returned payload is the sorted final
     tag list — the diff itself is captured in the audit log.
     """
-    final = TransactionService(get_database()).set_tags(
-        transaction_id, tags, actor="mcp"
-    )
+    with get_database() as db:
+        final = TransactionService(db).set_tags(transaction_id, tags, actor="mcp")
     return build_envelope(
         data={"transaction_id": transaction_id, "tags": final},
         sensitivity="medium",
@@ -228,7 +228,8 @@ def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvel
 @mcp_tool(sensitivity="medium", read_only=False)
 def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
     """Rename a tag globally. Emits one parent + N child audit events."""
-    res = TransactionService(get_database()).rename_tag(old_tag, new_tag, actor="mcp")
+    with get_database() as db:
+        res = TransactionService(db).rename_tag(old_tag, new_tag, actor="mcp")
     return build_envelope(
         data={"row_count": res.row_count, "parent_audit_id": res.parent_audit_id},
         sensitivity="medium",
@@ -245,9 +246,8 @@ def transactions_splits_set(
     ``subcategory``, and ``note`` are optional. Order is preserved.
     """
     prepared = _prepare_splits(splits)
-    out = TransactionService(get_database()).set_splits(
-        transaction_id, prepared, actor="mcp"
-    )
+    with get_database() as db:
+        out = TransactionService(db).set_splits(transaction_id, prepared, actor="mcp")
     return build_envelope(
         data=[_split_dict(s) for s in out],
         sensitivity="medium",
@@ -261,7 +261,8 @@ def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope:
     Computes the add/remove diff against the prior labels and emits one
     ``import_label.add`` / ``import_label.remove`` per changed entry.
     """
-    final = ImportService(get_database()).set_labels(import_id, labels, actor="mcp")
+    with get_database() as db:
+        final = ImportService(db).set_labels(import_id, labels, actor="mcp")
     return build_envelope(
         data={"import_id": import_id, "labels": final},
         sensitivity="medium",
@@ -280,15 +281,16 @@ def system_audit_list(
     for the full child chain of one event.
     """
     f = filters or {}
-    events = AuditService(get_database()).list_events(
-        actor=f.get("actor"),
-        action_pattern=f.get("action_pattern"),
-        target_table=f.get("target_table"),
-        target_id=f.get("target_id"),
-        from_ts=f.get("from") or f.get("from_ts"),
-        to_ts=f.get("to") or f.get("to_ts"),
-        limit=limit,
-    )
+    with get_database(read_only=True) as db:
+        events = AuditService(db).list_events(
+            actor=f.get("actor"),
+            action_pattern=f.get("action_pattern"),
+            target_table=f.get("target_table"),
+            target_id=f.get("target_id"),
+            from_ts=f.get("from") or f.get("from_ts"),
+            to_ts=f.get("to") or f.get("to_ts"),
+            limit=limit,
+        )
     return build_envelope(
         data=[e.to_dict() for e in events],
         sensitivity="medium",

@@ -16,6 +16,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -51,16 +52,17 @@ def system_audit_list(
     """List audit events with filters."""
     from moneybin.services.audit_service import AuditService
 
-    with handle_cli_errors(output=output) as db:
-        events = AuditService(db).list_events(
-            actor=actor,
-            action_pattern=action,
-            target_table=target_table,
-            target_id=target_id,
-            from_ts=from_ts,
-            to_ts=to_ts,
-            limit=limit,
-        )
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            events = AuditService(db).list_events(
+                actor=actor,
+                action_pattern=action,
+                target_table=target_table,
+                target_id=target_id,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                limit=limit,
+            )
 
     def _render_text(_: object) -> None:
         if not events:
@@ -88,10 +90,12 @@ def system_audit_show(
     """Show one audit event plus any chained children (parent_audit_id matches)."""
     from moneybin.services.audit_service import AuditService
 
-    with handle_cli_errors(output=output) as db:
-        events = AuditService(db).chain_for(audit_id)
-        if not events:
-            raise LookupError(f"audit_id={audit_id} not found")
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            events = AuditService(db).chain_for(audit_id)
+
+    if not events:
+        raise LookupError(f"audit_id={audit_id} not found")
 
     def _render_text(_: object) -> None:
         for e in events:

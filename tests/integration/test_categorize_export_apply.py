@@ -9,6 +9,7 @@ Tests the full CLI bridge workflow:
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -89,8 +90,18 @@ def _invoke_categorize(
     args: list[str],
     **kwargs: object,
 ) -> object:
-    """Invoke the categorize subcommand app with the database singleton pre-wired."""
-    monkeypatch.setattr("moneybin.database._database_instance", db)
+    """Invoke the categorize subcommand app with the database pre-wired."""
+    import moneybin.cli.commands.transactions.categorize as _categorize_mod
+    import moneybin.cli.commands.transactions.categorize.apply_from_file as _apply_mod
+    import moneybin.cli.commands.transactions.categorize.export as _export_mod
+
+    @contextmanager
+    def _db_ctx(*_a: object, **_kw: object):
+        yield db  # noqa: B023 — db is loop-invariant; test owns lifecycle
+
+    monkeypatch.setattr(_categorize_mod, "get_database", _db_ctx)
+    monkeypatch.setattr(_apply_mod, "get_database", _db_ctx)
+    monkeypatch.setattr(_export_mod, "get_database", _db_ctx)
     monkeypatch.setattr("moneybin.secrets.SecretStore", lambda: store)
     return runner.invoke(categorize_app, args, **kwargs)  # type: ignore[call-overload]
 

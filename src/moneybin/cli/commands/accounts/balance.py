@@ -19,6 +19,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import BalanceService
 
@@ -43,11 +44,12 @@ def accounts_balance_show(
 ) -> None:
     """Show current or as-of balances per account."""
     account_ids = [account] if account else None
-    with handle_cli_errors(output=output) as db:
-        as_of_date = _date.fromisoformat(as_of) if as_of else None
-        observations = BalanceService(db).current_balances(
-            account_ids=account_ids, as_of_date=as_of_date
-        )
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            as_of_date = _date.fromisoformat(as_of) if as_of else None
+            observations = BalanceService(db).current_balances(
+                account_ids=account_ids, as_of_date=as_of_date
+            )
 
     def _render_text(_: object) -> None:
         for obs in observations:
@@ -74,12 +76,13 @@ def accounts_balance_history(
     quiet: bool = quiet_option,  # noqa: ARG001 — history has no informational chatter
 ) -> None:
     """Per-account balance history (daily series)."""
-    with handle_cli_errors(output=output) as db:
-        from_d = _date.fromisoformat(from_date) if from_date else None
-        to_d = _date.fromisoformat(to_date) if to_date else None
-        observations = BalanceService(db).history(
-            account, from_date=from_d, to_date=to_d
-        )
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            from_d = _date.fromisoformat(from_date) if from_date else None
+            to_d = _date.fromisoformat(to_date) if to_date else None
+            observations = BalanceService(db).history(
+                account, from_date=from_d, to_date=to_d
+            )
 
     def _render_text(_: object) -> None:
         for obs in observations:
@@ -108,15 +111,16 @@ def accounts_balance_assert(
     """Assert a balance for an account on a specific date."""
     parsed_date: _date
     result: object
-    with handle_cli_errors() as db:
-        parsed_date = _date.fromisoformat(assertion_date)
-        parsed_amount = Decimal(amount)
-        result = BalanceService(db).assert_balance(
-            account_id=account_id,
-            assertion_date=parsed_date,
-            balance=parsed_amount,
-            notes=notes,
-        )
+    with handle_cli_errors():
+        with get_database() as db:
+            parsed_date = _date.fromisoformat(assertion_date)
+            parsed_amount = Decimal(amount)
+            result = BalanceService(db).assert_balance(
+                account_id=account_id,
+                assertion_date=parsed_date,
+                balance=parsed_amount,
+                notes=notes,
+            )
     typer.echo(
         f"✅ Asserted balance for {account_id} on {parsed_date}: {result.balance}",  # type: ignore[union-attr]
         err=True,
@@ -130,8 +134,9 @@ def accounts_balance_list(
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter
 ) -> None:
     """List balance assertions, optionally filtered by account."""
-    with handle_cli_errors(output=output) as db:
-        assertions = BalanceService(db).list_assertions(account)
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            assertions = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(data=[a.to_dict() for a in assertions], sensitivity="low"),
@@ -153,9 +158,10 @@ def accounts_balance_delete(
 ) -> None:
     """Delete a balance assertion. Silent no-op if no row exists."""
     parsed_date: _date
-    with handle_cli_errors() as db:
-        parsed_date = _date.fromisoformat(assertion_date)
-        BalanceService(db).delete_assertion(account_id, parsed_date)
+    with handle_cli_errors():
+        with get_database() as db:
+            parsed_date = _date.fromisoformat(assertion_date)
+            BalanceService(db).delete_assertion(account_id, parsed_date)
     typer.echo(
         f"✅ Deleted balance assertion for {account_id} on {parsed_date}",
         err=True,
@@ -171,11 +177,12 @@ def accounts_balance_reconcile(
 ) -> None:
     """Show observed balance days with non-zero reconciliation delta."""
     account_ids = [account] if account else None
-    with handle_cli_errors(output=output) as db:
-        parsed_threshold = Decimal(threshold)
-        observations = BalanceService(db).reconcile(
-            account_ids=account_ids, threshold=parsed_threshold
-        )
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            parsed_threshold = Decimal(threshold)
+            observations = BalanceService(db).reconcile(
+                account_ids=account_ids, threshold=parsed_threshold
+            )
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),

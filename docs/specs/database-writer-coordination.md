@@ -1,7 +1,7 @@
 # Feature: Database Writer Coordination
 
 ## Status
-draft
+implemented
 
 ## Goal
 
@@ -433,24 +433,27 @@ with sqlmesh_command("SQLMesh transform") as db:
 
 **`observability.py` `flush_metrics()`**
 
-Replace `get_database_if_initialized()` with `database_was_accessed()`:
+Gate the flush on `database_was_written()` (not `database_was_accessed()`). This ensures read-only sessions — which never open a write connection — do not open one at exit purely to persist metrics:
 
 ```python
 def flush_metrics() -> None:
     try:
-        from moneybin.database import database_was_accessed
+        from moneybin.database import database_was_written, get_database
         from moneybin.metrics.persistence import flush_to_duckdb
 
-        if not database_was_accessed():
+        if not database_was_written():
             return
-        # Write connection needed — metrics are written to app schema
         with get_database(max_wait=2.0) as db:
             flush_to_duckdb(db)
     except Exception:  # noqa: BLE001
         logger.debug("Metrics flush on exit failed", exc_info=True)
 ```
 
-`max_wait=2.0` bounds shutdown time. If a write connection is held by a slow operation at atexit, the flush is skipped (metrics lost for this session, accumulated next run).
+**Consequence for read-only commands:** Any in-process metric increments made during a read-only session (one that opens only `get_database(read_only=True)` connections) are silently dropped at exit because `flush_metrics()` is a no-op. This is intentional — read-only commands must not acquire a write lock at shutdown.
+
+**Implication for metric instrumentation:** Do not add persistent metric counters (e.g. `RUNS_TOTAL.inc()`) to read-only CLI commands. The counter would accumulate in-memory and be silently dropped, producing misleading lifetime totals. Commands that are always paired with a write connection (imports, transforms, categorize) may safely increment persistent metrics. Commands that can run read-only (reports, doctor, accounts list) should not.
+
+`max_wait=2.0` bounds shutdown time if a write connection is held by a slow operation at atexit.
 
 The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchanged.
 

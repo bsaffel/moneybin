@@ -66,7 +66,7 @@ class TestReportsNetworthShow:
             "per_account": per_account,
         }
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.reports.get_database"),
             patch(
                 "moneybin.cli.commands.reports.NetworthService"
             ) as mock_service_class,
@@ -83,7 +83,7 @@ class TestReportsNetworthShow:
     @pytest.mark.unit
     def test_show_as_of_date(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.reports.get_database"),
             patch(
                 "moneybin.cli.commands.reports.NetworthService"
             ) as mock_service_class,
@@ -124,7 +124,7 @@ class TestReportsNetworthShow:
     @pytest.mark.unit
     def test_show_account_filter(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.reports.get_database"),
             patch(
                 "moneybin.cli.commands.reports.NetworthService"
             ) as mock_service_class,
@@ -180,7 +180,7 @@ class TestReportsNetworthHistory:
             },
         ]
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.reports.get_database"),
             patch(
                 "moneybin.cli.commands.reports.NetworthService"
             ) as mock_service_class,
@@ -208,7 +208,7 @@ class TestReportsNetworthHistory:
     @pytest.mark.unit
     def test_history_default_interval_monthly(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.reports.get_database"),
             patch(
                 "moneybin.cli.commands.reports.NetworthService"
             ) as mock_service_class,

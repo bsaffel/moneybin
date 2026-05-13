@@ -11,6 +11,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
 from . import audit as _audit
@@ -33,8 +34,9 @@ def system_status(
     """Show data inventory and pending review queue counts."""
     from moneybin.services.system_service import SystemService
 
-    with handle_cli_errors(output=output) as db:
-        s = SystemService(db).status()
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            s = SystemService(db).status()
 
     min_d, max_d = s.transactions_date_range
     if output == OutputFormat.JSON:

@@ -53,7 +53,7 @@ class TestAccountsBalanceShow:
             "reconciliation_delta": None,
         }
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
@@ -88,7 +88,7 @@ class TestAccountsBalanceHistory:
             "reconciliation_delta": None,
         }
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
@@ -124,7 +124,7 @@ class TestAccountsBalanceAssert:
             balance=Decimal("1234.56"),
         )
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService",
                 return_value=mock_service,
@@ -155,7 +155,7 @@ class TestAccountsBalanceAssert:
         mock_service = MagicMock(spec=BalanceService)
         mock_service.assert_balance.return_value = MagicMock()
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService",
                 return_value=mock_service,
@@ -192,7 +192,7 @@ class TestAccountsBalanceList:
             "created_at": "2026-01-31 12:00:00",
         }
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
@@ -214,7 +214,7 @@ class TestAccountsBalanceDelete:
     @pytest.mark.unit
     def test_delete_calls_service(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
@@ -242,7 +242,7 @@ class TestAccountsBalanceReconcile:
             "reconciliation_delta": Decimal("5.00"),
         }
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
@@ -257,7 +257,7 @@ class TestAccountsBalanceReconcile:
     @pytest.mark.unit
     def test_reconcile_threshold_passed_through(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.utils.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,

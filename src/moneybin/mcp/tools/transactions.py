@@ -54,19 +54,20 @@ def transactions_get(
         limit: Maximum rows to return (default 50).
         cursor: Opaque pagination token from a previous response's next_cursor.
     """
-    service = TransactionService(get_database())
-    return service.get(
-        accounts=accounts,
-        date_from=date_from,
-        date_to=date_to,
-        categories=categories,
-        amount_min=Decimal(amount_min) if amount_min is not None else None,
-        amount_max=Decimal(amount_max) if amount_max is not None else None,
-        description=description,
-        uncategorized_only=uncategorized_only,
-        limit=limit,
-        cursor=cursor,
-    ).to_envelope()
+    with get_database(read_only=True) as db:
+        result = TransactionService(db).get(
+            accounts=accounts,
+            date_from=date_from,
+            date_to=date_to,
+            categories=categories,
+            amount_min=Decimal(amount_min) if amount_min is not None else None,
+            amount_max=Decimal(amount_max) if amount_max is not None else None,
+            description=description,
+            uncategorized_only=uncategorized_only,
+            limit=limit,
+            cursor=cursor,
+        )
+    return result.to_envelope()
 
 
 @mcp_tool(sensitivity="medium")
@@ -83,8 +84,8 @@ def transactions_recurring_list(
         min_occurrences: Minimum number of occurrences to consider
             a transaction as recurring (default 3).
     """
-    service = TransactionService(get_database())
-    result = service.recurring(min_occurrences=min_occurrences)
+    with get_database(read_only=True) as db:
+        result = TransactionService(db).recurring(min_occurrences=min_occurrences)
     return result.to_envelope()
 
 
@@ -101,11 +102,11 @@ def transactions_review_status() -> ResponseEnvelope:
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.review_service import ReviewService
 
-    db = get_database()
-    status = ReviewService(
-        match_service=MatchingService(db=db),
-        categorize_service=CategorizationService(db=db),
-    ).status()
+    with get_database(read_only=True) as db:
+        status = ReviewService(
+            match_service=MatchingService(db=db),
+            categorize_service=CategorizationService(db=db),
+        ).status()
 
     return build_envelope(
         data={

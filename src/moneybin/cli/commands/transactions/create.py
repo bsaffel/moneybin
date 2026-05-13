@@ -15,6 +15,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, render_or_json
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -87,18 +88,23 @@ def transactions_create(
 
     tags = list(tag or [])
 
-    with handle_cli_errors(output=output) as db:
-        svc = TransactionService(db)
-        batch = svc.create_manual_batch([entry], actor="cli")
-        row = batch.results[0]
-        transaction_id = row.transaction_id
-        note_id: str | None = None
-        if note:
-            created = svc.add_note(transaction_id, note, actor="cli")
-            note_id = created.note_id
-        applied_tags: list[str] = []
-        if tags:
-            applied_tags = svc.add_tags(transaction_id, tags, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                svc = TransactionService(db)
+                batch = svc.create_manual_batch([entry], actor="cli")
+                row = batch.results[0]
+                transaction_id = row.transaction_id
+                note_id: str | None = None
+                if note:
+                    created = svc.add_note(transaction_id, note, actor="cli")
+                    note_id = created.note_id
+                applied_tags: list[str] = []
+                if tags:
+                    applied_tags = svc.add_tags(transaction_id, tags, actor="cli")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     payload = {
         "transaction_id": transaction_id,

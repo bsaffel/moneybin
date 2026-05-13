@@ -21,7 +21,8 @@ def system_status() -> ResponseEnvelope:
     from moneybin.database import get_database
     from moneybin.services.system_service import SystemService
 
-    status = SystemService(get_database()).status()
+    with get_database(read_only=True) as db:
+        status = SystemService(db).status()
 
     min_date, max_date = status.transactions_date_range
     data: dict[str, Any] = {
@@ -50,26 +51,23 @@ def system_status() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low", read_only=True)
+@mcp_tool(sensitivity="low", read_only=False)
 def system_doctor() -> ResponseEnvelope:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
     Returns pass/fail/warn per invariant plus a transaction count.
-    Read-only — never writes. Call before relying on analytical results
-    to confirm the pipeline is self-consistent.
+    May write SQLMesh state tables on first Context init. Call before
+    relying on analytical results to confirm the pipeline is self-consistent.
     """
     from moneybin.database import get_database
-    from moneybin.metrics.registry import DOCTOR_RUNS_TOTAL  # noqa: PLC0415
     from moneybin.services.doctor_service import DoctorService
 
-    db = get_database()
-    report = DoctorService(db).run_all(verbose=False)
+    with get_database() as db:
+        report = DoctorService(db).run_all(verbose=False)
 
     failing = report.failing
     warning = report.warning
     passing = report.passing
-
-    DOCTOR_RUNS_TOTAL.labels(outcome="fail" if failing > 0 else "pass").inc()
 
     actions: list[str] = []
     if failing > 0:
@@ -112,5 +110,5 @@ def register_system_tools(mcp: FastMCP) -> None:
         "system_doctor",
         "Run pipeline integrity checks across all SQLMesh named audits. "
         "Returns pass/fail/warn per invariant plus transaction count. "
-        "Read-only. Call before relying on analytical results to confirm the pipeline is self-consistent.",
+        "May write SQLMesh state tables on first call. Call before relying on analytical results to confirm the pipeline is self-consistent.",
     )

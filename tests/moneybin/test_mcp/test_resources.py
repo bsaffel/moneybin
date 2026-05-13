@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from moneybin.database import get_database
 from moneybin.mcp.resources import (
     resource_accounts,
     resource_privacy,
@@ -41,24 +43,23 @@ class TestResourceStatus:
         assert transactions.get("total", 0) == 0
 
     @pytest.mark.unit
-    def test_transactions_present_after_insert(self, mcp_db: object) -> None:
-        from moneybin.mcp import server
-
-        server.get_db().execute("""
-            INSERT INTO core.fct_transactions (
-                transaction_id, account_id, transaction_date, amount,
-                amount_absolute, transaction_direction, description, memo,
-                transaction_type, is_pending, currency_code, source_type,
-                source_extracted_at, loaded_at,
-                transaction_year, transaction_month, transaction_day,
-                transaction_day_of_week, transaction_year_month,
-                transaction_year_quarter
-            ) VALUES
-            ('TXN_S01', 'ACC001', '2025-06-15', -42.50, 42.50, 'expense',
-             'Grocery Store', 'Weekly groceries', 'DEBIT', false, 'USD', 'ofx',
-             '2025-01-24', CURRENT_TIMESTAMP,
-             2025, 6, 15, 0, '2025-06', '2025-Q2')
-        """)
+    def test_transactions_present_after_insert(self, mcp_db: Path) -> None:
+        with get_database() as db:
+            db.execute("""
+                INSERT INTO core.fct_transactions (
+                    transaction_id, account_id, transaction_date, amount,
+                    amount_absolute, transaction_direction, description, memo,
+                    transaction_type, is_pending, currency_code, source_type,
+                    source_extracted_at, loaded_at,
+                    transaction_year, transaction_month, transaction_day,
+                    transaction_day_of_week, transaction_year_month,
+                    transaction_year_quarter
+                ) VALUES
+                ('TXN_S01', 'ACC001', '2025-06-15', -42.50, 42.50, 'expense',
+                 'Grocery Store', 'Weekly groceries', 'DEBIT', false, 'USD', 'ofx',
+                 '2025-01-24', CURRENT_TIMESTAMP,
+                 2025, 6, 15, 0, '2025-06', '2025-Q2')
+            """)
         result = resource_status()
         data: dict[str, Any] = json.loads(result)
         assert data["transactions"]["total"] == 1

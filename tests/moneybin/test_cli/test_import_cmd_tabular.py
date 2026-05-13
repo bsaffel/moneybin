@@ -39,7 +39,7 @@ class TestImportFileAccountName:
     def mock_get_database(self, mocker: Any) -> MagicMock:
         """Mock get_database to avoid requiring a real encrypted database."""
         return mocker.patch(
-            "moneybin.cli.utils.get_database",
+            "moneybin.database.get_database",
             return_value=MagicMock(),
         )
 
@@ -135,7 +135,7 @@ class TestImportFileValidation:
         csv_file.write_text("a,b,c\n1,2,3\n")
 
         # Mock service so we don't need a real DB.
-        mocker.patch("moneybin.cli.utils.get_database", return_value=MagicMock())
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             return_value=_make_import_result(),
@@ -156,7 +156,7 @@ class TestImportFileValidation:
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("a,b,c\n1,2,3\n")
 
-        mocker.patch("moneybin.cli.utils.get_database", return_value=MagicMock())
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             return_value=_make_import_result(),
@@ -223,7 +223,7 @@ class TestDeleteFormat:
 
     def test_unknown_format_exits_with_error(self, mocker: Any) -> None:
         """Attempting to delete an unknown user format exits 1."""
-        mocker.patch("moneybin.cli.utils.get_database", return_value=MagicMock())
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
         mocker.patch(
             "moneybin.extractors.tabular.formats.delete_format_from_db",
             return_value=False,

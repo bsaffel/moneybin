@@ -34,18 +34,14 @@ logger = logging.getLogger(__name__)
 def assert_sqlmesh_catalog_matches(db: Database) -> AssertionResult:
     """Assert SQLMesh's bound DuckDB adapter targets ``db.path``.
 
-    ``sqlmesh_context()`` reads the module-level ``_database_instance``
-    singleton in ``moneybin.database``. Callers must ensure that
-    singleton is set to ``db`` (e.g., via ``monkeypatch`` in tests, or
-    by going through ``get_database()`` in production) before invoking
-    this assertion.
+    ``sqlmesh_context(db)`` borrows ``db``'s connection directly.
 
     Catches the regression where SQLMesh opens its own unencrypted
     connection and silently writes state to ``memory.sqlmesh.*``.
     """
     db_path = str(Path(db.path).resolve())
     try:
-        with sqlmesh_context() as ctx:
+        with sqlmesh_context(db) as ctx:
             adapter_path = _resolve_adapter_path(ctx)
     except Exception as exc:  # noqa: BLE001  — sqlmesh raises untyped errors during context setup
         return AssertionResult(

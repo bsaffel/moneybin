@@ -56,7 +56,7 @@ def materialize_seeds(db: Database) -> None:
 
     if _SEED_MODELS:
         logger.info("Materializing SQLMesh seed models")
-        with sqlmesh_context() as ctx:
+        with sqlmesh_context(db) as ctx:
             ctx.plan(auto_apply=True, no_prompts=True, select_models=_SEED_MODELS)
 
     refresh_views(db)

@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services.account_service import (
@@ -135,9 +134,7 @@ def account_db(tmp_path: Path) -> Generator[Database, None, None]:
          15000.00, 'other.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
     """)  # noqa: S608  # test input, not executing SQL
 
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 
@@ -325,9 +322,7 @@ class TestEmptyResults:
             no_auto_upgrade=True,
         )
         create_core_tables_raw(database.conn)
-        db_module._database_instance = database  # type: ignore[attr-defined]
         yield database
-        db_module._database_instance = None  # type: ignore[attr-defined]
         database.close()
 
     @pytest.mark.unit

@@ -13,7 +13,9 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
-from moneybin.protocol.envelope import build_envelope
+from moneybin.database import get_database
+from moneybin.errors import UserError
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.doctor_service import DoctorService
 
 logger = logging.getLogger(__name__)
@@ -37,8 +39,9 @@ def doctor_command(
     are non-zero, transfer pairs balance, and categorization is healthy.
     Exits 0 when all invariants pass or warn; exits 1 when any fail.
     """
-    with handle_cli_errors(output=output) as db:
-        report = DoctorService(db).run_all(verbose=verbose)
+    with handle_cli_errors():
+        with get_database() as db:
+            report = DoctorService(db).run_all(verbose=verbose)
 
     status_icon = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}
 
@@ -46,12 +49,6 @@ def doctor_command(
     warning = report.warning
     passing = report.passing
     skipped = report.skipped
-
-    from moneybin.metrics.registry import (
-        DOCTOR_RUNS_TOTAL,  # noqa: PLC0415 — defer import
-    )
-
-    DOCTOR_RUNS_TOTAL.labels(outcome="fail" if failing > 0 else "pass").inc()
 
     if output == OutputFormat.JSON:
         data = {
@@ -73,10 +70,19 @@ def doctor_command(
         actions: list[str] = []
         if failing > 0:
             actions.append("Run with --verbose to see affected transaction IDs")
-        envelope = build_envelope(
-            data=data,
-            sensitivity="low",
-            actions=actions,
+        base = build_envelope(data=data, sensitivity="low", actions=actions)
+        envelope = (
+            ResponseEnvelope(
+                summary=base.summary,
+                data=data,
+                actions=base.actions,
+                error=UserError(
+                    f"{failing} invariant(s) failing",
+                    code="invariant_failure",
+                ),
+            )
+            if failing > 0
+            else base
         )
         render_or_json(envelope, output)
         if failing > 0:

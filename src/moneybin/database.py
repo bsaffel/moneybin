@@ -20,6 +20,8 @@ import logging
 import os
 import stat
 import sys
+import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -51,9 +53,26 @@ _KEY_NAME = "DATABASE__ENCRYPTION_KEY"
 SALT_NAME = "DATABASE__PASSPHRASE_SALT"
 _DATABASE_ALIAS = "moneybin"
 
+_cached_encryption_key: str | None = None
+
+_active_write_conn: "Database | None" = None
+_active_write_lock: threading.Lock = threading.Lock()
+# Per-thread holder populated by the MCP decorator so the timeout handler
+# can interrupt the specific connection opened for *this* tool call rather
+# than whatever is currently in the process-global slot.
+_write_conn_thread_local: threading.local = threading.local()
+
+_migration_check_done: set[Path] = set()
+_database_accessed: bool = False
+_database_written: bool = False
+
 
 def build_attach_sql(
-    db_path: Path, encryption_key: str, *, alias: str = _DATABASE_ALIAS
+    db_path: Path,
+    encryption_key: str,
+    *,
+    alias: str = _DATABASE_ALIAS,
+    read_only: bool = False,
 ) -> str:
     """Build a DuckDB ATTACH statement for an encrypted database.
 
@@ -67,6 +86,8 @@ def build_attach_sql(
         encryption_key: AES-256-GCM encryption key.
         alias: Database alias in DuckDB (default "moneybin"). Must be a
             simple identifier — callers should only pass hardcoded literals.
+        read_only: If True, append READ_ONLY to the ATTACH options so the
+            connection cannot write to the database file.
 
     Returns:
         ATTACH SQL string ready for execution.
@@ -76,9 +97,12 @@ def build_attach_sql(
     safe_path = escape_sql_literal(str(db_path))
     safe_key = escape_sql_literal(encryption_key)
     safe_alias = exp.to_identifier(alias, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
+    options = f"TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}'"
+    if read_only:
+        options += ", READ_ONLY"
     return (
         f"ATTACH '{safe_path}' AS {safe_alias} "  # noqa: S608 — trusted internal values, single-quote escaped, alias sqlglot-quoted
-        f"(TYPE DUCKDB, ENCRYPTION_KEY '{safe_key}')"
+        f"({options})"
     )
 
 
@@ -95,6 +119,34 @@ def escape_sql_literal(value: str) -> str:
 
 class DatabaseKeyError(Exception):
     """Raised when the database encryption key cannot be retrieved."""
+
+
+class DatabaseLockError(Exception):
+    """DuckDB file lock held by another process; caller may retry."""
+
+
+class DatabaseNotInitializedError(Exception):
+    """Database file missing or incomplete; run 'moneybin db init'."""
+
+
+def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
+    """Execute an ATTACH statement, mapping lock/config errors to DatabaseLockError.
+
+    Closes `conn` and raises `DatabaseLockError` if DuckDB reports a conflicting
+    lock or configuration mismatch. Re-raises other DuckDB exceptions unchanged.
+    """
+    try:
+        conn.execute(sql)
+    except duckdb.CatalogException as e:
+        conn.close()
+        if "different configuration" in str(e):
+            raise DatabaseLockError(str(e)) from e
+        raise
+    except duckdb.IOException as e:
+        conn.close()
+        if "Conflicting lock" in str(e):
+            raise DatabaseLockError(str(e)) from e
+        raise
 
 
 class Database:
@@ -124,6 +176,7 @@ class Database:
         self,
         db_path: Path,
         *,
+        read_only: bool = False,
         secret_store: SecretStore | None = None,
         no_auto_upgrade: bool | None = None,
     ) -> None:
@@ -131,6 +184,9 @@ class Database:
 
         Args:
             db_path: Path to the DuckDB database file.
+            read_only: If True, open the database in read-only mode. The
+                database must already exist. Skips schema init, migrations,
+                and view refresh.
             secret_store: SecretStore instance for key retrieval. If None,
                 creates a new one.
             no_auto_upgrade: If True, skip versioned migrations and SQLMesh
@@ -138,6 +194,10 @@ class Database:
 
         Raises:
             DatabaseKeyError: If the encryption key cannot be retrieved.
+            DatabaseNotInitializedError: If read_only=True and db_path does
+                not exist.
+            DatabaseLockError: If DuckDB reports a conflicting lock or
+                configuration mismatch on ATTACH.
         """
         self._db_path = db_path
         self._conn: duckdb.DuckDBPyConnection | None = None
@@ -145,14 +205,32 @@ class Database:
 
         store = secret_store or SecretStore()
 
-        try:
-            encryption_key = store.get_key(_KEY_NAME)
-        except SecretNotFoundError as e:
-            raise DatabaseKeyError(
-                f"Cannot open database — encryption key not found. "
-                f"Run 'moneybin db init' to create a new database, or set "
-                f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
-            ) from e
+        global _cached_encryption_key  # noqa: PLW0603
+        if _cached_encryption_key is not None:
+            encryption_key = _cached_encryption_key
+        else:
+            try:
+                encryption_key = store.get_key(_KEY_NAME)
+            except SecretNotFoundError as e:
+                raise DatabaseKeyError(
+                    f"Cannot open database — encryption key not found. "
+                    f"Run 'moneybin db init' to create a new database, or set "
+                    f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
+                ) from e
+            _cached_encryption_key = encryption_key
+
+        if read_only:
+            if not db_path.exists():
+                raise DatabaseNotInitializedError(
+                    f"Database not found at {db_path}.\n"
+                    f"Run 'moneybin db init' to initialize it first."
+                )
+            self._conn = duckdb.connect()
+            _attach_encrypted(
+                self._conn, build_attach_sql(db_path, encryption_key, read_only=True)
+            )
+            self._conn.execute(f"USE {_DATABASE_ALIAS}")
+            return
 
         # Ensure parent directory exists — parents=False so we don't
         # recreate a deleted profile's directory tree. The profile root
@@ -162,18 +240,15 @@ class Database:
         is_new = not db_path.exists()
 
         self._conn = duckdb.connect()
-
-        self._conn.execute(build_attach_sql(db_path, encryption_key))
+        _attach_encrypted(self._conn, build_attach_sql(db_path, encryption_key))
         self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
-        # Set file permissions on new databases (macOS/Linux)
         if is_new and sys.platform != "win32":
             try:
                 db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
             except OSError:
                 logger.warning(f"Could not set file permissions on {db_path}")
 
-        # Validate permissions on existing databases
         if not is_new and sys.platform != "win32":
             self._check_permissions(db_path)
 
@@ -507,6 +582,11 @@ class Database:
 
     def close(self) -> None:
         """Close the database connection and release resources."""
+        global _active_write_conn  # noqa: PLW0603
+        with _active_write_lock:
+            if _active_write_conn is self:
+                _active_write_conn = None
+
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -530,7 +610,31 @@ class Database:
                 self._conn.interrupt()
             except Exception:  # noqa: BLE001, S110 — interrupt is best-effort; pass is correct here
                 pass
+            # Explicit DETACH so DuckDB's process-level file registry releases
+            # the path entry before close(). USE memory first: DuckDB prohibits
+            # detaching the active catalog, and connection setup calls USE moneybin.
+            # These execute() calls survive interrupt() when no DuckDB statement
+            # was running (the common case for Python-level sleeps); even if they
+            # fail, the subsequent close() releases the handle.
+            try:
+                self._conn.execute("USE memory")  # noqa: S608 — hardcoded literal, not user input
+            except Exception:  # noqa: BLE001, S110 — best-effort; pass is correct here
+                pass
+            try:
+                self._conn.execute(f'DETACH "{_DATABASE_ALIAS}"')  # noqa: S608 — alias is a hardcoded internal literal
+            except Exception:  # noqa: BLE001, S110 — DETACH is best-effort; pass is correct here
+                pass
         self.close()
+
+
+def invalidate_encryption_key_cache() -> None:
+    """Clear the in-process encryption key cache.
+
+    Called by key rotation so subsequent Database() calls fetch the new key
+    from the keychain instead of reusing the pre-rotation cached value.
+    """
+    global _cached_encryption_key  # noqa: PLW0603
+    _cached_encryption_key = None
 
 
 def database_key_error_hint() -> str:
@@ -551,87 +655,101 @@ def database_key_error_hint() -> str:
         return "💡 Run 'moneybin db init' to create the database"
 
 
-# Singleton instance
-_database_instance: Database | None = None
+def _lock_error_message(db_path: "Path", max_wait: float) -> str:
+    from moneybin.utils.db_processes import describe_process, find_blocking_processes
+
+    blockers = find_blocking_processes(db_path)
+    if blockers:
+        names = ", ".join(describe_process(str(p["cmdline"])) for p in blockers)
+        return (
+            f"Could not acquire write lock after {max_wait:.0f}s "
+            f"(held by: {names}). "
+            f"Run 'moneybin db ps' for details."
+        )
+    return (
+        f"Could not acquire write lock after {max_wait:.0f}s. "
+        f"Another process may be writing to the database. "
+        f"Run 'moneybin db ps' for details."
+    )
 
 
-def get_database() -> Database:
-    """Get the singleton Database instance for the current profile.
+def database_was_accessed() -> bool:
+    """Return True if any Database connection was opened in this process."""
+    return _database_accessed
 
-    Creates the Database on first call, reuses on subsequent calls.
-    The database path comes from get_settings().database.path.
 
-    Returns:
-        The Database singleton instance.
+def database_was_written() -> bool:
+    """Return True if any write (non-read-only) Database connection was opened."""
+    return _database_written
+
+
+def get_database(
+    read_only: bool = False,
+    max_wait: float = 5.0,
+) -> "Database":
+    """Create and return a new short-lived Database connection.
+
+    Each call opens a fresh connection; callers must close it when done
+    (``with get_database() as db: ...`` closes automatically).
+
+    Write connections retry on DatabaseLockError with exponential backoff
+    (start 50 ms, ×1.5, cap 500 ms) until max_wait is exhausted.
     """
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _database_instance is not None:
-        return _database_instance
-
+    global _database_accessed, _database_written, _active_write_conn  # noqa: PLW0603
     settings = get_settings()
-    db = Database(settings.database.path)
-    _database_instance = db
-    return db
+    db_path = settings.database.path
+    deadline = time.monotonic() + max_wait
+    delay = 0.05
+    skip_upgrade = (
+        read_only
+        or settings.database.no_auto_upgrade
+        or (db_path in _migration_check_done)
+    )
+    while True:
+        try:
+            db = Database(
+                db_path,
+                read_only=read_only,
+                no_auto_upgrade=skip_upgrade,
+            )
+            _database_accessed = True
+            if not read_only:
+                _database_written = True
+                _migration_check_done.add(db_path)
+                with _active_write_lock:
+                    _active_write_conn = db
+                # If the MCP decorator registered a per-call holder on this
+                # thread, store the connection there too. The timeout handler
+                # reads from the holder to interrupt the *specific* connection
+                # it dispatched rather than whatever is currently in the global
+                # slot (which may belong to a different concurrent tool call).
+                _holder = getattr(_write_conn_thread_local, "conn_holder", None)
+                if _holder is not None:
+                    _holder[0] = db
+            return db
+        except DatabaseLockError:
+            if time.monotonic() >= deadline:
+                raise DatabaseLockError(
+                    _lock_error_message(db_path, max_wait)
+                ) from None
+            time.sleep(delay)
+            delay = min(delay * 1.5, 0.5)
 
 
-def get_database_if_initialized() -> Database | None:
-    """Return the singleton Database if it exists, otherwise None.
+def interrupt_and_reset_database(conn: "Database | None" = None) -> None:
+    """Interrupt and close the active write connection, if any.
 
-    Unlike ``get_database()``, this never creates a new connection.
-    Used by the atexit handler to flush metrics only when a database
-    was actually used during the session.
+    If *conn* is provided (captured by the MCP decorator's per-call holder),
+    interrupt that specific connection. Otherwise fall back to the
+    process-global slot. No-op if no write connection is active.
     """
-    return _database_instance
-
-
-def close_database() -> None:
-    """Close and clear the singleton Database instance."""
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _database_instance is not None:
-        _database_instance.close()
-        _database_instance = None
-
-
-def interrupt_and_reset_database() -> None:
-    """Interrupt and clear the singleton Database, if one exists.
-
-    The next ``get_database()`` call will reopen a fresh connection. No-op
-    if no Database has been initialized yet (e.g., timeout before any
-    tool actually touched the DB).
-
-    Known limitation — thread-survivor race: when this is called from the
-    MCP timeout path, ``asyncio.timeout()`` cancels the awaited task but
-    the underlying ``asyncio.to_thread`` worker keeps running until the
-    sync tool body returns. If that surviving thread later touches the DB,
-    it will see the closed connection and raise — that exception surfaces
-    via ``ThreadPoolExecutor``'s unhandled-exception path (stderr), not
-    the MCP envelope. Occasional stderr noise after a timeout is expected.
-    Forcing termination would require cooperative cancellation in tool
-    bodies; out of scope for this iteration.
-    """
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-
-    if _database_instance is not None:
-        _database_instance.interrupt_and_reset()
-        _database_instance = None
-
-
-@contextmanager
-def _temporary_singleton(db: Database) -> Generator[None, None, None]:
-    """Register ``db`` as the singleton for the duration of the block.
-
-    Used by ``init_db`` to let ``sqlmesh_context()`` find the locally-opened
-    Database. Restores the prior state on exit.
-    """
-    global _database_instance  # noqa: PLW0603 — module-level singleton is intentional
-    prior = _database_instance
-    _database_instance = db
-    try:
-        yield
-    finally:
-        _database_instance = prior
+    if conn is not None:
+        conn.interrupt_and_reset()
+        return
+    with _active_write_lock:
+        slot_conn = _active_write_conn
+    if slot_conn is not None:
+        slot_conn.interrupt_and_reset()
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +761,7 @@ _SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
 
 @contextmanager
 def sqlmesh_context(
+    db: "Database",
     sqlmesh_root: Path | None = None,
 ) -> Generator[Any, None, None]:
     """Create a SQLMesh Context that can open the encrypted database.
@@ -652,18 +771,14 @@ def sqlmesh_context(
     SQLMesh's internal adapter cache. SQLMesh then reuses our encrypted
     connection instead of opening its own unencrypted one.
 
-    Requires the Database singleton to be initialized via
-    ``get_database()`` before calling.  Callers should NOT close the
-    database before invoking this — ``sqlmesh_context()`` borrows the
-    singleton's connection.
-
     Usage::
 
-        db = get_database()          # ensure singleton is open
-        with sqlmesh_context() as ctx:
-            ctx.plan(auto_apply=True, no_prompts=True)
+        with get_database() as db:
+            with sqlmesh_context(db) as ctx:
+                ctx.plan(auto_apply=True, no_prompts=True)
 
     Args:
+        db: Open Database instance whose connection SQLMesh will borrow.
         sqlmesh_root: Path to the sqlmesh/ directory. Defaults to the
             project's ``sqlmesh/`` directory.
 
@@ -671,7 +786,7 @@ def sqlmesh_context(
         A ``sqlmesh.Context`` connected to the encrypted database.
 
     Raises:
-        DatabaseKeyError: If the Database singleton is not initialized.
+        DatabaseKeyError: If the database connection is closed.
     """
     from sqlmesh.core.config import Config, GatewayConfig
     from sqlmesh.core.config.connection import (
@@ -693,21 +808,19 @@ def sqlmesh_context(
 
     root = sqlmesh_root or _SQLMESH_ROOT
 
-    # Reuse the singleton's connection — DuckDB only allows one
-    # connection per file.  Callers must call get_database() first.
+    # Reuse the caller-supplied connection — DuckDB only allows one
+    # connection per file.
     # httpfs is NOT loaded — no SQLMesh models use remote file access.
     # If a future model needs read_parquet over HTTP or s3://, add
     # conn.execute("INSTALL httpfs; LOAD httpfs;") to Database.__init__.
-    if _database_instance is None or _database_instance._conn is None:  # type: ignore[reportPrivateUsage]  # must check singleton's connection state
+    if db._conn is None:  # pyright: ignore[reportPrivateUsage]
         raise DatabaseKeyError(
-            "Database not initialized — call get_database() before "
-            "sqlmesh_context(). If the database was explicitly closed, "
-            "re-open it first."
+            "Database connection is closed — cannot create SQLMesh context."
         )
-    conn = _database_instance._conn  # type: ignore[reportPrivateUsage]
-    # Use the singleton's actual path, not settings — during `profile create`
+    conn = db._conn  # pyright: ignore[reportPrivateUsage]
+    # Use the supplied db's actual path, not settings — during `profile create`
     # the new profile isn't yet the active one, so get_settings() would fail.
-    db_path = _database_instance._db_path  # type: ignore[reportPrivateUsage]
+    db_path = db._db_path  # pyright: ignore[reportPrivateUsage]
 
     cache_key = str(db_path)
     try:
@@ -863,8 +976,7 @@ def init_db(
             with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
                 from moneybin.seeds import materialize_seeds
 
-                with _temporary_singleton(db):
-                    materialize_seeds(db)
+                materialize_seeds(db)
         except Exception:
             # Roll back keychain to previous state so the existing DB
             # remains accessible with its original key.
@@ -926,8 +1038,7 @@ def init_db(
             with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
                 from moneybin.seeds import materialize_seeds
 
-                with _temporary_singleton(db):
-                    materialize_seeds(db)
+                materialize_seeds(db)
         except Exception:
             # Roll back the freshly persisted key and any orphan DB file.
             # We only undo persistence we just performed — a pre-existing

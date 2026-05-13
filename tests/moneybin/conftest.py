@@ -75,8 +75,12 @@ def clean_profile_state() -> Generator[None, None, None]:
     - Clears the settings cache to prevent test pollution
     - Resets current profile to 'test'
     - Resets the module-level ``_CLIFlags`` singleton in ``cli.utils`` so
-      a stale ``--profile`` value from one test cannot leak into the
-      next via ``resolve_profile()``.
+      stale ``--profile``, ``--verbose``, and ``--output`` values from one
+      test cannot leak into the next.
+    - Resets per-process database module state (``_cached_encryption_key``,
+      ``_active_write_conn``, ``_migration_check_done``, ``_database_accessed``,
+      ``_database_written``) so a key cached by one test is never reused by the
+      next test in the same xdist worker.
 
     This ensures tests are isolated and don't affect each other.
 
@@ -84,12 +88,21 @@ def clean_profile_state() -> Generator[None, None, None]:
     """
     from moneybin.cli import utils as cli_utils
 
+    def _reset_db_state() -> None:
+        db_module._cached_encryption_key = None  # pyright: ignore[reportPrivateUsage]
+        db_module._active_write_conn = None  # pyright: ignore[reportPrivateUsage]
+        db_module._migration_check_done = set()  # pyright: ignore[reportPrivateUsage]
+        db_module._database_accessed = False  # pyright: ignore[reportPrivateUsage]
+        db_module._database_written = False  # pyright: ignore[reportPrivateUsage]
+
     # Setup: clean state before test
     register_profile_resolver(None)
     clear_settings_cache()
     set_current_profile("test")
     cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
     cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
+    cli_utils._flags.output = cli_utils.OutputFormat.TEXT  # pyright: ignore[reportPrivateUsage]
+    _reset_db_state()
 
     # Yield to run the test
     yield
@@ -100,6 +113,8 @@ def clean_profile_state() -> Generator[None, None, None]:
     set_current_profile("test")
     cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
     cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
+    cli_utils._flags.output = cli_utils.OutputFormat.TEXT  # pyright: ignore[reportPrivateUsage]
+    _reset_db_state()
 
 
 @pytest.fixture()
@@ -116,7 +131,7 @@ def mock_secret_store() -> MagicMock:
 
 @pytest.fixture()
 def schema_catalog_db(
-    tmp_path: Path, mock_secret_store: MagicMock
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[Database, None, None]:
     """Database with core tables + the core.dim_categories view stub.
 
@@ -263,11 +278,20 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS status "
         "WHERE FALSE"
     )
-    db_module._database_instance = database  # type: ignore[attr-defined]
+
+    # Inject fixture DB so any call to get_database() returns it without
+    # opening a new connection (which would fail: no settings, no key).
+    @contextmanager
+    def _inject_db(*args: object, **kwargs: object) -> Generator[Database, None, None]:
+        yield database
+
+    import moneybin.services.schema_catalog as schema_catalog_module
+
+    monkeypatch.setattr(db_module, "get_database", _inject_db)
+    monkeypatch.setattr(schema_catalog_module, "get_database", _inject_db)
     try:
         yield database
     finally:
-        db_module._database_instance = None  # type: ignore[attr-defined]
         database.close()
 
 

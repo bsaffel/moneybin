@@ -9,11 +9,13 @@ the MCP wrapper plumbing — coercion, envelope construction, registration.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp import FastMCP
 
+from moneybin.database import get_database
 from moneybin.mcp.tools.curation import (
     import_labels_set,
     register_curation_tools,
@@ -28,9 +30,6 @@ from moneybin.mcp.tools.curation import (
 )
 from moneybin.services.audit_service import AuditService
 
-if TYPE_CHECKING:
-    from moneybin.database import Database
-
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
@@ -38,7 +37,6 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
 def _seed_transaction(
-    db: Database,
     transaction_id: str,
     *,
     account_id: str = "ACC001",
@@ -46,45 +44,51 @@ def _seed_transaction(
     description: str = "Coffee Shop",
     transaction_date: str = "2026-04-10",
 ) -> None:
-    """Insert one minimal core.fct_transactions row for tests that need a target."""
-    db.execute(
-        """
-        INSERT INTO core.fct_transactions (
-            transaction_id, account_id, transaction_date, amount,
-            amount_absolute, transaction_direction, description,
-            transaction_type, is_pending, currency_code, source_type,
-            source_extracted_at, loaded_at,
-            transaction_year, transaction_month, transaction_day,
-            transaction_day_of_week, transaction_year_month,
-            transaction_year_quarter
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DEBIT', false, 'USD', 'manual',
-                  ?, CURRENT_TIMESTAMP, 2026, 4, 10, 3, '2026-04', '2026-Q2')
-        """,
-        [
-            transaction_id,
-            account_id,
-            transaction_date,
-            Decimal(amount),
-            abs(Decimal(amount)),
-            "expense" if Decimal(amount) < 0 else "income",
-            description,
-            transaction_date,
-        ],
-    )
+    """Insert one minimal core.fct_transactions row for tests that need a target.
+
+    Opens and closes its own write connection so callers don't hold an open
+    connection when the MCP tool runs.
+    """
+    with get_database() as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at,
+                transaction_year, transaction_month, transaction_day,
+                transaction_day_of_week, transaction_year_month,
+                transaction_year_quarter
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DEBIT', false, 'USD', 'manual',
+                      ?, CURRENT_TIMESTAMP, 2026, 4, 10, 3, '2026-04', '2026-Q2')
+            """,
+            [
+                transaction_id,
+                account_id,
+                transaction_date,
+                Decimal(amount),
+                abs(Decimal(amount)),
+                "expense" if Decimal(amount) < 0 else "income",
+                description,
+                transaction_date,
+            ],
+        )
 
 
-def _seed_import(db: Database, import_id: str = "IMP_TEST_001") -> str:
+def _seed_import(import_id: str = "IMP_TEST_001") -> str:
     """Insert one raw.import_log row that import_labels_set can attach to."""
-    db.execute(
-        """
-        INSERT INTO raw.import_log (
-            import_id, source_file, source_type, source_origin,
-            format_name, account_names, status, rows_total, rows_imported
-        ) VALUES (?, 'inline', 'manual', 'manual',
-                  'manual', '[]'::JSON, 'complete', 0, 0)
-        """,
-        [import_id],
-    )
+    with get_database() as db:
+        db.execute(
+            """
+            INSERT INTO raw.import_log (
+                import_id, source_file, source_type, source_origin,
+                format_name, account_names, status, rows_total, rows_imported
+            ) VALUES (?, 'inline', 'manual', 'manual',
+                      'manual', '[]'::JSON, 'complete', 0, 0)
+            """,
+            [import_id],
+        )
     return import_id
 
 
@@ -119,9 +123,7 @@ class TestTransactionsCreate:
     """Bulk manual entry: atomic batches and validation guards."""
 
     @pytest.mark.unit
-    async def test_bulk_atomic_returns_batch_id_and_results(
-        self, mcp_db: Database
-    ) -> None:
+    async def test_bulk_atomic_returns_batch_id_and_results(self, mcp_db: Path) -> None:
         env = (
             await transactions_create(
                 transactions=[
@@ -148,7 +150,7 @@ class TestTransactionsCreate:
         assert all("transaction_id" in r for r in results)
 
     @pytest.mark.unit
-    async def test_rejects_size_above_100(self, mcp_db: Database) -> None:
+    async def test_rejects_size_above_100(self, mcp_db: Path) -> None:
         too_many = [
             {
                 "account_id": "ACC001",
@@ -170,8 +172,8 @@ class TestNotesLifecycle:
     """Add / edit / delete a note end-to-end through the MCP surface."""
 
     @pytest.mark.unit
-    async def test_add_edit_delete_roundtrip(self, mcp_db: Database) -> None:
-        _seed_transaction(mcp_db, "TXN_NOTE_1")
+    async def test_add_edit_delete_roundtrip(self, mcp_db: Path) -> None:
+        _seed_transaction("TXN_NOTE_1")
 
         added = (
             await transactions_notes_add(transaction_id="TXN_NOTE_1", text="hello")
@@ -195,8 +197,8 @@ class TestTagsSetAndRename:
     """Declarative tag set diffing and global rename."""
 
     @pytest.mark.unit
-    async def test_set_tags_computes_diff(self, mcp_db: Database) -> None:
-        _seed_transaction(mcp_db, "TXN_TAG_1")
+    async def test_set_tags_computes_diff(self, mcp_db: Path) -> None:
+        _seed_transaction("TXN_TAG_1")
 
         first = (
             await transactions_tags_set(transaction_id="TXN_TAG_1", tags=["a", "b"])
@@ -215,18 +217,19 @@ class TestTagsSetAndRename:
 
         # Audit log: one tag.add for 'a' (round 1), 'b' (round 1), 'c' (round 2),
         # one tag.remove for 'a' (round 2). Round 3 is a no-op.
-        events = AuditService(mcp_db).list_events(
-            target_id="TXN_TAG_1", action_pattern="tag.%", limit=100
-        )
+        with get_database() as db:
+            events = AuditService(db).list_events(
+                target_id="TXN_TAG_1", action_pattern="tag.%", limit=100
+            )
         adds = [e for e in events if e.action == "tag.add"]
         removes = [e for e in events if e.action == "tag.remove"]
         assert {(e.after_value or {}).get("tag") for e in adds} == {"a", "b", "c"}
         assert {(e.before_value or {}).get("tag") for e in removes} == {"a"}
 
     @pytest.mark.unit
-    async def test_rename_tag(self, mcp_db: Database) -> None:
-        _seed_transaction(mcp_db, "TXN_REN_1")
-        _seed_transaction(mcp_db, "TXN_REN_2")
+    async def test_rename_tag(self, mcp_db: Path) -> None:
+        _seed_transaction("TXN_REN_1")
+        _seed_transaction("TXN_REN_2")
         await transactions_tags_set(transaction_id="TXN_REN_1", tags=["old"])
         await transactions_tags_set(transaction_id="TXN_REN_2", tags=["old"])
 
@@ -242,8 +245,8 @@ class TestSplitsSet:
     """Declarative split replacement."""
 
     @pytest.mark.unit
-    async def test_set_splits_replaces_atomically(self, mcp_db: Database) -> None:
-        _seed_transaction(mcp_db, "TXN_SPLIT_1", amount="-30.00")
+    async def test_set_splits_replaces_atomically(self, mcp_db: Path) -> None:
+        _seed_transaction("TXN_SPLIT_1", amount="-30.00")
 
         env = (
             await transactions_splits_set(
@@ -267,8 +270,8 @@ class TestImportLabelsSet:
     """Declarative import-label replacement."""
 
     @pytest.mark.unit
-    async def test_set_labels_returns_canonical_list(self, mcp_db: Database) -> None:
-        import_id = _seed_import(mcp_db)
+    async def test_set_labels_returns_canonical_list(self, mcp_db: Path) -> None:
+        import_id = _seed_import()
 
         first = (
             await import_labels_set(import_id=import_id, labels=["q1", "needs-review"])
@@ -289,8 +292,8 @@ class TestSystemAuditList:
     """Audit log query tool."""
 
     @pytest.mark.unit
-    async def test_filters_by_action_pattern(self, mcp_db: Database) -> None:
-        _seed_transaction(mcp_db, "TXN_AUDIT_1")
+    async def test_filters_by_action_pattern(self, mcp_db: Path) -> None:
+        _seed_transaction("TXN_AUDIT_1")
         await transactions_tags_set(transaction_id="TXN_AUDIT_1", tags=["alpha"])
         await transactions_notes_add(transaction_id="TXN_AUDIT_1", text="hello")
 

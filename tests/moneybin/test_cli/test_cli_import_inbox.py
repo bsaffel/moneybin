@@ -14,7 +14,6 @@ from typer.testing import CliRunner
 from moneybin.cli.main import app
 from moneybin.services.inbox_service import (
     InboxListResult,
-    InboxService,
     InboxSyncResult,
 )
 
@@ -22,6 +21,11 @@ from moneybin.services.inbox_service import (
 @contextmanager
 def _fake_db_ctx(**kwargs: object) -> Generator[object, None, None]:
     yield object()
+
+
+@contextmanager
+def _fake_get_database(**kwargs: object) -> Generator[object, None, None]:
+    yield MagicMock()
 
 
 @pytest.fixture
@@ -32,22 +36,19 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def patch_inbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
-    """Patch InboxService factories + handle_cli_errors to skip the real DB."""
+    """Patch InboxService, get_database, get_settings, handle_cli_errors to skip the real DB."""
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
 
-    def _factory(cls: type[InboxService]) -> MagicMock:
-        return fake
-
+    fake_cls = MagicMock(return_value=fake)
+    fake_cls.for_active_profile_no_db = MagicMock(return_value=fake)
     monkeypatch.setattr(
-        "moneybin.services.inbox_service.InboxService.for_active_profile",
-        classmethod(_factory),
-    )
-    monkeypatch.setattr(
-        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
-        classmethod(_factory),
+        "moneybin.cli.commands.import_inbox.InboxService",
+        fake_cls,
     )
     monkeypatch.setattr("moneybin.cli.utils.handle_cli_errors", _fake_db_ctx)
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+    monkeypatch.setattr("moneybin.config.get_settings", lambda: MagicMock())
     return fake
 
 

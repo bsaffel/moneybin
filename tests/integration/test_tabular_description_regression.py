@@ -35,12 +35,11 @@ def test_tabular_import_preserves_description(
     db_path = tmp_path / "tabular_desc.duckdb"
     db = Database(db_path, secret_store=secret_store)
 
-    # run_transforms() resolves the active Database via the module singleton
-    # plus get_settings().database.path; wire both to this test DB so
-    # sqlmesh_context() reuses our encrypted connection.
+    # get_settings().database.path is used by sqlmesh_context() to key the
+    # adapter injection; point it at this test DB so SQLMesh reuses our
+    # encrypted connection instead of opening its own.
     mock_settings = MagicMock()
     mock_settings.database.path = db_path
-    monkeypatch.setattr("moneybin.database._database_instance", db)
     monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
 
     fixture = FIXTURES_DIR / "standard.csv"

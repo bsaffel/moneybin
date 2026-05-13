@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services._validators import InvalidSlugError
 from moneybin.services.audit_service import AuditService
@@ -78,9 +77,7 @@ def transaction_db(tmp_path: Path) -> Generator[Database, None, None]:
         ('T1', 'Food & Drink', 'Coffee Shops', CURRENT_TIMESTAMP, 'user')
     """)  # noqa: S608  # test input, not executing SQL
 
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 
@@ -133,9 +130,7 @@ class TestEmptyResults:
             no_auto_upgrade=True,
         )
         create_core_tables_raw(database.conn)
-        db_module._database_instance = database  # type: ignore[attr-defined]
         yield database
-        db_module._database_instance = None  # type: ignore[attr-defined]
         database.close()
 
     @pytest.mark.unit

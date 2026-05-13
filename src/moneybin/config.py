@@ -827,7 +827,14 @@ def set_current_profile(profile: str) -> None:
         # Only invalidate cache if profile actually changed
         if _current_profile is None or normalized != _current_profile:
             _current_profile = normalized
-            _current_settings = None  # Invalidate cache
+            _current_settings = None  # Invalidate settings cache
+            # Each profile has its own encryption key; clear the process-level
+            # key cache so the next Database() open fetches the correct key.
+            from moneybin.database import (
+                invalidate_encryption_key_cache,  # noqa: PLC0415
+            )
+
+            invalidate_encryption_key_cache()
     except ValueError as e:
         raise ValueError(f"Invalid profile name: {e}") from e
 

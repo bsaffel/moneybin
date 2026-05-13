@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from moneybin.database import Database, close_database, get_database
+from moneybin.database import Database, get_database
 from moneybin.validation.assertions import assert_sqlmesh_catalog_matches
 from moneybin.validation.result import (
     AssertionResult,
@@ -99,7 +99,7 @@ def scenario_env(
 ) -> Generator[tuple[Database, str, dict[str, str]], None, None]:
     """Yield ``(db, tmpdir, env)`` for a fully bootstrapped scenario environment.
 
-    Cleans up the singleton Database and removes the tempdir on exit
+    Closes the Database and removes the tempdir on exit
     (unless ``keep_tmpdir=True``). Use this directly when a test needs to
     drive scenario steps step-by-step (e.g. snapshotting state between steps).
     """
@@ -112,7 +112,7 @@ def scenario_env(
             yield db, tmp, env
     finally:
         if db is not None:
-            close_database()
+            db.close()
         if not keep_tmpdir:
             shutil.rmtree(tmp, ignore_errors=True)
         else:
@@ -164,10 +164,11 @@ def run_scenario(
         try:
             for step in scenario.pipeline:
                 run_step(step, scenario.setup, db, env=env)
-                # Steps may close the singleton (e.g., to release the
-                # DuckDB file lock for a subprocess). Re-fetch so the
-                # next step / assertion phase has a live connection.
-                db = get_database()
+                # Some steps close the connection to release the DuckDB file
+                # lock (e.g. transform_via_subprocess spawns a subprocess that
+                # needs the write lock). Re-open only when that happens.
+                if db._closed:  # pyright: ignore[reportPrivateUsage]
+                    db = get_database()
         except Exception as exc:  # noqa: BLE001 — surface as halted result
             # Don't use logger.exception — tracebacks may include local
             # variables holding amounts/descriptions (PII rule).
@@ -241,7 +242,7 @@ def run_scenario(
 
 
 def _bootstrap_database() -> Database:
-    """Create the scenario profile and return the singleton ``Database``.
+    """Create the scenario profile and return a new Database connection.
 
     Assumes ``MONEYBIN_HOME`` and ``MONEYBIN_PROFILE`` are already set in
     the environment. Invalidates any previously cached settings so the new
@@ -249,12 +250,6 @@ def _bootstrap_database() -> Database:
     """
     from moneybin.config import clear_settings_cache, set_current_profile
     from moneybin.services.profile_service import ProfileService
-
-    # Drop any pre-existing module singleton so we don't accidentally reuse
-    # a Database opened against the caller's profile/path. Without this, a
-    # long-lived process that already called ``get_database()`` would have
-    # the scenario run silently against the caller's data.
-    close_database()
 
     # Reset any previously cached settings/profile so subsequent calls pick
     # up the patched env vars.

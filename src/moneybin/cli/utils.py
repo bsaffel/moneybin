@@ -8,34 +8,38 @@ import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import typer
 
 from moneybin.cli.output import OutputFormat, emit_json_error
 from moneybin.config import set_current_profile
-from moneybin.database import Database, get_database
 from moneybin.errors import classify_user_error
 from moneybin.observability import setup_observability
 from moneybin.utils.user_config import ensure_default_profile
+
+if TYPE_CHECKING:
+    from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def handle_cli_errors(
-    output: OutputFormat = OutputFormat.TEXT,
-) -> Generator[Database, None, None]:
-    """Get the active database with cross-cutting CLI error handling.
+def handle_cli_errors() -> Generator[None, None, None]:
+    """Cross-cutting CLI error handler.
 
-    Yields a ``Database`` and catches user-facing exceptions raised either
-    during database open or inside the ``with`` block. When ``output`` is
-    ``OutputFormat.JSON``, classified errors are emitted as a structured JSON
-    envelope to stdout. Otherwise they are logged with the standard ``❌``
-    prefix. Unrecognized exceptions propagate unchanged.
+    Catches classified user-facing exceptions (DatabaseKeyError,
+    DatabaseLockError, DatabaseNotInitializedError, etc.) and exits with
+    code 1. When the active output format is JSON (set via ``output_option``
+    callback), emits a structured error envelope to stdout; otherwise logs
+    with the standard ❌ prefix. Unrecognized exceptions propagate unchanged.
+
+    Does NOT open or yield a Database — commands acquire their own
+    connections with ``get_database(read_only=...)``.
+
     """
     try:
-        db = get_database()
-        yield db
+        yield
     except typer.Exit:
         # Commands raise typer.Exit for their own early-exit paths
         # (mutually exclusive flags, user-cancelled prompts). Don't run
@@ -45,7 +49,7 @@ def handle_cli_errors(
         user_error = classify_user_error(e)
         if user_error is None:
             raise
-        if output == OutputFormat.JSON:
+        if _flags.output == OutputFormat.JSON:
             # JSON-mode errors bypass logger.error intentionally: stdout stays
             # machine-readable for agents and the structured envelope carries
             # the full error context. The agent's transcript is the audit trail.
@@ -80,11 +84,8 @@ def sqlmesh_command(
 ) -> Generator[Database, None, None]:
     """Wrap a SQLMesh-fronted command with consistent ⚙️/✅/❌ logging.
 
-    SQLMesh raises broad untyped exceptions that bypass ``classify_user_error``.
-    This wrapper layers on top of ``handle_cli_errors`` so user errors
-    (DatabaseKeyError, etc.) still classify correctly while SQLMesh's broad
-    failures get a uniform ``❌ {operation} failed: {e}`` line and exit 1.
-    Yields the active ``Database`` for commands that need it.
+    Opens its own write connection, yields it, and handles both classified
+    user errors and SQLMesh's broad untyped exceptions.
 
     Args:
         operation: Verb-noun describing the action (e.g. ``"SQLMesh plan"``).
@@ -93,16 +94,23 @@ def sqlmesh_command(
         success: Custom success message after ``✅ ``. Defaults to
             ``f"{operation} completed"``.
     """
+    from moneybin.database import get_database  # noqa: PLC0415 — defer heavy import
+
     logger.info(f"⚙️  {operation}...")
     try:
-        # TODO: forward output param when sqlmesh_command callers gain --output json support
-        with handle_cli_errors() as db:
+        with get_database() as db:
             yield db
         logger.info(f"✅ {success or f'{operation} completed'}")
     except typer.Exit:
         raise
-    except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
-        logger.error(f"❌ {operation} failed: {e}")
+    except Exception as e:  # noqa: BLE001
+        user_error = classify_user_error(e)
+        if user_error is not None:
+            logger.error(f"❌ {user_error.message}")
+            if user_error.hint:
+                logger.info(user_error.hint)
+        else:
+            logger.error(f"❌ {operation} failed: {e}")
         raise typer.Exit(1) from e
 
 
@@ -112,6 +120,7 @@ class _CLIFlags:
 
     profile: str | None = None
     verbose: bool = False
+    output: OutputFormat = OutputFormat.TEXT
 
 
 _flags = _CLIFlags()
@@ -126,6 +135,12 @@ def stash_cli_flags(profile: str | None, verbose: bool) -> None:
 def get_verbose_flag() -> bool:
     """Return whether --verbose was passed on the top-level CLI."""
     return _flags.verbose
+
+
+def set_output_flag(value: OutputFormat) -> OutputFormat:
+    """Record the active output format; called by the output_option callback."""
+    _flags.output = value
+    return value
 
 
 def resolve_profile() -> None:

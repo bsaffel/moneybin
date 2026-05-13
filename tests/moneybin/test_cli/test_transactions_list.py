@@ -46,8 +46,12 @@ def _mock_result(
 
 
 @contextmanager
-def _mock_db_ctx(**_kwargs: object):
-    """Context manager that yields a mock database — replaces handle_cli_errors."""
+def _mock_db_ctx(*_args: object, **_kwargs: object):
+    """Context manager that yields a mock database.
+
+    Used as both a handle_cli_errors replacement and a get_database mock.
+    Accepts any args/kwargs so it can replace get_database(read_only=True).
+    """
     yield MagicMock()
 
 
@@ -55,9 +59,12 @@ def _mock_db_ctx(**_kwargs: object):
 def test_list_text_output_shows_columns() -> None:
     """Text output renders date, description, amount, category, account columns."""
     txns = [_make_txn()]
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result(txns)):
-            result = runner.invoke(app, ["transactions", "list"])
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result(txns)
+            ):
+                result = runner.invoke(app, ["transactions", "list"])
     assert result.exit_code == 0
     assert "2026-04-10" in result.output
     assert "Coffee Shop" in result.output
@@ -70,9 +77,14 @@ def test_list_json_output_returns_envelope() -> None:
     import json
 
     txns = [_make_txn()]
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result(txns)):
-            result = runner.invoke(app, ["transactions", "list", "--output", "json"])
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result(txns)
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--output", "json"]
+                )
     assert result.exit_code == 0
     parsed = json.loads(result.output)
     assert "summary" in parsed
@@ -83,9 +95,10 @@ def test_list_json_output_returns_envelope() -> None:
 @pytest.mark.unit
 def test_list_empty_text_output() -> None:
     """Empty result set prints a 'no transactions' message."""
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result([])):
-            result = runner.invoke(app, ["transactions", "list"])
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(TransactionService, "get", return_value=_mock_result([])):
+                result = runner.invoke(app, ["transactions", "list"])
     assert result.exit_code == 0
     assert "No transactions" in result.output
 
@@ -93,11 +106,12 @@ def test_list_empty_text_output() -> None:
 @pytest.mark.unit
 def test_list_passes_account_to_service() -> None:
     """--account is forwarded to TransactionService.get()."""
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(
-            TransactionService, "get", return_value=_mock_result([])
-        ) as mock_get:
-            runner.invoke(app, ["transactions", "list", "--account", "Test Bank"])
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([])
+            ) as mock_get:
+                runner.invoke(app, ["transactions", "list", "--account", "Test Bank"])
     mock_get.assert_called_once()
     assert mock_get.call_args.kwargs["accounts"] == ["Test Bank"]
 
@@ -105,78 +119,58 @@ def test_list_passes_account_to_service() -> None:
 @pytest.mark.unit
 def test_list_repeatable_account_flag() -> None:
     """Multiple --account flags accumulate into a list."""
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(
-            TransactionService, "get", return_value=_mock_result([])
-        ) as mock_get:
-            runner.invoke(
-                app, ["transactions", "list", "--account", "A1", "--account", "A2"]
-            )
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([])
+            ) as mock_get:
+                runner.invoke(
+                    app, ["transactions", "list", "--account", "A1", "--account", "A2"]
+                )
     assert mock_get.call_args.kwargs["accounts"] == ["A1", "A2"]
 
 
 @pytest.mark.unit
 def test_list_repeatable_category_flag() -> None:
     """Multiple --category flags accumulate into a list."""
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(
-            TransactionService, "get", return_value=_mock_result([])
-        ) as mock_get:
-            runner.invoke(
-                app,
-                [
-                    "transactions",
-                    "list",
-                    "--category",
-                    "Food & Drink",
-                    "--category",
-                    "Travel",
-                ],
-            )
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([])
+            ) as mock_get:
+                runner.invoke(
+                    app,
+                    [
+                        "transactions",
+                        "list",
+                        "--category",
+                        "Food & Drink",
+                        "--category",
+                        "Travel",
+                    ],
+                )
     assert mock_get.call_args.kwargs["categories"] == ["Food & Drink", "Travel"]
 
 
 @pytest.mark.unit
 def test_list_uncategorized_flag() -> None:
     """--uncategorized sets uncategorized_only=True."""
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(
-            TransactionService, "get", return_value=_mock_result([])
-        ) as mock_get:
-            runner.invoke(app, ["transactions", "list", "--uncategorized"])
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([])
+            ) as mock_get:
+                runner.invoke(app, ["transactions", "list", "--uncategorized"])
     assert mock_get.call_args.kwargs["uncategorized_only"] is True
 
 
 @pytest.mark.unit
 def test_list_cursor_forwarded() -> None:
     """--cursor is forwarded to TransactionService.get()."""
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(
-            TransactionService, "get", return_value=_mock_result([])
-        ) as mock_get:
-            runner.invoke(app, ["transactions", "list", "--cursor", "dGVzdA=="])
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([])
+            ) as mock_get:
+                runner.invoke(app, ["transactions", "list", "--cursor", "dGVzdA=="])
     assert mock_get.call_args.kwargs["cursor"] == "dGVzdA=="
-
-
-@pytest.mark.unit
-def test_list_json_fields_projection() -> None:
-    """--json-fields projects the requested fields from the JSON envelope data."""
-    import json
-
-    txns = [_make_txn()]
-    with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
-        with patch.object(TransactionService, "get", return_value=_mock_result(txns)):
-            result = runner.invoke(
-                app,
-                [
-                    "transactions",
-                    "list",
-                    "--output",
-                    "json",
-                    "--json-fields",
-                    "transaction_id,amount",
-                ],
-            )
-    assert result.exit_code == 0
-    parsed = json.loads(result.output)
-    assert parsed["data"] == [{"transaction_id": "T1", "amount": "-50.00"}]

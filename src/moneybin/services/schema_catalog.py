@@ -473,37 +473,36 @@ def build_schema_doc() -> dict[str, Any]:
     table that exists in the live database; missing tables are silently
     skipped (the test/dev DB may not have every interface table).
     """
-    db = get_database()
-
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
     # Union tables and views — `duckdb_tables()` excludes views, but
     # interface objects like `core.dim_categories` are SQLMesh-managed views.
-    rows = db.execute(
-        f"""
-        WITH interface_objects AS (
-            SELECT schema_name, table_name, comment
-            FROM duckdb_tables()
-            UNION ALL
-            SELECT schema_name, view_name AS table_name, comment
-            FROM duckdb_views()
-            WHERE NOT internal
-        )
-        SELECT
-            t.schema_name || '.' || t.table_name AS full_name,
-            COALESCE(t.comment, '') AS table_comment,
-            c.column_name,
-            c.data_type,
-            c.is_nullable,
-            COALESCE(c.comment, '') AS column_comment
-        FROM interface_objects t
-        JOIN duckdb_columns() c
-          ON t.schema_name = c.schema_name AND t.table_name = c.table_name
-        WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
-        ORDER BY t.schema_name, t.table_name, c.column_index
-        """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
-        interface_names,
-    ).fetchall()
+    with get_database(read_only=True) as db:
+        rows = db.execute(
+            f"""
+            WITH interface_objects AS (
+                SELECT schema_name, table_name, comment
+                FROM duckdb_tables()
+                UNION ALL
+                SELECT schema_name, view_name AS table_name, comment
+                FROM duckdb_views()
+                WHERE NOT internal
+            )
+            SELECT
+                t.schema_name || '.' || t.table_name AS full_name,
+                COALESCE(t.comment, '') AS table_comment,
+                c.column_name,
+                c.data_type,
+                c.is_nullable,
+                COALESCE(c.comment, '') AS column_comment
+            FROM interface_objects t
+            JOIN duckdb_columns() c
+              ON t.schema_name = c.schema_name AND t.table_name = c.table_name
+            WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
+            ORDER BY t.schema_name, t.table_name, c.column_index
+            """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
+            interface_names,
+        ).fetchall()
 
     tables_by_name: dict[str, dict[str, Any]] = {}
     for full_name, table_comment, col_name, dtype, nullable, col_comment in rows:

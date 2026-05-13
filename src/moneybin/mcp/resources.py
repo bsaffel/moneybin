@@ -20,7 +20,7 @@ from moneybin.services.networth_service import NetworthService
 from moneybin.services.schema_catalog import build_schema_doc
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS
 
-from .server import get_db, mcp, table_exists
+from .server import mcp, table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,14 @@ logger = logging.getLogger(__name__)
 def resource_status() -> str:
     """Data freshness: row counts, date ranges, last import, categorization coverage."""
     logger.info("Resource read: moneybin://status")
-    db = get_db()
     status: dict[str, Any] = {}
 
     if table_exists(FCT_TRANSACTIONS):
-        row = db.execute(f"""
-            SELECT COUNT(*), MIN(transaction_date), MAX(transaction_date)
-            FROM {FCT_TRANSACTIONS.full_name}
-        """).fetchone()
+        with get_database(read_only=True) as db:
+            row = db.execute(f"""
+                SELECT COUNT(*), MIN(transaction_date), MAX(transaction_date)
+                FROM {FCT_TRANSACTIONS.full_name}
+            """).fetchone()
         if row:
             status["transactions"] = {
                 "total": row[0],
@@ -45,7 +45,10 @@ def resource_status() -> str:
             }
 
     if table_exists(DIM_ACCOUNTS):
-        row = db.execute(f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}").fetchone()
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}"
+            ).fetchone()
         status["accounts"] = {"total": row[0] if row else 0}
 
     return json.dumps(status, indent=2, default=str)
@@ -55,18 +58,18 @@ def resource_status() -> str:
 def resource_accounts() -> str:
     """Account list with types, institutions, currencies. No balances."""
     logger.info("Resource read: moneybin://accounts")
-    db = get_db()
 
     if not table_exists(DIM_ACCOUNTS):
         return json.dumps({"accounts": []})
 
-    result = db.execute(f"""
-        SELECT account_id, account_type, institution_name, source_type
-        FROM {DIM_ACCOUNTS.full_name}
-        ORDER BY institution_name, account_type
-    """)
-    columns = [desc[0] for desc in result.description]
-    rows = result.fetchall()
+    with get_database(read_only=True) as db:
+        result = db.execute(f"""
+            SELECT account_id, account_type, institution_name, source_type
+            FROM {DIM_ACCOUNTS.full_name}
+            ORDER BY institution_name, account_type
+        """)
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
     records = [dict(zip(columns, row, strict=False)) for row in rows]
     return json.dumps({"accounts": records}, indent=2, default=str)
 
@@ -190,7 +193,8 @@ def resource_accounts_summary() -> str:
     No per-account data, no balances, no PII.
     """
     logger.info("Resource read: accounts://summary")
-    return json.dumps(AccountService(get_database()).summary(), default=str)
+    with get_database(read_only=True) as db:
+        return json.dumps(AccountService(db).summary(), default=str)
 
 
 @mcp.resource("moneybin://recent-curation")
@@ -204,7 +208,8 @@ def resource_recent_curation() -> str:
     logger.info("Resource read: moneybin://recent-curation")
     from moneybin.services.audit_service import AuditService
 
-    events = AuditService(get_database()).list_events(limit=50)
+    with get_database(read_only=True) as db:
+        events = AuditService(db).list_events(limit=50)
     payload = [
         {
             "audit_id": e.audit_id,
@@ -233,5 +238,6 @@ def resource_networth_summary() -> str:
     reports_networth_get tool for that.
     """
     logger.info("Resource read: net-worth://summary")
-    snapshot = NetworthService(get_database()).current()
+    with get_database(read_only=True) as db:
+        snapshot = NetworthService(db).current()
     return json.dumps(snapshot.to_dict(include_per_account=False), default=str)

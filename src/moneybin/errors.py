@@ -16,7 +16,12 @@ from __future__ import annotations
 from decimal import InvalidOperation
 from typing import Any
 
-from moneybin.database import DatabaseKeyError, database_key_error_hint
+from moneybin.database import (
+    DatabaseKeyError,
+    DatabaseLockError,
+    DatabaseNotInitializedError,
+    database_key_error_hint,
+)
 
 
 class UserError(Exception):
@@ -67,10 +72,21 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     """
     if isinstance(exc, UserError):
         return exc
-    if isinstance(exc, DatabaseKeyError):
+    if isinstance(exc, DatabaseNotInitializedError):
+        return UserError(
+            "Database not found. Run 'moneybin db init' to initialize it first.",
+            code="database_not_initialized",
+        )
+    if isinstance(exc, DatabaseLockError):
         return UserError(
             str(exc),
             code="database_locked",
+            hint="💡 Run 'moneybin db ps' for details or wait and retry",
+        )
+    if isinstance(exc, DatabaseKeyError):
+        return UserError(
+            str(exc),
+            code="wrong_key",
             hint=database_key_error_hint(),
         )
     if isinstance(exc, FileNotFoundError):
@@ -78,6 +94,9 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         # end users don't need the errno number.
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
         return UserError(msg, code="file_not_found")
+    if isinstance(exc, OSError) and not isinstance(exc, TimeoutError):
+        msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
+        return UserError(msg, code="io_error")
     if isinstance(exc, ValueError):
         return UserError(str(exc), code="invalid_input")
     if isinstance(exc, InvalidOperation):

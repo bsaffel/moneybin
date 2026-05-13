@@ -82,7 +82,7 @@ class DoctorService:
         """Discover and run all named SQLMesh standalone audits."""
         results: list[InvariantResult] = []
         try:
-            with sqlmesh_context() as ctx:
+            with sqlmesh_context(self._db) as ctx:
                 for name, audit in ctx.standalone_audits.items():
                     try:
                         sql = audit.render_audit_query().sql(dialect="duckdb")

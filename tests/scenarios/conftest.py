@@ -12,6 +12,7 @@ from collections.abc import Generator
 import keyring
 import pytest
 
+import moneybin.database as db_module
 from tests.e2e.conftest import FAST_ARGON2_ENV
 from tests.e2e.memory_keyring import MemoryKeyring
 
@@ -37,3 +38,18 @@ def _scenario_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:  # pyrigh
     )
     for key, value in FAST_ARGON2_ENV.items():
         monkeypatch.setenv(key, value)
+
+
+@pytest.fixture(autouse=True)
+def _reset_database_module_state() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Reset database module-level state before each scenario test.
+
+    Prevents _cached_encryption_key and _migration_check_done from bleeding
+    across scenario tests when running sequentially in the same process.
+    """
+    db_module._cached_encryption_key = None  # pyright: ignore[reportPrivateUsage]
+    db_module._active_write_conn = None  # pyright: ignore[reportPrivateUsage]
+    db_module._migration_check_done = set()  # pyright: ignore[reportPrivateUsage]
+    db_module._database_accessed = False  # pyright: ignore[reportPrivateUsage]
+    db_module._database_written = False  # pyright: ignore[reportPrivateUsage]
+    yield

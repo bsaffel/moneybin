@@ -34,7 +34,7 @@ def transform_plan(
         transform_apply()
         return
 
-    with sqlmesh_command("SQLMesh plan"), sqlmesh_context() as ctx:
+    with sqlmesh_command("SQLMesh plan") as db, sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=False, no_prompts=False)
 
 
@@ -68,7 +68,7 @@ def transform_seed() -> None:
 @app.command("status")
 def transform_status() -> None:
     """Show current model state and environment."""
-    with sqlmesh_command("SQLMesh status check"), sqlmesh_context() as ctx:
+    with sqlmesh_command("SQLMesh status check") as db, sqlmesh_context(db) as ctx:
         env = ctx.state_reader.get_environment("prod")
         if env:
             logger.info("Environment: prod")
@@ -88,8 +88,8 @@ def transform_status() -> None:
 def transform_validate() -> None:
     """Check that model SQL parses and resolves without errors."""
     with (
-        sqlmesh_command("SQLMesh validation", success="All models valid"),
-        sqlmesh_context() as ctx,
+        sqlmesh_command("SQLMesh validation", success="All models valid") as db,
+        sqlmesh_context(db) as ctx,
     ):
         ctx.plan(no_prompts=True, auto_apply=False)
 
@@ -105,8 +105,8 @@ def transform_audit(
 ) -> None:
     """Run data quality assertions defined in SQLMesh models."""
     with (
-        sqlmesh_command("SQLMesh audit", success="All audits passed"),
-        sqlmesh_context() as ctx,
+        sqlmesh_command("SQLMesh audit", success="All audits passed") as db,
+        sqlmesh_context(db) as ctx,
     ):
         ctx.audit(start=start, end=end)
 
@@ -130,8 +130,8 @@ def transform_restate(
         if not confirm:
             return
     with (
-        sqlmesh_command(f"Restating {model}", success=f"Restated {model}"),
-        sqlmesh_context() as ctx,
+        sqlmesh_command(f"Restating {model}", success=f"Restated {model}") as db,
+        sqlmesh_context(db) as ctx,
     ):
         ctx.plan(
             restate_models=[model],

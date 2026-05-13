@@ -50,12 +50,13 @@ def transactions_categorize_assist(
             )
         date_tuple = (date_range["start"], date_range["end"])
 
-    svc = CategorizationService(get_database())
-    redacted = svc.categorize_assist(
-        limit=effective_limit,
-        account_filter=account_filter,
-        date_range=date_tuple,
-    )
+    with get_database(read_only=True) as db:
+        svc = CategorizationService(db)
+        redacted = svc.categorize_assist(
+            limit=effective_limit,
+            account_filter=account_filter,
+            date_range=date_tuple,
+        )
 
     CATEGORIZE_ASSIST_CALLS_TOTAL.labels(surface="mcp").inc()
 

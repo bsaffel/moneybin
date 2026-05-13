@@ -14,6 +14,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.networth_service import NetworthService
 
@@ -58,11 +59,12 @@ def reports_networth_show(
     quiet: bool = quiet_option,  # noqa: ARG001 — show prints a snapshot, not informational chatter
 ) -> None:
     """Show current or as-of net worth + per-account breakdown."""
-    with handle_cli_errors(output=output) as db:
-        as_of_date = _date.fromisoformat(as_of) if as_of else None
-        snapshot = NetworthService(db).current(
-            as_of_date=as_of_date, account_ids=account
-        )
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            as_of_date = _date.fromisoformat(as_of) if as_of else None
+            snapshot = NetworthService(db).current(
+                as_of_date=as_of_date, account_ids=account
+            )
     payload = snapshot.to_dict()
 
     def _render_text(_: object) -> None:
@@ -96,10 +98,13 @@ def reports_networth_history(
     quiet: bool = quiet_option,  # noqa: ARG001 — history prints a series, not informational chatter
 ) -> None:
     """Net worth time series with period-over-period change."""
-    with handle_cli_errors(output=output) as db:
-        parsed_from = _date.fromisoformat(from_date)
-        parsed_to = _date.fromisoformat(to_date)
-        rows = NetworthService(db).history(parsed_from, parsed_to, interval=interval)
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            parsed_from = _date.fromisoformat(from_date)
+            parsed_to = _date.fromisoformat(to_date)
+            rows = NetworthService(db).history(
+                parsed_from, parsed_to, interval=interval
+            )
 
     def _render_text(_: object) -> None:
         typer.echo("period      net_worth     change_abs    change_pct")

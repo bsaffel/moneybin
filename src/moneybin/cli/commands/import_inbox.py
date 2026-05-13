@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
-import logging
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.services.inbox_service import InboxService, InboxSyncResult
-
-logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="Drop files into the inbox and drain them into MoneyBin.",
@@ -50,10 +47,13 @@ def inbox_default(
     """Default action: drain the inbox."""
     if ctx.invoked_subcommand is not None:
         return
-    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
+    from moneybin.config import get_settings  # noqa: PLC0415
+    from moneybin.database import get_database  # noqa: PLC0415
 
-    with handle_cli_errors(output=output):
-        result = InboxService.for_active_profile().sync()
+    with handle_cli_errors():
+        with get_database() as db:
+            result = InboxService(db=db, settings=get_settings()).sync()
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json
@@ -74,13 +74,10 @@ def inbox_list(
     quiet: bool = quiet_option,
 ) -> None:
     """Show what a sync would do, without moving anything."""
-    # No handle_cli_errors(): for_active_profile_no_db() exists precisely so
-    # this command works when the DB is locked or its key is unavailable.
-    try:
+    from moneybin.cli.utils import handle_cli_errors
+
+    with handle_cli_errors():
         result = InboxService.for_active_profile_no_db().enumerate()
-    except (OSError, ValueError) as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json
@@ -105,15 +102,13 @@ def inbox_path(
     quiet: bool = quiet_option,
 ) -> None:
     """Print the active profile's inbox parent directory."""
-    # No handle_cli_errors(): printing a path doesn't need the DB.
-    try:
+    from moneybin.cli.utils import handle_cli_errors
+
+    with handle_cli_errors():
         service = InboxService.for_active_profile_no_db()
         # Materialize the layout so users can immediately copy files into
         # `$(moneybin import inbox path)/inbox/...` on a fresh profile.
         service.ensure_layout()
-    except (OSError, ValueError) as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json

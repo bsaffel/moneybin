@@ -20,7 +20,9 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.utils import emit_json as emit_json
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
     CLEAR,
@@ -58,23 +60,21 @@ def accounts_list(
     ),
 ) -> None:
     """List accounts. Hides archived accounts by default."""
-    with handle_cli_errors(output=output) as db:
-        result = AccountService(db).list_accounts(
-            include_archived=include_archived, type_filter=type_filter
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            result = AccountService(db).list_accounts(
+                include_archived=include_archived, type_filter=type_filter
+            )
+    if output == OutputFormat.JSON:
+        render_or_json(
+            build_envelope(data=result.accounts, sensitivity="medium"), output
         )
-
-    def _render_text(_: object) -> None:
-        for acct in result.accounts:
-            display = acct.get("display_name") or acct.get("account_id")
-            institution = acct.get("institution_name", "")
-            acct_type = acct.get("account_type", "")
-            typer.echo(f"  {display}  [{institution}]  {acct_type}")
-
-    render_or_json(
-        build_envelope(data=result.accounts, sensitivity="medium"),
-        output,
-        render_fn=_render_text,
-    )
+        return
+    for acct in result.accounts:
+        display = acct.get("display_name") or acct.get("account_id")
+        institution = acct.get("institution_name", "")
+        acct_type = acct.get("account_type", "")
+        typer.echo(f"  {display}  [{institution}]  {acct_type}")
 
 
 @app.command("show")
@@ -84,20 +84,17 @@ def accounts_show(
     quiet: bool = quiet_option,  # noqa: ARG001
 ) -> None:
     """Show one account's full settings + dim record."""
-    with handle_cli_errors(output=output) as db:
-        record = AccountService(db).get_account(account_id)
-        if record is None:
-            raise LookupError(f"Account not found: {account_id}")
-
-    def _render_text(_: object) -> None:
-        for k, v in record.items():
-            typer.echo(f"  {k}: {v}")
-
-    render_or_json(
-        build_envelope(data=record, sensitivity="medium"),
-        output,
-        render_fn=_render_text,
-    )
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            record = AccountService(db).get_account(account_id)
+    if record is None:
+        logger.error(f"❌ Account not found: {account_id}")
+        raise typer.Exit(1)
+    if output == OutputFormat.JSON:
+        render_or_json(build_envelope(data=record, sensitivity="medium"), output)
+        return
+    for k, v in record.items():
+        typer.echo(f"  {k}: {v}")
 
 
 @app.command("rename")
@@ -109,8 +106,9 @@ def accounts_rename(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Rename an account. Empty string clears the override."""
-    with handle_cli_errors() as db:
-        result = AccountService(db).rename(account_id, display_name)
+    with handle_cli_errors():
+        with get_database() as db:
+            result = AccountService(db).rename(account_id, display_name)
     name = result.display_name or "<cleared>"
     typer.echo(f"✅ Renamed {account_id} → {name}", err=True)
 
@@ -123,8 +121,9 @@ def accounts_include(
 ) -> None:
     """Toggle account inclusion in net worth (default TRUE; --no to exclude)."""
     include = not no
-    with handle_cli_errors() as db:
-        result = AccountService(db).set_include_in_net_worth(account_id, include)
+    with handle_cli_errors():
+        with get_database() as db:
+            result = AccountService(db).set_include_in_net_worth(account_id, include)
     state = "included in" if result.include_in_net_worth else "excluded from"
     typer.echo(f"✅ Account {account_id} {state} net worth", err=True)
 
@@ -135,8 +134,9 @@ def accounts_archive(
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Archive an account. Cascades exclude_from_net_worth in the same write."""
-    with handle_cli_errors() as db:
-        AccountService(db).archive(account_id)
+    with handle_cli_errors():
+        with get_database() as db:
+            AccountService(db).archive(account_id)
     typer.echo(
         f"✅ Archived account {account_id} (also excluded from net worth)",
         err=True,
@@ -149,8 +149,9 @@ def accounts_unarchive(
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Unarchive an account. Does NOT restore include_in_net_worth."""
-    with handle_cli_errors() as db:
-        result = AccountService(db).unarchive(account_id)
+    with handle_cli_errors():
+        with get_database() as db:
+            result = AccountService(db).unarchive(account_id)
     if not result.include_in_net_worth:
         typer.echo(
             f"✅ Unarchived account {account_id} "
@@ -278,15 +279,16 @@ def accounts_set(
             if not ok:
                 raise typer.Exit(2)
 
-    with handle_cli_errors() as db:
-        # Decimal conversion inside the handler so InvalidOperation surfaces
-        # via classify_user_error rather than as a raw traceback.
-        _add(
-            "credit_limit",
-            Decimal(credit_limit) if credit_limit is not None else None,
-            clear_credit_limit,
-        )
-        _, warnings = AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
+    with handle_cli_errors():
+        with get_database() as db:
+            # Decimal conversion inside the handler so InvalidOperation surfaces
+            # via classify_user_error rather than as a raw traceback.
+            _add(
+                "credit_limit",
+                Decimal(credit_limit) if credit_limit is not None else None,
+                clear_credit_limit,
+            )
+            _, warnings = AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
     for w in warnings:
         typer.echo(f"⚠️  {w.get('message', w)}", err=True)
     typer.echo(
@@ -316,15 +318,15 @@ def accounts_resolve(
     Use this before commands that need an account_id when you only have a
     natural-language reference.
     """
-    with handle_cli_errors(output=output) as db:
-        matches = AccountService(db).resolve(query=query, limit=limit)
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            matches = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:
-        envelope = build_envelope(
-            data=[m.to_dict() for m in matches],
-            sensitivity="low",
+        render_or_json(
+            build_envelope(data=[m.to_dict() for m in matches], sensitivity="low"),
+            output,
         )
-        typer.echo(envelope.to_json())
         return
 
     if not matches:

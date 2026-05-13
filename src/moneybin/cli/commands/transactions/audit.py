@@ -17,6 +17,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -31,8 +32,9 @@ def transactions_audit(
     """List audit events for one transaction."""
     from moneybin.services.audit_service import AuditService
 
-    with handle_cli_errors(output=output) as db:
-        events = AuditService(db).list_events(target_id=transaction_id, limit=limit)
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            events = AuditService(db).list_events(target_id=transaction_id, limit=limit)
 
     def _render_text(_: object) -> None:
         if not events:

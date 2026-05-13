@@ -66,15 +66,17 @@ def test_migration_roundtrip_preserves_row_counts() -> None:
         run_step("generate", scenario.setup, db, env=env)
         run_step("transform", scenario.setup, db, env=env)
 
-        # Steps may have replaced the singleton — re-fetch.
+        db.close()
         db = get_database()
         pre = {tbl: _row_count(db, tbl) for tbl in tracked_tables}
 
         run_step("migrate", scenario.setup, db, env=env)
         run_step("match", scenario.setup, db, env=env)
 
+        db.close()
         db = get_database()
         post = {tbl: _row_count(db, tbl) for tbl in tracked_tables}
+        db.close()
 
     assert pre == post, f"row counts changed across migrate: pre={pre} post={post}"
     # Sanity: the snapshot is meaningful only if data actually exists.

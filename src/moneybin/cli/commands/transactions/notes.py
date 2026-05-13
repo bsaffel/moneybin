@@ -16,6 +16,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Note
 
@@ -46,8 +47,15 @@ def transactions_notes_add(
     """Add a new note to a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        note = TransactionService(db).add_note(transaction_id, text, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                note = TransactionService(db).add_note(
+                    transaction_id, text, actor="cli"
+                )
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
@@ -65,8 +73,9 @@ def transactions_notes_list(
     """List all notes on a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        notes = TransactionService(db).list_notes(transaction_id)
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            notes = TransactionService(db).list_notes(transaction_id)
 
     payload = [_note_to_dict(n) for n in notes]
     if output == OutputFormat.JSON:
@@ -90,8 +99,16 @@ def transactions_notes_edit(
     """Edit an existing note's text."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        note = TransactionService(db).edit_note(note_id, text, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                note = TransactionService(db).edit_note(note_id, text, actor="cli")
+    except LookupError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
@@ -114,8 +131,13 @@ def transactions_notes_delete(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    with handle_cli_errors(output=output) as db:
-        TransactionService(db).delete_note(note_id, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                TransactionService(db).delete_note(note_id, actor="cli")
+    except LookupError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         render_or_json(

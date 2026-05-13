@@ -5,9 +5,14 @@ These tests exercise the underlying tool functions directly. Registration
 with the FastMCP server is covered by tests/mcp/test_visibility.py.
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+
 import pytest
 from fastmcp import FastMCP
 
+from moneybin.database import get_database
 from moneybin.mcp.tools.accounts import accounts_list, register_accounts_tools
 from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
@@ -102,11 +107,10 @@ class TestToolRegistration:
             assert "credit_limit" not in account
 
     @pytest.mark.unit
-    async def test_sql_query_returns_envelope(self, mcp_db: object) -> None:
+    async def test_sql_query_returns_envelope(self, mcp_db: Path) -> None:
 
-        from moneybin.mcp.server import get_db
-
-        get_db().execute(_INSERT_TRANSACTIONS)
+        with get_database() as db:
+            db.conn.execute(_INSERT_TRANSACTIONS)
 
         # Also exercise registration to ensure no smoke errors.
         register_sql_tools(FastMCP("test"))

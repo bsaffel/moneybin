@@ -17,6 +17,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,15 @@ def transactions_tags_add(
     """Apply one or more tags to a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        added = TransactionService(db).add_tags(transaction_id, tags, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                added = TransactionService(db).add_tags(
+                    transaction_id, tags, actor="cli"
+                )
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -63,8 +71,11 @@ def transactions_tags_remove(
     """Remove one or more tags from a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        removed = TransactionService(db).remove_tags(transaction_id, tags, actor="cli")
+    with handle_cli_errors():
+        with get_database() as db:
+            removed = TransactionService(db).remove_tags(
+                transaction_id, tags, actor="cli"
+            )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -93,28 +104,29 @@ def transactions_tags_list(
     """List tags on a transaction, or all distinct tags with usage counts."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        svc = TransactionService(db)
-        if transaction_id is not None:
-            tags = svc.list_tags(transaction_id)
-            if output == OutputFormat.JSON:
-                render_or_json(
-                    build_envelope(
-                        data={"transaction_id": transaction_id, "tags": tags},
-                        sensitivity="low",
-                    ),
-                    output,
-                )
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            svc = TransactionService(db)
+            if transaction_id is not None:
+                tags = svc.list_tags(transaction_id)
+                if output == OutputFormat.JSON:
+                    render_or_json(
+                        build_envelope(
+                            data={"transaction_id": transaction_id, "tags": tags},
+                            sensitivity="low",
+                        ),
+                        output,
+                    )
+                    return
+                if not tags:
+                    if not quiet:
+                        logger.info(f"No tags on {transaction_id}")
+                    return
+                for t in tags:
+                    typer.echo(t)
                 return
-            if not tags:
-                if not quiet:
-                    logger.info(f"No tags on {transaction_id}")
-                return
-            for t in tags:
-                typer.echo(t)
-            return
 
-        rows = svc.list_distinct_tags()
+            rows = svc.list_distinct_tags()
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -142,8 +154,13 @@ def transactions_tags_rename(
     """Rename a tag globally (all transactions). Emits a parent audit event."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        result = TransactionService(db).rename_tag(old, new, actor="cli")
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                result = TransactionService(db).rename_tag(old, new, actor="cli")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         render_or_json(

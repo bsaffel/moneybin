@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.budget_service import (
     BudgetCategoryStatus,
@@ -65,9 +64,7 @@ def budget_db(tmp_path: Path) -> Generator[Database, None, None]:
         ('T2', 'Food & Drink', 'Bakeries', CURRENT_TIMESTAMP, 'user')
     """)  # noqa: S608  # test input, not executing SQL
 
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 

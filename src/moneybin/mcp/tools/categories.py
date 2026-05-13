@@ -14,9 +14,10 @@ from moneybin.services.categorization_service import CategorizationService
 @mcp_tool(sensitivity="low")
 def categories_list(include_inactive: bool = False) -> ResponseEnvelope:
     """List all categories in the taxonomy."""
-    data = CategorizationService(get_database()).get_all_categories(
-        include_inactive=include_inactive
-    )
+    with get_database(read_only=True) as db:
+        data = CategorizationService(db).get_all_categories(
+            include_inactive=include_inactive
+        )
     return build_envelope(
         data=data,
         sensitivity="low",
@@ -35,11 +36,12 @@ def categories_create(
     description: str | None = None,
 ) -> ResponseEnvelope:
     """Create a custom category or subcategory (non-default, active by default)."""
-    category_id = CategorizationService(get_database()).create_category(
-        category,
-        subcategory=subcategory,
-        description=description,
-    )
+    with get_database() as db:
+        category_id = CategorizationService(db).create_category(
+            category,
+            subcategory=subcategory,
+            description=description,
+        )
     sub = f" / {subcategory}" if subcategory else ""
     return build_envelope(
         data={
@@ -59,10 +61,11 @@ def categories_toggle(
     is_active: bool,
 ) -> ResponseEnvelope:
     """Enable or disable a category. Existing categorizations are preserved."""
-    CategorizationService(get_database()).toggle_category(
-        category_id,
-        is_active=is_active,
-    )
+    with get_database() as db:
+        CategorizationService(db).toggle_category(
+            category_id,
+            is_active=is_active,
+        )
     action = "enabled" if is_active else "disabled"
     return build_envelope(
         data={"category_id": category_id, "action": action},

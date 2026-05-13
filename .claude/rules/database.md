@@ -9,25 +9,31 @@ paths: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.
 
 **Never call `duckdb.connect()` directly.** Use the `Database` class (`src/moneybin/database.py`) via `get_database()` for all database access. The `Database` class handles encryption key retrieval, encrypted file attachment, extension loading, schema initialization, and migrations.
 
-Connections are **short-lived and purpose-declared** — acquire, use, release immediately via the context manager. Declare read intent with `read_only=True` to allow concurrent cross-process reads (~14 ms overhead); write connections are exclusive (~79 ms) and retry automatically on lock contention.
-
-> **Target API — not yet implemented.** The usage below reflects the design from [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) (draft). The current `get_database()` takes no parameters, returns a singleton, and does not support context-manager use (exiting `__exit__` closes the singleton, leaving `_database_instance` pointing to a dead connection). Do not use either the `read_only` parameter or the context-manager pattern until that spec is implemented.
+Connections are **short-lived and purpose-declared** — acquire, use, release immediately via the context manager:
 
 ```python
 from moneybin.database import get_database
 
-# read path — lightweight, coexists with other read-only connections
+# read path — lightweight (~14 ms), coexists with writers across processes
 with get_database(read_only=True) as db:
     result = db.execute(
         "SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id]
     )
 
-# write path — exclusive; retries up to max_wait seconds on contention
+# write path — exclusive (~79 ms); retries up to max_wait on contention
 with get_database() as db:
     db.execute("INSERT INTO app.some_table ...")
 ```
 
-See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [ADR-010](../../docs/decisions/010-writer-coordination.md) for the full design.
+**Lock contention** (`DatabaseLockError`) is raised after `max_wait` seconds
+(default 5 s). The error message identifies the blocking process when `lsof`
+is available. `get_database()` retries automatically with exponential backoff.
+
+**`DatabaseNotInitializedError`** is raised by `get_database(read_only=True)`
+when the database file does not exist. Both exceptions are caught by
+`handle_cli_errors()` and classified as user-facing errors.
+
+See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [ADR-010](../../docs/decisions/010-writer-coordination.md).
 
 ## Batch Data Loading
 

@@ -9,7 +9,7 @@ error (per spec — splits are warn-not-block).
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import typer
 
@@ -20,6 +20,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Split
 
@@ -59,20 +60,26 @@ def transactions_splits_add(
 
     try:
         amount_dec = Decimal(amount)
-    except Exception as e:
-        raise typer.BadParameter(f"Invalid decimal: {amount!r}") from e
+    except InvalidOperation as e:
+        typer.echo(f"❌ Invalid amount {amount!r}", err=True)
+        raise typer.Exit(2) from e
 
-    with handle_cli_errors(output=output) as db:
-        svc = TransactionService(db)
-        split = svc.add_split(
-            transaction_id,
-            amount_dec,
-            category=category,
-            subcategory=subcategory,
-            note=note,
-            actor="cli",
-        )
-        residual = svc.splits_balance(transaction_id)
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                svc = TransactionService(db)
+                split = svc.add_split(
+                    transaction_id,
+                    amount_dec,
+                    category=category,
+                    subcategory=subcategory,
+                    note=note,
+                    actor="cli",
+                )
+                residual = svc.splits_balance(transaction_id)
+    except LookupError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     payload = {"split": _split_to_dict(split), "residual": str(residual)}
     if output == OutputFormat.JSON:
@@ -94,8 +101,9 @@ def transactions_splits_list(
     """List splits on a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors(output=output) as db:
-        splits = TransactionService(db).list_splits(transaction_id)
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            splits = TransactionService(db).list_splits(transaction_id)
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -126,18 +134,24 @@ def transactions_splits_remove(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    with handle_cli_errors(output=output) as db:
-        svc = TransactionService(db)
-        # Look up parent before delete so we can report residual after.
-        parent = db.conn.execute(
-            "SELECT transaction_id FROM app.transaction_splits WHERE split_id = ?",
-            [split_id],
-        ).fetchone()
-        if parent is None:
-            raise LookupError(f"split_id={split_id} not found")
-        transaction_id = parent[0]
-        svc.remove_split(split_id, actor="cli")
-        residual = svc.splits_balance(transaction_id)
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                svc = TransactionService(db)
+                # Look up parent before delete so we can report residual after.
+                parent = db.conn.execute(
+                    "SELECT transaction_id FROM app.transaction_splits WHERE split_id = ?",
+                    [split_id],
+                ).fetchone()
+                if parent is None:
+                    typer.echo(f"❌ split_id={split_id} not found", err=True)
+                    raise typer.Exit(1)
+                transaction_id = parent[0]
+                svc.remove_split(split_id, actor="cli")
+                residual = svc.splits_balance(transaction_id)
+    except LookupError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -173,8 +187,9 @@ def transactions_splits_clear(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    with handle_cli_errors(output=output) as db:
-        TransactionService(db).clear_splits(transaction_id, actor="cli")
+    with handle_cli_errors():
+        with get_database() as db:
+            TransactionService(db).clear_splits(transaction_id, actor="cli")
 
     if output == OutputFormat.JSON:
         render_or_json(

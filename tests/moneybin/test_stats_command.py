@@ -45,9 +45,11 @@ class TestStatsLeafShape:
         monkeypatch.setenv("MONEYBIN_PROFILE", "test")
 
         mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
         mock_db.execute.return_value.fetchall.return_value = []
         with (
-            patch("moneybin.cli.utils.get_database", return_value=mock_db),
+            patch("moneybin.cli.commands.stats.get_database", return_value=mock_db),
             patch("moneybin.cli.utils.ensure_default_profile", return_value="test"),
             patch("moneybin.cli.utils.set_current_profile"),
             patch("moneybin.cli.utils.setup_observability"),
@@ -74,9 +76,11 @@ class TestStatsCommand:
     def test_show_no_metrics_prints_hint(self, runner: CliRunner) -> None:
         """Should display a hint when no metrics exist."""
         mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
+        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, [])
 
         assert result.exit_code == 0
@@ -86,6 +90,8 @@ class TestStatsCommand:
     def test_show_with_rows_displays_metrics(self, runner: CliRunner) -> None:
         """Should display formatted metric values when rows exist."""
         mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
         mock_db.execute.return_value.fetchall.return_value = [
             (
                 "moneybin_import_records",
@@ -97,7 +103,7 @@ class TestStatsCommand:
             ),
         ]
 
-        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
+        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, [])
 
         assert result.exit_code == 0
@@ -107,9 +113,11 @@ class TestStatsCommand:
     def test_show_json_output(self, runner: CliRunner) -> None:
         """--output json should return valid JSON."""
         mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
+        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, ["--output", "json"])
 
         assert result.exit_code == 0
@@ -120,9 +128,11 @@ class TestStatsCommand:
     def test_show_with_since_filter(self, runner: CliRunner) -> None:
         """--since should filter metrics by time window."""
         mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
         mock_db.execute.return_value.fetchall.return_value = []
 
-        with patch("moneybin.cli.utils.get_database", return_value=mock_db):
+        with patch("moneybin.cli.commands.stats.get_database", return_value=mock_db):
             result = runner.invoke(stats_app, ["--since", "7d"])
 
         assert result.exit_code == 0
@@ -133,7 +143,7 @@ class TestStatsCommand:
         from moneybin.database import DatabaseKeyError
 
         with patch(
-            "moneybin.cli.utils.get_database",
+            "moneybin.cli.commands.stats.get_database",
             side_effect=DatabaseKeyError("locked"),
         ):
             result = runner.invoke(stats_app, [])

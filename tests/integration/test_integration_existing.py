@@ -162,6 +162,12 @@ class TestKeyRotation:
         runner = CliRunner()
         db_path = tmp_path / "rotate_test.duckdb"
 
+        # Clear any cached key from a prior xdist worker test to prevent it
+        # being used when opening this test's fresh DB.
+        import moneybin.database as _db_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(_db_mod, "_cached_encryption_key", None)
+
         mock_settings = MagicMock()
         mock_settings.database.path = db_path
         mock_settings.database.backup_path = tmp_path / "backups"
