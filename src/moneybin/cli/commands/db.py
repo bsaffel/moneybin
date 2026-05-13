@@ -559,6 +559,11 @@ def db_lock() -> None:
     store = SecretStore()
     try:
         store.delete_key("DATABASE__ENCRYPTION_KEY")
+        from moneybin.database import (  # noqa: PLC0415 — defer to avoid cold-start cost
+            invalidate_encryption_key_cache,
+        )
+
+        invalidate_encryption_key_cache()
         logger.info("✅ Database locked — key cleared from keychain")
     except SecretNotFoundError:
         logger.info("Database is already locked (no key in keychain)")
@@ -621,6 +626,11 @@ def db_unlock() -> None:
     try:
         with Database(settings.database.path, secret_store=store):
             pass
+        from moneybin.database import (  # noqa: PLC0415 — defer to avoid cold-start cost
+            invalidate_encryption_key_cache,
+        )
+
+        invalidate_encryption_key_cache()
         logger.info("✅ Database unlocked")
     except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
         try:
