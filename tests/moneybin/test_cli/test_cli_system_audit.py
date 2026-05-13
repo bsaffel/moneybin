@@ -40,7 +40,9 @@ def test_system_audit_list_filters_by_action(runner: CliRunner, db: Database) ->
         ["system", "audit", "list", "--action", "note.%", "--output", "json"],
     )
     assert result.exit_code == 0, result.output
-    events = json.loads(result.stdout)["audit_events"]
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    events = payload["data"]
     assert events
     assert all(e["action"].startswith("note.") for e in events)
 
@@ -52,7 +54,9 @@ def test_system_audit_list_filter_by_target_id(runner: CliRunner, db: Database) 
         ["system", "audit", "list", "--target-id", "T1", "--output", "json"],
     )
     assert result.exit_code == 0
-    events = json.loads(result.stdout)["audit_events"]
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    events = payload["data"]
     assert all(e["target_id"] == "T1" for e in events)
 
 
@@ -66,7 +70,9 @@ def test_system_audit_show_returns_chain(runner: CliRunner, db: Database) -> Non
         ["system", "audit", "show", rename.parent_audit_id, "--output", "json"],
     )
     assert result.exit_code == 0, result.output
-    chain = json.loads(result.stdout)["audit_chain"]
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    chain = payload["data"]
     actions = {e["action"] for e in chain}
     assert "tag.rename" in actions
     assert "tag.rename_row" in actions

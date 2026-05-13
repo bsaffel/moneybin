@@ -28,6 +28,24 @@ def test_classify_file_not_found_returns_user_error() -> None:
     assert result.hint is None
 
 
+def test_classify_lookup_error_returns_not_found() -> None:
+    """Plain LookupError maps to a UserError with code not_found."""
+    result = classify_user_error(LookupError("note abc not found"))
+    assert result is not None
+    assert result.code == "not_found"
+    assert "not found" in result.message
+
+
+def test_classify_key_error_returns_none() -> None:
+    """KeyError (LookupError subclass) propagates as internal error, not not_found."""
+    assert classify_user_error(KeyError("bad_key")) is None
+
+
+def test_classify_index_error_returns_none() -> None:
+    """IndexError (LookupError subclass) propagates as internal error, not not_found."""
+    assert classify_user_error(IndexError(0)) is None
+
+
 def test_classify_unknown_exception_returns_none() -> None:
     """Unrecognized exceptions return None so callers can re-raise."""
     assert classify_user_error(RuntimeError("internal bug")) is None

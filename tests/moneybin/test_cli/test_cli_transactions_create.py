@@ -60,7 +60,7 @@ def test_transactions_create_json_output(runner: CliRunner, db: Database) -> Non
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
-    body = payload["manual_create"]
+    body = payload["data"]
     assert body["transaction_id"]
     assert body["import_id"]
     assert body["source_transaction_id"].startswith("manual_")
@@ -90,7 +90,7 @@ def test_transactions_create_with_note_and_tags(
         ],
     )
     assert result.exit_code == 0, result.output
-    body = json.loads(result.stdout)["manual_create"]
+    body = json.loads(result.stdout)["data"]
     assert body["note_id"] is not None
     assert sorted(body["tags"]) == ["food", "personal"]
     row = db.conn.execute(

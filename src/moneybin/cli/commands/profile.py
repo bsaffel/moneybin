@@ -6,8 +6,13 @@ from typing import Annotated
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.profile_service import (
     ProfileExistsError,
     ProfileNotFoundError,
@@ -77,7 +82,7 @@ def profile_list(
     profiles = svc.list()
 
     if output == OutputFormat.JSON:
-        emit_json("profiles", profiles)
+        render_or_json(build_envelope(data=profiles, sensitivity="low"), output)
         return
 
     if not profiles:
@@ -152,7 +157,7 @@ def profile_show(
     try:
         info = svc.show(name)
         if output == OutputFormat.JSON:
-            emit_json("profile", info)
+            render_or_json(build_envelope(data=info, sensitivity="low"), output)
             return
         marker = " (active)" if info["active"] else ""
         logger.info(f"Profile: {info['name']}{marker}")

@@ -5,10 +5,16 @@ import logging
 import duckdb as duckdb_mod
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import VALID_MATCH_TYPES, get_match_log, undo_match
+from moneybin.protocol.envelope import build_envelope
 
 app = typer.Typer(
     help="Review and manage transaction matches (dedup, transfers)",
@@ -74,11 +80,11 @@ def matches_history(
         logger.error("❌ --type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         entries = get_match_log(db, limit=limit, match_type=match_type)
 
         if output == OutputFormat.JSON:
-            emit_json("matches", entries)
+            render_or_json(build_envelope(data=entries, sensitivity="low"), output)
             return
 
         if not entries:

@@ -39,6 +39,7 @@ Every tool returns:
 
 ```json
 {
+  "status": "ok",
   "summary": {
     "total_count": 247,
     "returned_count": 50,
@@ -51,6 +52,20 @@ Every tool returns:
   "actions": ["Use reports_spending_by_category for category breakdown"]
 }
 ```
+
+`status` is always present: `"ok"` when the tool succeeded, `"error"` when it failed. On failure, an `error` field is also present:
+
+```json
+{
+  "status": "error",
+  "summary": {"total_count": 0, "returned_count": 0, "has_more": false, "sensitivity": "low", "display_currency": "USD"},
+  "data": [],
+  "actions": [],
+  "error": {"message": "Database is locked", "code": "database_locked", "hint": "Run `moneybin db unlock`"}
+}
+```
+
+This contract applies to all MCP tool responses and to CLI `--output json` responses on commands that use `render_or_json`; remaining CLI commands adopt the envelope shape incrementally.
 
 Write tools return a result object in `data` (not an array). Currency lives in `summary.display_currency`, not per-row.
 

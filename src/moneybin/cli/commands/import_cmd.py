@@ -19,9 +19,15 @@ from typing import TYPE_CHECKING, get_args
 import typer
 
 from moneybin.cli.commands import import_inbox, import_labels
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_json_error,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
+from moneybin.protocol.envelope import build_envelope
 
 if TYPE_CHECKING:
     from moneybin.database import Database
@@ -280,46 +286,49 @@ def import_history(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.loaders.tabular_loader import TabularLoader
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         loader = TabularLoader(db)
         records = loader.get_import_history(limit=limit, import_id=import_id)
 
-    if output == OutputFormat.JSON:
-        emit_json("imports", records)
-        return
+    def _render_text(_: object) -> None:
+        if not records:
+            if not quiet:
+                if import_id:
+                    logger.warning(f"⚠️  No import found with ID: {import_id}")
+                else:
+                    logger.warning("⚠️  No import history found")
+            return
 
-    if not records:
-        if not quiet:
-            if import_id:
-                logger.warning(f"⚠️  No import found with ID: {import_id}")
-            else:
-                logger.warning("⚠️  No import history found")
-        return
-
-    typer.echo(
-        f"\n{'Import ID':<38} {'Status':<10} {'Imported':>8} {'Rejected':>8}  {'Source File'}"
-    )
-    typer.echo("-" * 100)
-    for rec in records:
-        imp_id = str(rec.get("import_id", ""))
-        status = str(rec.get("status", ""))
-        rows_imported = rec.get("rows_imported") or 0
-        rows_rejected = rec.get("rows_rejected") or 0
-        source_file = str(rec.get("source_file", ""))
-        # Truncate source file path for display
-        display_path = Path(source_file).name if source_file else ""
         typer.echo(
-            f"{imp_id:<38} {status:<10} {rows_imported:>8} {rows_rejected:>8}  "
-            f"{display_path}"
+            f"\n{'Import ID':<38} {'Status':<10} {'Imported':>8} {'Rejected':>8}  {'Source File'}"
         )
+        typer.echo("-" * 100)
+        for rec in records:
+            imp_id = str(rec.get("import_id", ""))
+            status = str(rec.get("status", ""))
+            rows_imported = rec.get("rows_imported") or 0
+            rows_rejected = rec.get("rows_rejected") or 0
+            source_file = str(rec.get("source_file", ""))
+            # Truncate source file path for display
+            display_path = Path(source_file).name if source_file else ""
+            typer.echo(
+                f"{imp_id:<38} {status:<10} {rows_imported:>8} {rows_rejected:>8}  "
+                f"{display_path}"
+            )
 
-    if import_id and records:
-        rec = records[0]
-        typer.echo("\nDetails:")
-        for key, value in rec.items():
-            if value is not None:
-                typer.echo(f"  {key}: {value}")
-    typer.echo()
+        if import_id and records:
+            rec = records[0]
+            typer.echo("\nDetails:")
+            for key, value in rec.items():
+                if value is not None:
+                    typer.echo(f"  {key}: {value}")
+        typer.echo()
+
+    render_or_json(
+        build_envelope(data=records, sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("revert")
@@ -519,39 +528,43 @@ def formats_list(
 
     all_formats, builtin = _load_all_formats(db)
 
-    if output == OutputFormat.JSON:
-        formats_payload = [
-            {
-                "name": fmt.name,
-                "institution": fmt.institution_name,
-                "sign_convention": fmt.sign_convention,
-                "date_format": fmt.date_format,
-                "source": "builtin" if fmt.name in builtin else "user",
-            }
-            for fmt in sorted(all_formats.values(), key=lambda f: f.name)
-        ]
-        emit_json("formats", formats_payload)
-        return
+    formats_payload = [
+        {
+            "name": fmt.name,
+            "institution": fmt.institution_name,
+            "sign_convention": fmt.sign_convention,
+            "date_format": fmt.date_format,
+            "source": "builtin" if fmt.name in builtin else "user",
+        }
+        for fmt in sorted(all_formats.values(), key=lambda f: f.name)
+    ]
 
-    if not all_formats:
-        if not quiet:
-            logger.warning("⚠️  No formats found")
-        return
+    def _render_text(_: object) -> None:
+        if not all_formats:
+            if not quiet:
+                logger.warning("⚠️  No formats found")
+            return
 
-    typer.echo(
-        f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} {'Date Format'}"
-    )
-    typer.echo("-" * 100)
-    for fmt in sorted(all_formats.values(), key=lambda f: f.name):
-        source_tag = " (user)" if fmt.name not in builtin else ""
         typer.echo(
-            f"{fmt.name:<24} {fmt.institution_name:<28} "
-            f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
+            f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} {'Date Format'}"
         )
-    if not quiet:
-        n_builtin = len(builtin)
-        n_user = len(all_formats) - len(builtin)
-        typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
+        typer.echo("-" * 100)
+        for fmt in sorted(all_formats.values(), key=lambda f: f.name):
+            source_tag = " (user)" if fmt.name not in builtin else ""
+            typer.echo(
+                f"{fmt.name:<24} {fmt.institution_name:<28} "
+                f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
+            )
+        if not quiet:
+            n_builtin = len(builtin)
+            n_user = len(all_formats) - len(builtin)
+            typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
+
+    render_or_json(
+        build_envelope(data=formats_payload, sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @formats_app.command("show")
@@ -579,52 +592,69 @@ def formats_show(
     fmt = all_formats.get(name)
 
     if fmt is None:
-        logger.error(f"❌ Format not found: {name!r}")
         available = ", ".join(sorted(all_formats.keys())) or "(none)"
-        logger.info(f"💡 Available formats: {available}")
+        if output == OutputFormat.JSON:
+            from moneybin.errors import (
+                UserError,  # noqa: PLC0415 — avoid top-level import
+            )
+
+            emit_json_error(
+                UserError(
+                    f"Format not found: {name!r}",
+                    code="not_found",
+                    hint=f"Available formats: {available}",
+                )
+            )
+        else:
+            logger.error(f"❌ Format not found: {name!r}")
+            logger.info(f"💡 Available formats: {available}")
         raise typer.Exit(1)
 
-    if output == OutputFormat.JSON:
-        payload = {
-            "name": fmt.name,
-            "institution": fmt.institution_name,
-            "file_type": fmt.file_type,
-            "delimiter": fmt.delimiter,
-            "encoding": fmt.encoding,
-            "skip_rows": fmt.skip_rows,
-            "sheet": fmt.sheet,
-            "sign_convention": fmt.sign_convention,
-            "date_format": fmt.date_format,
-            "number_format": fmt.number_format,
-            "multi_account": fmt.multi_account,
-            "header_signature": fmt.header_signature,
-            "field_mapping": dict(fmt.field_mapping),
-            "skip_trailing_patterns": fmt.skip_trailing_patterns,
-        }
-        emit_json("format", payload)
-        return
+    payload = {
+        "name": fmt.name,
+        "institution": fmt.institution_name,
+        "file_type": fmt.file_type,
+        "delimiter": fmt.delimiter,
+        "encoding": fmt.encoding,
+        "skip_rows": fmt.skip_rows,
+        "sheet": fmt.sheet,
+        "sign_convention": fmt.sign_convention,
+        "date_format": fmt.date_format,
+        "number_format": fmt.number_format,
+        "multi_account": fmt.multi_account,
+        "header_signature": fmt.header_signature,
+        "field_mapping": dict(fmt.field_mapping),
+        "skip_trailing_patterns": fmt.skip_trailing_patterns,
+    }
 
-    typer.echo(f"\nFormat: {fmt.name}")
-    typer.echo(f"Institution: {fmt.institution_name}")
-    typer.echo(f"File type: {fmt.file_type}")
-    if fmt.delimiter:
-        typer.echo(f"Delimiter: {fmt.delimiter!r}")
-    typer.echo(f"Encoding: {fmt.encoding}")
-    if fmt.skip_rows:
-        typer.echo(f"Skip rows: {fmt.skip_rows}")
-    if fmt.sheet:
-        typer.echo(f"Sheet: {fmt.sheet}")
-    typer.echo(f"Sign convention: {fmt.sign_convention}")
-    typer.echo(f"Date format: {fmt.date_format}")
-    typer.echo(f"Number format: {fmt.number_format}")
-    typer.echo(f"Multi-account: {fmt.multi_account}")
-    typer.echo(f"\nHeader signature: {fmt.header_signature}")
-    typer.echo("\nField mapping:")
-    for field, col in fmt.field_mapping.items():
-        typer.echo(f"  {field} ← {col}")
-    if fmt.skip_trailing_patterns:
-        typer.echo(f"\nSkip trailing patterns: {fmt.skip_trailing_patterns}")
-    typer.echo()
+    def _render_text(_: object) -> None:
+        typer.echo(f"\nFormat: {fmt.name}")
+        typer.echo(f"Institution: {fmt.institution_name}")
+        typer.echo(f"File type: {fmt.file_type}")
+        if fmt.delimiter:
+            typer.echo(f"Delimiter: {fmt.delimiter!r}")
+        typer.echo(f"Encoding: {fmt.encoding}")
+        if fmt.skip_rows:
+            typer.echo(f"Skip rows: {fmt.skip_rows}")
+        if fmt.sheet:
+            typer.echo(f"Sheet: {fmt.sheet}")
+        typer.echo(f"Sign convention: {fmt.sign_convention}")
+        typer.echo(f"Date format: {fmt.date_format}")
+        typer.echo(f"Number format: {fmt.number_format}")
+        typer.echo(f"Multi-account: {fmt.multi_account}")
+        typer.echo(f"\nHeader signature: {fmt.header_signature}")
+        typer.echo("\nField mapping:")
+        for field, col in fmt.field_mapping.items():
+            typer.echo(f"  {field} ← {col}")
+        if fmt.skip_trailing_patterns:
+            typer.echo(f"\nSkip trailing patterns: {fmt.skip_trailing_patterns}")
+        typer.echo()
+
+    render_or_json(
+        build_envelope(data=payload, sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @formats_app.command("delete")

@@ -9,12 +9,18 @@ error (per spec — splits are warn-not-block).
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Split
 
 logger = logging.getLogger(__name__)
@@ -53,29 +59,24 @@ def transactions_splits_add(
 
     try:
         amount_dec = Decimal(amount)
-    except InvalidOperation as e:
-        typer.echo(f"❌ Invalid amount {amount!r}", err=True)
-        raise typer.Exit(2) from e
+    except Exception as e:
+        raise typer.BadParameter(f"Invalid decimal: {amount!r}") from e
 
-    try:
-        with handle_cli_errors() as db:
-            svc = TransactionService(db)
-            split = svc.add_split(
-                transaction_id,
-                amount_dec,
-                category=category,
-                subcategory=subcategory,
-                note=note,
-                actor="cli",
-            )
-            residual = svc.splits_balance(transaction_id)
-    except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        svc = TransactionService(db)
+        split = svc.add_split(
+            transaction_id,
+            amount_dec,
+            category=category,
+            subcategory=subcategory,
+            note=note,
+            actor="cli",
+        )
+        residual = svc.splits_balance(transaction_id)
 
     payload = {"split": _split_to_dict(split), "residual": str(residual)}
     if output == OutputFormat.JSON:
-        emit_json("split", payload)
+        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
     else:
         logger.info(f"✅ Added split {split.split_id} to {transaction_id}")
     if residual != Decimal("0"):
@@ -93,11 +94,14 @@ def transactions_splits_list(
     """List splits on a transaction."""
     from moneybin.services.transaction_service import TransactionService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         splits = TransactionService(db).list_splits(transaction_id)
 
     if output == OutputFormat.JSON:
-        emit_json("splits", [_split_to_dict(s) for s in splits])
+        render_or_json(
+            build_envelope(data=[_split_to_dict(s) for s in splits], sensitivity="low"),
+            output,
+        )
         return
     if not splits:
         if not quiet:
@@ -122,32 +126,30 @@ def transactions_splits_remove(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    try:
-        with handle_cli_errors() as db:
-            svc = TransactionService(db)
-            # Look up parent before delete so we can report residual after.
-            parent = db.conn.execute(
-                "SELECT transaction_id FROM app.transaction_splits WHERE split_id = ?",
-                [split_id],
-            ).fetchone()
-            if parent is None:
-                typer.echo(f"❌ split_id={split_id} not found", err=True)
-                raise typer.Exit(1)
-            transaction_id = parent[0]
-            svc.remove_split(split_id, actor="cli")
-            residual = svc.splits_balance(transaction_id)
-    except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        svc = TransactionService(db)
+        # Look up parent before delete so we can report residual after.
+        parent = db.conn.execute(
+            "SELECT transaction_id FROM app.transaction_splits WHERE split_id = ?",
+            [split_id],
+        ).fetchone()
+        if parent is None:
+            raise LookupError(f"split_id={split_id} not found")
+        transaction_id = parent[0]
+        svc.remove_split(split_id, actor="cli")
+        residual = svc.splits_balance(transaction_id)
 
     if output == OutputFormat.JSON:
-        emit_json(
-            "split_remove",
-            {
-                "split_id": split_id,
-                "transaction_id": transaction_id,
-                "residual": str(residual),
-            },
+        render_or_json(
+            build_envelope(
+                data={
+                    "split_id": split_id,
+                    "transaction_id": transaction_id,
+                    "residual": str(residual),
+                },
+                sensitivity="low",
+            ),
+            output,
         )
     else:
         logger.info(f"✅ Removed split {split_id}")
@@ -171,10 +173,16 @@ def transactions_splits_clear(
             logger.info("Cancelled")
             raise typer.Exit(0)
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         TransactionService(db).clear_splits(transaction_id, actor="cli")
 
     if output == OutputFormat.JSON:
-        emit_json("split_clear", {"transaction_id": transaction_id, "cleared": True})
+        render_or_json(
+            build_envelope(
+                data={"transaction_id": transaction_id, "cleared": True},
+                sensitivity="low",
+            ),
+            output,
+        )
         return
     logger.info(f"✅ Cleared splits on {transaction_id}")

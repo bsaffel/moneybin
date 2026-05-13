@@ -5,15 +5,20 @@ need these — auto-upgrade in Database.__init__() handles everything
 transparently.
 """
 
-import json
 import logging
 from typing import Annotated
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.migrations import MigrationRunner, get_current_versions
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,7 @@ def migrate_status(
     quiet: bool = quiet_option,
 ) -> None:
     """Show migration state — applied, pending, and drift warnings."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         runner = MigrationRunner(db)
 
         applied = runner.applied_details()
@@ -89,7 +94,7 @@ def migrate_status(
                 "drift": [{"reason": w.reason} for w in drift],
                 "versions": versions,
             }
-            typer.echo(json.dumps(payload, indent=2, default=str))
+            render_or_json(build_envelope(data=payload, sensitivity="low"), output)
             return
 
         if applied:

@@ -67,7 +67,9 @@ class TestResponseEnvelope:
             actions=["Use reports_spending_by_category for breakdown"],
         )
         d = envelope.to_dict()
-        assert set(d.keys()) == {"summary", "data", "actions"}
+        assert set(d.keys()) == {"status", "summary", "data", "actions"}
+        assert d["status"] == "ok"
+        assert list(d.keys())[0] == "status"
         assert d["summary"]["total_count"] == 3
         assert d["summary"]["returned_count"] == 3
         assert d["summary"]["has_more"] is False
@@ -93,6 +95,39 @@ class TestResponseEnvelope:
             data=[],
         )
         assert envelope.actions == []
+
+    @pytest.mark.unit
+    def test_to_dict_status_ok_when_no_error(self) -> None:
+        envelope = ResponseEnvelope(
+            summary=SummaryMeta(total_count=1, returned_count=1),
+            data=[{"id": "abc"}],
+        )
+        assert envelope.to_dict()["status"] == "ok"
+
+    @pytest.mark.unit
+    def test_to_dict_status_error_when_error_set(self) -> None:
+        from moneybin.errors import UserError
+
+        err = UserError("DB locked", code="database_locked")
+        envelope = ResponseEnvelope(
+            summary=SummaryMeta(total_count=0, returned_count=0),
+            data=[],
+            error=err,
+        )
+        d = envelope.to_dict()
+        assert d["status"] == "error"
+        assert "error" in d
+
+    @pytest.mark.unit
+    def test_to_json_includes_status(self) -> None:
+        import json
+
+        envelope = ResponseEnvelope(
+            summary=SummaryMeta(total_count=0, returned_count=0),
+            data=[],
+        )
+        parsed = json.loads(envelope.to_json())
+        assert parsed["status"] == "ok"
 
     @pytest.mark.unit
     def test_degraded_envelope(self) -> None:

@@ -20,7 +20,7 @@ from moneybin.services.inbox_service import (
 
 
 @contextmanager
-def _fake_db_ctx() -> Generator[object, None, None]:
+def _fake_db_ctx(**kwargs: object) -> Generator[object, None, None]:
     yield object()
 
 
@@ -100,7 +100,7 @@ def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> N
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["sync"]["processed"][0]["filename"] == "a.csv"
+    assert payload["data"]["processed"][0]["filename"] == "a.csv"
 
 
 def test_inbox_list_prints_would_process(

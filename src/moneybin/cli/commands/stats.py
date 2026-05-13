@@ -30,16 +30,12 @@ def stats_command(
     quiet: bool = quiet_option,
 ) -> None:
     """Display lifetime metric aggregates."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         where_clauses: list[str] = []
         params: list[str | datetime] = []
 
         if since:
-            try:
-                delta = parse_duration(since)
-            except ValueError as e:
-                logger.error(f"❌ {e}")
-                raise typer.Exit(1) from e
+            delta = parse_duration(since)
             cutoff = datetime.now(tz=UTC) - delta
             where_clauses.append("recorded_at >= ?")
             params.append(cutoff)

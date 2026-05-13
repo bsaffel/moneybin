@@ -19,9 +19,14 @@ from typing import Annotated, Any, Literal, get_args
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.config import find_repo_root, get_base_dir
+from moneybin.protocol.envelope import build_envelope
 
 app = typer.Typer(help="MCP server for AI assistant integration", no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -601,7 +606,7 @@ def mcp_list_tools(
             }
             for tool in sorted_tools
         ]
-        emit_json("tools", tools_payload)
+        render_or_json(build_envelope(data=tools_payload, sensitivity="low"), output)
         return
 
     for tool in sorted_tools:
@@ -647,7 +652,7 @@ def mcp_list_prompts(
             }
             for prompt in sorted_prompts
         ]
-        emit_json("prompts", prompts_payload)
+        render_or_json(build_envelope(data=prompts_payload, sensitivity="low"), output)
         return
 
     if not sorted_prompts:

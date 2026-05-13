@@ -11,8 +11,14 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +37,16 @@ def import_labels_add(
     """Add one or more labels to an import."""
     from moneybin.services.import_service import ImportService
 
-    try:
-        with handle_cli_errors() as db:
-            updated = ImportService(db).add_labels(import_id, labels, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        updated = ImportService(db).add_labels(import_id, labels, actor="cli")
 
     if output == OutputFormat.JSON:
-        emit_json("import_labels", {"import_id": import_id, "labels": updated})
+        render_or_json(
+            build_envelope(
+                data={"import_id": import_id, "labels": updated}, sensitivity="low"
+            ),
+            output,
+        )
         return
     logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
 
@@ -53,15 +60,16 @@ def import_labels_remove(
     """Remove one or more labels from an import."""
     from moneybin.services.import_service import ImportService
 
-    try:
-        with handle_cli_errors() as db:
-            updated = ImportService(db).remove_labels(import_id, labels, actor="cli")
-    except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+    with handle_cli_errors(output=output) as db:
+        updated = ImportService(db).remove_labels(import_id, labels, actor="cli")
 
     if output == OutputFormat.JSON:
-        emit_json("import_labels", {"import_id": import_id, "labels": updated})
+        render_or_json(
+            build_envelope(
+                data={"import_id": import_id, "labels": updated}, sensitivity="low"
+            ),
+            output,
+        )
         return
     logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
 
@@ -77,12 +85,18 @@ def import_labels_list(
     """List labels for one import, or all distinct labels with usage counts."""
     from moneybin.services.import_service import ImportService
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         svc = ImportService(db)
         if import_id is not None:
             labels = svc.list_labels(import_id)
             if output == OutputFormat.JSON:
-                emit_json("import_labels", {"import_id": import_id, "labels": labels})
+                render_or_json(
+                    build_envelope(
+                        data={"import_id": import_id, "labels": labels},
+                        sensitivity="low",
+                    ),
+                    output,
+                )
                 return
             if not labels:
                 if not quiet:
@@ -95,8 +109,12 @@ def import_labels_list(
         rows = svc.list_distinct_labels()
 
     if output == OutputFormat.JSON:
-        emit_json(
-            "import_labels", [{"label": label, "usage_count": n} for label, n in rows]
+        render_or_json(
+            build_envelope(
+                data=[{"label": label, "usage_count": n} for label, n in rows],
+                sensitivity="low",
+            ),
+            output,
         )
         return
     if not rows:

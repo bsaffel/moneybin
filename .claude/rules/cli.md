@@ -118,7 +118,7 @@ A **leaf command** is a top-level command with no subcommands (e.g., `moneybin s
 |---|---|
 | `0` | Success |
 | `1` | Runtime error (operation ran and failed: file not found, DB locked, API 500) |
-| `2` | Usage error (missing arg, invalid flag, unknown subcommand) |
+| `2` | Usage error (missing arg, invalid flag, unknown subcommand, bad argument value) |
 
 Diagnostic output (errors, warnings, progress, status) goes to **stderr** (fd 2). Data output (rows, JSON, the thing the user asked for) goes to **stdout** (fd 1). Help text from `--help` goes to stdout — it's documentation the user requested, and pipes (`| less`) must work.
 
@@ -130,6 +130,7 @@ Every command that **reads but does not mutate** state MUST accept:
 
 - `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same data the text branch displays.
 - `-q, --quiet` — suppress informational output (status lines, progress, `✅`). Result rows are NEVER suppressed by `-q` — they are the data.
+- `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).
 
 `db query` extends `--output` to `text|json|csv|markdown|box` since DuckDB's CLI supports all five natively.
 

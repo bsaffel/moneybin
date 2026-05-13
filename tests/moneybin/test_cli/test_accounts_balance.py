@@ -64,8 +64,8 @@ class TestAccountsBalanceShow:
             )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        assert "balances" in payload
-        assert len(payload["balances"]) == 1
+        assert payload["status"] == "ok"
+        assert len(payload["data"]) == 1
 
 
 class TestAccountsBalanceHistory:
@@ -205,7 +205,7 @@ class TestAccountsBalanceList:
             )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        assert "assertions" in payload
+        assert "data" in payload
 
 
 class TestAccountsBalanceDelete:

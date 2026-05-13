@@ -12,8 +12,14 @@ from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import BalanceService
 
 logger = logging.getLogger(__name__)
@@ -37,21 +43,26 @@ def accounts_balance_show(
 ) -> None:
     """Show current or as-of balances per account."""
     account_ids = [account] if account else None
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         as_of_date = _date.fromisoformat(as_of) if as_of else None
         observations = BalanceService(db).current_balances(
             account_ids=account_ids, as_of_date=as_of_date
         )
-    if output == OutputFormat.JSON:
-        emit_json("balances", [o.to_dict() for o in observations])
-        return
-    for obs in observations:
-        d = obs.to_dict()
-        typer.echo(
-            f"  {d['account_id']}  {d['balance_date']}  {d['balance']}"
-            f"  observed={d['is_observed']}  source={d['observation_source']}"
-            f"  delta={d['reconciliation_delta']}"
-        )
+
+    def _render_text(_: object) -> None:
+        for obs in observations:
+            d = obs.to_dict()
+            typer.echo(
+                f"  {d['account_id']}  {d['balance_date']}  {d['balance']}"
+                f"  observed={d['is_observed']}  source={d['observation_source']}"
+                f"  delta={d['reconciliation_delta']}"
+            )
+
+    render_or_json(
+        build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("history")
@@ -63,22 +74,27 @@ def accounts_balance_history(
     quiet: bool = quiet_option,  # noqa: ARG001 — history has no informational chatter
 ) -> None:
     """Per-account balance history (daily series)."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         from_d = _date.fromisoformat(from_date) if from_date else None
         to_d = _date.fromisoformat(to_date) if to_date else None
         observations = BalanceService(db).history(
             account, from_date=from_d, to_date=to_d
         )
-    if output == OutputFormat.JSON:
-        emit_json("history", [o.to_dict() for o in observations])
-        return
-    for obs in observations:
-        d = obs.to_dict()
-        typer.echo(
-            f"  {d['balance_date']}  {d['balance']}"
-            f"  observed={d['is_observed']}  source={d['observation_source']}"
-            f"  delta={d['reconciliation_delta']}"
-        )
+
+    def _render_text(_: object) -> None:
+        for obs in observations:
+            d = obs.to_dict()
+            typer.echo(
+                f"  {d['balance_date']}  {d['balance']}"
+                f"  observed={d['is_observed']}  source={d['observation_source']}"
+                f"  delta={d['reconciliation_delta']}"
+            )
+
+    render_or_json(
+        build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("assert")
@@ -114,10 +130,13 @@ def accounts_balance_list(
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter
 ) -> None:
     """List balance assertions, optionally filtered by account."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         assertions = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
-        emit_json("assertions", [a.to_dict() for a in assertions])
+        render_or_json(
+            build_envelope(data=[a.to_dict() for a in assertions], sensitivity="low"),
+            output,
+        )
         return
     for assertion in assertions:
         d = assertion.to_dict()
@@ -152,13 +171,16 @@ def accounts_balance_reconcile(
 ) -> None:
     """Show observed balance days with non-zero reconciliation delta."""
     account_ids = [account] if account else None
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         parsed_threshold = Decimal(threshold)
         observations = BalanceService(db).reconcile(
             account_ids=account_ids, threshold=parsed_threshold
         )
     if output == OutputFormat.JSON:
-        emit_json("reconcile", [o.to_dict() for o in observations])
+        render_or_json(
+            build_envelope(data=[o.to_dict() for o in observations], sensitivity="low"),
+            output,
+        )
         return
     for obs in observations:
         d = obs.to_dict()

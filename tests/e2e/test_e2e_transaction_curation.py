@@ -85,8 +85,8 @@ class TestManualEntryGoldenPath:
         )
         result.assert_success()
         payload = _loads(result.stdout)
-        txn_id = payload["manual_create"]["transaction_id"]
-        import_id = payload["manual_create"]["import_id"]
+        txn_id = payload["data"]["transaction_id"]
+        import_id = payload["data"]["import_id"]
         assert txn_id, payload
         assert import_id, payload
 
@@ -124,7 +124,7 @@ class TestNotesTagsSplitsGoldenPath:
             env=env,
         )
         result.assert_success()
-        txn_id = _loads(result.stdout)["manual_create"]["transaction_id"]
+        txn_id = _loads(result.stdout)["data"]["transaction_id"]
 
         # Add a note, two tags, and two splits.
         run_cli(
@@ -199,7 +199,7 @@ class TestTagRenameAuditChain:
                 env=env,
             )
             result.assert_success()
-            txn_ids.append(_loads(result.stdout)["manual_create"]["transaction_id"])
+            txn_ids.append(_loads(result.stdout)["data"]["transaction_id"])
 
         for tid in txn_ids:
             run_cli(
@@ -226,7 +226,7 @@ class TestTagRenameAuditChain:
             env=env,
         )
         result.assert_success()
-        events: list[dict[str, Any]] = _loads(result.stdout)["audit_events"]
+        events: list[dict[str, Any]] = _loads(result.stdout)["data"]
         assert isinstance(events, list)
 
         rename_parents = [
@@ -288,7 +288,7 @@ class TestImportLabelsGoldenPath:
             env=env,
         )
         result.assert_success()
-        payload = _loads(result.stdout)["import_labels"]
+        payload = _loads(result.stdout)["data"]
         labels = payload["labels"]
         assert "needs-review" in labels
 
@@ -325,7 +325,7 @@ class TestCategoryEditAudit:
             env=env,
         )
         result.assert_success()
-        txn_id = _loads(result.stdout)["manual_create"]["transaction_id"]
+        txn_id = _loads(result.stdout)["data"]["transaction_id"]
         run_cli("transform", "apply", env=env, timeout=180).assert_success()
 
         # Apply a category via apply-from-file (writes through CategorizationService.set_category).
@@ -366,7 +366,7 @@ class TestCategoryEditAudit:
             env=env,
         )
         result.assert_success()
-        events: list[dict[str, Any]] = _loads(result.stdout)["audit_events"]
+        events: list[dict[str, Any]] = _loads(result.stdout)["data"]
         cat_sets = [e for e in events if str(e.get("action")) == "category.set"]
         assert cat_sets, events
         # At least one event should carry an after_value referencing a category name.

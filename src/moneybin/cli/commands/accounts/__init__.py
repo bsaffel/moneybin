@@ -14,8 +14,13 @@ from decimal import Decimal
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
     CLEAR,
@@ -53,18 +58,23 @@ def accounts_list(
     ),
 ) -> None:
     """List accounts. Hides archived accounts by default."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         result = AccountService(db).list_accounts(
             include_archived=include_archived, type_filter=type_filter
         )
-    if output == OutputFormat.JSON:
-        emit_json("data", result.accounts)
-        return
-    for acct in result.accounts:
-        display = acct.get("display_name") or acct.get("account_id")
-        institution = acct.get("institution_name", "")
-        acct_type = acct.get("account_type", "")
-        typer.echo(f"  {display}  [{institution}]  {acct_type}")
+
+    def _render_text(_: object) -> None:
+        for acct in result.accounts:
+            display = acct.get("display_name") or acct.get("account_id")
+            institution = acct.get("institution_name", "")
+            acct_type = acct.get("account_type", "")
+            typer.echo(f"  {display}  [{institution}]  {acct_type}")
+
+    render_or_json(
+        build_envelope(data=result.accounts, sensitivity="medium"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("show")
@@ -74,16 +84,20 @@ def accounts_show(
     quiet: bool = quiet_option,  # noqa: ARG001
 ) -> None:
     """Show one account's full settings + dim record."""
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         record = AccountService(db).get_account(account_id)
-    if record is None:
-        logger.error(f"❌ Account not found: {account_id}")
-        raise typer.Exit(1)
-    if output == OutputFormat.JSON:
-        emit_json("account", record)
-        return
-    for k, v in record.items():
-        typer.echo(f"  {k}: {v}")
+        if record is None:
+            raise LookupError(f"Account not found: {account_id}")
+
+    def _render_text(_: object) -> None:
+        for k, v in record.items():
+            typer.echo(f"  {k}: {v}")
+
+    render_or_json(
+        build_envelope(data=record, sensitivity="medium"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("rename")
@@ -302,7 +316,7 @@ def accounts_resolve(
     Use this before commands that need an account_id when you only have a
     natural-language reference.
     """
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         matches = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:

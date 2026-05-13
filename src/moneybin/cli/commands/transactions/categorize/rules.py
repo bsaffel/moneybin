@@ -8,8 +8,10 @@ from moneybin.cli.output import (
     OutputFormat,
     output_option,
     quiet_option,
+    render_or_json,
 )
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ def rules_list(
     """Display all active categorization rules."""
     from moneybin.tables import CATEGORIZATION_RULES
 
-    with handle_cli_errors() as db:
+    with handle_cli_errors(output=output) as db:
         rows = db.execute(
             f"""
             SELECT rule_id, name, merchant_pattern, match_type,
@@ -38,34 +40,37 @@ def rules_list(
             """  # noqa: S608  # TableRef compile-time constant, not user input
         ).fetchall()
 
-    if output == OutputFormat.JSON:
-        rules = [
-            {
-                "rule_id": r[0],
-                "name": r[1],
-                "merchant_pattern": r[2],
-                "match_type": r[3],
-                "category": r[4],
-                "subcategory": r[5],
-                "priority": r[6],
-            }
-            for r in rows
-        ]
-        emit_json("rules", rules)
-        return
+    rules = [
+        {
+            "rule_id": r[0],
+            "name": r[1],
+            "merchant_pattern": r[2],
+            "match_type": r[3],
+            "category": r[4],
+            "subcategory": r[5],
+            "priority": r[6],
+        }
+        for r in rows
+    ]
 
-    if not rows:
+    def _render_text(_: object) -> None:
+        if not rows:
+            if not quiet:
+                logger.info("No active categorization rules.")
+            return
         if not quiet:
-            logger.info("No active categorization rules.")
-        return
+            logger.info("Active categorization rules:")
+        for rule_id, name, pattern, match_type, cat, subcat, priority in rows:
+            sub = f" / {subcat}" if subcat else ""
+            logger.info(
+                f"  [{rule_id}] {name}: '{pattern}' ({match_type}) -> {cat}{sub} (priority: {priority})"
+            )
 
-    if not quiet:
-        logger.info("Active categorization rules:")
-    for rule_id, name, pattern, match_type, cat, subcat, priority in rows:
-        sub = f" / {subcat}" if subcat else ""
-        logger.info(
-            f"  [{rule_id}] {name}: '{pattern}' ({match_type}) -> {cat}{sub} (priority: {priority})"
-        )
+    render_or_json(
+        build_envelope(data=rules, sensitivity="low"),
+        output,
+        render_fn=_render_text,
+    )
 
 
 @app.command("apply")

@@ -98,7 +98,7 @@ def categorize_apply_from_file(
         raise typer.Exit(1) from e
 
     if items:
-        with handle_cli_errors() as db:
+        with handle_cli_errors(output=output) as db:
             from moneybin.services.categorization_service import CategorizationService
 
             result = CategorizationService(db).categorize_items(items)
