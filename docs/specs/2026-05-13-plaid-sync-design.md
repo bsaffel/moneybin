@@ -9,7 +9,7 @@
 
 ## Background
 
-MoneyBin's sync stubs have been placeholders since the architecture was laid down. This document captures the design decisions reached during the Phase 1 brainstorming session before cutting code. It supersedes the implementation sketch in `sync-plaid.md` where the two disagree.
+MoneyBin's sync stubs have been placeholders since the architecture was laid down. This document captures the design decisions reached during two rounds of Phase 1 brainstorming (one initial, one after independent review). It supersedes the implementation sketch in `sync-plaid.md` where the two disagree.
 
 Key inputs:
 
@@ -44,7 +44,11 @@ The client parses `connect_type`. If the value isn't `widget_flow` in Phase 1, t
 
 ```
 POST /sync/connect/initiate
-  Body: { "provider": "plaid", "provider_item_id": "item_abc" }   # provider_item_id optional (update mode)
+  Body: {
+    "provider": "plaid",
+    "provider_item_id": "item_abc",     # optional — update mode for re-auth
+    "return_to": "https://app.moneybin.io/sync/callback"   # optional — for web UI; CLI sends null
+  }
   Response 200: {
     "session_id": "sess_abc123",
     "link_url": "https://hosted.plaid.com/link/...",
@@ -58,16 +62,18 @@ GET /sync/connect/status?session_id=sess_abc123
     "status": "pending" | "connected" | "failed",
     "provider_item_id": "item_abc123",   # only when status == "connected"
     "institution_name": "Chase",          # only when status == "connected"
-    "error": null                         # error message when status == "failed"
+    "error": null,                        # error message when status == "failed"
+    "expiration": "2026-05-13T13:30:00Z"  # session expiration; agent can decide when to give up
   }
 
 POST /auth/refresh
   Body: { "refresh_token": "..." }
   Response 200: { "access_token": "...", "refresh_token": "...", "expires_in": 3600 }
+  Refresh tokens MUST rotate on each call — server returns a new refresh_token; old one invalidated.
 
 POST /webhooks/plaid                      # internal, not in client API surface
   Handles SESSION_FINISHED + Plaid item lifecycle webhooks
-  Verified via Plaid-Verification JWT header
+  Verified via Plaid-Verification JWT header; replay-window enforced on `iat`
 ```
 
 **Renamed:** `item_id` → `provider_item_id` everywhere in client-visible responses (`GET /institutions`, `GET /sync/status.results[]`, `GET /sync/data.metadata.institutions[]`).
@@ -79,8 +85,12 @@ POST /webhooks/plaid                      # internal, not in client API surface
 **Retained:**
 - `POST /sync/trigger` — synchronous, returns final state, `provider_item_id` body param
 - `GET /sync/status` — fallback for crash recovery
-- `GET /sync/data` — unchanged shape
+- `GET /sync/data` — unchanged shape; one-shot read (server deletes from TTL store on read)
 - `DELETE /institutions/:id` — unchanged
+
+### `return_to` (forward-compat for web UI)
+
+The `return_to` field is added now so the M3D Web UI doesn't require a breaking API change. CLI sends `null`; the server tells Plaid to display its default "session complete" page; CLI polls `GET /sync/connect/status` for completion. The future web UI sends its callback URL; the server passes it to Plaid Hosted Link's `redirect_uri` config; Plaid redirects the user's browser back to the web app after they finish. The status endpoint remains the authoritative completion signal even when redirect-based UX is in use, since the webhook may race the browser redirect.
 
 ### Update mode (re-authentication)
 
@@ -115,11 +125,11 @@ The fallback handles environments without an OS keychain (headless Linux without
    - `403` → user denied; raise `SyncAuthError`
    - `400` → code expired; raise `SyncAuthError`
 
-### Token refresh
+### Token refresh (rotating)
 
 On any `401 Unauthorized` from a sync endpoint:
 1. If a refresh token is stored, call `POST /auth/refresh` with it
-2. On success: update stored JWT + refresh token, retry the original request once
+2. On success: update stored JWT **and refresh token** (server rotates on every call), retry the original request once
 3. On refresh failure (refresh token expired or revoked): clear keyring/file entries, raise `SyncAuthError("session expired — run moneybin sync login")`
 
 Refresh is transparent to method callers — they see either success or `SyncAuthError`.
@@ -130,15 +140,16 @@ Refresh is transparent to method callers — they see either success or `SyncAut
 
 - Default: call `webbrowser.open()`; whether it returns True or False, always also print the URL to stderr so a headless user can copy it
 - `--no-browser` flag: skip the `webbrowser.open()` call entirely; print URL only
-- Auto-detection of headless env (no `DISPLAY` on Linux, no Aqua session on macOS, etc.) is **not** implemented in Phase 1 — explicit flag is enough and more predictable
 
 ### Connect flow
 
 ```python
-def connect(self, provider_item_id: str | None = None) -> ConnectResult:
+def connect(self, provider_item_id: str | None = None, return_to: str | None = None) -> ConnectResult:
     body = {"provider": "plaid"}
     if provider_item_id:
         body["provider_item_id"] = provider_item_id   # update mode
+    if return_to:
+        body["return_to"] = return_to                  # web UI redirect
     resp = self._post("/sync/connect/initiate", body)
     initiate = ConnectInitiateResponse.model_validate(resp)
     if initiate.connect_type != "widget_flow":
@@ -149,7 +160,7 @@ def connect(self, provider_item_id: str | None = None) -> ConnectResult:
     return self._poll_connect(initiate.session_id)
 
 def _poll_connect(self, session_id: str) -> ConnectResult:
-    deadline = time.time() + self.config.connect_timeout_seconds   # default 300
+    deadline = time.time() + _LONG_TIMEOUT
     interval = 3.0
     while time.time() < deadline:
         time.sleep(interval)
@@ -162,20 +173,16 @@ def _poll_connect(self, session_id: str) -> ConnectResult:
     raise SyncTimeoutError("connect flow timed out — user may have abandoned the browser")
 ```
 
-### Per-endpoint timeouts
+### Timeouts
 
-httpx default (5s) is far too short for `POST /sync/trigger`. Timeouts configured per-endpoint via `SyncConfig`:
+Two constants, not config knobs:
 
 ```python
-# src/moneybin/config.py — SyncConfig additions
-timeout_auth_seconds: float = 10.0       # /auth/* endpoints
-timeout_default_seconds: float = 15.0    # connect/status, institutions, etc.
-timeout_data_seconds: float = 30.0       # GET /sync/data (JSON download)
-timeout_trigger_seconds: float = 120.0   # POST /sync/trigger (long-running)
-connect_timeout_seconds: float = 300.0   # _poll_connect deadline (5 min)
+_DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)   # most endpoints
+_LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)     # POST /sync/trigger, connect-poll deadline
 ```
 
-Users can override via env vars (e.g., `MONEYBIN_SYNC__TIMEOUT_TRIGGER_SECONDS=180`).
+Promote to `SyncConfig` only when a real user file says they need different values. Don't add knobs speculatively.
 
 ### Exception taxonomy
 
@@ -193,13 +200,15 @@ The CLI's `handle_cli_errors` maps these to exit codes and user-friendly message
 
 **File:** `src/moneybin/connectors/sync_models.py`
 
-All server responses validated at the boundary. Single source of truth for the contract; imported by both `SyncClient` and `PlaidLoader`.
+All server responses validated at the boundary. Single source of truth for the contract; imported by both `SyncClient` and `PlaidLoader`. Result/view types for the service layer live alongside, not in a separate module.
 
 ```python
 from pydantic import BaseModel, Field
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
+
+# ---- Server response models ----
 
 class AuthToken(BaseModel):
     access_token: str
@@ -219,6 +228,7 @@ class ConnectStatusResponse(BaseModel):
     provider_item_id: str | None = None
     institution_name: str | None = None
     error: str | None = None
+    expiration: datetime
 
 class SyncTriggerResponse(BaseModel):
     job_id: str
@@ -277,6 +287,21 @@ class ConnectedInstitution(BaseModel):
     status: Literal["active", "error", "revoked"]
     last_sync: datetime | None = None
     created_at: datetime
+
+# ---- Service-layer result types ----
+
+class PullResult(BaseModel):
+    job_id: str
+    transactions_loaded: int
+    accounts_loaded: int
+    balances_loaded: int
+    transactions_removed: int
+    institutions: list[InstitutionResult]   # passthrough from sync metadata
+
+class ConnectResult(BaseModel):
+    provider_item_id: str
+    institution_name: str
+    pull_result: PullResult | None = None   # populated when auto_pull=True
 ```
 
 `SyncClient` methods return these models (not raw dicts). `PlaidLoader.load(sync_data: SyncDataResponse, job_id: str)` consumes the typed model.
@@ -289,57 +314,73 @@ class ConnectedInstitution(BaseModel):
 
 Business logic and orchestration. The `mcp-server.md` architecture rule applies: CLI and MCP are thin wrappers; the service does the work.
 
+### State source: server, not local
+
+The service does **not** maintain a local `app.sync_connections` cache. Connection state lives on the server (`GET /institutions` returns the current set; `GET /sync/status` per-job returns recent per-institution results with error codes). Reasons:
+
+- Server is already the system of record for connections — it owns the Plaid access tokens
+- A local mirror would drift the moment a connection is created via another surface (future web UI)
+- Three columns we'd have added (`last_sync_txn_count`, `last_error`, `last_error_code`) are already available from `GET /sync/status` for the latest job
+- `sync status` is a low-frequency command; one HTTP call per invocation is fine
+
 ### Interface
 
 ```python
 class SyncService:
     def __init__(self, client: SyncClient, db: Database, loader: PlaidLoader) -> None: ...
 
-    def pull(self, *, institution: str | None = None, force: bool = False) -> PullResult:
-        """Full sync: resume any in-flight job, trigger, fetch, load, update connections."""
-        ...
-
-    def connect(self, *, institution: str | None = None, auto_pull: bool = True) -> ConnectResult:
-        """Connect a new institution OR re-auth an existing one. If auto_pull, follow with pull()."""
-        ...
-
-    def disconnect(self, *, institution: str) -> None:
-        """Resolve name → id; call DELETE /institutions/:id; remove from app.sync_connections."""
-        ...
-
-    def list_connections(self) -> list[SyncConnectionView]:
-        """Read app.sync_connections; map error codes to user-facing guidance."""
-        ...
+    def pull(self, *, institution: str | None = None, force: bool = False) -> PullResult: ...
+    def connect(self, *, institution: str | None = None, auto_pull: bool = True, return_to: str | None = None) -> ConnectResult: ...
+    def disconnect(self, *, institution: str) -> None: ...
+    def list_connections(self) -> list[SyncConnectionView]: ...
 
     # Internal helpers
-    def _resolve_institution(self, name: str) -> str: ...        # name → provider_item_id
-    def _resume_or_trigger(self, ...) -> SyncTriggerResponse: ...   # crash recovery
-    def _update_connections(self, results: list[InstitutionResult]) -> None: ...
+    def _resolve_institution(self, name: str) -> str: ...        # name → provider_item_id (via GET /institutions)
+    def _map_error_guidance(self, results: list[InstitutionResult]) -> list[str]: ...
 ```
 
-### Crash recovery (see Section 8: `.in_flight_sync.json`)
-
-Inside `pull()`:
+### `pull()` flow
 
 ```python
 def pull(self, *, institution=None, force=False) -> PullResult:
-    resumed = self._try_resume_in_flight()
-    if resumed:
-        logger.info(f"Found in-flight sync from {resumed.age_minutes:.0f} min ago — resuming")
-        sync_data = self.client.get_data(resumed.job_id)
-        self._load_and_record(sync_data, resumed.job_id)
-        self._clear_in_flight()
-        # fall through to trigger a fresh sync (the resumed one is now loaded)
-
     provider_item_id = self._resolve_institution(institution) if institution else None
-    trigger_response = self.client.trigger_sync(provider_item_id=provider_item_id, reset_cursor=force)
-    self._write_in_flight(trigger_response.job_id)
-    try:
-        sync_data = self.client.get_data(trigger_response.job_id)
-        result = self._load_and_record(sync_data, trigger_response.job_id)
-    finally:
-        self._clear_in_flight()
-    return result
+    trigger_response = self.client.trigger_sync(
+        provider_item_id=provider_item_id, reset_cursor=force,
+    )
+    sync_data = self.client.get_data(trigger_response.job_id)
+    self.loader.handle_removed_transactions(sync_data.removed_transactions)
+    load_result = self.loader.load(sync_data, trigger_response.job_id)
+    return PullResult(
+        job_id=trigger_response.job_id,
+        transactions_loaded=load_result.transactions,
+        accounts_loaded=load_result.accounts,
+        balances_loaded=load_result.balances,
+        transactions_removed=len(sync_data.removed_transactions),
+        institutions=sync_data.metadata.institutions,
+    )
+```
+
+**No crash-recovery file.** If the client crashes between `trigger_sync` and `get_data`, the user re-runs `sync pull`. The server's TTL store is one-shot (data is consumed on read of `GET /sync/data`), and the Plaid cursor has already advanced, so the lost batch is genuinely lost. Acceptable for Phase 1; the server-side fix (cursor-ack) is tracked as a followup and must land before M3 launch. The CLI logs warnings explicitly in error paths so silent data loss is impossible: every error message names the `job_id` and tells the user to re-run.
+
+### `list_connections()` flow
+
+```python
+def list_connections(self) -> list[SyncConnectionView]:
+    institutions = self.client.list_institutions()   # GET /institutions
+    # Optional: enrich with the latest sync_jobs results for error codes / txn counts
+    # For Phase 1, just return what /institutions gives us
+    return [
+        SyncConnectionView(
+            id=i.id,
+            provider_item_id=i.provider_item_id,
+            institution_name=i.institution_name,
+            provider=i.provider,
+            status=i.status,
+            last_sync=i.last_sync,
+            guidance=self._guidance_for(i.status),
+        )
+        for i in institutions
+    ]
 ```
 
 ### Error code → guidance mapping
@@ -357,7 +398,7 @@ ERROR_GUIDANCE = {
 }
 ```
 
-The mapping is consumed by both `pull()` (post-sync summary) and `list_connections()` (`sync status` output).
+Consumed by `pull()` (post-sync summary) and `list_connections()` (`sync status` output).
 
 ---
 
@@ -479,6 +520,8 @@ def handle_removed_transactions(self, removed_ids: list[str]) -> int:
 
 Three files in `src/moneybin/sql/schema/`. Column comments follow `.claude/rules/database.md` conventions (block `/* */` table comment, inline `--` column comments on the final SELECT).
 
+No `app.sync_connections` table — connection state lives on the server. The only schema files this PR adds are the three raw Plaid tables.
+
 **`raw_plaid_accounts.sql`**
 
 ```sql
@@ -541,69 +584,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
 
 ---
 
-## Section 7: `app.sync_connections` (schema file only)
-
-**File:** `src/moneybin/sql/schema/app_sync_connections.sql`
-
-No V009 migration. The schema file's `CREATE TABLE IF NOT EXISTS` runs on every app startup via `init_schemas`; that handles fresh installs *and* upgrades from existing DBs that don't have the table yet. A migration would just duplicate the same DDL.
-
-> **Convention shift:** This is the first table that ships without a paired V00X migration. The pattern going forward is: schema files for new tables, migrations for ALTERs/backfills/drops/renames. Retroactive cleanup of V004/V005-style redundant migrations and an update to `migrations/README.md` are tracked as followup work.
-
-```sql
-/* Connected institutions and their sync health; one row per provider connection */
-CREATE TABLE IF NOT EXISTS app.sync_connections (
-    item_id VARCHAR NOT NULL,           -- provider_item_id (named item_id locally for brevity); maps to server's provider_item_id
-    provider VARCHAR NOT NULL DEFAULT 'plaid',     -- Aggregator: plaid, simplefin, mx
-    institution_name VARCHAR,           -- Human-readable institution name
-    status VARCHAR NOT NULL DEFAULT 'active',      -- active, error, revoked
-    last_sync_at TIMESTAMP,             -- Last successful sync completion
-    last_sync_txn_count INTEGER,        -- Transactions returned in the last sync
-    last_error VARCHAR,                 -- Most recent error message (NULL when healthy)
-    last_error_code VARCHAR,            -- Provider error code for programmatic handling
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (item_id)
-);
-```
-
----
-
-## Section 8: Crash Recovery (`in_flight_sync.json`)
-
-The risk: between `POST /sync/trigger` (server advances Plaid cursor) and `GET /sync/data` (client downloads), if the client crashes, the `job_id` is lost from memory. Server holds the data in a 30-min TTL store. If TTL expires before the client recovers, that batch is silently lost because the cursor already advanced.
-
-### Mechanism
-
-`SyncService.pull()` persists `{job_id, started_at}` to `~/.moneybin/.in_flight_sync.json` (0600) immediately after `trigger_sync` returns. The file is deleted after `get_data` + `load` complete successfully.
-
-On every `sync pull` invocation, before triggering a new sync:
-
-```python
-def _try_resume_in_flight(self) -> ResumeRecord | None:
-    if not in_flight_path.exists():
-        return None
-    record = json.loads(in_flight_path.read_text())
-    age = datetime.now(timezone.utc) - datetime.fromisoformat(record["started_at"])
-    if age > timedelta(minutes=25):    # 5-min buffer before TTL expiry
-        logger.warning(
-            f"In-flight sync from {age} ago is past safe-resume window; abandoning. "
-            f"Job ID: {record['job_id']}. Data may have been lost."
-        )
-        in_flight_path.unlink()
-        return None
-    return ResumeRecord(**record)
-```
-
-If resume succeeds, the loaded data is committed and the flow continues with a fresh trigger (which fetches anything new since the resumed batch).
-
-If resume fails (404 from server — TTL expired despite our window estimate, or job was a different user's), log the data loss and proceed with a fresh sync. The user knows because the warning is loud.
-
-### Server-side followup
-
-The cleanest fix lives server-side: don't advance the Plaid cursor until the client `acks` receipt. The client mitigation above shrinks the window but doesn't close the hole (laptop sleeping > 30 min during sync still loses data). Tracked as a server-side followup; coordinate with moneybin-server before launch so this PR doesn't ship a known silent-data-loss path.
-
----
-
-## Section 9: SQLMesh Staging and Core
+## Section 7: SQLMesh Staging and Core
 
 ### Staging views (`sqlmesh/models/prep/`)
 
@@ -644,42 +625,67 @@ Cross-source dedup (a transaction appearing in both OFX and Plaid) is handled by
 
 ---
 
-## Section 10: CLI Commands
+## Section 8: CLI Commands
 
 **File:** `src/moneybin/cli/commands/sync.py` (replacing `_not_implemented` stubs)
 
 | Command | Description |
 |---|---|
-| `moneybin sync login [--no-browser]` | Device Auth Flow |
+| `moneybin sync login [--no-browser] [-o text\|json] [-q]` | Device Auth Flow |
 | `moneybin sync logout` | Clear stored JWT |
-| `moneybin sync connect [--institution NAME] [--no-pull] [--no-browser] [-y/--yes]` | Connect new institution OR re-auth existing one; auto-pulls by default |
-| `moneybin sync disconnect --institution NAME [-y/--yes]` | Remove a connection |
-| `moneybin sync pull [--institution NAME] [--force]` | Sync data |
-| `moneybin sync status [-o/--output text|json] [-q/--quiet] [--json-fields ...]` | Show connections + health |
+| `moneybin sync connect [--institution NAME] [--no-pull] [--no-browser] [-y/--yes] [-o text\|json]` | Connect new institution OR re-auth existing; auto-pulls by default |
+| `moneybin sync connect-status --session-id SESSION_ID [-o text\|json]` | Verify a pending connect session completed; CLI mirror of MCP `sync_connect_status` |
+| `moneybin sync disconnect --institution NAME [-y/--yes] [-o text\|json]` | Remove a connection |
+| `moneybin sync pull [--institution NAME] [--force] [-o text\|json] [-q] [--json-fields ...]` | Sync data |
+| `moneybin sync status [-o text\|json] [-q] [--json-fields ...]` | Show connections + health |
 
-### `sync connect` interactive UX
+### `--output json` shapes
 
-Without `--institution`, the command auto-detects re-auth need:
+Per `.claude/rules/cli.md`, every mutating command also accepts `--output json` so agents can drive end-to-end without scraping human-formatted text.
 
+**`sync pull --output json`:**
+
+```json
+{
+  "job_id": "550e8400-...",
+  "transactions_loaded": 142,
+  "accounts_loaded": 2,
+  "balances_loaded": 2,
+  "transactions_removed": 1,
+  "institutions": [
+    {"provider_item_id": "item_abc", "institution_name": "Chase", "status": "completed", "transaction_count": 80, "error_code": null},
+    {"provider_item_id": "item_def", "institution_name": "Schwab", "status": "failed", "error_code": "ITEM_LOGIN_REQUIRED"}
+  ]
+}
 ```
-$ moneybin sync connect
-Scanning your connections...
-⚠️  Schwab is in error state: ITEM_LOGIN_REQUIRED.
-Re-authenticate Schwab now? [Y/n]: y
-⚙️  Opening browser to re-authenticate Schwab...
-   If your browser didn't open, visit: https://hosted.plaid.com/link/...
-Waiting for connection... (Ctrl-C to cancel)
-✅ Re-authenticated Schwab
-⚙️  Pulling latest transactions...
-✅ Synced 12 transactions from Schwab
+
+**`sync connect --output json --no-browser`:** returns the link URL and exits without polling, mirroring MCP `sync_connect`:
+
+```json
+{
+  "session_id": "sess_abc123",
+  "link_url": "https://hosted.plaid.com/link/...",
+  "expiration": "2026-05-13T13:30:00Z"
+}
 ```
 
-Decision tree:
-- Exactly one institution in `status='error'` AND no `--institution` flag → prompt to re-auth that one
-- Zero error-state institutions AND no `--institution` flag → new connection flow
-- Multiple error-state institutions → list them, ask user to pick or pass `--institution NAME`
-- `--institution NAME` provided → resolve to `provider_item_id`; pass to `POST /sync/connect/initiate` (update mode)
-- `--yes` skips the re-auth confirmation prompt (parity for agents/scripts per `.claude/rules/cli.md` Non-Interactive Parity)
+The agent then calls `sync connect-status --session-id sess_abc123 --output json` to verify.
+
+**`sync connect --output json`** (without `--no-browser`): blocks until connected, returns the full result including the auto-pull summary if applicable.
+
+### `sync connect` decision tree
+
+Without `--institution` flag:
+
+- **Zero institutions in `status='error'`:** new-connection flow
+- **Exactly one institution in `status='error'`:**
+  - Interactive (TTY, no `--yes`): prompt `Re-authenticate {institution}? [Y/n]`
+  - Non-interactive (`--yes` OR no TTY): exit code 2 with a clear error: "Found 1 institution needing re-auth. Pass `--institution {name}` to confirm intent, or pass `--institution NEW` to create a new connection." Agents must be explicit.
+- **Multiple institutions in `status='error'`:** list them; exit code 2 directing user to pass `--institution NAME`. Even interactive — too easy to pick the wrong one.
+
+With `--institution NAME`: resolve NAME → `provider_item_id` via `GET /institutions`; pass to `POST /sync/connect/initiate` (server detects update mode). If NAME doesn't match any existing connection, treat as new-connection request and let the server's connect flow handle naming.
+
+`--yes` flag's semantics: skip the single-institution re-auth confirmation prompt only. It never selects an institution on its own — selection is always explicit via `--institution`. This matches `.claude/rules/cli.md` non-interactive parity without papering over ambiguity.
 
 ### Auto-pull behavior
 
@@ -695,23 +701,23 @@ If the connection succeeds but the auto-pull fails, the connection is kept and t
 
 ### `key` subgroup
 
-The existing `moneybin sync key rotate` subcommand stays as `_not_implemented` stub. Phase 3 work (E2E encryption) — see Section 14.
+The existing `moneybin sync key rotate` subcommand stays as `_not_implemented` stub. Phase 3 work (E2E encryption) — see Section 12.
 
 ---
 
-## Section 11: MCP Tools and Prompt
+## Section 9: MCP Tools and Prompt
 
 **File:** `src/moneybin/mcp/tools/sync.py` (replacing `not_implemented_envelope` stubs)
 
 ### Tools
 
-| Tool | Description | Parameters |
+| Tool | Sensitivity | Description |
 |---|---|---|
-| `sync_pull` | Trigger sync, fetch, load. Returns summary envelope. | `institution: str \| None`, `force: bool` |
-| `sync_status` | List connections with health, last sync, mapped error guidance | none |
-| `sync_connect` | Initiate connect flow; returns `{session_id, link_url}` immediately (does NOT block) | `institution: str \| None` (for re-auth update mode) |
-| `sync_connect_status` | Verify a connect session completed | `session_id: str` |
-| `sync_disconnect` | Remove a connection | `institution: str` |
+| `sync_pull` | `medium` | Trigger sync, fetch, load. Amounts in loaded data follow MoneyBin convention (negative = expense, positive = income). Returns summary envelope with per-institution results. |
+| `sync_status` | `low` | List connections with health, last sync, mapped error guidance |
+| `sync_connect` | `medium` | Initiate connect flow; returns `{session_id, link_url, expiration}` immediately (does NOT block). The `link_url` is a one-time bearer credential — treat as sensitive. |
+| `sync_connect_status` | `low` | Verify a connect session completed; includes `expiration` so agent can decide when to give up |
+| `sync_disconnect` | `medium` | Remove a connection |
 
 `sync_login`/`sync_logout` remain CLI-only (browser interaction; credential handling). `sync_pull` and friends return a clear error if not authenticated, directing the user to run `moneybin sync login`.
 
@@ -719,18 +725,23 @@ The existing `moneybin sync key rotate` subcommand stays as `_not_implemented` s
 
 Tool description (visible to agent at selection time):
 
-> Initiate a bank-connection flow. Returns a URL the user opens in their browser to complete the Plaid Hosted Link UI. Does not wait for completion. After the user confirms they've finished, call `sync_connect_status` with the returned `session_id` to verify.
+> Initiate a bank-connection flow. Returns a URL the user opens in their browser to complete the Plaid Hosted Link UI. Does not wait for completion. After the user confirms they've finished, call `sync_connect_status` with the returned `session_id` to verify. The `link_url` is a sensitive one-time credential — present it to the user but do not include it in logs or summaries.
 
-Response envelope when called:
+Response envelope on call:
 
 ```json
 {
-  "summary": {"sensitivity": "low", "display_currency": "USD"},
-  "data": {"session_id": "sess_abc", "link_url": "https://hosted.plaid.com/link/..."},
+  "summary": {"sensitivity": "medium", "display_currency": "USD"},
+  "data": {
+    "session_id": "sess_abc",
+    "link_url": "https://hosted.plaid.com/link/...",
+    "expiration": "2026-05-13T13:30:00Z"
+  },
   "actions": [
     "Present the link_url to the user and ask them to complete the connection in their browser.",
     "After they confirm completion, call sync_connect_status with the session_id to verify.",
-    "Once verified, call sync_pull to fetch transactions."
+    "Once verified, call sync_pull to fetch transactions.",
+    "Session expires at the expiration timestamp — beyond that, start a new connect flow."
   ]
 }
 ```
@@ -740,14 +751,19 @@ Response envelope when called:
 ```json
 {
   "summary": {"sensitivity": "low"},
-  "data": {"status": "pending", "session_id": "sess_abc"},
+  "data": {"status": "pending", "session_id": "sess_abc", "expiration": "2026-05-13T13:30:00Z"},
   "actions": [
-    "Connection has not completed yet. Ask the user to finish the flow in their browser, or wait and check again."
+    "Connection has not completed yet. Ask the user to finish the flow in their browser, or wait and check again.",
+    "If the session expiration has passed, start a new connect flow with sync_connect."
   ]
 }
 ```
 
-This shapes agent behavior toward "ask user, then verify once" rather than a tight polling loop. Each tool call is a discrete conversation turn.
+This shapes agent behavior toward "ask user, then verify once" rather than a tight polling loop. Each tool call is a discrete conversation turn. The included `expiration` lets the agent reason about when to give up.
+
+### `sync_pull` description
+
+> Pull transactions, accounts, and balances from connected institutions through moneybin-server. Amounts in loaded data follow MoneyBin convention (negative = expense, positive = income); the Plaid sign flip happens during ingestion. Returns per-institution results including `error_code` for any failed institutions. Mutates `raw.plaid_*` tables and propagates through SQLMesh to core; not directly revertable but idempotent on re-run (transactions upsert by `(transaction_id, provider_item_id)`).
 
 ### `sync_review` MCP prompt
 
@@ -761,8 +777,8 @@ Use these tools (in order):
 Report concisely (bulleted, single paragraph if everything is healthy):
 
 - **Errors:** any institutions with status='error' and the specific re-auth or reconnect action — quote the exact command from the actions hint.
-- **Stale data:** any institution whose last_sync_at is more than 7 days ago, even if status='active'. Suggest running `moneybin sync pull`.
-- **Anomalies:** institutions whose last_sync_txn_count is dramatically lower than their typical recent volume (use spending_summary as a rough yardstick — a checking account that's been returning ~30/week suddenly returning 0 is worth flagging).
+- **Stale data:** any institution whose last_sync is more than 7 days ago, even if status='active'. Suggest running `moneybin sync pull`.
+- **Anomalies:** institutions whose recent sync transaction counts are dramatically lower than typical volume (use spending_summary as a rough yardstick — a checking account that's been returning ~30/week suddenly returning 0 is worth flagging).
 - **Recommended next action:** one specific command, or "no action needed."
 
 Do not include account numbers, balances, individual transaction descriptions, or merchant names. Stick to counts, dates, status codes, and institution names.
@@ -772,7 +788,7 @@ The prompt is registered alongside the tools via FastMCP's prompts API.
 
 ---
 
-## Section 12: Testing
+## Section 10: Testing
 
 ### Unit tests (no server dependency)
 
@@ -787,21 +803,21 @@ The prompt is registered alongside the tools via FastMCP's prompts API.
 - `login()` happy path → assert keyring write
 - `login()` `slow_down` response → interval increases by 5s
 - `login()` user denied → raises `SyncAuthError`
-- 401 → refresh → retry → success
-- 401 → refresh fails → raise `SyncAuthError`
-- Connect flow polls until `connected`
-- `trigger_sync()` returns synchronous result; `timeout_trigger_seconds` respected
+- 401 → refresh (with rotation) → retry → success; assert new refresh token stored
+- 401 → refresh fails → raise `SyncAuthError`; assert stored tokens cleared
+- Connect flow polls until `connected`; respects `_LONG_TIMEOUT`
+- `trigger_sync()` returns synchronous result; honors `_LONG_TIMEOUT`
 
 `tests/test_sync_service.py`:
-- `pull()` happy path → SyncClient + PlaidLoader called in order; `app.sync_connections` updated
-- Partial failure (one institution `failed`, one `completed`) → both recorded in `app.sync_connections`; pull returns success with per-institution summary
-- Crash recovery: simulate `.in_flight_sync.json` present → `pull()` calls `get_data` first
-- Crash recovery: `.in_flight_sync.json` older than 25 min → warning logged, file removed, normal flow continues
-- Re-auth path: `connect(institution="Schwab")` resolves name → `provider_item_id`, passes to `connect/initiate`
+- `pull()` happy path → SyncClient + PlaidLoader called in order; returns `PullResult` with correct counts
+- Partial failure (one institution `failed`, one `completed`) → both reflected in `PullResult.institutions`
+- Re-auth path: `connect(institution="Schwab")` resolves name via `GET /institutions` → passes `provider_item_id` to `connect/initiate`
+- `connect(auto_pull=True)` → returns `ConnectResult` with `pull_result` populated
+- `connect(auto_pull=True)` with pull failure → returns `ConnectResult` with `pull_result=None` and a clear error
 
 ### SQL tests
 
-`tests/fixtures/plaid_sync_response.yaml` — YAML fixture per project convention (`feedback_fixture_format_yaml`).
+`tests/fixtures/plaid_sync_response.yaml` — YAML fixture per project convention.
 
 SQLMesh tests:
 - `stg_plaid__transactions`: amount sign flip (raw `42.50` → staging `-42.50`; raw `-1500.00` → staging `1500.00`)
@@ -814,28 +830,39 @@ Plaid Sandbox tests run only when `MONEYBIN_SYNC__TEST_SERVER_URL` is set; marke
 
 ---
 
-## Section 13: Server-Side Dependencies
+## Section 11: Server-Side Dependencies
 
 The Phase 1 client doesn't work end-to-end until the moneybin-server implements the corresponding endpoints and integrations. Listed inline (no cross-repo path links per project convention):
 
 ### Endpoints (new or changed)
 
-- **`POST /sync/connect/initiate`** — body `{provider, provider_item_id?}`; response `{session_id, link_url, connect_type, expiration}`. For `provider_item_id` present → create a Plaid Link token in update mode against the existing item; otherwise create a new-connection token.
-- **`GET /sync/connect/status?session_id=...`** — response `{session_id, status, provider_item_id?, institution_name?, error?}`. Reads server-side session table.
-- **`POST /auth/refresh`** — body `{refresh_token}`; response `{access_token, refresh_token, expires_in}`. Proxies refresh to Auth0.
-- **`POST /webhooks/plaid`** — internal; handles `SESSION_FINISHED` (and `ITEM_LOGIN_REQUIRED`, `ERROR` for re-auth). Verified via the `Plaid-Verification` JWT header against Plaid's webhook public key.
+- **`POST /sync/connect/initiate`** — body `{provider, provider_item_id?, return_to?}`; response `{session_id, link_url, connect_type, expiration}`. Body shape MUST be supported even when all fields are absent (defaults to new-connection flow for Plaid). With `provider_item_id` → update mode against the existing item. With `return_to` → server configures Plaid Hosted Link's `redirect_uri`; without `return_to` → Plaid displays default completion page.
+- **`GET /sync/connect/status?session_id=...`** — response includes `expiration` so the client can decide when to give up. Filter by `auth.user_id` — session table MUST have a `user_id` column and the endpoint MUST 404 on cross-user lookups.
+- **`POST /auth/refresh`** — body `{refresh_token}`; response `{access_token, refresh_token, expires_in}`. Refresh tokens MUST rotate (single-use): each call returns a new refresh token and invalidates the old one. Proxies refresh to Auth0 with refresh-token rotation enabled.
+- **`POST /webhooks/plaid`** — internal; handles `SESSION_FINISHED` (and `ITEM_LOGIN_REQUIRED`, `ERROR` for re-auth). Implementation requirements below.
 - **Rename in responses:** `item_id` → `provider_item_id` throughout client-visible responses (`GET /institutions`, `GET /sync/status.results[]`, `GET /sync/data.metadata.institutions[]`, `POST /sync/trigger` request body).
 - **Remove:** `POST /sync/link-token` and `POST /sync/exchange-token` (replaced by the initiate/webhook flow).
+- **`GET /sync/data`** — one-shot read; server deletes from TTL store on successful read. The client design (no crash-recovery file) depends on this; if the server keeps data readable for the full TTL window, the design still works but data loss on client crash becomes guaranteed instead of probabilistic.
 
 ### Server-side new infrastructure
 
-- **Session storage** — keyed by `session_id`, mapping `→ {user_id, link_token, provider_item_id?, status, error, created_at, expires_at}`. PostgreSQL table or Redis (server team's call). Must support 30-min TTL aligned with Plaid Hosted Link session expiry.
-- **Plaid Hosted Link integration** — `linkTokenCreate` with `hosted_link: {}` config. Capture the `hosted_link_url` field in the response and surface it to the client. Configure `SESSION_FINISHED` webhook URL pointing to `POST /webhooks/plaid`.
+- **Session storage** — keyed by `session_id`. Required columns: `user_id` (for ownership filtering), `link_token` (Plaid's token, for webhook correlation), `provider_item_id`, `status`, `error`, `created_at`, `expires_at`, `return_to`. PostgreSQL table or Redis (server team's call). Must support 30-min TTL aligned with Plaid Hosted Link session expiry.
+- **Plaid Hosted Link integration** — `linkTokenCreate` with `hosted_link: {}` config; include `redirect_uri` config when the client passed `return_to`. Capture the `hosted_link_url` from response. Configure `SESSION_FINISHED` webhook URL pointing to `POST /webhooks/plaid`.
 - **Webhook handler responsibilities:**
-  - Verify `Plaid-Verification` JWT signature against Plaid's webhook public key (rotated periodically — fetch from JWKS).
-  - Idempotency: Plaid retries on 5xx and occasionally on 2xx. Dedupe on `(webhook_id, item_id)` — first arrival wins, duplicates are 200-acked but skip processing.
-  - On `SESSION_FINISHED`: lookup session by `link_token`, call `plaid.itemPublicTokenExchange()`, encrypt `access_token` with the existing AES-256-GCM `ENCRYPTION_KEY`, store in `plaid_items`, update session row to `status='connected'` with `provider_item_id` and `institution_name` populated.
-  - On `ITEM_LOGIN_REQUIRED`/`ERROR`: update `plaid_items.status` so the next `POST /sync/trigger` for that item reports the error code in `results[]`.
+  - **Signature verification:** verify `Plaid-Verification` JWT against Plaid's webhook public key (rotated periodically — fetch from JWKS, cache with TTL).
+  - **Replay-window enforcement:** reject JWTs with `iat` older than 5 minutes to prevent replay attacks.
+  - **Request-size limit:** cap webhook body at e.g. 1 MB; reject larger.
+  - **Rate limiting:** apply rate limits at the IP and at the JWT-issuer level to mitigate webhook flooding attacks (publicly reachable, unauthenticated by JWT).
+  - **Idempotency:** dedupe per webhook type. For `SESSION_FINISHED`: dedupe on `link_session_id` (Plaid's stable session identifier; the `webhook_id` field is not reliably present). For item-lifecycle webhooks: dedupe on `(item_id, webhook_code, environment)`. First arrival wins; duplicates are 200-acked without reprocessing.
+  - **On `SESSION_FINISHED`:** lookup session by `link_token`, call `plaid.itemPublicTokenExchange()`. On success: encrypt `access_token` with the existing AES-256-GCM `ENCRYPTION_KEY`, store in `plaid_items`, update session row to `status='connected'` with `provider_item_id` and `institution_name` populated.
+  - **On exchange failure (Plaid 5xx, network blip, retries exhausted):** update session row to `status='failed'` with a clear `error` message. **Sessions must not stay `pending` indefinitely** — the client's `GET /sync/connect/status` poll must eventually see a terminal state.
+  - **On `ITEM_LOGIN_REQUIRED` / `ERROR`:** update `plaid_items.status` so the next `POST /sync/trigger` for that item reports the error code in `results[]`.
+
+### Server-side cursor ack (required before launch, not Phase 1)
+
+The Phase 1 client design has no crash-recovery file. If the client crashes between `POST /sync/trigger` and `GET /sync/data`, the Plaid cursor has already advanced and the data batch is lost. This is acceptable for early Phase 1 testing but **must be fixed server-side before M3 launch.**
+
+The fix: don't advance the persisted Plaid cursor until the client `acks` receipt. Server holds the data in the TTL store and keeps the prior cursor until acked. The client adds a `POST /sync/data/ack` (or `DELETE /sync/data?job_id=…`) call after successful load. On ack: drop TTL entry, commit the new cursor. On TTL expiry without ack: drop TTL entry, revert the cursor so the next sync re-fetches the lost batch. Tracked as a coordinating-server-PR followup.
 
 ### Coordination
 
@@ -843,17 +870,19 @@ Client PR (this branch) and server PR ship paired. Until the server endpoints la
 
 ---
 
-## Section 14: Out of Scope
+## Section 12: Out of Scope
 
 - `sync schedule` commands (Phase 2 — automation track in `sync-overview.md` build order)
-- E2E encryption (Phase 3 — gated on server implementing client-side key exchange). `sync key rotate` stub stays in CLI. Open design question for Phase 3: whether key rotation can be MCP-exposed safely. Argument for: no passphrase material passes through the LLM context (the agent triggers rotation; new keys generated locally; public key goes server-via-HTTPS). Argument against: operational consistency with other key tools (`db_unlock`, `db_rotate_key`) which genuinely require passphrase entry and are correctly CLI-only. Decision deferred to the Phase 3 spec.
+- E2E encryption (Phase 3 — gated on server implementing client-side key exchange). `sync key rotate` stub stays in CLI. Open design question for Phase 3: whether key rotation can be MCP-exposed safely (no passphrase material in the LLM context — the agent triggers rotation; new keys generated locally; public key goes server-via-HTTPS — but operational consistency with `db_unlock`/`db_rotate_key` (which DO require passphrases) argues for CLI-only uniformity). Decision deferred to the Phase 3 spec.
 - Post-quantum cryptography (Phase 4 — designed in `sync-overview.md`)
 - Plaid Investments product (separate spec, gated on `investment-tracking.md`)
 - Plaid Liabilities product
 - SimpleFIN, MX, TrueLayer integration (Phase 2/3 — `connect_type` discriminator is in place for forward compat; `POST /sync/connect/submit` endpoint and the `token_paste` client path are NOT in this PR)
-- Local web server callback for OAuth (Phase 1 polish — no server API changes needed; deferred)
+- Local web server callback for OAuth on the CLI (Phase 1 polish — no server API changes needed; deferred)
 - Plaid Production OAuth approval — submit the application during this PR's review cycle given the 4–8 week approval timeline; can run in parallel with remaining implementation work
 - Provider sequencing rationale (SimpleFIN/MX/TrueLayer detailed plan) — tracked separately in product strategy docs
+- Server-side cursor ack — required before M3 launch but not blocking Phase 1 client work; see Section 11
+- Web UI surface (M3D) — the `return_to` parameter on `connect/initiate` is forward-compatible, but the actual web UI is out of scope here
 
 ---
 
@@ -862,11 +891,18 @@ Client PR (this branch) and server PR ship paired. Until the server endpoints la
 | Question | Decision |
 |---|---|
 | Dedup PK: `(transaction_id, source_file)` or `(transaction_id, source_origin)`? | `(transaction_id, source_origin)`. Plaid's sync API is upsert-shaped; OFX-style append-only doesn't fit. |
-| Token refresh: extend `/auth/device/token` or separate `/auth/refresh`? | Separate `/auth/refresh`. Clean endpoint per concern. |
-| MCP connect-flow polling: blocking, looped, or event-driven? | Event-driven via separate `sync_connect_status` tool. Avoids MCP tool-timeout limits and progress-notification client variance. |
+| Token refresh: extend `/auth/device/token` or separate `/auth/refresh`? | Separate `/auth/refresh` with rotating refresh tokens (single-use). |
+| MCP connect-flow polling: blocking, looped, or event-driven? | Event-driven via separate `sync_connect_status` tool, with `expiration` in responses so agents know when to give up. |
 | `--no-browser`: explicit flag, auto-detect, or both? | Both. Auto-print URL alongside browser open; `--no-browser` skips the open attempt. |
-| New table: schema file + migration, or schema file only? | Schema file only. Convention shift; followup to clean up redundant migrations. |
-| Response models: Pydantic everywhere, partial, or dicts? | Pydantic at every API boundary. Single `sync_models.py` module imported by client + loader. |
-| Service layer scope: `SyncConnectionService` or broader `SyncService`? | `SyncService` — owns orchestration plus connection-table operations. |
+| New table: schema file + migration, or schema file only? | Neither — we don't introduce a new local table (see next row). Convention shift for future cases still applies. |
+| Local mirror of server connection state in `app.sync_connections`? | Dropped. Server is the system of record; `sync status` reads `GET /institutions` per invocation. Avoids drift when web UI lands. |
+| Crash-recovery file for in-flight sync? | Dropped. Server-side cursor-ack is the real fix and tracked as required-before-launch. Phase 1 logs loud warnings on crash; user re-runs `sync pull`. |
+| Forward-compat for web UI's connect-redirect needs? | Added `return_to: string \| null` to `POST /sync/connect/initiate` body. CLI sends null; future web UI sends its callback URL. |
+| Response models: Pydantic everywhere, partial, or dicts? | Pydantic at every API boundary. Single `sync_models.py` module imported by client + loader; service-layer result types live alongside. |
+| Service layer scope: `SyncConnectionService` or broader `SyncService`? | `SyncService` — owns orchestration; no local connection-table operations (state lives on server). |
 | Provider ladder section in design doc: full detail, trimmed, or none? | Trimmed. Public design doc mentions the discriminator; sequencing/rationale stays in strategy docs. |
 | Auto-pull after connect? | Yes, by default. `--no-pull` to opt out. |
+| Per-endpoint timeout configuration? | Two constants in `sync_client.py` (15s default, 120s long-op). No config knobs without evidence of need. |
+| CLI `--output json` on mutating commands? | Yes for `pull`, `connect`, `connect-status`, `disconnect` per agent-surface rule. |
+| Missing `sync connect-status` CLI command? | Added (CLI symmetry with `sync_connect_status` MCP tool). |
+| `sync_connect` MCP sensitivity? | Bumped from `low` to `medium` — `link_url` is a one-time bearer credential. |
