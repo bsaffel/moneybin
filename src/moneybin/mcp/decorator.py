@@ -29,7 +29,10 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal, cast
 
-from moneybin.database import interrupt_and_reset_database
+from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
+    _write_conn_thread_local,  # pyright: ignore[reportPrivateUsage]
+    interrupt_and_reset_database,
+)
 from moneybin.errors import UserError, classify_user_error
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
@@ -265,6 +268,13 @@ def mcp_tool(
                     return cap_error
             timeout_s = _get_timeout_seconds()
             started = time.monotonic()
+            # Per-call holder: the tool's thread stores the write connection
+            # here via _write_conn_thread_local so the timeout handler can
+            # interrupt *this* call's connection specifically rather than
+            # whatever is in the process-global slot (which might belong to a
+            # different concurrent tool call if this tool closed its connection
+            # mid-function before timing out).
+            _conn_for_this_call: list[Any] = [None]
             # asyncio.timeout()'s .expired() lets us distinguish a cap-fired
             # TimeoutError from one the tool body raised itself (e.g., a
             # downstream HTTP timeout). Without this, both surface as
@@ -276,7 +286,17 @@ def mcp_tool(
                     if is_coro:
                         result = await fn(*args, **kwargs)
                     else:
-                        result = await asyncio.to_thread(fn, *args, **kwargs)
+
+                        def _fn_with_conn_tracking(*a: Any, **kw: Any) -> Any:
+                            _write_conn_thread_local.conn_holder = _conn_for_this_call
+                            try:
+                                return fn(*a, **kw)
+                            finally:
+                                _write_conn_thread_local.conn_holder = None
+
+                        result = await asyncio.to_thread(
+                            _fn_with_conn_tracking, *args, **kwargs
+                        )
             except TimeoutError as exc:
                 if not cm.expired():
                     return _classify_or_raise(fn.__name__, exc)
@@ -286,7 +306,7 @@ def mcp_tool(
                     f"(cap {timeout_s:.1f}s); interrupting DB and resetting connection"
                 )
                 try:
-                    interrupt_and_reset_database()
+                    interrupt_and_reset_database(_conn_for_this_call[0])
                 except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
                     logger.error(
                         f"interrupt_and_reset_database failed during {fn.__name__} "

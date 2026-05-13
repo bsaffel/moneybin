@@ -57,6 +57,10 @@ _cached_encryption_key: str | None = None
 
 _active_write_conn: "Database | None" = None
 _active_write_lock: threading.Lock = threading.Lock()
+# Per-thread holder populated by the MCP decorator so the timeout handler
+# can interrupt the specific connection opened for *this* tool call rather
+# than whatever is currently in the process-global slot.
+_write_conn_thread_local: threading.local = threading.local()
 
 _migration_check_done: set[Path] = set()
 _database_accessed: bool = False
@@ -712,11 +716,16 @@ def get_database(
             if not read_only:
                 _database_written = True
                 _migration_check_done.add(db_path)
-                # DuckDB enforces one writer per file — only one write
-                # connection can be open at a time, so this slot always
-                # refers to the current active writer.
                 with _active_write_lock:
                     _active_write_conn = db
+                # If the MCP decorator registered a per-call holder on this
+                # thread, store the connection there too. The timeout handler
+                # reads from the holder to interrupt the *specific* connection
+                # it dispatched rather than whatever is currently in the global
+                # slot (which may belong to a different concurrent tool call).
+                _holder = getattr(_write_conn_thread_local, "conn_holder", None)
+                if _holder is not None:
+                    _holder[0] = db
             return db
         except DatabaseLockError:
             if time.monotonic() >= deadline:
@@ -727,16 +736,20 @@ def get_database(
             delay = min(delay * 1.5, 0.5)
 
 
-def interrupt_and_reset_database() -> None:
+def interrupt_and_reset_database(conn: "Database | None" = None) -> None:
     """Interrupt and close the active write connection, if any.
 
-    Called from the MCP timeout path to release the write lock before the
-    dispatcher returns. No-op if no write connection is currently active.
+    If *conn* is provided (captured by the MCP decorator's per-call holder),
+    interrupt that specific connection. Otherwise fall back to the
+    process-global slot. No-op if no write connection is active.
     """
-    with _active_write_lock:
-        conn = _active_write_conn
     if conn is not None:
         conn.interrupt_and_reset()
+        return
+    with _active_write_lock:
+        slot_conn = _active_write_conn
+    if slot_conn is not None:
+        slot_conn.interrupt_and_reset()
 
 
 # ---------------------------------------------------------------------------

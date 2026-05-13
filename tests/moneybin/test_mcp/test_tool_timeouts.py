@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -224,8 +225,8 @@ async def test_back_to_back_call_after_timeout_succeeds(
 
     _real_irdb = dec_module.interrupt_and_reset_database
 
-    def _interrupt_and_signal() -> None:
-        _real_irdb()  # run the real cleanup (clears _active_write_conn, etc.)
+    def _interrupt_and_signal(conn: Any = None) -> None:
+        _real_irdb(conn)  # run the real cleanup (clears _active_write_conn, etc.)
         _stop.set()  # unblock hang_tool so it closes its own connection
 
     monkeypatch.setattr(
