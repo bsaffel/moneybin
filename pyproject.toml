@@ -313,8 +313,12 @@ markers = [
 filterwarnings = [
     # Ignore deprecation warnings from third-party libraries we don't control
     "ignore:Call to deprecated method findAll:DeprecationWarning:ofxparse",
-    # astor 0.8.1 uses ast.Num which is removed in Python 3.14; remove when astor is updated
+    # astor 0.8.1 uses ast.Num/ast.Str/Attribute.s which are removed in Python 3.14; remove when astor is updated
     "ignore:ast.Num is deprecated:DeprecationWarning:astor",
+    "ignore:ast.Str is deprecated:DeprecationWarning:astor",
+    "ignore:Attribute s is deprecated:DeprecationWarning:astor",
+    # sqlmesh uses ast.Str internally; remove when sqlmesh upgrades its metaprogramming module
+    "ignore:ast.Str is deprecated:DeprecationWarning:sqlmesh",
     # pydantic 2.12.5 still triggers json_encoders warning from an indirect dependency;
     # remove once the offending dependency migrates to custom_serializers
     "ignore:`json_encoders` is deprecated:pydantic.warnings.PydanticDeprecatedSince20",
