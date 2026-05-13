@@ -110,5 +110,5 @@ def register_system_tools(mcp: FastMCP) -> None:
         "system_doctor",
         "Run pipeline integrity checks across all SQLMesh named audits. "
         "Returns pass/fail/warn per invariant plus transaction count. "
-        "Read-only. Call before relying on analytical results to confirm the pipeline is self-consistent.",
+        "May write SQLMesh state tables on first call. Call before relying on analytical results to confirm the pipeline is self-consistent.",
     )
