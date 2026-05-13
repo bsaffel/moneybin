@@ -120,7 +120,7 @@ def mcp_db(
     # Reset per-process state so each test starts clean.
     import moneybin.database as db_module
 
-    monkeypatch.setattr(db_module, "_migration_check_done", set())
+    monkeypatch.setattr(db_module, "_migration_check_done", set[Path]())
     monkeypatch.setattr(db_module, "_database_accessed", False)
     monkeypatch.setattr(db_module, "_cached_encryption_key", None)
     monkeypatch.setattr(db_module, "_active_write_conn", None)
