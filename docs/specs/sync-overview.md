@@ -1,9 +1,9 @@
 # Sync — Overview
 
-> Last updated: 2026-04-19
-> Status: Draft — umbrella doc for the sync initiative. The child spec for the first provider is [`sync-plaid.md`](sync-plaid.md).
+> Last updated: 2026-05-13
+> Status: Ready — umbrella doc for the sync initiative. Phase 1 implementation underway in [`sync-plaid.md`](sync-plaid.md); Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`mcp-tool-surface.md`](mcp-tool-surface.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
-> Server docs: [`../moneybin-server/docs/architecture/api-contract.md`](../../moneybin-server/docs/architecture/api-contract.md) (authoritative API surface), [`../moneybin-server/docs/architecture/system-overview.md`](../../moneybin-server/docs/architecture/system-overview.md) (ecosystem architecture)
+> Server contract: the moneybin-server HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` and `sync-client-integration.md` (moved to `archived/`)
 
 ## Purpose
@@ -48,7 +48,7 @@ Sync is the bridge between MoneyBin's power-user core and mainstream usability:
 - Auth0 configuration details (server proxies auth; client calls `/auth/*`)
 - Plaid Link implementation, webhook handling, cursor management
 
-Server behavior is documented in `../moneybin-server/docs/specs/` and `../moneybin-server/docs/architecture/api-contract.md`. The client treats the server as opaque — it consumes the API contract, nothing more.
+Server behavior is documented in the moneybin-server project. The client treats the server as opaque — it consumes the API contract, nothing more, and endpoint shapes are restated inline in this spec where the client depends on them.
 
 ### What this spec does NOT define (provider-specific)
 
