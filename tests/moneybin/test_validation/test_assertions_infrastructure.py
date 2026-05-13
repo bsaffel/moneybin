@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 import duckdb
 import pytest
 
-import moneybin.database as database_module
 from moneybin.database import Database
 from moneybin.migrations import MigrationRunner
 from moneybin.validation.assertions.infrastructure import (
@@ -122,14 +121,10 @@ def test_min_rows_treats_missing_table_as_zero_rows(db: Database) -> None:
 
 
 @pytest.mark.integration
-def test_sqlmesh_catalog_matches_against_real_db(
-    db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sqlmesh_catalog_matches_against_real_db(db: Database) -> None:
     """SQLMesh's bound adapter path must equal db.path.
 
-    sqlmesh_context() reads the module-level _database_instance singleton —
-    monkeypatch it to point at the test fixture's database.
+    sqlmesh_context() takes db directly — no singleton needed.
     """
-    monkeypatch.setattr(database_module, "_database_instance", db)
     result = assert_sqlmesh_catalog_matches(db)
     assert result.passed, result.details
