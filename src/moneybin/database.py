@@ -686,10 +686,15 @@ def get_database(
     (start 50 ms, ×1.5, cap 500 ms) until max_wait is exhausted.
     """
     global _database_accessed, _active_write_conn  # noqa: PLW0603
-    db_path = get_settings().database.path
+    settings = get_settings()
+    db_path = settings.database.path
     deadline = time.monotonic() + max_wait
     delay = 0.05
-    skip_upgrade = read_only or (db_path in _migration_check_done)
+    skip_upgrade = (
+        read_only
+        or settings.database.no_auto_upgrade
+        or (db_path in _migration_check_done)
+    )
     while True:
         try:
             db = Database(

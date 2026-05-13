@@ -51,13 +51,13 @@ def system_status() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low", read_only=True)
+@mcp_tool(sensitivity="low", read_only=False)
 def system_doctor() -> ResponseEnvelope:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
     Returns pass/fail/warn per invariant plus a transaction count.
-    Read-only — never writes. Call before relying on analytical results
-    to confirm the pipeline is self-consistent.
+    May write SQLMesh state tables on first Context init. Call before
+    relying on analytical results to confirm the pipeline is self-consistent.
     """
     from moneybin.database import get_database
     from moneybin.metrics.registry import DOCTOR_RUNS_TOTAL  # noqa: PLC0415
