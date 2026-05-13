@@ -47,10 +47,13 @@ def inbox_default(
     """Default action: drain the inbox."""
     if ctx.invoked_subcommand is not None:
         return
-    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
+    from moneybin.config import get_settings  # noqa: PLC0415
+    from moneybin.database import get_database  # noqa: PLC0415
 
     with handle_cli_errors():
-        result = InboxService.for_active_profile().sync()
+        with get_database() as db:
+            result = InboxService(db=db, settings=get_settings()).sync()
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json

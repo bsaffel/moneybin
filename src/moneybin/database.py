@@ -712,6 +712,9 @@ def get_database(
             if not read_only:
                 _database_written = True
                 _migration_check_done.add(db_path)
+                # DuckDB enforces one writer per file — only one write
+                # connection can be open at a time, so this slot always
+                # refers to the current active writer.
                 with _active_write_lock:
                     _active_write_conn = db
             return db
