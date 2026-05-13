@@ -38,7 +38,7 @@ def review(
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             result = AutoRuleService(db).review(limit=limit)
 
     proposals = result.proposals
@@ -124,7 +124,7 @@ def stats(
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             result = AutoRuleService(db).stats()
 
     if output == OutputFormat.JSON:
@@ -159,7 +159,7 @@ def rules(
     from moneybin.services.auto_rule_service import AutoRuleService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             svc = AutoRuleService(db)
             active_rules = svc.list_active_rules(limit=limit)
             total = svc.count_active_rules()

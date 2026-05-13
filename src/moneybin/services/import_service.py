@@ -359,11 +359,9 @@ class ImportService:
     def run_transforms(self) -> bool:
         """Run SQLMesh transforms to rebuild core tables.
 
-        Uses ``sqlmesh_context()`` to handle encrypted DB injection into
-        SQLMesh's adapter cache. ``sqlmesh_context()`` reuses the active
-        ``get_database()`` singleton internally, so ``self._db`` should
-        be that same singleton (typical caller pattern is
-        ``ImportService(get_database()).run_transforms()``).
+        Uses ``sqlmesh_context(self._db)`` to inject the caller-supplied
+        encrypted connection into SQLMesh's adapter cache. Typical caller
+        pattern: ``with get_database() as db: ImportService(db).run_transforms()``.
 
         Seeds ``app.seed_source_priority`` from config before running so
         ``int_transactions__merged`` can resolve per-field winners. Without

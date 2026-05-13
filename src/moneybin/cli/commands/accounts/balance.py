@@ -39,7 +39,7 @@ def accounts_balance_show(
     """Show current or as-of balances per account."""
     account_ids = [account] if account else None
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             as_of_date = _date.fromisoformat(as_of) if as_of else None
             observations = BalanceService(db).current_balances(
                 account_ids=account_ids, as_of_date=as_of_date
@@ -66,7 +66,7 @@ def accounts_balance_history(
 ) -> None:
     """Per-account balance history (daily series)."""
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             from_d = _date.fromisoformat(from_date) if from_date else None
             to_d = _date.fromisoformat(to_date) if to_date else None
             observations = BalanceService(db).history(
@@ -119,7 +119,7 @@ def accounts_balance_list(
 ) -> None:
     """List balance assertions, optionally filtered by account."""
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             assertions = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
         emit_json("assertions", [a.to_dict() for a in assertions])
@@ -159,7 +159,7 @@ def accounts_balance_reconcile(
     """Show observed balance days with non-zero reconciliation delta."""
     account_ids = [account] if account else None
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             parsed_threshold = Decimal(threshold)
             observations = BalanceService(db).reconcile(
                 account_ids=account_ids, threshold=parsed_threshold

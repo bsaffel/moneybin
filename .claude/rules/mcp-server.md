@@ -110,7 +110,7 @@ The `FastMCP(instructions=...)` argument in `src/moneybin/mcp/server.py` is the 
 
 ## Connection Model
 
-All tools use `get_database()` from `src/moneybin/database.py` — a single long-lived read-write connection per process. The `Database` class handles encryption, schema init, and migrations transparently. See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
+All tools use `get_database()` from `src/moneybin/database.py`. Each call returns a **fresh, short-lived connection** that the caller must close via the context manager (`with get_database(...) as db:`). Read-only tools pass `read_only=True` so they attach DuckDB in shared-read mode and do not hold the exclusive write lock. Write tools use the default `read_only=False`. See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
 
 ## Data Access
 

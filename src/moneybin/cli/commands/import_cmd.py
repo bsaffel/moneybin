@@ -438,12 +438,16 @@ def import_preview(
 
         # Stage 3: Column mapping — load built-in + user-saved formats
         matched_format = None
-        from moneybin.database import get_database
+        from moneybin.database import (  # noqa: PLC0415
+            DatabaseKeyError,
+            DatabaseNotInitializedError,
+            get_database,
+        )
 
         try:
             with get_database(read_only=True) as preview_db:
                 all_formats, _ = _load_all_formats(preview_db)
-        except Exception:  # noqa: BLE001 — DB may not exist yet; use built-in only
+        except (DatabaseNotInitializedError, DatabaseKeyError):
             all_formats, _ = _load_all_formats(None)
         if format_name:
             matched_format = all_formats.get(format_name)

@@ -54,7 +54,7 @@ def reports_networth_show(
 ) -> None:
     """Show current or as-of net worth + per-account breakdown."""
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             as_of_date = _date.fromisoformat(as_of) if as_of else None
             snapshot = NetworthService(db).current(
                 as_of_date=as_of_date, account_ids=account
@@ -88,7 +88,7 @@ def reports_networth_history(
 ) -> None:
     """Net worth time series with period-over-period change."""
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             parsed_from = _date.fromisoformat(from_date)
             parsed_to = _date.fromisoformat(to_date)
             rows = NetworthService(db).history(

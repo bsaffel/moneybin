@@ -34,7 +34,7 @@ def reports_merchants_show(
     if sort not in MERCHANTS_SORTS:
         raise typer.BadParameter(f"Unknown sort key: {sort}")
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             cols, rows = ReportsService(db).merchant_activity(top=top, sort=sort)
     if output == OutputFormat.JSON:
         emit_json("merchants", [dict(zip(cols, r, strict=False)) for r in rows])

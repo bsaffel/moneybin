@@ -36,7 +36,7 @@ def reports_cashflow_show(
     if by not in CASHFLOW_GROUPINGS:
         raise typer.BadParameter(f"Unknown grouping: {by}")
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             cols, rows = ReportsService(db).cash_flow(
                 from_month=from_month, to_month=to_month, by=by
             )

@@ -68,7 +68,7 @@ def transactions_notes_list(
     from moneybin.services.transaction_service import TransactionService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             notes = TransactionService(db).list_notes(transaction_id)
 
     payload = [_note_to_dict(n) for n in notes]

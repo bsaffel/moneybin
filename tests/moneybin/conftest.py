@@ -91,7 +91,7 @@ def clean_profile_state() -> Generator[None, None, None]:
     def _reset_db_state() -> None:
         db_module._cached_encryption_key = None  # pyright: ignore[reportPrivateUsage]
         db_module._active_write_conn = None  # pyright: ignore[reportPrivateUsage]
-        db_module._migration_check_done = False  # pyright: ignore[reportPrivateUsage]
+        db_module._migration_check_done = set()  # pyright: ignore[reportPrivateUsage]
         db_module._database_accessed = False  # pyright: ignore[reportPrivateUsage]
 
     # Setup: clean state before test

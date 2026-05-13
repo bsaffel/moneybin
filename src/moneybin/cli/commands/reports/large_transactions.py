@@ -34,7 +34,7 @@ def reports_large_transactions_show(
     if anomaly not in LARGE_TXN_ANOMALIES:
         raise typer.BadParameter(f"Unknown anomaly mode: {anomaly}")
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             cols, rows = ReportsService(db).large_transactions(top=top, anomaly=anomaly)
     if output == OutputFormat.JSON:
         emit_json(

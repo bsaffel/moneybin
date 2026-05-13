@@ -549,7 +549,7 @@ class TestGetDatabaseNew:
     ) -> None:
         import moneybin.database as db_module
 
-        monkeypatch.setattr(db_module, "_migration_check_done", False)
+        monkeypatch.setattr(db_module, "_migration_check_done", set())
         monkeypatch.setattr(db_module, "_database_accessed", False)
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)
 
@@ -573,14 +573,13 @@ class TestGetDatabaseNew:
     ) -> None:
         import moneybin.database as db_module
 
-        # Set _migration_check_done=True so the successful third attempt uses
+        db_path = tmp_path / "retry.duckdb"
+        # Set _migration_check_done with db_path so the successful third attempt uses
         # no_auto_upgrade=True and avoids migrations.py calling time.monotonic,
         # which would exhaust the patched iterator prematurely.
-        monkeypatch.setattr(db_module, "_migration_check_done", True)
+        monkeypatch.setattr(db_module, "_migration_check_done", {db_path})
         monkeypatch.setattr(db_module, "_database_accessed", False)
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)
-
-        db_path = tmp_path / "retry.duckdb"
         mock_settings = MagicMock()
         mock_settings.database.path = db_path
         monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
@@ -622,7 +621,7 @@ class TestGetDatabaseNew:
     ) -> None:
         import moneybin.database as db_module
 
-        monkeypatch.setattr(db_module, "_migration_check_done", False)
+        monkeypatch.setattr(db_module, "_migration_check_done", set())
         monkeypatch.setattr(db_module, "_database_accessed", False)
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)
 
@@ -657,7 +656,7 @@ class TestGetDatabaseNew:
     ) -> None:
         import moneybin.database as db_module
 
-        monkeypatch.setattr(db_module, "_migration_check_done", False)
+        monkeypatch.setattr(db_module, "_migration_check_done", set())
         monkeypatch.setattr(db_module, "_database_accessed", False)
         monkeypatch.setattr(db_module, "_active_write_conn", None)
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)

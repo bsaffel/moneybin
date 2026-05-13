@@ -63,8 +63,8 @@ def system_doctor() -> ResponseEnvelope:
     from moneybin.metrics.registry import DOCTOR_RUNS_TOTAL  # noqa: PLC0415
     from moneybin.services.doctor_service import DoctorService
 
-    db = get_database()
-    report = DoctorService(db).run_all(verbose=False)
+    with get_database(read_only=True) as db:
+        report = DoctorService(db).run_all(verbose=False)
 
     failing = report.failing
     warning = report.warning

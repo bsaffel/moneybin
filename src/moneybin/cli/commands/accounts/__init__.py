@@ -55,7 +55,7 @@ def accounts_list(
 ) -> None:
     """List accounts. Hides archived accounts by default."""
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             result = AccountService(db).list_accounts(
                 include_archived=include_archived, type_filter=type_filter
             )
@@ -77,7 +77,7 @@ def accounts_show(
 ) -> None:
     """Show one account's full settings + dim record."""
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             record = AccountService(db).get_account(account_id)
     if record is None:
         logger.error(f"❌ Account not found: {account_id}")
@@ -311,7 +311,7 @@ def accounts_resolve(
     natural-language reference.
     """
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             matches = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:

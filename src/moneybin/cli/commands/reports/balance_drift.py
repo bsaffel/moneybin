@@ -41,7 +41,7 @@ def reports_balance_drift_show(
     if status not in DRIFT_STATUSES:
         raise typer.BadParameter(f"Unknown status: {status}")
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             cols, rows = ReportsService(db).balance_drift(
                 account=account, status=status, since=since
             )

@@ -37,7 +37,7 @@ def reports_spending_show(
     if compare not in SPENDING_COMPARES:
         raise typer.BadParameter(f"Unknown comparison: {compare}")
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             cols, rows = ReportsService(db).spending_trend(
                 from_month=from_month,
                 to_month=to_month,

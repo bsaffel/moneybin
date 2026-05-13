@@ -58,7 +58,7 @@ _cached_encryption_key: str | None = None
 _active_write_conn: "Database | None" = None
 _active_write_lock: threading.Lock = threading.Lock()
 
-_migration_check_done: bool = False
+_migration_check_done: set[Path] = set()
 _database_accessed: bool = False
 
 
@@ -685,11 +685,11 @@ def get_database(
     Write connections retry on DatabaseLockError with exponential backoff
     (start 50 ms, ×1.5, cap 500 ms) until max_wait is exhausted.
     """
-    global _database_accessed, _migration_check_done, _active_write_conn  # noqa: PLW0603
+    global _database_accessed, _active_write_conn  # noqa: PLW0603
     db_path = get_settings().database.path
     deadline = time.monotonic() + max_wait
     delay = 0.05
-    skip_upgrade = read_only or _migration_check_done
+    skip_upgrade = read_only or (db_path in _migration_check_done)
     while True:
         try:
             db = Database(
@@ -699,7 +699,7 @@ def get_database(
             )
             _database_accessed = True
             if not read_only:
-                _migration_check_done = True
+                _migration_check_done.add(db_path)
                 with _active_write_lock:
                     _active_write_conn = db
             return db

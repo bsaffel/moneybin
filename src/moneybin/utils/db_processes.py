@@ -29,9 +29,14 @@ def find_blocking_processes(db_path: Path) -> list[dict[str, str | int]]:
             text=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
+        logger.debug("lsof not found; cannot enumerate processes holding %s", db_path)
+        return []
+    except subprocess.TimeoutExpired:
+        logger.debug("lsof timed out inspecting %s", db_path)
         return []
     except Exception:  # noqa: BLE001 — lsof can fail in containers/sandbox
+        logger.debug("lsof failed inspecting %s", db_path, exc_info=True)
         return []
 
     if not result.stdout:
