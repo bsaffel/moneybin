@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.doctor_service import (
     DoctorReport,
@@ -113,9 +112,7 @@ def doctor_db(tmp_path: Path) -> Generator[Database, None, None]:
          'CREDIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 1, 2, 4, '2026-01', '2026-Q1')
     """)  # noqa: S608 — test input, not user data
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 

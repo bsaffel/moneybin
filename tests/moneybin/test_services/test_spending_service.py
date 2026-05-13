@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.spending_service import (
     CategoryBreakdown,
@@ -27,9 +26,7 @@ def empty_db(tmp_path: Path) -> Generator[Database, None, None]:
         tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
     )
     create_core_tables_raw(database.conn)
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 
@@ -69,9 +66,7 @@ def spending_db(tmp_path: Path) -> Generator[Database, None, None]:
         ('T3', 'Food & Drink', 'Groceries', CURRENT_TIMESTAMP, 'user')
     """)  # noqa: S608  # test input, not executing SQL
 
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 

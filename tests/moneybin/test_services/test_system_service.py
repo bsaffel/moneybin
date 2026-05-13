@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.system_service import SystemService, SystemStatus
 from tests.moneybin.db_helpers import create_core_tables_raw
@@ -57,11 +56,7 @@ def system_db(tmp_path: Path) -> Generator[Database, None, None]:
 
     conn.execute(_INSERT_TRANSACTIONS)
 
-    db_module._database_instance = database  # type: ignore[attr-defined]
-
     yield database
-
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 

@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.transaction_service import (
     Transaction,
@@ -74,9 +73,7 @@ def txn_db(tmp_path: Path) -> Generator[Database, None, None]:
          NULL, NULL, NULL, NULL, NULL)
     """)  # noqa: S608  # test input, not executing SQL
 
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 

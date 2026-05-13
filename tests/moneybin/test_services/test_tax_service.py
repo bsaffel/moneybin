@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import moneybin.database as db_module
 from moneybin.database import Database
 from moneybin.services.tax_service import (
     TaxService,
@@ -52,9 +51,7 @@ def tax_db(tmp_path: Path) -> Generator[Database, None, None]:
          70000.00, 1015.00, 'w2_2024.pdf', CURRENT_TIMESTAMP)
     """)  # noqa: S608  # test input, not executing SQL
 
-    db_module._database_instance = database  # type: ignore[attr-defined]
     yield database
-    db_module._database_instance = None  # type: ignore[attr-defined]
     database.close()
 
 
@@ -148,9 +145,7 @@ class TestEmptyResults:
             no_auto_upgrade=True,
         )
         create_core_tables_raw(database.conn)
-        db_module._database_instance = database  # type: ignore[attr-defined]
         yield database
-        db_module._database_instance = None  # type: ignore[attr-defined]
         database.close()
 
     @pytest.mark.unit
