@@ -72,12 +72,11 @@ class TestRenderOrJson:
         assert len(called) == 1
 
     @pytest.mark.unit
-    def test_text_mode_no_render_fn_falls_back_to_json(
+    def test_text_mode_no_render_fn_emits_nothing(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         render_or_json(_make_envelope(), OutputFormat.TEXT)
-        out = capsys.readouterr().out
-        assert json.loads(out)["status"] == "ok"
+        assert capsys.readouterr().out == ""
 
     @pytest.mark.unit
     def test_json_fields_missing_field_silently_skipped(

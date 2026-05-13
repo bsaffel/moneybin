@@ -82,10 +82,11 @@ def render_or_json(
     Leading/trailing whitespace around each field name is stripped; empty
     segments (e.g. from ``"id,,amount"``) are silently ignored.
     """
-    if output == OutputFormat.TEXT and render_fn is not None:
-        render_fn(envelope)
+    if output == OutputFormat.TEXT:
+        if render_fn is not None:
+            render_fn(envelope)
         return
-    if output == OutputFormat.JSON and json_fields and isinstance(envelope.data, list):
+    if json_fields and isinstance(envelope.data, list):
         fields = {f.strip() for f in json_fields.split(",") if f.strip()}
         filtered = [
             {k: v for k, v in row.items() if k in fields} for row in envelope.data
