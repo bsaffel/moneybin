@@ -14,7 +14,7 @@ def test_classify_database_key_error_returns_user_error() -> None:
     ):
         result = classify_user_error(DatabaseKeyError("locked"))
     assert result is not None
-    assert result.code == "database_locked"
+    assert result.code == "wrong_key"
     assert "locked" in result.message
     assert result.hint == "Run: moneybin db unlock"
 

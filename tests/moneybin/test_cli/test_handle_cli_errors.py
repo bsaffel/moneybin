@@ -53,14 +53,15 @@ def test_handle_cli_errors_lets_other_exceptions_propagate() -> None:
 def test_handle_cli_errors_json_mode_emits_envelope_on_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """With output=JSON, classified errors emit a JSON envelope to stdout."""
+    """With JSON output mode active, classified errors emit a JSON envelope to stdout."""
     import json
 
     from moneybin.cli.output import OutputFormat
-    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.cli.utils import handle_cli_errors, set_output_flag
 
+    set_output_flag(OutputFormat.JSON)
     with pytest.raises(typer.Exit) as exc_info:
-        with handle_cli_errors(output=OutputFormat.JSON):
+        with handle_cli_errors():
             raise FileNotFoundError("missing.csv")
 
     assert exc_info.value.exit_code == 1
@@ -74,12 +75,13 @@ def test_handle_cli_errors_json_mode_no_log_output(
     capsys: pytest.CaptureFixture[str],
     caplog: LogCaptureFixture,
 ) -> None:
-    """With output=JSON, error goes to stdout envelope — not to stderr log."""
+    """With JSON output mode active, error goes to stdout envelope — not to stderr log."""
     from moneybin.cli.output import OutputFormat
-    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.cli.utils import handle_cli_errors, set_output_flag
 
+    set_output_flag(OutputFormat.JSON)
     with caplog.at_level("ERROR"), pytest.raises(typer.Exit):
-        with handle_cli_errors(output=OutputFormat.JSON):
+        with handle_cli_errors():
             raise FileNotFoundError("gone.csv")
 
     assert "gone.csv" not in caplog.text
@@ -90,12 +92,13 @@ def test_handle_cli_errors_json_mode_no_log_output(
 def test_handle_cli_errors_text_mode_unchanged(
     caplog: LogCaptureFixture,
 ) -> None:
-    """Default (text) mode still logs and does not emit JSON."""
+    """Text mode (default) still logs and does not emit JSON."""
     from moneybin.cli.output import OutputFormat
-    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.cli.utils import handle_cli_errors, set_output_flag
 
+    set_output_flag(OutputFormat.TEXT)
     with caplog.at_level("ERROR"), pytest.raises(typer.Exit):
-        with handle_cli_errors(output=OutputFormat.TEXT):
+        with handle_cli_errors():
             raise FileNotFoundError("also.csv")
 
     assert "also.csv" in caplog.text

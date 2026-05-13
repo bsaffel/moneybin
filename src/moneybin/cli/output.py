@@ -42,11 +42,21 @@ class OutputFormat(StrEnum):
     JSON = "json"
 
 
+def _set_output_flag(value: OutputFormat) -> OutputFormat:
+    from moneybin.cli.utils import (
+        set_output_flag,  # noqa: PLC0415 — defer to break import cycle
+    )
+
+    return set_output_flag(value)
+
+
 output_option: OutputFormat = typer.Option(
     OutputFormat.TEXT,
     "-o",
     "--output",
     help="Output format: 'text' (human-readable) or 'json' (machine-readable).",
+    callback=_set_output_flag,
+    is_eager=False,
 )
 
 quiet_option: bool = typer.Option(

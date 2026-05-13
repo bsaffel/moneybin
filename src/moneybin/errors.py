@@ -86,7 +86,7 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     if isinstance(exc, DatabaseKeyError):
         return UserError(
             str(exc),
-            code="database_locked",
+            code="wrong_key",
             hint=database_key_error_hint(),
         )
     if isinstance(exc, FileNotFoundError):

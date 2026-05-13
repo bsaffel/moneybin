@@ -49,7 +49,7 @@ def inbox_default(
         return
     from moneybin.cli.utils import handle_cli_errors
 
-    with handle_cli_errors(output=output):
+    with handle_cli_errors():
         result = InboxService.for_active_profile().sync()
 
     if output == OutputFormat.JSON:
@@ -73,7 +73,7 @@ def inbox_list(
     """Show what a sync would do, without moving anything."""
     from moneybin.cli.utils import handle_cli_errors
 
-    with handle_cli_errors(output=output):
+    with handle_cli_errors():
         result = InboxService.for_active_profile_no_db().enumerate()
 
     if output == OutputFormat.JSON:
@@ -101,7 +101,7 @@ def inbox_path(
     """Print the active profile's inbox parent directory."""
     from moneybin.cli.utils import handle_cli_errors
 
-    with handle_cli_errors(output=output):
+    with handle_cli_errors():
         service = InboxService.for_active_profile_no_db()
         # Materialize the layout so users can immediately copy files into
         # `$(moneybin import inbox path)/inbox/...` on a fresh profile.

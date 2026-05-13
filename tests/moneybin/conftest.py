@@ -75,8 +75,8 @@ def clean_profile_state() -> Generator[None, None, None]:
     - Clears the settings cache to prevent test pollution
     - Resets current profile to 'test'
     - Resets the module-level ``_CLIFlags`` singleton in ``cli.utils`` so
-      a stale ``--profile`` value from one test cannot leak into the
-      next via ``resolve_profile()``.
+      stale ``--profile``, ``--verbose``, and ``--output`` values from one
+      test cannot leak into the next.
     - Resets per-process database module state (``_cached_encryption_key``,
       ``_active_write_conn``, ``_migration_check_done``, ``_database_accessed``,
       ``_database_written``) so a key cached by one test is never reused by the
@@ -101,6 +101,7 @@ def clean_profile_state() -> Generator[None, None, None]:
     set_current_profile("test")
     cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
     cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
+    cli_utils._flags.output = cli_utils.OutputFormat.TEXT  # pyright: ignore[reportPrivateUsage]
     _reset_db_state()
 
     # Yield to run the test
@@ -112,6 +113,7 @@ def clean_profile_state() -> Generator[None, None, None]:
     set_current_profile("test")
     cli_utils._flags.profile = None  # pyright: ignore[reportPrivateUsage]
     cli_utils._flags.verbose = False  # pyright: ignore[reportPrivateUsage]
+    cli_utils._flags.output = cli_utils.OutputFormat.TEXT  # pyright: ignore[reportPrivateUsage]
     _reset_db_state()
 
 

@@ -25,16 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def handle_cli_errors(
-    output: OutputFormat = OutputFormat.TEXT,
-) -> Generator[None, None, None]:
+def handle_cli_errors() -> Generator[None, None, None]:
     """Cross-cutting CLI error handler.
 
     Catches classified user-facing exceptions (DatabaseKeyError,
     DatabaseLockError, DatabaseNotInitializedError, etc.) and exits with
-    code 1. When ``output`` is JSON, emits a structured error envelope to
-    stdout; otherwise logs with the standard ❌ prefix. Unrecognized
-    exceptions propagate unchanged.
+    code 1. When the active output format is JSON (set via ``output_option``
+    callback), emits a structured error envelope to stdout; otherwise logs
+    with the standard ❌ prefix. Unrecognized exceptions propagate unchanged.
 
     Does NOT open or yield a Database — commands acquire their own
     connections with ``get_database(read_only=...)``.
@@ -51,7 +49,7 @@ def handle_cli_errors(
         user_error = classify_user_error(e)
         if user_error is None:
             raise
-        if output == OutputFormat.JSON:
+        if _flags.output == OutputFormat.JSON:
             # JSON-mode errors bypass logger.error intentionally: stdout stays
             # machine-readable for agents and the structured envelope carries
             # the full error context. The agent's transcript is the audit trail.
@@ -122,6 +120,7 @@ class _CLIFlags:
 
     profile: str | None = None
     verbose: bool = False
+    output: OutputFormat = OutputFormat.TEXT
 
 
 _flags = _CLIFlags()
@@ -136,6 +135,12 @@ def stash_cli_flags(profile: str | None, verbose: bool) -> None:
 def get_verbose_flag() -> bool:
     """Return whether --verbose was passed on the top-level CLI."""
     return _flags.verbose
+
+
+def set_output_flag(value: OutputFormat) -> OutputFormat:
+    """Record the active output format; called by the output_option callback."""
+    _flags.output = value
+    return value
 
 
 def resolve_profile() -> None:
