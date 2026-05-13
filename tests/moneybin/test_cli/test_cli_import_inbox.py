@@ -20,7 +20,7 @@ from moneybin.services.inbox_service import (
 
 
 @contextmanager
-def _fake_db_ctx() -> Generator[object, None, None]:
+def _fake_db_ctx(**kwargs: object) -> Generator[object, None, None]:
     yield object()
 
 
