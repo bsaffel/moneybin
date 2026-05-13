@@ -50,4 +50,5 @@ def _reset_database_module_state() -> Generator[None, None, None]:  # pyright: i
     db_module._cached_encryption_key = None  # pyright: ignore[reportPrivateUsage]
     db_module._migration_check_done = set()  # pyright: ignore[reportPrivateUsage]
     db_module._database_accessed = False  # pyright: ignore[reportPrivateUsage]
+    db_module._database_written = False  # pyright: ignore[reportPrivateUsage]
     yield

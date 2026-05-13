@@ -78,9 +78,9 @@ def clean_profile_state() -> Generator[None, None, None]:
       a stale ``--profile`` value from one test cannot leak into the
       next via ``resolve_profile()``.
     - Resets per-process database module state (``_cached_encryption_key``,
-      ``_active_write_conn``, ``_migration_check_done``, ``_database_accessed``)
-      so a key cached by one test is never reused by the next test in the same
-      xdist worker.
+      ``_active_write_conn``, ``_migration_check_done``, ``_database_accessed``,
+      ``_database_written``) so a key cached by one test is never reused by the
+      next test in the same xdist worker.
 
     This ensures tests are isolated and don't affect each other.
 
@@ -93,6 +93,7 @@ def clean_profile_state() -> Generator[None, None, None]:
         db_module._active_write_conn = None  # pyright: ignore[reportPrivateUsage]
         db_module._migration_check_done = set()  # pyright: ignore[reportPrivateUsage]
         db_module._database_accessed = False  # pyright: ignore[reportPrivateUsage]
+        db_module._database_written = False  # pyright: ignore[reportPrivateUsage]
 
     # Setup: clean state before test
     register_profile_resolver(None)

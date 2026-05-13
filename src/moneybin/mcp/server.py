@@ -134,7 +134,7 @@ def init_db() -> None:
 
 
 def close_db() -> None:
-    """Flush metrics if any write connection was opened during the session."""
+    """Flush metrics on session close — flush_metrics() no-ops for read-only sessions."""
     from moneybin.observability import flush_metrics
 
     flush_metrics()
