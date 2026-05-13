@@ -134,13 +134,10 @@ def init_db() -> None:
 
 
 def close_db() -> None:
-    """Flush metrics if the database was accessed during the session."""
-    from moneybin.database import database_was_accessed
+    """Flush metrics if any write connection was opened during the session."""
+    from moneybin.observability import flush_metrics
 
-    if database_was_accessed():
-        from moneybin.observability import flush_metrics
-
-        flush_metrics()
+    flush_metrics()
     try:
         logger.info("MCP session closing")
     except ValueError:

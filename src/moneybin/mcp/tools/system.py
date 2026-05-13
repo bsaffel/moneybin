@@ -60,7 +60,6 @@ def system_doctor() -> ResponseEnvelope:
     relying on analytical results to confirm the pipeline is self-consistent.
     """
     from moneybin.database import get_database
-    from moneybin.metrics.registry import DOCTOR_RUNS_TOTAL  # noqa: PLC0415
     from moneybin.services.doctor_service import DoctorService
 
     with get_database() as db:
@@ -69,8 +68,6 @@ def system_doctor() -> ResponseEnvelope:
     failing = report.failing
     warning = report.warning
     passing = report.passing
-
-    DOCTOR_RUNS_TOTAL.labels(outcome="fail" if failing > 0 else "pass").inc()
 
     actions: list[str] = []
     if failing > 0:

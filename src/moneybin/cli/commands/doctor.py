@@ -44,12 +44,6 @@ def doctor_command(
     passing = report.passing
     skipped = report.skipped
 
-    from moneybin.metrics.registry import (
-        DOCTOR_RUNS_TOTAL,  # noqa: PLC0415 — defer import
-    )
-
-    DOCTOR_RUNS_TOTAL.labels(outcome="fail" if failing > 0 else "pass").inc()
-
     if output == OutputFormat.JSON:
         data = {
             "passing": passing,

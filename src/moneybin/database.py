@@ -60,6 +60,7 @@ _active_write_lock: threading.Lock = threading.Lock()
 
 _migration_check_done: set[Path] = set()
 _database_accessed: bool = False
+_database_written: bool = False
 
 
 def build_attach_sql(
@@ -673,6 +674,11 @@ def database_was_accessed() -> bool:
     return _database_accessed
 
 
+def database_was_written() -> bool:
+    """Return True if any write (non-read-only) Database connection was opened."""
+    return _database_written
+
+
 def get_database(
     read_only: bool = False,
     max_wait: float = 5.0,
@@ -685,7 +691,7 @@ def get_database(
     Write connections retry on DatabaseLockError with exponential backoff
     (start 50 ms, ×1.5, cap 500 ms) until max_wait is exhausted.
     """
-    global _database_accessed, _active_write_conn  # noqa: PLW0603
+    global _database_accessed, _database_written, _active_write_conn  # noqa: PLW0603
     settings = get_settings()
     db_path = settings.database.path
     deadline = time.monotonic() + max_wait
@@ -704,6 +710,7 @@ def get_database(
             )
             _database_accessed = True
             if not read_only:
+                _database_written = True
                 _migration_check_done.add(db_path)
                 with _active_write_lock:
                     _active_write_conn = db

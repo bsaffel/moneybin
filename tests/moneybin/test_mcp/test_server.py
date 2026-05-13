@@ -71,12 +71,9 @@ class TestCloseDb:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """close_db() calls flush_metrics() when database_was_accessed() is True."""
+        """close_db() always calls flush_metrics(); flush_metrics guards on database_was_written()."""
         from unittest.mock import patch
 
-        import moneybin.database as db_module
-
-        monkeypatch.setattr(db_module, "_database_accessed", True)
         with patch("moneybin.observability.flush_metrics") as mock_flush:
             server.close_db()
         mock_flush.assert_called_once()

@@ -104,18 +104,18 @@ def flush_metrics() -> None:
     This is best-effort — if the database is unavailable, metrics are lost
     for this session (they'll be re-accumulated on next run).
 
-    Only flushes if a database connection already exists — never creates one.
-    Creating a connection on exit would recreate directories for a deleted
-    profile and run migrations unexpectedly.
+    Only flushes if a write connection was opened this session — never flushes
+    for read-only sessions. This avoids opening a write lock at exit purely to
+    persist counters when no business data was written.
 
     Called by the atexit handler and explicitly by MCP serve before
     closing the database connection.
     """
     try:
-        from moneybin.database import database_was_accessed, get_database
+        from moneybin.database import database_was_written, get_database
         from moneybin.metrics.persistence import flush_to_duckdb
 
-        if not database_was_accessed():
+        if not database_was_written():
             return
         with get_database(max_wait=2.0) as db:
             flush_to_duckdb(db)
