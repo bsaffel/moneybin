@@ -21,11 +21,17 @@ import json
 import logging
 import os
 import stat
+import sys
+import time
+import webbrowser
 from pathlib import Path
 
 import httpx
 import keyring
 from keyring.errors import KeyringError
+
+from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
+from moneybin.connectors.sync_models import AuthToken
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,9 @@ class SyncClient:
         SyncClient(server_url, token_path=None)
     For tests, pass an explicit `token_path` to use a tmp file (bypasses keyring).
     """
+
+    # Test hook — overridable for fast tests (e.g. client._sleep = list.append)
+    _sleep = staticmethod(time.sleep)
 
     def __init__(self, server_url: str, token_path: Path | None = None) -> None:
         """Set up the HTTP client and optional test-only token path override."""
@@ -124,3 +133,55 @@ class SyncClient:
         if self._token_path is not None:
             return self._token_path
         return Path.home() / ".moneybin" / ".sync_token"
+
+    # ------------------------------ Login ------------------------------
+
+    def login(self, *, open_browser: bool = True) -> None:
+        """Device Authorization Flow (RFC 8628).
+
+        Displays user_code + verification URL on stderr, optionally opens the
+        browser, then polls for the access token. Stores token + refresh token.
+        """
+        code_resp = self._client.post("/auth/device/code")
+        code_resp.raise_for_status()
+        code_data = code_resp.json()
+        user_code = code_data["user_code"]
+        uri = code_data["verification_uri_complete"]
+        interval = float(code_data.get("interval", 5))
+        device_code = code_data["device_code"]
+
+        print(f"To sign in, visit: {uri}", file=sys.stderr)  # noqa: T201
+        print(f"Code: {user_code}", file=sys.stderr)  # noqa: T201
+        if open_browser:
+            try:
+                webbrowser.open(uri)
+            except webbrowser.Error:
+                pass  # fall through; URL already printed
+
+        while True:
+            self._sleep(interval)
+            poll = self._client.post(
+                "/auth/device/token", json={"device_code": device_code}
+            )
+            if poll.status_code == 200:
+                token = AuthToken.model_validate(poll.json())
+                self._store_tokens(
+                    access_token=token.access_token,
+                    refresh_token=token.refresh_token,
+                )
+                return
+            if poll.status_code == 202:
+                status = poll.json().get("status")
+                if status == "slow_down":
+                    interval += 5.0  # RFC 8628 §3.5
+                    continue
+                if status == "pending":
+                    continue
+                raise SyncAPIError(f"unexpected 202 status: {status}")
+            if poll.status_code == 403:
+                raise SyncAuthError("user denied device authorization")
+            if poll.status_code == 400:
+                raise SyncAuthError("device code expired or invalid; restart login")
+            raise SyncAPIError(
+                f"unexpected status {poll.status_code} from /auth/device/token"
+            )
