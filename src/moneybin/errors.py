@@ -16,6 +16,7 @@ from __future__ import annotations
 from decimal import InvalidOperation
 from typing import Any
 
+from moneybin.connectors.sync_errors import SyncError
 from moneybin.database import (
     DatabaseKeyError,
     DatabaseLockError,
@@ -103,4 +104,6 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         return UserError(f"invalid decimal value: {exc}", code="invalid_input")
     if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):
         return UserError(str(exc), code="not_found")
+    if isinstance(exc, SyncError):
+        return UserError(str(exc), code="sync_error")
     return None

@@ -40,29 +40,31 @@ def _stub(action: str) -> ResponseEnvelope:
     )
 
 
+def _build_sync_client() -> Any:
+    """Construct a SyncClient from current settings."""
+    from moneybin.config import get_settings  # noqa: PLC0415
+    from moneybin.connectors.sync_client import SyncClient  # noqa: PLC0415
+
+    settings = get_settings()
+    if settings.sync.server_url is None:
+        raise ValueError(
+            "sync.server_url is not configured. "
+            "Set MONEYBIN_SYNC__SERVER_URL in your environment."
+        )
+    return SyncClient(server_url=str(settings.sync.server_url))
+
+
 @contextmanager
 def _build_sync_service() -> Generator[Any, None, None]:
     """Context manager yielding a SyncService with active Database connection."""
-    from moneybin.config import get_settings  # noqa: PLC0415
-    from moneybin.connectors.sync_client import SyncClient  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.loaders.plaid_loader import PlaidLoader  # noqa: PLC0415
     from moneybin.services.sync_service import SyncService  # noqa: PLC0415
 
-    settings = get_settings()
-    client = SyncClient(server_url=str(settings.sync.server_url))
+    client = _build_sync_client()
     with get_database(read_only=False) as db:
         loader = PlaidLoader(db)
         yield SyncService(client=client, db=db, loader=loader)
-
-
-def _build_sync_client() -> Any:
-    """Construct a SyncClient (no DB connection — for status/initiate flows)."""
-    from moneybin.config import get_settings  # noqa: PLC0415
-    from moneybin.connectors.sync_client import SyncClient  # noqa: PLC0415
-
-    settings = get_settings()
-    return SyncClient(server_url=str(settings.sync.server_url))
 
 
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
