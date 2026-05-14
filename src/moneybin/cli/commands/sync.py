@@ -2,6 +2,7 @@
 
 import json
 import logging
+from contextlib import contextmanager
 
 import typer
 
@@ -34,6 +35,19 @@ def _build_sync_client():
             "Set MONEYBIN_SYNC__SERVER_URL in your environment."
         )
     return SyncClient(server_url=str(settings.sync.server_url))
+
+
+@contextmanager
+def _build_sync_service():
+    """Yield a SyncService with an active Database connection (per ADR-010)."""
+    from moneybin.database import get_database  # noqa: PLC0415
+    from moneybin.loaders.plaid_loader import PlaidLoader  # noqa: PLC0415
+    from moneybin.services.sync_service import SyncService  # noqa: PLC0415
+
+    client = _build_sync_client()
+    with get_database(read_only=False) as db:
+        loader = PlaidLoader(db)
+        yield SyncService(client=client, db=db, loader=loader)
 
 
 @app.command("login")
@@ -72,13 +86,39 @@ def sync_disconnect() -> None:
 
 @app.command("pull")
 def sync_pull(
-    force: bool = typer.Option(False, "--force", "-f", help="Force full sync"),
     institution: str | None = typer.Option(
-        None, "--institution", help="Sync specific institution"
+        None, "--institution", help="Sync specific institution by name."
     ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Reset cursor and re-fetch full history."
+    ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Pull data from connected institutions."""
-    _not_implemented("sync-overview.md")
+    with handle_cli_errors():
+        with _build_sync_service() as service:
+            if not quiet and output == OutputFormat.TEXT:
+                typer.echo("⚙️  Syncing… (this may take up to 2 minutes)")
+            result = service.pull(institution=institution, force=force)
+
+    if output == OutputFormat.JSON:
+        typer.echo(result.model_dump_json(indent=2))
+        return
+
+    for inst in result.institutions:
+        icon = "✅" if inst.status == "completed" else "❌"
+        count = inst.transaction_count or 0
+        typer.echo(f"{icon} {inst.institution_name}: {count} transactions")
+        if inst.status == "failed" and inst.error_code:
+            typer.echo(f"   💡 error: {inst.error_code}")
+    completed = sum(1 for i in result.institutions if i.status == "completed")
+    typer.echo(
+        f"✅ Loaded {result.transactions_loaded} transactions from "
+        f"{completed} institutions."
+    )
+    if result.transactions_removed:
+        typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
 
 
 @app.command("status")
