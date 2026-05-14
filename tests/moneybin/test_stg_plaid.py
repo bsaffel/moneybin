@@ -68,3 +68,28 @@ def test_stg_plaid_transactions_flips_sign(db_with_data: Database) -> None:
     ).fetchone()
     assert row is not None
     assert row[0] == Decimal("1500.00")
+
+
+@pytest.mark.slow
+def test_fct_transactions_includes_plaid_with_correct_sign(db_with_data: Database) -> None:
+    """Plaid transactions in core.fct_transactions use MoneyBin sign convention."""
+    with sqlmesh_context(db_with_data) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db_with_data.execute(
+        """
+        SELECT amount FROM core.fct_transactions
+        WHERE source_type = 'plaid' AND description LIKE '%STARBUCKS%'
+        """
+    ).fetchone()
+    assert row is not None
+    assert row[0] == Decimal("-42.50")
+
+    row = db_with_data.execute(
+        """
+        SELECT amount FROM core.fct_transactions
+        WHERE source_type = 'plaid' AND description LIKE '%PAYROLL%'
+        """
+    ).fetchone()
+    assert row is not None
+    assert row[0] == Decimal("1500.00")
