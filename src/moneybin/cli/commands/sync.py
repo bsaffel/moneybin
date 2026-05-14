@@ -6,6 +6,7 @@ import logging
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.utils import handle_cli_errors
 
 from .stubs import _not_implemented
 
@@ -21,16 +22,40 @@ app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
 
 
+def _build_sync_client():
+    """Construct a SyncClient from current settings. Extracted for test mocking."""
+    from moneybin.config import get_settings  # noqa: PLC0415
+    from moneybin.connectors.sync_client import SyncClient  # noqa: PLC0415
+
+    settings = get_settings()
+    if settings.sync.server_url is None:
+        raise ValueError(
+            "sync.server_url is not configured. "
+            "Set MONEYBIN_SYNC__SERVER_URL in your environment."
+        )
+    return SyncClient(server_url=str(settings.sync.server_url))
+
+
 @app.command("login")
-def sync_login() -> None:
-    """Authenticate with moneybin-server."""
-    _not_implemented("sync-overview.md")
+def sync_login(
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Print URL only; don't try to open a browser."
+    ),
+) -> None:
+    """Authenticate with moneybin-server via Device Authorization Flow."""
+    with handle_cli_errors():
+        client = _build_sync_client()
+        client.login(open_browser=not no_browser)
+        typer.echo("✅ Logged in.")
 
 
 @app.command("logout")
 def sync_logout() -> None:
-    """Clear stored JWT from keychain."""
-    _not_implemented("sync-overview.md")
+    """Clear stored JWT from keychain (or fallback file)."""
+    with handle_cli_errors():
+        client = _build_sync_client()
+        client.logout()
+        typer.echo("✅ Logged out.")
 
 
 @app.command("connect")

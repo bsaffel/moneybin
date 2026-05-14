@@ -102,6 +102,10 @@ class SyncClient:
         except KeyringError:
             return self._read_token_file(fallback_path=True).get("refresh_token")
 
+    def logout(self) -> None:
+        """Remove stored tokens from keychain (or fallback file)."""
+        self._clear_tokens()
+
     def _clear_tokens(self) -> None:
         if self._token_path is not None:
             if self._token_path.exists():
