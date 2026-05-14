@@ -113,3 +113,43 @@ def test_loader_pending_to_posted_transition(
     ).fetchall()
     assert len(rows) == 1
     assert rows[0][0] is False
+
+
+def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> None:
+    loader = PlaidLoader(db)
+    result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
+    assert result.balances_loaded == 2
+
+    rows = db.execute(
+        """
+        SELECT account_id, current_balance, available_balance
+        FROM raw.plaid_balances ORDER BY account_id
+        """
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0] == ("acc_chase_check", Decimal("1234.56"), Decimal("1200.00"))
+
+
+def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) -> None:
+    loader = PlaidLoader(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+
+    before = db.execute(
+        "SELECT COUNT(*) FROM raw.plaid_transactions WHERE transaction_id = 'txn_001'"
+    ).fetchone()
+    assert before is not None
+    assert before[0] == 1
+
+    deleted = loader.handle_removed_transactions(["txn_001", "nonexistent_id"])
+    assert deleted == 2  # method reports the count of IDs it tried to remove
+
+    after = db.execute(
+        "SELECT COUNT(*) FROM raw.plaid_transactions WHERE transaction_id = 'txn_001'"
+    ).fetchone()
+    assert after is not None
+    assert after[0] == 0
+
+
+def test_handle_removed_transactions_empty_list_is_noop(db: Database) -> None:
+    loader = PlaidLoader(db)
+    assert loader.handle_removed_transactions([]) == 0

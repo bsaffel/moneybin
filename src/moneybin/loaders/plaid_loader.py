@@ -17,6 +17,7 @@ import polars as pl
 
 from moneybin.connectors.sync_models import (
     SyncAccount,
+    SyncBalance,
     SyncDataResponse,
     SyncTransaction,
 )
@@ -64,6 +65,18 @@ _TRANSACTIONS_SCHEMA = pl.Schema({
     "loaded_at": pl.Datetime(time_zone="UTC"),
 })
 
+_BALANCES_SCHEMA = pl.Schema({
+    "account_id": pl.Utf8,
+    "balance_date": pl.Date,
+    "current_balance": pl.Decimal(18, 2),
+    "available_balance": pl.Decimal(18, 2),
+    "source_file": pl.Utf8,
+    "source_type": pl.Utf8,
+    "source_origin": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
 
 class PlaidLoader:
     """Load Plaid sync data into raw.plaid_* tables.
@@ -104,11 +117,17 @@ class PlaidLoader:
             extracted_at,
             loaded_at,
         )
-        # Balances come in the next task.
+        balances_loaded = self._load_balances(
+            sync_data.balances,
+            item_by_account,
+            source_file,
+            extracted_at,
+            loaded_at,
+        )
         return LoadResult(
             accounts_loaded=accounts_loaded,
             transactions_loaded=transactions_loaded,
-            balances_loaded=0,
+            balances_loaded=balances_loaded,
         )
 
     def _build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
@@ -193,3 +212,46 @@ class PlaidLoader:
         self.db.ingest_dataframe("raw.plaid_transactions", df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} Plaid transactions")
         return len(df)
+
+    def _load_balances(
+        self,
+        balances: list[SyncBalance],
+        item_by_account: dict[str, str],
+        source_file: str,
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> int:
+        if not balances:
+            return 0
+        df = pl.DataFrame(
+            [
+                {
+                    **bal.model_dump(),
+                    "source_file": source_file,
+                    "source_type": "plaid",
+                    "source_origin": item_by_account[bal.account_id],
+                    "extracted_at": extracted_at,
+                    "loaded_at": loaded_at,
+                }
+                for bal in balances
+            ],
+            schema=_BALANCES_SCHEMA,
+        )
+        self.db.ingest_dataframe("raw.plaid_balances", df, on_conflict="upsert")
+        logger.info(f"Loaded {len(df)} Plaid balance snapshots")
+        return len(df)
+
+    def handle_removed_transactions(self, removed_ids: list[str]) -> int:
+        """Delete transactions Plaid has removed.
+
+        Returns the number of IDs the caller passed in (the actual number of
+        rows deleted is the same when transactions exist and are unique).
+        """
+        if not removed_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in removed_ids)
+        self.db.execute(
+            f"DELETE FROM raw.plaid_transactions WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
+            removed_ids,
+        )
+        return len(removed_ids)
