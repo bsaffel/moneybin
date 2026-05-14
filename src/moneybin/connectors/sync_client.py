@@ -31,7 +31,7 @@ import keyring
 from keyring.errors import KeyringError
 
 from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
-from moneybin.connectors.sync_models import AuthToken
+from moneybin.connectors.sync_models import AuthToken, ConnectedInstitution
 
 logger = logging.getLogger(__name__)
 
@@ -185,3 +185,71 @@ class SyncClient:
             raise SyncAPIError(
                 f"unexpected status {poll.status_code} from /auth/device/token"
             )
+
+    # ------------------------------ Authed transport ------------------------------
+
+    def _authed_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, object] | None = None,
+        params: dict[str, str] | None = None,
+        timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
+    ) -> httpx.Response:
+        token = self._read_token()
+        if token is None:
+            raise SyncAuthError("not authenticated — run `moneybin sync login`")
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = self._client.request(
+            method,
+            path,
+            json=json_body,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
+        if resp.status_code == 401:
+            self._refresh()  # raises SyncAuthError on failure
+            token = self._read_token()
+            headers["Authorization"] = f"Bearer {token}"
+            resp = self._client.request(
+                method,
+                path,
+                json=json_body,
+                params=params,
+                headers=headers,
+                timeout=timeout,
+            )
+        if resp.status_code >= 400:
+            raise SyncAPIError(
+                f"{method} {path} returned {resp.status_code}: {resp.text[:200]}"
+            )
+        return resp
+
+    def _refresh(self) -> None:
+        """Exchange refresh token for a new access token (rotating refresh tokens)."""
+        refresh = self._read_refresh_token()
+        if refresh is None:
+            self._clear_tokens()
+            raise SyncAuthError("no refresh token stored — run `moneybin sync login`")
+        resp = self._client.post("/auth/refresh", json={"refresh_token": refresh})
+        if resp.status_code != 200:
+            self._clear_tokens()
+            raise SyncAuthError("session expired — run `moneybin sync login`")
+        token = AuthToken.model_validate(resp.json())
+        self._store_tokens(
+            access_token=token.access_token,
+            refresh_token=token.refresh_token,
+        )
+
+    # ------------------------------ Institutions ------------------------------
+
+    def list_institutions(self) -> list[ConnectedInstitution]:
+        """Return all connected institutions for the authenticated user."""
+        resp = self._authed_request("GET", "/institutions")
+        return [ConnectedInstitution.model_validate(item) for item in resp.json()]
+
+    def disconnect(self, connection_id: str) -> None:
+        """Remove a connected institution by its connection ID."""
+        self._authed_request("DELETE", f"/institutions/{connection_id}")

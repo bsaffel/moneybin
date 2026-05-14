@@ -174,3 +174,51 @@ def test_login_user_denied_raises(sync_client: SyncClient) -> None:
     )
     with pytest.raises(SyncAuthError):
         sync_client.login(open_browser=False)
+
+
+@respx.mock
+def test_authed_request_refreshes_on_401_then_retries(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="old-jwt", refresh_token="old-refresh")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+
+    # First call: 401. Refresh succeeds with rotated tokens. Retry: 200.
+    institutions_route = respx.get("https://test.api/institutions").mock(
+        side_effect=[
+            httpx.Response(401, json={"error": "Unauthorized"}),
+            httpx.Response(200, json=[]),
+        ]
+    )
+    refresh_route = respx.post("https://test.api/auth/refresh").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "new-jwt",  # noqa: S106  # test fixture, not a real credential
+                "refresh_token": "new-refresh",  # noqa: S106  # test fixture, not a real credential
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+    )
+
+    result = sync_client.list_institutions()
+    assert result == []
+    assert sync_client._read_token() == "new-jwt"  # type: ignore[reportPrivateUsage]
+    assert sync_client._read_refresh_token() == "new-refresh"  # type: ignore[reportPrivateUsage]
+    assert institutions_route.call_count == 2
+    assert refresh_route.call_count == 1
+
+
+@respx.mock
+def test_refresh_failure_clears_tokens_and_raises(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="old-jwt", refresh_token="expired-refresh")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+
+    respx.get("https://test.api/institutions").mock(
+        return_value=httpx.Response(401, json={"error": "Unauthorized"})
+    )
+    respx.post("https://test.api/auth/refresh").mock(
+        return_value=httpx.Response(401, json={"error": "refresh token expired"})
+    )
+
+    with pytest.raises(SyncAuthError):
+        sync_client.list_institutions()
+    assert sync_client._read_token() is None  # type: ignore[reportPrivateUsage]
+    assert sync_client._read_refresh_token() is None  # type: ignore[reportPrivateUsage]
