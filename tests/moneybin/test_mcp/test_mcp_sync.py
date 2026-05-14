@@ -120,3 +120,20 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
     envelope = await sync_disconnect(institution="Chase")
     service.disconnect.assert_called_once_with(institution="Chase")
     assert envelope.summary.sensitivity == "medium"
+
+
+@pytest.mark.unit
+def test_sync_review_prompt_content_includes_required_elements() -> None:
+    """The sync_review prompt must guide an agent through a sync health check."""
+    from moneybin.mcp.tools.sync import SYNC_REVIEW_PROMPT  # noqa: PLC0415
+
+    text = SYNC_REVIEW_PROMPT
+    assert "sync_status" in text
+    assert "stale" in text.lower()
+    assert "error" in text.lower()
+    # Privacy guard: prompt must direct agent NOT to surface PII
+    assert (
+        "account numbers" in text.lower()
+        or "no pii" in text.lower()
+        or "do not include" in text.lower()
+    )

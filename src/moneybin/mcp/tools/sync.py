@@ -214,6 +214,32 @@ def sync_schedule_remove() -> ResponseEnvelope:
     return _stub("sync_schedule_remove")
 
 
+SYNC_REVIEW_PROMPT = """\
+Review my MoneyBin sync state and flag anything that needs attention.
+
+Use these tools (in order):
+1. sync_status — list connected institutions with last sync time, status, and any error guidance.
+2. spending_summary detail=summary — optional, for context on recent transaction volume per institution.
+
+Report concisely (bulleted, single paragraph if everything is healthy):
+
+- **Errors:** any institutions with status='error' and the specific re-auth or reconnect action — quote the exact command from the actions hint.
+- **Stale data:** any institution whose last_sync is more than 7 days ago, even if status='active'. Suggest running `moneybin sync pull`.
+- **Anomalies:** institutions whose recent sync transaction counts are dramatically lower than typical volume (use spending_summary as a rough yardstick — a checking account that's been returning ~30/week suddenly returning 0 is worth flagging).
+- **Recommended next action:** one specific command, or "no action needed."
+
+Do not include account numbers, balances, individual transaction descriptions, or merchant names. Stick to counts, dates, status codes, and institution names.
+"""
+
+
+def register_sync_prompts(mcp: FastMCP) -> None:
+    """Register sync-related FastMCP prompts."""
+
+    @mcp.prompt(name="sync_review", description="Review sync health and suggest next steps.")
+    def _sync_review() -> str:  # type: ignore[reportUnusedFunction]
+        return SYNC_REVIEW_PROMPT
+
+
 def register_sync_tools(mcp: FastMCP) -> None:
     """Register all sync namespace tools with the FastMCP server."""
     for fn, desc in [
