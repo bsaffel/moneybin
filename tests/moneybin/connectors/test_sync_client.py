@@ -18,11 +18,14 @@ from moneybin.connectors.sync_models import SyncDataResponse
 
 
 @pytest.fixture
-def sync_client(tmp_path: Path) -> SyncClient:
+def sync_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SyncClient:
     """A SyncClient pointed at a fake URL with file-based token storage in tmp.
 
     Uses the `_token_path` escape hatch so tests never touch the user's keyring.
+    Clears proxy env vars so httpx doesn't try to load `socksio` in sandbox envs.
     """
+    for var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
     token_path = tmp_path / ".sync_token"
     return SyncClient(server_url="https://test.api", token_path=token_path)
 
