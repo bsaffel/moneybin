@@ -13,7 +13,7 @@ from moneybin.connectors.sync_client import (
     _LONG_TIMEOUT,  # type: ignore[reportPrivateUsage]
     SyncClient,
 )
-from moneybin.connectors.sync_errors import SyncAuthError
+from moneybin.connectors.sync_errors import SyncAuthError, SyncConnectError
 
 
 @pytest.fixture
@@ -222,3 +222,93 @@ def test_refresh_failure_clears_tokens_and_raises(sync_client: SyncClient) -> No
         sync_client.list_institutions()
     assert sync_client._read_token() is None  # type: ignore[reportPrivateUsage]
     assert sync_client._read_refresh_token() is None  # type: ignore[reportPrivateUsage]
+
+
+@respx.mock
+def test_initiate_connect_returns_session_and_url(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    respx.post("https://test.api/sync/connect/initiate").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "session_id": "sess_abc",
+                "link_url": "https://hosted.plaid.com/link/xyz",
+                "connect_type": "widget_flow",
+                "expiration": "2026-05-13T13:30:00Z",
+            },
+        )
+    )
+    result = sync_client.initiate_connect()
+    assert result.session_id == "sess_abc"
+    assert result.connect_type == "widget_flow"
+
+
+@respx.mock
+def test_initiate_connect_passes_provider_item_id_for_update_mode(
+    sync_client: SyncClient,
+) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    route = respx.post("https://test.api/sync/connect/initiate").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "session_id": "sess_abc",
+                "link_url": "https://hosted.plaid.com/link/xyz",
+                "connect_type": "widget_flow",
+                "expiration": "2026-05-13T13:30:00Z",
+            },
+        )
+    )
+    sync_client.initiate_connect(provider_item_id="item_existing")
+    sent_body = route.calls.last.request.content
+    assert b"item_existing" in sent_body
+
+
+@respx.mock
+def test_poll_connect_until_connected(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    respx.get("https://test.api/sync/connect/status").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "session_id": "sess_abc",
+                    "status": "pending",
+                    "expiration": "2026-05-13T13:30:00Z",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "session_id": "sess_abc",
+                    "status": "connected",
+                    "provider_item_id": "item_new",
+                    "institution_name": "Chase",
+                    "expiration": "2026-05-13T13:30:00Z",
+                },
+            ),
+        ]
+    )
+    sync_client._sleep = lambda _: None  # skip real sleep  # type: ignore[method-assign]
+    result = sync_client.poll_connect_status("sess_abc")
+    assert result.status == "connected"
+    assert result.provider_item_id == "item_new"
+
+
+@respx.mock
+def test_poll_connect_failed_raises(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    respx.get("https://test.api/sync/connect/status").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "session_id": "sess_abc",
+                "status": "failed",
+                "error": "user cancelled flow",
+                "expiration": "2026-05-13T13:30:00Z",
+            },
+        )
+    )
+    sync_client._sleep = lambda _: None  # type: ignore[method-assign]
+    with pytest.raises(SyncConnectError, match="user cancelled"):
+        sync_client.poll_connect_status("sess_abc")

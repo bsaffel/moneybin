@@ -30,8 +30,18 @@ import httpx
 import keyring
 from keyring.errors import KeyringError
 
-from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
-from moneybin.connectors.sync_models import AuthToken, ConnectedInstitution
+from moneybin.connectors.sync_errors import (
+    SyncAPIError,
+    SyncAuthError,
+    SyncConnectError,
+    SyncTimeoutError,
+)
+from moneybin.connectors.sync_models import (
+    AuthToken,
+    ConnectedInstitution,
+    ConnectInitiateResponse,
+    ConnectStatusResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -253,3 +263,46 @@ class SyncClient:
     def disconnect(self, connection_id: str) -> None:
         """Remove a connected institution by its connection ID."""
         self._authed_request("DELETE", f"/institutions/{connection_id}")
+
+    # ------------------------------ Connect flow ------------------------------
+
+    def initiate_connect(
+        self,
+        *,
+        provider: str = "plaid",
+        provider_item_id: str | None = None,
+        return_to: str | None = None,
+    ) -> ConnectInitiateResponse:
+        """Start a Plaid Link session; returns session_id and hosted link_url."""
+        body: dict[str, object] = {"provider": provider}
+        if provider_item_id:
+            body["provider_item_id"] = provider_item_id
+        if return_to:
+            body["return_to"] = return_to
+        resp = self._authed_request("POST", "/sync/connect/initiate", json_body=body)
+        return ConnectInitiateResponse.model_validate(resp.json())
+
+    def poll_connect_status(self, session_id: str) -> ConnectStatusResponse:
+        """Poll GET /sync/connect/status until status reaches a terminal state.
+
+        Terminal: 'connected' (returns) or 'failed' (raises SyncConnectError).
+        Times out after _LONG_TIMEOUT seconds → SyncTimeoutError.
+        """
+        read_timeout: float = _LONG_TIMEOUT.read or 120.0
+        deadline = time.time() + read_timeout
+        while time.time() < deadline:
+            self._sleep(_CONNECT_POLL_INTERVAL)
+            resp = self._authed_request(
+                "GET",
+                "/sync/connect/status",
+                params={"session_id": session_id},
+            )
+            status = ConnectStatusResponse.model_validate(resp.json())
+            if status.status == "connected":
+                return status
+            if status.status == "failed":
+                raise SyncConnectError(status.error or "connect session failed")
+            # status == "pending" → continue
+        raise SyncTimeoutError(
+            "connect flow timed out — user may have abandoned the browser"
+        )
