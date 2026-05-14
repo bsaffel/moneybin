@@ -160,9 +160,27 @@ def sync_connect_status(
 
 
 @app.command("disconnect")
-def sync_disconnect() -> None:
-    """Remove an institution."""
-    _not_implemented("sync-overview.md")
+def sync_disconnect(
+    institution: str = typer.Option(
+        ..., "--institution", help="Institution name to disconnect.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompt.",
+    ),
+    output: OutputFormat = output_option,
+) -> None:
+    """Remove a bank connection."""
+    if not yes and sys.stdin.isatty():
+        if not typer.confirm(f"Disconnect {institution}?", default=False):
+            typer.echo("Cancelled.", err=True)
+            raise typer.Exit(0)
+    with handle_cli_errors():
+        with _build_sync_service() as service:
+            service.disconnect(institution=institution)
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps({"status": "disconnected", "institution": institution}))
+    else:
+        typer.echo(f"✅ Disconnected {institution}")
 
 
 @app.command("pull")
@@ -205,18 +223,38 @@ def sync_pull(
 @app.command("status")
 def sync_status(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — placeholder; nothing to suppress yet
+    quiet: bool = quiet_option,  # noqa: ARG001 — nothing to suppress yet
+    json_fields: str | None = typer.Option(
+        None,
+        "--json-fields",
+        help=(
+            "Comma-separated field projection (json output only). Available: "
+            "id, provider_item_id, institution_name, provider, status, last_sync, guidance"
+        ),
+    ),
 ) -> None:
-    """Show connected institutions and sync health."""
+    """Show connected institutions, last sync times, and health."""
+    with handle_cli_errors():
+        with _build_sync_service() as service:
+            connections = service.list_connections()
+
     if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps(
-                {"status": "not_implemented", "spec": "docs/specs/sync-overview.md"},
-                indent=2,
-            )
-        )
+        rows = [c.model_dump(mode="json") for c in connections]
+        if json_fields:
+            keep = {f.strip() for f in json_fields.split(",")}
+            rows = [{k: v for k, v in r.items() if k in keep} for r in rows]
+        typer.echo(json.dumps(rows, indent=2))
         return
-    _not_implemented("sync-overview.md")
+
+    if not connections:
+        typer.echo("No connected institutions. Run `moneybin sync connect` to add one.")
+        return
+    for c in connections:
+        last = c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"
+        line = f"{c.institution_name} — status: {c.status}, last sync: {last}"
+        typer.echo(line)
+        if c.guidance:
+            typer.echo(f"   💡 {c.guidance}")
 
 
 @key_app.command("rotate")

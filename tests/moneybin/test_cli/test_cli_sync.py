@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.connectors.sync_models import ConnectResult, InstitutionResult, PullResult
+from moneybin.connectors.sync_models import (
+    ConnectResult,
+    InstitutionResult,
+    PullResult,
+    SyncConnectionView,
+)
 
 runner = CliRunner()
 
@@ -169,3 +175,69 @@ def test_sync_connect_status_command(mock_build: MagicMock) -> None:
         )
     assert result.exit_code == 0, result.output
     assert "connected" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_requires_yes_or_confirm(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "disconnect", "--institution", "Chase", "--yes"])
+    assert result.exit_code == 0, result.output
+    service.disconnect.assert_called_once_with(institution="Chase")
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_text_output(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="active",
+            last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            guidance=None,
+        ),
+        SyncConnectionView(
+            id="u2",
+            provider_item_id="item_b",
+            institution_name="Schwab",
+            provider="plaid",
+            status="error",
+            last_sync=None,
+            guidance="Schwab needs re-authentication — run `moneybin sync connect --institution Schwab`",
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "status"])
+    assert result.exit_code == 0, result.output
+    assert "Chase" in result.stdout
+    assert "Schwab" in result.stdout
+    assert "needs re-authentication" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_json_output(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="active",
+            last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            guidance=None,
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "status", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert isinstance(data, list)
+    assert data[0]["institution_name"] == "Chase"
+    assert data[0]["status"] == "active"
