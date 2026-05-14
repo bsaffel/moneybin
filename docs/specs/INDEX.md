@@ -83,7 +83,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Overview](sync-overview.md) | Umbrella | ready | Provider-agnostic sync framework: interaction model, SyncClient, CLI/MCP surface, E2E encryption design, provider contract. Supersedes archived `sync-client-integration` spec. |
-| [Plaid Provider](sync-plaid.md) | Feature | in-progress | First sync provider: Plaid Transactions. Raw schemas, staging views, core integration, Plaid Hosted Link flow, error codes. M3A Phase 1 implementation underway. |
+| [Plaid Provider](sync-plaid.md) | Feature | implemented | First sync provider: Plaid Transactions. Raw schemas, staging views, core integration, Plaid Hosted Link flow, error codes. M3A Phase 1 shipped. |
 | `sync-simplefin.md` | Feature | planned | SimpleFIN aggregator provider (alternative to Plaid) |
 | `sync-plaid-investments.md` | Feature | planned | Plaid Investments product (gated on `investment-tracking.md`) |
 

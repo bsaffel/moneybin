@@ -13,7 +13,7 @@ MoneyBin's pre-launch plan is organized as **milestones**: M0 through M3, each w
 | **M2A** | Curator State | — | 🚧 in flight |
 | **M2B** | Architecture Reference | — | 🚧 in flight |
 | **M2C** | Brand Surface + Distribution | — | 🚧 in flight |
-| **M3A** | Plaid Transactions sync | Domain | 📐 designed |
+| **M3A** | Plaid Transactions sync | Domain | ✅ shipped |
 | **M3B** | Investment tracking | Domain | 📐 designed |
 | **M3C** | Multi-currency + budget rollovers | Domain | 📐 designed |
 | **M3D** | Web UI hardening + Streamable HTTP MCP | Surface | 📐 designed |

@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-draft
+implemented
 
 ## Goal
 Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checking, savings, and credit card transactions from connected banks through moneybin-server, load into provider-specific raw tables, and flow through the data warehouse into core alongside OFX, CSV, and tabular-imported data.
