@@ -100,12 +100,6 @@ class TestStubCommands:
     @pytest.mark.parametrize(
         "cmd",
         [
-            ["sync", "login"],
-            ["sync", "logout"],
-            ["sync", "connect"],
-            ["sync", "disconnect"],
-            ["sync", "pull"],
-            ["sync", "status"],
             ["sync", "key", "rotate"],
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],
