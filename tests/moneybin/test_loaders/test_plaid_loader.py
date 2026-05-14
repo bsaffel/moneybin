@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,7 @@ def sync_data() -> SyncDataResponse:
 def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> None:
     loader = PlaidLoader(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
-    assert result.accounts == 2
+    assert result.accounts_loaded == 2
 
     rows = db.execute(
         """
@@ -41,3 +42,74 @@ def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> No
         "plaid",
         "item_chase_abc",
     )
+
+
+def test_loader_writes_transactions_preserving_plaid_sign(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    loader = PlaidLoader(db)
+    result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
+    assert result.transactions_loaded == 3
+
+    # Fixture has txn_001 with amount 42.50 (expense in Plaid convention).
+    # Raw MUST preserve positive sign — the flip happens in staging.
+    amount = db.execute(
+        "SELECT amount FROM raw.plaid_transactions WHERE transaction_id = 'txn_001'"
+    ).fetchone()
+    assert amount is not None
+    assert amount[0] == Decimal("42.50")
+
+    # txn_002 is payroll: -1500.00 in Plaid (income).
+    income = db.execute(
+        "SELECT amount FROM raw.plaid_transactions WHERE transaction_id = 'txn_002'"
+    ).fetchone()
+    assert income is not None
+    assert income[0] == Decimal("-1500.00")
+
+
+def test_loader_upserts_on_same_transaction_id_and_source_origin(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    loader = PlaidLoader(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+
+    # Re-run the same load with a different job_id (different source_file)
+    # but the same source_origin (same provider_item_id) — should UPSERT,
+    # not duplicate.
+    loader.load(sync_data, job_id="different-job-456")
+
+    count = db.execute(
+        "SELECT COUNT(*) FROM raw.plaid_transactions WHERE transaction_id = 'txn_001'"
+    ).fetchone()
+    assert count is not None
+    assert count[0] == 1
+
+    # source_file should reflect the latest sync
+    sf = db.execute(
+        "SELECT source_file FROM raw.plaid_transactions WHERE transaction_id = 'txn_001'"
+    ).fetchone()
+    assert sf is not None
+    assert sf[0] == "sync_different-job-456"
+
+
+def test_loader_pending_to_posted_transition(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A pending transaction in sync 1, posted (pending=false) in sync 2 → single row, pending=false."""
+    loader = PlaidLoader(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+
+    # Sync 2: same transaction_id, pending now false
+    payload2 = sync_data.model_copy(deep=True)
+    payload2.transactions = [
+        t.model_copy(update={"pending": False}) if t.transaction_id == "txn_003" else t
+        for t in payload2.transactions
+    ]
+    payload2.metadata = sync_data.metadata.model_copy(update={"job_id": "job-2"})
+    loader.load(payload2, job_id="job-2")
+
+    rows = db.execute(
+        "SELECT pending FROM raw.plaid_transactions WHERE transaction_id = 'txn_003'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] is False

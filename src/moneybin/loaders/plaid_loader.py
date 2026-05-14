@@ -18,6 +18,7 @@ import polars as pl
 from moneybin.connectors.sync_models import (
     SyncAccount,
     SyncDataResponse,
+    SyncTransaction,
 )
 from moneybin.database import Database
 
@@ -28,9 +29,9 @@ logger = logging.getLogger(__name__)
 class LoadResult:
     """Per-table row counts returned by PlaidLoader.load()."""
 
-    accounts: int
-    transactions: int
-    balances: int
+    accounts_loaded: int
+    transactions_loaded: int
+    balances_loaded: int
 
 
 _ACCOUNTS_SCHEMA = pl.Schema({
@@ -40,6 +41,22 @@ _ACCOUNTS_SCHEMA = pl.Schema({
     "institution_name": pl.Utf8,
     "official_name": pl.Utf8,
     "mask": pl.Utf8,
+    "source_file": pl.Utf8,
+    "source_type": pl.Utf8,
+    "source_origin": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
+_TRANSACTIONS_SCHEMA = pl.Schema({
+    "transaction_id": pl.Utf8,
+    "account_id": pl.Utf8,
+    "transaction_date": pl.Date,
+    "amount": pl.Decimal(18, 2),  # Plaid convention preserved; sign flip in staging
+    "description": pl.Utf8,
+    "merchant_name": pl.Utf8,
+    "category": pl.Utf8,
+    "pending": pl.Boolean,
     "source_file": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
@@ -80,8 +97,19 @@ class PlaidLoader:
             extracted_at,
             loaded_at,
         )
-        # Transactions and balances come in later tasks.
-        return LoadResult(accounts=accounts_loaded, transactions=0, balances=0)
+        transactions_loaded = self._load_transactions(
+            sync_data.transactions,
+            item_by_account,
+            source_file,
+            extracted_at,
+            loaded_at,
+        )
+        # Balances come in the next task.
+        return LoadResult(
+            accounts_loaded=accounts_loaded,
+            transactions_loaded=transactions_loaded,
+            balances_loaded=0,
+        )
 
     def _build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
         """Each account belongs to exactly one institution (provider_item_id).
@@ -134,4 +162,34 @@ class PlaidLoader:
         )
         self.db.ingest_dataframe("raw.plaid_accounts", df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} Plaid accounts")
+        return len(df)
+
+    def _load_transactions(
+        self,
+        transactions: list[SyncTransaction],
+        item_by_account: dict[str, str],
+        source_file: str,
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> int:
+        if not transactions:
+            return 0
+        # DO NOT NEGATE amount here. Plaid convention (positive = expense)
+        # is preserved in raw. The sign flip lives in stg_plaid__transactions.
+        df = pl.DataFrame(
+            [
+                {
+                    **txn.model_dump(),
+                    "source_file": source_file,
+                    "source_type": "plaid",
+                    "source_origin": item_by_account[txn.account_id],
+                    "extracted_at": extracted_at,
+                    "loaded_at": loaded_at,
+                }
+                for txn in transactions
+            ],
+            schema=_TRANSACTIONS_SCHEMA,
+        )
+        self.db.ingest_dataframe("raw.plaid_transactions", df, on_conflict="upsert")
+        logger.info(f"Loaded {len(df)} Plaid transactions")
         return len(df)
