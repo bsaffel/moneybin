@@ -17,7 +17,9 @@ from moneybin.connectors.sync_models import SyncDataResponse
 from moneybin.database import Database, sqlmesh_context
 from moneybin.loaders.plaid_loader import PlaidLoader
 
-FIXTURE = Path(__file__).parent / "test_loaders" / "fixtures" / "plaid_sync_response.yaml"
+FIXTURE = (
+    Path(__file__).parent / "test_loaders" / "fixtures" / "plaid_sync_response.yaml"
+)
 
 
 @pytest.fixture
@@ -27,6 +29,24 @@ def db_with_data(db: Database) -> Database:
     loader = PlaidLoader(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
     return db
+
+
+@pytest.mark.slow
+def test_dim_accounts_includes_plaid(db_with_data: Database) -> None:
+    """Plaid accounts appear in core.dim_accounts with source_type='plaid'."""
+    with sqlmesh_context(db_with_data) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db_with_data.execute(
+        """
+        SELECT account_id, source_type
+        FROM core.dim_accounts
+        WHERE source_type = 'plaid'
+        ORDER BY account_id
+        """
+    ).fetchall()
+    assert len(rows) == 2
+    assert {r[0] for r in rows} == {"acc_chase_check", "acc_chase_save"}
 
 
 @pytest.mark.slow
