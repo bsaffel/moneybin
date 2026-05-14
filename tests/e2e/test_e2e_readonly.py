@@ -84,6 +84,28 @@ class TestNoDBCommands:
         result = run_cli("mcp", "install", "--print", env=e2e_env)
         result.assert_success()
 
+    def test_sync_status_unreachable_server_fails_cleanly(
+        self, e2e_env: dict[str, str]
+    ) -> None:
+        """`moneybin sync status` with an unreachable server must exit cleanly.
+
+        Exit non-zero without a Python traceback — handle_cli_errors should
+        classify the connection failure into a user-facing message.
+
+        Covers boot/wiring for the live sync commands removed from
+        TestStubCommands: catches import-time regressions in sync.py,
+        Typer subcommand registration, and SyncClient construction even
+        though the actual HTTP request fails.
+        """
+        env = {
+            **e2e_env,
+            # 127.0.0.1:1 is reserved and refuses connections fast.
+            "MONEYBIN_SYNC__SERVER_URL": "http://127.0.0.1:1",
+        }
+        result = run_cli("sync", "status", env=env, timeout=15)
+        assert result.exit_code != 0
+        assert "Traceback" not in result.stderr
+
     def test_db_ps(self) -> None:
         result = run_cli("db", "ps")
         result.assert_success()
@@ -100,12 +122,6 @@ class TestStubCommands:
     @pytest.mark.parametrize(
         "cmd",
         [
-            ["sync", "login"],
-            ["sync", "logout"],
-            ["sync", "connect"],
-            ["sync", "disconnect"],
-            ["sync", "pull"],
-            ["sync", "status"],
             ["sync", "key", "rotate"],
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],

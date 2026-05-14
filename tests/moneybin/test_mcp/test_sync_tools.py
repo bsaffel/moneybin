@@ -1,9 +1,10 @@
 """Tests for sync_* MCP tools.
 
-Sync is currently a stub surface (mirrors `moneybin sync *` CLI which is
-also stubbed pending docs/specs/sync-overview.md). These tests verify
-taxonomy/wiring — every advertised sync tool registers and returns the
-not_implemented envelope shape — not real sync behavior.
+Verifies taxonomy/wiring — every registered sync stub returns the
+not_implemented envelope shape — not real sync behavior. sync_pull, sync_status,
+sync_connect, sync_connect_status, and sync_disconnect have live implementations
+tested in test_mcp_sync.py. sync_login and sync_logout are CLI-only (browser
+interaction + credential handling) and are intentionally absent from MCP.
 """
 
 from __future__ import annotations
@@ -16,21 +17,14 @@ from fastmcp import FastMCP
 
 from moneybin.mcp.tools.sync import (
     register_sync_tools,
-    sync_connect,
-    sync_disconnect,
-    sync_login,
-    sync_logout,
-    sync_pull,
     sync_schedule_remove,
     sync_schedule_set,
     sync_schedule_show,
-    sync_status,
 )
 
 _EXPECTED_TOOLS = {
-    "sync_login",
-    "sync_logout",
     "sync_connect",
+    "sync_connect_status",
     "sync_disconnect",
     "sync_pull",
     "sync_status",
@@ -41,12 +35,14 @@ _EXPECTED_TOOLS = {
 
 
 @pytest.mark.unit
-async def test_register_sync_tools_registers_all_nine() -> None:
-    """All nine sync tools register; key rotate is excluded by design."""
+async def test_register_sync_tools_registers_expected_tools() -> None:
+    """Expected sync tools register; login/logout/key-rotate excluded by design."""
     srv = FastMCP("test")
     register_sync_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert _EXPECTED_TOOLS <= names
+    assert "sync_login" not in names
+    assert "sync_logout" not in names
     assert "sync_key_rotate" not in names
     assert "sync_rotate_key" not in names
 
@@ -55,24 +51,21 @@ async def test_register_sync_tools_registers_all_nine() -> None:
 @pytest.mark.parametrize(
     "fn",
     [
-        sync_login,
-        sync_logout,
-        sync_connect,
-        lambda: sync_disconnect(institution="chase"),
-        sync_pull,
-        sync_status,
         lambda: sync_schedule_set(time="09:00"),
         sync_schedule_show,
         sync_schedule_remove,
     ],
 )
-async def test_sync_tool_returns_not_implemented_envelope(
+async def test_sync_stub_tool_returns_not_implemented_envelope(
     fn: Callable[..., Any],
 ) -> None:
-    """Every sync tool returns a stub envelope pointing at the spec."""
+    """Stub sync tools return a not_implemented envelope pointing at the spec."""
     parsed = (await fn()).to_dict()
     assert parsed["status"] == "error"
     assert parsed["summary"]["sensitivity"] == "low"
     assert parsed["error"]["code"] == "not_implemented"
-    assert parsed["error"]["details"]["spec"] == "docs/specs/sync-overview.md"
+    assert (
+        parsed["error"]["details"]["spec"]
+        == "docs/specs/2026-05-13-plaid-sync-design.md"
+    )
     assert any("moneybin sync" in a for a in parsed["actions"])

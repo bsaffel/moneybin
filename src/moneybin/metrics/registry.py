@@ -257,3 +257,44 @@ audit_events_emitted_total = Counter(
     "Audit log events written to app.audit_log.",
     ["action", "actor"],
 )
+
+# ── Sync (moneybin-server pull/connect lifecycle) ────────────────────────────
+
+SYNC_PULL_DURATION_SECONDS = Histogram(
+    "moneybin_sync_pull_duration_seconds",
+    "End-to-end duration of SyncService.pull() (trigger + fetch + load + remove).",
+    ["provider"],
+)
+
+SYNC_PULL_OUTCOMES_TOTAL = Counter(
+    "moneybin_sync_pull_outcomes_total",
+    "Pull outcomes by provider and status (success or failed).",
+    ["provider", "status"],
+)
+
+SYNC_PULL_TRANSACTIONS_LOADED = Counter(
+    "moneybin_sync_pull_transactions_loaded_total",
+    "Transactions loaded into raw.{provider}_transactions per pull.",
+    ["provider"],
+)
+
+SYNC_INSTITUTION_ERRORS_TOTAL = Counter(
+    "moneybin_sync_institution_errors_total",
+    "Per-institution sync errors by Plaid error_code (ITEM_LOGIN_REQUIRED, "
+    "INSTITUTION_DOWN, RATE_LIMIT_EXCEEDED, etc.).",
+    ["error_code"],
+)
+
+SYNC_AUTH_REFRESH_OUTCOMES = Counter(
+    "moneybin_sync_auth_refresh_outcomes_total",
+    "Refresh-token rotation outcomes: success (rotated and retry succeeded), "
+    "failed (refresh endpoint rejected the token, user must re-login), or "
+    "second_401 (refresh succeeded but retry still got 401 — token-store drift).",
+    ["outcome"],
+)
+
+SYNC_CONNECT_OUTCOMES = Counter(
+    "moneybin_sync_connect_outcomes_total",
+    "Connect-flow outcomes by terminal status (connected, failed, timeout).",
+    ["status"],
+)

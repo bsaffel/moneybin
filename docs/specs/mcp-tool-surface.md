@@ -1508,19 +1508,24 @@ Reserved namespace for `asset-tracking.md`. Workflows (registration, valuation, 
 
 Per the v2 MCP exposure principle, sync becomes nearly fully MCP-exposed. The AI may want to proactively pull recent data, check sync status, or initiate a connection — these are legitimate user-workflow operations. OAuth flows return redirect URLs; the client opens them.
 
-| v2 tool | Behavior |
-|---|---|
-| `sync_login` | Initiates device-code flow with moneybin-server. Returns `{device_code, user_code, verification_url, polling_token}`. Client displays URL + code; tool polls until completion |
-| `sync_logout` | Clears stored JWT |
-| `sync_connect [--institution]` | Initiates OAuth with bank/aggregator. Returns redirect URL; tool polls for completion |
-| `sync_disconnect <institution>` | Removes institution; idempotent |
-| `sync_pull [--institution] [--force]` | Triggers sync for one or all institutions; runs full pipeline |
-| `sync_status` | Read-only: connected institutions, last-sync times, errors |
-| `sync_schedule_set --time HH:MM` | Installs daily sync (launchd/cron); writes scheduler entry |
-| `sync_schedule_show` | Read-only schedule details |
-| `sync_schedule_remove` | Uninstalls scheduled job |
+| Tool | Sensitivity | Behavior |
+|---|---|---|
+| `sync_connect [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
+| `sync_connect_status <session_id>` | low | Single-shot check of a connect session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
+| `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
+| `sync_pull [institution] [force]` | medium | Triggers sync for one or all institutions; loads raw.plaid_* and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). |
+| `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
+| `sync_schedule_set --time HH:MM` | low | Stub — installs daily sync (launchd/cron). |
+| `sync_schedule_show` | low | Stub — read-only schedule details. |
+| `sync_schedule_remove` | low | Stub — uninstalls scheduled job. |
 
-**CLI-only (security-justified):** `sync_rotate_key` — passphrase material through LLM context window is a security model violation.
+**CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security model violation); `sync_rotate_key` — passphrase material through LLM context window is a security model violation.
+
+**Prompts (FastMCP):**
+
+| Prompt | Behavior |
+|---|---|
+| `sync_review` | Agent-driven health check. Walks the agent through `sync_status` + optional `spending_summary` to flag errored institutions, stale connections (last_sync > 7 days), and volume anomalies. Output is constrained to counts/dates/status codes/institution names — no PII (account numbers, balances, descriptions, merchant names). |
 
 ### `transform_*` (new MCP exposure — was CLI-only)
 

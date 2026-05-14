@@ -33,10 +33,24 @@ WITH ofx_accounts AS (
     extracted_at,
     loaded_at
   FROM prep.stg_tabular__accounts
+), plaid_accounts AS (
+  SELECT
+    account_id,
+    NULL::VARCHAR AS routing_number,
+    account_type,
+    institution_name,
+    NULL::VARCHAR AS institution_fid,
+    'plaid' AS source_type,
+    source_file,
+    extracted_at,
+    loaded_at
+  FROM prep.stg_plaid__accounts
 ), all_accounts AS (
   SELECT * FROM ofx_accounts
   UNION ALL
   SELECT * FROM tabular_accounts
+  UNION ALL
+  SELECT * FROM plaid_accounts
 ), deduplicated AS (
   SELECT
     *,

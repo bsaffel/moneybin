@@ -1,0 +1,64 @@
+# Golden-file Plaid sync response for unit tests.
+# Mirrors the shape of GET /sync/data per docs/specs/2026-05-13-plaid-sync-design.md Section 3.
+# Amounts use Plaid convention (positive = expense).
+accounts:
+  - account_id: acc_chase_check
+    account_type: depository
+    account_subtype: checking
+    institution_name: Chase
+    official_name: Total Checking
+    mask: "1234"
+  - account_id: acc_chase_save
+    account_type: depository
+    account_subtype: savings
+    institution_name: Chase
+    official_name: Total Savings
+    mask: "5678"
+
+transactions:
+  - transaction_id: txn_001
+    account_id: acc_chase_check
+    transaction_date: "2026-04-07"
+    amount: "42.50"
+    description: "STARBUCKS #1234"
+    merchant_name: Starbucks
+    category: FOOD_AND_DRINK
+    pending: false
+  - transaction_id: txn_002
+    account_id: acc_chase_check
+    transaction_date: "2026-04-06"
+    amount: "-1500.00"   # Plaid convention: negative = income
+    description: "EMPLOYER PAYROLL"
+    merchant_name: null
+    category: INCOME
+    pending: false
+  - transaction_id: txn_003
+    account_id: acc_chase_check
+    transaction_date: "2026-04-08"
+    amount: "12.99"
+    description: "PENDING CHARGE"
+    merchant_name: null
+    category: null
+    pending: true
+
+balances:
+  - account_id: acc_chase_check
+    balance_date: "2026-04-08"
+    current_balance: "1234.56"
+    available_balance: "1200.00"
+  - account_id: acc_chase_save
+    balance_date: "2026-04-08"
+    current_balance: "5000.00"
+    available_balance: "5000.00"
+
+removed_transactions:
+  - txn_removed_old
+
+metadata:
+  job_id: "550e8400-e29b-41d4-a716-446655440000"
+  synced_at: "2026-04-08T12:00:00Z"
+  institutions:
+    - provider_item_id: item_chase_abc
+      institution_name: Chase
+      status: completed
+      transaction_count: 3

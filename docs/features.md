@@ -11,6 +11,10 @@ Snapshot of MoneyBin's shipped capabilities, with links to the per-feature guide
 - **W-2 PDF extraction.**
 - **Watched-folder inbox UX.** Drop files in `~/Documents/MoneyBin/<profile>/inbox/`; `moneybin import inbox` drains successes to `processed/YYYY-MM/` and failures to `failed/YYYY-MM/` with YAML error sidecars. Per-profile lockfile + crash-recovery via staging-rename. → [Smart Import Inbox spec](specs/smart-import-inbox.md)
 
+## Sync
+
+- **Plaid bank sync (M3A Phase 1):** connect checking, savings, and credit card accounts via Plaid Hosted Link; pull transactions, balances, and account metadata through moneybin-server; loads into `raw.plaid_*` and flows through SQLMesh staging into `core.fct_transactions` / `core.dim_accounts` alongside OFX and CSV data. Incremental by default (cursor-based); `--force` for full re-fetch. CLI: `moneybin sync pull / connect / connect-status / disconnect / status / login / logout`. MCP tools: `sync_pull`, `sync_status`, `sync_connect`, `sync_connect_status`, `sync_disconnect`. MCP prompt: `sync_review`. → [Plaid Sync spec](specs/sync-plaid.md)
+
 ## Pipeline
 
 - **Three-layer SQLMesh:** raw → prep → core. Plus emerging `app.*` (user-state) and time-series `agg_*` conventions. → [Data Pipeline guide](guides/data-pipeline.md)
@@ -59,4 +63,4 @@ Snapshot of MoneyBin's shipped capabilities, with links to the per-feature guide
 
 ## What's coming next
 
-The next batch of capabilities lands in M2A (curator state) and M2C (`brew install`, `moneybin doctor`, `reports.*` recipe library, demo profile preset, first-run wizard). M3 brings Plaid sync, investments, multi-currency, Web UI, and the hosted tier. See [Roadmap](roadmap.md) for the full picture.
+M3A (Plaid Transactions sync) shipped. Remaining M3 work: investments (M3B), multi-currency + budgets (M3C), Web UI hardening + Streamable HTTP MCP (M3D), and hosted launch (M3E). See [Roadmap](roadmap.md) for the full picture.
