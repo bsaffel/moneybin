@@ -11,6 +11,8 @@ import yaml
 
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
+    ConnectInitiateResponse,
+    ConnectStatusResponse,
     SyncDataResponse,
     SyncTriggerResponse,
 )
@@ -100,6 +102,26 @@ def test_pull_with_unknown_institution_raises(
         service.pull(institution="UnknownBank")
 
 
+def test_pull_with_provider_item_id_skips_resolution(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.pull(provider_item_id="item_direct")
+    mock_client.list_institutions.assert_not_called()
+    mock_client.trigger_sync.assert_called_once_with(
+        provider_item_id="item_direct",
+        reset_cursor=False,
+    )
+
+
+def test_pull_rejects_both_institution_and_provider_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        service.pull(institution="Chase", provider_item_id="item_x")
+
+
 def test_pull_with_force_passes_reset_cursor(
     mock_client: MagicMock, db: Database, loader: PlaidLoader
 ) -> None:
@@ -108,4 +130,91 @@ def test_pull_with_force_passes_reset_cursor(
     mock_client.trigger_sync.assert_called_once_with(
         provider_item_id=None,
         reset_cursor=True,
+    )
+
+
+def test_connect_new_institution_auto_pulls(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidLoader,
+    sync_data: SyncDataResponse,
+) -> None:
+    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+        session_id="sess_x",
+        link_url="https://hosted.plaid.com/link/x",
+        connect_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+        session_id="sess_x",
+        status="connected",
+        provider_item_id="item_chase_abc",
+        institution_name="Chase",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    result = service.connect(auto_pull=True)
+    assert result.provider_item_id == "item_chase_abc"
+    assert result.institution_name == "Chase"
+    assert result.pull_result is not None
+    assert result.pull_result.transactions_loaded == 3
+    mock_client.trigger_sync.assert_called_once_with(
+        provider_item_id="item_chase_abc",
+        reset_cursor=False,
+    )
+
+
+def test_connect_no_pull_returns_without_pull_result(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+        session_id="sess_x",
+        link_url="https://hosted.plaid.com/link/x",
+        connect_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+        session_id="sess_x",
+        status="connected",
+        provider_item_id="item_new",
+        institution_name="Bank",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    result = service.connect(auto_pull=False)
+    assert result.pull_result is None
+    mock_client.trigger_sync.assert_not_called()
+
+
+def test_connect_re_auth_resolves_institution_name(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    mock_client.list_institutions.return_value = [
+        ConnectedInstitution(
+            id="u1",
+            provider_item_id="item_existing",
+            provider="plaid",
+            institution_name="Chase",
+            status="error",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+    ]
+    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+        session_id="sess_x",
+        link_url="https://hosted.plaid.com/link/x",
+        connect_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+        session_id="sess_x",
+        status="connected",
+        provider_item_id="item_existing",
+        institution_name="Chase",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.connect(institution="Chase", auto_pull=False)
+    mock_client.initiate_connect.assert_called_once_with(
+        provider_item_id="item_existing",
+        return_to=None,
     )

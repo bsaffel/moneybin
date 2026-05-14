@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from moneybin.connectors.sync_client import SyncClient
-from moneybin.connectors.sync_models import PullResult
+from moneybin.connectors.sync_models import ConnectResult, PullResult
 from moneybin.database import Database
 from moneybin.loaders.plaid_loader import PlaidLoader
 
@@ -52,12 +52,16 @@ class SyncService:
         self,
         *,
         institution: str | None = None,
+        provider_item_id: str | None = None,
         force: bool = False,
     ) -> PullResult:
         """Trigger a sync, fetch data, load into raw tables, return counts."""
-        provider_item_id = (
-            self._resolve_institution(institution) if institution else None
-        )
+        if institution is not None and provider_item_id is not None:
+            raise ValueError(
+                "institution and provider_item_id are mutually exclusive — pass one or neither"
+            )
+        if provider_item_id is None and institution is not None:
+            provider_item_id = self._resolve_institution(institution)
         trigger_resp = self.client.trigger_sync(
             provider_item_id=provider_item_id,
             reset_cursor=force,
@@ -74,6 +78,46 @@ class SyncService:
             balances_loaded=load_result.balances_loaded,
             transactions_removed=removed_count,
             institutions=sync_data.metadata.institutions,
+        )
+
+    # ------------------------------ Connect ------------------------------
+
+    def connect(
+        self,
+        *,
+        institution: str | None = None,
+        auto_pull: bool = True,
+        return_to: str | None = None,
+    ) -> ConnectResult:
+        """Connect new institution OR re-authenticate existing one.
+
+        When `institution` is provided, resolve to provider_item_id and trigger
+        Plaid update mode. When omitted, create a new connection.
+        """
+        provider_item_id = (
+            self._resolve_institution(institution) if institution else None
+        )
+        initiate = self.client.initiate_connect(
+            provider_item_id=provider_item_id,
+            return_to=return_to,
+        )
+        if initiate.connect_type != "widget_flow":
+            raise NotImplementedError(
+                f"connect_type '{initiate.connect_type}' is not supported in this version"
+            )
+        # The CLI/MCP layer is responsible for surfacing initiate.link_url
+        # to the user. The service blocks on polling.
+        status = self.client.poll_connect_status(initiate.session_id)
+        pull_result: PullResult | None = None
+        if auto_pull:
+            try:
+                pull_result = self.pull(provider_item_id=status.provider_item_id)
+            except Exception as e:
+                logger.warning(f"Auto-pull failed after connect: {e}")
+        return ConnectResult(
+            provider_item_id=status.provider_item_id or "",
+            institution_name=status.institution_name,
+            pull_result=pull_result,
         )
 
     # ------------------------------ Helpers ------------------------------
