@@ -1,4 +1,4 @@
-"""Tests for CLI `moneybin sync login`, `moneybin sync logout`, and `moneybin sync pull`."""
+"""Tests for CLI `moneybin sync login`, `moneybin sync logout`, `moneybin sync pull`, and connect."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.connectors.sync_models import InstitutionResult, PullResult
+from moneybin.connectors.sync_models import ConnectResult, InstitutionResult, PullResult
 
 runner = CliRunner()
 
@@ -97,3 +97,75 @@ def test_sync_pull_with_institution_and_force(mock_build: MagicMock) -> None:
     result = runner.invoke(app, ["sync", "pull", "--institution", "Chase", "--force"])
     assert result.exit_code == 0, result.output
     service.pull.assert_called_once_with(institution="Chase", force=True)
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_connect_new_institution(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.connect.return_value = ConnectResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=_fake_pull_result(),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "connect"])
+    assert result.exit_code == 0, result.output
+    service.connect.assert_called_once()
+    # auto_pull defaults to True
+    assert service.connect.call_args.kwargs.get("auto_pull", True) is True
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_connect_no_pull(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.connect.return_value = ConnectResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "connect", "--no-pull"])
+    assert result.exit_code == 0, result.output
+    service.connect.assert_called_once()
+    assert service.connect.call_args.kwargs["auto_pull"] is False
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_connect_explicit_institution(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    service.connect.return_value = ConnectResult(
+        provider_item_id="item_x",
+        institution_name="Schwab",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "connect", "--institution", "Schwab", "--no-pull"])
+    assert result.exit_code == 0, result.output
+    service.connect.assert_called_once()
+    assert service.connect.call_args.kwargs["institution"] == "Schwab"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_connect_status_command(mock_build: MagicMock) -> None:
+    from moneybin.connectors.sync_client import SyncClient
+
+    client = MagicMock(spec=SyncClient)
+    client.poll_connect_status.return_value = MagicMock(
+        session_id="sess_x",
+        status="connected",
+        provider_item_id="item_new",
+        institution_name="Chase",
+        model_dump_json=lambda **k: '{"status": "connected"}',  # type: ignore[misc]
+    )
+    # connect-status uses the client directly, not the service
+    with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
+        result = runner.invoke(
+            app,
+            ["sync", "connect-status", "--session-id", "sess_x", "--output", "json"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "connected" in result.stdout

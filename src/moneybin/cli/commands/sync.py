@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from contextlib import contextmanager
 
 import typer
@@ -73,9 +74,89 @@ def sync_logout() -> None:
 
 
 @app.command("connect")
-def sync_connect() -> None:
-    """Connect a bank account."""
-    _not_implemented("sync-overview.md")
+def sync_connect(
+    institution: str | None = typer.Option(
+        None, "--institution", help="Re-authenticate this connected institution.",
+    ),
+    no_pull: bool = typer.Option(
+        False, "--no-pull", help="Skip the auto-pull after connecting.",
+    ),
+    no_browser: bool = typer.Option(  # noqa: ARG001
+        False, "--no-browser", help="Print URL only; don't try to open a browser.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip re-auth confirmation prompt.",
+    ),
+    output: OutputFormat = output_option,
+) -> None:
+    """Connect a bank account (new) or re-authenticate one in error state."""
+    # Phase 1: no_browser is accepted for forward-compat but not wired through SyncService yet.
+    with handle_cli_errors():
+        with _build_sync_service() as service:
+            if institution is None:
+                connections = service.list_connections()
+                error_state = [c for c in connections if c.status == "error"]
+                if len(error_state) == 1:
+                    target = error_state[0].institution_name
+                    if yes:
+                        institution = target
+                    elif sys.stdin.isatty():
+                        confirmed = typer.confirm(
+                            f"Re-authenticate {target}?", default=True,
+                        )
+                        if not confirmed:
+                            typer.echo("Cancelled.", err=True)
+                            raise typer.Exit(0)
+                        institution = target
+                    else:
+                        typer.echo(
+                            f"❌ Found 1 institution needing re-auth ({target}). "
+                            "Pass `--institution NAME` to confirm intent, or pass "
+                            "`--institution NEW` for a new connection.",
+                            err=True,
+                        )
+                        raise typer.Exit(2)
+                elif len(error_state) > 1:
+                    typer.echo(
+                        "❌ Multiple institutions need re-auth. Pass `--institution NAME`:",
+                        err=True,
+                    )
+                    for c in error_state:
+                        typer.echo(f"   - {c.institution_name}", err=True)
+                    raise typer.Exit(2)
+                # else: no error-state institutions → new connection flow
+
+            if output == OutputFormat.TEXT:
+                typer.echo("⚙️  Opening browser for bank authentication...", err=True)
+
+            result = service.connect(
+                institution=institution,
+                auto_pull=not no_pull,
+            )
+
+    if output == OutputFormat.JSON:
+        typer.echo(result.model_dump_json(indent=2))
+        return
+
+    typer.echo(f"✅ Connected {result.institution_name}")
+    if result.pull_result is not None:
+        typer.echo(f"   Pulled {result.pull_result.transactions_loaded} transactions")
+
+
+@app.command("connect-status")
+def sync_connect_status(
+    session_id: str = typer.Option(..., "--session-id", help="Session ID from connect."),
+    output: OutputFormat = output_option,
+) -> None:
+    """Verify a pending connect session completed (CLI mirror of MCP sync_connect_status)."""
+    with handle_cli_errors():
+        client = _build_sync_client()
+        result = client.poll_connect_status(session_id)
+
+    if output == OutputFormat.JSON:
+        typer.echo(result.model_dump_json(indent=2))
+        return
+    typer.echo(f"✅ {result.status}: {result.institution_name or '(no name)'}")
 
 
 @app.command("disconnect")
