@@ -14,7 +14,9 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.loaders.plaid_loader import PlaidLoader
 from moneybin.services.sync_service import SyncService
 
-FIXTURE = Path(__file__).parent / "test_loaders" / "fixtures" / "plaid_sync_response.yaml"
+FIXTURE = (
+    Path(__file__).parent / "test_loaders" / "fixtures" / "plaid_sync_response.yaml"
+)
 
 
 @pytest.mark.slow

@@ -148,7 +148,9 @@ def test_sync_connect_explicit_institution(mock_build: MagicMock) -> None:
         institution_name="Schwab",
     )
     mock_build.return_value.__enter__.return_value = service
-    result = runner.invoke(app, ["sync", "connect", "--institution", "Schwab", "--no-pull"])
+    result = runner.invoke(
+        app, ["sync", "connect", "--institution", "Schwab", "--no-pull"]
+    )
     assert result.exit_code == 0, result.output
     service.connect.assert_called_once()
     assert service.connect.call_args.kwargs["institution"] == "Schwab"
@@ -182,7 +184,9 @@ def test_sync_connect_status_command(mock_build: MagicMock) -> None:
 def test_sync_disconnect_requires_yes_or_confirm(mock_build: MagicMock) -> None:
     service = MagicMock()
     mock_build.return_value.__enter__.return_value = service
-    result = runner.invoke(app, ["sync", "disconnect", "--institution", "Chase", "--yes"])
+    result = runner.invoke(
+        app, ["sync", "disconnect", "--institution", "Chase", "--yes"]
+    )
     assert result.exit_code == 0, result.output
     service.disconnect.assert_called_once_with(institution="Chase")
 

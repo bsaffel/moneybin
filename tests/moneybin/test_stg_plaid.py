@@ -71,7 +71,9 @@ def test_stg_plaid_transactions_flips_sign(db_with_data: Database) -> None:
 
 
 @pytest.mark.slow
-def test_fct_transactions_includes_plaid_with_correct_sign(db_with_data: Database) -> None:
+def test_fct_transactions_includes_plaid_with_correct_sign(
+    db_with_data: Database,
+) -> None:
     """Plaid transactions in core.fct_transactions use MoneyBin sign convention."""
     with sqlmesh_context(db_with_data) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)

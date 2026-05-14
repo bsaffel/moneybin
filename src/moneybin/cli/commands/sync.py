@@ -76,16 +76,25 @@ def sync_logout() -> None:
 @app.command("connect")
 def sync_connect(
     institution: str | None = typer.Option(
-        None, "--institution", help="Re-authenticate this connected institution.",
+        None,
+        "--institution",
+        help="Re-authenticate this connected institution.",
     ),
     no_pull: bool = typer.Option(
-        False, "--no-pull", help="Skip the auto-pull after connecting.",
+        False,
+        "--no-pull",
+        help="Skip the auto-pull after connecting.",
     ),
     no_browser: bool = typer.Option(  # noqa: ARG001
-        False, "--no-browser", help="Print URL only; don't try to open a browser.",
+        False,
+        "--no-browser",
+        help="Print URL only; don't try to open a browser.",
     ),
     yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip re-auth confirmation prompt.",
+        False,
+        "--yes",
+        "-y",
+        help="Skip re-auth confirmation prompt.",
     ),
     output: OutputFormat = output_option,
 ) -> None:
@@ -102,7 +111,8 @@ def sync_connect(
                         institution = target
                     elif sys.stdin.isatty():
                         confirmed = typer.confirm(
-                            f"Re-authenticate {target}?", default=True,
+                            f"Re-authenticate {target}?",
+                            default=True,
                         )
                         if not confirmed:
                             typer.echo("Cancelled.", err=True)
@@ -145,7 +155,9 @@ def sync_connect(
 
 @app.command("connect-status")
 def sync_connect_status(
-    session_id: str = typer.Option(..., "--session-id", help="Session ID from connect."),
+    session_id: str = typer.Option(
+        ..., "--session-id", help="Session ID from connect."
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Verify a pending connect session completed (CLI mirror of MCP sync_connect_status)."""
@@ -162,10 +174,15 @@ def sync_connect_status(
 @app.command("disconnect")
 def sync_disconnect(
     institution: str = typer.Option(
-        ..., "--institution", help="Institution name to disconnect.",
+        ...,
+        "--institution",
+        help="Institution name to disconnect.",
     ),
     yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip confirmation prompt.",
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation prompt.",
     ),
     output: OutputFormat = output_option,
 ) -> None:

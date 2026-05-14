@@ -115,7 +115,10 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
     provider_item_id = None
     if institution:
         for inst in client.list_institutions():
-            if inst.institution_name and inst.institution_name.lower() == institution.lower():
+            if (
+                inst.institution_name
+                and inst.institution_name.lower() == institution.lower()
+            ):
                 provider_item_id = inst.provider_item_id
                 break
         if provider_item_id is None:
@@ -157,7 +160,9 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
     client = _build_sync_client()
     # Single-shot: GET /sync/connect/status without the internal poll loop.
     resp = client._authed_request(  # noqa: SLF001 — internal access intentional for single-shot status
-        "GET", "/sync/connect/status", params={"session_id": session_id},
+        "GET",
+        "/sync/connect/status",
+        params={"session_id": session_id},
     )
     status = ConnectStatusResponse.model_validate(resp.json())
     actions: list[str] = []
@@ -235,7 +240,9 @@ Do not include account numbers, balances, individual transaction descriptions, o
 def register_sync_prompts(mcp: FastMCP) -> None:
     """Register sync-related FastMCP prompts."""
 
-    @mcp.prompt(name="sync_review", description="Review sync health and suggest next steps.")
+    @mcp.prompt(
+        name="sync_review", description="Review sync health and suggest next steps."
+    )
     def _sync_review() -> str:  # type: ignore[reportUnusedFunction]
         return SYNC_REVIEW_PROMPT
 
@@ -243,10 +250,16 @@ def register_sync_prompts(mcp: FastMCP) -> None:
 def register_sync_tools(mcp: FastMCP) -> None:
     """Register all sync namespace tools with the FastMCP server."""
     for fn, desc in [
-        (sync_connect, "Initiate a bank-connection flow — returns a URL the user opens in their browser. link_url is a sensitive one-time credential."),
+        (
+            sync_connect,
+            "Initiate a bank-connection flow — returns a URL the user opens in their browser. link_url is a sensitive one-time credential.",
+        ),
         (sync_connect_status, "Check whether a connect session has completed."),
         (sync_disconnect, "Remove a bank connection."),
-        (sync_pull, "Pull transactions, accounts, and balances. Amounts use MoneyBin convention (negative = expense)."),
+        (
+            sync_pull,
+            "Pull transactions, accounts, and balances. Amounts use MoneyBin convention (negative = expense).",
+        ),
         (sync_status, "Connected institutions, last-sync times, and errors."),
         (sync_schedule_set, "Install a daily sync at HH:MM."),
         (sync_schedule_show, "Show current scheduled sync."),

@@ -178,8 +178,10 @@ def _poll_connect(self, session_id: str) -> ConnectResult:
 Two constants, not config knobs:
 
 ```python
-_DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)   # most endpoints
-_LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)     # POST /sync/trigger, connect-poll deadline
+_DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)  # most endpoints
+_LONG_TIMEOUT = httpx.Timeout(
+    120.0, connect=10.0
+)  # POST /sync/trigger, connect-poll deadline
 ```
 
 Promote to `SyncConfig` only when a real user file says they need different values. Don't add knobs speculatively.
@@ -210,17 +212,20 @@ from typing import Literal
 
 # ---- Server response models ----
 
+
 class AuthToken(BaseModel):
     access_token: str
     refresh_token: str
     expires_in: int = Field(gt=0)
     token_type: Literal["Bearer"] = "Bearer"
 
+
 class ConnectInitiateResponse(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     link_url: str
     connect_type: Literal["widget_flow", "token_paste"]
     expiration: datetime
+
 
 class ConnectStatusResponse(BaseModel):
     session_id: str
@@ -230,10 +235,12 @@ class ConnectStatusResponse(BaseModel):
     error: str | None = None
     expiration: datetime
 
+
 class SyncTriggerResponse(BaseModel):
     job_id: str
     status: Literal["pending", "running", "completed", "failed"]
     transaction_count: int | None = None
+
 
 class SyncAccount(BaseModel):
     account_id: str
@@ -243,21 +250,24 @@ class SyncAccount(BaseModel):
     official_name: str | None = None
     mask: str | None = Field(default=None, max_length=8)
 
+
 class SyncTransaction(BaseModel):
     transaction_id: str
     account_id: str
     transaction_date: date
-    amount: Decimal              # Plaid convention preserved: positive = expense
+    amount: Decimal  # Plaid convention preserved: positive = expense
     description: str | None = None
     merchant_name: str | None = None
     category: str | None = None
     pending: bool = False
+
 
 class SyncBalance(BaseModel):
     account_id: str
     balance_date: date
     current_balance: Decimal | None = None
     available_balance: Decimal | None = None
+
 
 class InstitutionResult(BaseModel):
     provider_item_id: str
@@ -267,10 +277,12 @@ class InstitutionResult(BaseModel):
     error: str | None = None
     error_code: str | None = None
 
+
 class SyncMetadata(BaseModel):
     job_id: str
     synced_at: datetime
     institutions: list[InstitutionResult]
+
 
 class SyncDataResponse(BaseModel):
     accounts: list[SyncAccount]
@@ -279,8 +291,9 @@ class SyncDataResponse(BaseModel):
     removed_transactions: list[str]
     metadata: SyncMetadata
 
+
 class ConnectedInstitution(BaseModel):
-    id: str                      # internal UUID
+    id: str  # internal UUID
     provider_item_id: str
     provider: str
     institution_name: str | None = None
@@ -288,7 +301,9 @@ class ConnectedInstitution(BaseModel):
     last_sync: datetime | None = None
     created_at: datetime
 
+
 # ---- Service-layer result types ----
+
 
 class PullResult(BaseModel):
     job_id: str
@@ -296,12 +311,13 @@ class PullResult(BaseModel):
     accounts_loaded: int
     balances_loaded: int
     transactions_removed: int
-    institutions: list[InstitutionResult]   # passthrough from sync metadata
+    institutions: list[InstitutionResult]  # passthrough from sync metadata
+
 
 class ConnectResult(BaseModel):
     provider_item_id: str
     institution_name: str
-    pull_result: PullResult | None = None   # populated when auto_pull=True
+    pull_result: PullResult | None = None  # populated when auto_pull=True
 ```
 
 `SyncClient` methods return these models (not raw dicts). `PlaidLoader.load(sync_data: SyncDataResponse, job_id: str)` consumes the typed model.
@@ -327,15 +343,27 @@ The service does **not** maintain a local `app.sync_connections` cache. Connecti
 
 ```python
 class SyncService:
-    def __init__(self, client: SyncClient, db: Database, loader: PlaidLoader) -> None: ...
+    def __init__(
+        self, client: SyncClient, db: Database, loader: PlaidLoader
+    ) -> None: ...
 
-    def pull(self, *, institution: str | None = None, force: bool = False) -> PullResult: ...
-    def connect(self, *, institution: str | None = None, auto_pull: bool = True, return_to: str | None = None) -> ConnectResult: ...
+    def pull(
+        self, *, institution: str | None = None, force: bool = False
+    ) -> PullResult: ...
+    def connect(
+        self,
+        *,
+        institution: str | None = None,
+        auto_pull: bool = True,
+        return_to: str | None = None,
+    ) -> ConnectResult: ...
     def disconnect(self, *, institution: str) -> None: ...
     def list_connections(self) -> list[SyncConnectionView]: ...
 
     # Internal helpers
-    def _resolve_institution(self, name: str) -> str: ...        # name → provider_item_id (via GET /institutions)
+    def _resolve_institution(
+        self, name: str
+    ) -> str: ...  # name → provider_item_id (via GET /institutions)
     def _map_error_guidance(self, results: list[InstitutionResult]) -> list[str]: ...
 ```
 
@@ -345,7 +373,8 @@ class SyncService:
 def pull(self, *, institution=None, force=False) -> PullResult:
     provider_item_id = self._resolve_institution(institution) if institution else None
     trigger_response = self.client.trigger_sync(
-        provider_item_id=provider_item_id, reset_cursor=force,
+        provider_item_id=provider_item_id,
+        reset_cursor=force,
     )
     sync_data = self.client.get_data(trigger_response.job_id)
     self.loader.handle_removed_transactions(sync_data.removed_transactions)
@@ -366,7 +395,7 @@ def pull(self, *, institution=None, force=False) -> PullResult:
 
 ```python
 def list_connections(self) -> list[SyncConnectionView]:
-    institutions = self.client.list_institutions()   # GET /institutions
+    institutions = self.client.list_institutions()  # GET /institutions
     # Optional: enrich with the latest sync_jobs results for error codes / txn counts
     # For Phase 1, just return what /institutions gives us
     return [
@@ -436,7 +465,9 @@ TRANSACTIONS_SCHEMA = {
     "transaction_id": pl.Utf8,
     "account_id": pl.Utf8,
     "transaction_date": pl.Date,
-    "amount": pl.Decimal(18, 2),         # Plaid convention: positive = expense (DO NOT NEGATE HERE)
+    "amount": pl.Decimal(
+        18, 2
+    ),  # Plaid convention: positive = expense (DO NOT NEGATE HERE)
     "description": pl.Utf8,
     "merchant_name": pl.Utf8,
     "category": pl.Utf8,
@@ -447,6 +478,7 @@ TRANSACTIONS_SCHEMA = {
     "extracted_at": pl.Datetime,
     "loaded_at": pl.Datetime,
 }
+
 
 def load(self, sync_data: SyncDataResponse, job_id: str) -> LoadResult:
     source_file = f"sync_{job_id}"
@@ -470,9 +502,7 @@ def load(self, sync_data: SyncDataResponse, job_id: str) -> LoadResult:
         ],
         schema=TRANSACTIONS_SCHEMA,
     )
-    self.db.ingest_dataframe(
-        "raw.plaid_transactions", txn_df, on_conflict="upsert"
-    )
+    self.db.ingest_dataframe("raw.plaid_transactions", txn_df, on_conflict="upsert")
     # ... same for accounts and balances
 ```
 
