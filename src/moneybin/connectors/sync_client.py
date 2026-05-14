@@ -41,6 +41,8 @@ from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     ConnectInitiateResponse,
     ConnectStatusResponse,
+    SyncDataResponse,
+    SyncTriggerResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -306,3 +308,37 @@ class SyncClient:
         raise SyncTimeoutError(
             "connect flow timed out — user may have abandoned the browser"
         )
+
+    # ------------------------------ Sync trigger and data ------------------------------
+
+    def trigger_sync(
+        self,
+        *,
+        provider_item_id: str | None = None,
+        reset_cursor: bool = False,
+    ) -> SyncTriggerResponse:
+        """POST /sync/trigger — synchronous. Blocks until sync completes server-side.
+
+        Uses _LONG_TIMEOUT since multi-institution syncs can take 30-90s.
+        """
+        body: dict[str, object] = {}
+        if provider_item_id:
+            body["provider_item_id"] = provider_item_id
+        if reset_cursor:
+            body["reset_cursor"] = True
+        resp = self._authed_request(
+            "POST",
+            "/sync/trigger",
+            json_body=body,
+            timeout=_LONG_TIMEOUT,
+        )
+        return SyncTriggerResponse.model_validate(resp.json())
+
+    def get_data(self, job_id: str) -> SyncDataResponse:
+        """GET /sync/data — one-shot read; server deletes from TTL store after."""
+        resp = self._authed_request(
+            "GET",
+            "/sync/data",
+            params={"job_id": job_id},
+        )
+        return SyncDataResponse.model_validate(resp.json())

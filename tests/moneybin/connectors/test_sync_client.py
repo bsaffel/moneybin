@@ -14,6 +14,7 @@ from moneybin.connectors.sync_client import (
     SyncClient,
 )
 from moneybin.connectors.sync_errors import SyncAuthError, SyncConnectError
+from moneybin.connectors.sync_models import SyncDataResponse
 
 
 @pytest.fixture
@@ -312,3 +313,85 @@ def test_poll_connect_failed_raises(sync_client: SyncClient) -> None:
     sync_client._sleep = lambda _: None  # type: ignore[method-assign]
     with pytest.raises(SyncConnectError, match="user cancelled"):
         sync_client.poll_connect_status("sess_abc")
+
+
+@respx.mock
+def test_trigger_sync_returns_synchronous_result(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    respx.post("https://test.api/sync/trigger").mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "job_id": "job-abc",
+                "status": "completed",
+                "transaction_count": 42,
+            },
+        )
+    )
+    result = sync_client.trigger_sync()
+    assert result.job_id == "job-abc"
+    assert result.status == "completed"
+    assert result.transaction_count == 42
+
+
+@respx.mock
+def test_trigger_sync_passes_provider_item_id_and_force(
+    sync_client: SyncClient,
+) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    route = respx.post("https://test.api/sync/trigger").mock(
+        return_value=httpx.Response(201, json={"job_id": "j", "status": "completed"})
+    )
+    sync_client.trigger_sync(provider_item_id="item_x", reset_cursor=True)
+    body = route.calls.last.request.content
+    assert b"item_x" in body
+    assert b'"reset_cursor":true' in body or b'"reset_cursor": true' in body
+
+
+@respx.mock
+def test_get_data_returns_parsed_sync_data(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    respx.get("https://test.api/sync/data").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "accounts": [
+                    {
+                        "account_id": "a1",
+                        "account_type": "depository",
+                        "account_subtype": "checking",
+                        "institution_name": "Chase",
+                        "official_name": "Total",
+                        "mask": "0001",
+                    }
+                ],
+                "transactions": [
+                    {
+                        "transaction_id": "t1",
+                        "account_id": "a1",
+                        "transaction_date": "2026-04-07",
+                        "amount": "10.00",
+                        "description": "x",
+                        "pending": False,
+                    }
+                ],
+                "balances": [],
+                "removed_transactions": [],
+                "metadata": {
+                    "job_id": "job-abc",
+                    "synced_at": "2026-04-08T00:00:00Z",
+                    "institutions": [
+                        {
+                            "provider_item_id": "item_x",
+                            "status": "completed",
+                            "transaction_count": 1,
+                        }
+                    ],
+                },
+            },
+        )
+    )
+    result = sync_client.get_data("job-abc")
+    assert isinstance(result, SyncDataResponse)
+    assert result.metadata.job_id == "job-abc"
+    assert len(result.transactions) == 1
