@@ -93,15 +93,18 @@ async def test_sync_connect_returns_link_url_with_medium_sensitivity(
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.sync._build_sync_client")
 async def test_sync_connect_status_pending(mock_client_builder: MagicMock) -> None:
+    from datetime import UTC, datetime
+
+    from moneybin.connectors.sync_models import ConnectStatusResponse
+
     client = MagicMock()
-    # sync_connect_status calls _authed_request directly (single-shot, no poll loop)
-    resp_mock = MagicMock()
-    resp_mock.json.return_value = {
-        "session_id": "sess_abc",
-        "status": "pending",
-        "expiration": "2026-05-13T13:30:00Z",
-    }
-    client._authed_request.return_value = resp_mock
+    # MCP sync_connect_status uses the public get_connect_status single-shot
+    # method on the client (was reaching into _authed_request before).
+    client.get_connect_status.return_value = ConnectStatusResponse(
+        session_id="sess_abc",
+        status="pending",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
     mock_client_builder.return_value = client
     from moneybin.mcp.tools.sync import sync_connect_status
 

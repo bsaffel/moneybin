@@ -119,7 +119,13 @@ def sync_connect(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Connect a bank account (new) or re-authenticate one in error state."""
+    """Connect a bank account (new) or re-authenticate one in error state.
+
+    JSON output mode is event-driven: returns the initiate response immediately
+    so an agent can present the link to the user and verify completion with
+    `sync connect-status` later. Text mode blocks until the user finishes the
+    Plaid flow in their browser and returns the auto-pull summary.
+    """
     with handle_cli_errors():
         with _build_sync_service() as service:
             if institution is None:
@@ -158,18 +164,22 @@ def sync_connect(
                     raise typer.Exit(2)
                 # else: no error-state institutions → new connection flow
 
+            if output == OutputFormat.JSON:
+                # Event-driven: emit initiate response and exit. Agent verifies
+                # completion via `sync connect-status` after the user finishes
+                # the Plaid Hosted Link flow out-of-band.
+                initiate = service.initiate_connect(institution=institution)
+                typer.echo(initiate.model_dump_json(indent=2))
+                return
+
             def _on_initiate(init: ConnectInitiateResponse) -> None:
                 _surface_connect_link(init, open_browser=not no_browser)
 
             result = service.connect(
                 institution=institution,
                 auto_pull=not no_pull,
-                on_initiate=None if output == OutputFormat.JSON else _on_initiate,
+                on_initiate=_on_initiate,
             )
-
-    if output == OutputFormat.JSON:
-        typer.echo(result.model_dump_json(indent=2))
-        return
 
     typer.echo(f"✅ Connected {result.institution_name}")
     if result.pull_result is not None:
@@ -183,10 +193,15 @@ def sync_connect_status(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Verify a pending connect session completed (CLI mirror of MCP sync_connect_status)."""
+    """Verify a pending connect session completed (CLI mirror of MCP sync_connect_status).
+
+    Single-shot — returns whatever state the server holds for `session_id`
+    (pending, connected, or failed). Does not poll; the caller decides when
+    to check again.
+    """
     with handle_cli_errors():
         client = _build_sync_client()
-        result = client.poll_connect_status(session_id)
+        result = client.get_connect_status(session_id)
 
     if output == OutputFormat.JSON:
         typer.echo(result.model_dump_json(indent=2))

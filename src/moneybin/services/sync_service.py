@@ -24,8 +24,17 @@ from moneybin.connectors.sync_models import (
 )
 from moneybin.database import Database
 from moneybin.loaders.plaid_loader import PlaidLoader
+from moneybin.metrics.registry import (
+    SYNC_CONNECT_OUTCOMES,
+    SYNC_INSTITUTION_ERRORS_TOTAL,
+    SYNC_PULL_DURATION_SECONDS,
+    SYNC_PULL_OUTCOMES_TOTAL,
+    SYNC_PULL_TRANSACTIONS_LOADED,
+)
 
 logger = logging.getLogger(__name__)
+
+_PROVIDER = "plaid"  # Phase 1: single provider; widen when SimpleFIN/MX land
 
 
 _ERROR_GUIDANCE: dict[str, str] = {
@@ -69,23 +78,40 @@ class SyncService:
             )
         if provider_item_id is None and institution is not None:
             provider_item_id = self._resolve_institution(institution)
-        trigger_resp = self.client.trigger_sync(
-            provider_item_id=provider_item_id,
-            reset_cursor=force,
-        )
-        if trigger_resp.status != "completed":
-            # Server contract: /sync/trigger is synchronous and must return a terminal
-            # status. pending/running here means the server returned before the sync
-            # finished — proceeding to get_data would silently load nothing.
-            raise RuntimeError(
-                f"sync trigger returned non-terminal status '{trigger_resp.status}' "
-                f"for job_id={trigger_resp.job_id}; expected 'completed'"
+        with SYNC_PULL_DURATION_SECONDS.labels(provider=_PROVIDER).time():
+            try:
+                trigger_resp = self.client.trigger_sync(
+                    provider_item_id=provider_item_id,
+                    reset_cursor=force,
+                )
+                if trigger_resp.status != "completed":
+                    # Server contract: /sync/trigger is synchronous and must return
+                    # a terminal status. pending/running here means the server
+                    # returned before the sync finished — proceeding to get_data
+                    # would silently load nothing.
+                    raise RuntimeError(
+                        f"sync trigger returned non-terminal status '{trigger_resp.status}' "
+                        f"for job_id={trigger_resp.job_id}; expected 'completed'"
+                    )
+                sync_data = self.client.get_data(trigger_resp.job_id)
+                removed_count = self.loader.handle_removed_transactions(
+                    sync_data.removed_transactions,
+                )
+                load_result = self.loader.load(sync_data, trigger_resp.job_id)
+            except Exception:
+                SYNC_PULL_OUTCOMES_TOTAL.labels(
+                    provider=_PROVIDER, status="failed"
+                ).inc()
+                raise
+            SYNC_PULL_OUTCOMES_TOTAL.labels(provider=_PROVIDER, status="success").inc()
+            SYNC_PULL_TRANSACTIONS_LOADED.labels(provider=_PROVIDER).inc(
+                load_result.transactions_loaded
             )
-        sync_data = self.client.get_data(trigger_resp.job_id)
-        removed_count = self.loader.handle_removed_transactions(
-            sync_data.removed_transactions,
-        )
-        load_result = self.loader.load(sync_data, trigger_resp.job_id)
+            for inst in sync_data.metadata.institutions:
+                if inst.status == "failed" and inst.error_code:
+                    SYNC_INSTITUTION_ERRORS_TOTAL.labels(
+                        error_code=inst.error_code
+                    ).inc()
         return PullResult(
             job_id=trigger_resp.job_id,
             transactions_loaded=load_result.transactions_loaded,
@@ -96,6 +122,38 @@ class SyncService:
         )
 
     # ------------------------------ Connect ------------------------------
+
+    def initiate_connect(
+        self,
+        *,
+        institution: str | None = None,
+        return_to: str | None = None,
+    ) -> ConnectInitiateResponse:
+        """Resolve institution and start a Plaid Link session — does not poll.
+
+        Used by JSON-mode CLI and MCP sync_connect, where the caller surfaces
+        link_url to the user and verifies completion via a separate
+        sync_connect_status call. The full connect() path (resolve → initiate →
+        poll → auto-pull) remains for text-mode CLI.
+
+        Falls through to a new-connection request when institution is provided
+        but matches no existing connection (per design Section 8). Raises on
+        ambiguous matches via _find_institution.
+        """
+        provider_item_id: str | None = None
+        if institution:
+            inst = self._find_institution(institution)
+            if inst is not None:
+                provider_item_id = inst.provider_item_id
+        initiate = self.client.initiate_connect(
+            provider_item_id=provider_item_id,
+            return_to=return_to,
+        )
+        if initiate.connect_type != "widget_flow":
+            raise NotImplementedError(
+                f"connect_type '{initiate.connect_type}' is not supported in this version"
+            )
+        return initiate
 
     def connect(
         self,
@@ -118,24 +176,19 @@ class SyncService:
         polling without surfacing the URL — only safe for callers that surface it
         themselves (MCP returns the URL in its envelope and never enters this path).
         """
-        provider_item_id: str | None = None
-        if institution:
-            inst = self._find_institution(institution)
-            if inst is not None:
-                provider_item_id = inst.provider_item_id
-            # else: institution name doesn't match any existing connection;
-            # fall through to new-connection request per design Section 8.
-        initiate = self.client.initiate_connect(
-            provider_item_id=provider_item_id,
-            return_to=return_to,
-        )
-        if initiate.connect_type != "widget_flow":
-            raise NotImplementedError(
-                f"connect_type '{initiate.connect_type}' is not supported in this version"
-            )
+        initiate = self.initiate_connect(institution=institution, return_to=return_to)
         if on_initiate is not None:
             on_initiate(initiate)
-        status = self.client.poll_connect_status(initiate.session_id)
+        try:
+            status = self.client.poll_connect_status(initiate.session_id)
+        except Exception:
+            # poll_connect_status raises SyncConnectError on terminal 'failed'
+            # status, and SyncTimeoutError when the user abandons the browser.
+            # Surface both as failed-connect outcomes; the CLI/MCP layer
+            # re-raises with the specific exception type.
+            SYNC_CONNECT_OUTCOMES.labels(status="failed").inc()
+            raise
+        SYNC_CONNECT_OUTCOMES.labels(status=status.status or "connected").inc()
         pull_result: PullResult | None = None
         if auto_pull:
             try:

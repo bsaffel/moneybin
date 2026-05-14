@@ -162,7 +162,9 @@ def test_sync_connect_status_command(mock_build: MagicMock) -> None:
     from moneybin.connectors.sync_client import SyncClient
 
     client = MagicMock(spec=SyncClient)
-    client.poll_connect_status.return_value = MagicMock(
+    # CLI connect-status is single-shot via the public get_connect_status,
+    # not the blocking poll_connect_status loop.
+    client.get_connect_status.return_value = MagicMock(
         session_id="sess_x",
         status="connected",
         provider_item_id="item_new",

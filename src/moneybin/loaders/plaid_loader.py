@@ -141,30 +141,48 @@ class PlaidLoader:
         ("" source_origin) would cause dedup collapse on `(account_id, source_origin)`
         and break downstream joins. Server should structure responses with per-
         institution account groupings to make this unambiguous (followup).
+
+        Also raises if `sync_data.transactions` or `sync_data.balances` reference
+        an `account_id` not present in `sync_data.accounts` — eventual-consistency
+        on Plaid's side surfaces this occasionally, and a KeyError during the
+        per-row dict lookup leaves no useful context. Loud and explicit is better.
         """
         institutions = sync_data.metadata.institutions
         if len(institutions) == 1:
             single_item = institutions[0].provider_item_id
-            return {acc.account_id: single_item for acc in sync_data.accounts}
+            mapping = {acc.account_id: single_item for acc in sync_data.accounts}
+        else:
+            name_to_item: dict[str | None, str] = {}
+            for inst in institutions:
+                if inst.institution_name in name_to_item:
+                    raise ValueError(
+                        f"multi-institution sync metadata has duplicate institution_name "
+                        f"{inst.institution_name!r}; cannot attribute accounts unambiguously"
+                    )
+                name_to_item[inst.institution_name] = inst.provider_item_id
 
-        name_to_item: dict[str | None, str] = {}
-        for inst in institutions:
-            if inst.institution_name in name_to_item:
-                raise ValueError(
-                    f"multi-institution sync metadata has duplicate institution_name "
-                    f"{inst.institution_name!r}; cannot attribute accounts unambiguously"
-                )
-            name_to_item[inst.institution_name] = inst.provider_item_id
+            mapping = {}
+            for acc in sync_data.accounts:
+                if acc.institution_name not in name_to_item:
+                    raise ValueError(
+                        f"account {acc.account_id} has institution_name "
+                        f"{acc.institution_name!r} not present in sync metadata "
+                        f"({sorted(str(n) for n in name_to_item)})"
+                    )
+                mapping[acc.account_id] = name_to_item[acc.institution_name]
 
-        mapping: dict[str, str] = {}
-        for acc in sync_data.accounts:
-            if acc.institution_name not in name_to_item:
-                raise ValueError(
-                    f"account {acc.account_id} has institution_name "
-                    f"{acc.institution_name!r} not present in sync metadata "
-                    f"({sorted(str(n) for n in name_to_item)})"
-                )
-            mapping[acc.account_id] = name_to_item[acc.institution_name]
+        referenced = {txn.account_id for txn in sync_data.transactions} | {
+            bal.account_id for bal in sync_data.balances
+        }
+        orphans = referenced - mapping.keys()
+        if orphans:
+            raise ValueError(
+                f"transactions/balances reference account_id(s) not present in "
+                f"sync_data.accounts: {sorted(orphans)}. This typically indicates "
+                f"eventual-consistency drift on the server — retry the sync, and "
+                f"if it persists, the server's account_id stream is out of sync "
+                f"with its transaction stream."
+            )
         return mapping
 
     def _load_accounts(

@@ -44,6 +44,7 @@ from moneybin.connectors.sync_models import (
     SyncDataResponse,
     SyncTriggerResponse,
 )
+from moneybin.metrics.registry import SYNC_AUTH_REFRESH_OUTCOMES
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +131,18 @@ class SyncClient:
     ) -> None:
         path = self._effective_token_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Tighten parent dir to 0o700 — mkdir respects umask, which on many
+        # systems leaves the directory traversable by group/other.
+        os.chmod(path.parent, stat.S_IRWXU)  # 0o700
         payload = json.dumps({"jwt": access_token, "refresh_token": refresh_token})
-        path.write_text(payload)
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        # Atomic create with 0o600 permissions — never world-readable, even for
+        # the brief window between create and chmod. The JWT + refresh token
+        # gate every connected bank's data; the cost of getting this right is
+        # small relative to the blast radius.
+        flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+        fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
 
     def _read_token_file(self) -> dict[str, str]:
         path = self._effective_token_path()
@@ -156,7 +166,12 @@ class SyncClient:
         Displays user_code + verification URL on stderr, optionally opens the
         browser, then polls for the access token. Stores token + refresh token.
         """
-        code_resp = self._client.post("/auth/device/code")
+        try:
+            code_resp = self._client.post("/auth/device/code")
+        except httpx.RequestError as e:
+            raise SyncAPIError(
+                f"sync server unreachable at {self._server_url}: {e}"
+            ) from e
         code_resp.raise_for_status()
         code_data = code_resp.json()
         user_code = code_data["user_code"]
@@ -174,9 +189,14 @@ class SyncClient:
 
         while True:
             self._sleep(interval)
-            poll = self._client.post(
-                "/auth/device/token", json={"device_code": device_code}
-            )
+            try:
+                poll = self._client.post(
+                    "/auth/device/token", json={"device_code": device_code}
+                )
+            except httpx.RequestError as e:
+                raise SyncAPIError(
+                    f"sync server unreachable at {self._server_url}: {e}"
+                ) from e
             if poll.status_code == 200:
                 token = AuthToken.model_validate(poll.json())
                 self._store_tokens(
@@ -215,18 +235,7 @@ class SyncClient:
         if token is None:
             raise SyncAuthError("not authenticated — run `moneybin sync login`")
         headers = {"Authorization": f"Bearer {token}"}
-        resp = self._client.request(
-            method,
-            path,
-            json=json_body,
-            params=params,
-            headers=headers,
-            timeout=timeout,
-        )
-        if resp.status_code == 401:
-            self._refresh()  # raises SyncAuthError on failure
-            token = self._read_token()
-            headers["Authorization"] = f"Bearer {token}"
+        try:
             resp = self._client.request(
                 method,
                 path,
@@ -236,13 +245,34 @@ class SyncClient:
                 timeout=timeout,
             )
             if resp.status_code == 401:
-                # Refresh succeeded but the retry still 401'd — token store drift,
-                # server-side revocation, or the refresh issued a token the resource
-                # server rejects. Treat as auth (run sync login), not generic API.
-                self._clear_tokens()
-                raise SyncAuthError(
-                    "session expired after refresh — run `moneybin sync login`"
+                self._refresh()  # raises SyncAuthError on failure
+                token = self._read_token()
+                headers["Authorization"] = f"Bearer {token}"
+                resp = self._client.request(
+                    method,
+                    path,
+                    json=json_body,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout,
                 )
+                if resp.status_code == 401:
+                    # Refresh succeeded but the retry still 401'd — token store
+                    # drift, server-side revocation, or the refresh issued a
+                    # token the resource server rejects. Treat as auth (run
+                    # sync login), not generic API.
+                    self._clear_tokens()
+                    SYNC_AUTH_REFRESH_OUTCOMES.labels(outcome="second_401").inc()
+                    raise SyncAuthError(
+                        "session expired after refresh — run `moneybin sync login`"
+                    )
+        except httpx.RequestError as e:
+            # Connection refused, DNS failure, timeout, etc. Wrap so
+            # classify_user_error can surface a clean CLI/MCP message instead
+            # of a raw httpx traceback.
+            raise SyncAPIError(
+                f"sync server unreachable at {self._server_url}: {e}"
+            ) from e
         if resp.status_code >= 400:
             raise SyncAPIError(
                 f"{method} {path} returned {resp.status_code}: {resp.text[:200]}"
@@ -255,15 +285,22 @@ class SyncClient:
         if refresh is None:
             self._clear_tokens()
             raise SyncAuthError("no refresh token stored — run `moneybin sync login`")
-        resp = self._client.post("/auth/refresh", json={"refresh_token": refresh})
+        try:
+            resp = self._client.post("/auth/refresh", json={"refresh_token": refresh})
+        except httpx.RequestError as e:
+            raise SyncAPIError(
+                f"sync server unreachable at {self._server_url}: {e}"
+            ) from e
         if resp.status_code != 200:
             self._clear_tokens()
+            SYNC_AUTH_REFRESH_OUTCOMES.labels(outcome="failed").inc()
             raise SyncAuthError("session expired — run `moneybin sync login`")
         token = AuthToken.model_validate(resp.json())
         self._store_tokens(
             access_token=token.access_token,
             refresh_token=token.refresh_token,
         )
+        SYNC_AUTH_REFRESH_OUTCOMES.labels(outcome="success").inc()
 
     # ------------------------------ Institutions ------------------------------
 
@@ -293,6 +330,21 @@ class SyncClient:
             body["return_to"] = return_to
         resp = self._authed_request("POST", "/sync/connect/initiate", json_body=body)
         return ConnectInitiateResponse.model_validate(resp.json())
+
+    def get_connect_status(self, session_id: str) -> ConnectStatusResponse:
+        """Single-shot GET /sync/connect/status — returns whatever state the server holds.
+
+        Used by CLI `sync connect-status` and MCP `sync_connect_status`; both are
+        event-driven (caller decides when to check) rather than blocking. Use
+        `poll_connect_status` instead when the caller needs to block until a
+        terminal state.
+        """
+        resp = self._authed_request(
+            "GET",
+            "/sync/connect/status",
+            params={"session_id": session_id},
+        )
+        return ConnectStatusResponse.model_validate(resp.json())
 
     def poll_connect_status(self, session_id: str) -> ConnectStatusResponse:
         """Poll GET /sync/connect/status until status reaches a terminal state.

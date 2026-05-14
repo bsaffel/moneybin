@@ -114,24 +114,29 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
     Pass `institution` to re-authenticate an existing connection (Plaid update mode).
     """
     client = _build_sync_client()
-    provider_item_id = None
+    provider_item_id: str | None = None
     if institution:
-        for inst in client.list_institutions():
-            if (
-                inst.institution_name
-                and inst.institution_name.lower() == institution.lower()
-            ):
-                provider_item_id = inst.provider_item_id
-                break
-        if provider_item_id is None:
+        matches = [
+            inst
+            for inst in client.list_institutions()
+            if inst.institution_name
+            and inst.institution_name.lower() == institution.lower()
+        ]
+        if len(matches) > 1:
+            ids = ", ".join(m.provider_item_id for m in matches)
             return build_error_envelope(
                 error=UserError(
-                    f"no connected institution matching '{institution}'",
-                    code="not_found",
-                    hint="Run sync_status to list connected institutions.",
+                    f"multiple connected institutions match '{institution}' ({ids})",
+                    code="ambiguous",
+                    hint="Run sync_status to identify them; the duplicate name "
+                    "must be disambiguated before sync_connect can target one.",
                 ),
                 actions=["Run sync_status to list connected institutions."],
             )
+        if len(matches) == 1:
+            provider_item_id = matches[0].provider_item_id
+        # else: name doesn't match any existing connection → new-connection flow
+        # per design Section 8; let the server's Link flow name the institution.
     initiate = client.initiate_connect(provider_item_id=provider_item_id)
     return build_envelope(
         data={
@@ -157,16 +162,8 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
     Returns connected, pending, or failed. Does NOT loop internally — the agent should
     invoke this when the user signals completion, not poll repeatedly.
     """
-    from moneybin.connectors.sync_models import ConnectStatusResponse  # noqa: PLC0415
-
     client = _build_sync_client()
-    # Single-shot: GET /sync/connect/status without the internal poll loop.
-    resp = client._authed_request(  # noqa: SLF001 — internal access intentional for single-shot status
-        "GET",
-        "/sync/connect/status",
-        params={"session_id": session_id},
-    )
-    status = ConnectStatusResponse.model_validate(resp.json())
+    status = client.get_connect_status(session_id)
     actions: list[str] = []
     if status.status == "pending":
         actions = [
