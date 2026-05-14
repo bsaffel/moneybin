@@ -141,7 +141,9 @@ def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) 
     assert before[0] == 1
 
     deleted = loader.handle_removed_transactions(["txn_001", "nonexistent_id"])
-    assert deleted == 2  # method reports the count of IDs it tried to remove
+    # Method reports the actual rowcount deleted: txn_001 was present, the
+    # nonexistent ID was a no-op, so deleted == 1, not len(removed_ids) == 2.
+    assert deleted == 1
 
     after = db.execute(
         "SELECT COUNT(*) FROM raw.plaid_transactions WHERE transaction_id = 'txn_001'"

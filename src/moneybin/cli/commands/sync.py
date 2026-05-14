@@ -3,12 +3,14 @@
 import json
 import logging
 import sys
+import webbrowser
 from contextlib import contextmanager
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.connectors.sync_models import ConnectInitiateResponse
 
 from .stubs import _not_implemented
 
@@ -73,19 +75,38 @@ def sync_logout() -> None:
         typer.echo("✅ Logged out.")
 
 
+def _surface_connect_link(
+    initiate: ConnectInitiateResponse, *, open_browser: bool
+) -> None:
+    """Print the Plaid Hosted Link URL to stderr and optionally open the browser.
+
+    Always prints to stderr so headless users can copy the URL even when
+    `webbrowser.open()` falsely reports success (common on Linux without a
+    display server). Called by SyncService.connect via the on_initiate hook
+    before it begins polling.
+    """
+    typer.echo("⚙️  To complete authentication, open this URL:", err=True)
+    typer.echo(f"   {initiate.link_url}", err=True)
+    if open_browser:
+        try:
+            webbrowser.open(initiate.link_url)
+        except webbrowser.Error:
+            pass  # URL already printed; user can copy manually
+
+
 @app.command("connect")
 def sync_connect(
     institution: str | None = typer.Option(
         None,
         "--institution",
-        help="Re-authenticate this connected institution.",
+        help="Re-authenticate this connected institution, or a label for a new one.",
     ),
     no_pull: bool = typer.Option(
         False,
         "--no-pull",
         help="Skip the auto-pull after connecting.",
     ),
-    no_browser: bool = typer.Option(  # noqa: ARG001
+    no_browser: bool = typer.Option(
         False,
         "--no-browser",
         help="Print URL only; don't try to open a browser.",
@@ -99,7 +120,6 @@ def sync_connect(
     output: OutputFormat = output_option,
 ) -> None:
     """Connect a bank account (new) or re-authenticate one in error state."""
-    # Phase 1: no_browser is accepted for forward-compat but not wired through SyncService yet.
     with handle_cli_errors():
         with _build_sync_service() as service:
             if institution is None:
@@ -121,8 +141,10 @@ def sync_connect(
                     else:
                         typer.echo(
                             f"❌ Found 1 institution needing re-auth ({target}). "
-                            "Pass `--institution NAME` to confirm intent, or pass "
-                            "`--institution NEW` for a new connection.",
+                            f"Pass `--institution {target}` to re-authenticate, or "
+                            f"`--institution <new-bank-name>` to add a different "
+                            "institution. Bare invocation is ambiguous in non-"
+                            "interactive mode.",
                             err=True,
                         )
                         raise typer.Exit(2)
@@ -136,12 +158,13 @@ def sync_connect(
                     raise typer.Exit(2)
                 # else: no error-state institutions → new connection flow
 
-            if output == OutputFormat.TEXT:
-                typer.echo("⚙️  Opening browser for bank authentication...", err=True)
+            def _on_initiate(init: ConnectInitiateResponse) -> None:
+                _surface_connect_link(init, open_browser=not no_browser)
 
             result = service.connect(
                 institution=institution,
                 auto_pull=not no_pull,
+                on_initiate=None if output == OutputFormat.JSON else _on_initiate,
             )
 
     if output == OutputFormat.JSON:

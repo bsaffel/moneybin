@@ -1521,6 +1521,12 @@ Per the v2 MCP exposure principle, sync becomes nearly fully MCP-exposed. The AI
 
 **CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security model violation); `sync_rotate_key` — passphrase material through LLM context window is a security model violation.
 
+**Prompts (FastMCP):**
+
+| Prompt | Behavior |
+|---|---|
+| `sync_review` | Agent-driven health check. Walks the agent through `sync_status` + optional `spending_summary` to flag errored institutions, stale connections (last_sync > 7 days), and volume anomalies. Output is constrained to counts/dates/status codes/institution names — no PII (account numbers, balances, descriptions, merchant names). |
+
 ### `transform_*` (new MCP exposure — was CLI-only)
 
 Routine pipeline operations the AI legitimately needs (e.g., ensure pipeline is up to date after a manual data change). Full surface except `_restate`.

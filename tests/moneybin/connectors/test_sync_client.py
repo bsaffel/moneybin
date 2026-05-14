@@ -236,6 +236,41 @@ def test_refresh_failure_clears_tokens_and_raises(sync_client: SyncClient) -> No
 
 
 @respx.mock
+def test_401_after_successful_refresh_raises_auth_not_api(
+    sync_client: SyncClient,
+) -> None:
+    """401-after-refresh must classify as auth failure, not generic API error.
+
+    Token store drift / server-side revocation: refresh issues a new token,
+    but the retry still 401s. Must surface as SyncAuthError (run sync login),
+    not as a generic SyncAPIError.
+    """
+    sync_client._store_tokens(access_token="old-jwt", refresh_token="old-refresh")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+
+    respx.get("https://test.api/institutions").mock(
+        side_effect=[
+            httpx.Response(401, json={"error": "Unauthorized"}),
+            httpx.Response(401, json={"error": "still unauthorized"}),
+        ]
+    )
+    respx.post("https://test.api/auth/refresh").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "new-jwt",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+    )
+
+    with pytest.raises(SyncAuthError, match="session expired after refresh"):
+        sync_client.list_institutions()
+    assert sync_client._read_token() is None  # type: ignore[reportPrivateUsage]
+
+
+@respx.mock
 def test_initiate_connect_returns_session_and_url(sync_client: SyncClient) -> None:
     sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
     respx.post("https://test.api/sync/connect/initiate").mock(

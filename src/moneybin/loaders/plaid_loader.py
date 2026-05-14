@@ -131,29 +131,41 @@ class PlaidLoader:
         )
 
     def _build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
-        """Each account belongs to exactly one institution (provider_item_id).
+        """Map each account_id to its provider_item_id.
 
-        The server's GET /sync/data response doesn't include item_id per account
-        directly — accounts inherit it from their institution context. Phase 1
-        assumes the metadata.institutions[] has exactly one entry per item, and
-        all accounts in this sync belong to a single institution batch.
-        For multi-institution syncs, the server should structure the response
-        with per-institution account groupings (see follow-up).
+        Single-institution sync: all accounts get the one item's id.
+
+        Multi-institution sync: match each account to its institution by name.
+        Raises if an account's institution_name doesn't appear in metadata, or
+        if two institutions in metadata share the same name — silent fallback
+        ("" source_origin) would cause dedup collapse on `(account_id, source_origin)`
+        and break downstream joins. Server should structure responses with per-
+        institution account groupings to make this unambiguous (followup).
         """
-        # Phase 1: single-institution-per-sync assumption.
-        # If sync_data.metadata.institutions has multiple entries, attribute
-        # each account to its institution_name match. Otherwise, all accounts
-        # get the single institution's provider_item_id.
         institutions = sync_data.metadata.institutions
         if len(institutions) == 1:
             single_item = institutions[0].provider_item_id
             return {acc.account_id: single_item for acc in sync_data.accounts}
-        # Multi-institution: match by institution_name
-        name_to_item = {i.institution_name: i.provider_item_id for i in institutions}
-        return {
-            acc.account_id: name_to_item.get(acc.institution_name, "")
-            for acc in sync_data.accounts
-        }
+
+        name_to_item: dict[str | None, str] = {}
+        for inst in institutions:
+            if inst.institution_name in name_to_item:
+                raise ValueError(
+                    f"multi-institution sync metadata has duplicate institution_name "
+                    f"{inst.institution_name!r}; cannot attribute accounts unambiguously"
+                )
+            name_to_item[inst.institution_name] = inst.provider_item_id
+
+        mapping: dict[str, str] = {}
+        for acc in sync_data.accounts:
+            if acc.institution_name not in name_to_item:
+                raise ValueError(
+                    f"account {acc.account_id} has institution_name "
+                    f"{acc.institution_name!r} not present in sync metadata "
+                    f"({sorted(str(n) for n in name_to_item)})"
+                )
+            mapping[acc.account_id] = name_to_item[acc.institution_name]
+        return mapping
 
     def _load_accounts(
         self,
@@ -242,16 +254,27 @@ class PlaidLoader:
         return len(df)
 
     def handle_removed_transactions(self, removed_ids: list[str]) -> int:
-        """Delete transactions Plaid has removed.
+        """Delete transactions Plaid has removed; return the rowcount actually deleted.
 
-        Returns the number of IDs the caller passed in (the actual number of
-        rows deleted is the same when transactions exist and are unique).
+        Stale IDs (already removed in a prior sync, or never landed locally) don't
+        inflate the count — the return value flows into `PullResult.transactions_removed`
+        and the CLI's "Removed N stale transactions" message, so it must reflect
+        reality rather than the request.
         """
         if not removed_ids:
             return 0
         placeholders = ", ".join("?" for _ in removed_ids)
+        # Pre-count to report the rows DELETE will actually affect. DuckDB doesn't
+        # surface affected-row counts through this connection API, so a separate
+        # COUNT(*) is the simplest accurate signal; the two statements share the
+        # write lock for the duration of the call.
+        count_row = self.db.execute(
+            f"SELECT COUNT(*) FROM raw.plaid_transactions WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
+            removed_ids,
+        ).fetchone()
+        deleted = int(count_row[0]) if count_row else 0
         self.db.execute(
             f"DELETE FROM raw.plaid_transactions WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
             removed_ids,
         )
-        return len(removed_ids)
+        return deleted

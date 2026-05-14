@@ -193,7 +193,13 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
 
 @mcp_tool(sensitivity="medium", read_only=False, open_world=True)
 def sync_disconnect(institution: str) -> ResponseEnvelope:
-    """Remove a bank connection. Writes to app.sync_connections; no revert path."""
+    """Remove a bank connection on moneybin-server. Permanent — no revert path.
+
+    Local pulled transactions are preserved in raw.plaid_* and core.fct_transactions;
+    the institution simply stops appearing in sync_status and can no longer be
+    sync_pull'd. No local app.* state is mutated — connection state lives on the
+    server per design Section 4.
+    """
     with _build_sync_service() as service:
         service.disconnect(institution=institution)
     return build_envelope(

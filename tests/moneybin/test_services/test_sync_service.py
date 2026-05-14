@@ -68,7 +68,10 @@ def test_pull_happy_path(
     assert result.transactions_loaded == 3
     assert result.accounts_loaded == 2
     assert result.balances_loaded == 2
-    assert result.transactions_removed == 1
+    # The fixture's removed_transactions=["txn_removed_old"] references a
+    # transaction that was never loaded, so the actual deleted rowcount is 0.
+    # PullResult.transactions_removed reflects rows touched, not IDs requested.
+    assert result.transactions_removed == 0
     assert result.institutions[0].provider_item_id == "item_chase_abc"
 
 
@@ -218,6 +221,92 @@ def test_connect_re_auth_resolves_institution_name(
         provider_item_id="item_existing",
         return_to=None,
     )
+
+
+def test_connect_falls_through_to_new_when_institution_not_matched(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    """Unknown institution name falls through to new-connection flow.
+
+    Per design Section 8: an unknown institution name is a new-connection
+    intent, not an error — let the server's Link flow name the institution.
+    """
+    mock_client.list_institutions.return_value = []  # no existing connections
+    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+        session_id="sess_x",
+        link_url="https://hosted.plaid.com/link/x",
+        connect_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+        session_id="sess_x",
+        status="connected",
+        provider_item_id="item_new",
+        institution_name="Bank",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.connect(institution="Wells Fargo", auto_pull=False)
+    # provider_item_id is None — new-connection flow, not update mode
+    mock_client.initiate_connect.assert_called_once_with(
+        provider_item_id=None,
+        return_to=None,
+    )
+
+
+def test_connect_invokes_on_initiate_callback_before_polling(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    """on_initiate fires after initiate_connect, before polling.
+
+    The CLI uses on_initiate to print link_url + open the browser. Verify
+    the service invokes it between initiate_connect and poll_connect_status.
+    """
+    initiate_resp = ConnectInitiateResponse(
+        session_id="sess_x",
+        link_url="https://hosted.plaid.com/link/x",
+        connect_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client.initiate_connect.return_value = initiate_resp
+    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+        session_id="sess_x",
+        status="connected",
+        provider_item_id="item_new",
+        institution_name="Bank",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    captured: list[ConnectInitiateResponse] = []
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.connect(auto_pull=False, on_initiate=captured.append)
+    assert captured == [initiate_resp]
+
+
+def test_resolve_institution_raises_on_ambiguous_name(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    """Two connections sharing institution_name must not silently map to one."""
+    mock_client.list_institutions.return_value = [
+        ConnectedInstitution(
+            id="u1",
+            provider_item_id="item_a",
+            provider="plaid",
+            institution_name="Chase",
+            status="active",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+        ConnectedInstitution(
+            id="u2",
+            provider_item_id="item_b",
+            provider="plaid",
+            institution_name="Chase",
+            status="active",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+    ]
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(ValueError, match="multiple connected institutions match"):
+        service.pull(institution="Chase")
 
 
 def test_list_connections_returns_views_with_guidance(

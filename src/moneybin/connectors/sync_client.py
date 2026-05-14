@@ -84,7 +84,7 @@ class SyncClient:
             keyring.set_password(_KEYRING_SERVICE, _KEYRING_REFRESH_KEY, refresh_token)
         except KeyringError as e:
             logger.warning(f"Keyring unavailable ({e}); falling back to file storage.")
-            self._write_token_file(access_token, refresh_token, fallback_path=True)
+            self._write_token_file(access_token, refresh_token)
 
     def _read_token(self) -> str | None:
         if self._token_path is not None:
@@ -92,7 +92,7 @@ class SyncClient:
         try:
             return keyring.get_password(_KEYRING_SERVICE, _KEYRING_JWT_KEY)
         except KeyringError:
-            return self._read_token_file(fallback_path=True).get("jwt")
+            return self._read_token_file().get("jwt")
 
     def _read_refresh_token(self) -> str | None:
         if self._token_path is not None:
@@ -100,7 +100,7 @@ class SyncClient:
         try:
             return keyring.get_password(_KEYRING_SERVICE, _KEYRING_REFRESH_KEY)
         except KeyringError:
-            return self._read_token_file(fallback_path=True).get("refresh_token")
+            return self._read_token_file().get("refresh_token")
 
     def logout(self) -> None:
         """Remove stored tokens from keychain (or fallback file)."""
@@ -127,17 +127,15 @@ class SyncClient:
         self,
         access_token: str,
         refresh_token: str,
-        *,
-        fallback_path: bool = False,
     ) -> None:
-        path = self._effective_token_path(fallback_path)
+        path = self._effective_token_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps({"jwt": access_token, "refresh_token": refresh_token})
         path.write_text(payload)
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
 
-    def _read_token_file(self, *, fallback_path: bool = False) -> dict[str, str]:
-        path = self._effective_token_path(fallback_path)
+    def _read_token_file(self) -> dict[str, str]:
+        path = self._effective_token_path()
         if not path.exists():
             return {}
         try:
@@ -145,7 +143,7 @@ class SyncClient:
         except json.JSONDecodeError:
             return {}
 
-    def _effective_token_path(self, fallback_path: bool) -> Path:  # noqa: ARG002
+    def _effective_token_path(self) -> Path:
         if self._token_path is not None:
             return self._token_path
         return Path.home() / ".moneybin" / ".sync_token"
@@ -237,6 +235,14 @@ class SyncClient:
                 headers=headers,
                 timeout=timeout,
             )
+            if resp.status_code == 401:
+                # Refresh succeeded but the retry still 401'd — token store drift,
+                # server-side revocation, or the refresh issued a token the resource
+                # server rejects. Treat as auth (run sync login), not generic API.
+                self._clear_tokens()
+                raise SyncAuthError(
+                    "session expired after refresh — run `moneybin sync login`"
+                )
         if resp.status_code >= 400:
             raise SyncAPIError(
                 f"{method} {path} returned {resp.status_code}: {resp.text[:200]}"

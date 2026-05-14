@@ -12,9 +12,12 @@ State source: server. No local connection-state mirror. See design Section 4.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_models import (
+    ConnectedInstitution,
+    ConnectInitiateResponse,
     ConnectResult,
     PullResult,
     SyncConnectionView,
@@ -70,6 +73,14 @@ class SyncService:
             provider_item_id=provider_item_id,
             reset_cursor=force,
         )
+        if trigger_resp.status != "completed":
+            # Server contract: /sync/trigger is synchronous and must return a terminal
+            # status. pending/running here means the server returned before the sync
+            # finished — proceeding to get_data would silently load nothing.
+            raise RuntimeError(
+                f"sync trigger returned non-terminal status '{trigger_resp.status}' "
+                f"for job_id={trigger_resp.job_id}; expected 'completed'"
+            )
         sync_data = self.client.get_data(trigger_resp.job_id)
         removed_count = self.loader.handle_removed_transactions(
             sync_data.removed_transactions,
@@ -92,15 +103,28 @@ class SyncService:
         institution: str | None = None,
         auto_pull: bool = True,
         return_to: str | None = None,
+        on_initiate: Callable[[ConnectInitiateResponse], None] | None = None,
     ) -> ConnectResult:
         """Connect new institution OR re-authenticate existing one.
 
-        When `institution` is provided, resolve to provider_item_id and trigger
-        Plaid update mode. When omitted, create a new connection.
+        When `institution` matches an existing connection, runs Plaid update mode
+        against that item. When it matches none, falls through to a new-connection
+        request (per design Section 8); the server's Link flow handles naming.
+        Ambiguous matches (same name on multiple connections) raise.
+
+        `on_initiate` is invoked synchronously with the ConnectInitiateResponse before
+        the service starts polling. The CLI uses this hook to display `link_url`
+        and optionally open the user's browser. Without it, the service blocks on
+        polling without surfacing the URL — only safe for callers that surface it
+        themselves (MCP returns the URL in its envelope and never enters this path).
         """
-        provider_item_id = (
-            self._resolve_institution(institution) if institution else None
-        )
+        provider_item_id: str | None = None
+        if institution:
+            inst = self._find_institution(institution)
+            if inst is not None:
+                provider_item_id = inst.provider_item_id
+            # else: institution name doesn't match any existing connection;
+            # fall through to new-connection request per design Section 8.
         initiate = self.client.initiate_connect(
             provider_item_id=provider_item_id,
             return_to=return_to,
@@ -109,8 +133,8 @@ class SyncService:
             raise NotImplementedError(
                 f"connect_type '{initiate.connect_type}' is not supported in this version"
             )
-        # The CLI/MCP layer is responsible for surfacing initiate.link_url
-        # to the user. The service blocks on polling.
+        if on_initiate is not None:
+            on_initiate(initiate)
         status = self.client.poll_connect_status(initiate.session_id)
         pull_result: PullResult | None = None
         if auto_pull:
@@ -147,43 +171,64 @@ class SyncService:
 
     def disconnect(self, *, institution: str) -> None:
         """Resolve institution name to connection id and call client.disconnect()."""
-        institutions = self.client.list_institutions()
-        for inst in institutions:
-            if (
-                inst.institution_name
-                and inst.institution_name.lower() == institution.lower()
-            ):
-                self.client.disconnect(inst.id)
-                return
-        raise ValueError(
-            f"no connected institution matching '{institution}' — "
-            f"run `moneybin sync status` to list connected banks"
-        )
+        inst = self._find_institution(institution)
+        if inst is None:
+            raise ValueError(
+                f"no connected institution matching '{institution}' — "
+                f"run `moneybin sync status` to list connected banks"
+            )
+        self.client.disconnect(inst.id)
 
     def _guidance_for(self, *, status: str, institution: str) -> str | None:
+        # Phase 1: ConnectedInstitution doesn't carry per-institution error_code,
+        # so we can't map to the specific entry in _ERROR_GUIDANCE. Use a generic
+        # message that doesn't lie about the root cause (e.g., claiming
+        # ITEM_LOGIN_REQUIRED when the actual error is INSTITUTION_DOWN).
         if status == "active":
             return None
         if status == "error":
-            return _ERROR_GUIDANCE.get(
-                "ITEM_LOGIN_REQUIRED",  # Phase 1: we don't track per-institution error_code
-                "Connection error",
-            ).format(institution=institution)
+            return (
+                f"{institution} needs attention. "
+                f"Run `moneybin sync connect --institution {institution}` "
+                f"to inspect and re-authenticate if needed."
+            )
         if status == "revoked":
             return _ERROR_GUIDANCE["ITEM_NOT_FOUND"].format(institution=institution)
         return None
 
     # ------------------------------ Helpers ------------------------------
 
+    def _find_institution(self, name: str) -> ConnectedInstitution | None:
+        """Look up a connected institution by case-insensitive name match.
+
+        Returns None when no connection matches (caller decides what to do).
+        Raises ValueError when multiple connections share the name — the name is
+        ambiguous and must be disambiguated by the caller before any action runs.
+        """
+        institutions = self.client.list_institutions()
+        matches = [
+            inst
+            for inst in institutions
+            if inst.institution_name and inst.institution_name.lower() == name.lower()
+        ]
+        if len(matches) > 1:
+            ids = ", ".join(m.provider_item_id for m in matches)
+            raise ValueError(
+                f"multiple connected institutions match '{name}' ({ids}). "
+                f"Run `moneybin sync status` to identify them; disambiguate "
+                f"via the matching server-side connection id."
+            )
+        return matches[0] if matches else None
+
     def _resolve_institution(self, name: str) -> str:
         """Map a human-readable institution name to its provider_item_id.
 
-        Reads from GET /institutions — server is the system of record.
+        Strict — raises if no connection matches. Reads from GET /institutions.
         """
-        institutions = self.client.list_institutions()
-        for inst in institutions:
-            if inst.institution_name and inst.institution_name.lower() == name.lower():
-                return inst.provider_item_id
-        raise ValueError(
-            f"no connected institution matching '{name}' — "
-            f"run `moneybin sync status` to list connected banks"
-        )
+        inst = self._find_institution(name)
+        if inst is None:
+            raise ValueError(
+                f"no connected institution matching '{name}' — "
+                f"run `moneybin sync status` to list connected banks"
+            )
+        return inst.provider_item_id
