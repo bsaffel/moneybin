@@ -1,6 +1,6 @@
 # Sync — Overview
 
-> Last updated: 2026-05-13
+> Last updated: 2026-05-14
 > Status: Ready — umbrella doc for the sync initiative. Phase 1 implementation underway in [`sync-plaid.md`](sync-plaid.md); Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`mcp-tool-surface.md`](mcp-tool-surface.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-server HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
@@ -580,6 +580,46 @@ Add `{provider}_transactions` CTE in `fct_transactions.sql`, `{provider}_account
 - `app.sync_connections` — `provider` column discriminates; schema is shared
 - `EncryptionBackend` — encryption is at the transport layer, not the provider layer
 
+### Cross-provider response shape (open design question)
+
+Two architectural decisions intersect when a second provider lands. The artifact-level decision is already made in the "Provider contract" section above: per-provider raw tables, per-provider loaders, per-provider staging views. The **HTTP-layer decision** — what shape the server returns to the client — is currently implicit, and the answer Phase 1 baked in deserves a deliberate revisit before provider #2 ships.
+
+**What's in the code today.**
+
+The client's response models in `src/moneybin/connectors/sync_models.py` are named `Sync*` (`SyncDataResponse`, `SyncTransaction`, `SyncAccount`, `SyncBalance`, `SyncMetadata`) but the field semantics are Plaid's:
+
+| Field | Plaid-specific assumption |
+|---|---|
+| `SyncTransaction.amount` | positive = expense (Plaid convention). The MoneyBin sign flip lives in `prep.stg_plaid__transactions`, NOT in the loader or model. |
+| `SyncTransaction.category` | single flat string. We're collapsing Plaid's `personal_finance_category.primary` + `.detailed` somewhere in the server pipeline. |
+| `SyncTransaction.merchant_name` | populated by Plaid's merchant enrichment. SimpleFIN doesn't send this; OFX/MX use different sources. |
+| `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN doesn't surface pending. |
+| `SyncMetadata.institutions[].provider_item_id` | one item per institution per response — matches Plaid's item model. |
+
+The names suggest provider-agnostic; the contents don't.
+
+**Two paths when provider #2 lands.**
+
+**Option A — Server normalizes per-provider data to a canonical client shape.** The server speaks Plaid/SimpleFIN/MX/etc. internally and produces a single normalized stream. The sign flip, category flattening, and pending semantics all move server-side. `SyncDataResponse` becomes the genuinely-shared contract its name suggests.
+
+- Pros: client stays one code path; one loader, one set of staging views; future providers are pure server-side work.
+- Cons: lossy when a provider exposes data the canonical shape doesn't capture; server team carries the per-provider transformation debt; the per-provider `raw.{provider}_*` artifact convention in the section above would collapse to `raw.sync_*` with a `provider` discriminator column — which contradicts the established OFX/tabular pattern.
+
+**Option B — Server passes provider-shaped data through; client normalizes per provider.** `SyncDataResponse` becomes a tagged union (or splits into `PlaidSyncResponse`, `SimpleFINSyncResponse`, etc.). Each loader (`PlaidLoader`, `SimpleFINLoader`) reads its variant and writes to its own `raw.{provider}_*` tables. Per-provider staging views apply the right sign/category/pending semantics. Core models `UNION ALL` from each as today.
+
+- Pros: matches the per-provider artifact pattern already in this spec and already in OFX/tabular; lossless preservation; new providers don't require server-side normalization work.
+- Cons: client carries more per-provider code; the `Sync*` model names become misleading and need renaming.
+
+**The two paths are currently inconsistent.**
+
+The artifact-level convention this spec defines (per-provider raw tables, loaders, staging views) is **Option B**. The HTTP-layer model names (`Sync*` in `sync_models.py`) suggest **Option A**. Phase 1 worked because there's only one provider — the inconsistency doesn't bite. Provider #2 will force the call.
+
+**Recommendation.**
+
+Commit to **Option B** at provider #2's design spec, and rename the Pydantic models in `sync_models.py` from `Sync*` to `PlaidSync*` (preserving a shared envelope at whatever level survives, or splitting fully — to be decided when the second provider's response shape is concrete). This keeps the architecture honest, matches OFX/tabular, and avoids pushing per-provider semantics onto a server team that may not own categorization or sign conventions for every aggregator.
+
+The rename is cheap now (one provider, no external API consumers) but should land in the same PR that introduces provider #2's `*_models.py`, so the boundary becomes explicit at the moment it starts mattering. Until then, the `Sync*` naming is a Phase 1 simplification we live with — documented here so future work doesn't mistake it for a settled abstraction.
+
 ### `source_type` and `source_origin`
 
 Per `.claude/rules/database.md` column name consistency rules:
@@ -735,4 +775,5 @@ Not designed here. Architectural constraints noted so the current design does no
 - **Connection token flow.** The exact polling mechanism for Phase 2 (connect) depends on the server's implementation of the provider callback. The spec defines the contract (client polls, server confirms) but the endpoint name and response shape are TBD in `api-contract.md`.
 - **Schedule persistence across upgrades.** If MoneyBin is upgraded and the schedule mechanism changes (e.g., cron → systemd timer), should `moneybin sync schedule set` detect and migrate the old schedule?
 - **Multi-provider institution.** If the same bank is connectable through both Plaid and SimpleFIN, how does the client prevent duplicate data? Likely a matching-engine concern (same institution, different `source_type`), but worth noting.
+- **Cross-provider response shape.** Whether the server normalizes per-provider payloads into a canonical client shape (Option A) or passes provider-shaped data through (Option B). Phase 1 baked in Option B at the artifact layer (`raw.plaid_*`, `stg_plaid__*`) but named the HTTP-layer models as if they were Option A (`SyncTransaction`, `SyncDataResponse`). See "Cross-provider response shape" under "Data flow & provider contract" — must be reconciled before provider #2 ships.
 - **Rate limiting.** Should the client enforce any rate limiting on `sync pull` calls, or is this purely a server-side concern?
