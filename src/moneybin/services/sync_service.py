@@ -14,7 +14,11 @@ from __future__ import annotations
 import logging
 
 from moneybin.connectors.sync_client import SyncClient
-from moneybin.connectors.sync_models import ConnectResult, PullResult
+from moneybin.connectors.sync_models import (
+    ConnectResult,
+    PullResult,
+    SyncConnectionView,
+)
 from moneybin.database import Database
 from moneybin.loaders.plaid_loader import PlaidLoader
 
@@ -119,6 +123,54 @@ class SyncService:
             institution_name=status.institution_name,
             pull_result=pull_result,
         )
+
+    # ------------------------------ Status and disconnect ------------------------------
+
+    def list_connections(self) -> list[SyncConnectionView]:
+        """Return enriched connection views with user-facing guidance for non-active statuses."""
+        institutions = self.client.list_institutions()
+        return [
+            SyncConnectionView(
+                id=i.id,
+                provider_item_id=i.provider_item_id,
+                institution_name=i.institution_name,
+                provider=i.provider,
+                status=i.status,
+                last_sync=i.last_sync,
+                guidance=self._guidance_for(
+                    status=i.status,
+                    institution=i.institution_name or "this connection",
+                ),
+            )
+            for i in institutions
+        ]
+
+    def disconnect(self, *, institution: str) -> None:
+        """Resolve institution name to connection id and call client.disconnect()."""
+        institutions = self.client.list_institutions()
+        for inst in institutions:
+            if (
+                inst.institution_name
+                and inst.institution_name.lower() == institution.lower()
+            ):
+                self.client.disconnect(inst.id)
+                return
+        raise ValueError(
+            f"no connected institution matching '{institution}' — "
+            f"run `moneybin sync status` to list connected banks"
+        )
+
+    def _guidance_for(self, *, status: str, institution: str) -> str | None:
+        if status == "active":
+            return None
+        if status == "error":
+            return _ERROR_GUIDANCE.get(
+                "ITEM_LOGIN_REQUIRED",  # Phase 1: we don't track per-institution error_code
+                "Connection error",
+            ).format(institution=institution)
+        if status == "revoked":
+            return _ERROR_GUIDANCE["ITEM_NOT_FOUND"].format(institution=institution)
+        return None
 
     # ------------------------------ Helpers ------------------------------
 

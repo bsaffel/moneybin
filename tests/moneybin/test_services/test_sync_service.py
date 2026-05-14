@@ -218,3 +218,62 @@ def test_connect_re_auth_resolves_institution_name(
         provider_item_id="item_existing",
         return_to=None,
     )
+
+
+def test_list_connections_returns_views_with_guidance(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    mock_client.list_institutions.return_value = [
+        ConnectedInstitution(
+            id="u1",
+            provider_item_id="item_a",
+            provider="plaid",
+            institution_name="Chase",
+            status="active",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+        ConnectedInstitution(
+            id="u2",
+            provider_item_id="item_b",
+            provider="plaid",
+            institution_name="Schwab",
+            status="error",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+    ]
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    views = service.list_connections()
+    assert len(views) == 2
+    chase = next(v for v in views if v.institution_name == "Chase")
+    schwab = next(v for v in views if v.institution_name == "Schwab")
+    assert chase.guidance is None
+    assert schwab.guidance is not None
+    assert "Schwab" in schwab.guidance
+    assert "sync connect" in schwab.guidance
+
+
+def test_disconnect_resolves_institution_and_calls_client(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    mock_client.list_institutions.return_value = [
+        ConnectedInstitution(
+            id="conn_uuid",
+            provider_item_id="item_a",
+            provider="plaid",
+            institution_name="Chase",
+            status="active",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+    ]
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.disconnect(institution="Chase")
+    mock_client.disconnect.assert_called_once_with("conn_uuid")
+
+
+def test_disconnect_unknown_institution_raises(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    mock_client.list_institutions.return_value = []
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(ValueError, match="no connected institution"):
+        service.disconnect(institution="UnknownBank")
