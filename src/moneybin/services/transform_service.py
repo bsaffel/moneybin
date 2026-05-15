@@ -53,6 +53,34 @@ class ApplyResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class TransformPlan:
+    """Preview of pending SQLMesh changes."""
+
+    has_changes: bool
+    directly_modified: list[str]
+    indirectly_modified: list[str]
+    added: list[str]
+    removed: list[str]
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Outcome of a parse/resolve check across all models."""
+
+    valid: bool
+    errors: list[dict[str, str]]
+
+
+@dataclass(frozen=True)
+class AuditResult:
+    """Outcome of running SQLMesh audits over a date window."""
+
+    passed: int
+    failed: int
+    audits: list[dict[str, str | None]]
+
+
 class TransformService:
     """SQLMesh interaction layer.
 
@@ -166,6 +194,97 @@ class TransformService:
             pending=freshness.pending,
             latest_import_at=freshness.latest_import_at,
         )
+
+    def plan(self) -> TransformPlan:
+        """Preview pending SQLMesh changes without applying.
+
+        Reads ``Plan.directly_modified`` (Set[SnapshotId]),
+        ``Plan.indirectly_modified`` (Dict[SnapshotId, Set[SnapshotId]]),
+        ``Plan.new_snapshots`` (List[Snapshot]), and removed snapshots from
+        ``context_diff.removed_snapshots`` (Dict[SnapshotId, ...]). All keys
+        carry a ``.name`` attribute.
+        """
+        with sqlmesh_context(self._db) as ctx:
+            sqlmesh_plan = ctx.plan_builder().build()
+            directly = sorted(s.name for s in sqlmesh_plan.directly_modified)
+            indirectly = sorted({
+                s.name
+                for s_set in sqlmesh_plan.indirectly_modified.values()
+                for s in s_set
+            })
+            added = sorted(s.name for s in sqlmesh_plan.new_snapshots)
+            removed = sorted(
+                s.name for s in sqlmesh_plan.context_diff.removed_snapshots
+            )
+        has_changes = bool(directly or indirectly or added or removed)
+        return TransformPlan(
+            has_changes=has_changes,
+            directly_modified=directly,
+            indirectly_modified=indirectly,
+            added=added,
+            removed=removed,
+        )
+
+    def validate(self) -> ValidationResult:
+        """Parse + resolve all models. Reports errors without applying."""
+        errors: list[dict[str, str]] = []
+        try:
+            with sqlmesh_context(self._db) as ctx:
+                ctx.plan_builder().build()
+        except Exception as e:  # noqa: BLE001 — SQLMesh raises a variety of parse/resolve errors
+            errors.append({"model": "<unknown>", "message": str(e)})
+        return ValidationResult(valid=not errors, errors=errors)
+
+    def audit(self, start: str, end: str) -> AuditResult:
+        """Run SQLMesh data-quality audits over [start, end] (YYYY-MM-DD).
+
+        ``Context.audit()`` returns only a bool, so we iterate snapshots and
+        call ``ctx.snapshot_evaluator.audit()`` per snapshot to recover per-
+        audit detail (matches the pattern in
+        ``sqlmesh.core.context.Context.audit``).
+        """
+        audits: list[dict[str, str | None]] = []
+        passed = 0
+        failed = 0
+        try:
+            with sqlmesh_context(self._db) as ctx:
+                for snapshot in ctx.snapshots.values():
+                    for audit_result in ctx.snapshot_evaluator.audit(
+                        snapshot=snapshot,
+                        start=start,
+                        end=end,
+                        snapshots=ctx.snapshots,
+                    ):
+                        name = audit_result.audit.name
+                        if audit_result.skipped:
+                            continue
+                        if audit_result.count:
+                            audits.append({
+                                "name": name,
+                                "status": "failed",
+                                "detail": f"{audit_result.count} row(s) failed",
+                            })
+                            failed += 1
+                        else:
+                            audits.append({
+                                "name": name,
+                                "status": "passed",
+                                "detail": None,
+                            })
+                            passed += 1
+        except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as one failed audit
+            return AuditResult(
+                passed=0,
+                failed=1,
+                audits=[
+                    {
+                        "name": "<audit invocation>",
+                        "status": "failed",
+                        "detail": str(e),
+                    }
+                ],
+            )
+        return AuditResult(passed=passed, failed=failed, audits=audits)
 
     def _max_completed_import_at(self) -> datetime | None:
         try:

@@ -154,17 +154,23 @@ def test_apply_returns_apply_result_shape(
     def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
         yield fake_ctx
 
+    def fake_seed(_db: object, _settings: object) -> None:
+        return None
+
+    def fake_refresh(_db: object) -> None:
+        return None
+
     monkeypatch.setattr(
         "moneybin.services.transform_service.sqlmesh_context",
         fake_sqlmesh_context,
     )
     monkeypatch.setattr(
         "moneybin.services.transform_service.seed_source_priority",
-        lambda _db, _settings: None,
+        fake_seed,
     )
     monkeypatch.setattr(
         "moneybin.services.transform_service.refresh_views",
-        lambda _db: None,
+        fake_refresh,
     )
 
     db = _open_db(tmp_path, mock_secret_store)
@@ -270,3 +276,174 @@ def test_status_initialized_with_finalized_ts(
     assert s.initialized is True
     assert s.last_apply_at is not None
     assert abs((s.last_apply_at - expected_naive).total_seconds()) < 1.0
+
+
+def test_plan_no_changes(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """plan() returns has_changes=False when SQLMesh Plan is empty."""
+    from contextlib import contextmanager
+
+    fake_plan = MagicMock()
+    fake_plan.directly_modified = set()
+    fake_plan.indirectly_modified = {}
+    fake_plan.new_snapshots = []
+    fake_plan.context_diff.removed_snapshots = {}
+
+    fake_ctx = MagicMock()
+    fake_ctx.plan_builder.return_value.build.return_value = fake_plan
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database) -> Generator[MagicMock, None, None]:
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        p = TransformService(db).plan()
+    finally:
+        db.close()
+
+    assert p.has_changes is False
+    assert p.directly_modified == []
+    assert p.indirectly_modified == []
+    assert p.added == []
+    assert p.removed == []
+
+
+def test_plan_lists_changed_models(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """plan() surfaces directly_modified + indirectly_modified snapshot names."""
+    from contextlib import contextmanager
+
+    direct_snap = MagicMock()
+    direct_snap.name = "core.dim_accounts"
+    indirect_snap = MagicMock()
+    indirect_snap.name = "core.fct_transactions"
+
+    fake_plan = MagicMock()
+    fake_plan.directly_modified = {direct_snap}
+    # indirectly_modified is Dict[SnapshotId, Set[SnapshotId]]; we only read values.
+    fake_plan.indirectly_modified = {direct_snap: {indirect_snap}}
+    fake_plan.new_snapshots = []
+    fake_plan.context_diff.removed_snapshots = {}
+
+    fake_ctx = MagicMock()
+    fake_ctx.plan_builder.return_value.build.return_value = fake_plan
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database) -> Generator[MagicMock, None, None]:
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        p = TransformService(db).plan()
+    finally:
+        db.close()
+
+    assert p.has_changes is True
+    assert p.directly_modified == ["core.dim_accounts"]
+    assert p.indirectly_modified == ["core.fct_transactions"]
+
+
+def test_validate_passes_when_plan_builds(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """validate() returns valid=True when SQLMesh builds the plan without raising."""
+    from contextlib import contextmanager
+
+    fake_ctx = MagicMock()
+    fake_ctx.plan_builder.return_value.build.return_value = MagicMock()
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database) -> Generator[MagicMock, None, None]:
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        v = TransformService(db).validate()
+    finally:
+        db.close()
+
+    assert v.valid is True
+    assert v.errors == []
+
+
+def test_validate_reports_errors_on_raise(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """validate() returns valid=False with error detail when SQLMesh raises."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database) -> Generator[None, None, None]:
+        raise RuntimeError("model parse error")
+        yield  # unreachable; satisfies the contextmanager generator contract
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        v = TransformService(db).validate()
+    finally:
+        db.close()
+
+    assert v.valid is False
+    assert len(v.errors) == 1
+    assert "model parse error" in v.errors[0]["message"]
+
+
+def test_audit_aggregates_pass_fail_counts(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """audit() derives passed/failed counts from per-snapshot audit results."""
+    from contextlib import contextmanager
+
+    good = MagicMock()
+    good.audit.name = "fct_transactions_pk"
+    good.skipped = False
+    good.count = 0
+
+    bad = MagicMock()
+    bad.audit.name = "fct_transactions_fk"
+    bad.skipped = False
+    bad.count = 3
+
+    fake_snapshot = MagicMock()
+    fake_ctx = MagicMock()
+    fake_ctx.snapshots = {"s1": fake_snapshot}
+    fake_ctx.snapshot_evaluator.audit.return_value = [good, bad]
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database) -> Generator[MagicMock, None, None]:
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        result = TransformService(db).audit(start="2026-01-01", end="2026-12-31")
+    finally:
+        db.close()
+
+    assert result.passed == 1
+    assert result.failed == 1
+    names = [a["name"] for a in result.audits]
+    assert "fct_transactions_pk" in names
+    assert "fct_transactions_fk" in names
