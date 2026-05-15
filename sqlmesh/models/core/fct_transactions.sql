@@ -146,10 +146,10 @@ SELECT
   loaded_at, /* When this record was last written */
   GREATEST(
     loaded_at,
-    COALESCE(categorized_at, loaded_at),
-    COALESCE(notes_latest, loaded_at),
-    COALESCE(tags_latest, loaded_at),
-    COALESCE(splits_latest, loaded_at)
+    categorized_at,
+    notes_latest,
+    tags_latest,
+    splits_latest
   ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, or categorization. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
   transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */

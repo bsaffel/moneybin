@@ -27,7 +27,7 @@ def get_model_freshness(db: Database, model_name: str) -> ModelFreshness | None:
     been materialized (no row in sqlmesh._snapshots).
     """
     row = db.execute(
-        "SELECT model_name, last_changed_at, last_applied_at "
+        "SELECT last_changed_at, last_applied_at "
         "FROM meta.model_freshness "
         "WHERE model_name = ?",
         [model_name],
@@ -35,7 +35,7 @@ def get_model_freshness(db: Database, model_name: str) -> ModelFreshness | None:
     if row is None:
         return None
     return ModelFreshness(
-        model_name=row[0],
-        last_changed_at=row[1],
-        last_applied_at=row[2],
+        model_name=model_name,
+        last_changed_at=row[0],
+        last_applied_at=row[1],
     )

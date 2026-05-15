@@ -7,25 +7,32 @@ MODEL (
   kind VIEW
 );
 
-WITH latest_per_name AS (
+WITH snapshots AS (
   SELECT
     -- `name` in sqlmesh._snapshots is a quoted three-part FQN like
     -- "moneybin"."core"."dim_accounts". Strip the quotes, then strip the
     -- leading catalog component, leaving 'schema.entity' for the public
     -- contract. `updated_ts` is BIGINT milliseconds since epoch.
     regexp_replace(REPLACE(name, '"', ''), '^[^.]+\.', '') AS model_name,
-    MAX(updated_ts) AS last_applied_ms
+    version,
+    updated_ts
   FROM sqlmesh._snapshots
-  GROUP BY name
+),
+latest_per_name AS (
+  SELECT
+    model_name,
+    MAX(updated_ts) AS last_applied_ms
+  FROM snapshots
+  GROUP BY model_name
 ),
 latest_version_per_name AS (
   SELECT
-    regexp_replace(REPLACE(name, '"', ''), '^[^.]+\.', '') AS model_name,
+    model_name,
     version,
     MIN(updated_ts) AS version_first_seen_ms,
     MAX(updated_ts) AS version_last_touched_ms
-  FROM sqlmesh._snapshots
-  GROUP BY name, version
+  FROM snapshots
+  GROUP BY model_name, version
 ),
 current_version_per_name AS (
   SELECT model_name, version, version_first_seen_ms
