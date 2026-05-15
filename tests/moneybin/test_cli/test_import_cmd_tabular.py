@@ -99,16 +99,16 @@ class TestImportFileValidation:
         assert result.exit_code == 1
 
     def test_invalid_sign_convention_exits_with_error(self, tmp_path: Path) -> None:
-        """An unrecognised --sign value exits with code 1."""
+        """An unrecognised --sign value exits with code 2 (Typer usage error)."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("a,b,c\n1,2,3\n")
 
         result = runner.invoke(app, ["file", str(csv_file), "--sign", "invalid_sign"])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
 
     def test_invalid_number_format_exits_with_error(self, tmp_path: Path) -> None:
-        """An unrecognised --number-format value exits with code 1."""
+        """An unrecognised --number-format value exits with code 2 (Typer usage error)."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("a,b,c\n1,2,3\n")
 
@@ -116,7 +116,7 @@ class TestImportFileValidation:
             app, ["file", str(csv_file), "--number-format", "badformat"]
         )
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
 
     def test_invalid_override_format_exits_with_error(self, tmp_path: Path) -> None:
         """An --override value without '=' exits with code 1."""

@@ -284,7 +284,8 @@ def sync_status(
         "--json-fields",
         help=(
             "Comma-separated field projection (json output only). Available: "
-            "id, provider_item_id, institution_name, provider, status, last_sync, guidance"
+            "id, provider_item_id, institution_name, provider, status, last_sync, "
+            "error_code, guidance"
         ),
     ),
 ) -> None:
@@ -308,6 +309,8 @@ def sync_status(
         last = c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"
         line = f"{c.institution_name} — status: {c.status}, last sync: {last}"
         typer.echo(line)
+        if c.error_code:
+            typer.echo(f"   ⚠️  error: {c.error_code}")
         if c.guidance:
             typer.echo(f"   💡 {c.guidance}")
 

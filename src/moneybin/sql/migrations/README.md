@@ -47,6 +47,16 @@ Migrations may alter:
 Migrations must NOT alter (owned by SQLMesh):
 - `core.*`, `prep.*`, `analytics.*`
 
+## New Tables
+
+**New tables go in `src/moneybin/sql/schema/` only.** Schema files use
+`CREATE TABLE IF NOT EXISTS` and run on every app startup via `init_schemas`,
+so they handle fresh installs and upgrades alike.
+
+Migrations are for ALTERs, backfills, drops, renames, and any non-idempotent
+change to existing data — not for creating tables that `init_schemas` already
+creates.
+
 ## When to Use SQL vs Python
 
 | SQL | Python |

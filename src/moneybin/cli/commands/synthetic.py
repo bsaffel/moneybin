@@ -133,6 +133,7 @@ def _run_generate(
                     try:
                         ImportService(db).run_transforms()
                     except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
+                        logger.debug("SQLMesh transform failed", exc_info=True)
                         logger.warning(
                             "⚠️  SQLMesh transforms failed — raw data is intact, "
                             "run 'moneybin transform apply' manually"
