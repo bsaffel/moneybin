@@ -140,3 +140,65 @@ def test_freshness_counts_partial_imports(freshness_db: Database) -> None:
     f = TransformService(freshness_db).freshness()
     assert f.pending is True
     assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
+
+
+def test_apply_returns_apply_result_shape(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply() returns ApplyResult(applied=True, duration_seconds>=0) on success."""
+    from contextlib import contextmanager
+
+    fake_ctx = MagicMock()
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.seed_source_priority",
+        lambda _db, _settings: None,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.refresh_views",
+        lambda _db: None,
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        result = TransformService(db).apply()
+    finally:
+        db.close()
+
+    assert result.applied is True
+    assert result.duration_seconds >= 0
+    assert result.error is None
+    fake_ctx.plan.assert_called_once_with(auto_apply=True, no_prompts=True)
+
+
+def test_import_service_run_transforms_delegates_to_transform_service(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ImportService.run_transforms() delegates to TransformService.apply()."""
+    from moneybin.services.import_service import ImportService
+    from moneybin.services.transform_service import ApplyResult
+
+    calls: list[str] = []
+
+    def fake_apply(self: TransformService) -> ApplyResult:
+        calls.append("apply")
+        return ApplyResult(applied=True, duration_seconds=0.0)
+
+    monkeypatch.setattr(TransformService, "apply", fake_apply)
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        result = ImportService(db).run_transforms()
+    finally:
+        db.close()
+
+    assert result is True
+    assert calls == ["apply"]

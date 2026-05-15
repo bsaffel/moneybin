@@ -8,12 +8,17 @@ path cheap and side-effect free.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
 import duckdb
 
-from moneybin.database import Database
+from moneybin.config import get_settings
+from moneybin.database import Database, sqlmesh_context
+from moneybin.matching.priority import seed_source_priority
+from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
+from moneybin.seeds import refresh_views
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -28,6 +33,15 @@ class TransformFreshness:
     latest_import_at: datetime | None
 
 
+@dataclass(frozen=True)
+class ApplyResult:
+    """Outcome of a transform apply."""
+
+    applied: bool
+    duration_seconds: float
+    error: str | None = None
+
+
 class TransformService:
     """SQLMesh interaction layer.
 
@@ -40,6 +54,35 @@ class TransformService:
     def __init__(self, db: Database) -> None:
         """Bind to an open Database connection."""
         self._db = db
+
+    def apply(self) -> ApplyResult:
+        """Apply pending SQLMesh changes.
+
+        Seeds ``app.seed_source_priority`` before running so
+        ``int_transactions__merged`` can resolve per-field winners. Without
+        this, the LEFT JOIN onto ``seed_source_priority`` produces NULL
+        priorities for every row, causing ARG_MIN(value, NULL_key) to drop
+        non-NULL values for fields that key on a CASE-with-NULL-fallthrough
+        pattern (description, memo, etc.). Callers that go straight to
+        transforms would otherwise materialize NULL descriptions in
+        core.fct_transactions.
+        """
+        logger.info("Running SQLMesh transforms")
+        seed_source_priority(self._db, get_settings().matching)
+
+        t0 = time.monotonic()
+        try:
+            with sqlmesh_context(self._db) as ctx:
+                ctx.plan(auto_apply=True, no_prompts=True)
+            # Full plan rebuilds seeds.* too, so refresh the views that read them.
+            refresh_views(self._db)
+            elapsed = time.monotonic() - t0
+            logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
+            return ApplyResult(applied=True, duration_seconds=elapsed)
+        finally:
+            SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_apply").observe(
+                time.monotonic() - t0
+            )
 
     def freshness(self) -> TransformFreshness:
         """Return raw-vs-dim staleness without initializing SQLMesh.

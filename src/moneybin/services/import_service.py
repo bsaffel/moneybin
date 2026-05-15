@@ -16,7 +16,7 @@ from typing import Any, Literal, cast
 
 import duckdb
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import Database
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -25,7 +25,6 @@ from moneybin.metrics.registry import (
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
     IMPORT_RECORDS_TOTAL,
-    SQLMESH_RUN_DURATION_SECONDS,
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
@@ -357,45 +356,15 @@ class ImportService:
         return slugify(account_name)
 
     def run_transforms(self) -> bool:
-        """Run SQLMesh transforms to rebuild core tables.
+        """Apply SQLMesh transforms via :class:`TransformService`.
 
-        Uses ``sqlmesh_context(self._db)`` to inject the caller-supplied
-        encrypted connection into SQLMesh's adapter cache. Typical caller
-        pattern: ``with get_database() as db: ImportService(db).run_transforms()``.
-
-        Seeds ``app.seed_source_priority`` from config before running so
-        ``int_transactions__merged`` can resolve per-field winners. Without
-        this, the LEFT JOIN onto ``seed_source_priority`` produces NULL
-        priorities for every row, causing ARG_MIN(value, NULL_key) to drop
-        non-NULL values for fields that key on a CASE-with-NULL-fallthrough
-        pattern (description, memo, etc.). Callers that go straight to
-        transforms (``transform apply``, synthetic generation) would
-        otherwise materialize NULL descriptions in core.fct_transactions.
-
-        Returns:
-            True if transforms ran successfully.
+        Transitional shim: callers will move to ``TransformService.apply()``
+        directly in a later phase. Returns ``True`` on success for API parity
+        with the original method.
         """
-        from moneybin.config import get_settings
-        from moneybin.matching.priority import seed_source_priority
-        from moneybin.seeds import refresh_views
+        from moneybin.services.transform_service import TransformService
 
-        logger.info("Running SQLMesh transforms")
-
-        seed_source_priority(self._db, get_settings().matching)
-
-        t0 = time.monotonic()
-        try:
-            with sqlmesh_context(self._db) as ctx:
-                ctx.plan(auto_apply=True, no_prompts=True)
-            # Full plan rebuilds seeds.* too, so refresh the views that read them.
-            refresh_views(self._db)
-            elapsed = time.monotonic() - t0
-            logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
-        finally:
-            SQLMESH_RUN_DURATION_SECONDS.labels(model="import_plan_apply").observe(
-                time.monotonic() - t0
-            )
-        return True
+        return TransformService(self._db).apply().applied
 
     def _import_ofx(
         self,
