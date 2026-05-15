@@ -1,8 +1,9 @@
-"""End-to-end: editing a user category bumps dim_categories.updated_at for that
-row only; unrelated rows are unaffected.
+"""End-to-end test of the per-row updated_at convention.
 
-Validates the core convention from docs/specs/core-updated-at-convention.md
-across the full SQLMesh pipeline."""
+Editing a user category bumps dim_categories.updated_at for that row only;
+unrelated rows are unaffected. Validates the core convention from
+docs/specs/core-updated-at-convention.md across the full SQLMesh pipeline.
+"""
 
 from __future__ import annotations
 

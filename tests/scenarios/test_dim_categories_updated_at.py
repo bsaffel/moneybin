@@ -80,9 +80,12 @@ def test_user_category_has_non_null_updated_at() -> None:
 @pytest.mark.scenarios
 @pytest.mark.slow
 def test_overridden_seed_category_carries_override_updated_at() -> None:
-    """A default category with a row in app.category_overrides exposes the
+    """Verify seed+override branch carries the override timestamp.
+
+    A default category with a row in app.category_overrides exposes the
     override's updated_at on dim_categories — covering the seed+override
-    branch of the per-row freshness formula."""
+    branch of the per-row freshness formula.
+    """
     scenario = load_shipped_scenario("idempotency-rerun")
     assert scenario is not None
 
