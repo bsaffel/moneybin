@@ -181,9 +181,7 @@ def import_files_command(
     encoding: str | None = typer.Option(
         None,
         "--encoding",
-        help=(
-            "Explicit file encoding (e.g. utf-8, latin-1). Single-file mode only."
-        ),
+        help=("Explicit file encoding (e.g. utf-8, latin-1). Single-file mode only."),
     ),
     no_row_limit: bool = typer.Option(
         False, "--no-row-limit", help="Override row count limit"
@@ -227,6 +225,7 @@ def import_files_command(
         moneybin import files ~/Downloads/2024_W2.pdf --no-apply-transforms
         moneybin import files statement.ofx --output json
     """
+    from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.import_service import ImportService
@@ -339,9 +338,9 @@ def import_files_command(
                     if batch.transforms_error:
                         data["transforms_error"] = batch.transforms_error
 
+        envelope = build_envelope(data=data, sensitivity="low")
         if output == OutputFormat.JSON:
-            envelope = build_envelope(data=data, sensitivity="low")
-            emit_json("import", envelope.to_dict())
+            render_or_json(envelope, output)
             return
 
         if quiet:
@@ -359,9 +358,7 @@ def import_files_command(
             else:
                 logger.info("✅ Core tables rebuilt")
         if data.get("transforms_error"):
-            logger.warning(
-                f"⚠️  Transform apply failed: {data['transforms_error']}"
-            )
+            logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
     except ValueError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e

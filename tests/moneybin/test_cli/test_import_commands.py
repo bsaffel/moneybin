@@ -115,9 +115,7 @@ class TestImportFilesCommand:
         test_file = tmp_path / "test.ofx"
         test_file.touch()
 
-        result = runner.invoke(
-            app, ["files", str(test_file), "--no-apply-transforms"]
-        )
+        result = runner.invoke(app, ["files", str(test_file), "--no-apply-transforms"])
         assert result.exit_code == 0, result.output
         call_kwargs = mock_import_files.call_args.kwargs
         assert call_kwargs["apply_transforms"] is False
@@ -302,7 +300,7 @@ class TestImportFilesCommand:
         test_file.touch()
         result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)["import"]
+        payload = json.loads(result.output)
         assert payload["data"]["imported_count"] == 1
         assert payload["data"]["total_count"] == 1
         assert "files" in payload["data"]
