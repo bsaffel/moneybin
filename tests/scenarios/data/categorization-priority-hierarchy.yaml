@@ -1,0 +1,36 @@
+scenario: categorization-priority-hierarchy
+description: >
+  User-set category must survive the auto-rule/merchant categorization engine.
+  A transaction pre-seeded with categorized_by='user' must remain unchanged
+  after categorize_pending() runs, even when a merchant rule would otherwise
+  assign the same or a different category to matching transactions.
+  Negative expectation: a non-overridden MCDONALDS transaction IS categorized
+  by the merchant rule (proving the engine ran, not that it skipped everything).
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures:
+    - path: categorization-priority-hierarchy.csv
+      account: test-checking
+      source_type: csv
+      categories:
+        - source_transaction_id: USER_OVERRIDE_2024_03_01
+          category: Food & Drink
+          categorized_by: user
+
+pipeline:
+  - load_fixtures
+  - transform
+  - seed_merchants
+  - categorize
+
+# Assertions are in the pytest entry (test_categorization_priority_hierarchy.py)
+# rather than YAML expectations, because category_for_transaction uses the gold
+# transaction_id (SHA-256 hash of source_type|source_transaction_id|account_id)
+# which cannot be expressed as a human-readable YAML literal.
+
+gates:
+  required_assertions: all
+  required_expectations: all

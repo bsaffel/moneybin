@@ -10,6 +10,7 @@ foreign-key target they need.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 
@@ -21,6 +22,7 @@ from moneybin.tables import (
     OFX_TRANSACTIONS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
+    TRANSACTION_CATEGORIES,
 )
 from tests.scenarios._runner.loader import FIXTURES_ROOT, FixtureSpec
 
@@ -49,6 +51,9 @@ def load_fixture_into_db(db: Database, spec: FixtureSpec) -> None:
         raise NotImplementedError(
             f"fixture loader does not support source_type={spec.source_type!r}"
         )
+
+    if spec.categories:
+        _seed_category_overrides(db, spec)
 
 
 def _seed_tabular_account(db: Database, account_id: str, source_file: str) -> None:
@@ -121,3 +126,32 @@ def _enrich_for_ofx_raw(
         pl.lit(source_file).alias("source_file"),
         pl.lit(datetime.now(UTC)).alias("extracted_at"),
     )
+
+
+def _seed_category_overrides(db: Database, spec: FixtureSpec) -> None:
+    """Write FixtureSpec.categories into app.transaction_categories.
+
+    Computes the gold transaction_id (SHA256(source_type|source_transaction_id|account_id)[:16])
+    to match int_transactions__matched.sql — must align with the gold key so the
+    categorize step's LEFT JOIN on transaction_categories actually finds the override.
+
+    Runs after raw rows are loaded but before transform, so the categorize
+    step (which skips rows already present in transaction_categories) sees
+    the override and leaves it untouched.
+    """
+    _upsert_sql = (
+        f"INSERT INTO {TRANSACTION_CATEGORIES.full_name}"  # noqa: S608 — TableRef constant; values parameterized
+        " (transaction_id, category, subcategory, categorized_by)"
+        " VALUES (?, ?, ?, ?)"
+        " ON CONFLICT (transaction_id) DO UPDATE SET"
+        " category = EXCLUDED.category,"
+        " subcategory = EXCLUDED.subcategory,"
+        " categorized_by = EXCLUDED.categorized_by"
+    )
+    for override in spec.categories:
+        raw = f"{spec.source_type}|{override.source_transaction_id}|{spec.account}"
+        gold_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+        db.execute(
+            _upsert_sql,
+            [gold_id, override.category, override.subcategory, override.categorized_by],
+        )
