@@ -41,33 +41,33 @@ class TestClassifyPair:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.95), "2b") == ("accepted", "auto")
+        assert matcher._classify_pair(_make_pair(0.95), "2b") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
 
     def test_high_confidence_returns_accepted_for_3(self) -> None:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.95), "3") == ("accepted", "auto")
+        assert matcher._classify_pair(_make_pair(0.95), "3") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
 
     def test_tier3_above_review_threshold_returns_pending(self) -> None:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.80), "3") == ("pending", "auto")
+        assert matcher._classify_pair(_make_pair(0.80), "3") == ("pending", "auto")  # pyright: ignore[reportPrivateUsage]
 
     def test_tier2b_above_review_threshold_returns_none(self) -> None:
         # Same confidence range as pending case, but tier 2b has no review bucket.
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.80), "2b") is None
+        assert matcher._classify_pair(_make_pair(0.80), "2b") is None  # pyright: ignore[reportPrivateUsage]
 
     def test_below_all_thresholds_returns_none(self) -> None:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
         for tier in ("2b", "3"):
-            result = matcher._classify_pair(_make_pair(0.50), tier)  # type: ignore[arg-type]
+            result = matcher._classify_pair(_make_pair(0.50), tier)  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
             assert result is None, f"Expected None for tier {tier!r}"
 
 
@@ -137,7 +137,7 @@ class TestFetchActiveDedupDecisions:
         assert result.auto_merged >= 1  # the fresh pair was matched
 
         # Now call _fetch_active_dedup_decisions directly and verify both sets.
-        decisions = matcher._fetch_active_dedup_decisions()
+        decisions = matcher._fetch_active_dedup_decisions()  # pyright: ignore[reportPrivateUsage]
 
         # matched_ids must include both sides of all three pairs.
         assert ("csv_pre1", "acct1") in decisions.matched_ids

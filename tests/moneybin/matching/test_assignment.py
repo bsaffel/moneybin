@@ -2,7 +2,10 @@
 
 from decimal import Decimal
 
-from moneybin.matching.assignment import _claim_key, assign_greedy
+from moneybin.matching.assignment import (
+    _claim_key,  # pyright: ignore[reportPrivateUsage]
+    assign_greedy,
+)
 from moneybin.matching.scoring import CandidatePair
 from moneybin.matching.transfer import TransferCandidatePair
 
