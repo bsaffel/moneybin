@@ -16,7 +16,9 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V010__add_updated_at_to_user_tables import migrate
 
 
-def _column_info(db: Database, schema: str, table: str, column: str) -> tuple[str, bool]:
+def _column_info(
+    db: Database, schema: str, table: str, column: str
+) -> tuple[str, bool]:
     """Return (data_type, is_nullable_bool) for a column from duckdb_columns()."""
     row = db.execute(
         """
@@ -71,7 +73,9 @@ class TestV010Migration:
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
-        data_type, is_nullable = _column_info(db, "app", "user_categories", "updated_at")
+        data_type, is_nullable = _column_info(
+            db, "app", "user_categories", "updated_at"
+        )
         assert data_type == "TIMESTAMP"
         assert is_nullable is False
 
@@ -124,7 +128,12 @@ class TestV010Migration:
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
-        for table in ("user_categories", "user_merchants", "category_overrides", "merchant_overrides"):
+        for table in (
+            "user_categories",
+            "user_merchants",
+            "category_overrides",
+            "merchant_overrides",
+        ):
             data_type, is_nullable = _column_info(db, "app", table, "updated_at")
             assert data_type == "TIMESTAMP", f"{table}.updated_at type drift"
             assert is_nullable is False, f"{table}.updated_at nullability drift"
@@ -134,7 +143,12 @@ class TestV010Migration:
         # No _reset call — db comes from init_schemas with the final shape.
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
-        for table in ("user_categories", "user_merchants", "category_overrides", "merchant_overrides"):
+        for table in (
+            "user_categories",
+            "user_merchants",
+            "category_overrides",
+            "merchant_overrides",
+        ):
             data_type, is_nullable = _column_info(db, "app", table, "updated_at")
             assert data_type == "TIMESTAMP"
             assert is_nullable is False
