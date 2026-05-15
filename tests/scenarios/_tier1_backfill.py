@@ -15,7 +15,7 @@ from collections.abc import Set as AbstractSet
 from datetime import date
 
 from moneybin.database import Database
-from moneybin.testing.synthetic.engine import GeneratorEngine
+from moneybin.synthetic.engine import GeneratorEngine
 from moneybin.validation.assertions import (
     assert_amount_precision,
     assert_date_bounds,

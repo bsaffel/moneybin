@@ -4,7 +4,7 @@
 import statistics
 from collections import Counter
 
-from moneybin.testing.synthetic.seed import SeededRandom
+from moneybin.synthetic.seed import SeededRandom
 
 
 class TestSeededRandomDeterminism:

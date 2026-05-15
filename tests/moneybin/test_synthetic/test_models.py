@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.models import (
     AccountConfig,
     AmountDistribution,
     GeneratedTransaction,

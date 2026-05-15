@@ -10,9 +10,9 @@ from collections.abc import Callable
 from moneybin.database import Database, sqlmesh_context
 from moneybin.services.categorization_service import CategorizationService
 from moneybin.services.matching_service import MatchingService
-from moneybin.testing.synthetic.engine import GeneratorEngine
-from moneybin.testing.synthetic.models import load_persona
-from moneybin.testing.synthetic.writer import SyntheticWriter
+from moneybin.synthetic.engine import GeneratorEngine
+from moneybin.synthetic.models import load_persona
+from moneybin.synthetic.writer import SyntheticWriter
 from tests.scenarios._runner.loader import IMPORT_FIXTURES_ROOT, SetupSpec
 from tests.scenarios._runner.seed_merchants import seed_merchants_from_persona
 

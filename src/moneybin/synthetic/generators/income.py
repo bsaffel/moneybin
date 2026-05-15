@@ -6,12 +6,12 @@ import calendar
 from datetime import date, timedelta
 from decimal import Decimal
 
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.models import (
     AmountDistribution,
     GeneratedTransaction,
     IncomeConfig,
 )
-from moneybin.testing.synthetic.seed import SeededRandom
+from moneybin.synthetic.seed import SeededRandom
 
 # calendar.day_name uses Monday=0 convention matching date.weekday()
 _DAY_MAP = {name.lower(): i for i, name in enumerate(calendar.day_name)}
@@ -39,13 +39,17 @@ class IncomeGenerator:
         self._end_year = end_year
         self._rng = rng
 
-        # Pre-compute biweekly pay dates for the full range
-        self._biweekly_dates: dict[int, list[date]] = {}
+        # Pre-compute biweekly pay dates keyed by (year, month) for O(1) lookup
+        self._biweekly_dates: dict[int, dict[tuple[int, int], list[date]]] = {}
         for i, config in enumerate(incomes):
             if config.schedule == "biweekly":
-                self._biweekly_dates[i] = self._compute_biweekly(
+                dates = self._compute_biweekly(
                     start_year, end_year, config.pay_day or "friday"
                 )
+                by_month: dict[tuple[int, int], list[date]] = {}
+                for d in dates:
+                    by_month.setdefault((d.year, d.month), []).append(d)
+                self._biweekly_dates[i] = by_month
 
     def _compute_biweekly(
         self, start_year: int, end_year: int, pay_day: str
@@ -93,11 +97,7 @@ class IncomeGenerator:
     def _generate_biweekly(
         self, index: int, config: IncomeConfig, year: int, month: int
     ) -> list[GeneratedTransaction]:
-        dates = [
-            d
-            for d in self._biweekly_dates[index]
-            if d.year == year and d.month == month
-        ]
+        dates = self._biweekly_dates[index].get((year, month), [])
         base = (
             config.amount.mean
             if isinstance(config.amount, AmountDistribution)

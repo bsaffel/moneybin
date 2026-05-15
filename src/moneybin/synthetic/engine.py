@@ -7,11 +7,11 @@ import time
 from datetime import date
 from decimal import Decimal
 
-from moneybin.testing.synthetic.generators.income import IncomeGenerator
-from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
-from moneybin.testing.synthetic.generators.spending import SpendingGenerator
-from moneybin.testing.synthetic.generators.transfers import TransferGenerator
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.generators.income import IncomeGenerator
+from moneybin.synthetic.generators.recurring import RecurringGenerator
+from moneybin.synthetic.generators.spending import SpendingGenerator
+from moneybin.synthetic.generators.transfers import TransferGenerator
+from moneybin.synthetic.models import (
     GeneratedAccount,
     GeneratedTransaction,
     GenerationResult,
@@ -19,7 +19,7 @@ from moneybin.testing.synthetic.models import (
     load_merchant_catalog,
     load_persona,
 )
-from moneybin.testing.synthetic.seed import SeededRandom
+from moneybin.synthetic.seed import SeededRandom
 
 logger = logging.getLogger(__name__)
 

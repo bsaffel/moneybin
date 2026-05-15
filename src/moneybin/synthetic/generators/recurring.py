@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.models import (
     AmountDistribution,
     GeneratedTransaction,
     RecurringConfig,
 )
-from moneybin.testing.synthetic.seed import SeededRandom
+from moneybin.synthetic.seed import SeededRandom
 
 
 class RecurringGenerator:
@@ -66,6 +66,8 @@ class RecurringGenerator:
         for increase in self._sorted_increases.get(index, []):
             if elapsed >= increase.after_months:
                 base = increase.new_amount
+            else:
+                break  # sorted ascending; no later increases can apply
         return base
 
     def generate_month(self, year: int, month: int) -> list[GeneratedTransaction]:

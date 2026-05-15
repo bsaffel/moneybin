@@ -48,7 +48,7 @@ class TestGenerateCommand:
         mock_result.start_date = MagicMock(__str__=lambda s: "2024-01-01")  # type: ignore[reportUnknownLambdaType]  # MagicMock dunder override
         mock_result.end_date = MagicMock(__str__=lambda s: "2024-12-31")  # type: ignore[reportUnknownLambdaType]  # MagicMock dunder override
         mock_cls = mocker.patch(
-            "moneybin.testing.synthetic.engine.GeneratorEngine",
+            "moneybin.synthetic.engine.GeneratorEngine",
         )
         mock_cls.return_value.generate.return_value = mock_result
         return mock_cls
@@ -56,7 +56,7 @@ class TestGenerateCommand:
     @pytest.fixture
     def mock_writer(self, mocker: Any) -> MagicMock:
         mock_cls = mocker.patch(
-            "moneybin.testing.synthetic.writer.SyntheticWriter",
+            "moneybin.synthetic.writer.SyntheticWriter",
         )
         mock_cls.return_value.write.return_value = {
             "ofx_accounts": 1,
@@ -98,7 +98,7 @@ class TestGenerateCommand:
         mock_get_database: MagicMock,
     ) -> None:
         with patch(
-            "moneybin.testing.synthetic.engine.GeneratorEngine",
+            "moneybin.synthetic.engine.GeneratorEngine",
             side_effect=FileNotFoundError("Unknown persona: 'bad'"),
         ):
             result = runner.invoke(app, ["generate", "--persona", "bad"])

@@ -16,8 +16,8 @@ import logging
 
 from moneybin.database import Database
 from moneybin.services.categorization_service import CategorizationService
-from moneybin.testing.synthetic.category_mapping import to_canonical
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.category_mapping import to_canonical
+from moneybin.synthetic.models import (
     PersonaConfig,
     load_merchant_catalog,
 )

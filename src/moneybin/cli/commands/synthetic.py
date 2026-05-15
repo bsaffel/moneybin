@@ -54,8 +54,8 @@ def _run_generate(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_current_profile, set_current_profile
     from moneybin.services.import_service import ImportService
-    from moneybin.testing.synthetic.engine import GeneratorEngine
-    from moneybin.testing.synthetic.writer import SyntheticWriter
+    from moneybin.synthetic.engine import GeneratorEngine
+    from moneybin.synthetic.writer import SyntheticWriter
 
     actual_seed = seed if seed is not None else random.randint(1, 9999)  # noqa: S311 — not crypto, just a reproducibility seed
 
