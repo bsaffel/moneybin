@@ -1234,6 +1234,9 @@ class ImportService:
         are not available for batch — use ``import_file()`` for single
         imports with overrides.
         """
+        from moneybin.metrics.registry import IMPORT_BATCH_SIZE
+
+        IMPORT_BATCH_SIZE.observe(len(paths))
         per_file: list[PerFileResult] = []
         any_succeeded = False
         any_transformable = False
