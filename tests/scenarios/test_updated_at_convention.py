@@ -48,12 +48,16 @@ def test_user_category_edit_advances_only_that_row() -> None:
                 no_prompts=True,
             )
 
-        before_edit = db.execute(
+        before_edit_row = db.execute(
             "SELECT updated_at FROM core.dim_categories WHERE category_id = 'edit12345678'"
-        ).fetchone()[0]
-        before_keep = db.execute(
+        ).fetchone()
+        before_keep_row = db.execute(
             "SELECT updated_at FROM core.dim_categories WHERE category_id = 'keep12345678'"
-        ).fetchone()[0]
+        ).fetchone()
+        assert before_edit_row is not None, "seeded edit-target row missing from dim"
+        assert before_keep_row is not None, "seeded keep-unchanged row missing from dim"
+        before_edit = before_edit_row[0]
+        before_keep = before_keep_row[0]
 
         time.sleep(0.01)  # ensure timestamp resolution
 
@@ -72,12 +76,16 @@ def test_user_category_edit_advances_only_that_row() -> None:
                 no_prompts=True,
             )
 
-        after_edit = db.execute(
+        after_edit_row = db.execute(
             "SELECT updated_at FROM core.dim_categories WHERE category_id = 'edit12345678'"
-        ).fetchone()[0]
-        after_keep = db.execute(
+        ).fetchone()
+        after_keep_row = db.execute(
             "SELECT updated_at FROM core.dim_categories WHERE category_id = 'keep12345678'"
-        ).fetchone()[0]
+        ).fetchone()
+        assert after_edit_row is not None
+        assert after_keep_row is not None
+        after_edit = after_edit_row[0]
+        after_keep = after_keep_row[0]
 
     assert before_edit is not None
     assert before_keep is not None

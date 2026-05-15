@@ -30,9 +30,7 @@ def test_updated_at_non_null_for_all_observations() -> None:
         null_row = db.execute(
             "SELECT COUNT(*) FROM core.fct_balances WHERE updated_at IS NULL"
         ).fetchone()
-        total_row = db.execute(
-            "SELECT COUNT(*) FROM core.fct_balances"
-        ).fetchone()
+        total_row = db.execute("SELECT COUNT(*) FROM core.fct_balances").fetchone()
         assert null_row is not None
         assert total_row is not None
         null_count = null_row[0]

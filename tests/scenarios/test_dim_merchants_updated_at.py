@@ -104,7 +104,9 @@ def test_overridden_seed_merchant_carries_override_updated_at() -> None:
             LIMIT 1
             """
         ).fetchone()
-        assert merch_row is not None, "scenario must include a seed merchant with no override"
+        assert merch_row is not None, (
+            "scenario must include a seed merchant with no override"
+        )
         merch_id = merch_row[0]
 
         # Insert an override row with an explicit fresh timestamp.

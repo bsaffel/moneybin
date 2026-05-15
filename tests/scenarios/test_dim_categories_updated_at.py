@@ -102,7 +102,9 @@ def test_overridden_seed_category_carries_override_updated_at() -> None:
             LIMIT 1
             """
         ).fetchone()
-        assert cat_row is not None, "scenario must include a seed category with no override"
+        assert cat_row is not None, (
+            "scenario must include a seed category with no override"
+        )
         cat_id = cat_row[0]
 
         # Insert an override row with an explicit fresh timestamp.

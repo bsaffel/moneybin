@@ -94,6 +94,7 @@ class ModelFreshness:
     last_changed_at: datetime | None
     last_applied_at: datetime | None
 
+
 class SystemService:
     def model_freshness(self, model_name: str) -> ModelFreshness | None:
         """Return freshness for one SQLMesh model, or None if not yet applied."""
