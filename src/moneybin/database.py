@@ -129,6 +129,78 @@ class DatabaseNotInitializedError(Exception):
     """Database file missing or incomplete; run 'moneybin db init'."""
 
 
+class SchemaDriftError(Exception):
+    """Raised when materialized core.* tables lack expected columns.
+
+    Indicates a stale SQLMesh snapshot vs. the current model definition.
+    Remediation: ``moneybin transform apply`` to rebuild affected models.
+    """
+
+
+# Captured from the final SELECT of each FULL-materialized core SQLMesh
+# model. Views (kind VIEW) cannot drift — they always reflect the current
+# model. NOT parsed at runtime; keep in sync via the parity test in
+# tests/moneybin/test_db_helpers_parity.py (Task 6C).
+EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
+    # sqlmesh/models/core/dim_accounts.sql — kind FULL
+    "core.dim_accounts": frozenset({
+        "account_id",
+        "routing_number",
+        "account_type",
+        "institution_name",
+        "institution_fid",
+        "source_type",
+        "source_file",
+        "extracted_at",
+        "loaded_at",
+        "updated_at",
+        "display_name",
+        "official_name",
+        "last_four",
+        "account_subtype",
+        "holder_category",
+        "iso_currency_code",
+        "credit_limit",
+        "archived",
+        "include_in_net_worth",
+    }),
+    # sqlmesh/models/core/fct_balances_daily.py — kind FULL
+    "core.fct_balances_daily": frozenset({
+        "account_id",
+        "balance_date",
+        "balance",
+        "is_observed",
+        "observation_source",
+        "reconciliation_delta",
+    }),
+}
+
+
+def check_core_schema_drift(db: "Database") -> dict[str, list[str]]:
+    """Return missing-column map per table, or empty dict for no drift.
+
+    Reads ``duckdb_columns()`` once and compares each expected table's column
+    set to the observed set. Cheap (< 5 ms warm). Used at FastMCP boot and
+    re-runnable from system_status.
+    """
+    rows = db.execute(
+        "SELECT table_name, column_name "
+        "FROM duckdb_columns() "
+        "WHERE schema_name = 'core'"
+    ).fetchall()
+    observed: dict[str, set[str]] = {}
+    for table, column in rows:
+        observed.setdefault(f"core.{table}", set()).add(column)
+
+    drift: dict[str, list[str]] = {}
+    for qualified_name, expected in EXPECTED_CORE_COLUMNS.items():
+        seen = observed.get(qualified_name, set())
+        missing = sorted(expected - seen)
+        if missing:
+            drift[qualified_name] = missing
+    return drift
+
+
 def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
     """Execute an ATTACH statement, mapping lock/config errors to DatabaseLockError.
 
