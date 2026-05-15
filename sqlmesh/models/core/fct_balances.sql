@@ -13,7 +13,8 @@ WITH ofx_balances AS (
     ledger_balance_date AS balance_date,
     ledger_balance AS balance,
     'ofx' AS source_type,
-    source_file AS source_ref
+    source_file AS source_ref,
+    loaded_at AS updated_at
   FROM prep.stg_ofx__balances
 ), tabular_balances AS (
   SELECT
@@ -21,7 +22,8 @@ WITH ofx_balances AS (
     transaction_date AS balance_date,
     balance,
     'tabular' AS source_type,
-    source_file AS source_ref
+    source_file AS source_ref,
+    loaded_at AS updated_at
   FROM prep.stg_tabular__transactions
   WHERE balance IS NOT NULL
 ), user_assertions AS (
@@ -30,7 +32,8 @@ WITH ofx_balances AS (
     assertion_date AS balance_date,
     balance,
     'assertion' AS source_type,
-    'user' AS source_ref
+    'user' AS source_ref,
+    created_at AS updated_at
   FROM app.balance_assertions
 )
 SELECT
@@ -38,9 +41,10 @@ SELECT
   balance_date, /* Date the balance was observed */
   balance, /* Observed balance amount */
   source_type, /* Observation source: ofx, tabular, or assertion */
-  source_ref /* Source file path or 'user' for assertions */
+  source_ref, /* Source file path or 'user' for assertions */
+  updated_at /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
 FROM ofx_balances
 UNION ALL
-SELECT account_id, balance_date, balance, source_type, source_ref FROM tabular_balances
+SELECT account_id, balance_date, balance, source_type, source_ref, updated_at FROM tabular_balances
 UNION ALL
-SELECT account_id, balance_date, balance, source_type, source_ref FROM user_assertions
+SELECT account_id, balance_date, balance, source_type, source_ref, updated_at FROM user_assertions
