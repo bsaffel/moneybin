@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 import duckdb
 
@@ -30,6 +30,17 @@ class TransformFreshness:
 
     pending: bool
     last_apply_at: datetime | None
+    latest_import_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TransformStatus:
+    """Snapshot of SQLMesh environment + freshness."""
+
+    environment: str
+    initialized: bool
+    last_apply_at: datetime | None
+    pending: bool
     latest_import_at: datetime | None
 
 
@@ -118,6 +129,42 @@ class TransformService:
             pending=latest_import_at > last_apply_at,
             last_apply_at=last_apply_at,
             latest_import_at=latest_import_at,
+        )
+
+    def status(self) -> TransformStatus:
+        """Current SQLMesh environment state plus freshness signal.
+
+        Reads SQLMesh env via Context (multi-second on first init; acceptable
+        for the explicit transform_status tool but not for system_status).
+        """
+        freshness = self.freshness()
+        initialized = False
+        env_apply_at: datetime | None = None
+
+        try:
+            with sqlmesh_context(self._db) as ctx:
+                env = ctx.state_reader.get_environment("prod")
+                if env is not None:
+                    initialized = True
+                    if env.finalized_ts is not None:
+                        env_apply_at = datetime.fromtimestamp(
+                            env.finalized_ts / 1000, tz=UTC
+                        ).replace(tzinfo=None)
+        except Exception:  # noqa: BLE001 — SQLMesh may fail to init on a fresh DB
+            logger.debug("SQLMesh status read failed", exc_info=True)
+
+        # Prefer SQLMesh's finalized_ts when present (authoritative for the
+        # plan); fall back to freshness's dim_accounts-derived signal otherwise.
+        last_apply_at = (
+            env_apply_at if env_apply_at is not None else freshness.last_apply_at
+        )
+
+        return TransformStatus(
+            environment="prod",
+            initialized=initialized,
+            last_apply_at=last_apply_at,
+            pending=freshness.pending,
+            latest_import_at=freshness.latest_import_at,
         )
 
     def _max_completed_import_at(self) -> datetime | None:

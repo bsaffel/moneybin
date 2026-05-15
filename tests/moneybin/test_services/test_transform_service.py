@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.transform_service import TransformService
+from moneybin.services.transform_service import TransformService, TransformStatus
 
 # raw.import_log columns required by NOT NULL constraints. The table is
 # auto-created by Database() schema init; tests only need to provide
@@ -202,3 +202,71 @@ def test_import_service_run_transforms_delegates_to_transform_service(
 
     assert result is True
     assert calls == ["apply"]
+
+
+def test_status_uninitialized_environment(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh DB: no SQLMesh env → initialized=False, pending=False."""
+    from contextlib import contextmanager
+
+    fake_ctx = MagicMock()
+    fake_ctx.state_reader.get_environment.return_value = None
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        s: TransformStatus = TransformService(db).status()
+    finally:
+        db.close()
+
+    assert s.environment == "prod"
+    assert s.initialized is False
+    assert s.last_apply_at is None
+    assert s.pending is False
+
+
+def test_status_initialized_with_finalized_ts(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLMesh env exists and is finalized → initialized=True, last_apply_at set."""
+    from contextlib import contextmanager
+
+    # finalized_ts is milliseconds since epoch (SQLMesh convention). Build via
+    # an explicit UTC tz-aware datetime so the test is host-TZ independent.
+    expected_utc = datetime(2026, 5, 13, 18, 24, 0, tzinfo=UTC)
+    finalized_ms = int(expected_utc.timestamp() * 1000)
+    expected_naive = expected_utc.replace(tzinfo=None)
+
+    fake_env = MagicMock()
+    fake_env.finalized_ts = finalized_ms
+    fake_ctx = MagicMock()
+    fake_ctx.state_reader.get_environment.return_value = fake_env
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        yield fake_ctx
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        s: TransformStatus = TransformService(db).status()
+    finally:
+        db.close()
+
+    assert s.environment == "prod"
+    assert s.initialized is True
+    assert s.last_apply_at is not None
+    assert abs((s.last_apply_at - expected_naive).total_seconds()) < 1.0
