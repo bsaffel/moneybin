@@ -52,11 +52,10 @@ All `updated_at` columns are `TIMESTAMP` and may be `NULL` only where the row's 
 | Model | `kind` | `updated_at` expression |
 |---|---|---|
 | `core.dim_accounts` | FULL | `GREATEST(winner.loaded_at, settings.updated_at)` |
-| `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.updated_at, notes_latest, tags_latest, splits_latest)` where each `*_latest` is the per-transaction `MAX` of the appropriate freshness column on `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` (column choice per curation table resolved in [Open verification](#open-verification-resolve-at-plan-time)). |
+| `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.categorized_at, notes_latest, tags_latest, splits_latest)` where `notes_latest = MAX(notes.created_at)`, `tags_latest = MAX(tags.applied_at)`, `splits_latest = MAX(splits.created_at)`, each grouped per transaction. Notes/tags/splits are insert-only today, so their per-row freshness column is the create-time column. `c` is `app.transaction_categories`, whose write-time column is `categorized_at`. |
 | `core.dim_categories` | VIEW | `COALESCE(user_categories.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
 | `core.dim_merchants` | VIEW | `COALESCE(user_merchants.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
-| `core.fct_balances` | VIEW | `MAX(observation.loaded_at)` — i.e., the contributing observation's `loaded_at` (one row per observation today, so a plain column read). |
-| `core.fct_balances_daily` | INCREMENTAL | `MAX(contributing observation.loaded_at)` aggregated over the day window. |
+| `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular staging sources, `created_at` from `app.balance_assertions`. Requires extending `fct_balances` CTEs to project these timestamps through to a single `updated_at` output column. |
 
 ### Semantics for consumers
 
@@ -106,27 +105,27 @@ This is a thin wrapper over `meta.model_freshness`. It exists so callers (future
 
 ## App-table schema changes
 
-The per-row formulas above require that every `app.*` reference table contributing to a `core.dim_*` row carries an `updated_at` column. Three already do (`app.account_settings`, `app.budgets`, `app.imports`); four do not. This spec adds:
+The per-row formulas above require that every `app.*` reference table contributing to a `core.dim_*` row carries an `updated_at` column. Five already do (`app.account_settings`, `app.budgets`, `app.imports`, `app.category_overrides`, `app.merchant_overrides`); two do not. This spec adds:
 
 | Table | DDL change |
 |---|---|
 | `app.user_categories` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
 | `app.user_merchants` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
-| `app.category_overrides` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
-| `app.merchant_overrides` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
 
 DuckDB has no `ON UPDATE` trigger, so services that write to these tables must set `updated_at = NOW()` on `UPDATE` (and `INSERT … ON CONFLICT DO UPDATE` statements). This is already the established pattern — see `account_service.py:276` and `categorization_service.py:1106`. The exact call sites needing updates are enumerated during plan execution.
 
 The DDL change ships as a SQL migration under `src/moneybin/sql/migrations/`. Backfill: existing rows take `CURRENT_TIMESTAMP` at migration time (via the default). This is a one-time approximation — pre-existing rows lose their true last-edit time, which the project does not track today anyway.
 
+For the two existing `*_overrides` tables, the live schema is `updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP` (nullable). The DDL migration also tightens these to `NOT NULL` for uniform per-row freshness guarantees — all existing rows are already populated by the default, so the tightening succeeds without backfill.
+
 ## What ships
 
-1. **DDL migration** — `app.user_categories`, `app.user_merchants`, `app.category_overrides`, `app.merchant_overrides` gain `updated_at`.
+1. **DDL migration** — `app.user_categories` and `app.user_merchants` gain `updated_at`. `app.category_overrides` and `app.merchant_overrides` tighten existing `updated_at` to `NOT NULL`.
 2. **Service writes** — every `INSERT … ON CONFLICT DO UPDATE` and bare `UPDATE` against the four tables above sets `updated_at = NOW()`. Specific call sites identified during plan execution.
-3. **SQLMesh model edits** — six core models (`dim_accounts`, `fct_transactions`, `dim_categories`, `dim_merchants`, `fct_balances`, `fct_balances_daily`) gain/replace `updated_at` per the formulas above. The misleading `CURRENT_TIMESTAMP AS updated_at` on `dim_accounts` is replaced.
+3. **SQLMesh model edits** — five core models (`dim_accounts`, `fct_transactions`, `dim_categories`, `dim_merchants`, `fct_balances`) gain/replace `updated_at` per the formulas above. The misleading `CURRENT_TIMESTAMP AS updated_at` on `dim_accounts` is replaced. `fct_balances` also gains `loaded_at` propagation through its source CTEs.
 4. **`meta.model_freshness` view** — new SQLMesh model in `sqlmesh/models/meta/` exposing the public column contract above.
 5. **`get_model_freshness()` function** — typed wrapper over the view; location decided at plan time.
-6. **Per-column comments** — every `updated_at` column on the six core models gets a comment matching the convention (see [Documentation](#documentation)).
+6. **Per-column comments** — every `updated_at` column on the five core models gets a comment matching the convention (see [Documentation](#documentation)).
 7. **Cascading edits** — see below.
 
 ## What does NOT ship
@@ -135,6 +134,7 @@ The DDL change ships as a SQL migration under `src/moneybin/sql/migrations/`. Ba
 - A `meta.transform_apply_log` table or any other custom event log. SQLMesh state already tracks this; we wrap it via `meta.model_freshness`.
 - Any user-facing CLI surface (`moneybin freshness`, etc.). Surfaces are added when consuming specs (`agent-ingest-completion.md` or similar) need them.
 - Reconciliation logic that compares `updated_at` against SLAs or alerts on stale data. Out of scope.
+- **`core.fct_balances_daily`.** It is a Python carry-forward model that synthesizes one row per account-day from first to last observation. Interpolated days have no per-row "input that changed" — assigning them an `updated_at` would either propagate the contributing observation's timestamp (defensible, but adds complexity) or fall back to model-level rebuild time (misleading). Defer until a consumer needs per-day balance freshness; for now, callers needing balance-table freshness use `core.fct_balances.updated_at` directly or `meta.model_freshness` for the daily model.
 
 ## Cascading edits
 
@@ -163,15 +163,17 @@ Both consumers and reviewers should be able to read this without opening this sp
 | **Scenario** | One end-to-end scenario: edit a user-category, run `transform apply`, verify `core.dim_categories.updated_at` advances for that row and not for unrelated rows. |
 | **`meta.model_freshness`** | Smoke test: applying the pipeline, then querying the view, returns a row per registered SQLMesh model with non-`NULL` `last_applied_at`. |
 
-## Open verification (resolve at plan time)
+## Open verification — resolved
 
-1. **SQLMesh state table names and column names.** `_snapshots` and `_intervals` are the historical names; the live names in this project's SQLMesh version must be confirmed by inspecting an applied database. If the names have changed upstream, the view definition adapts; the public contract above does not.
-2. **`fct_balances` per-row aggregation.** Today the model unions one row per balance observation. Confirm there are no observation-level joins that would change the formula from a plain column read to an aggregate.
-3. **Exact service call sites for the four newly-versioned app tables.** A grep at plan time enumerates them; the spec only commits to the contract.
-4. **Curation-table freshness columns for `fct_transactions`.** Per-table choice of `created_at` vs `updated_at` from `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` depends on which timestamps each table actually carries and whether the table semantics are insert-only (note: a tag association is typically insert-only, so `created_at` is the only meaningful signal). Resolved by inspecting the live schema at plan time.
+The four verification items deferred to plan time were resolved during plan preparation:
+
+1. **SQLMesh state schema** — confirmed as `sqlmesh._snapshots` (SQLMesh `c.SQLMESH` constant = `"sqlmesh"`; default `state_schema`). Relevant columns: `name` (quoted FQN like `"core"."dim_accounts"`), `version` (content fingerprint), `updated_ts` (BIGINT, Unix milliseconds). The `meta.model_freshness` view strips the quotes from `name` and converts `updated_ts` from millis to `TIMESTAMP`.
+2. **`fct_balances` aggregation shape** — confirmed: one row per observation today, three UNION ALL CTEs (OFX, tabular, user assertion). Source CTEs do not currently project `loaded_at`/`created_at` to the final SELECT; the plan extends them.
+3. **Service call sites** — enumerated in the plan's File Structure section.
+4. **Curation-table timestamp columns** — confirmed via live schema: `app.transaction_notes.created_at`, `app.transaction_tags.applied_at`, `app.transaction_splits.created_at`, `app.transaction_categories.categorized_at`. All four tables are insert-only or have a single write-time column; the formulas use those columns directly.
 
 ## Risk
 
-- **Largest risk: a query consumer somewhere does `SELECT *` from a touched view and breaks when the column shape changes.** `SELECT *` against `core.*` is discouraged but not forbidden. Plan execution greps for `SELECT \*` against the six models and either narrows the projection or accepts the new column.
+- **Largest risk: a query consumer somewhere does `SELECT *` from a touched view and breaks when the column shape changes.** `SELECT *` against `core.*` is discouraged but not forbidden. Plan execution greps for `SELECT \*` against the five models and either narrows the projection or accepts the new column.
 - **Second-largest risk: the SQLMesh state schema differs from expectation.** Mitigated by verifying against an applied database before writing the view definition.
 - **Third: a service write path is missed and `updated_at` goes stale for some rows.** Mitigated by the service-level test surface above and by the `NOT NULL DEFAULT` constraint preventing accidental `NULL` inserts.
