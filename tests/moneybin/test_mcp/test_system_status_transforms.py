@@ -9,12 +9,7 @@ from moneybin.mcp.tools.system import system_status
 
 
 def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
-    """Insert an import_log row newer than dim_accounts.updated_at.
-
-    The mcp_db template stamps dim_accounts.updated_at with CURRENT_TIMESTAMP
-    at session start. To guarantee the import row is strictly later (even
-    when the same wall-clock second), we offset completed_at by +1 hour.
-    """
+    """Insert an import strictly newer than the template's dim_accounts.updated_at."""
     with get_database() as db:
         db.execute(
             """
@@ -24,7 +19,7 @@ def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
                 completed_at
             ) VALUES (?, 'inline', 'manual', 'manual',
                       'manual', '[]'::JSON, 'complete', 0, 0,
-                      CURRENT_TIMESTAMP + INTERVAL 1 HOUR)
+                      CURRENT_TIMESTAMP)
             """,
             [import_id],
         )
