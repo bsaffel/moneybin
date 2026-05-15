@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -473,11 +473,44 @@ def matches_pattern(text: str, pattern: str, match_type: str) -> bool:
         return False
 
 
-# Merchant row shape used by the in-memory matcher: (merchant_id, raw_pattern,
-# match_type, canonical_name, category, subcategory, exemplars). raw_pattern is
-# None for exemplar-only merchants (match_type='oneOf'); exemplars is the set
-# of exact match_text values for oneOf set-membership lookup.
-MerchantRow = tuple[str, str | None, str, str, str, str | None, list[str]]
+class MerchantRow(NamedTuple):
+    """Merchant row shape used by the in-memory matcher.
+
+    Nullability mirrors ``app.user_merchants`` DDL: ``raw_pattern`` is None for
+    exemplar-only merchants (``match_type='oneOf'``); ``category`` and
+    ``subcategory`` are nullable when a merchant has no default mapping.
+    ``exemplars`` is the set of exact ``match_text`` values for oneOf
+    set-membership lookup.
+
+    Built by :func:`_fetch_merchants` from DuckDB rows. Tuple-compatible so
+    legacy positional unpacking keeps working.
+    """
+
+    merchant_id: str
+    raw_pattern: str | None
+    match_type: str
+    canonical_name: str
+    category: str | None
+    subcategory: str | None
+    exemplars: list[str]
+
+    @classmethod
+    def from_row(cls, row: tuple[Any, ...]) -> "MerchantRow":
+        """Lift a raw DuckDB result tuple into a typed ``MerchantRow``.
+
+        Follows the ``BalanceAssertion.from_row`` / ``BalanceObservation.from_row``
+        idiom: coerce to declared types at the boundary so downstream code
+        stops branching on DuckDB's dynamic row values.
+        """
+        return cls(
+            merchant_id=str(row[0]),
+            raw_pattern=str(row[1]) if row[1] is not None else None,
+            match_type=str(row[2]),
+            canonical_name=str(row[3]),
+            category=str(row[4]) if row[4] is not None else None,
+            subcategory=str(row[5]) if row[5] is not None else None,
+            exemplars=list(row[6] or []),
+        )
 
 
 def _fetch_merchants(
@@ -504,7 +537,7 @@ def _fetch_merchants(
         List of merchant rows, or None if the table doesn't exist.
     """
     try:
-        return db.execute(
+        rows = db.execute(
             f"""
             SELECT merchant_id, raw_pattern, match_type,
                    canonical_name, category, subcategory, exemplars
@@ -517,6 +550,7 @@ def _fetch_merchants(
         ).fetchall()
     except duckdb.CatalogException:
         return None
+    return [MerchantRow.from_row(r) for r in rows]
 
 
 def _match_shape_label(description_present: bool, memo_present: bool) -> str:
@@ -552,25 +586,16 @@ def _match_exemplar(
     if not match_text:
         return None
 
-    for row in merchants:
-        (
-            merchant_id,
-            _raw_pattern,
-            match_type,
-            canonical_name,
-            category,
-            subcategory,
-            exemplars,
-        ) = row
-        if match_type != "oneOf":
+    for m in merchants:
+        if m.match_type != "oneOf":
             continue
-        if exemplars and match_text in exemplars:
+        if m.exemplars and match_text in m.exemplars:
             CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="exemplar", shape=shape).inc()
             return {
-                "merchant_id": merchant_id,
-                "canonical_name": canonical_name,
-                "category": category,
-                "subcategory": subcategory,
+                "merchant_id": m.merchant_id,
+                "canonical_name": m.canonical_name,
+                "category": m.category,
+                "subcategory": m.subcategory,
             }
     return None
 
@@ -611,28 +636,19 @@ def _match_text(
         CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
         return None
 
-    for row in merchants:
-        (
-            merchant_id,
-            raw_pattern,
-            match_type,
-            canonical_name,
-            category,
-            subcategory,
-            _exemplars,
-        ) = row
-        if match_type == "oneOf" or not raw_pattern:
+    for m in merchants:
+        if m.match_type == "oneOf" or not m.raw_pattern:
             # Exemplar-only merchants are handled by _match_exemplar.
             continue
-        if any(matches_pattern(c, raw_pattern, match_type) for c in candidates):
+        if any(matches_pattern(c, m.raw_pattern, m.match_type) for c in candidates):
             CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(
-                outcome=str(match_type or "contains"), shape=shape
+                outcome=m.match_type or "contains", shape=shape
             ).inc()
             return {
-                "merchant_id": merchant_id,
-                "canonical_name": canonical_name,
-                "category": category,
-                "subcategory": subcategory,
+                "merchant_id": m.merchant_id,
+                "canonical_name": m.canonical_name,
+                "category": m.category,
+                "subcategory": m.subcategory,
             }
 
     CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
@@ -702,7 +718,7 @@ class CategorizationService:
         *,
         category: str,
         subcategory: str | None = None,
-        categorized_by: str = "user",
+        categorized_by: Literal["user"] = "user",
         actor: str,
     ) -> None:
         """Upsert a transaction's user category and emit ``category.set`` audit.
@@ -731,13 +747,20 @@ class CategorizationService:
         *,
         category: str,
         subcategory: str | None,
-        categorized_by: str,
+        categorized_by: Literal["user"] = "user",
         actor: str,
     ) -> None:
         """``set_category`` body without txn boundaries.
 
         Use when the caller already owns a transaction and wants to batch
         multiple category writes atomically with their own audit chain.
+
+        ``categorized_by`` is restricted to ``"user"``. The user-manual-edit
+        path is the only intended use; the direct ``INSERT ... ON CONFLICT``
+        below bypasses :meth:`write_categorization`'s precedence guard, so
+        admitting a lower-priority source here would let it silently overwrite
+        a higher-priority existing categorization. New callers needing a
+        non-user write must route through :meth:`write_categorization`.
         """
         prior = self._fetch_category_row(transaction_id)
         self._db.conn.execute(
@@ -1462,7 +1485,7 @@ class CategorizationService:
         # writes for the batch.
         try:
             raw_merchants = _fetch_merchants(self._db)
-            cached_merchants: list[tuple[Any, ...]] = (
+            cached_merchants: list[MerchantRow] = (
                 list(raw_merchants) if raw_merchants is not None else []
             )
         except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
@@ -1590,14 +1613,14 @@ class CategorizationService:
                             # batch see the new exemplar-only merchant at the
                             # head of the merchant list (oneOf is first per
                             # _fetch_merchants ordering).
-                            new_row: MerchantRow = (
-                                new_merchant_id,
-                                None,
-                                "oneOf",
-                                canonical_name,
-                                category,
-                                subcategory,
-                                [match_text],
+                            new_row = MerchantRow(
+                                merchant_id=new_merchant_id,
+                                raw_pattern=None,
+                                match_type="oneOf",
+                                canonical_name=canonical_name,
+                                category=category,
+                                subcategory=subcategory,
+                                exemplars=[match_text],
                             )
                             ctx.register_new_merchant(new_row)
                     except Exception:  # noqa: BLE001 — exemplar accumulation is best-effort; categorization proceeds without it
@@ -1633,23 +1656,22 @@ class CategorizationService:
             merchants_created=merchants_created,
         )
 
-    def apply_merchant_categories(self) -> int:
-        """Apply merchant-based categories to uncategorized transactions.
+    def _fetch_uncategorized_rows(self) -> list[tuple[Any, ...]] | None:
+        """Return rows for uncategorized transactions with a non-empty description or memo.
 
-        Fetches all merchants once, then matches each uncategorized transaction
-        in Python — avoids a per-transaction DB query.
+        Single scan shared between :meth:`apply_rules` and
+        :meth:`apply_merchant_categories` when called from
+        :meth:`categorize_pending`. Returns ``None`` if the source tables don't
+        exist (DB pre-migration); returns ``[]`` when there are no pending rows.
 
-        Returns:
-            Number of transactions categorized.
+        Columns: ``(transaction_id, description, amount, account_id, memo)`` —
+        the superset of what either consumer needs; ``apply_merchant_categories``
+        ignores ``amount`` and ``account_id``.
         """
-        merchants = _fetch_merchants(self._db)
-        if not merchants:
-            return 0
-
         try:
-            uncategorized = self._db.execute(
+            return self._db.execute(
                 f"""
-                SELECT t.transaction_id, t.description, t.memo
+                SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
                 FROM {FCT_TRANSACTIONS.full_name} t
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
                     ON t.transaction_id = c.transaction_id
@@ -1661,13 +1683,50 @@ class CategorizationService:
                 """,
             ).fetchall()
         except duckdb.CatalogException:
+            return None
+
+    def apply_merchant_categories(
+        self,
+        *,
+        uncategorized: list[tuple[Any, ...]] | None = None,
+        skip_txn_ids: set[str] | None = None,
+    ) -> int:
+        """Apply merchant-based categories to uncategorized transactions.
+
+        Fetches all merchants once, then matches each uncategorized transaction
+        in Python — avoids a per-transaction DB query.
+
+        ``uncategorized`` lets :meth:`categorize_pending` share a single scan
+        across :meth:`apply_rules` and this method. Rows are expected in the
+        ``(transaction_id, description, amount, account_id, memo)`` shape from
+        :meth:`_fetch_uncategorized_rows`; ``amount`` and ``account_id`` are
+        ignored here. When omitted, the rows are fetched.
+
+        ``skip_txn_ids`` filters rows by transaction_id. :meth:`categorize_pending`
+        passes the rule pass's applied set; without that filter the merchant
+        write would overwrite the rule write at the same ``'rule'`` priority
+        under the ``<=`` precedence guard.
+
+        Returns:
+            Number of transactions categorized.
+        """
+        merchants = _fetch_merchants(self._db)
+        if not merchants:
             return 0
+
+        if uncategorized is None:
+            rows = self._fetch_uncategorized_rows()
+            if rows is None:
+                return 0
+            uncategorized = rows
 
         if not uncategorized:
             return 0
 
         categorized_count = 0
-        for txn_id, description, memo in uncategorized:
+        for txn_id, description, _amount, _account_id, memo in uncategorized:
+            if skip_txn_ids is not None and txn_id in skip_txn_ids:
+                continue
             match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
             if not match_text:
                 continue
@@ -1826,7 +1885,9 @@ class CategorizationService:
             return None
         return self.match_first_rule(rules, description, amount, account_id, memo)
 
-    def apply_rules(self) -> int:
+    def apply_rules(
+        self, *, uncategorized: list[tuple[Any, ...]] | None = None
+    ) -> set[str]:
         """Apply active categorization rules to uncategorized transactions.
 
         Runs before merchant mapping in :meth:`categorize_pending` so that
@@ -1840,34 +1901,31 @@ class CategorizationService:
         can identify auto-rule-driven assignments without joining through
         ``rule_id``. All other rules write ``categorized_by='rule'``.
 
+        ``uncategorized`` lets :meth:`categorize_pending` share a single scan
+        with :meth:`apply_merchant_categories`. Rows are expected in the
+        ``(transaction_id, description, amount, account_id, memo)`` shape from
+        :meth:`_fetch_uncategorized_rows`. When omitted, the rows are fetched.
+
         Returns:
-            Number of transactions categorized.
+            Set of ``transaction_id``s that landed a successful write. Count
+            via ``len(...)``. :meth:`categorize_pending` passes the set to
+            :meth:`apply_merchant_categories` as ``skip_txn_ids`` so the
+            merchant pass doesn't overwrite rule writes at the same priority.
         """
         rules = self.fetch_active_rules()
         if not rules:
-            return 0
+            return set()
 
-        try:
-            uncategorized = self._db.execute(
-                f"""
-                SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
-                WHERE c.transaction_id IS NULL
-                    AND (
-                        (t.description IS NOT NULL AND t.description != '')
-                        OR (t.memo IS NOT NULL AND t.memo != '')
-                    )
-                """,
-            ).fetchall()
-        except duckdb.CatalogException:
-            return 0
+        if uncategorized is None:
+            rows = self._fetch_uncategorized_rows()
+            if rows is None:
+                return set()
+            uncategorized = rows
 
         if not uncategorized:
-            return 0
+            return set()
 
-        categorized_count = 0
+        applied: set[str] = set()
         for txn_id, description, amount, account_id, memo in uncategorized:
             match = self.match_first_rule(
                 rules,
@@ -1879,7 +1937,9 @@ class CategorizationService:
             if match is None:
                 continue
             rule_id, category, subcategory, created_by = match
-            categorized_by = "auto_rule" if created_by == "auto_rule" else "rule"
+            categorized_by: CategorizedBy = (
+                "auto_rule" if created_by == "auto_rule" else "rule"
+            )
             outcome = self.write_categorization(
                 transaction_id=txn_id,
                 category=category,
@@ -1889,11 +1949,11 @@ class CategorizationService:
                 confidence=1.0,
             )
             if outcome.written:
-                categorized_count += 1
+                applied.add(txn_id)
 
-        if categorized_count:
-            logger.info(f"Rule engine categorized {categorized_count} transactions")
-        return categorized_count
+        if applied:
+            logger.info(f"Rule engine categorized {len(applied)} transactions")
+        return applied
 
     def categorize_pending(self) -> dict[str, int]:
         """Categorize all pending (uncategorized) transactions.
@@ -1905,11 +1965,24 @@ class CategorizationService:
 
         Idempotent: a second run on the same state writes nothing.
 
+        Fetches uncategorized rows once and shares them with both
+        :meth:`apply_rules` and :meth:`apply_merchant_categories`. The set of
+        rule-written ``transaction_id``s is passed as ``skip_txn_ids`` to the
+        merchant pass so it doesn't overwrite the rule writes at the same
+        priority.
+
         Returns:
             Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
         """
-        rule_count = self.apply_rules()
-        merchant_count = self.apply_merchant_categories()
+        rows = self._fetch_uncategorized_rows()
+        if not rows:
+            return {"merchant": 0, "rule": 0, "total": 0}
+
+        rule_applied = self.apply_rules(uncategorized=rows)
+        merchant_count = self.apply_merchant_categories(
+            uncategorized=rows, skip_txn_ids=rule_applied
+        )
+        rule_count = len(rule_applied)
         total = merchant_count + rule_count
 
         if total:
