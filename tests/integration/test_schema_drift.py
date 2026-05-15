@@ -23,6 +23,8 @@ def test_boot_check_raises_on_dropped_column(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_check_schema_at_boot() raises SchemaDriftError when a column is missing."""
+    # Leading underscore preserved: function is wired in by cli.commands.mcp
+    # only. Importing it here is intentional to verify boot-path behavior.
     from moneybin.mcp.server import (
         _check_schema_at_boot,  # pyright: ignore[reportPrivateUsage]
     )
