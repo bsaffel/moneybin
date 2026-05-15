@@ -459,7 +459,7 @@ def test_sqlmesh_discovery_failure_emits_skipped_invariant(
     def _failing_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
         msg = "SQLMesh config not found"
         raise RuntimeError(msg)
-        yield  # noqa: unreachable — satisfies generator type
+        yield  # unreachable; satisfies the generator type @contextmanager requires
 
     monkeypatch.setattr(
         "moneybin.services.doctor_service.sqlmesh_context", _failing_ctx
