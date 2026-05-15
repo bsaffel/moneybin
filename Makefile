@@ -130,9 +130,9 @@ pre-commit: venv ## Setup & Installation: Install pre-commit hooks
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
 	@echo "$(BLUE)ℹ️  Pre-commit will use uv run for consistent tool versions$(RESET)"
 
-test-unit: venv ## Development: Run unit tests only (excludes integration and e2e tests)
+test-unit: venv ## Development: Run unit tests only (excludes integration, e2e, and slow tests)
 	@echo "$(BLUE)🧪 Running unit tests (use 'make test-all' for all tests)...$(RESET)"
-	@uv run pytest tests/ -m "not integration and not e2e" --durations=25
+	@uv run pytest tests/ -m "not integration and not e2e and not slow" --durations=25
 
 test: test-unit ## Development: Run unit tests (alias for test-unit)
 
@@ -142,7 +142,7 @@ test-all: venv ## Development: Run all tests (unit, integration, e2e) with verbo
 
 test-cov: venv ## Development: Run tests with coverage report
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
-	@uv run pytest --cov=src tests/ -m "not integration and not e2e" --durations=25
+	@uv run pytest --cov=src tests/ -m "not integration and not e2e and not slow" --durations=25
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"
 
 test-integration: venv ## Development: Run integration tests only

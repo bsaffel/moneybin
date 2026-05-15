@@ -12,10 +12,18 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from moneybin.cli.main import app
 from tests.e2e.conftest import FIXTURES_DIR, run_cli
 
 pytestmark = pytest.mark.e2e
+
+# In-process runner for tests that exercise pure CLI argument parsing
+# (--help output, stub messages). Subprocess invocation is reserved for
+# tests that need real boot/wiring coverage — DB-touching read commands
+# and env-dependent NoDB commands.
+_runner = CliRunner()
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +125,13 @@ class TestNoDBCommands:
 
 
 class TestStubCommands:
-    """Stubs should print a message and exit 0, not crash."""
+    """Stubs should print a message and exit 0, not crash.
+
+    Run in-process via CliRunner: stub bodies are pure log + return, with
+    no env, DB, or filesystem access — subprocess isolation adds cost
+    without coverage. Subprocess-level boot is exercised by the smoke in
+    ``test_e2e_help.py`` and the mutating/workflow tiers.
+    """
 
     @pytest.mark.parametrize(
         "cmd",
@@ -138,8 +152,10 @@ class TestStubCommands:
         ids=lambda c: " ".join(c),
     )
     def test_stub_exits_cleanly(self, cmd: list[str]) -> None:
-        result = run_cli(*cmd)
-        result.assert_success()
+        result = _runner.invoke(app, cmd)
+        assert result.exit_code == 0, (
+            f"stub {cmd} exited {result.exit_code}\noutput: {result.output}"
+        )
         assert "not yet implemented" in result.output.lower()
 
 
@@ -230,69 +246,72 @@ class TestDBReadOnlyCommands:
         result = run_cli("mcp", "list-tools", env=e2e_profile)
         result.assert_success()
 
-    # ── accounts ─────────────────────────────────────────────────────────
-    # Subprocess-level boot tests: verify the commands wire and parse flags
-    # correctly. The shared e2e_profile has no transforms run yet so
-    # core.dim_accounts / fct_balances_daily / reports.net_worth do not exist;
-    # read commands that require those tables are covered at help-tier only.
-    # Write commands (rename, include, archive, set, balance assert/delete/list)
+    # ── accounts / reports help-substring checks (in-process) ──────────
+    # Verify each command registers and exposes its documented flags. The
+    # shared e2e_profile has no transforms run yet so core.dim_accounts /
+    # fct_balances_daily / reports.net_worth do not exist; read commands
+    # that require those tables are covered at help-tier only. Write
+    # commands (rename, include, archive, set, balance assert/delete/list)
     # are covered in test_e2e_mutating.py which uses isolated envs.
+    #
+    # Runs via CliRunner because --help is side-effect free per
+    # ``.claude/rules/cli.md`` and doesn't need subprocess isolation.
 
     def test_accounts_list_help(self) -> None:
-        result = run_cli("accounts", "list", "--help")
-        result.assert_success()
-        assert "--output" in result.stdout
+        result = _runner.invoke(app, ["accounts", "list", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--output" in result.output
 
     def test_accounts_show_help(self) -> None:
-        result = run_cli("accounts", "show", "--help")
-        result.assert_success()
-        assert "account_id" in result.stdout.lower() or "ACCOUNT_ID" in result.stdout
+        result = _runner.invoke(app, ["accounts", "show", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "account_id" in result.output.lower() or "ACCOUNT_ID" in result.output
 
     def test_accounts_resolve_help(self) -> None:
-        result = run_cli("accounts", "resolve", "--help")
-        result.assert_success()
-        assert "--limit" in result.stdout
-        assert "--output" in result.stdout
+        result = _runner.invoke(app, ["accounts", "resolve", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--limit" in result.output
+        assert "--output" in result.output
 
     def test_accounts_balance_show_help(self) -> None:
-        result = run_cli("accounts", "balance", "show", "--help")
-        result.assert_success()
-        assert "--output" in result.stdout
+        result = _runner.invoke(app, ["accounts", "balance", "show", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--output" in result.output
 
     def test_accounts_balance_history_help(self) -> None:
-        result = run_cli("accounts", "balance", "history", "--help")
-        result.assert_success()
-        assert "--account" in result.stdout
+        result = _runner.invoke(app, ["accounts", "balance", "history", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--account" in result.output
 
     def test_accounts_balance_list_help(self) -> None:
-        result = run_cli("accounts", "balance", "list", "--help")
-        result.assert_success()
-        assert "--output" in result.stdout
+        result = _runner.invoke(app, ["accounts", "balance", "list", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--output" in result.output
 
     def test_accounts_balance_assert_help(self) -> None:
-        result = run_cli("accounts", "balance", "assert", "--help")
-        result.assert_success()
-        assert "--output" not in result.stdout or "account_id" in result.stdout.lower()
+        result = _runner.invoke(app, ["accounts", "balance", "assert", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--output" not in result.output or "account_id" in result.output.lower()
 
     def test_accounts_balance_delete_help(self) -> None:
-        result = run_cli("accounts", "balance", "delete", "--help")
-        result.assert_success()
-        assert "--yes" in result.stdout or "assertion_date" in result.stdout.lower()
+        result = _runner.invoke(app, ["accounts", "balance", "delete", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--yes" in result.output or "assertion_date" in result.output.lower()
 
     def test_accounts_balance_reconcile_help(self) -> None:
-        result = run_cli("accounts", "balance", "reconcile", "--help")
-        result.assert_success()
-        assert "--threshold" in result.stdout
+        result = _runner.invoke(app, ["accounts", "balance", "reconcile", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--threshold" in result.output
 
     def test_reports_networth_show_help(self) -> None:
-        result = run_cli("reports", "networth", "show", "--help")
-        result.assert_success()
-        assert "--output" in result.stdout
+        result = _runner.invoke(app, ["reports", "networth", "show", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--output" in result.output
 
     def test_reports_networth_history_help(self) -> None:
-        result = run_cli("reports", "networth", "history", "--help")
-        result.assert_success()
-        assert "--from" in result.stdout
+        result = _runner.invoke(app, ["reports", "networth", "history", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--from" in result.output
 
     # ── stats ───────────────────────────────────────────────────────────
 

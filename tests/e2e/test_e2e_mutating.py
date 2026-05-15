@@ -598,9 +598,13 @@ class TestAccountsEntityOps:
         )
         result.assert_success()
 
-    def test_accounts_set_no_flags_exits_2(self, tmp_path: Path) -> None:
+    def test_accounts_set_no_flags_exits_2(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """Accounts set with no field flags exits 2 (usage error)."""
-        env = make_workflow_env(tmp_path, "acct-set-noflags")
+        env = make_workflow_env_fast(
+            tmp_path, "acct-set-noflags", _mutating_profile_template
+        )
         result = run_cli("accounts", "set", self._ACCOUNT, env=env)
         assert result.exit_code == 2
 
@@ -692,9 +696,13 @@ class TestBalanceAssertions:
         result.assert_success()
         assert '"data": []' in result.stdout or "data" in result.stdout
 
-    def test_balance_delete_nonexistent_is_noop(self, tmp_path: Path) -> None:
+    def test_balance_delete_nonexistent_is_noop(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """Balance delete for a nonexistent row exits 0 (silent no-op per spec)."""
-        env = make_workflow_env(tmp_path, "bal-del-noop")
+        env = make_workflow_env_fast(
+            tmp_path, "bal-del-noop", _mutating_profile_template
+        )
         result = run_cli(
             "accounts",
             "balance",
@@ -705,8 +713,12 @@ class TestBalanceAssertions:
         )
         result.assert_success()
 
-    def test_balance_list_empty_is_success(self, tmp_path: Path) -> None:
+    def test_balance_list_empty_is_success(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
         """Balance list on a fresh profile returns exit 0 with an empty result."""
-        env = make_workflow_env(tmp_path, "bal-list-empty")
+        env = make_workflow_env_fast(
+            tmp_path, "bal-list-empty", _mutating_profile_template
+        )
         result = run_cli("accounts", "balance", "list", "--output", "json", env=env)
         result.assert_success()

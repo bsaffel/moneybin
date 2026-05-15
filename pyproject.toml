@@ -299,7 +299,7 @@ reportUnusedExpression = true
 [tool.pytest.ini_options]
 # Documentation: https://docs.pytest.org/en/stable/reference/reference.html#configuration-options
 minversion = "7.0"
-addopts = "-ra -q --strict-markers --strict-config -n auto"
+addopts = "-ra -q --strict-markers --strict-config -n auto --dist=loadscope"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
