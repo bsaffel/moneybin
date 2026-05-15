@@ -47,6 +47,14 @@ class TransformService:
         Pending iff the newest completed import is newer than the newest
         ``core.dim_accounts.updated_at``. When ``core.dim_accounts`` is
         missing (pre-first-transform), pending=True if any imports exist.
+
+        Both timestamps are cast to naive ``TIMESTAMP`` in SQL before being
+        returned to Python. ``raw.import_log.completed_at`` is already naive
+        ``TIMESTAMP``, but ``core.dim_accounts.updated_at`` is materialized
+        from ``CURRENT_TIMESTAMP`` by SQLMesh, which DuckDB types as
+        ``TIMESTAMP WITH TIME ZONE``. Mixing tz-aware and naive datetimes in
+        Python's ``>`` comparison raises ``TypeError`` — normalize in SQL so
+        both sides of the comparison are the same type.
         """
         latest_import_at = self._max_completed_import_at()
         last_apply_at = self._max_dim_accounts_updated_at()
@@ -72,7 +80,7 @@ class TransformService:
     def _max_completed_import_at(self) -> datetime | None:
         try:
             row = self._db.execute(
-                f"SELECT MAX(completed_at) FROM {IMPORT_LOG.full_name} "
+                f"SELECT MAX(completed_at)::TIMESTAMP FROM {IMPORT_LOG.full_name} "
                 f"WHERE status NOT IN ('reverted', 'failed')"  # noqa: S608  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
@@ -83,7 +91,7 @@ class TransformService:
     def _max_dim_accounts_updated_at(self) -> datetime | None:
         try:
             row = self._db.execute(
-                f"SELECT MAX(updated_at) FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant
+                f"SELECT MAX(updated_at)::TIMESTAMP FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
             # CatalogException when core.dim_accounts not yet created (pre-first-transform)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -24,9 +24,16 @@ _INSERT_IMPORT = (
 
 
 def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    # Naive timestamp; raw.import_log.completed_at and dim_accounts.updated_at
-    # in production both resolve to TIMESTAMP (no tz) in DuckDB.
+    # Naive timestamp; mirrors raw.import_log.completed_at (TIMESTAMP).
     return datetime(year, month, day, hour, minute)
+
+
+def _tz(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
+    # tz-aware (UTC); mirrors core.dim_accounts.updated_at in production. SQLMesh
+    # materializes the column from CURRENT_TIMESTAMP, which DuckDB types as
+    # TIMESTAMP WITH TIME ZONE. The unit fixture matches that type so a naive-vs-
+    # aware comparison bug in TransformService.freshness() surfaces in tests.
+    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
@@ -41,11 +48,19 @@ def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
 def freshness_db(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> Generator[Database, None, None]:
-    """Empty DB with core.dim_accounts shimmed in (raw.import_log is auto-created)."""
+    """Empty DB with core.dim_accounts shimmed in (raw.import_log is auto-created).
+
+    The session TZ is pinned to UTC so tz-aware datetimes inserted into
+    ``dim_accounts.updated_at`` round-trip predictably through the
+    ``::TIMESTAMP`` cast in ``TransformService.freshness()`` (DuckDB casts
+    ``TIMESTAMPTZ`` to ``TIMESTAMP`` using the session TZ).
+    """
     db = _open_db(tmp_path, mock_secret_store)
     try:
+        db.execute("SET TimeZone = 'UTC'")
         db.execute(
-            "CREATE TABLE core.dim_accounts (account_id VARCHAR, updated_at TIMESTAMP)"
+            "CREATE TABLE core.dim_accounts "
+            "(account_id VARCHAR, updated_at TIMESTAMP WITH TIME ZONE)"
         )
         yield db
     finally:
@@ -56,7 +71,7 @@ def test_freshness_pending_when_import_newer_than_apply(
     freshness_db: Database,
 ) -> None:
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 10, 12, 0)]
     )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
@@ -67,7 +82,7 @@ def test_freshness_pending_when_import_newer_than_apply(
 
 def test_freshness_not_pending_when_apply_newer(freshness_db: Database) -> None:
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 13, 19, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 13, 19, 0)]
     )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
@@ -107,7 +122,7 @@ def test_freshness_filters_reverted_and_failed_imports(
 ) -> None:
     """Reverted and failed rows must not count toward staleness."""
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 10, 12, 0)]
     )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "reverted", _ts(2026, 5, 13, 18, 24)])
     freshness_db.execute(_INSERT_IMPORT, ["i2", "failed", _ts(2026, 5, 13, 18, 30)])
@@ -119,7 +134,7 @@ def test_freshness_filters_reverted_and_failed_imports(
 def test_freshness_counts_partial_imports(freshness_db: Database) -> None:
     """Partial imports landed some rows; they count toward staleness."""
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 10, 12, 0)]
     )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "partial", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
