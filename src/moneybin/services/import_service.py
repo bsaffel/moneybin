@@ -80,7 +80,7 @@ class PerFileResult:
     """One file's outcome inside a batch import."""
 
     path: str
-    status: str  # "imported" | "failed" | "skipped"
+    status: Literal["imported", "failed", "skipped"]
     source_type: str | None
     rows_loaded: int = 0
     rows_skipped: int = 0
@@ -1087,6 +1087,8 @@ class ImportService:
 
         if apply_transforms and result.file_type in ("ofx", "tabular"):
             self._apply_post_import_hooks()
+            # TransformService.apply() is fail-loud: returns applied=True or raises.
+            # Reaching this line means hooks ran, so the rebuilt flag is unconditional.
             result.core_tables_rebuilt = True
 
         logger.info(f"Import complete: {result.summary()}")
@@ -1204,13 +1206,15 @@ class ImportService:
                 if r.file_type in ("ofx", "tabular"):
                     any_transformable = True
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                logger.warning(f"Import failed for {path}: {e}")
+                # error_type only; raw str(e) may embed PII per ofx_extractor.py:228-232
+                error_type = type(e).__name__
+                logger.warning(f"Import failed for {path}: {error_type}")
                 per_file.append(
                     PerFileResult(
                         path=str(path),
                         status="failed",
                         source_type=None,
-                        error=str(e),
+                        error=error_type,
                     )
                 )
 
