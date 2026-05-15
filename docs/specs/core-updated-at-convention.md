@@ -3,7 +3,7 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** in-progress
+- **Status:** implemented
 - **Authority:** Defines the row-level freshness contract for `core.*` models and the model-level freshness surface in `meta.*`. Cited by future specs that probe pipeline or row freshness (e.g., the eventual `agent-ingest-completion.md`).
 
 ## Goal
