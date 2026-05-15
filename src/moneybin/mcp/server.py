@@ -67,8 +67,12 @@ mcp = FastMCP(
         - system_audit_list — unified audit log (filter by actor, action_pattern, target, time)
 
         Getting oriented:
-        - system_status — what data exists, freshness, pending review queues
+        - system_status — what data exists, freshness, pending review queues, transforms-pending signal
         - reports_spending_get — monthly spending trend with MoM/YoY/trailing deltas
+
+        Refreshing derived tables:
+        - import_files and import_inbox_sync apply transforms once at end of batch by default.
+        - When system_status.data.transforms.pending is true, call transform_apply to rebuild core.* tables.
 
         Conventions:
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
