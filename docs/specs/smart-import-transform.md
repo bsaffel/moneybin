@@ -29,6 +29,12 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 9. A new `TransformService` owns SQLMesh interaction. `ImportService.run_transforms()` moves here as `TransformService.apply()`; the source-priority seeding and `refresh_views` calls migrate with it. `ImportService` calls `TransformService(db).apply()` at end-of-batch.
 10. A scenario test imports multiple files and asserts `MAX(dim_accounts.updated_at)` advances and all imported accounts appear in `accounts_list` — regression guard for the originating finding.
 11. Metrics: a new `IMPORT_BATCH_SIZE` histogram per `AGENTS.md` observability requirement. The existing `SQLMESH_RUN_DURATION_SECONDS` is reused; no per-pending gauge (derived signal, not state to scrape).
+12. **Schema drift detection** — a wider failure mode than transforms-pending. `core.dim_accounts` (and other FULL-materialized core tables) can have a snapshot built at an older model revision; queries that SELECT columns added in the newer revision fail with binder errors, surfacing as opaque MCP tool failures. Detection runs at FastMCP startup via a single `duckdb_columns()` catalog query and compares observed columns to a static `EXPECTED_CORE_COLUMNS` constant. On mismatch, the server raises `SchemaDriftError`, mapped through `handle_cli_errors()` to a user-facing "run `moneybin transform apply` to rebuild stale models" message. The check is fail-fast at boot for local-first deployments; multi-tenant degraded-mode is a TODO comment, not built now.
+13. `system_status` envelope adds a `schema_drift` block: `{"tables": [{name, missing_columns}], "remediation": "moneybin transform apply"}` when the boot-time check finds drift but the server is configured to start anyway, or when re-run on demand. Agents see the problem without invoking a failing tool first.
+14. Test coverage for schema drift:
+    - Unit test in `tests/moneybin/test_database.py` for the check function (correct/missing-column cases) plus a perf assertion (warm < 2 ms, cold < 5 ms).
+    - Fixture-parity test in `tests/moneybin/test_db_helpers_parity.py` asserting `EXPECTED_CORE_COLUMNS == { name: set(columns_from_CORE_*_DDL) }` so the boot guard and test fixtures never silently diverge.
+    - Integration test in `tests/integration/test_schema_drift.py` that builds a profile DB, runs the current SQLMesh setup, then `ALTER` drops a column from `core.dim_accounts` (simulates a stale snapshot), starts the server, and asserts `SchemaDriftError` is raised naming the table and column.
 
 ## Data Model
 
@@ -50,6 +56,8 @@ No schema changes. The spec leans on three existing columns/tables:
 - `tests/moneybin/test_cli/test_import_files_cli.py` — variadic, `--no-apply-transforms`, `--output json` parity.
 - `tests/moneybin/test_cli/test_transform_json_output.py` — `--output json` parity for the five transform commands.
 - `tests/scenarios/test_scenario_import_dim_freshness.py` — regression test for the originating finding.
+- `tests/integration/test_schema_drift.py` — upgrade-path test: build SQLMesh-applied DB, drop a column, start server, assert `SchemaDriftError`.
+- `tests/moneybin/test_db_helpers_parity.py` — fixture-parity test: `EXPECTED_CORE_COLUMNS` matches `CORE_*_DDL` strings in `tests/moneybin/db_helpers.py`.
 
 ### Files to Modify
 
@@ -58,7 +66,10 @@ No schema changes. The spec leans on three existing columns/tables:
 - `src/moneybin/mcp/tools/system.py` — extend `system_status` envelope with the `transforms` block; add the pending-state action hint.
 - `src/moneybin/mcp/server.py` — instructions text edits if it names `import_file` directly (per `mcp-server.md` Server Instructions Field rule).
 - `src/moneybin/services/import_service.py` — split `import_file()` into `_import_one()` (private) and `import_files()` (public batch). Remove `run_transforms()`; call `TransformService(self._db).apply()` instead.
-- `src/moneybin/services/system_service.py` — `SystemStatus` gains `transforms_pending: bool` and `transforms_last_apply_at: datetime | None`. `status()` calls `TransformService(self._db).freshness()`.
+- `src/moneybin/services/system_service.py` — `SystemStatus` gains `transforms_pending: bool` and `transforms_last_apply_at: datetime | None`. `status()` calls `TransformService(self._db).freshness()`. Also surfaces `schema_drift` info (queried via the boot-time check's cached state or re-run on demand).
+- `src/moneybin/database.py` — add `SchemaDriftError`, `EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]]` constant, and a `check_core_schema_drift(db) -> dict[str, list[str]]` function that returns a mapping of `table_name -> list of missing columns` (empty dict means no drift). Constant is the source of truth for each FULL-materialized `core.*` table's expected column set, captured manually from the final SELECT of `sqlmesh/models/core/*.sql`; NOT parsed at runtime.
+- `src/moneybin/mcp/server.py` — invoke `check_core_schema_drift()` at FastMCP startup; raise `SchemaDriftError` on mismatch (fail-fast for local-first deployments). Leave a `# TODO multi-tenant:` comment noting degraded-mode is the alternative if we ever go multi-tenant.
+- `src/moneybin/cli/_errors.py` (or equivalent error-mapping module) — map `SchemaDriftError` to the user-facing remediation message ("Run `moneybin transform apply` to rebuild stale models. Tables: …").
 - `src/moneybin/cli/commands/transform.py` — switch from inline `sqlmesh_context` blocks to `TransformService` calls; add `--output json` to each command using the standard envelope.
 - `src/moneybin/cli/commands/import_cmd.py` — rename leaf command, accept variadic paths, add `--no-apply-transforms`.
 - `src/moneybin/metrics/registry.py` — add `IMPORT_BATCH_SIZE` histogram.
@@ -136,18 +147,27 @@ def transform_apply() -> ResponseEnvelope: ...
 
 `import_inbox_sync` gains the same `apply_transforms: bool = True` parameter for symmetry. No other shape changes to that tool.
 
-`system_status` envelope adds:
+`system_status` envelope adds two new blocks (`transforms` always; `schema_drift` only when drift is detected):
 
 ```json
 {
   "data": {
-    "transforms": {"pending": true, "last_apply_at": "2026-05-13T18:24:00Z"}
+    "transforms": {"pending": true, "last_apply_at": "2026-05-13T18:24:00Z"},
+    "schema_drift": {
+      "tables": [{"name": "core.dim_accounts", "missing_columns": ["display_name", "last_four"]}],
+      "remediation": "moneybin transform apply"
+    }
   },
-  "actions": ["Run transform_apply to refresh derived tables (raw imports newer than last refresh)"]
+  "actions": [
+    "Run transform_apply to refresh derived tables (raw imports newer than last refresh)",
+    "Run transform_apply to rebuild stale models — core.dim_accounts is missing 2 expected columns"
+  ]
 }
 ```
 
-The action appears only when `pending=true`.
+The `transforms` action appears only when `pending=true`. The `schema_drift` action appears only when drift is detected.
+
+**Failure mode of schema drift.** When the materialized snapshot of a core table lacks columns that current service code SELECTs (e.g., `AccountService.list_accounts()` references `display_name`/`last_four`/`archived` after a model revision), DuckDB raises a binder error and `accounts_list` / `reports_networth_get` / `accounts_resolve` all fail with opaque "Error calling tool …" envelopes. Drift detection makes the problem loud and actionable at boot rather than surfacing as one-off tool failures.
 
 ## Data Flow
 
@@ -184,6 +204,9 @@ flowchart TD
 | MCP | `test_mcp/test_import_files.py` | List-shaped `paths`, per-file result rows, `transforms_applied` summary flag. |
 | MCP | `test_mcp/test_system_status_transforms.py` | Pending=true when raw is newer; pending=false after apply; action hint appears only when pending. |
 | Scenario | `tests/scenarios/test_scenario_import_dim_freshness.py` | **Regression guard for the finding.** Import N files, verify `MAX(dim_accounts.updated_at)` advances and all N accounts appear in `accounts_list`. |
+| Unit | `tests/moneybin/test_database.py` (extended) | `check_core_schema_drift()` returns empty for healthy schema, returns missing-columns map when a column is dropped. Perf assertion: warm < 2 ms, cold < 5 ms. |
+| Unit | `tests/moneybin/test_db_helpers_parity.py` | `EXPECTED_CORE_COLUMNS == { name: set(columns_from_CORE_*_DDL) }` — guards against the boot guard and test fixtures diverging. |
+| Integration | `tests/integration/test_schema_drift.py` | Upgrade-path test: build SQLMesh-applied DB, `ALTER` drops a column, start server, assert `SchemaDriftError` raised naming table + missing column. |
 
 ## Dependencies
 
@@ -197,3 +220,7 @@ flowchart TD
 - `transform_restate` MCP exposure — remains CLI-only per existing operator-territory policy in `mcp-tool-surface.md`.
 - Scheduled/cron-style transform reruns — not needed once batch-boundary auto-apply works.
 - Capturing SQLMesh stdout. The Python API provides structured objects; stdout capture is neither attempted nor required.
+- Auto-running transforms on schema-drift detection. The `transform_apply` MCP/CLI surface this spec ships is the remediation path; drift detection only makes the problem loud and actionable.
+- Parsing SQLMesh model SQL at runtime to derive `EXPECTED_CORE_COLUMNS`. The constant is captured manually from the final SELECT of each `sqlmesh/models/core/*.sql`; the fixture-parity test guards against drift between the constant and the test DDL.
+- Drift detection on `raw.*`, `prep.*`, or `app.*` schemas. Only `core.*` is checked — `raw`/`prep` aren't read by services, and `app.*` schema changes flow through the migrations subsystem.
+- Multi-tenant degraded-mode (per-request `schema_drift` error envelopes instead of refusing to boot). Leave a `# TODO multi-tenant:` comment; don't build it.
