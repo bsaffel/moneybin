@@ -18,7 +18,8 @@ WITH notes_agg AS (
       author := author,
       created_at := created_at
     ) ORDER BY created_at) AS notes,
-    COUNT(*) AS note_count
+    COUNT(*) AS note_count,
+    MAX(created_at) AS notes_latest
   FROM app.transaction_notes
   GROUP BY transaction_id
 ),
@@ -26,7 +27,8 @@ tags_agg AS (
   SELECT
     transaction_id,
     LIST(tag ORDER BY tag) AS tags,
-    COUNT(*) AS tag_count
+    COUNT(*) AS tag_count,
+    MAX(applied_at) AS tags_latest
   FROM app.transaction_tags
   GROUP BY transaction_id
 ),
@@ -40,7 +42,8 @@ splits_agg AS (
       subcategory := subcategory,
       note := note
     ) ORDER BY ord, split_id) AS splits,
-    COUNT(*) AS split_count
+    COUNT(*) AS split_count,
+    MAX(created_at) AS splits_latest
   FROM app.transaction_splits
   GROUP BY transaction_id
 ),
@@ -82,12 +85,16 @@ enriched AS (
       NOT bt_debit.transfer_id IS NULL OR NOT bt_credit.transfer_id IS NULL
     ) AS is_transfer,
     t.loaded_at,
+    c.categorized_at,
     n.notes,
     n.note_count,
+    n.notes_latest,
     tg.tags,
     tg.tag_count,
+    tg.tags_latest,
     s.splits,
     s.split_count,
+    s.splits_latest,
     COALESCE(s.split_count, 0) > 0 AS has_splits
   FROM prep.int_transactions__merged AS t
   LEFT JOIN app.transaction_categories AS c
@@ -137,6 +144,13 @@ SELECT
   match_confidence, /* Match confidence score; NULL for unmatched records */
   source_extracted_at, /* When the data was parsed from the source file */
   loaded_at, /* When this record was last written */
+  GREATEST(
+    loaded_at,
+    COALESCE(categorized_at, loaded_at),
+    COALESCE(notes_latest, loaded_at),
+    COALESCE(tags_latest, loaded_at),
+    COALESCE(splits_latest, loaded_at)
+  ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, or categorization. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
   transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
   DATE_PART('year', transaction_date) AS transaction_year, /* Calendar year */
