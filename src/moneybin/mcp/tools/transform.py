@@ -77,9 +77,12 @@ def transform_validate() -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool(sensitivity="low", read_only=False)
 def transform_audit(start: str, end: str) -> ResponseEnvelope:
-    """Run SQLMesh data-quality audits over a date window."""
+    """Run SQLMesh data-quality audits over a date window.
+
+    May write SQLMesh state tables on first Context init.
+    """
     from moneybin.services.transform_service import TransformService
 
     with get_database() as db:
