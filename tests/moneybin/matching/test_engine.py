@@ -1,6 +1,7 @@
 """Tests for TransactionMatcher orchestrator."""
 
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9,6 +10,12 @@ import pytest
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
 from moneybin.matching.engine import MatchResult, TransactionMatcher
+from moneybin.matching.persistence import (
+    get_active_matches,
+    get_pending_matches,
+    undo_match,
+    update_match_status,
+)
 from moneybin.matching.scoring import CandidatePair
 
 
@@ -95,8 +102,6 @@ class TestFetchActiveDedupDecisions:
         _create_test_table(db)
 
         # Pre-seed two accepted dedup decisions before any run.
-        from datetime import UTC, datetime
-
         now = datetime.now(tz=UTC).isoformat()
         db.execute(
             """
@@ -315,12 +320,6 @@ class TestTransactionMatcher:
         assert result1.auto_merged == 1
 
         # Undo and reject
-        from moneybin.matching.persistence import (
-            get_active_matches,
-            undo_match,
-            update_match_status,
-        )
-
         matches = get_active_matches(db, match_type="dedup")
         undo_match(db, matches[0]["match_id"], reversed_by="user")
         update_match_status(
@@ -464,11 +463,6 @@ class TestTransferDetection:
 
         result1 = matcher.run()
         assert result1.pending_transfers >= 1
-
-        from moneybin.matching.persistence import (
-            get_pending_matches,
-            update_match_status,
-        )
 
         pending = get_pending_matches(db, match_type="transfer")
         for m in pending:

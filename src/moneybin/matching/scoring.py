@@ -38,6 +38,7 @@ class CandidatePair:
     confidence_score: float
     description_a: str
     description_b: str
+    # Transfer-only; dedup pairs leave these None (used by _claim_key for slot scoping).
     account_id_a: str | None = None
     account_id_b: str | None = None
 

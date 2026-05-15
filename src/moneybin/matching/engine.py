@@ -188,8 +188,8 @@ class TransactionMatcher:
         tier: MatchTier,
         status: MatchStatus,
         decided_by: str,
-    ) -> str:
-        """Write one dedup match decision to the database and return the match_id."""
+    ) -> None:
+        """Write one dedup match decision to the database."""
         match_id = uuid.uuid4().hex[:12]
         create_match_decision(
             self._db,
@@ -214,7 +214,6 @@ class TransactionMatcher:
                 f"desc similarity {pair.description_similarity:.2f}"
             ),
         )
-        return match_id
 
     def _run_tier(
         self,
@@ -345,6 +344,8 @@ class TransactionMatcher:
 
         assigned = assign_greedy(candidates)
         tier_pending = 0
+        transfer_match_type: MatchType = "transfer"
+        transfer_status: MatchStatus = "accepted" if auto_accept else "pending"
 
         for pair in assigned:
             TRANSFER_MATCH_CONFIDENCE.observe(pair.confidence_score)
@@ -357,8 +358,6 @@ class TransactionMatcher:
                 continue
 
             match_id = uuid.uuid4().hex[:12]
-            transfer_match_type: MatchType = "transfer"
-            transfer_status: MatchStatus = "accepted" if auto_accept else "pending"
             create_match_decision(
                 self._db,
                 match_id=match_id,

@@ -5,7 +5,7 @@ scoring pair wins. Both rows in a winning pair are marked as "claimed"
 and cannot participate in further assignments.
 """
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 class _Matchable(Protocol):
@@ -27,7 +27,7 @@ class _Matchable(Protocol):
     def account_id_b(self) -> str | None: ...
 
 
-def _claim_key(pair: _Matchable, side: str) -> str:
+def _claim_key(pair: _Matchable, side: Literal["a", "b"]) -> str:
     """Build a claim key for greedy assignment.
 
     For transfer pairs (which have account_id_a/account_id_b), include
