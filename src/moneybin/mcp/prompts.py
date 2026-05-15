@@ -127,7 +127,7 @@ def onboarding() -> str:
         so they can start querying their finances.
 
         **Relevant tools:**
-        - import_file — import financial data files
+        - import_files — import one or more financial data files
         - import_list_formats — see supported formats
         - accounts_list — verify imported accounts
         - transactions_categorize_stats — check categorization coverage
@@ -135,7 +135,7 @@ def onboarding() -> str:
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
-        2. Import files one at a time with import_file
+        2. Import the user's files in one call to import_files (pass a list of paths)
         3. Verify with accounts_list that accounts were created
         4. Check transactions_categorize_stats — if many uncategorized, offer to help
         5. Show reports_spending_get as their first financial snapshot

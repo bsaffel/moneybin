@@ -2,7 +2,7 @@
 """Import namespace tools — file import, preview, status, revert, format listing.
 
 Tools:
-    - import_file — Import a financial data file (low sensitivity)
+    - import_files — Import one or more financial data files (low sensitivity)
     - import_preview — Preview a tabular file without importing (low sensitivity)
     - import_status — List past import batches (low sensitivity)
     - import_revert — Undo an import batch by import_id (low sensitivity)
@@ -12,6 +12,7 @@ Tools:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -40,76 +41,86 @@ def _validate_file_path(file_path: str) -> Path:
 
 
 @mcp_tool(sensitivity="low", read_only=False, idempotent=False)
-def import_file(
-    file_path: str,
-    account_id: str | None = None,
-    account_name: str | None = None,
-    institution: str | None = None,
-    format_name: str | None = None,
+def import_files(
+    paths: list[str],
+    apply_transforms: bool = True,
     force: bool = False,
 ) -> ResponseEnvelope:
-    """Import a financial data file into MoneyBin.
+    """Import one or more financial data files into MoneyBin.
 
-    Supported formats (detected automatically by extension):
+    Supported formats (auto-detected by extension):
       - .ofx / .qfx / .qbo -- OFX/Quicken bank statements
       - .pdf -- W-2 tax forms
       - .csv / .tsv / .xlsx / .parquet / .feather -- tabular transaction exports
 
-    For single-account tabular files, provide ``account_name``.
-    Multi-account files (Tiller, Mint, etc.) are detected automatically.
+    Per-file failures do not abort the batch. Transforms run once at end
+    of batch by default; pass apply_transforms=False to defer.
 
     Args:
-        file_path: Absolute path to the file to import.
-        account_id: Explicit account identifier (bypasses name matching).
-        account_name: Account name for single-account tabular files.
-        institution: Institution name override for OFX/QFX/QBO files. Consulted
-            only when the file's <FI><ORG>, FID lookup, and filename heuristic
-            all yield nothing. For files with institution metadata, this
-            argument is logged and ignored.
-        format_name: Use a specific named format (bypass auto-detection).
-        force: If True, allow re-importing a file already in the import log.
-            Returns a structured error otherwise.
+        paths: One or more absolute file paths to import. Each path must
+            be within the user's home directory.
+        apply_transforms: Run SQLMesh transforms once after the batch
+            completes. Defaults to True. Pass False to import without
+            refreshing core tables; the transforms_pending signal in
+            system_status will indicate the pending state, and a later
+            transform_apply call will catch the data up.
+        force: If True, re-import files already in the import log.
+
+    Returns:
+        Envelope with data containing imported/failed/total counts,
+        transforms state, and a "files" list of per-file results.
+        Amounts use accounting convention: negative=expense,
+        positive=income; transfers exempt. Display currency is set
+        in summary.display_currency.
     """
     from moneybin.services.import_service import ImportService
 
-    validated = _validate_file_path(file_path)
-    try:
-        with get_database() as db:
-            result = ImportService(db).import_file(
-                str(validated),
-                account_id=account_id,
-                account_name=account_name,
-                institution=institution,
-                format_name=format_name,
-                force=force,
-                interactive=False,
-            )
-    except ValueError as e:
-        return build_error_envelope(
-            error=UserError(str(e), code="import_error"),
-            sensitivity="low",
+    validated = [_validate_file_path(p) for p in paths]
+    with get_database() as db:
+        batch = ImportService(db).import_files(
+            [str(p) for p in validated],
+            apply_transforms=apply_transforms,
+            force=force,
         )
 
-    import_id = result.import_id
+    files = [
+        {
+            "path": r.path,
+            "status": r.status,
+            "source_type": r.source_type,
+            "rows_loaded": r.rows_loaded,
+            "import_id": r.import_id,
+            **({"error": r.error} if r.error else {}),
+        }
+        for r in batch.per_file
+    ]
+
+    actions: list[str] = []
+    if not batch.transforms_applied and batch.imported_count > 0:
+        actions.append(
+            "Run transform_apply when ready to refresh derived tables"
+        )
+    if batch.transforms_error:
+        actions.append(
+            "Transform apply failed after import — call transform_apply to retry"
+        )
+    actions.append("Use system_status to confirm refreshed counts")
+
+    data: dict[str, Any] = {
+        "imported_count": batch.imported_count,
+        "failed_count": batch.failed_count,
+        "total_count": batch.total_count,
+        "transforms_applied": batch.transforms_applied,
+        "transforms_duration_seconds": batch.transforms_duration_seconds,
+        "files": files,
+    }
+    if batch.transforms_error:
+        data["transforms_error"] = batch.transforms_error
 
     return build_envelope(
-        data={
-            "message": result.summary(),
-            "file_type": result.file_type,
-            "transactions": result.transactions,
-            "accounts": result.accounts,
-            "date_range": result.date_range,
-            "core_tables_rebuilt": result.core_tables_rebuilt,
-            "import_id": import_id,
-        },
+        data=data,
         sensitivity="low",
-        actions=[
-            f"Use import_revert with import_id={import_id} to undo this import"
-            if import_id
-            else "Use import_status to view recent imports",
-            "Use transactions_get to view imported transactions",
-            "Use transactions_categorize_pending_list to categorize new transactions",
-        ],
+        actions=actions,
     )
 
 
@@ -162,7 +173,7 @@ def import_preview(file_path: str) -> ResponseEnvelope:
         data=preview,
         sensitivity="low",
         actions=[
-            "Use import_file to import after reviewing the preview",
+            "Use import_files to import after reviewing the preview",
             "Use import_list_formats for available named formats",
         ],
     )
@@ -194,7 +205,7 @@ def import_status(
         data=records,
         sensitivity="low",
         actions=[
-            "Use import_file to import a new file",
+            "Use import_files to import a new file",
         ],
     )
 
@@ -209,7 +220,7 @@ def import_revert(import_id: str) -> ResponseEnvelope:
 
     Args:
         import_id: UUID of the import batch to revert. Get it from
-            import_file's response or from import_status.
+            import_files's response or from import_status.
     """
     from moneybin.loaders import import_log
 
@@ -273,7 +284,7 @@ def import_list_formats() -> ResponseEnvelope:
         sensitivity="low",
         actions=[
             "Use import_preview to test a format against a file",
-            "Use import_file with format_name to import using a specific format",
+            "Use import_files to import a file once you have the format name available",
         ],
     )
 
@@ -282,11 +293,14 @@ def register_import_tools(mcp: FastMCP) -> None:
     """Register all import namespace tools with the FastMCP server."""
     register(
         mcp,
-        import_file,
-        "import_file",
-        "Import a financial data file (OFX, QFX, QBO, CSV, TSV, Excel, "
-        "Parquet, PDF) into MoneyBin. "
-        "Writes raw.* source tables, raw.import_log, and rebuilds core/* downstream tables; revert via import_revert with the returned import_id.",
+        import_files,
+        "import_files",
+        "Import one or more financial data files (OFX, QFX, QBO, CSV, TSV, "
+        "Excel, Parquet, PDF) into MoneyBin. Per-file failures do not abort "
+        "the batch; transforms run once at end-of-batch unless deferred. "
+        "Writes raw.* source tables and raw.import_log; revert each import "
+        "via import_revert with the returned import_id. "
+        "Amounts use accounting convention: negative=expense, positive=income.",
     )
     register(
         mcp,
@@ -307,7 +321,7 @@ def register_import_tools(mcp: FastMCP) -> None:
         "import_revert",
         "Undo an import batch by import_id (deletes the rows it produced and "
         "marks the batch as reverted). "
-        "Hard-deletes from raw.* source tables and updates raw.import_log.status='reverted'; the deletion is permanent — re-import the original file via import_file to restore the rows.",
+        "Hard-deletes from raw.* source tables and updates raw.import_log.status='reverted'; the deletion is permanent — re-import the original file via import_files to restore the rows.",
     )
     register(
         mcp,
