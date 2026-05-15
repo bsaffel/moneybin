@@ -1,9 +1,14 @@
-"""Tests for transform CLI commands."""
+"""Tests for transform CLI commands (text output paths and restate).
+
+JSON-output parity for status/plan/apply/validate/audit lives in
+``test_transform_json_output.py``; this file covers the text rendering and
+the restate command (which still drives ``sqlmesh_context`` directly).
+"""
 
 import logging
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -11,8 +16,19 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transform import app
+from moneybin.services.transform_service import (
+    AuditResult,
+    TransformStatus,
+    ValidationResult,
+)
 
 runner = CliRunner()
+
+
+@contextmanager
+def _fake_get_database(*_a: Any, **_kw: Any) -> Generator[MagicMock, None, None]:
+    """Stub get_database so the CLI never opens a real DB."""
+    yield MagicMock()
 
 
 def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
@@ -28,102 +44,152 @@ def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
 
 
 class TestTransformStatus:
-    """Test transform status command."""
+    """Test transform status command (text output)."""
 
-    @patch("moneybin.database.get_database")
-    @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_status_succeeds(
-        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
-    ) -> None:
-        """Transform status calls SQLMesh info."""
-        ctx_fn, _mock_ctx = _mock_sqlmesh_context()
-        mock_ctx_factory.side_effect = ctx_fn
-        result = runner.invoke(app, ["status"])
-        assert result.exit_code == 0
-
-    @patch("moneybin.database.get_database")
-    @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_status_formats_finalized_timestamp(
+    def test_status_uninitialized(
         self,
-        mock_ctx_factory: MagicMock,
-        _mock_get_db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """finalized_ts (epoch ms) is rendered as a local-time string."""
-        ctx_fn, mock_ctx = _mock_sqlmesh_context()
-        env = MagicMock()
-        # 2026-01-15 12:34:56 UTC in epoch milliseconds.
-        env.finalized_ts = int(
-            datetime(2026, 1, 15, 12, 34, 56, tzinfo=UTC).timestamp() * 1000
+        """Missing SQLMesh env reports the bootstrap hint."""
+
+        def fake_status(_self: Any) -> TransformStatus:
+            return TransformStatus(
+                environment="prod",
+                initialized=False,
+                last_apply_at=None,
+                pending=False,
+                latest_import_at=None,
+            )
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.status",
+            fake_status,
         )
-        mock_ctx.state_reader.get_environment.return_value = env
-        mock_ctx_factory.side_effect = ctx_fn
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        expected = (
-            datetime(2026, 1, 15, 12, 34, 56, tzinfo=UTC)
-            .astimezone()
-            .strftime("%Y-%m-%d %H:%M:%S %Z")
-        )
-        assert f"Last updated: {expected}" in caplog.text
+        assert "No SQLMesh environment initialized yet" in caplog.text
 
-    @patch("moneybin.database.get_database")
-    @patch("moneybin.cli.commands.transform.sqlmesh_context")
+    def test_status_renders_last_apply(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Last-apply timestamp is rendered in text mode."""
+
+        def fake_status(_self: Any) -> TransformStatus:
+            return TransformStatus(
+                environment="prod",
+                initialized=True,
+                last_apply_at=datetime(2026, 1, 15, 12, 34, 56),
+                pending=False,
+                latest_import_at=None,
+            )
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.status",
+            fake_status,
+        )
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0
+        assert "Last apply: 2026-01-15 12:34:56" in caplog.text
+
     def test_status_reports_never_finalized_when_null(
         self,
-        mock_ctx_factory: MagicMock,
-        _mock_get_db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Missing finalized_ts is reported as 'never finalized'."""
-        ctx_fn, mock_ctx = _mock_sqlmesh_context()
-        env = MagicMock()
-        env.finalized_ts = None
-        mock_ctx.state_reader.get_environment.return_value = env
-        mock_ctx_factory.side_effect = ctx_fn
+        """Initialized env without a last_apply_at reports 'never finalized'."""
+
+        def fake_status(_self: Any) -> TransformStatus:
+            return TransformStatus(
+                environment="prod",
+                initialized=True,
+                last_apply_at=None,
+                pending=False,
+                latest_import_at=None,
+            )
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.status",
+            fake_status,
+        )
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        assert "Last updated: never finalized" in caplog.text
+        assert "Last apply: never finalized" in caplog.text
 
 
 class TestTransformValidate:
-    """Test transform validate command."""
+    """Test transform validate command (text output)."""
 
-    @patch("moneybin.database.get_database")
-    @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_validate_succeeds(
-        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
-    ) -> None:
-        """Transform validate runs plan in dry-run mode."""
-        ctx_fn, mock_ctx = _mock_sqlmesh_context()
-        mock_ctx_factory.side_effect = ctx_fn
+    def test_validate_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Valid models exit 0."""
+
+        def fake_validate(_self: Any) -> ValidationResult:
+            return ValidationResult(valid=True, errors=[])
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.validate",
+            fake_validate,
+        )
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
         result = runner.invoke(app, ["validate"])
-        assert result.exit_code == 0
-        mock_ctx.plan.assert_called_once()
+        assert result.exit_code == 0, result.output
 
 
 class TestTransformAudit:
-    """Test transform audit command."""
+    """Test transform audit command (text output)."""
 
-    @patch("moneybin.database.get_database")
-    @patch("moneybin.cli.commands.transform.sqlmesh_context")
-    def test_audit_succeeds(
-        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
-    ) -> None:
-        """Transform audit runs SQLMesh audit."""
-        ctx_fn, mock_ctx = _mock_sqlmesh_context()
-        mock_ctx_factory.side_effect = ctx_fn
+    def test_audit_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Audit with all-pass result exits 0."""
+
+        def fake_audit(_self: Any, _start: str, _end: str) -> AuditResult:
+            return AuditResult(passed=2, failed=0, audits=[])
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.audit",
+            fake_audit,
+        )
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
         result = runner.invoke(
             app, ["audit", "--start", "2026-01-01", "--end", "2026-01-31"]
         )
-        assert result.exit_code == 0
-        mock_ctx.audit.assert_called_once()
+        assert result.exit_code == 0, result.output
+
+    def test_audit_failure_exits_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Any failed audit exits with code 1."""
+
+        def fake_audit(_self: Any, _start: str, _end: str) -> AuditResult:
+            return AuditResult(
+                passed=0,
+                failed=1,
+                audits=[{"name": "x", "status": "failed", "detail": "boom"}],
+            )
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.audit",
+            fake_audit,
+        )
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+        result = runner.invoke(
+            app, ["audit", "--start", "2026-01-01", "--end", "2026-01-31"]
+        )
+        assert result.exit_code == 1
 
 
 class TestTransformRestate:
