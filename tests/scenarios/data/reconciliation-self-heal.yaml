@@ -1,0 +1,26 @@
+scenario: reconciliation-self-heal
+description: >
+  Phase 1 fixture spec for the two-phase reconciliation self-heal test.
+  The pytest entry (test_reconciliation_self_heal.py) drives both phases
+  directly because the two-pass import + re-transform pattern does not fit
+  the single-pass run_scenario() contract.
+  Phase 1 loads fixture_a (transactions outside the Jan 10-20 gap) plus
+  balance assertions; asserts reconciliation_delta is non-zero.
+  Phase 2 loads fixture_b (the gap transactions) and re-runs transform;
+  asserts reconciliation_delta resolves to zero within $0.01.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures:
+    - path: reconciliation-self-heal/fixture_a.csv
+      account: recon-checking
+      source_type: csv
+
+# Steps are driven by the pytest entry — see test_reconciliation_self_heal.py.
+pipeline: []
+
+gates:
+  required_assertions: all
+  required_expectations: all

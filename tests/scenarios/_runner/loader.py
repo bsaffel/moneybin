@@ -37,6 +37,21 @@ class ScenarioValidationError(ValueError):
     """Raised when a scenario YAML fails Pydantic validation."""
 
 
+class CategorySeedSpec(BaseModel):
+    """A user-category override to seed into app.transaction_categories.
+
+    Written after fixture rows are loaded so the categorize step skips these
+    transactions (which only processes rows absent from transaction_categories).
+    The source_transaction_id must match a transaction in the parent fixture.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    source_transaction_id: str
+    category: str
+    subcategory: str | None = None
+    categorized_by: str = "user"
+
+
 class FixtureSpec(BaseModel):
     """A fixture file referenced by a scenario's setup block."""
 
@@ -46,6 +61,10 @@ class FixtureSpec(BaseModel):
     # Only csv/ofx are implemented in fixture_loader; pdf will be added when
     # a loader exists. Reject at validation rather than crashing mid-run.
     source_type: Literal["csv", "ofx"]
+    # Optional per-transaction category overrides. Written to
+    # app.transaction_categories after raw rows are loaded so the categorize
+    # step skips these transactions (they already have a category entry).
+    categories: list[CategorySeedSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_path(self) -> FixtureSpec:

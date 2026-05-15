@@ -1,0 +1,29 @@
+scenario: networth-correctness
+description: >
+  reports.net_worth daily totals must match hand-computed ground truth derived
+  from deterministic fixture amounts. Uses two accounts (checking, savings)
+  with exact transaction amounts. Balance assertions are seeded directly in the
+  pytest entry before transform runs, so no generate step is needed.
+  Expected net-worth values are computed independently from fixture data before
+  running the pipeline.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures:
+    - path: networth-correctness/checking.csv
+      account: networth-checking
+      source_type: csv
+    - path: networth-correctness/savings.csv
+      account: networth-savings
+      source_type: csv
+
+# Pipeline steps are driven by the pytest entry (test_networth_correctness.py)
+# rather than the YAML runner because balance assertions must be inserted between
+# load_fixtures and transform, which requires direct DB access mid-pipeline.
+pipeline: []
+
+gates:
+  required_assertions: all
+  required_expectations: all
