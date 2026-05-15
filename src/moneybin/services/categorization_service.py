@@ -959,15 +959,24 @@ class CategorizationService:
         """
         # Single round-trip: DuckDB supports RETURNING on UPDATE, so the
         # post-update size flows back without a separate SELECT.
+        #
+        # The `updated_at` advance is gated on the exemplars set actually
+        # growing — when the exemplar already exists, the SET expression is
+        # a no-op and the row's per-row freshness must NOT advance, per the
+        # spec's "advances iff a real input changed" contract. See
+        # docs/specs/core-updated-at-convention.md.
         row = self._db.execute(
             f"""
             UPDATE {USER_MERCHANTS.full_name}
             SET exemplars = list_distinct(list_append(exemplars, ?)),
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = CASE
+                    WHEN list_contains(exemplars, ?) THEN updated_at
+                    ELSE CURRENT_TIMESTAMP
+                END
             WHERE merchant_id = ?
             RETURNING len(exemplars)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant
-            [match_text, merchant_id],
+            [match_text, match_text, merchant_id],
         ).fetchone()
         new_size = int(row[0]) if row and row[0] is not None else 0
         MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(new_size)

@@ -115,14 +115,18 @@ class SystemService:
         """Return freshness for one SQLMesh model, or None if not yet applied.
 
         Reads from meta.model_freshness; returns None when the model has never
-        been materialized (no row in sqlmesh._snapshots).
+        been materialized (no row in sqlmesh._snapshots) or when the view
+        itself does not yet exist (fresh DB, no `sqlmesh apply` yet).
         """
-        row = self._db.execute(
-            "SELECT last_changed_at, last_applied_at "
-            "FROM meta.model_freshness "
-            "WHERE model_name = ?",
-            [model_name],
-        ).fetchone()
+        try:
+            row = self._db.execute(
+                "SELECT last_changed_at, last_applied_at "
+                "FROM meta.model_freshness "
+                "WHERE model_name = ?",
+                [model_name],
+            ).fetchone()
+        except Exception:  # noqa: BLE001 — view may not exist before first transform
+            return None
         if row is None:
             return None
         return ModelFreshness(

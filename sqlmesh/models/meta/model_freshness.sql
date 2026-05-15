@@ -49,6 +49,6 @@ current_version_per_name AS (
 SELECT
   l.model_name, /* Schema-qualified model name, e.g. 'core.dim_accounts', 'seeds.categories'. */
   CAST(epoch_ms(c.version_first_seen_ms) AS TIMESTAMP) AS last_changed_at, /* When the current content version of this model was first materialized. Advances only when model definition or dependencies change. */
-  CAST(epoch_ms(l.last_applied_ms) AS TIMESTAMP) AS last_applied_at /* When SQLMesh last touched any snapshot row for this model. Advances on every apply, idempotent or not. */
+  CAST(epoch_ms(l.last_applied_ms) AS TIMESTAMP) AS last_applied_at /* When SQLMesh last wrote to any snapshot row for this model. Underlying source is `_snapshots.updated_ts`, which captures snapshot-record updates (push/touch/unpause/state changes), not strict model-execution events. Advances on every apply; metadata-only touches (restore, environment promotion) also bump it. For strict "was this model just executed?" semantics, the SQLMesh `_intervals` / run-history surface is more authoritative — wire one in if a future consumer needs it. */
 FROM latest_per_name AS l
 JOIN current_version_per_name AS c USING (model_name)

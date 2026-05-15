@@ -63,6 +63,16 @@ All `updated_at` columns are `TIMESTAMP` and may be `NULL` only where the row's 
 - `NULL` `updated_at` means "this row's freshness is the model's freshness." Consumers needing a non-`NULL` answer should `COALESCE(updated_at, <meta.model_freshness.last_changed_at for this row's contributing seed model>)`. The model name is derivable from row-level fields where it matters (e.g., `is_user = FALSE` rows in `dim_categories` came from `seeds.categories`).
 - `updated_at` does not imply causality across rows. Two rows with the same `updated_at` may have changed for unrelated reasons.
 
+### Known limitation: curation deletes and edits on `fct_transactions`
+
+`fct_transactions.updated_at` aggregates `MAX(created_at)` from `app.transaction_notes`, `MAX(applied_at)` from `app.transaction_tags`, and `MAX(created_at)` from `app.transaction_splits`. Each of these app tables tracks only an insert-time column today — there is no per-row "last edited" timestamp. As a consequence:
+
+- **Edits to a note's text (`UPDATE app.transaction_notes SET text`)** do not advance `fct_transactions.updated_at` for the parent transaction.
+- **Tag updates (`UPDATE app.transaction_tags`)** do not advance it.
+- **Deletes** (notes / tags / splits) leave `MAX(...)` over the remaining rows unchanged or smaller, so a delete is silently invisible.
+
+Closing this gap requires either (a) adding an `updated_at` column to each curation table and refreshing it on UPDATE in `transaction_service.py`, or (b) introducing a count-based signal alongside `MAX(...)` so deletes can be detected. Both are real follow-up work, scoped out of this spec and tracked separately. Until then, consumers needing strict edit/delete sensitivity on transactions must consult `app.audit_log` rather than relying on `fct_transactions.updated_at` alone.
+
 ## Model-level freshness: `meta.model_freshness`
 
 `meta.model_freshness` is a SQLMesh view that wraps SQLMesh's internal state schema and exposes a stable public contract:

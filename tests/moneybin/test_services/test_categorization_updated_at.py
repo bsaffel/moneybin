@@ -106,6 +106,39 @@ class TestUserMerchantsUpdatedAt:
         assert after is not None
         assert after[0] > before[0]
 
+    @pytest.mark.unit
+    def test_append_exemplar_idempotent_does_not_advance_updated_at(
+        self, db: Database
+    ) -> None:
+        """Re-appending an existing exemplar must not advance updated_at.
+
+        The spec's per-row freshness contract states updated_at advances iff
+        a real input changed. list_distinct(list_append(...)) is a no-op when
+        the exemplar already exists, so the row's freshness must not move.
+        """
+        svc = CategorizationService(db)
+        merchant_id = svc.create_merchant(
+            raw_pattern=None,
+            canonical_name="Starbucks",
+            match_type="oneOf",
+            exemplars=["STARBUCKS #1234"],
+        )
+        before = db.execute(
+            "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert before is not None
+        time.sleep(0.01)
+        svc._append_exemplar(merchant_id, "STARBUCKS #1234")  # pyright: ignore[reportPrivateUsage]
+        after = db.execute(
+            "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert after is not None
+        assert after[0] == before[0], (
+            "re-appending an existing exemplar should not advance updated_at"
+        )
+
 
 class TestCategoryOverridesUpdatedAt:
     """``app.category_overrides.updated_at`` lifecycle via CategorizationService.
