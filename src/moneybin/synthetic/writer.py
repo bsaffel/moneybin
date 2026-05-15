@@ -16,14 +16,14 @@ from typing import Any
 import polars as pl
 
 from moneybin.database import Database
-from moneybin.tables import GROUND_TRUTH
-from moneybin.utils.slugify import slugify
 from moneybin.synthetic.category_mapping import to_canonical
 from moneybin.synthetic.models import (
     GeneratedAccount,
     GeneratedTransaction,
     GenerationResult,
 )
+from moneybin.tables import GROUND_TRUTH
+from moneybin.utils.slugify import slugify
 
 logger = logging.getLogger(__name__)
 
