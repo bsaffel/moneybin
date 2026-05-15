@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from tests.scenarios._runner import load_shipped_scenario, scenario_env
@@ -32,9 +34,9 @@ from tests.scenarios._runner.steps import run_step
 #               → net worth = $4,975 + $5,500 = $10,475.00
 #   2024-01-31: checking = $4,900 (assertion), savings = $5,510 (assertion)
 #               → net worth = $4,900 + $5,510 = $10,410.00
-_EXPECTED: list[tuple[str, float]] = [
-    ("2024-01-15", 10_475.00),
-    ("2024-01-31", 10_410.00),
+_EXPECTED: list[tuple[str, Decimal]] = [
+    ("2024-01-15", Decimal("10475.00")),
+    ("2024-01-31", Decimal("10410.00")),
 ]
 
 
@@ -76,7 +78,7 @@ def test_networth_correctness() -> None:
                 [date_str],
             ).fetchone()
             assert row is not None, f"no net_worth row for {date_str}"
-            actual = float(row[0])
-            assert abs(actual - expected) < 0.01, (
-                f"net_worth on {date_str}: expected ${expected:.2f}, got ${actual:.2f}"
+            actual = Decimal(str(row[0]))
+            assert abs(actual - expected) < Decimal("0.01"), (
+                f"net_worth on {date_str}: expected ${expected}, got ${actual}"
             )
