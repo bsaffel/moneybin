@@ -19,18 +19,20 @@ Audited as of 2026-05-15:
 |---|---|---|
 | `docs/` root | 7 | `README.md`, `roadmap.md`, `features.md`, `comparison.md`, `architecture.md`, `audience.md`, `licensing.md` |
 | `docs/guides/` | 14 | CLI reference, data import, MCP server, threat model, security, observability, etc. |
-| `docs/reference/` | 13 | Data model, data sources, system overview, server API contract, prompt library |
+| `docs/reference/` | 14 | Data model, data sources, system overview, server API contract, prompt library (including `prompts/` subdirectory — 3 top-level + 11 prompts) |
 | `docs/decisions/` | 11 | ADR-000 through ADR-010 |
 | `docs/specs/` | 53 | Internal specs including archived — not surfaced in public site nav |
 | Other (`tech/`, `architecture/`) | 3 | Implementation-internal |
 
-**Total: ~95 markdown files, ~31 K lines of content.**
+**Total: 102 markdown files, ~31 K lines of content.**
 
 Content is plain CommonMark throughout. Checked all files for:
 - **YAML front-matter**: none. Files starting with `---` use it as a horizontal rule
   mid-document, not as a YAML block.
 - **Non-standard markdown**: no admonitions (`!!!`), no tab fences (`:::`), no raw HTML.
-  `Mermaid` diagrams appear in some specs (not yet in guides or reference docs).
+  `Mermaid` diagrams are present in specs and in several public-nav files:
+  `docs/guides/categorization.md`, `docs/guides/data-pipeline.md`,
+  `docs/reference/data-model.md`, `docs/reference/system-overview.md`.
 
 The zero-rewrite constraint is therefore simple to satisfy: any framework that ingests
 plain CommonMark `.md` files without required front-matter or syntax additions passes.
@@ -55,7 +57,7 @@ plain CommonMark `.md` files without required front-matter or syntax additions p
 ### Findings worth noting
 
 **Starlight disqualified.** Its page-rendering pipeline requires a `title:` field in
-YAML front-matter on every `.md` file. All 95 existing docs files would need a header
+YAML front-matter on every `.md` file. All 102 existing docs files would need a header
 block added — a mechanical but non-trivial rewrite that violates the hard constraint and
 creates ongoing authoring friction.
 
@@ -112,6 +114,7 @@ content and traffic to qualify.
 - `mkdocs.yml` in the repo root with:
   - Theme: `material` with a color palette and GitHub repo link.
   - Plugins: `search` (built-in), `include-markdown` (for shared content fragments).
+  - Markdown extensions: `pymdownx.superfences` with a `mermaid` custom fence — required at launch since several guides and reference pages already contain Mermaid diagrams.
   - Nav: three top-level sections — Guides, Reference, Decisions (ADRs). Specs omitted
     from the public nav (internal planning material).
   - `docs_dir: docs` pointing at the existing `docs/` tree.
@@ -141,10 +144,12 @@ content and traffic to qualify.
 - **`mike` versioning requires a separate `gh-pages` branch strategy.** Each versioned
   build is a separate deploy to a subdirectory; this is not the default `mkdocs gh-deploy`
   behavior and requires workflow changes when versioning is introduced.
-- **Mermaid diagrams need the `pymdownx.superfences` extension** and a custom fence
-  configured for `mermaid`. This is a one-time config addition, not per-file; existing
-  Mermaid blocks in specs are not affected since specs are excluded from the public nav.
-  When Mermaid is needed in guides, the extension covers it.
+- **Mermaid diagrams require `pymdownx.superfences`** with a custom fence configured for
+  `mermaid`. This is required at initial launch — several public-nav files already contain
+  Mermaid blocks (`docs/guides/categorization.md`, `docs/guides/data-pipeline.md`,
+  `docs/reference/data-model.md`, `docs/reference/system-overview.md`). Without the
+  extension, those pages render raw fenced code instead of diagrams. The extension is a
+  one-line config addition to `mkdocs.yml`; no per-file changes are needed.
 
 ## References
 
