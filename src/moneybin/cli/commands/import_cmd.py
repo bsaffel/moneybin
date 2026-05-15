@@ -14,7 +14,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 
@@ -90,15 +90,19 @@ def _load_all_formats(
     return all_formats, builtin
 
 
-@app.command("file")
-def import_file(
-    file_path: str = typer.Argument(
-        ..., help="Path to the financial data file to import"
+@app.command("files")
+def import_files_command(
+    file_paths: list[Path] = typer.Argument(
+        ..., help="One or more financial data files to import"
     ),
-    skip_transform: bool = typer.Option(
-        False,
-        "--skip-transform",
-        help="Skip rebuilding core tables after import",
+    apply_transforms: bool = typer.Option(
+        True,
+        "--apply-transforms/--no-apply-transforms",
+        help=(
+            "Run SQLMesh transforms once after the batch completes. "
+            "Pass --no-apply-transforms to defer; system_status will show "
+            "transforms_pending and a later 'transform apply' will catch up."
+        ),
     ),
     institution: str | None = typer.Option(
         None,
@@ -107,7 +111,8 @@ def import_file(
         help=(
             "Institution override for OFX/QFX/QBO files. Consulted only when "
             "the file's <FI><ORG>, FID lookup, and filename heuristic all "
-            "yield nothing. For CSV/tabular files, selects the format profile."
+            "yield nothing. For CSV/tabular files, selects the format profile. "
+            "Single-file mode only."
         ),
     ),
     force: bool = typer.Option(
@@ -117,51 +122,68 @@ def import_file(
         help="Re-import a file already in the import log (creates a new batch).",
     ),
     account_id: str | None = typer.Option(
-        None, "--account-id", "-a", help="Account identifier (bypasses name matching)"
+        None,
+        "--account-id",
+        "-a",
+        help="Account identifier (bypasses name matching). Single-file mode only.",
     ),
     account_name: str | None = typer.Option(
         None,
         "--account-name",
         "-n",
-        help="Account name for single-account tabular files",
+        help="Account name for single-account tabular files. Single-file mode only.",
     ),
     format_name: str | None = typer.Option(
         None,
         "--format",
         "-f",
-        help="Use a specific named format (bypass auto-detection)",
+        help=(
+            "Use a specific named format (bypass auto-detection). "
+            "Single-file mode only."
+        ),
     ),
     override: list[str] = typer.Option(
         None,
         "--override",
         help=(
             "Field→column override, repeatable (e.g. --override date=Date "
-            "--override amount=Amount)"
+            "--override amount=Amount). Single-file mode only."
         ),
     ),
     sign: SignConventionType | None = typer.Option(
         None,
         "--sign",
-        help="Sign convention override.",
+        help="Sign convention override. Single-file mode only.",
     ),
     date_format: str | None = typer.Option(
         None,
         "--date-format",
-        help="Date format override (strptime format string, e.g. %%Y-%%m-%%d)",
+        help=(
+            "Date format override (strptime format string, e.g. %%Y-%%m-%%d). "
+            "Single-file mode only."
+        ),
     ),
     number_format: NumberFormatType | None = typer.Option(
         None,
         "--number-format",
-        help="Number format override.",
+        help="Number format override. Single-file mode only.",
     ),
     sheet: str | None = typer.Option(
-        None, "--sheet", help="Excel sheet name (default: auto-select largest)"
+        None,
+        "--sheet",
+        help="Excel sheet name (default: auto-select largest). Single-file mode only.",
     ),
     delimiter: str | None = typer.Option(
-        None, "--delimiter", help="Explicit delimiter for text formats"
+        None,
+        "--delimiter",
+        help="Explicit delimiter for text formats. Single-file mode only.",
     ),
     encoding: str | None = typer.Option(
-        None, "--encoding", help="Explicit file encoding (e.g. utf-8, latin-1)"
+        None,
+        "--encoding",
+        help=(
+            "Explicit file encoding (e.g. utf-8, latin-1). Single-file mode only."
+        ),
     ),
     no_row_limit: bool = typer.Option(
         False, "--no-row-limit", help="Override row count limit"
@@ -180,62 +202,166 @@ def import_file(
         "-y",
         help="Auto-accept the top fuzzy account match without prompting",
     ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
-    """Import a financial data file — auto-detects type, loads into DuckDB, and rebuilds core tables.
+    """Import one or more financial data files into MoneyBin.
 
     Supported file types:
-      - OFX/QFX: Bank and credit card statements
+      - OFX/QFX/QBO: Bank and credit card statements
       - CSV/TSV/Excel: Bank transaction exports (Chase, Citi, etc.)
       - Parquet/Feather: Data warehouse exports
       - PDF: IRS Form W-2 wage and tax statements
 
+    Per-file failures do not abort the batch. Transforms run once at end
+    of the batch by default; pass --no-apply-transforms to defer.
+
+    Per-file overrides (--institution, --account-name, --format, --override,
+    etc.) apply only when a single path is supplied. Pass one file per
+    command when per-file overrides are required.
+
     Examples:
-        moneybin import file ~/Downloads/WellsFargo_2025.qfx
-        moneybin import file ~/Downloads/chase_activity.csv --account-name "Chase Checking"
-        moneybin import file ~/Downloads/transactions.xlsx --format chase_credit
-        moneybin import file ~/Downloads/2024_W2.pdf
-        moneybin import file statement.ofx --institution "Wells Fargo"
-        moneybin import file export.csv --override date=Date --override amount=Amount
+        moneybin import files ~/Downloads/WellsFargo_2025.qfx
+        moneybin import files ~/Downloads/*.ofx
+        moneybin import files ~/Downloads/chase_activity.csv --account-name "Chase Checking"
+        moneybin import files ~/Downloads/2024_W2.pdf --no-apply-transforms
+        moneybin import files statement.ofx --output json
     """
     from moneybin.cli.utils import handle_cli_errors
+    from moneybin.protocol.envelope import build_envelope
     from moneybin.services.import_service import ImportService
 
-    source = Path(file_path)
-
-    if not source.exists():
-        logger.error(f"❌ File not found: {source}")
-        raise typer.Exit(1)
+    for p in file_paths:
+        if not p.exists():
+            logger.error(f"❌ File not found: {p}")
+            raise typer.Exit(1)
 
     overrides = _parse_overrides(override)
     interactive = not yes and sys.stdin.isatty()
+
+    has_single_file_knobs = (
+        any(
+            v is not None
+            for v in (
+                institution,
+                account_id,
+                account_name,
+                format_name,
+                sign,
+                date_format,
+                number_format,
+                sheet,
+                delimiter,
+                encoding,
+            )
+        )
+        or overrides is not None
+    )
+
+    if len(file_paths) > 1 and has_single_file_knobs:
+        logger.warning(
+            "⚠️  Per-file flags only apply in single-file mode and will be "
+            "ignored. Use one file per command for per-file overrides."
+        )
 
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
 
     try:
         with handle_cli_errors():
             with get_database() as db:
-                result = ImportService(db).import_file(
-                    file_path=source,
-                    apply_transforms=not skip_transform,
-                    institution=institution,
-                    force=force,
-                    interactive=interactive,
-                    account_id=account_id,
-                    account_name=account_name,
-                    format_name=format_name,
-                    overrides=overrides,
-                    sign=sign,
-                    date_format=date_format or None,
-                    number_format=number_format,
-                    save_format=save_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
-                    no_row_limit=no_row_limit,
-                    no_size_limit=no_size_limit,
-                    auto_accept=yes,
-                )
-                logger.info(f"✅ {result.summary()}")
+                svc = ImportService(db)
+                if len(file_paths) == 1 and has_single_file_knobs:
+                    result = svc.import_file(
+                        file_path=file_paths[0],
+                        apply_transforms=apply_transforms,
+                        institution=institution,
+                        force=force,
+                        interactive=interactive,
+                        account_id=account_id,
+                        account_name=account_name,
+                        format_name=format_name,
+                        overrides=overrides,
+                        sign=sign,
+                        date_format=date_format or None,
+                        number_format=number_format,
+                        save_format=save_format,
+                        sheet=sheet,
+                        delimiter=delimiter,
+                        encoding=encoding,
+                        no_row_limit=no_row_limit,
+                        no_size_limit=no_size_limit,
+                        auto_accept=yes,
+                    )
+                    files_list: list[dict[str, Any]] = [
+                        {
+                            "path": str(file_paths[0]),
+                            "status": "imported",
+                            "source_type": result.file_type,
+                            "rows_loaded": result.transactions or result.w2_forms,
+                            "import_id": result.import_id,
+                        }
+                    ]
+                    data: dict[str, Any] = {
+                        "imported_count": 1,
+                        "failed_count": 0,
+                        "total_count": 1,
+                        "transforms_applied": apply_transforms
+                        and result.core_tables_rebuilt,
+                        "transforms_duration_seconds": None,
+                        "files": files_list,
+                    }
+                else:
+                    batch = svc.import_files(
+                        [str(p) for p in file_paths],
+                        apply_transforms=apply_transforms,
+                        force=force,
+                        interactive=interactive,
+                    )
+                    files_list = [
+                        {
+                            "path": r.path,
+                            "status": r.status,
+                            "source_type": r.source_type,
+                            "rows_loaded": r.rows_loaded,
+                            "import_id": r.import_id,
+                            **({"error": r.error} if r.error else {}),
+                        }
+                        for r in batch.per_file
+                    ]
+                    data = {
+                        "imported_count": batch.imported_count,
+                        "failed_count": batch.failed_count,
+                        "total_count": batch.total_count,
+                        "transforms_applied": batch.transforms_applied,
+                        "transforms_duration_seconds": batch.transforms_duration_seconds,
+                        "files": files_list,
+                    }
+                    if batch.transforms_error:
+                        data["transforms_error"] = batch.transforms_error
+
+        if output == OutputFormat.JSON:
+            envelope = build_envelope(data=data, sensitivity="low")
+            emit_json("import", envelope.to_dict())
+            return
+
+        if quiet:
+            return
+
+        for f in files_list:
+            icon = "✅" if f["status"] == "imported" else "❌"
+            label = f["source_type"] or "?"
+            rows = f.get("rows_loaded") or 0
+            logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
+        if data["transforms_applied"]:
+            duration = data["transforms_duration_seconds"]
+            if duration is not None:
+                logger.info(f"✅ Core tables rebuilt in {duration:.1f}s")
+            else:
+                logger.info("✅ Core tables rebuilt")
+        if data.get("transforms_error"):
+            logger.warning(
+                f"⚠️  Transform apply failed: {data['transforms_error']}"
+            )
     except ValueError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
@@ -705,7 +831,7 @@ def import_status(
             )
         elif not quiet:
             logger.warning(f"Database not found: {db_path}")
-            logger.info("Run 'moneybin import file <path>' to import data first.")
+            logger.info("Run 'moneybin import files <path>' to import data first.")
         # Both modes exit non-zero so machine consumers can detect missing/
         # uninitialized state. The JSON payload carries the same signal as
         # the human warning; the exit code carries it for scripts.
@@ -736,7 +862,7 @@ def import_status(
     if not rows:
         if not quiet:
             typer.echo("\nNo imported data found.")
-            typer.echo("   Run 'moneybin import file <path>' to get started.")
+            typer.echo("   Run 'moneybin import files <path>' to get started.")
         return
 
     if not quiet:

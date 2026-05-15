@@ -52,11 +52,11 @@ def _bootstrap_account(env: dict[str, str], account_id: str) -> None:
     fixture = FIXTURES_DIR / "tabular" / "standard.csv"
     run_cli(
         "import",
-        "file",
+        "files",
         str(fixture),
         "--account-id",
         account_id,
-        "--skip-transform",
+        "--no-apply-transforms",
         env=env,
     ).assert_success()
     run_cli("transform", "apply", env=env, timeout=180).assert_success()
@@ -256,11 +256,11 @@ class TestImportLabelsGoldenPath:
 
         result = run_cli(
             "import",
-            "file",
+            "files",
             str(fixture),
             "--account-id",
             "labels-acct",
-            "--skip-transform",
+            "--no-apply-transforms",
             env=env,
         )
         result.assert_success()

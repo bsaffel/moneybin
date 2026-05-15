@@ -424,11 +424,11 @@ class TestImportMutating:
         # Import
         result = run_cli(
             "import",
-            "file",
+            "files",
             str(fixture),
             "--account-id",
             "smoke-acct",
-            "--skip-transform",
+            "--no-apply-transforms",
             env=env,
         )
         result.assert_success()
@@ -529,7 +529,7 @@ def _accounts_with_data_template(  # pyright: ignore[reportUnusedFunction]  # py
     # Use the same profile name that make_workflow_env_fast resolves as active.
     env = make_workflow_env(e2e_home, "e2e-template")
     run_cli(
-        "import", "file", str(_SAMPLE_OFX), "--skip-transform", env=env
+        "import", "files", str(_SAMPLE_OFX), "--no-apply-transforms", env=env
     ).assert_success()
     run_cli("transform", "apply", env=env, timeout=180).assert_success()
     return e2e_home

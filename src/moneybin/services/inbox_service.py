@@ -469,7 +469,7 @@ class InboxService:
                 "(e.g., inbox/chase-checking/) and re-run sync."
             ),
             "low_confidence_mapping": (
-                "Use 'moneybin import file <path> --override field=column' "
+                "Use 'moneybin import files <path> --override field=column' "
                 "to map columns explicitly, then re-drop in inbox/."
             ),
             "unsupported_file_type": (
