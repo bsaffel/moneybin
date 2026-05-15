@@ -13,7 +13,7 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 @mcp_tool(sensitivity="low")
 def system_status() -> ResponseEnvelope:
-    """Return data inventory and pending review queue counts.
+    """Return data inventory, pending review queue counts, and transforms freshness.
 
     Use this tool to understand what data exists in MoneyBin and what
     needs user attention before suggesting any analytical query.
@@ -39,15 +39,28 @@ def system_status() -> ResponseEnvelope:
         },
         "matches": {"pending_review": status.matches_pending},
         "categorization": {"uncategorized": status.categorize_pending},
+        "transforms": {
+            "pending": status.transforms_pending,
+            "last_apply_at": status.transforms_last_apply_at.isoformat()
+            if status.transforms_last_apply_at
+            else None,
+        },
     }
+
+    actions = [
+        "Use transactions_review_status for per-queue review counts",
+        "Use reports_spending_get for a monthly spending trend snapshot",
+    ]
+    if status.transforms_pending:
+        actions.append(
+            "Run transform_apply to refresh derived tables "
+            "(raw imports are newer than the last refresh)"
+        )
 
     return build_envelope(
         data=data,
         sensitivity="low",
-        actions=[
-            "Use transactions_review_status for per-queue review counts",
-            "Use reports_spending_get for a monthly spending trend snapshot",
-        ],
+        actions=actions,
     )
 
 
@@ -101,7 +114,8 @@ def register_system_tools(mcp: FastMCP) -> None:
         mcp,
         system_status,
         "system_status",
-        "Return data inventory (accounts, transactions, freshness) and pending review queue counts. "
+        "Return data inventory (accounts, transactions, freshness), pending review queue counts, "
+        "and a transforms-pending signal indicating whether derived tables need a refresh. "
         "Call this first to orient before suggesting analytical queries.",
     )
     register(
