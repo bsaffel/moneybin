@@ -214,8 +214,10 @@ class SyncService:
                 provider=i.provider,
                 status=i.status,
                 last_sync=i.last_sync,
+                error_code=i.error_code,
                 guidance=self._guidance_for(
                     status=i.status,
+                    error_code=i.error_code,
                     institution=i.institution_name or "this connection",
                 ),
             )
@@ -232,14 +234,14 @@ class SyncService:
             )
         self.client.disconnect(inst.id)
 
-    def _guidance_for(self, *, status: str, institution: str) -> str | None:
-        # Phase 1: ConnectedInstitution doesn't carry per-institution error_code,
-        # so we can't map to the specific entry in _ERROR_GUIDANCE. Use a generic
-        # message that doesn't lie about the root cause (e.g., claiming
-        # ITEM_LOGIN_REQUIRED when the actual error is INSTITUTION_DOWN).
+    def _guidance_for(
+        self, *, status: str, error_code: str | None, institution: str
+    ) -> str | None:
         if status == "active":
             return None
         if status == "error":
+            if error_code and error_code in _ERROR_GUIDANCE:
+                return _ERROR_GUIDANCE[error_code].format(institution=institution)
             return (
                 f"{institution} needs attention. "
                 f"Run `moneybin sync connect --institution {institution}` "

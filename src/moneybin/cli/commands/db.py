@@ -12,6 +12,8 @@ import signal
 import subprocess  # noqa: S404 — subprocess used with static args for DuckDB CLI invocation and lsof/ps process inspection
 import sys
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -32,6 +34,30 @@ key_app = typer.Typer(
 )
 app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _load_encryption_key() -> Generator[str, None, None]:
+    """Load the active profile's encryption key; delete the local ref on exit.
+
+    Exits with code 1 when the database is locked (key not in keychain).
+    The ``finally`` block removes the local name binding so the key string
+    is not accidentally reused after the managed block completes or raises.
+    Python cannot zero-fill string buffers, but the binding removal prevents
+    unintended access through this local name.
+    """
+    from moneybin.secrets import SecretNotFoundError, SecretStore  # noqa: PLC0415
+
+    store = SecretStore()
+    try:
+        key = store.get_key("DATABASE__ENCRYPTION_KEY")
+    except SecretNotFoundError:
+        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        raise typer.Exit(1) from None
+    try:
+        yield key
+    finally:
+        del key
 
 
 def _format_bytes(num_bytes: int) -> str:
@@ -650,32 +676,23 @@ def db_key_show(
     quiet: bool = quiet_option,  # noqa: ARG001 — security warning is unconditional
 ) -> None:
     """Print the database encryption key."""
-    from moneybin.secrets import SecretNotFoundError, SecretStore
+    with _load_encryption_key() as key:
+        # Security warning is unconditional — the key provides full database
+        # access, so the warning must reach stderr regardless of -q/--quiet or
+        # --output json. Hoisted above all branches so neither path can suppress
+        # it.
+        logger.warning(
+            "⚠️  Security warning: this key provides full access to your "
+            "database. Do not share it or store it in plain text."
+        )
 
-    store = SecretStore()
-    try:
-        key = store.get_key("DATABASE__ENCRYPTION_KEY")
-    except SecretNotFoundError as e:
-        from moneybin.database import database_key_error_hint
+        if output == OutputFormat.JSON:
+            render_or_json(
+                build_envelope(data={"key": key}, sensitivity="high"), output
+            )
+            return
 
-        logger.error("❌ No encryption key found")
-        logger.info(database_key_error_hint())
-        raise typer.Exit(1) from e
-
-    # Security warning is unconditional — the key provides full database
-    # access, so the warning must reach stderr regardless of -q/--quiet or
-    # --output json. Hoisted above all branches so neither path can suppress
-    # it.
-    logger.warning(
-        "⚠️  Security warning: this key provides full access to your "
-        "database. Do not share it or store it in plain text."
-    )
-
-    if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data={"key": key}, sensitivity="high"), output)
-        return
-
-    typer.echo(key)
+        typer.echo(key)
 
 
 @key_app.command("rotate")
@@ -688,10 +705,11 @@ def db_key_rotate(
     import duckdb as duckdb_mod
 
     from moneybin.config import get_settings
-    from moneybin.secrets import SecretNotFoundError, SecretStore
+    from moneybin.secrets import SecretStore
 
     settings = get_settings()
     db_path = settings.database.path
+    store = SecretStore()
 
     if not db_path.exists():
         logger.error(f"❌ Database file not found: {db_path}")
@@ -703,31 +721,26 @@ def db_key_rotate(
         if not confirm:
             raise typer.Exit(0)
 
-    store = SecretStore()
-    try:
-        old_key = store.get_key("DATABASE__ENCRYPTION_KEY")
-    except SecretNotFoundError:
-        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
-        raise typer.Exit(1) from None
     new_key = secrets_mod.token_hex(32)
 
     from moneybin.database import build_attach_sql
 
     rotated_path = db_path.with_suffix(".rotated.duckdb")
-    # Direct duckdb.connect() required here: COPY FROM DATABASE needs two
-    # simultaneous open connections; the Database class wraps a single one.
-    conn = duckdb_mod.connect()
-    try:
-        conn.execute("LOAD httpfs;")
-        conn.execute(build_attach_sql(db_path, old_key, alias="old_db"))
-        conn.execute(build_attach_sql(rotated_path, new_key, alias="new_db"))
-        conn.execute("COPY FROM DATABASE old_db TO new_db")
-    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on ATTACH/COPY failure
-        logger.error(f"❌ Key rotation failed: {e}")
-        rotated_path.unlink(missing_ok=True)
-        raise typer.Exit(1) from e
-    finally:
-        conn.close()
+    with _load_encryption_key() as old_key:
+        # Direct duckdb.connect() required here: COPY FROM DATABASE needs two
+        # simultaneous open connections; the Database class wraps a single one.
+        conn = duckdb_mod.connect()
+        try:
+            conn.execute("LOAD httpfs;")
+            conn.execute(build_attach_sql(db_path, old_key, alias="old_db"))
+            conn.execute(build_attach_sql(rotated_path, new_key, alias="new_db"))
+            conn.execute("COPY FROM DATABASE old_db TO new_db")
+        except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on ATTACH/COPY failure
+            logger.error(f"❌ Key rotation failed: {e}")
+            rotated_path.unlink(missing_ok=True)
+            raise typer.Exit(1) from e
+        finally:
+            conn.close()
 
     old_backup = db_path.with_suffix(".old.duckdb")
     shutil.move(str(db_path), str(old_backup))

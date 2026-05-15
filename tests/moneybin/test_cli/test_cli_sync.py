@@ -247,3 +247,27 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
     assert isinstance(data, list)
     assert data[0]["institution_name"] == "Chase"
     assert data[0]["status"] == "active"
+    assert "error_code" in data[0]
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_shows_error_code_when_present(mock_build: MagicMock) -> None:
+    """Sync status text output shows the error_code when it is non-null."""
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="error",
+            last_sync=None,
+            error_code="ITEM_LOGIN_REQUIRED",
+            guidance="Chase needs re-authentication",
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "status"])
+    assert result.exit_code == 0, result.output
+    assert "ITEM_LOGIN_REQUIRED" in result.stdout

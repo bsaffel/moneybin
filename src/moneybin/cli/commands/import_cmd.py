@@ -14,7 +14,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -48,9 +48,6 @@ app.add_typer(formats_app, name="formats")
 app.add_typer(import_inbox.app, name="inbox", help="Drain the watched import inbox")
 app.add_typer(import_labels.app, name="labels", help="Manage labels on imports")
 logger = logging.getLogger(__name__)
-
-_VALID_SIGN_CONVENTIONS = frozenset(get_args(SignConventionType))
-_VALID_NUMBER_FORMATS = frozenset(get_args(NumberFormatType))
 
 
 def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
@@ -142,23 +139,20 @@ def import_file(
             "--override amount=Amount)"
         ),
     ),
-    sign: str | None = typer.Option(
+    sign: SignConventionType | None = typer.Option(
         None,
         "--sign",
-        help=(
-            "Sign convention override: negative_is_expense, "
-            "negative_is_income, split_debit_credit"
-        ),
+        help="Sign convention override.",
     ),
     date_format: str | None = typer.Option(
         None,
         "--date-format",
         help="Date format override (strptime format string, e.g. %%Y-%%m-%%d)",
     ),
-    number_format: str | None = typer.Option(
+    number_format: NumberFormatType | None = typer.Option(
         None,
         "--number-format",
-        help="Number format override: us, european, swiss_french, zero_decimal",
+        help="Number format override.",
     ),
     sheet: str | None = typer.Option(
         None, "--sheet", help="Excel sheet name (default: auto-select largest)"
@@ -213,23 +207,6 @@ def import_file(
         raise typer.Exit(1)
 
     overrides = _parse_overrides(override)
-
-    # Validate sign convention if provided
-    if sign and sign not in _VALID_SIGN_CONVENTIONS:
-        logger.error(
-            f"❌ Invalid --sign value: {sign!r}. "
-            f"Valid options: {', '.join(sorted(_VALID_SIGN_CONVENTIONS))}"
-        )
-        raise typer.Exit(1)
-
-    # Validate number format if provided
-    if number_format and number_format not in _VALID_NUMBER_FORMATS:
-        logger.error(
-            f"❌ Invalid --number-format value: {number_format!r}. "
-            f"Valid options: {', '.join(sorted(_VALID_NUMBER_FORMATS))}"
-        )
-        raise typer.Exit(1)
-
     interactive = not yes and sys.stdin.isatty()
 
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
@@ -247,9 +224,9 @@ def import_file(
                     account_name=account_name,
                     format_name=format_name,
                     overrides=overrides,
-                    sign=sign or None,
+                    sign=sign,
                     date_format=date_format or None,
-                    number_format=number_format or None,
+                    number_format=number_format,
                     save_format=save_format,
                     sheet=sheet,
                     delimiter=delimiter,
