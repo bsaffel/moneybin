@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.models import (
     AmountDistribution,
     GeneratedTransaction,
     IncomeConfig,
@@ -18,7 +18,7 @@ from moneybin.testing.synthetic.models import (
     SpendingConfig,
     TransferConfig,
 )
-from moneybin.testing.synthetic.seed import SeededRandom
+from moneybin.synthetic.seed import SeededRandom
 
 
 class TestIncomeGenerator:
@@ -55,7 +55,7 @@ class TestIncomeGenerator:
     def test_biweekly_salary_26_deposits_per_year(
         self, rng: SeededRandom, salary_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([salary_config], 2024, 2024, rng)
         all_txns: list[GeneratedTransaction] = []
@@ -66,7 +66,7 @@ class TestIncomeGenerator:
     def test_salary_amounts_positive(
         self, rng: SeededRandom, salary_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([salary_config], 2024, 2024, rng)
         txns = gen.generate_month(2024, 1)
@@ -75,7 +75,7 @@ class TestIncomeGenerator:
     def test_salary_description_includes_employer(
         self, rng: SeededRandom, salary_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([salary_config], 2024, 2024, rng)
         txns = gen.generate_month(2024, 1)
@@ -84,7 +84,7 @@ class TestIncomeGenerator:
     def test_annual_raise_increases_amount(
         self, rng: SeededRandom, salary_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([salary_config], 2024, 2025, rng)
         jan_2024 = gen.generate_month(2024, 1)
@@ -94,7 +94,7 @@ class TestIncomeGenerator:
     def test_salary_transaction_type_is_directdep(
         self, rng: SeededRandom, salary_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([salary_config], 2024, 2024, rng)
         txns = gen.generate_month(2024, 1)
@@ -103,7 +103,7 @@ class TestIncomeGenerator:
     def test_salary_category_is_income(
         self, rng: SeededRandom, salary_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([salary_config], 2024, 2024, rng)
         txns = gen.generate_month(2024, 1)
@@ -112,7 +112,7 @@ class TestIncomeGenerator:
     def test_freelance_generates_variable_count(
         self, rng: SeededRandom, freelance_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([freelance_config], 2024, 2024, rng)
         monthly_counts = [len(gen.generate_month(2024, m)) for m in range(1, 13)]
@@ -122,7 +122,7 @@ class TestIncomeGenerator:
     def test_freelance_amounts_positive(
         self, rng: SeededRandom, freelance_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([freelance_config], 2024, 2024, rng)
         all_txns: list[GeneratedTransaction] = []
@@ -144,7 +144,7 @@ class TestIncomeGenerator:
     def test_monthly_generates_one_per_month(
         self, rng: SeededRandom, monthly_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([monthly_config], 2024, 2024, rng)
         for month in range(1, 13):
@@ -154,7 +154,7 @@ class TestIncomeGenerator:
     def test_monthly_transaction_type_is_dep(
         self, rng: SeededRandom, monthly_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([monthly_config], 2024, 2024, rng)
         txns = gen.generate_month(2024, 1)
@@ -163,14 +163,14 @@ class TestIncomeGenerator:
     def test_monthly_pay_date_is_first_of_month(
         self, rng: SeededRandom, monthly_config: IncomeConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         gen = IncomeGenerator([monthly_config], 2024, 2024, rng)
         txns = gen.generate_month(2024, 6)
         assert txns[0].date == date(2024, 6, 1)
 
     def test_deterministic_output(self) -> None:
-        from moneybin.testing.synthetic.generators.income import IncomeGenerator
+        from moneybin.synthetic.generators.income import IncomeGenerator
 
         config = IncomeConfig(
             type="salary",
@@ -218,7 +218,7 @@ class TestRecurringGenerator:
     def test_fixed_amount_generates_one_per_month(
         self, rng: SeededRandom, rent_config: RecurringConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
+        from moneybin.synthetic.generators.recurring import RecurringGenerator
 
         gen = RecurringGenerator([rent_config], 2024, rng)
         txns = gen.generate_month(2024, 3)
@@ -228,7 +228,7 @@ class TestRecurringGenerator:
     def test_fixed_amount_on_correct_day(
         self, rng: SeededRandom, rent_config: RecurringConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
+        from moneybin.synthetic.generators.recurring import RecurringGenerator
 
         gen = RecurringGenerator([rent_config], 2024, rng)
         txns = gen.generate_month(2024, 3)
@@ -237,7 +237,7 @@ class TestRecurringGenerator:
     def test_variable_amount_varies(
         self, rng: SeededRandom, variable_config: RecurringConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
+        from moneybin.synthetic.generators.recurring import RecurringGenerator
 
         gen = RecurringGenerator([variable_config], 2024, rng)
         amounts = [gen.generate_month(2024, m)[0].amount for m in range(1, 13)]
@@ -245,7 +245,7 @@ class TestRecurringGenerator:
         assert len(set(amounts)) > 1
 
     def test_price_increase_applies(self, rng: SeededRandom) -> None:
-        from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
+        from moneybin.synthetic.generators.recurring import RecurringGenerator
 
         config = RecurringConfig(
             category="subscriptions",
@@ -262,7 +262,7 @@ class TestRecurringGenerator:
         assert after[0].amount == Decimal("-19.99")
 
     def test_quarterly_months_filter(self, rng: SeededRandom) -> None:
-        from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
+        from moneybin.synthetic.generators.recurring import RecurringGenerator
 
         config = RecurringConfig(
             category="taxes",
@@ -281,7 +281,7 @@ class TestRecurringGenerator:
     def test_category_set_correctly(
         self, rng: SeededRandom, rent_config: RecurringConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
+        from moneybin.synthetic.generators.recurring import RecurringGenerator
 
         gen = RecurringGenerator([rent_config], 2024, rng)
         txns = gen.generate_month(2024, 1)
@@ -290,7 +290,7 @@ class TestRecurringGenerator:
     def test_transaction_type_is_debit(
         self, rng: SeededRandom, rent_config: RecurringConfig
     ) -> None:
-        from moneybin.testing.synthetic.generators.recurring import RecurringGenerator
+        from moneybin.synthetic.generators.recurring import RecurringGenerator
 
         gen = RecurringGenerator([rent_config], 2024, rng)
         txns = gen.generate_month(2024, 1)
@@ -343,7 +343,7 @@ class TestSpendingGenerator:
         spending_config: SpendingConfig,
         test_catalog: MerchantCatalog,
     ) -> None:
-        from moneybin.testing.synthetic.generators.spending import SpendingGenerator
+        from moneybin.synthetic.generators.spending import SpendingGenerator
 
         catalogs = {"grocery": test_catalog}
         gen = SpendingGenerator(spending_config, catalogs, rng)
@@ -356,7 +356,7 @@ class TestSpendingGenerator:
         spending_config: SpendingConfig,
         test_catalog: MerchantCatalog,
     ) -> None:
-        from moneybin.testing.synthetic.generators.spending import SpendingGenerator
+        from moneybin.synthetic.generators.spending import SpendingGenerator
 
         gen = SpendingGenerator(spending_config, {"grocery": test_catalog}, rng)
         txns = gen.generate_month(2024, 3)
@@ -368,7 +368,7 @@ class TestSpendingGenerator:
         spending_config: SpendingConfig,
         test_catalog: MerchantCatalog,
     ) -> None:
-        from moneybin.testing.synthetic.generators.spending import SpendingGenerator
+        from moneybin.synthetic.generators.spending import SpendingGenerator
 
         gen = SpendingGenerator(spending_config, {"grocery": test_catalog}, rng)
         txns = gen.generate_month(2024, 3)
@@ -379,7 +379,7 @@ class TestSpendingGenerator:
         rng: SeededRandom,
         test_catalog: MerchantCatalog,
     ) -> None:
-        from moneybin.testing.synthetic.generators.spending import SpendingGenerator
+        from moneybin.synthetic.generators.spending import SpendingGenerator
 
         config = SpendingConfig(
             categories=[
@@ -404,7 +404,7 @@ class TestSpendingGenerator:
         rng: SeededRandom,
         test_catalog: MerchantCatalog,
     ) -> None:
-        from moneybin.testing.synthetic.generators.spending import SpendingGenerator
+        from moneybin.synthetic.generators.spending import SpendingGenerator
 
         config = SpendingConfig(
             categories=[
@@ -434,7 +434,7 @@ class TestSpendingGenerator:
         rng: SeededRandom,
         test_catalog: MerchantCatalog,
     ) -> None:
-        from moneybin.testing.synthetic.generators.spending import SpendingGenerator
+        from moneybin.synthetic.generators.spending import SpendingGenerator
 
         config = SpendingConfig(
             categories=[
@@ -490,7 +490,7 @@ class TestTransferGenerator:
         rng: SeededRandom,
         fixed_transfer: TransferConfig,
     ) -> None:
-        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+        from moneybin.synthetic.generators.transfers import TransferGenerator
 
         gen = TransferGenerator([fixed_transfer], rng)
         balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
@@ -502,7 +502,7 @@ class TestTransferGenerator:
         rng: SeededRandom,
         fixed_transfer: TransferConfig,
     ) -> None:
-        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+        from moneybin.synthetic.generators.transfers import TransferGenerator
 
         gen = TransferGenerator([fixed_transfer], rng)
         balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
@@ -517,7 +517,7 @@ class TestTransferGenerator:
         rng: SeededRandom,
         fixed_transfer: TransferConfig,
     ) -> None:
-        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+        from moneybin.synthetic.generators.transfers import TransferGenerator
 
         gen = TransferGenerator([fixed_transfer], rng)
         balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
@@ -530,7 +530,7 @@ class TestTransferGenerator:
         rng: SeededRandom,
         statement_balance_transfer: TransferConfig,
     ) -> None:
-        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+        from moneybin.synthetic.generators.transfers import TransferGenerator
 
         gen = TransferGenerator([statement_balance_transfer], rng)
         # Credit card has -350 balance (accumulated charges)
@@ -546,7 +546,7 @@ class TestTransferGenerator:
         rng: SeededRandom,
         statement_balance_transfer: TransferConfig,
     ) -> None:
-        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+        from moneybin.synthetic.generators.transfers import TransferGenerator
 
         gen = TransferGenerator([statement_balance_transfer], rng)
         balances = {"Checking": Decimal("5000"), "Credit Card": Decimal("0")}
@@ -558,7 +558,7 @@ class TestTransferGenerator:
         rng: SeededRandom,
         fixed_transfer: TransferConfig,
     ) -> None:
-        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+        from moneybin.synthetic.generators.transfers import TransferGenerator
 
         gen = TransferGenerator([fixed_transfer], rng)
         balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}
@@ -570,7 +570,7 @@ class TestTransferGenerator:
         rng: SeededRandom,
         fixed_transfer: TransferConfig,
     ) -> None:
-        from moneybin.testing.synthetic.generators.transfers import TransferGenerator
+        from moneybin.synthetic.generators.transfers import TransferGenerator
 
         gen = TransferGenerator([fixed_transfer], rng)
         balances = {"Checking": Decimal("5000"), "Savings": Decimal("10000")}

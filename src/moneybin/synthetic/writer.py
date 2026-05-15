@@ -16,18 +16,19 @@ from typing import Any
 import polars as pl
 
 from moneybin.database import Database
-from moneybin.tables import GROUND_TRUTH
-from moneybin.testing.synthetic.category_mapping import to_canonical
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.category_mapping import to_canonical
+from moneybin.synthetic.models import (
     GeneratedAccount,
     GeneratedTransaction,
     GenerationResult,
 )
+from moneybin.tables import GROUND_TRUTH
+from moneybin.utils.slugify import slugify
 
 logger = logging.getLogger(__name__)
 
 _GROUND_TRUTH_DDL_PATH = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[1]
     / "sql"
     / "schema"
     / "synthetic_ground_truth.sql"
@@ -35,9 +36,8 @@ _GROUND_TRUTH_DDL_PATH = (
 _ground_truth_ddl: str | None = None
 
 
-def _slugify(name: str) -> str:
-    """Convert account name to URL-safe slug."""
-    return name.lower().replace(" ", "-")
+def _source_file(result: GenerationResult, suffix: str | int) -> str:
+    return f"synthetic://{result.persona}/{result.seed}/{suffix}"
 
 
 def _account_type_to_ofx(account_type: str) -> str:
@@ -93,17 +93,13 @@ class SyntheticWriter:
                 csv_accts, result, now
             )
 
-        # Split transactions by account source_type
-        ofx_txns = [
-            t
-            for t in result.transactions
-            if account_lookup[t.account_name].source_type == "ofx"
-        ]
-        csv_txns = [
-            t
-            for t in result.transactions
-            if account_lookup[t.account_name].source_type == "csv"
-        ]
+        ofx_txns: list[GeneratedTransaction] = []
+        csv_txns: list[GeneratedTransaction] = []
+        for t in result.transactions:
+            if account_lookup[t.account_name].source_type == "ofx":
+                ofx_txns.append(t)
+            else:
+                csv_txns.append(t)
 
         if ofx_txns:
             counts["ofx_transactions"] = self._write_ofx_transactions(
@@ -126,14 +122,13 @@ class SyntheticWriter:
     ) -> int:
         rows: list[dict[str, Any]] = []
         for acct in accounts:
-            slug = _slugify(acct.name)
             rows.append({
                 "account_id": acct.account_id,
                 "routing_number": None,
                 "account_type": _account_type_to_ofx(acct.account_type),
                 "institution_org": acct.institution,
                 "institution_fid": None,
-                "source_file": f"synthetic://{result.persona}/{result.seed}/{slug}",
+                "source_file": _source_file(result, slugify(acct.name)),
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
@@ -148,7 +143,6 @@ class SyntheticWriter:
     ) -> int:
         rows: list[dict[str, Any]] = []
         for acct in accounts:
-            slug = _slugify(acct.name)
             start_dt = datetime.combine(result.start_date, time())
             rows.append({
                 "account_id": acct.account_id,
@@ -157,7 +151,7 @@ class SyntheticWriter:
                 "ledger_balance": Decimal(str(round(acct.opening_balance, 2))),
                 "ledger_balance_date": start_dt,
                 "available_balance": None,
-                "source_file": f"synthetic://{result.persona}/{result.seed}/{slug}",
+                "source_file": _source_file(result, slugify(acct.name)),
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
@@ -183,7 +177,7 @@ class SyntheticWriter:
                 "payee": txn.description,
                 "memo": None,
                 "check_number": None,
-                "source_file": f"synthetic://{result.persona}/{result.seed}/{txn.date.year}",
+                "source_file": _source_file(result, txn.date.year),
                 "extracted_at": now,
             })
         df = pl.DataFrame(rows)
@@ -198,13 +192,12 @@ class SyntheticWriter:
     ) -> int:
         rows: list[dict[str, Any]] = []
         for acct in accounts:
-            slug = _slugify(acct.name)
             rows.append({
                 "account_id": acct.account_id,
                 "account_name": acct.name,
                 "account_type": acct.account_type,
                 "institution_name": acct.institution,
-                "source_file": f"synthetic://{result.persona}/{result.seed}/{slug}",
+                "source_file": _source_file(result, slugify(acct.name)),
                 "source_type": "csv",
                 "source_origin": f"synthetic_{result.persona}",
                 "import_id": f"synthetic-{result.seed}",
@@ -241,7 +234,7 @@ class SyntheticWriter:
                     "description": txn.description,
                     "status": "Posted",
                     "balance": Decimal(str(round(balance, 2))),
-                    "source_file": f"synthetic://{result.persona}/{result.seed}/{txn.date.year}",
+                    "source_file": _source_file(result, txn.date.year),
                     "source_type": "csv",
                     "source_origin": f"synthetic_{result.persona}",
                     "import_id": f"synthetic-{result.seed}",

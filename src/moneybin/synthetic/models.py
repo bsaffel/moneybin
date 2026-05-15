@@ -282,7 +282,7 @@ class GeneratedTransaction:
     account_name: str
     category: str | None = None
     transfer_pair_id: str | None = None
-    transaction_type: str = "DEBIT"
+    transaction_type: Literal["DEBIT", "DEP", "DIRECTDEP", "XFER"] = "DEBIT"
     transaction_id: str = ""
 
 

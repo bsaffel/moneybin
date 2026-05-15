@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.models import (
     GeneratedAccount,
     GeneratedTransaction,
     GenerationResult,
@@ -72,7 +72,7 @@ class TestSyntheticWriter:
         db.close()
 
     def test_write_ofx_account(self, db: Database) -> None:
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = _make_result()
         writer = SyntheticWriter(db)
@@ -86,7 +86,7 @@ class TestSyntheticWriter:
         assert row[1] == "Test Bank"
 
     def test_write_ofx_transactions(self, db: Database) -> None:
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = _make_result()
         writer = SyntheticWriter(db)
@@ -98,7 +98,7 @@ class TestSyntheticWriter:
         assert row[1] == "TEST STORE"
 
     def test_write_ofx_balances(self, db: Database) -> None:
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = _make_result()
         writer = SyntheticWriter(db)
@@ -109,7 +109,7 @@ class TestSyntheticWriter:
         assert float(row[0]) == pytest.approx(1000.00)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
 
     def test_write_csv_account(self, db: Database) -> None:
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         acct = GeneratedAccount(
             name="Test Card",
@@ -140,7 +140,7 @@ class TestSyntheticWriter:
         assert row[1] == "Test CC"
 
     def test_write_csv_running_balance(self, db: Database) -> None:
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         acct = GeneratedAccount(
             name="Card",
@@ -178,7 +178,7 @@ class TestSyntheticWriter:
         assert float(rows[1][0]) == pytest.approx(-80.00)  # type: ignore[reportUnknownArgumentType]  # -50 + (-30)
 
     def test_write_ground_truth(self, db: Database) -> None:
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = _make_result()
         writer = SyntheticWriter(db)
@@ -190,7 +190,7 @@ class TestSyntheticWriter:
         assert row[1] == 42
 
     def test_source_file_uses_synthetic_uri(self, db: Database) -> None:
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = _make_result()
         writer = SyntheticWriter(db)
@@ -212,7 +212,7 @@ class TestSyntheticWriter:
 
         import polars as pl
 
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.writer import SyntheticWriter
 
         ofx_acct = GeneratedAccount(
             name="OFX Checking",

@@ -6,8 +6,8 @@ import logging
 from datetime import date
 from decimal import Decimal
 
-from moneybin.testing.synthetic.models import GeneratedTransaction, TransferConfig
-from moneybin.testing.synthetic.seed import SeededRandom
+from moneybin.synthetic.models import GeneratedTransaction, TransferConfig
+from moneybin.synthetic.seed import SeededRandom
 
 logger = logging.getLogger(__name__)
 

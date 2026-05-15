@@ -6,7 +6,7 @@
 # split across categories, and select import batches carry labels.
 #
 # Status: forward-looking. The synthetic generator
-# (``src/moneybin/testing/synthetic/``) consumed by the scenario harness's
+# (``src/moneybin/synthetic/``) consumed by the scenario harness's
 # ``generate`` step is account/recurring/spending-driven and does not yet
 # accept ``manual_entries`` / ``notes`` / ``tags`` / ``splits`` /
 # ``import_labels`` keys. The four scenario tests added in this task do not

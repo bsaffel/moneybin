@@ -12,14 +12,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.testing.synthetic.models import GeneratedTransaction
+from moneybin.synthetic.models import GeneratedTransaction
 
 
 class TestGeneratorEngine:
     """Test the full generation pipeline (no DB writes)."""
 
     def test_generate_produces_result(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         engine = GeneratorEngine("basic", seed=42, years=1)
         result = engine.generate()
@@ -29,7 +29,7 @@ class TestGeneratorEngine:
         assert len(result.transactions) > 0
 
     def test_deterministic_output(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         engine1 = GeneratorEngine("basic", seed=42, years=1)
         engine2 = GeneratorEngine("basic", seed=42, years=1)
@@ -41,7 +41,7 @@ class TestGeneratorEngine:
         assert ids1 == ids2
 
     def test_different_seeds_diverge(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         r1 = GeneratorEngine("basic", seed=42, years=1).generate()
         r2 = GeneratorEngine("basic", seed=99, years=1).generate()
@@ -52,14 +52,14 @@ class TestGeneratorEngine:
         assert len(r1.transactions) != len(r2.transactions) or ids1 != ids2
 
     def test_accounts_have_synthetic_ids(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         for acct in result.accounts:
             assert acct.account_id.startswith("SYN")
 
     def test_transaction_ids_assigned(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         for txn in result.transactions:
@@ -67,14 +67,14 @@ class TestGeneratorEngine:
             assert len(txn.transaction_id) == 13  # SYN + 10 digits
 
     def test_transaction_ids_unique(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         ids = [t.transaction_id for t in result.transactions]
         assert len(ids) == len(set(ids))
 
     def test_sign_convention(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         for txn in result.transactions:
@@ -84,7 +84,7 @@ class TestGeneratorEngine:
                 assert txn.amount < 0, f"Expense should be negative: {txn}"
 
     def test_transfer_pairs_match(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         transfers = [t for t in result.transactions if t.transfer_pair_id]
@@ -98,7 +98,7 @@ class TestGeneratorEngine:
             assert total == Decimal(0), f"Pair {pair_id} should net to zero"
 
     def test_date_range_correct(self) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.engine import GeneratorEngine
 
         result = GeneratorEngine("basic", seed=42, years=2).generate()
         current_year = date.today().year
@@ -122,8 +122,8 @@ class TestGeneratorEngineWithDB:
         db.close()
 
     def test_write_to_database(self, db: Database) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         writer = SyntheticWriter(db)
@@ -131,8 +131,8 @@ class TestGeneratorEngineWithDB:
         assert counts["ground_truth"] == len(result.transactions)
 
     def test_ofx_transactions_in_db(self, db: Database) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         writer = SyntheticWriter(db)
@@ -142,8 +142,8 @@ class TestGeneratorEngineWithDB:
         assert row[0] > 0
 
     def test_ground_truth_matches_transactions(self, db: Database) -> None:
-        from moneybin.testing.synthetic.engine import GeneratorEngine
-        from moneybin.testing.synthetic.writer import SyntheticWriter
+        from moneybin.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.writer import SyntheticWriter
 
         result = GeneratorEngine("basic", seed=42, years=1).generate()
         writer = SyntheticWriter(db)

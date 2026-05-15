@@ -6,13 +6,13 @@ import calendar
 from datetime import date
 from decimal import Decimal
 
-from moneybin.testing.synthetic.models import (
+from moneybin.synthetic.models import (
     GeneratedTransaction,
     MerchantCatalog,
     MerchantEntry,
     SpendingConfig,
 )
-from moneybin.testing.synthetic.seed import SeededRandom
+from moneybin.synthetic.seed import SeededRandom
 
 _CITIES = [
     "AUSTIN TX",
@@ -126,19 +126,16 @@ class SpendingGenerator:
             )
 
             for _ in range(base_count):
-                # Select merchant by weight
                 merchant_name = self._rng.weighted_choice(
                     merchant_names, merchant_weights
                 )
                 merchant = merchant_lookup[merchant_name]
 
-                # Generate amount from merchant's log-normal distribution
                 amount = max(
                     0.01,
                     self._rng.log_normal(merchant.amount.mean, merchant.amount.stddev),
                 )
 
-                # Select account, optionally weighted
                 if cat_config.name in self._account_weights:
                     account = self._rng.weighted_choice(
                         cat_config.accounts,
@@ -147,7 +144,6 @@ class SpendingGenerator:
                 else:
                     account = self._rng.choice(cat_config.accounts)
 
-                # Select day with optional day-of-week bias
                 day_weights = cat_config.day_of_week_weights or None
                 day = self._rng.day_in_month(year, month, day_weights)
 
