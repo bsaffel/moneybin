@@ -76,6 +76,49 @@ class ImportResult:
 
 
 @dataclass(frozen=True)
+class PerFileResult:
+    """One file's outcome inside a batch import."""
+
+    path: str
+    status: str  # "imported" | "failed" | "skipped"
+    source_type: str | None
+    rows_loaded: int = 0
+    rows_skipped: int = 0
+    import_id: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchImportResult:
+    """Outcome of an import_files call.
+
+    Note: ``per_file`` is a list (mutable), so instances aren't hashable —
+    matches the precedent set by other frozen result dataclasses in the
+    services layer.
+    """
+
+    per_file: list[PerFileResult]
+    transforms_applied: bool
+    transforms_duration_seconds: float | None
+    transforms_error: str | None = None
+
+    @property
+    def imported_count(self) -> int:
+        """Number of files that imported successfully."""
+        return sum(1 for r in self.per_file if r.status == "imported")
+
+    @property
+    def failed_count(self) -> int:
+        """Number of files that failed to import."""
+        return sum(1 for r in self.per_file if r.status == "failed")
+
+    @property
+    def total_count(self) -> int:
+        """Total number of files attempted in this batch."""
+        return len(self.per_file)
+
+
+@dataclass(frozen=True)
 class ResolvedMapping:
     """Final per-import mapping from the matched format or auto-detection.
 
@@ -1021,6 +1064,62 @@ class ImportService:
             FileNotFoundError: If the file does not exist.
             ValueError: If the file type is not supported.
         """
+        result = self._import_one(
+            file_path,
+            institution=institution,
+            force=force,
+            interactive=interactive,
+            account_id=account_id,
+            account_name=account_name,
+            format_name=format_name,
+            overrides=overrides,
+            sign=sign,
+            date_format=date_format,
+            number_format=number_format,
+            save_format=save_format,
+            sheet=sheet,
+            delimiter=delimiter,
+            encoding=encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
+            auto_accept=auto_accept,
+        )
+
+        if apply_transforms and result.file_type in ("ofx", "tabular"):
+            self._apply_post_import_hooks()
+            result.core_tables_rebuilt = True
+
+        logger.info(f"Import complete: {result.summary()}")
+        return result
+
+    def _import_one(
+        self,
+        file_path: str | Path,
+        *,
+        institution: str | None = None,
+        force: bool = False,
+        interactive: bool = False,
+        account_id: str | None = None,
+        account_name: str | None = None,
+        format_name: str | None = None,
+        overrides: dict[str, str] | None = None,
+        sign: str | None = None,
+        date_format: str | None = None,
+        number_format: str | None = None,
+        save_format: bool = True,
+        sheet: str | None = None,
+        delimiter: str | None = None,
+        encoding: str | None = None,
+        no_row_limit: bool = False,
+        no_size_limit: bool = False,
+        auto_accept: bool = False,
+    ) -> ImportResult:
+        """Extract + load one file. Does NOT run matching/transforms/categorization.
+
+        End-of-batch hooks (matching, SQLMesh transforms, deterministic
+        categorization) are the caller's responsibility — see
+        ``_apply_post_import_hooks`` and ``import_files``.
+        """
         path = Path(file_path)
 
         if not path.exists():
@@ -1030,13 +1129,13 @@ class ImportService:
         logger.info(f"Importing {_display_label(file_type, path)} file: {path}")
 
         if file_type == "ofx":
-            result = self._import_ofx(
+            return self._import_ofx(
                 path, institution=institution, force=force, interactive=interactive
             )
-        elif file_type == "w2":
-            result = self._import_w2(path)
-        elif file_type == "tabular":
-            result = self._import_tabular(
+        if file_type == "w2":
+            return self._import_w2(path)
+        if file_type == "tabular":
+            return self._import_tabular(
                 path,
                 account_name=account_name,
                 account_id=account_id,
@@ -1053,24 +1152,95 @@ class ImportService:
                 no_size_limit=no_size_limit,
                 auto_accept=auto_accept,
             )
-        else:
-            raise ValueError(f"Unsupported file type: {file_type}")
+        raise ValueError(f"Unsupported file type: {file_type}")
 
-        # Run matching and SQLMesh transforms after loading raw data
-        if apply_transforms and file_type in ("ofx", "tabular"):
+    def _apply_post_import_hooks(self) -> None:
+        """Run matching, SQLMesh transforms, and deterministic categorization."""
+        from moneybin.services.transform_service import TransformService
+
+        try:
+            self._run_matching()
+        except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
+            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+        TransformService(self._db).apply()
+        self._apply_categorization()
+
+    def import_files(
+        self,
+        paths: list[str | Path],
+        *,
+        apply_transforms: bool = True,
+        force: bool = False,
+        interactive: bool = False,
+    ) -> BatchImportResult:
+        """Import a list of files; apply transforms once at end of batch.
+
+        Per-file failures do not abort the batch. Transforms run only if at
+        least one file succeeded AND at least one file was transformable
+        (ofx/tabular — W-2 imports don't write to fct_transactions).
+
+        Per-file overrides (account_name, institution, format_name, etc.)
+        are not available for batch — use ``import_file()`` for single
+        imports with overrides.
+        """
+        per_file: list[PerFileResult] = []
+        any_succeeded = False
+        any_transformable = False
+        for raw_path in paths:
+            path = Path(raw_path)
+            try:
+                r = self._import_one(path, force=force, interactive=interactive)
+                rows_loaded = r.transactions or r.w2_forms
+                per_file.append(
+                    PerFileResult(
+                        path=str(path),
+                        status="imported",
+                        source_type=r.file_type,
+                        rows_loaded=rows_loaded,
+                        import_id=r.import_id,
+                    )
+                )
+                any_succeeded = True
+                if r.file_type in ("ofx", "tabular"):
+                    any_transformable = True
+            except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
+                logger.warning(f"Import failed for {path}: {e}")
+                per_file.append(
+                    PerFileResult(
+                        path=str(path),
+                        status="failed",
+                        source_type=None,
+                        error=str(e),
+                    )
+                )
+
+        transforms_applied = False
+        transforms_duration: float | None = None
+        transforms_error: str | None = None
+        if apply_transforms and any_succeeded and any_transformable:
+            from moneybin.services.transform_service import TransformService
+
             try:
                 self._run_matching()
-            except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
+            except Exception:  # noqa: BLE001 — matching best-effort; first import may precede SQLMesh views
                 logger.debug(
                     "Matching skipped (views may not exist yet)", exc_info=True
                 )
-            result.core_tables_rebuilt = self.run_transforms()
+            try:
+                apply_result = TransformService(self._db).apply()
+                transforms_applied = apply_result.applied
+                transforms_duration = apply_result.duration_seconds
+                self._apply_categorization()
+            except Exception as e:  # noqa: BLE001 — surface transform error in envelope
+                transforms_error = str(e)
+                logger.warning(f"Transform apply failed after batch import: {e}")
 
-            # Apply deterministic categorization to new transactions
-            self._apply_categorization()
-
-        logger.info(f"Import complete: {result.summary()}")
-        return result
+        return BatchImportResult(
+            per_file=per_file,
+            transforms_applied=transforms_applied,
+            transforms_duration_seconds=transforms_duration,
+            transforms_error=transforms_error,
+        )
 
     def _run_matching(self) -> None:
         """Run transaction matching after import.
