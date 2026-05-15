@@ -22,12 +22,8 @@ def test_boot_check_raises_on_dropped_column(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_check_schema_at_boot() raises SchemaDriftError when a column is missing."""
-    # Leading underscore preserved: function is wired in by cli.commands.mcp
-    # only. Importing it here is intentional to verify boot-path behavior.
-    from moneybin.mcp.server import (
-        _check_schema_at_boot,  # pyright: ignore[reportPrivateUsage]
-    )
+    """check_schema_at_boot() raises SchemaDriftError when a column is missing."""
+    from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.import_service import ImportService
 
     secret_store = MagicMock()
@@ -71,6 +67,6 @@ def test_boot_check_raises_on_dropped_column(
     db.close()
 
     with pytest.raises(SchemaDriftError) as exc_info:
-        _check_schema_at_boot()
+        check_schema_at_boot()
 
     assert "dim_accounts" in str(exc_info.value)

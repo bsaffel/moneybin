@@ -90,20 +90,20 @@ async def test_system_status_action_hint_for_schema_drift(mcp_db: object) -> Non
 
 
 @pytest.mark.unit
-def test_check_schema_at_boot_raises_on_drift(mcp_db: object) -> None:
-    """_check_schema_at_boot raises SchemaDriftError when columns are missing."""
+def testcheck_schema_at_boot_raises_on_drift(mcp_db: object) -> None:
+    """check_schema_at_boot raises SchemaDriftError when columns are missing."""
     from moneybin.database import SchemaDriftError
-    from moneybin.mcp.server import _check_schema_at_boot
+    from moneybin.mcp.server import check_schema_at_boot
 
     with get_database() as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
     with pytest.raises(SchemaDriftError, match="dim_accounts"):
-        _check_schema_at_boot()
+        check_schema_at_boot()
 
 
 @pytest.mark.unit
-def test_check_schema_at_boot_silent_on_healthy(mcp_db: object) -> None:
-    """_check_schema_at_boot returns silently when no drift detected."""
-    from moneybin.mcp.server import _check_schema_at_boot
+def testcheck_schema_at_boot_silent_on_healthy(mcp_db: object) -> None:
+    """check_schema_at_boot returns silently when no drift detected."""
+    from moneybin.mcp.server import check_schema_at_boot
 
-    _check_schema_at_boot()
+    check_schema_at_boot()

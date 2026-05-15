@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 class TestImportMatchingIntegration:
     """Tests that matching is hooked into the import pipeline."""
 
-    @patch("moneybin.services.import_service.ImportService.run_transforms")
+    @patch("moneybin.services.transform_service.TransformService.apply")
     @patch("moneybin.services.import_service.ImportService._run_matching")
     @patch("moneybin.services.import_service.ImportService._apply_categorization")
     @patch("moneybin.services.import_service.ImportService._import_ofx")
@@ -18,27 +18,30 @@ class TestImportMatchingIntegration:
         mock_import_ofx: MagicMock,
         mock_categorize: MagicMock,
         mock_matching: MagicMock,
-        mock_transforms: MagicMock,
+        mock_transforms_apply: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Verify _run_matching is called before run_transforms during import."""
+        """Verify _run_matching is called before TransformService.apply during import."""
         from moneybin.services.import_service import ImportResult, ImportService
+        from moneybin.services.transform_service import ApplyResult
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
         mock_import_ofx.return_value = ImportResult(
             file_path=str(qfx), file_type="ofx", transactions=3, accounts=1
         )
-        mock_transforms.return_value = True
+        mock_transforms_apply.return_value = ApplyResult(
+            applied=True, duration_seconds=0.0
+        )
 
         db = MagicMock()
         db.path = tmp_path / "test.duckdb"
         ImportService(db).import_file(qfx, apply_transforms=True)
 
         mock_matching.assert_called_once_with()
-        mock_transforms.assert_called_once()
+        mock_transforms_apply.assert_called_once()
 
-    @patch("moneybin.services.import_service.ImportService.run_transforms")
+    @patch("moneybin.services.transform_service.TransformService.apply")
     @patch("moneybin.services.import_service.ImportService._run_matching")
     @patch("moneybin.services.import_service.ImportService._apply_categorization")
     @patch("moneybin.services.import_service.ImportService._import_ofx")
@@ -49,7 +52,7 @@ class TestImportMatchingIntegration:
         mock_import_ofx: MagicMock,
         mock_categorize: MagicMock,
         mock_matching: MagicMock,
-        mock_transforms: MagicMock,
+        mock_transforms_apply: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Verify matching is skipped when apply_transforms=False."""
@@ -66,9 +69,9 @@ class TestImportMatchingIntegration:
         ImportService(db).import_file(qfx, apply_transforms=False)
 
         mock_matching.assert_not_called()
-        mock_transforms.assert_not_called()
+        mock_transforms_apply.assert_not_called()
 
-    @patch("moneybin.services.import_service.ImportService.run_transforms")
+    @patch("moneybin.services.transform_service.TransformService.apply")
     @patch("moneybin.services.import_service.ImportService._run_matching")
     @patch("moneybin.services.import_service.ImportService._apply_categorization")
     @patch("moneybin.services.import_service.ImportService._import_ofx")
@@ -79,11 +82,12 @@ class TestImportMatchingIntegration:
         mock_import_ofx: MagicMock,
         mock_categorize: MagicMock,
         mock_matching: MagicMock,
-        mock_transforms: MagicMock,
+        mock_transforms_apply: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Verify matching errors are swallowed (best-effort)."""
         from moneybin.services.import_service import ImportResult, ImportService
+        from moneybin.services.transform_service import ApplyResult
 
         qfx = tmp_path / "test.qfx"
         qfx.touch()
@@ -91,7 +95,9 @@ class TestImportMatchingIntegration:
             file_path=str(qfx), file_type="ofx", transactions=3, accounts=1
         )
         mock_matching.side_effect = RuntimeError("views don't exist yet")
-        mock_transforms.return_value = True
+        mock_transforms_apply.return_value = ApplyResult(
+            applied=True, duration_seconds=0.0
+        )
 
         db = MagicMock()
         db.path = tmp_path / "test.duckdb"
@@ -99,7 +105,7 @@ class TestImportMatchingIntegration:
 
         # Import should succeed despite matching failure
         assert result.transactions == 3
-        mock_transforms.assert_called_once()
+        mock_transforms_apply.assert_called_once()
 
 
 class TestApplyCategorizationProposalSummary:

@@ -137,7 +137,7 @@ def init_db() -> None:
     register_core_tools()
 
 
-def _check_schema_at_boot() -> None:  # pyright: ignore[reportUnusedFunction]  # called from cli.commands.mcp.mcp_serve
+def check_schema_at_boot() -> None:
     """Verify core.* materialized tables aren't stale vs. EXPECTED_CORE_COLUMNS.
 
     Raises SchemaDriftError if any FULL-materialized core model is missing a

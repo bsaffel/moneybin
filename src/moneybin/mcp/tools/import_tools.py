@@ -97,9 +97,7 @@ def import_files(
 
     actions: list[str] = []
     if not batch.transforms_applied and batch.imported_count > 0:
-        actions.append(
-            "Run transform_apply when ready to refresh derived tables"
-        )
+        actions.append("Run transform_apply when ready to refresh derived tables")
     if batch.transforms_error:
         actions.append(
             "Transform apply failed after import — call transform_apply to retry"

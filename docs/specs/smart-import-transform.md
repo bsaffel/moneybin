@@ -124,24 +124,39 @@ def import_files(
 ) -> ResponseEnvelope:
     """Import one or more files. Applies transforms once at end of batch by default."""
 
+
 @mcp_tool(sensitivity="low")
 def transform_status() -> ResponseEnvelope: ...
+
+
 # data: {environment, initialized, last_apply_at, pending, latest_import_at}
+
 
 @mcp_tool(sensitivity="low")
 def transform_plan() -> ResponseEnvelope: ...
+
+
 # data: {has_changes, directly_modified[], indirectly_modified[], added[], removed[]}
+
 
 @mcp_tool(sensitivity="low")
 def transform_validate() -> ResponseEnvelope: ...
+
+
 # data: {valid, errors[{model, message}]}
+
 
 @mcp_tool(sensitivity="low")
 def transform_audit(start: str, end: str) -> ResponseEnvelope: ...
+
+
 # data: {passed, failed, audits[{name, status, detail}]}
+
 
 @mcp_tool(sensitivity="low", read_only=False)
 def transform_apply() -> ResponseEnvelope: ...
+
+
 # data: {applied, duration_seconds, models_refreshed}
 ```
 
