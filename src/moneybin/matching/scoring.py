@@ -38,6 +38,8 @@ class CandidatePair:
     confidence_score: float
     description_a: str
     description_b: str
+    account_id_a: str | None = None
+    account_id_b: str | None = None
 
 
 def compute_confidence(

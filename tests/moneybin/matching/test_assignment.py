@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from moneybin.matching.assignment import assign_greedy
+from moneybin.matching.assignment import _claim_key, assign_greedy
 from moneybin.matching.scoring import CandidatePair
 from moneybin.matching.transfer import TransferCandidatePair
 
@@ -22,6 +22,58 @@ def _pair(stid_a: str, stid_b: str, score: float, acct: str = "acct1") -> Candid
         description_a="",
         description_b="",
     )
+
+
+def _transfer_pair(
+    stid_a: str,
+    acct_a: str,
+    stid_b: str,
+    acct_b: str,
+    score: float,
+) -> TransferCandidatePair:
+    return TransferCandidatePair(
+        source_transaction_id_a=stid_a,
+        source_type_a="csv",
+        source_origin_a="chase",
+        account_id_a=acct_a,
+        source_transaction_id_b=stid_b,
+        source_type_b="csv",
+        source_origin_b="chase",
+        account_id_b=acct_b,
+        amount=Decimal("100.00"),
+        date_distance_days=0,
+        description_a="TRANSFER",
+        description_b="TRANSFER",
+        date_distance_score=1.0,
+        keyword_score=0.5,
+        amount_roundness_score=1.0,
+        pair_frequency_score=1.0,
+        confidence_score=score,
+    )
+
+
+class TestClaimKey:
+    """Tests for _claim_key Protocol discriminator."""
+
+    def test_claim_key_dedup_pair_excludes_account(self) -> None:
+        pair = _pair("csv_a", "ofx_b", 0.9)
+        assert _claim_key(pair, "a") == "csv|csv_a"
+        assert _claim_key(pair, "b") == "ofx|ofx_b"
+
+    def test_claim_key_transfer_pair_includes_account(self) -> None:
+        pair = _transfer_pair("chk_1", "acct_123", "sav_1", "acct_456", 0.9)
+        assert _claim_key(pair, "a") == "csv|acct_123|chk_1"
+        assert _claim_key(pair, "b") == "csv|acct_456|sav_1"
+
+    def test_assign_greedy_transfer_prevents_double_claim(self) -> None:
+        """Two transfer candidates share the same side-A slot; only the higher-scoring wins."""
+        candidates = [
+            _transfer_pair("chk_1", "checking", "sav_1", "savings", 0.90),
+            _transfer_pair("chk_1", "checking", "sav_2", "savings", 0.70),
+        ]
+        assigned = assign_greedy(candidates)
+        assert len(assigned) == 1
+        assert assigned[0].source_transaction_id_b == "sav_1"
 
 
 class TestAssignGreedy:
