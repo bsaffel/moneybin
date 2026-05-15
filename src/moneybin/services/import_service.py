@@ -89,6 +89,20 @@ class PerFileResult:
 
 
 @dataclass(frozen=True)
+class PostImportHookResult:
+    """Outcome of running matching + transforms + categorization after a batch.
+
+    Captures whether transforms ran, how long they took, and any error so
+    callers (batch import, inbox sync) can surface the state to users without
+    swallowing the failure.
+    """
+
+    applied: bool
+    duration_seconds: float | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class BatchImportResult:
     """Outcome of an import_files call.
 
@@ -1157,7 +1171,13 @@ class ImportService:
         raise ValueError(f"Unsupported file type: {file_type}")
 
     def _apply_post_import_hooks(self) -> None:
-        """Run matching, SQLMesh transforms, and deterministic categorization."""
+        """Run matching, SQLMesh transforms, and deterministic categorization.
+
+        Fail-loud variant used by single-file ``import_file()``: a transform
+        failure propagates so the CLI exit code reflects the broken state.
+        Batch callers should prefer :meth:`apply_post_import_hooks` for the
+        soft-fail variant that surfaces the error in a structured result.
+        """
         from moneybin.services.transform_service import TransformService
 
         try:
@@ -1166,6 +1186,35 @@ class ImportService:
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
         TransformService(self._db).apply()
         self._apply_categorization()
+
+    def apply_post_import_hooks(self) -> PostImportHookResult:
+        """Soft-fail end-of-batch hooks: matching + transforms + categorization.
+
+        Used by batch import and inbox sync — both want to preserve already-
+        imported rows and per-file move outcomes even if SQLMesh apply
+        explodes mid-batch. The transform error is returned in the result so
+        the caller can surface it in the response envelope or sidecar.
+        """
+        from moneybin.services.transform_service import TransformService
+
+        try:
+            self._run_matching()
+        except Exception:  # noqa: BLE001 — matching best-effort; first import may precede SQLMesh views
+            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+        try:
+            apply_result = TransformService(self._db).apply()
+            self._apply_categorization()
+            return PostImportHookResult(
+                applied=apply_result.applied,
+                duration_seconds=apply_result.duration_seconds,
+            )
+        except Exception as e:  # noqa: BLE001 — surface transform error in envelope
+            logger.warning(f"Transform apply failed after batch import: {e}")
+            return PostImportHookResult(
+                applied=False,
+                duration_seconds=None,
+                error=str(e),
+            )
 
     def import_files(
         self,
@@ -1218,32 +1267,15 @@ class ImportService:
                     )
                 )
 
-        transforms_applied = False
-        transforms_duration: float | None = None
-        transforms_error: str | None = None
+        hook_result = PostImportHookResult(applied=False, duration_seconds=None)
         if apply_transforms and any_succeeded and any_transformable:
-            from moneybin.services.transform_service import TransformService
-
-            try:
-                self._run_matching()
-            except Exception:  # noqa: BLE001 — matching best-effort; first import may precede SQLMesh views
-                logger.debug(
-                    "Matching skipped (views may not exist yet)", exc_info=True
-                )
-            try:
-                apply_result = TransformService(self._db).apply()
-                transforms_applied = apply_result.applied
-                transforms_duration = apply_result.duration_seconds
-                self._apply_categorization()
-            except Exception as e:  # noqa: BLE001 — surface transform error in envelope
-                transforms_error = str(e)
-                logger.warning(f"Transform apply failed after batch import: {e}")
+            hook_result = self.apply_post_import_hooks()
 
         return BatchImportResult(
             per_file=per_file,
-            transforms_applied=transforms_applied,
-            transforms_duration_seconds=transforms_duration,
-            transforms_error=transforms_error,
+            transforms_applied=hook_result.applied,
+            transforms_duration_seconds=hook_result.duration_seconds,
+            transforms_error=hook_result.error,
         )
 
     def _run_matching(self) -> None:

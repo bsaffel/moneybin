@@ -70,12 +70,20 @@ class InboxBusyError(Exception):
 
 @dataclass
 class InboxSyncResult:
-    """Outcome of an inbox sync run, bucketed by per-file disposition."""
+    """Outcome of an inbox sync run, bucketed by per-file disposition.
+
+    Transform fields surface end-of-batch hook state so callers can render
+    "rebuilt core tables" / "transform failed" in the same response that
+    enumerates the per-file moves.
+    """
 
     processed: list[dict[str, object]] = field(default_factory=list)
     failed: list[dict[str, object]] = field(default_factory=list)
     skipped: list[dict[str, object]] = field(default_factory=list)
     ignored: list[dict[str, object]] = field(default_factory=list)
+    transforms_applied: bool = False
+    transforms_duration_seconds: float | None = None
+    transforms_error: str | None = None
 
 
 @dataclass
@@ -317,8 +325,19 @@ class InboxService:
             f"(>{_MAX_FILENAME_COLLISIONS})"
         )
 
-    def sync(self, year_month: str | None = None) -> InboxSyncResult:
-        """Drain the inbox: import each eligible file and move it."""
+    def sync(
+        self,
+        year_month: str | None = None,
+        *,
+        apply_transforms: bool = True,
+    ) -> InboxSyncResult:
+        """Drain the inbox: import each eligible file and move it.
+
+        Per-file imports run with ``apply_transforms=False`` so SQLMesh runs
+        once at end-of-batch instead of N times. When at least one file
+        imported successfully, ``ImportService.apply_post_import_hooks()`` is
+        invoked once and the timing/error fields land in the result.
+        """
         if self._db is None:
             raise RuntimeError("InboxService.sync() requires a database connection")
         ym = year_month or datetime.now(UTC).strftime("%Y-%m")
@@ -335,6 +354,11 @@ class InboxService:
                     self._sync_one(
                         item, importer=importer, year_month=ym, result=result
                     )
+                if apply_transforms and result.processed:
+                    hook_result = importer.apply_post_import_hooks()
+                    result.transforms_applied = hook_result.applied
+                    result.transforms_duration_seconds = hook_result.duration_seconds
+                    result.transforms_error = hook_result.error
                 INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
                 return result
         except InboxBusyError:
@@ -349,13 +373,19 @@ class InboxService:
         year_month: str,
         result: InboxSyncResult,
     ) -> None:
-        """Import one inbox item and move it to the processed/ bucket."""
+        """Import one inbox item and move it to the processed/ bucket.
+
+        Transforms are deferred: passed ``apply_transforms=False`` here so the
+        whole batch runs SQLMesh once at the end of :meth:`sync` instead of
+        per-file.
+        """
         rel_filename = str(item["filename"])
         account_hint = item["account_hint"]
         src = self.inbox_dir / rel_filename
         try:
             import_result = importer.import_file(
                 str(src),
+                apply_transforms=False,
                 account_name=account_hint if isinstance(account_hint, str) else None,
             )
         except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry

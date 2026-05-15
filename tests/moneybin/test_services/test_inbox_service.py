@@ -251,19 +251,26 @@ class TestSyncHappyPath:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from moneybin.services import inbox_service as mod
-        from moneybin.services.import_service import ImportResult
+        from moneybin.services.import_service import (
+            ImportResult,
+            PostImportHookResult,
+        )
 
         captured: list[dict[str, object]] = []
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
-                pass
+                self.hook_calls = 0
 
             def import_file(self, path: str, **kwargs: object) -> ImportResult:
                 captured.append({"path": path, **kwargs})
                 return ImportResult(
                     file_path=path, file_type="tabular", transactions=42
                 )
+
+            def apply_post_import_hooks(self) -> PostImportHookResult:
+                self.hook_calls += 1
+                return PostImportHookResult(applied=True, duration_seconds=0.01)
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
 
@@ -281,12 +288,19 @@ class TestSyncHappyPath:
         assert not (svc.inbox_dir / "statement.csv").exists()
         assert (svc.processed_dir / "2026-05" / "statement.csv").exists()
         assert str(captured[0]["path"]).endswith("/inbox/statement.csv")
+        # Per-file import must defer transforms; sync runs them once at end.
+        assert captured[0]["apply_transforms"] is False
+        assert result.transforms_applied is True
+        assert result.transforms_duration_seconds == 0.01
 
     def test_subfolder_passes_account_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from moneybin.services import inbox_service as mod
-        from moneybin.services.import_service import ImportResult
+        from moneybin.services.import_service import (
+            ImportResult,
+            PostImportHookResult,
+        )
 
         captured_kwargs: dict[str, object] = {}
 
@@ -297,6 +311,9 @@ class TestSyncHappyPath:
             def import_file(self, path: str, **kwargs: object) -> ImportResult:
                 captured_kwargs.update(kwargs)
                 return ImportResult(file_path=path, file_type="tabular")
+
+            def apply_post_import_hooks(self) -> PostImportHookResult:
+                return PostImportHookResult(applied=True, duration_seconds=0.0)
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
 
@@ -310,6 +327,130 @@ class TestSyncHappyPath:
         svc.sync(year_month="2026-05")
 
         assert captured_kwargs["account_name"] == "chase-checking"
+
+
+class TestSyncTransformsOnce:
+    """Regression: transforms run exactly once per sync() call, not per file."""
+
+    def test_multi_file_batch_runs_transforms_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two files should trigger exactly one apply_post_import_hooks call."""
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import (
+            ImportResult,
+            PostImportHookResult,
+        )
+
+        hook_call_count = 0
+        per_file_kwargs: list[dict[str, object]] = []
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                per_file_kwargs.append(kwargs)
+                return ImportResult(
+                    file_path=path, file_type="tabular", transactions=10
+                )
+
+            def apply_post_import_hooks(self) -> PostImportHookResult:
+                nonlocal hook_call_count
+                hook_call_count += 1
+                return PostImportHookResult(applied=True, duration_seconds=0.02)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "one.csv").write_text("a\n1\n")
+        (svc.inbox_dir / "two.csv").write_text("a\n2\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        # Two files processed, exactly one hook call.
+        assert len(result.processed) == 2
+        assert hook_call_count == 1
+        # Each per-file import deferred transforms.
+        assert len(per_file_kwargs) == 2
+        assert all(kw["apply_transforms"] is False for kw in per_file_kwargs)
+        # Hook timing surfaces in the result.
+        assert result.transforms_applied is True
+        assert result.transforms_duration_seconds == 0.02
+
+    def test_no_successes_skips_transforms(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All-failure batch must NOT call apply_post_import_hooks."""
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import PostImportHookResult
+
+        hook_calls = 0
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise RuntimeError("boom")
+
+            def apply_post_import_hooks(self) -> PostImportHookResult:
+                nonlocal hook_calls
+                hook_calls += 1
+                return PostImportHookResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "broken.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert hook_calls == 0
+        assert result.transforms_applied is False
+        assert result.transforms_duration_seconds is None
+        assert len(result.failed) == 1
+
+    def test_apply_transforms_false_skips_hooks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sync(apply_transforms=False) defers SQLMesh entirely."""
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import (
+            ImportResult,
+            PostImportHookResult,
+        )
+
+        hook_calls = 0
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                return ImportResult(file_path=path, file_type="tabular", transactions=3)
+
+            def apply_post_import_hooks(self) -> PostImportHookResult:
+                nonlocal hook_calls
+                hook_calls += 1
+                return PostImportHookResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "a.csv").write_text("a\n1\n")
+
+        result = svc.sync(year_month="2026-05", apply_transforms=False)
+
+        assert hook_calls == 0
+        assert result.transforms_applied is False
+        assert len(result.processed) == 1
 
 
 class TestSyncFailure:
@@ -508,7 +649,10 @@ class TestRecovery:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from moneybin.services import inbox_service as mod
-        from moneybin.services.import_service import ImportResult
+        from moneybin.services.import_service import (
+            ImportResult,
+            PostImportHookResult,
+        )
 
         db = MagicMock(spec=Database)
         svc = InboxService(db=db, settings=_make_settings(tmp_path))
@@ -522,6 +666,9 @@ class TestRecovery:
 
             def import_file(self, path: str, **kwargs: object) -> ImportResult:
                 return ImportResult(file_path=path, file_type="tabular")
+
+            def apply_post_import_hooks(self) -> PostImportHookResult:
+                return PostImportHookResult(applied=True, duration_seconds=0.0)
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
 
@@ -629,7 +776,10 @@ class TestSyncMoveRace:
     ) -> None:
         """If src vanishes after import_file() succeeds, batch continues."""
         from moneybin.services import inbox_service as mod
-        from moneybin.services.import_service import ImportResult
+        from moneybin.services.import_service import (
+            ImportResult,
+            PostImportHookResult,
+        )
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
@@ -639,6 +789,9 @@ class TestSyncMoveRace:
                 # Import succeeds but external process removes file before move.
                 Path(path).unlink()
                 return ImportResult(file_path=path, file_type="tabular", transactions=5)
+
+            def apply_post_import_hooks(self) -> PostImportHookResult:
+                return PostImportHookResult(applied=True, duration_seconds=0.0)
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
 
