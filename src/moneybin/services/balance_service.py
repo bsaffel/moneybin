@@ -139,9 +139,11 @@ class BalanceService:
     ) -> BalanceAssertion:
         """Insert or update a balance assertion.
 
-        On the INSERT path, created_at is populated from the column DEFAULT.
-        On the UPDATE path, created_at is preserved (it records first entry,
-        not last update) — only balance and notes change on re-assertion.
+        On the INSERT path, created_at and updated_at are both populated from
+        the column DEFAULT. On the UPDATE path, created_at is preserved (it
+        records first entry) and updated_at is refreshed so `core.fct_balances`
+        per-row freshness reflects the edit, per the core-updated-at-convention
+        spec.
         """
         self._assert_account_exists(account_id)
         self._db.execute(
@@ -151,8 +153,12 @@ class BalanceService:
             VALUES (?, ?, ?, ?)
             ON CONFLICT (account_id, assertion_date) DO UPDATE SET
                 balance = excluded.balance,
-                notes = excluded.notes
+                notes = excluded.notes,
+                updated_at = NOW()
             """,
+            # `NOW()` rather than `CURRENT_TIMESTAMP` inside the DO UPDATE SET
+            # clause: DuckDB's parser treats `CURRENT_TIMESTAMP` as an
+            # identifier in that position, not a function call.
             [account_id, assertion_date, balance, notes],
         )
         logger.info(f"Asserted balance for account {account_id} on {assertion_date}")

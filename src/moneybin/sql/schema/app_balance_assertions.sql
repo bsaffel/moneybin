@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS app.balance_assertions (
     assertion_date DATE NOT NULL,                                     -- Date the balance was observed
     balance        DECIMAL(18, 2) NOT NULL,                           -- Asserted balance amount
     notes          VARCHAR,                                            -- Optional user notes (e.g., "from paper statement")
-    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,       -- When the assertion was entered
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,       -- When the assertion was first entered
+    updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,       -- When the assertion was last edited; refreshed by BalanceService.assert_balance on conflict
     PRIMARY KEY (account_id, assertion_date)
 );

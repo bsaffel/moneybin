@@ -1,9 +1,10 @@
 """Verify core.fct_balances.updated_at convention.
 
 updated_at carries the contributing observation's loaded_at (OFX/tabular) or
-created_at (user assertion). Every row must have a non-NULL updated_at, and
-user assertions must surface their created_at exactly. See
-docs/specs/core-updated-at-convention.md.
+the assertion row's updated_at (user assertion — mutable on re-assertion).
+Every row must have a non-NULL updated_at, user assertions must surface
+their updated_at exactly, and edits to an existing assertion must advance
+freshness. See docs/specs/core-updated-at-convention.md.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ def test_updated_at_non_null_for_all_observations() -> None:
 
 @pytest.mark.scenarios
 @pytest.mark.slow
-def test_user_assertion_carries_created_at() -> None:
+def test_user_assertion_carries_updated_at() -> None:
     scenario = load_shipped_scenario("idempotency-rerun")
     assert scenario is not None
 
@@ -60,7 +61,7 @@ def test_user_assertion_carries_created_at() -> None:
 
         db.execute(
             "INSERT INTO app.balance_assertions "
-            "(account_id, assertion_date, balance, created_at) "
+            "(account_id, assertion_date, balance, updated_at) "
             "VALUES (?, DATE '2020-01-01', 1000.00, TIMESTAMP '2020-01-02 12:00:00')",
             [account_id],
         )
@@ -75,5 +76,64 @@ def test_user_assertion_carries_created_at() -> None:
 
     assert row is not None, "user assertion did not surface in fct_balances"
     assert row[0] == datetime(2020, 1, 2, 12, 0, 0), (
-        f"updated_at={row[0]} did not match inserted created_at"
+        f"updated_at={row[0]} did not match inserted updated_at"
+    )
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_assertion_edit_advances_fct_balances_updated_at() -> None:
+    """Editing an existing assertion via BalanceService advances fct_balances.updated_at.
+
+    Pins the Codex P1 regression: prior to wiring app.balance_assertions.updated_at
+    as the source column (and refreshing it on ON CONFLICT DO UPDATE in
+    BalanceService.assert_balance), an edited assertion was invisible to
+    "changed since T" consumers of fct_balances.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from moneybin.services.balance_service import BalanceService
+
+    scenario = load_shipped_scenario("idempotency-rerun")
+    assert scenario is not None
+
+    with scenario_env(scenario) as (db, _tmp, env):
+        run_step("generate", scenario.setup, db, env=env)
+        run_step("transform", scenario.setup, db, env=env)
+
+        account_row = db.execute(
+            "SELECT account_id FROM core.dim_accounts LIMIT 1"
+        ).fetchone()
+        assert account_row is not None
+        account_id = account_row[0]
+
+        svc = BalanceService(db)
+        svc.assert_balance(account_id, date(2020, 1, 1), Decimal("100.00"))
+        before_row = db.execute(
+            "SELECT updated_at FROM core.fct_balances "
+            "WHERE account_id = ? AND source_type = 'assertion' "
+            "AND balance_date = DATE '2020-01-01'",
+            [account_id],
+        ).fetchone()
+        assert before_row is not None
+        before = before_row[0]
+
+        import time
+
+        time.sleep(0.01)
+
+        svc.assert_balance(account_id, date(2020, 1, 1), Decimal("200.00"))
+        after_row = db.execute(
+            "SELECT updated_at FROM core.fct_balances "
+            "WHERE account_id = ? AND source_type = 'assertion' "
+            "AND balance_date = DATE '2020-01-01'",
+            [account_id],
+        ).fetchone()
+        assert after_row is not None
+        after = after_row[0]
+
+    assert after > before, (
+        f"editing an assertion must advance fct_balances.updated_at "
+        f"(before={before}, after={after})"
     )

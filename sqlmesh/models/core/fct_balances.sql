@@ -33,7 +33,7 @@ WITH ofx_balances AS (
     balance,
     'assertion' AS source_type,
     'user' AS source_ref,
-    created_at AS updated_at
+    updated_at
   FROM app.balance_assertions
 )
 SELECT

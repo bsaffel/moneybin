@@ -108,7 +108,6 @@
 # to expose a stable public contract for model-level freshness.
 
 - name: '"moneybin"."sqlmesh"."_snapshots"'
-  description: SQLMesh internal state — snapshot metadata.
   columns:
     name: VARCHAR
     identifier: VARCHAR

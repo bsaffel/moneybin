@@ -55,7 +55,7 @@ All `updated_at` columns are `TIMESTAMP` and may be `NULL` only where the row's 
 | `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.categorized_at, notes_latest, tags_latest, splits_latest)` where `notes_latest = MAX(notes.created_at)`, `tags_latest = MAX(tags.applied_at)`, `splits_latest = MAX(splits.created_at)`, each grouped per transaction. Notes/tags/splits are insert-only today, so their per-row freshness column is the create-time column. `c` is `app.transaction_categories`, whose write-time column is `categorized_at`. |
 | `core.dim_categories` | VIEW | `COALESCE(user_categories.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
 | `core.dim_merchants` | VIEW | `COALESCE(user_merchants.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
-| `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular staging sources, `created_at` from `app.balance_assertions`. Requires extending `fct_balances` CTEs to project these timestamps through to a single `updated_at` output column. |
+| `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular staging sources, `updated_at` from `app.balance_assertions` (mutable; refreshed by `BalanceService.assert_balance` on conflict so edited assertions advance freshness). Requires extending `fct_balances` CTEs to project these timestamps through to a single `updated_at` output column. |
 
 ### Semantics for consumers
 
