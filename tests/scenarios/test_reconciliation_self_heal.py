@@ -69,10 +69,10 @@ def test_reconciliation_self_heal() -> None:
             [
                 _ACCOUNT,
                 "2024-01-01",
-                float(_START_BALANCE),
+                _START_BALANCE,
                 _ACCOUNT,
                 _OBS_DATE,
-                float(_END_BALANCE),
+                _END_BALANCE,
             ],
         )
 
