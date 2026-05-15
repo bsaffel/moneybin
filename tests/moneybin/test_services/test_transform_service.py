@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -12,9 +12,21 @@ import pytest
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
 
+# raw.import_log columns required by NOT NULL constraints. The table is
+# auto-created by Database() schema init; tests only need to provide
+# import_id, status, completed_at — the rest are dummy values.
+_INSERT_IMPORT = (
+    "INSERT INTO raw.import_log "
+    "(import_id, source_file, source_type, source_origin, account_names, "
+    "status, completed_at) "
+    "VALUES (?, '/tmp/f.csv', 'csv', 'test', '[]'::JSON, ?, ?)"
+)
 
-def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    return datetime(year, month, day, hour, minute, tzinfo=UTC)
+
+def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
+    # Naive timestamp; raw.import_log.completed_at and dim_accounts.updated_at
+    # in production both resolve to TIMESTAMP (no tz) in DuckDB.
+    return datetime(year, month, day, hour, minute)
 
 
 def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
@@ -29,18 +41,11 @@ def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
 def freshness_db(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> Generator[Database, None, None]:
-    """Empty DB with app.import_log and core.dim_accounts shimmed in."""
+    """Empty DB with core.dim_accounts shimmed in (raw.import_log is auto-created)."""
     db = _open_db(tmp_path, mock_secret_store)
     try:
-        db.execute("CREATE SCHEMA IF NOT EXISTS app")
-        db.execute("CREATE SCHEMA IF NOT EXISTS core")
         db.execute(
-            "CREATE TABLE app.import_log "
-            "(import_id VARCHAR, status VARCHAR, completed_at TIMESTAMPTZ)"
-        )
-        db.execute(
-            "CREATE TABLE core.dim_accounts "
-            "(account_id VARCHAR, updated_at TIMESTAMPTZ)"
+            "CREATE TABLE core.dim_accounts (account_id VARCHAR, updated_at TIMESTAMP)"
         )
         yield db
     finally:
@@ -51,26 +56,20 @@ def test_freshness_pending_when_import_newer_than_apply(
     freshness_db: Database,
 ) -> None:
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_utc(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 10, 12, 0)]
     )
-    freshness_db.execute(
-        "INSERT INTO app.import_log VALUES ('i1', 'complete', ?)",
-        [_utc(2026, 5, 13, 18, 24)],
-    )
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is True
-    assert f.last_apply_at == _utc(2026, 5, 10, 12, 0)
-    assert f.latest_import_at == _utc(2026, 5, 13, 18, 24)
+    assert f.last_apply_at == _ts(2026, 5, 10, 12, 0)
+    assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
 
 
 def test_freshness_not_pending_when_apply_newer(freshness_db: Database) -> None:
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_utc(2026, 5, 13, 19, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 13, 19, 0)]
     )
-    freshness_db.execute(
-        "INSERT INTO app.import_log VALUES ('i1', 'complete', ?)",
-        [_utc(2026, 5, 13, 18, 24)],
-    )
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is False
 
@@ -81,15 +80,7 @@ def test_freshness_pending_when_dim_table_missing(
     """Pre-first-transform: dim_accounts doesn't exist; pending if any imports."""
     db = _open_db(tmp_path, mock_secret_store)
     try:
-        db.execute("CREATE SCHEMA IF NOT EXISTS app")
-        db.execute(
-            "CREATE TABLE app.import_log "
-            "(import_id VARCHAR, status VARCHAR, completed_at TIMESTAMPTZ)"
-        )
-        db.execute(
-            "INSERT INTO app.import_log VALUES ('i1', 'complete', ?)",
-            [_utc(2026, 5, 13, 18, 24)],
-        )
+        db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
         f = TransformService(db).freshness()
         assert f.pending is True
         assert f.last_apply_at is None
@@ -111,15 +102,26 @@ def test_freshness_no_imports_no_pending(
         db.close()
 
 
-def test_freshness_filters_incomplete_imports(freshness_db: Database) -> None:
-    """Only status='complete' rows count for staleness."""
+def test_freshness_filters_reverted_and_failed_imports(
+    freshness_db: Database,
+) -> None:
+    """Reverted and failed rows must not count toward staleness."""
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_utc(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 10, 12, 0)]
     )
-    freshness_db.execute(
-        "INSERT INTO app.import_log VALUES ('i1', 'in_progress', ?)",
-        [_utc(2026, 5, 13, 18, 24)],
-    )
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "reverted", _ts(2026, 5, 13, 18, 24)])
+    freshness_db.execute(_INSERT_IMPORT, ["i2", "failed", _ts(2026, 5, 13, 18, 30)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is False
     assert f.latest_import_at is None
+
+
+def test_freshness_counts_partial_imports(freshness_db: Database) -> None:
+    """Partial imports landed some rows; they count toward staleness."""
+    freshness_db.execute(
+        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_ts(2026, 5, 10, 12, 0)]
+    )
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "partial", _ts(2026, 5, 13, 18, 24)])
+    f = TransformService(freshness_db).freshness()
+    assert f.pending is True
+    assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)

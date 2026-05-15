@@ -11,7 +11,10 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+import duckdb
+
 from moneybin.database import Database
+from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +72,20 @@ class TransformService:
     def _max_completed_import_at(self) -> datetime | None:
         try:
             row = self._db.execute(
-                "SELECT MAX(completed_at) FROM app.import_log WHERE status = 'complete'"
+                f"SELECT MAX(completed_at) FROM {IMPORT_LOG.full_name} "
+                f"WHERE status NOT IN ('reverted', 'failed')"  # noqa: S608  # TableRef constant
             ).fetchone()
-        except Exception:  # noqa: BLE001 — table may not exist before first import
+        except duckdb.CatalogException:
+            # CatalogException when raw.import_log not yet created (pre-first-import)
             return None
         return row[0] if row and row[0] is not None else None
 
     def _max_dim_accounts_updated_at(self) -> datetime | None:
         try:
             row = self._db.execute(
-                "SELECT MAX(updated_at) FROM core.dim_accounts"
+                f"SELECT MAX(updated_at) FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant
             ).fetchone()
-        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+        except duckdb.CatalogException:
+            # CatalogException when core.dim_accounts not yet created (pre-first-transform)
             return None
         return row[0] if row and row[0] is not None else None
