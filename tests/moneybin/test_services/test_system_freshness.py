@@ -1,4 +1,4 @@
-"""Tests for get_model_freshness() — typed wrapper over meta.model_freshness.
+"""Tests for SystemService.model_freshness — typed wrapper over meta.model_freshness.
 
 Uses the scenario runner to apply the full SQLMesh pipeline (which is what
 materializes meta.model_freshness). Cheaper unit-style fixtures cannot stand
@@ -11,10 +11,7 @@ from datetime import datetime
 
 import pytest
 
-from moneybin.services.freshness_service import (
-    ModelFreshness,
-    get_model_freshness,
-)
+from moneybin.services.system_service import ModelFreshness, SystemService
 from tests.scenarios._runner import load_shipped_scenario
 from tests.scenarios._runner.runner import scenario_env
 from tests.scenarios._runner.steps import run_step
@@ -30,7 +27,7 @@ def test_returns_freshness_for_known_model() -> None:
         run_step("generate", scenario.setup, db, env=env)
         run_step("transform", scenario.setup, db, env=env)
 
-        result = get_model_freshness(db, "core.dim_accounts")
+        result = SystemService(db).model_freshness("core.dim_accounts")
 
     assert result is not None
     assert isinstance(result, ModelFreshness)
@@ -49,6 +46,6 @@ def test_returns_none_for_unknown_model() -> None:
         run_step("generate", scenario.setup, db, env=env)
         run_step("transform", scenario.setup, db, env=env)
 
-        result = get_model_freshness(db, "core.does_not_exist")
+        result = SystemService(db).model_freshness("core.does_not_exist")
 
     assert result is None

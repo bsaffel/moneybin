@@ -84,24 +84,22 @@ This expands `meta`'s scope description in `architecture-shared-primitives.md` f
 
 ### Typed programmatic accessor
 
-A free function provides a typed alternative to ad-hoc SQL:
+A `SystemService.model_freshness()` method provides a typed alternative to ad-hoc SQL, alongside the existing `SystemService.status()` data-inventory snapshot:
 
 ```python
-# src/moneybin/services/freshness_service.py (final module location decided at plan time)
-from dataclasses import dataclass
-from datetime import datetime
-
+# src/moneybin/services/system_service.py
 @dataclass(slots=True)
 class ModelFreshness:
     model_name: str
     last_changed_at: datetime | None
     last_applied_at: datetime | None
 
-def get_model_freshness(db: Database, model_name: str) -> ModelFreshness | None:
-    """Return freshness for one model, or None if not yet applied."""
+class SystemService:
+    def model_freshness(self, model_name: str) -> ModelFreshness | None:
+        """Return freshness for one SQLMesh model, or None if not yet applied."""
 ```
 
-This is a thin wrapper over `meta.model_freshness`. It exists so callers (future CLI `freshness` subcommand, MCP tools, `transform apply` cool-down logic, etc.) get a typed surface instead of inline SQL.
+A thin wrapper over `meta.model_freshness`. Lives on `SystemService` because model-level freshness is the same conceptual family as data inventory and `last_import_at` — answered with the same service surface that other "system status" queries already use.
 
 ## App-table schema changes
 
@@ -124,7 +122,7 @@ For the two existing `*_overrides` tables, the live schema is `updated_at TIMEST
 2. **Service writes** — every `INSERT … ON CONFLICT DO UPDATE` and bare `UPDATE` against the four tables above sets `updated_at = NOW()`. Specific call sites identified during plan execution.
 3. **SQLMesh model edits** — five core models (`dim_accounts`, `fct_transactions`, `dim_categories`, `dim_merchants`, `fct_balances`) gain/replace `updated_at` per the formulas above. The misleading `CURRENT_TIMESTAMP AS updated_at` on `dim_accounts` is replaced. `fct_balances` also gains `loaded_at` propagation through its source CTEs.
 4. **`meta.model_freshness` view** — new SQLMesh model in `sqlmesh/models/meta/` exposing the public column contract above.
-5. **`get_model_freshness()` function** — typed wrapper over the view; location decided at plan time.
+5. **`SystemService.model_freshness()` method** — typed wrapper over the view; lives alongside `SystemService.status()` and the `ModelFreshness` dataclass in `src/moneybin/services/system_service.py`.
 6. **Per-column comments** — every `updated_at` column on the five core models gets a comment matching the convention (see [Documentation](#documentation)).
 7. **Cascading edits** — see below.
 
@@ -156,7 +154,7 @@ Both consumers and reviewers should be able to read this without opening this sp
 
 | Layer | Coverage |
 |---|---|
-| **Unit** | `get_model_freshness()` returns the right dataclass; returns `None` for unknown models. |
+| **Unit** | `SystemService.model_freshness()` returns the right dataclass; returns `None` for unknown models. |
 | **SQLMesh model** | Each touched core model has an audit (or scenario assertion) that `updated_at` is non-`NULL` for rows whose inputs all have timestamps, and is `NULL` only where expected (pure-seed rows in `dim_categories` / `dim_merchants`). |
 | **Migration** | DDL migration adds the column with the documented default; existing rows get `CURRENT_TIMESTAMP` at migration time. |
 | **Service** | Each updated write path sets `updated_at = NOW()` on UPDATE; verified by inspecting the row after edit. |

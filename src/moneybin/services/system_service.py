@@ -1,10 +1,10 @@
-"""System-status service: data inventory + queue counts."""
+"""System-status service: data inventory + queue counts + pipeline freshness."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from moneybin.database import Database
 from moneybin.services.categorization_service import CategorizationService
@@ -25,6 +25,18 @@ class SystemStatus:
     last_import_at: date | None
     matches_pending: int
     categorize_pending: int
+
+
+@dataclass(slots=True)
+class ModelFreshness:
+    """Freshness facts for a single SQLMesh model.
+
+    See docs/specs/core-updated-at-convention.md for column semantics.
+    """
+
+    model_name: str
+    last_changed_at: datetime | None
+    last_applied_at: datetime | None
 
 
 class SystemService:
@@ -98,3 +110,23 @@ class SystemService:
             return row[0] if row and row[0] is not None else None
         except Exception:  # noqa: BLE001 — table may not exist before first import
             return None
+
+    def model_freshness(self, model_name: str) -> ModelFreshness | None:
+        """Return freshness for one SQLMesh model, or None if not yet applied.
+
+        Reads from meta.model_freshness; returns None when the model has never
+        been materialized (no row in sqlmesh._snapshots).
+        """
+        row = self._db.execute(
+            "SELECT last_changed_at, last_applied_at "
+            "FROM meta.model_freshness "
+            "WHERE model_name = ?",
+            [model_name],
+        ).fetchone()
+        if row is None:
+            return None
+        return ModelFreshness(
+            model_name=model_name,
+            last_changed_at=row[0],
+            last_applied_at=row[1],
+        )
