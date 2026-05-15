@@ -62,6 +62,10 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "match_confidence": "DECIMAL(5,4)",
     "source_extracted_at": "TIMESTAMP",
     "loaded_at": "TIMESTAMP",
+    # Per-row freshness column added by core-updated-at-convention spec;
+    # MAX of loaded_at, categorized_at, and per-txn aggregates of note/tag/split
+    # timestamps. See sqlmesh/models/core/fct_transactions.sql outer SELECT.
+    "updated_at": "TIMESTAMP",
     "is_transfer": "BOOLEAN",
     "transfer_pair_id": "VARCHAR",
     "transaction_year": "BIGINT",
