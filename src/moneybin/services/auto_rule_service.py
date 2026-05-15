@@ -23,6 +23,7 @@ from moneybin.database import Database
 from moneybin.services._text import build_match_inputs, normalize_description
 from moneybin.services.categorization_service import (
     CategorizationService,
+    MerchantRow,
     matches_pattern,
 )
 from moneybin.tables import (
@@ -106,7 +107,7 @@ class RecordingContext:
 
     txn_rows: dict[str, TxnRow]
     active_rules: list[tuple[Any, ...]]
-    merchant_mappings: list[tuple[Any, ...]]
+    merchant_mappings: list[MerchantRow]
     new_merchant_count: int = field(default=0)
 
     def txn_row_for(self, transaction_id: str) -> TxnRow | None:
@@ -123,14 +124,14 @@ class RecordingContext:
         row = self.txn_rows.get(transaction_id)
         return row.memo if row else None
 
-    def merchant_row_for(self, merchant_id: str) -> tuple[Any, ...] | None:
-        """Return the cached merchant tuple for the given merchant_id, or None."""
+    def merchant_row_for(self, merchant_id: str) -> MerchantRow | None:
+        """Return the cached merchant row for the given merchant_id, or None."""
         for merchant in self.merchant_mappings:
-            if str(merchant[0]) == merchant_id:
+            if merchant.merchant_id == merchant_id:
                 return merchant
         return None
 
-    def register_new_merchant(self, merchant_row: tuple[Any, ...]) -> None:
+    def register_new_merchant(self, merchant_row: MerchantRow) -> None:
         """Insert at the canonical match-order position (before the first regex).
 
         Preserves the ordering from ``_fetch_merchants``
@@ -138,12 +139,15 @@ class RecordingContext:
         inserted at the front so they fire before pattern-based shapes for
         subsequent items in the same bulk batch.
         """
-        match_type = merchant_row[2] if len(merchant_row) > 2 else None
-        if match_type == "oneOf":
+        if merchant_row.match_type == "oneOf":
             insert_at = 0
         else:
             insert_at = next(
-                (i for i, m in enumerate(self.merchant_mappings) if m[2] == "regex"),
+                (
+                    i
+                    for i, m in enumerate(self.merchant_mappings)
+                    if m.match_type == "regex"
+                ),
                 len(self.merchant_mappings),
             )
         self.merchant_mappings.insert(insert_at, merchant_row)
@@ -154,23 +158,16 @@ class RecordingContext:
     ) -> bool:
         """Mirror of ``AutoRuleService._merchant_mapping_covers`` against the cached list."""
         for merchant in self.merchant_mappings:
-            # _fetch_merchants always returns 7-tuples; exemplars (index 6) is
-            # unused here — coverage is about pattern matches, not exact-string
-            # membership.
-            raw_pattern = merchant[1]
-            match_type = merchant[2]
-            m_cat = merchant[4]
-            m_subcat = merchant[5]
-            if str(m_cat) != category:
+            if merchant.category != category:
                 continue
-            if (m_subcat if m_subcat is None else str(m_subcat)) != subcategory:
+            if merchant.subcategory != subcategory:
                 continue
-            if match_type == "oneOf" or raw_pattern is None:
+            if merchant.match_type == "oneOf" or merchant.raw_pattern is None:
                 # Exemplar-only merchants cover exact match_text values rather
                 # than patterns; pattern-coverage doesn't apply.
                 continue
             if matches_pattern(
-                pattern, str(raw_pattern), str(match_type or "contains")
+                pattern, merchant.raw_pattern, merchant.match_type or "contains"
             ):
                 return True
         return False
@@ -793,8 +790,8 @@ class AutoRuleService:
         if merchant_id:
             if context is not None:
                 m_row = context.merchant_row_for(merchant_id)
-                if m_row and m_row[1]:
-                    return str(m_row[1]), str(m_row[2] or "contains")
+                if m_row and m_row.raw_pattern:
+                    return m_row.raw_pattern, m_row.match_type or "contains"
             else:
                 m = self._db.execute(
                     f"SELECT raw_pattern, match_type FROM {MERCHANTS.full_name} WHERE merchant_id = ?",

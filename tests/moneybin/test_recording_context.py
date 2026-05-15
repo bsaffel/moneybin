@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from moneybin.services.auto_rule_service import RecordingContext, TxnRow
+from moneybin.services.categorization_service import MerchantRow
 
 
 def _merchant(
@@ -12,8 +13,16 @@ def _merchant(
     canonical: str,
     category: str,
     subcategory: str | None = None,
-) -> tuple[str, str, str, str, str, str | None]:
-    return (merchant_id, raw_pattern, match_type, canonical, category, subcategory)
+) -> MerchantRow:
+    return MerchantRow(
+        merchant_id=merchant_id,
+        raw_pattern=raw_pattern,
+        match_type=match_type,
+        canonical_name=canonical,
+        category=category,
+        subcategory=subcategory,
+        exemplars=[],
+    )
 
 
 class TestTxnRowLookup:
@@ -64,7 +73,7 @@ class TestRegisterNewMerchant:
         new = _merchant("m4", "starbucks", "contains", "Starbucks", "Food", "Coffee")
         ctx.register_new_merchant(new)
         assert ctx.merchant_mappings[2] == new
-        assert ctx.merchant_mappings[3][0] == "m3"
+        assert ctx.merchant_mappings[3].merchant_id == "m3"
 
     def test_appends_when_no_regex(self) -> None:
         ctx = RecordingContext(

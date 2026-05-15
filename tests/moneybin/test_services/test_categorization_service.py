@@ -36,8 +36,12 @@ def match_merchant(
 
 
 def apply_rules(db: Database) -> int:
-    """Test shim — delegates to CategorizationService.apply_rules."""
-    return CategorizationService(db).apply_rules()
+    """Test shim — delegates to CategorizationService.apply_rules.
+
+    ``apply_rules`` returns the set of applied ``transaction_id``s; tests
+    historically assert on the count, so wrap with ``len``.
+    """
+    return len(CategorizationService(db).apply_rules())
 
 
 def apply_merchant_categories(db: Database) -> int:
