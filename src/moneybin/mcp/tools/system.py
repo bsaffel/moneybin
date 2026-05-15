@@ -51,12 +51,6 @@ def system_status() -> ResponseEnvelope:
         "Use transactions_review_status for per-queue review counts",
         "Use reports_spending_get for a monthly spending trend snapshot",
     ]
-    if status.transforms_pending:
-        actions.append(
-            "Run transform_apply to refresh derived tables "
-            "(raw imports are newer than the last refresh)"
-        )
-
     if status.schema_drift:
         data["schema_drift"] = {
             "tables": [
@@ -68,6 +62,12 @@ def system_status() -> ResponseEnvelope:
         actions.append(
             "Run transform_apply to rebuild stale models — "
             f"{len(status.schema_drift)} core table(s) drifted"
+        )
+
+    if status.transforms_pending:
+        actions.append(
+            "Run transform_apply to refresh derived tables "
+            "(raw imports are newer than the last refresh)"
         )
 
     return build_envelope(

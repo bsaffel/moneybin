@@ -156,10 +156,7 @@ def _check_schema_at_boot() -> None:  # pyright: ignore[reportUnusedFunction]  #
         return
     if drift:
         tables = ", ".join(sorted(drift.keys()))
-        raise SchemaDriftError(
-            f"Stale materialized snapshots detected: {tables}. "
-            "Run 'moneybin transform apply' to rebuild."
-        )
+        raise SchemaDriftError(f"Stale materialized snapshots detected: {tables}")
 
 
 def close_db() -> None:
