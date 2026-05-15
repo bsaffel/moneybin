@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 work in flight; M2A `transaction-curation.md` spec published (PR #115). Doc surface tightened for the personas reachable today. MCP surface hardened: protocol-standard annotations, `accounts_resolve` for fuzzy account lookup, list-parameter cap, de-bulking renames.
 
 ### Added
+- MCP transform tools — `transform_status`, `transform_plan`, `transform_validate`, `transform_audit`, `transform_apply` — wrap a new `TransformService` and replace the previous CLI-only surface. See [smart-import-transform.md](docs/specs/smart-import-transform.md).
+- `system_status` envelope `data.transforms` block (`pending`, `last_apply_at`) plus a `transform_apply` action hint when derived tables are stale.
+- Boot-time schema-drift check: server refuses to start when `core.dim_accounts` or `core.fct_balances_daily` is missing expected columns. `system_status` envelope surfaces a `data.schema_drift` block when drift is observed at query time.
+- `IMPORT_BATCH_SIZE` Prometheus histogram.
+- `--output json` on `moneybin transform {plan,apply,status,validate,audit}` returning the MCP envelope shape.
 - **Plaid sync (M3A Phase 1):** new `moneybin sync` CLI subgroup and corresponding MCP tools (`sync_pull`, `sync_status`, `sync_connect`, `sync_connect_status`, `sync_disconnect`, `sync_review` prompt). Pulls accounts, transactions, and balances from Plaid-connected banks via moneybin-server, loads into `raw.plaid_*` tables, and flows through SQLMesh staging (with sign-convention flip) into `core.fct_transactions` and `core.dim_accounts`. See [`docs/specs/sync-plaid.md`](docs/specs/sync-plaid.md).
 - `ResponseEnvelope`-based responses (all MCP tools and CLI `--output json` commands) now include a top-level `status` field (`"ok"` or `"error"`), giving agents a consistent signal without testing for presence of the `error` key. **Breaking change:** all `--output json` success responses now use `{"status":"ok","data":...}` instead of per-command `{"key":...}` shapes. (PR #128)
 - `--json-fields` field-projection added to `moneybin transactions list` as the reference implementation (shared `json_fields_option` + `render_or_json` infrastructure; other read-only commands will adopt progressively). Comma-separated projection: `moneybin transactions list --output json --json-fields transaction_id,date,amount`.
@@ -33,6 +38,9 @@ M2 work in flight; M2A `transaction-curation.md` spec published (PR #115). Doc s
 - `pyproject.toml` PyPI-publish-ready metadata (description, classifiers, URLs, keywords). Bumped setuptools floor to ≥77.0 for PEP 639 license metadata.
 
 ### Changed
+- **Breaking:** MCP `import_file` renamed to `import_files`; accepts `paths: list[str]` and applies transforms once at end of batch. Per-file overrides (`account_name`, `institution`, `format_name`) are no longer exposed on the MCP surface — use the CLI for those.
+- **Breaking:** CLI `moneybin import file PATH` renamed to `moneybin import files PATHS...`; the `--skip-transform` flag is replaced by `--apply-transforms / --no-apply-transforms` (default on).
+- `moneybin import inbox` and the `import_inbox_sync` MCP tool route through the batch import path; transforms now run once per inbox drain instead of once per file.
 - Replace long-lived database singleton with short-lived per-call connections (`get_database(read_only=True/False)`). Write connections retry on lock contention with exponential backoff; read-only connections coexist across processes. New exceptions: `DatabaseLockError`, `DatabaseNotInitializedError`. (#131)
 - Renamed `moneybin mcp config generate --install` to `moneybin mcp install`. Default behavior writes the client config; `--print` opts out. Hard cut, no alias. `mcp config path` (lookup-only) is unchanged.
 - Tool description audit: every existing `@mcp_tool` description was reviewed against the sign-convention, currency, and mutation-surface invariant rules. Missing invariants were appended; descriptions otherwise unchanged.
