@@ -116,11 +116,39 @@ def transform_apply() -> ResponseEnvelope:
 
 def register_transform_tools(mcp: FastMCP) -> None:
     """Register all transform namespace tools with the FastMCP server."""
-    for fn, desc in [
-        (transform_status, "Show current SQLMesh model state and environment."),
-        (transform_plan, "Preview pending SQLMesh changes without applying."),
-        (transform_validate, "Check that all model SQL parses and resolves."),
-        (transform_audit, "Run SQLMesh data-quality audits over a date window."),
-        (transform_apply, "Apply pending SQLMesh changes to rebuild affected models."),
-    ]:
-        register(mcp, fn, fn.__name__, desc)
+    register(
+        mcp,
+        transform_status,
+        "transform_status",
+        "Current SQLMesh model state, environment name, last apply timestamp, "
+        "and pending-changes flag. Call to verify whether derived tables are fresh.",
+    )
+    register(
+        mcp,
+        transform_plan,
+        "transform_plan",
+        "Preview pending SQLMesh changes (directly modified, indirectly modified, "
+        "added, removed) without applying them.",
+    )
+    register(
+        mcp,
+        transform_validate,
+        "transform_validate",
+        "Parse and resolve every model. Reports parse/resolve errors without "
+        "applying any changes.",
+    )
+    register(
+        mcp,
+        transform_audit,
+        "transform_audit",
+        "Run SQLMesh data-quality audits over [start, end] (YYYY-MM-DD). "
+        "Returns per-audit pass/fail counts.",
+    )
+    register(
+        mcp,
+        transform_apply,
+        "transform_apply",
+        "Apply pending SQLMesh changes to refresh derived tables. "
+        "Idempotent — safe to retry after a failure. "
+        "Writes to core.* and app.seed_source_priority; no revert path (re-run to rebuild).",
+    )
