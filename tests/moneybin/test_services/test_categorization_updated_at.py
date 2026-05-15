@@ -15,7 +15,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.services.categorization_service import CategorizationService
-from tests.moneybin.db_helpers import create_core_tables
+from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
 @pytest.fixture()
@@ -102,6 +102,39 @@ class TestUserMerchantsUpdatedAt:
         after = db.execute(
             "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
             [merchant_id],
+        ).fetchone()
+        assert after is not None
+        assert after[0] > before[0]
+
+
+class TestCategoryOverridesUpdatedAt:
+    """``app.category_overrides.updated_at`` lifecycle via CategorizationService.
+
+    Pins the ON CONFLICT DO UPDATE path in ``toggle_category`` — a regression
+    that drops ``updated_at = excluded.updated_at`` from the upsert would
+    silently leave the override row's timestamp frozen at the first toggle.
+    """
+
+    @pytest.mark.unit
+    def test_toggle_default_category_advances_overrides_updated_at(
+        self, db: Database
+    ) -> None:
+        seed_categories_view(db)
+        svc = CategorizationService(db)
+        # First toggle inserts the override row.
+        svc.toggle_category("FND", is_active=False)
+        before = db.execute(
+            "SELECT updated_at FROM app.category_overrides WHERE category_id = ?",
+            ["FND"],
+        ).fetchone()
+        assert before is not None
+        assert before[0] is not None
+        time.sleep(0.01)
+        # Second toggle takes the ON CONFLICT DO UPDATE branch.
+        svc.toggle_category("FND", is_active=True)
+        after = db.execute(
+            "SELECT updated_at FROM app.category_overrides WHERE category_id = ?",
+            ["FND"],
         ).fetchone()
         assert after is not None
         assert after[0] > before[0]
