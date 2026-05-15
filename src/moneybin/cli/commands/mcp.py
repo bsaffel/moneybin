@@ -700,7 +700,7 @@ def serve(
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_database_path
-    from moneybin.mcp.server import close_db, init_db, mcp
+    from moneybin.mcp.server import _check_schema_at_boot, close_db, init_db, mcp
 
     # Import resources/prompts to register their decorators with the server.
     # Tools are registered via register_core_tools() in init_db().
@@ -744,6 +744,7 @@ def serve(
     try:
         with handle_cli_errors():
             init_db()
+            _check_schema_at_boot()
         logger.info(f"MCP server starting (transport={transport}, db={db_path})")
         mcp.run(transport=validated_transport)
     except FileNotFoundError as e:

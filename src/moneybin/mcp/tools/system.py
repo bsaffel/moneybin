@@ -57,6 +57,19 @@ def system_status() -> ResponseEnvelope:
             "(raw imports are newer than the last refresh)"
         )
 
+    if status.schema_drift:
+        data["schema_drift"] = {
+            "tables": [
+                {"name": table, "missing_columns": cols}
+                for table, cols in sorted(status.schema_drift.items())
+            ],
+            "remediation": "moneybin transform apply",
+        }
+        actions.append(
+            "Run transform_apply to rebuild stale models — "
+            f"{len(status.schema_drift)} core table(s) drifted"
+        )
+
     return build_envelope(
         data=data,
         sensitivity="low",

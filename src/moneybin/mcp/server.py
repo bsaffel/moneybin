@@ -133,6 +133,35 @@ def init_db() -> None:
     register_core_tools()
 
 
+def _check_schema_at_boot() -> None:  # pyright: ignore[reportUnusedFunction]  # called from cli.commands.mcp.mcp_serve
+    """Verify core.* materialized tables aren't stale vs. EXPECTED_CORE_COLUMNS.
+
+    Raises SchemaDriftError if any FULL-materialized core model is missing a
+    column the service code SELECTs. Single-tenant fail-fast policy; multi-
+    tenant degraded mode is a TODO when we get there.
+    """
+    from moneybin.database import (
+        DatabaseNotInitializedError,
+        SchemaDriftError,
+        check_core_schema_drift,
+        get_database,
+    )
+
+    try:
+        with get_database(read_only=True) as db:
+            drift = check_core_schema_drift(db)
+    except DatabaseNotInitializedError:
+        # No DB yet means no drift to check. moneybin mcp serve already
+        # surfaces a clean error for this case via classify_user_error.
+        return
+    if drift:
+        tables = ", ".join(sorted(drift.keys()))
+        raise SchemaDriftError(
+            f"Stale materialized snapshots detected: {tables}. "
+            "Run 'moneybin transform apply' to rebuild."
+        )
+
+
 def close_db() -> None:
     """Flush metrics on session close — flush_metrics() no-ops for read-only sessions."""
     from moneybin.observability import flush_metrics
