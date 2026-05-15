@@ -1,6 +1,7 @@
 """Tests for TransactionMatcher orchestrator."""
 
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9,6 +10,72 @@ import pytest
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
 from moneybin.matching.engine import MatchResult, TransactionMatcher
+from moneybin.matching.persistence import (
+    get_active_matches,
+    get_pending_matches,
+    undo_match,
+    update_match_status,
+)
+from moneybin.matching.scoring import CandidatePair
+
+
+def _make_pair(confidence: float) -> CandidatePair:
+    return CandidatePair(
+        source_transaction_id_a="a",
+        source_type_a="csv",
+        source_origin_a="chase",
+        source_transaction_id_b="b",
+        source_type_b="ofx",
+        source_origin_b="chase",
+        account_id="acct1",
+        date_distance_days=0,
+        description_similarity=confidence,
+        confidence_score=confidence,
+        description_a="",
+        description_b="",
+    )
+
+
+def _matcher_with_settings(**kwargs: object) -> TransactionMatcher:
+    settings = MatchingSettings(**kwargs)  # type: ignore[arg-type]
+    return TransactionMatcher(MagicMock(), settings)
+
+
+class TestClassifyPair:
+    """Unit tests for _classify_pair — no DB required."""
+
+    def test_high_confidence_returns_accepted_for_2b(self) -> None:
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        assert matcher._classify_pair(_make_pair(0.95), "2b") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+
+    def test_high_confidence_returns_accepted_for_3(self) -> None:
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        assert matcher._classify_pair(_make_pair(0.95), "3") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+
+    def test_tier3_above_review_threshold_returns_pending(self) -> None:
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        assert matcher._classify_pair(_make_pair(0.80), "3") == ("pending", "auto")  # pyright: ignore[reportPrivateUsage]
+
+    def test_tier2b_above_review_threshold_returns_none(self) -> None:
+        # Same confidence range as pending case, but tier 2b has no review bucket.
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        assert matcher._classify_pair(_make_pair(0.80), "2b") is None  # pyright: ignore[reportPrivateUsage]
+
+    def test_below_all_thresholds_returns_none(self) -> None:
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        for tier in ("2b", "3"):
+            result = matcher._classify_pair(_make_pair(0.50), tier)  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
+            assert result is None, f"Expected None for tier {tier!r}"
 
 
 @pytest.fixture()
@@ -21,6 +88,75 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None
     )
     yield database
     database.close()
+
+
+class TestFetchActiveDedupDecisions:
+    """Equivalence check: _fetch_active_dedup_decisions covers pre-seeded and newly-created matches."""
+
+    def test_returns_pre_seeded_and_new_matches(self, db: Database) -> None:
+        """Verify _fetch_active_dedup_decisions covers pre-seeded and newly-created matches.
+
+        Pre-seeds two dedup decisions, runs the matcher on a fresh pair, then
+        asserts both matched_ids and secondary_ids include all three pairs.
+        """
+        _create_test_table(db)
+
+        # Pre-seed two accepted dedup decisions before any run.
+        now = datetime.now(tz=UTC).isoformat()
+        db.execute(
+            """
+            INSERT INTO app.match_decisions
+            (match_id, source_transaction_id_a, source_type_a, source_origin_a,
+             source_transaction_id_b, source_type_b, source_origin_b,
+             account_id, confidence_score, match_signals, match_type, match_tier,
+             match_status, decided_by, decided_at)
+            VALUES
+            ('seed000001', 'csv_pre1', 'csv', 'bank',
+             'ofx_pre1', 'ofx', 'bank',
+             'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?),
+            ('seed000002', 'csv_pre2', 'csv', 'bank',
+             'ofx_pre2', 'ofx', 'bank',
+             'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?)
+            """,
+            [now, now],
+        )  # noqa: S608  # test fixture data, not user input
+
+        # Insert a fresh pair that the matcher will create a new decision for.
+        _insert(
+            db, "csv_new", "acct1", "2026-03-15", "-42.50", "STARBUCKS", "csv", "chase"
+        )
+        _insert(
+            db,
+            "ofx_new",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS",
+            "ofx",
+            "chase_ofx",
+        )
+
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        result = matcher.run()
+        assert result.auto_merged >= 1  # the fresh pair was matched
+
+        # Now call _fetch_active_dedup_decisions directly and verify both sets.
+        decisions = matcher._fetch_active_dedup_decisions()  # pyright: ignore[reportPrivateUsage]
+
+        # matched_ids must include both sides of all three pairs.
+        assert ("csv_pre1", "acct1") in decisions.matched_ids
+        assert ("ofx_pre1", "acct1") in decisions.matched_ids
+        assert ("csv_pre2", "acct1") in decisions.matched_ids
+        assert ("ofx_pre2", "acct1") in decisions.matched_ids
+        assert ("csv_new", "acct1") in decisions.matched_ids
+        assert ("ofx_new", "acct1") in decisions.matched_ids
+
+        # secondary_ids: ofx is lower-priority than csv per default source_priority,
+        # so the ofx side of each pair is the secondary (excluded from transfers).
+        assert ("ofx_pre1", "ofx", "acct1") in decisions.secondary_ids
+        assert ("ofx_pre2", "ofx", "acct1") in decisions.secondary_ids
+        assert ("ofx_new", "ofx", "acct1") in decisions.secondary_ids
 
 
 def _create_test_table(db: Database) -> None:
@@ -184,12 +320,6 @@ class TestTransactionMatcher:
         assert result1.auto_merged == 1
 
         # Undo and reject
-        from moneybin.matching.persistence import (
-            get_active_matches,
-            undo_match,
-            update_match_status,
-        )
-
         matches = get_active_matches(db, match_type="dedup")
         undo_match(db, matches[0]["match_id"], reversed_by="user")
         update_match_status(
@@ -333,11 +463,6 @@ class TestTransferDetection:
 
         result1 = matcher.run()
         assert result1.pending_transfers >= 1
-
-        from moneybin.matching.persistence import (
-            get_pending_matches,
-            update_match_status,
-        )
 
         pending = get_pending_matches(db, match_type="transfer")
         for m in pending:

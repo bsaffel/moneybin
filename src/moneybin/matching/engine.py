@@ -15,7 +15,9 @@ from moneybin.database import Database
 from moneybin.matching import UNIONED_TABLE
 from moneybin.matching.assignment import assign_greedy
 from moneybin.matching.persistence import (
+    MatchStatus,
     MatchTier,
+    MatchType,
     create_match_decision,
     get_rejected_pairs,
 )
@@ -76,6 +78,14 @@ class MatchResult:
         return ", ".join(parts)
 
 
+@dataclass
+class _DedupDecisions:
+    """Both projections derived from a single active-dedup-decisions query."""
+
+    matched_ids: set[tuple[str, str]]
+    secondary_ids: set[tuple[str, str, str]]
+
+
 class TransactionMatcher:
     """Orchestrates transaction matching across tiers."""
 
@@ -102,7 +112,12 @@ class TransactionMatcher:
         result = MatchResult()
         rejected = get_rejected_pairs(self._db)
 
-        already_matched = self._get_matched_ids()
+        # Fetch pre-existing dedup decisions before tier 2b so the candidate
+        # functions can exclude already-matched pairs. The candidate functions
+        # filter excluded_ids in Python (not SQL), so this call must precede any
+        # tier that uses already_matched. A second call after tiers picks up
+        # decisions created in this run for the secondary-ids computation.
+        already_matched = self._fetch_active_dedup_decisions().matched_ids
 
         # Tier 2b: within-source overlap (high-confidence only)
         tier_2b_matched = self._run_tier(
@@ -139,8 +154,9 @@ class TransactionMatcher:
         # each dedup group. Without this, duplicate source rows (e.g., csv_chk1
         # and ofx_chk1 both deduped) can each form separate transfer proposals
         # that resolve to the same merged transaction pair in bridge_transfers.
+        # Re-query after tiers so decisions created in this run are included.
         transfer_excluded = self._get_transfer_matched_ids()
-        transfer_excluded |= self._get_dedup_secondary_ids()
+        transfer_excluded |= self._fetch_active_dedup_decisions().secondary_ids
         rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
 
         self._run_transfer_tier(
@@ -151,6 +167,53 @@ class TransactionMatcher:
         )
 
         return result
+
+    def _classify_pair(
+        self, pair: CandidatePair, tier: MatchTier
+    ) -> tuple[MatchStatus, str] | None:
+        """Return (status, decided_by) if pair should be persisted, None to skip.
+
+        The tier-3-only review-threshold branch lives exclusively here so it can
+        be tested without a database fixture.
+        """
+        if pair.confidence_score >= self._settings.high_confidence_threshold:
+            return ("accepted", "auto")
+        if tier == "3" and pair.confidence_score >= self._settings.review_threshold:
+            return ("pending", "auto")
+        return None
+
+    def _persist_dedup_match(
+        self,
+        pair: CandidatePair,
+        tier: MatchTier,
+        status: MatchStatus,
+        decided_by: str,
+    ) -> None:
+        """Write one dedup match decision to the database."""
+        match_id = uuid.uuid4().hex[:12]
+        create_match_decision(
+            self._db,
+            match_id=match_id,
+            source_transaction_id_a=pair.source_transaction_id_a,
+            source_type_a=pair.source_type_a,
+            source_origin_a=pair.source_origin_a,
+            source_transaction_id_b=pair.source_transaction_id_b,
+            source_type_b=pair.source_type_b,
+            source_origin_b=pair.source_origin_b,
+            account_id=pair.account_id,
+            confidence_score=pair.confidence_score,
+            match_signals={
+                "date_distance": pair.date_distance_days,
+                "description_similarity": round(pair.description_similarity, 4),
+            },
+            match_tier=tier,
+            match_status=status,
+            decided_by=decided_by,
+            match_reason=(
+                f"Amount match, {pair.date_distance_days}d apart, "
+                f"desc similarity {pair.description_similarity:.2f}"
+            ),
+        )
 
     def _run_tier(
         self,
@@ -175,48 +238,21 @@ class TransactionMatcher:
         for pair in assigned:
             DEDUP_MATCH_CONFIDENCE.observe(pair.confidence_score)
 
-            if pair.confidence_score >= self._settings.high_confidence_threshold:
-                status = "accepted"
-                decided_by = "auto"
+            classification = self._classify_pair(pair, tier)
+            if classification is None:
+                continue
+            status, decided_by = classification
+
+            if status == "accepted":
                 result.auto_merged += 1
                 tier_merged += 1
                 DEDUP_MATCHES_TOTAL.labels(match_tier=tier, decided_by="auto").inc()
-            elif (
-                tier == "3" and pair.confidence_score >= self._settings.review_threshold
-            ):
-                status = "pending"
-                decided_by = "auto"
+            else:
                 result.pending_review += 1
                 tier_pending += 1
                 DEDUP_REVIEW_PENDING.inc()
-            else:
-                continue
 
-            match_id = uuid.uuid4().hex[:12]
-            create_match_decision(
-                self._db,
-                match_id=match_id,
-                source_transaction_id_a=pair.source_transaction_id_a,
-                source_type_a=pair.source_type_a,
-                source_origin_a=pair.source_origin_a,
-                source_transaction_id_b=pair.source_transaction_id_b,
-                source_type_b=pair.source_type_b,
-                source_origin_b=pair.source_origin_b,
-                account_id=pair.account_id,
-                confidence_score=pair.confidence_score,
-                match_signals={
-                    "date_distance": pair.date_distance_days,
-                    "description_similarity": round(pair.description_similarity, 4),
-                },
-                match_tier=tier,
-                match_status=status,
-                decided_by=decided_by,
-                match_reason=(
-                    f"Amount match, {pair.date_distance_days}d apart, "
-                    f"desc similarity {pair.description_similarity:.2f}"
-                ),
-            )
-
+            self._persist_dedup_match(pair, tier, status, decided_by)
             newly_matched.add((pair.source_transaction_id_a, pair.account_id))
             newly_matched.add((pair.source_transaction_id_b, pair.account_id))
 
@@ -227,22 +263,40 @@ class TransactionMatcher:
 
         return newly_matched
 
-    def _get_matched_ids(self) -> set[tuple[str, str]]:
-        """Get (source_transaction_id, account_id) tuples in active/pending dedup matches."""
+    def _fetch_active_dedup_decisions(self) -> _DedupDecisions:
+        """Query active/pending dedup decisions and derive both exclusion sets.
+
+        Returns matched_ids (both sides of every pair) and secondary_ids (the
+        lower-priority side of each pair, used to prevent duplicated transfer
+        proposals for deduped source rows).
+        """
         rows = self._db.execute(
             """
-            SELECT source_transaction_id_a, source_transaction_id_b, account_id
+            SELECT source_transaction_id_a, source_type_a,
+                   source_transaction_id_b, source_type_b,
+                   account_id
             FROM app.match_decisions
             WHERE match_status IN ('accepted', 'pending')
               AND reversed_at IS NULL
               AND match_type = 'dedup'
             """
         ).fetchall()
-        ids: set[tuple[str, str]] = set()
+        priority = self._settings.source_priority
+        max_pri = len(priority)
+        priority_index = {src: i for i, src in enumerate(priority)}
+        matched: set[tuple[str, str]] = set()
+        secondary: set[tuple[str, str, str]] = set()
         for row in rows:
-            ids.add((row[0], row[2]))
-            ids.add((row[1], row[2]))
-        return ids
+            stid_a, st_a, stid_b, st_b, acct = row
+            matched.add((stid_a, acct))
+            matched.add((stid_b, acct))
+            pri_a = priority_index.get(st_a, max_pri)
+            pri_b = priority_index.get(st_b, max_pri)
+            if pri_a <= pri_b:
+                secondary.add((stid_b, st_b, acct))
+            else:
+                secondary.add((stid_a, st_a, acct))
+        return _DedupDecisions(matched_ids=matched, secondary_ids=secondary)
 
     def _get_transfer_matched_ids(self) -> set[tuple[str, str, str]]:
         """Get (source_transaction_id, source_type, account_id) in active/pending transfers.
@@ -264,40 +318,6 @@ class TransactionMatcher:
         for row in rows:
             ids.add((row[0], row[1], row[2]))
             ids.add((row[3], row[4], row[5]))
-        return ids
-
-    def _get_dedup_secondary_ids(self) -> set[tuple[str, str, str]]:
-        """Get (source_transaction_id, source_type, account_id) for non-primary dedup rows.
-
-        Uses source_priority to determine which side is lower-priority rather
-        than assuming side B. Dedup pair ordering is lexicographic, not
-        priority-based, so the secondary could be on either side.
-        """
-        rows = self._db.execute(
-            """
-            SELECT source_transaction_id_a, source_type_a,
-                   source_transaction_id_b, source_type_b,
-                   account_id
-            FROM app.match_decisions
-            WHERE match_status IN ('accepted', 'pending')
-              AND reversed_at IS NULL
-              AND match_type = 'dedup'
-            """
-        ).fetchall()
-        priority = self._settings.source_priority
-        max_pri = len(priority)
-        priority_index = {src: i for i, src in enumerate(priority)}
-        ids: set[tuple[str, str, str]] = set()
-        for row in rows:
-            stid_a, st_a, stid_b, st_b, acct = row
-            pri_a = priority_index.get(st_a, max_pri)
-            pri_b = priority_index.get(st_b, max_pri)
-            if pri_a <= pri_b:
-                # A has higher or equal priority; exclude B
-                ids.add((stid_b, st_b, acct))
-            else:
-                # B has higher priority; exclude A
-                ids.add((stid_a, st_a, acct))
         return ids
 
     def _run_transfer_tier(
@@ -324,6 +344,8 @@ class TransactionMatcher:
 
         assigned = assign_greedy(candidates)
         tier_pending = 0
+        transfer_match_type: MatchType = "transfer"
+        transfer_status: MatchStatus = "accepted" if auto_accept else "pending"
 
         for pair in assigned:
             TRANSFER_MATCH_CONFIDENCE.observe(pair.confidence_score)
@@ -354,9 +376,9 @@ class TransactionMatcher:
                     "roundness": round(pair.amount_roundness_score, 4),
                     "pair_frequency": round(pair.pair_frequency_score, 4),
                 },
-                match_type="transfer",
+                match_type=transfer_match_type,
                 match_tier=None,
-                match_status="accepted" if auto_accept else "pending",
+                match_status=transfer_status,
                 decided_by="auto",
                 match_reason=(
                     f"Transfer: {pair.account_id_a[:8]} -> {pair.account_id_b[:8]}, "

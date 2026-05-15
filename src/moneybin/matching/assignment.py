@@ -5,7 +5,7 @@ scoring pair wins. Both rows in a winning pair are marked as "claimed"
 and cannot participate in further assignments.
 """
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 class _Matchable(Protocol):
@@ -21,9 +21,13 @@ class _Matchable(Protocol):
     def source_transaction_id_b(self) -> str: ...
     @property
     def confidence_score(self) -> float: ...
+    @property
+    def account_id_a(self) -> str | None: ...
+    @property
+    def account_id_b(self) -> str | None: ...
 
 
-def _claim_key(pair: _Matchable, side: str) -> str:
+def _claim_key(pair: _Matchable, side: Literal["a", "b"]) -> str:
     """Build a claim key for greedy assignment.
 
     For transfer pairs (which have account_id_a/account_id_b), include
@@ -33,11 +37,11 @@ def _claim_key(pair: _Matchable, side: str) -> str:
     if side == "a":
         st = pair.source_type_a
         stid = pair.source_transaction_id_a
-        acct = getattr(pair, "account_id_a", None)
+        acct = pair.account_id_a
     else:
         st = pair.source_type_b
         stid = pair.source_transaction_id_b
-        acct = getattr(pair, "account_id_b", None)
+        acct = pair.account_id_b
 
     if acct is not None:
         return f"{st}|{acct}|{stid}"
