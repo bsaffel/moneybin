@@ -75,3 +75,64 @@ def test_user_category_has_non_null_updated_at() -> None:
 
     assert dim_row is not None, "test user_category did not surface in dim_categories"
     assert dim_row[0] is not None, "user category should have non-NULL updated_at"
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_overridden_seed_category_carries_override_updated_at() -> None:
+    """A default category with a row in app.category_overrides exposes the
+    override's updated_at on dim_categories — covering the seed+override
+    branch of the per-row freshness formula."""
+    scenario = load_shipped_scenario("idempotency-rerun")
+    assert scenario is not None
+
+    with scenario_env(scenario) as (db, _tmp, env):
+        run_step("generate", scenario.setup, db, env=env)
+        run_step("transform", scenario.setup, db, env=env)
+
+        # Pick a default category that has no existing override.
+        cat_row = db.execute(
+            """
+            SELECT category_id FROM core.dim_categories
+            WHERE is_default = TRUE
+              AND category_id NOT IN (SELECT category_id FROM app.category_overrides)
+            LIMIT 1
+            """
+        ).fetchone()
+        assert cat_row is not None, "scenario must include a seed category with no override"
+        cat_id = cat_row[0]
+
+        # Insert an override row with an explicit fresh timestamp.
+        db.execute(
+            "INSERT INTO app.category_overrides (category_id, is_active, updated_at) "
+            "VALUES (?, FALSE, CURRENT_TIMESTAMP)",
+            [cat_id],
+        )
+
+        # Force-restate dim_categories so it picks up the new override row.
+        # app.category_overrides is outside the SQLMesh model graph, so a plain
+        # plan() would be a no-op.
+        with sqlmesh_context(db) as ctx:
+            ctx.plan(
+                restate_models=["core.dim_categories"],
+                auto_apply=True,
+                no_prompts=True,
+            )
+
+        row = db.execute(
+            """
+            SELECT d.updated_at, o.updated_at
+            FROM core.dim_categories AS d
+            JOIN app.category_overrides AS o USING (category_id)
+            WHERE d.category_id = ?
+            """,
+            [cat_id],
+        ).fetchone()
+
+    assert row is not None
+    dim_updated_at, override_updated_at = row
+    assert dim_updated_at is not None
+    assert dim_updated_at == override_updated_at, (
+        f"dim_categories.updated_at={dim_updated_at} should equal "
+        f"app.category_overrides.updated_at={override_updated_at}"
+    )
