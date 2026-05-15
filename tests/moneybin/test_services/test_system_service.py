@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -79,6 +79,8 @@ def test_status_has_required_fields(system_db: Database) -> None:
     assert hasattr(result, "last_import_at")
     assert hasattr(result, "matches_pending")
     assert hasattr(result, "categorize_pending")
+    assert hasattr(result, "transforms_pending")
+    assert hasattr(result, "transforms_last_apply_at")
 
 
 @pytest.mark.unit
@@ -167,3 +169,101 @@ def test_status_queue_counts_integer_types(system_db: Database) -> None:
     assert result.matches_pending == 0
     # categorize_pending reflects the 2 uncategorized transactions in the fixture
     assert result.categorize_pending == 2
+
+
+def _seed_import_log(db: Database, completed_at: datetime) -> None:
+    """Insert one complete import row at the given timestamp."""
+    db.conn.execute(
+        """
+        INSERT INTO raw.import_log (
+            import_id, source_file, source_type, source_origin, account_names,
+            status, started_at, completed_at
+        ) VALUES (?, 'test.qfx', 'ofx', 'test', '[]', 'complete', ?, ?)
+        """,
+        ["import-1", completed_at, completed_at],
+    )
+
+
+@pytest.mark.unit
+def test_status_transforms_pending_when_import_newer_than_apply(
+    tmp_path: Path,
+) -> None:
+    """transforms_pending is True when newest import postdates dim_accounts.updated_at."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+    database = Database(
+        tmp_path / "pending.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        create_core_tables_raw(database.conn)
+        dim_updated = datetime(2026, 5, 10, 12, 0)
+        database.conn.execute(
+            """
+            INSERT INTO core.dim_accounts VALUES
+            ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
+             'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, ?,
+             'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD',
+             NULL, FALSE, TRUE)
+            """,
+            [dim_updated],
+        )
+        _seed_import_log(database, datetime(2026, 5, 13, 18, 24))
+
+        status = SystemService(db=database).status()
+        assert status.transforms_pending is True
+        assert status.transforms_last_apply_at == dim_updated
+    finally:
+        database.close()
+
+
+@pytest.mark.unit
+def test_status_transforms_not_pending_after_apply(tmp_path: Path) -> None:
+    """transforms_pending is False when dim_accounts.updated_at postdates last import."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+    database = Database(
+        tmp_path / "fresh.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        create_core_tables_raw(database.conn)
+        dim_updated = datetime(2026, 5, 13, 19, 0)
+        database.conn.execute(
+            """
+            INSERT INTO core.dim_accounts VALUES
+            ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
+             'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, ?,
+             'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD',
+             NULL, FALSE, TRUE)
+            """,
+            [dim_updated],
+        )
+        _seed_import_log(database, datetime(2026, 5, 13, 18, 24))
+
+        status = SystemService(db=database).status()
+        assert status.transforms_pending is False
+        assert status.transforms_last_apply_at == dim_updated
+    finally:
+        database.close()
+
+
+@pytest.mark.unit
+def test_status_transforms_pending_false_with_no_imports(tmp_path: Path) -> None:
+    """transforms_pending is False on a fresh DB with no imports."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+    database = Database(
+        tmp_path / "empty.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        # No core.dim_accounts and no imports → freshness returns pending=False.
+        status = SystemService(db=database).status()
+        assert status.transforms_pending is False
+        assert status.transforms_last_apply_at is None
+    finally:
+        database.close()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from moneybin.database import Database
 from moneybin.services.categorization_service import CategorizationService
@@ -25,6 +25,8 @@ class SystemStatus:
     last_import_at: date | None
     matches_pending: int
     categorize_pending: int
+    transforms_pending: bool
+    transforms_last_apply_at: datetime | None
 
 
 class SystemService:
@@ -36,16 +38,22 @@ class SystemService:
 
     def status(self) -> SystemStatus:
         """Return a current snapshot of data inventory and pending queue counts."""
+        # Function-local import mirrors ImportService.run_transforms() to avoid
+        # a top-level cycle between system/transform service modules.
+        from moneybin.services.transform_service import TransformService
+
         accounts_count = self._count_accounts()
         transactions_count, min_date, max_date = self._query_transactions()
         last_import_at = self._last_import_at()
         review = ReviewService(
             MatchingService(self._db), CategorizationService(self._db)
         ).status()
+        freshness = TransformService(self._db).freshness()
 
         logger.info(
             f"System status: {accounts_count} accounts, {transactions_count} transactions, "
-            f"{review.matches_pending} matches pending, {review.categorize_pending} uncategorized"
+            f"{review.matches_pending} matches pending, {review.categorize_pending} uncategorized, "
+            f"transforms_pending={freshness.pending}"
         )
         return SystemStatus(
             accounts_count=accounts_count,
@@ -54,6 +62,8 @@ class SystemService:
             last_import_at=last_import_at,
             matches_pending=review.matches_pending,
             categorize_pending=review.categorize_pending,
+            transforms_pending=freshness.pending,
+            transforms_last_apply_at=freshness.last_apply_at,
         )
 
     def _count_accounts(self) -> int:
