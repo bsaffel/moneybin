@@ -884,8 +884,8 @@ class CategorizationService:
             f"""
             INSERT INTO {USER_MERCHANTS.full_name}
             (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, created_by, exemplars)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             category, subcategory, created_by, exemplars, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
             [
                 merchant_id,
@@ -962,7 +962,8 @@ class CategorizationService:
         row = self._db.execute(
             f"""
             UPDATE {USER_MERCHANTS.full_name}
-            SET exemplars = list_distinct(list_append(exemplars, ?))
+            SET exemplars = list_distinct(list_append(exemplars, ?)),
+                updated_at = CURRENT_TIMESTAMP
             WHERE merchant_id = ?
             RETURNING len(exemplars)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant
@@ -1167,8 +1168,8 @@ class CategorizationService:
                 f"""
                 INSERT INTO {USER_CATEGORIES.full_name}
                 (category_id, category, subcategory, description,
-                 is_active, created_at)
-                VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP)
+                 is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,  # noqa: S608  # TableRef constant, no user input interpolated
                 [category_id, category, subcategory, description],
             )
@@ -1215,7 +1216,8 @@ class CategorizationService:
         else:
             self._db.execute(
                 f"UPDATE {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-                f"SET is_active = ? WHERE category_id = ?",
+                f"SET is_active = ?, updated_at = CURRENT_TIMESTAMP "
+                f"WHERE category_id = ?",
                 [is_active, category_id],
             )
 
