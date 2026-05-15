@@ -247,7 +247,7 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
     assert isinstance(data, list)
     assert data[0]["institution_name"] == "Chase"
     assert data[0]["status"] == "active"
-    assert "error_code" in data[0]
+    assert data[0]["error_code"] is None
 
 
 @pytest.mark.unit

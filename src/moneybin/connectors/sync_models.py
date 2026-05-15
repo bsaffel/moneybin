@@ -129,8 +129,9 @@ class ConnectedInstitution(BaseModel):
     status: Literal["active", "error", "revoked"]
     last_sync: datetime | None = None
     created_at: datetime
-    error_code: str | None = (
-        None  # e.g. ITEM_LOGIN_REQUIRED; None when status != 'error'
+    error_code: str | None = Field(
+        default=None,
+        description="Provider error code (e.g. ITEM_LOGIN_REQUIRED). Populated when status is 'error'.",
     )
 
 
@@ -165,7 +166,8 @@ class SyncConnectionView(BaseModel):
     provider: str
     status: Literal["active", "error", "revoked"]
     last_sync: datetime | None
-    error_code: str | None = (
-        None  # e.g. ITEM_LOGIN_REQUIRED; None when status != 'error'
+    error_code: str | None = Field(
+        default=None,
+        description="Provider error code (e.g. ITEM_LOGIN_REQUIRED). Populated when status is 'error'.",
     )
     guidance: str | None = None  # user-facing next-step message when status != 'active'

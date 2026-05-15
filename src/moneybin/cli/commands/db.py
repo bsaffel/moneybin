@@ -40,19 +40,24 @@ logger = logging.getLogger(__name__)
 def _load_encryption_key() -> Generator[str, None, None]:
     """Load the active profile's encryption key; delete the local ref on exit.
 
-    Exits with code 1 when the database is locked (key not in keychain).
-    The ``finally`` block removes the local name binding so the key string
-    is not accidentally reused after the managed block completes or raises.
-    Python cannot zero-fill string buffers, but the binding removal prevents
-    unintended access through this local name.
+    Exits with code 1 when the key is not in the keychain, with a hint that
+    distinguishes fresh-install (db file absent → suggest ``db init``) from
+    locked (db file present → suggest ``db unlock``).
+
+    The ``finally`` block removes this generator's own local name binding.
+    Python cannot zero-fill string memory, and the caller's ``as key:``
+    binding still holds the same string object until their with-block exits —
+    but ``del`` here prevents this frame from extending the object's lifetime
+    beyond the yield.
     """
+    from moneybin.database import database_key_error_hint  # noqa: PLC0415
     from moneybin.secrets import SecretNotFoundError, SecretStore  # noqa: PLC0415
 
     store = SecretStore()
     try:
         key = store.get_key("DATABASE__ENCRYPTION_KEY")
     except SecretNotFoundError:
-        logger.error("❌ Database is locked — run 'moneybin db unlock' first")
+        logger.error(f"❌ Key not found. {database_key_error_hint()}")
         raise typer.Exit(1) from None
     try:
         yield key

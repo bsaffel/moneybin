@@ -382,6 +382,30 @@ def test_list_connections_threads_error_code(
     assert "sync connect" in bank_b.guidance
 
 
+def test_list_connections_unrecognized_error_code_falls_back_to_generic_guidance(
+    mock_client: MagicMock, db: Database, loader: PlaidLoader
+) -> None:
+    """An error_code not in _ERROR_GUIDANCE falls back to generic guidance without raising."""
+    mock_client.list_institutions.return_value = [
+        ConnectedInstitution(
+            id="u1",
+            provider_item_id="item_a",
+            provider="plaid",
+            institution_name="BankA",
+            status="error",
+            error_code="WEIRD_NEW_CODE",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+    ]
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    views = service.list_connections()
+    bank_a = views[0]
+
+    assert bank_a.error_code == "WEIRD_NEW_CODE"
+    assert bank_a.guidance is not None
+    assert "sync connect" in bank_a.guidance
+
+
 def test_disconnect_resolves_institution_and_calls_client(
     mock_client: MagicMock, db: Database, loader: PlaidLoader
 ) -> None:

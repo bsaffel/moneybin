@@ -81,11 +81,10 @@ class TestLoadEncryptionKey:
         assert exc_info.value.exit_code == 1
 
     @pytest.mark.unit
-    def test_finally_runs_when_body_raises(self) -> None:
-        """The finally block executes even when the managed body raises."""
+    def test_body_exception_propagates_from_cm(self) -> None:
+        """Exceptions raised inside the with block propagate out of the context manager."""
         mock_store = MagicMock()
         mock_store.get_key.return_value = "testkey"
-        cleanup_ran: list[str] = []
 
         class _SentinelError(Exception):
             pass
@@ -93,8 +92,4 @@ class TestLoadEncryptionKey:
         with patch("moneybin.secrets.SecretStore", return_value=mock_store):
             with pytest.raises(_SentinelError):
                 with _load_encryption_key():
-                    cleanup_ran.append("before")
                     raise _SentinelError("body raised")
-
-        # The context exited — finally block ran (del key executed without error)
-        assert cleanup_ran == ["before"]
