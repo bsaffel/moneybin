@@ -16,10 +16,10 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 | Module | Status | Notes |
 |---|---|---|
-| `services/transaction_service.py` | ✅ routed | ~18 mutations, all audited via `AuditService`. Reference implementation. Threads `parent_audit_id` on cascading edits (e.g., `tag.rename_row` children, see L977). |
+| `services/transaction_service.py` | ✅ routed (subset shape) | ~18 mutations, all audited via `AuditService`. Reference implementation for *routing* and *cascade threading* (parent event at L977, per-row child emissions at L994 — the `tag.rename` / `tag.rename_row` chain). Today's writes capture **column subsets** in `before`/`after` per `transaction-curation.md` Req 29 — this is the shape Req 4 supersedes; see Req 4 notes and PR 1 / PR 12 in the Implementation Plan. |
 | `services/import_service.py` | ✅ routed (lifecycle) | Audit emitted at import lifecycle boundaries; `app.imports` *labels* row written directly at L1484 (see open question 2). |
 | `services/categorization_service.py` | ⚠️ partial | ~12 mutation sites against `app.transaction_categories`, `app.user_merchants`, `app.categorization_rules`, `app.user_categories`, `app.category_overrides`. Only the two `set_category` / `clear_category` paths (L758/795) emit audit. Imports `AuditService` but ignores it elsewhere. |
-| `services/auto_rule_service.py` | ❌ bypassed | 8 mutations on `app.proposed_rules`, `app.categorization_rules`, `app.rule_deactivations` across rule proposal/promotion/deactivation. Highest-value forensics gap. |
+| `services/auto_rule_service.py` | ❌ bypassed | 10 mutations on `app.proposed_rules` (L278, 287, 295, 408, 445, 575, 583), `app.categorization_rules` (L391 promotion INSERT, L570 deactivation UPDATE), `app.rule_deactivations` (L601) across rule proposal / promotion / deactivation. Highest-value forensics gap. |
 | `services/account_service.py` | ❌ bypassed | `app.account_settings` INSERT + DELETE (L259, L294), no audit. |
 | `services/balance_service.py` | ❌ bypassed | `app.balance_assertions` INSERT + DELETE (L151, L170). Not in the plan; identified during spec drafting. |
 | `services/budget_service.py` | ❌ bypassed | `app.budgets` UPDATE + INSERT (L142, L153). Not in the plan; identified during spec drafting. |
@@ -72,7 +72,9 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 4. **Reversibility contract.** Every repository mutation MUST capture the complete pre-mutation row in `before_value` (full row state, not a diff or changed-columns subset). For INSERT, `before_value=None`; for UPDATE, the full prior row read in the same transaction immediately before the write; for DELETE, the full prior row read in the same transaction immediately before the write. `after_value` is the resulting row state for INSERT/UPDATE and `None` for DELETE. This is non-negotiable and not subject to "optimize to diffs" feedback in review — it is the data foundation for Phase 2 undo.
 
-5. **Cascade threading.** When a single user action triggers multiple `app.*` mutations (e.g., deleting a category cascades to recategorizing every transaction that referenced it), the cascaded mutations MUST share a `parent_audit_id` pointing at the originating audit row. `TransactionService`'s `tag.rename_row` chain (transaction_service.py:977) is the reference implementation.
+   **This Req supersedes `transaction-curation.md` Req 29** ("`before_value` and `after_value` capture the relevant column subset of the affected row, not the entire table row") and the corresponding column comments on `app.audit_log` (currently "Prior column subset" / "New column subset"). The reference implementation in `TransactionService` writes column subsets today; PR 1 amends `transaction-curation.md` Req 29 + the schema column comments, and PR 12 backfills the existing `TransactionService` audited writes to full-row capture (so PR 12 is *not* "behavior unchanged" — the audit payload shape changes for already-audited paths). The cascade-threading semantics from Req 29 (parent event + `parent_audit_id` on per-row children) are unchanged.
+
+5. **Cascade threading.** When a single user action triggers multiple `app.*` mutations (e.g., deleting a category cascades to recategorizing every transaction that referenced it), the cascaded mutations MUST share a `parent_audit_id` pointing at the originating audit row. `TransactionService`'s `tag.rename` / `tag.rename_row` chain is the reference implementation: parent event at `transaction_service.py:977-983`, per-row child emissions at `transaction_service.py:993-1000` with `parent_audit_id=parent.audit_id`.
 
 6. **Protected table list (Phase 1).** The following tables are protected by Invariant 9 and have repository coverage:
 
@@ -100,7 +102,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 9. **Doctor invariants.** `moneybin doctor` adds per-table checks for each protected table:
 
-   - **Audit coverage** — every row mutated in the last `MoneyBinSettings.doctor.audit_coverage_lookback_days` (default: 7) has at least one `app.audit_log` row whose `target_table` matches and whose `target_id` (when applicable) references the row's primary key. Sampled at a configurable cap (default: 1,000 rows per table); full-table scan is opt-in via `moneybin doctor --full`.
+   - **Audit coverage** — every row mutated in the last `MoneyBinSettings.doctor.audit_coverage_lookback_days` (new setting, added in the doctor-invariant PR per the migration order in Req 10; default: 7) has at least one `app.audit_log` row whose `target_table` matches and whose `target_id` (when applicable) references the row's primary key. Sampled at a configurable cap (default: 1,000 rows per table); full-table scan is opt-in via `moneybin doctor --full`.
    - **Foreign-key integrity** — where applicable, FK references resolve. Examples: `app.account_settings.account_id` resolves in `core.dim_accounts`; `app.transaction_categories.transaction_id` resolves in `core.fct_transactions`; `app.balance_assertions.account_id` resolves in `core.dim_accounts`.
    - **Orphan detection** — where applicable, no `app.*` rows reference soft-deleted or absent parents (e.g., `app.user_merchants` rows with no `app.transaction_categories` referencing them after an extended idle period — this is a warning, not a failure).
    - **`app.categorization_rules.priority` uniqueness** — pre-existing concern from `categorization-auto-rules.md`; lift it here so it sits alongside the rest of the rule-table integrity checks.
@@ -114,7 +116,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 11. **Metrics.** Phase 1 adds an `app_mutation_audit_emitted_total` counter labeled by `repository` and `action`. The existing `audit_events_emitted_total` (already declared in `metrics/registry.py`) stays — it counts at the `AuditService` boundary; the new counter counts at the `*Repo` boundary so we can detect repositories that issue mutations without going through audit (should always be zero by contract; the metric catches contract violations introduced by future refactors).
 
-12. **No schema changes.** `app.audit_log` already has `before_value`, `after_value`, and `parent_audit_id` columns. The reversibility contract uses what's there. See [Data Model](#data-model).
+12. **No schema changes in Phase 1.** `app.audit_log` already has `before_value`, `after_value`, and `parent_audit_id` columns. The reversibility contract uses what's there. Phase 2 will add `revert_of_audit_id`; that schema migration ships with Phase 2. See [Data Model](#data-model).
 
 13. **Phase 2 (out of scope for this spec).** The `UndoService`, `revert(audit_event)` methods on each repository, the `moneybin undo` CLI group, and the `undo_*` MCP surface are explicitly deferred. The spec calls out the forward-compat contract Phase 1 must honor so that Phase 2 is a strictly additive feature.
 
@@ -161,11 +163,12 @@ Every mutation path on the left funnels through the repository in the middle. Th
 
 Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one repository, migrates one writer, and adds that table's doctor invariant — keeping diffs reviewable and reverts surgical.
 
-### PR 1 — Spec + Invariant 9 append (no code)
+### PR 1 — Spec + Invariant 9 append + Req 29 supersession (no service code)
 
 - This spec → `ready` (after open questions resolve).
 - Append Invariant 9 (Req 1 wording) to `architecture-shared-primitives.md` §Architecture Invariants. Update its [§Service-Layer Contract](architecture-shared-primitives.md#service-layer-contract) note: "Transactional services compose `*Repo` classes for protected `app.*` writes; raw mutation SQL inside services is a contract violation under Invariant 9."
 - Update `AGENTS.md` "Key Abstractions" table: add `Protected app.* mutation` → `*Repo` (compose; never raw SQL).
+- **Amend `transaction-curation.md` Req 29** to align with Req 4's full-row capture (replace "the relevant column subset of the affected row, not the entire table row" with full-row semantics; cascade-threading wording stays). **Update the `app.audit_log` schema column comments** in `src/moneybin/sql/schema/app_audit_log.sql` ("Prior column subset" → "Full prior row state"; "New column subset" → "Full resulting row state"). **Update `transaction-curation.md` §Data Model** prose on `before_value` / `after_value` snapshots (currently "snapshots of the relevant *column subset*"). No `TransactionService` code changes in PR 1 — the existing column-subset writes keep working under the new contract until PR 12 backfills them.
 
 ### PR 2 — Repository scaffolding + first concrete repo + first migration
 
@@ -183,7 +186,7 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 
 ### PR 4 — `CategorizationRulesRepo` + `ProposedRulesRepo` + `RuleDeactivationsRepo`
 
-- `categorization_service.py:1070, 1128` and `auto_rule_service.py` rule promotion paths → `CategorizationRulesRepo`.
+- `categorization_service.py:1070, 1128` and `auto_rule_service.py:391` (rule promotion INSERT) + `auto_rule_service.py:570` (rule deactivation UPDATE) → `CategorizationRulesRepo`.
 - `auto_rule_service.py:278, 287, 295, 408, 445, 575, 583` → `ProposedRulesRepo`.
 - `auto_rule_service.py:601` → `RuleDeactivationsRepo`.
 - `auto_rule_service.py:391` (rule promotion INSERT) shares a `parent_audit_id` with the `ProposedRulesRepo` status update at L408 — this exercises the cascade-threading contract from Req 5.
@@ -201,7 +204,7 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 
 ### PR 7 — `TabularFormatsRepo`
 
-- `extractors/tabular/formats.py:312` (DELETE) and the matching INSERT (not in the head grep — confirm during implementation) → `TabularFormatsRepo`. This is the awkward case where the writer lives outside `services/`; the spec confirms repositories may be invoked from non-service callers (extractors are loaders, not services, but the protection boundary is the `app.*` table, not the caller).
+- `extractors/tabular/formats.py:178` (`INSERT OR REPLACE INTO app.tabular_formats …` — verified at HEAD) and `extractors/tabular/formats.py:312` (`DELETE FROM app.tabular_formats WHERE name = ?`) → `TabularFormatsRepo`. The existence-check `SELECT` at L306 stays in the extractor module (reads remain free per Req 2). Repository surface: `upsert(name, …, actor, parent_audit_id=None)` (mirroring the INSERT-OR-REPLACE shape — the writer needs idempotency on `name` since it's the natural key) and `delete(name, …, actor, parent_audit_id=None)`. This is the awkward case where the writer lives outside `services/`; the spec confirms repositories may be invoked from non-service callers (extractors are loaders, not services, but the protection boundary is the `app.*` table, not the caller).
 - Doctor invariant: audit coverage.
 
 ### PR 8 — `MatchDecisionsRepo`
@@ -223,9 +226,11 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 
 - `import_service.py:1484` (`INSERT INTO app.imports (import_id, labels, …)`) → `ImportLabelsRepo`. The import lifecycle audit emissions in `import_service.py` (L1430, L1438, L1467) stay; this PR adds explicit audit for the *labels* mutation, which today bypasses the lifecycle audit chain.
 
-### PR 12 — Wrap existing audited writers in repos for symmetry
+### PR 12 — Wrap existing audited writers in repos + backfill full-row capture
 
-- `transaction_service.py` — wrap the existing audited writes against `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` in `TransactionNotesRepo`, `TransactionTagsRepo`, `TransactionSplitsRepo`. Behavior unchanged; this is a structural refactor that gets the lint rule below to apply uniformly across `app.*`.
+- `transaction_service.py` — wrap the existing audited writes against `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` in `TransactionNotesRepo`, `TransactionTagsRepo`, `TransactionSplitsRepo`.
+- **Backfill full-row capture for already-audited paths.** Per Req 4 (which supersedes `transaction-curation.md` Req 29), the existing `TransactionService` emissions capture column subsets today; this PR migrates them to full-row capture as part of the repo wrap. The audit payload shape changes for already-audited paths — *this is not "behavior unchanged"*, despite the structural-refactor framing. Cascade threading (`tag.rename` parent + `tag.rename_row` children) is preserved; only the `before_value` / `after_value` shape changes.
+- Doctor invariant audit-coverage check from Req 9 already covers these tables once they're wrapped.
 
 ### PR 13 — Lint rule + final doctor invariants + spec → `implemented`
 
