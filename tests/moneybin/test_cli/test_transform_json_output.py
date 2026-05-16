@@ -109,6 +109,30 @@ def test_transform_apply_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "error" not in payload["data"]
 
 
+def test_transform_apply_json_exits_nonzero_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JSON mode must still exit 1 on apply failure so scripts can detect via $?.
+
+    Envelope alone isn't enough for shell pipelines — locks the
+    transform.py:111 raise typer.Exit(1) after the JSON envelope is rendered.
+    """
+    canned = ApplyResult(applied=False, duration_seconds=0.4, error="RuntimeError")
+
+    def fake_apply(_self: Any) -> ApplyResult:
+        return canned
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.TransformService.apply", fake_apply
+    )
+    _patch_db(monkeypatch)
+    result = runner.invoke(app, ["apply", "--output", "json"])
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["applied"] is False
+    assert payload["data"]["error"] == "RuntimeError"
+
+
 def test_transform_plan_json(monkeypatch: pytest.MonkeyPatch) -> None:
     canned = TransformPlan(
         has_changes=False,

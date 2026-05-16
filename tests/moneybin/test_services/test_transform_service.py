@@ -201,6 +201,46 @@ def test_apply_returns_apply_result_shape(
     fake_ctx.plan.assert_called_once_with(auto_apply=True, no_prompts=True)
 
 
+def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
+    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply() returns ApplyResult(applied=False, error=<TypeName>) when SQLMesh raises.
+
+    Locks the soft-fail contract: ImportService.run_transforms() re-raises as
+    RuntimeError to preserve fail-loud semantics for callers that ignore the
+    boolean, but apply() itself must NOT raise — MCP/CLI consumers depend on
+    the structured envelope.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        raise RuntimeError("plan exploded")
+        yield  # unreachable; satisfies the contextmanager generator contract
+
+    def fake_seed(_db: object, _settings: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.seed_source_priority",
+        fake_seed,
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        result = TransformService(db).apply()
+    finally:
+        db.close()
+
+    assert result.applied is False
+    assert result.error == "RuntimeError"
+    assert result.duration_seconds >= 0
+
+
 def test_import_service_run_transforms_delegates_to_transform_service(
     tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:

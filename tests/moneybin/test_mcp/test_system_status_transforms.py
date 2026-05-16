@@ -9,7 +9,13 @@ from moneybin.mcp.tools.system import system_status
 
 
 def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
-    """Insert an import strictly newer than the template's dim_accounts.updated_at."""
+    """Insert raw account row + import_log strictly newer than template's dim.
+
+    freshness() compares MAX(raw.X_accounts.extracted_at) to
+    MAX(core.dim_accounts.extracted_at); a bare import_log row no longer
+    triggers pending. Seed a raw.ofx_accounts row with a future
+    extracted_at so the new signal fires.
+    """
     with get_database() as db:
         db.execute(
             """
@@ -22,6 +28,14 @@ def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
                       CURRENT_TIMESTAMP)
             """,
             [import_id],
+        )
+        db.execute(
+            """
+            INSERT INTO raw.ofx_accounts
+            (account_id, source_file, extracted_at, import_id)
+            VALUES (?, 'inline', TIMESTAMP '2099-01-01 00:00:00', ?)
+            """,
+            [f"ACC_{import_id}", import_id],
         )
 
 

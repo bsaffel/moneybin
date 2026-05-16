@@ -113,10 +113,14 @@ class TransformService:
         SQL fragments containing user data.
         """
         logger.info("Running SQLMesh transforms")
-        seed_source_priority(self._db, get_settings().matching)
 
         t0 = time.monotonic()
         try:
+            # Seed first so int_transactions__merged can resolve per-field
+            # winners. Inside the try block so a seed failure (write error,
+            # stale catalog) returns the structured ApplyResult envelope
+            # instead of propagating raw to MCP/CLI callers.
+            seed_source_priority(self._db, get_settings().matching)
             with sqlmesh_context(self._db) as ctx:
                 ctx.plan(auto_apply=True, no_prompts=True)
             # Full plan rebuilds seeds.* too, so refresh the views that read them.

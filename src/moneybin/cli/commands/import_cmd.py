@@ -381,24 +381,27 @@ def import_files_command(
     envelope = build_envelope(data=data, sensitivity="low")
     if output == OutputFormat.JSON:
         render_or_json(envelope, output)
-        return
+    elif not quiet:
+        for f in files_list:
+            icon = "✅" if f["status"] == "imported" else "❌"
+            label = f["source_type"] or "?"
+            rows = f.get("rows_loaded") or 0
+            logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
+        if data["transforms_applied"]:
+            duration = data["transforms_duration_seconds"]
+            if duration is not None:
+                logger.info(f"✅ Core tables rebuilt in {duration:.1f}s")
+            else:
+                logger.info("✅ Core tables rebuilt")
+        if data.get("transforms_error"):
+            logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
 
-    if quiet:
-        return
-
-    for f in files_list:
-        icon = "✅" if f["status"] == "imported" else "❌"
-        label = f["source_type"] or "?"
-        rows = f.get("rows_loaded") or 0
-        logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
-    if data["transforms_applied"]:
-        duration = data["transforms_duration_seconds"]
-        if duration is not None:
-            logger.info(f"✅ Core tables rebuilt in {duration:.1f}s")
-        else:
-            logger.info("✅ Core tables rebuilt")
+    # Batch import succeeds file-by-file but the post-import SQLMesh apply is
+    # a separate failure surface. Exit non-zero so scripts and agents detect
+    # that core tables were not refreshed even when every file imported.
+    # Mirrors the fail-loud single-file path via _apply_post_import_hooks().
     if data.get("transforms_error"):
-        logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
+        raise typer.Exit(1)
 
 
 @app.command("history")
