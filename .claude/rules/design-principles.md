@@ -122,8 +122,9 @@ coherent and durable.
 ## Example: applying the protocol
 
 **Decision:** Adding a merchant attribute to `core.fct_transactions`.
-`merchant TEXT` (raw string on the fact table) vs `merchant_id BIGINT`
-(FK to a new `core.dim_merchants`)?
+`merchant TEXT` (raw string on the fact table) vs `merchant_id VARCHAR`
+(FK to a new `core.dim_merchants`, populated with a truncated UUID4 per
+`.claude/rules/identifiers.md`)?
 
 **Classification:** One-way door. `core.fct_transactions` is exposed via
 MCP and CLI; consumers will write queries against this shape.
