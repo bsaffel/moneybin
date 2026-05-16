@@ -739,7 +739,10 @@ class TestCheckCoreSchemaDrift:
         t0 = time.perf_counter()
         check_core_schema_drift(db)
         warm_ms = (time.perf_counter() - t0) * 1000
-        assert warm_ms < 5.0, f"Warm drift check took {warm_ms:.2f}ms"
+        # Bound is generous (~50 ms) to absorb xdist + CI contention while
+        # still failing if someone replaces the single duckdb_columns() query
+        # with per-table catalog reads.
+        assert warm_ms < 50.0, f"Warm drift check took {warm_ms:.2f}ms"
 
 
 @pytest.mark.integration

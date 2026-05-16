@@ -354,7 +354,15 @@ class InboxService:
                     self._sync_one(
                         item, importer=importer, year_month=ym, result=result
                     )
-                if apply_transforms and result.processed:
+                # Mirror ImportService.import_files: skip the SQLMesh apply
+                # when nothing transformable landed. W-2 PDFs never populate
+                # core.fct_transactions, so a pure-W-2 drain has nothing for
+                # transforms to rebuild.
+                any_transformable = any(
+                    entry.get("file_type") in ("ofx", "tabular")
+                    for entry in result.processed
+                )
+                if apply_transforms and any_transformable:
                     hook_result = importer.apply_post_import_hooks()
                     result.transforms_applied = hook_result.applied
                     result.transforms_duration_seconds = hook_result.duration_seconds

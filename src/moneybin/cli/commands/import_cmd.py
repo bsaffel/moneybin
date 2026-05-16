@@ -238,6 +238,10 @@ def import_files_command(
     overrides = _parse_overrides(override)
     interactive = not yes and sys.stdin.isatty()
 
+    # Any flag that ImportService.import_files() does not forward routes the
+    # single-file path through the legacy import_file() so the flag still
+    # takes effect. Behavioral flags (--yes, --no-row-limit, --no-size-limit)
+    # belong in this set even though they aren't data-shape overrides.
     has_single_file_knobs = (
         any(
             v is not None
@@ -255,6 +259,9 @@ def import_files_command(
             )
         )
         or overrides is not None
+        or yes
+        or no_row_limit
+        or no_size_limit
     )
 
     if len(file_paths) > 1 and has_single_file_knobs:
@@ -265,6 +272,8 @@ def import_files_command(
 
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
 
+    files_list: list[dict[str, Any]] = []
+    data: dict[str, Any] = {}
     try:
         with handle_cli_errors():
             with get_database() as db:
@@ -291,7 +300,7 @@ def import_files_command(
                         no_size_limit=no_size_limit,
                         auto_accept=yes,
                     )
-                    files_list: list[dict[str, Any]] = [
+                    files_list = [
                         {
                             "path": str(file_paths[0]),
                             "status": "imported",
@@ -300,7 +309,7 @@ def import_files_command(
                             "import_id": result.import_id,
                         }
                     ]
-                    data: dict[str, Any] = {
+                    data = {
                         "imported_count": 1,
                         "failed_count": 0,
                         "total_count": 1,
@@ -337,34 +346,58 @@ def import_files_command(
                     }
                     if batch.transforms_error:
                         data["transforms_error"] = batch.transforms_error
-
+    except (ValueError, PermissionError) as e:
+        # Single-file path raises on extractor failure; surface it as a
+        # structured failed-file envelope so --output json stays consistent
+        # with the batch-mode contract (multi-file mode already returns
+        # per-file failures via BatchImportResult).
+        error_type = type(e).__name__
+        files_list = [
+            {
+                "path": str(file_paths[0]) if len(file_paths) == 1 else "",
+                "status": "failed",
+                "source_type": None,
+                "rows_loaded": 0,
+                "import_id": None,
+                "error": error_type,
+            }
+        ]
+        data = {
+            "imported_count": 0,
+            "failed_count": 1,
+            "total_count": 1,
+            "transforms_applied": False,
+            "transforms_duration_seconds": None,
+            "files": files_list,
+        }
         envelope = build_envelope(data=data, sensitivity="low")
         if output == OutputFormat.JSON:
             render_or_json(envelope, output)
-            return
-
-        if quiet:
-            return
-
-        for f in files_list:
-            icon = "✅" if f["status"] == "imported" else "❌"
-            label = f["source_type"] or "?"
-            rows = f.get("rows_loaded") or 0
-            logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
-        if data["transforms_applied"]:
-            duration = data["transforms_duration_seconds"]
-            if duration is not None:
-                logger.info(f"✅ Core tables rebuilt in {duration:.1f}s")
-            else:
-                logger.info("✅ Core tables rebuilt")
-        if data.get("transforms_error"):
-            logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
-    except ValueError as e:
-        logger.error(f"❌ {e}")
+        else:
+            logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
-    except PermissionError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
+
+    envelope = build_envelope(data=data, sensitivity="low")
+    if output == OutputFormat.JSON:
+        render_or_json(envelope, output)
+        return
+
+    if quiet:
+        return
+
+    for f in files_list:
+        icon = "✅" if f["status"] == "imported" else "❌"
+        label = f["source_type"] or "?"
+        rows = f.get("rows_loaded") or 0
+        logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
+    if data["transforms_applied"]:
+        duration = data["transforms_duration_seconds"]
+        if duration is not None:
+            logger.info(f"✅ Core tables rebuilt in {duration:.1f}s")
+        else:
+            logger.info("✅ Core tables rebuilt")
+    if data.get("transforms_error"):
+        logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
 
 
 @app.command("history")

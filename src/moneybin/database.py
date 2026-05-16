@@ -182,6 +182,11 @@ def check_core_schema_drift(db: "Database") -> dict[str, list[str]]:
     Reads ``duckdb_columns()`` once and compares each expected table's column
     set to the observed set. Cheap (< 5 ms warm). Used at FastMCP boot and
     re-runnable from system_status.
+
+    Tables that don't exist yet (e.g. on a pre-first-transform database) are
+    not drift — the boot check must not block a freshly initialized profile
+    from starting the MCP server. Only tables that exist but lack expected
+    columns are reported.
     """
     rows = db.execute(
         "SELECT table_name, column_name "
@@ -194,8 +199,10 @@ def check_core_schema_drift(db: "Database") -> dict[str, list[str]]:
 
     drift: dict[str, list[str]] = {}
     for qualified_name, expected in EXPECTED_CORE_COLUMNS.items():
-        seen = observed.get(qualified_name, set())
-        missing = sorted(expected - seen)
+        if qualified_name not in observed:
+            # Table not materialized yet — not drift.
+            continue
+        missing = sorted(expected - observed[qualified_name])
         if missing:
             drift[qualified_name] = missing
     return drift

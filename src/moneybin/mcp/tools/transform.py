@@ -145,7 +145,8 @@ def register_transform_tools(mcp: FastMCP) -> None:
         transform_audit,
         "transform_audit",
         "Run SQLMesh data-quality audits over [start, end] (YYYY-MM-DD). "
-        "Returns per-audit pass/fail counts.",
+        "Returns per-audit pass/fail counts. "
+        "May write SQLMesh state tables on first Context init.",
     )
     register(
         mcp,
