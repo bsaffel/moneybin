@@ -698,6 +698,66 @@ class TestGetDatabaseNew:
         db.close()
 
 
+class TestCheckCoreSchemaDrift:
+    """check_core_schema_drift() — detect missing columns on FULL core tables."""
+
+    def test_check_core_schema_drift_returns_empty_for_healthy_schema(
+        self, db: Database
+    ) -> None:
+        """No drift when all expected columns are present."""
+        from moneybin.database import check_core_schema_drift
+        from tests.moneybin.db_helpers import create_core_tables_raw
+
+        create_core_tables_raw(db.conn)
+        drift = check_core_schema_drift(db)
+        assert drift == {}
+
+    def test_check_core_schema_drift_returns_empty_on_pre_first_transform_db(
+        self, db: Database
+    ) -> None:
+        """A fresh DB with no materialized core tables must not register drift.
+
+        Regression guard: an earlier version reported every expected column
+        as missing when core.dim_accounts didn't exist yet, blocking
+        ``moneybin mcp serve`` from booting on a freshly initialized profile.
+        """
+        from moneybin.database import check_core_schema_drift
+
+        assert check_core_schema_drift(db) == {}
+
+    def test_check_core_schema_drift_detects_missing_columns(
+        self, db: Database
+    ) -> None:
+        """Drift report names the table and which columns are missing."""
+        from moneybin.database import check_core_schema_drift
+        from tests.moneybin.db_helpers import create_core_tables_raw
+
+        create_core_tables_raw(db.conn)
+        db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
+
+        drift = check_core_schema_drift(db)
+        assert "core.dim_accounts" in drift
+        assert "display_name" in drift["core.dim_accounts"]
+
+    def test_check_core_schema_drift_perf(self, db: Database) -> None:
+        """Drift check is fast enough to run at every server boot."""
+        import time
+
+        from moneybin.database import check_core_schema_drift
+        from tests.moneybin.db_helpers import create_core_tables_raw
+
+        create_core_tables_raw(db.conn)
+
+        check_core_schema_drift(db)  # warm catalog
+        t0 = time.perf_counter()
+        check_core_schema_drift(db)
+        warm_ms = (time.perf_counter() - t0) * 1000
+        # Bound is generous (~50 ms) to absorb xdist + CI contention while
+        # still failing if someone replaces the single duckdb_columns() query
+        # with per-table catalog reads.
+        assert warm_ms < 50.0, f"Warm drift check took {warm_ms:.2f}ms"
+
+
 @pytest.mark.integration
 class TestDatabaseIntegration:
     """Integration tests with a real encrypted DuckDB file."""

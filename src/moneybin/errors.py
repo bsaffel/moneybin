@@ -21,6 +21,7 @@ from moneybin.database import (
     DatabaseKeyError,
     DatabaseLockError,
     DatabaseNotInitializedError,
+    SchemaDriftError,
     database_key_error_hint,
 )
 
@@ -89,6 +90,12 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             str(exc),
             code="wrong_key",
             hint=database_key_error_hint(),
+        )
+    if isinstance(exc, SchemaDriftError):
+        return UserError(
+            str(exc),
+            code="schema_drift",
+            hint="💡 Run 'moneybin transform apply' to rebuild stale models",
         )
     if isinstance(exc, FileNotFoundError):
         # Drop the "[Errno 2]" prefix that str(FileNotFoundError) includes —

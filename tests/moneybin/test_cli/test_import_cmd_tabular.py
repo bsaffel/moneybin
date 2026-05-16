@@ -63,7 +63,7 @@ class TestImportFileAccountName:
 
         result = runner.invoke(
             app,
-            ["file", str(csv_file), "--account-name", "Chase Checking"],
+            ["files", str(csv_file), "--account-name", "Chase Checking"],
         )
 
         assert result.exit_code == 0
@@ -95,7 +95,7 @@ class TestImportFileValidation:
 
     def test_file_not_found_exits_with_error(self, tmp_path: Path) -> None:
         """Missing file exits with code 1 before reaching the service."""
-        result = runner.invoke(app, ["file", str(tmp_path / "missing.csv")])
+        result = runner.invoke(app, ["files", str(tmp_path / "missing.csv")])
         assert result.exit_code == 1
 
     def test_invalid_sign_convention_exits_with_error(self, tmp_path: Path) -> None:
@@ -103,7 +103,7 @@ class TestImportFileValidation:
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("a,b,c\n1,2,3\n")
 
-        result = runner.invoke(app, ["file", str(csv_file), "--sign", "invalid_sign"])
+        result = runner.invoke(app, ["files", str(csv_file), "--sign", "invalid_sign"])
 
         assert result.exit_code == 2
 
@@ -113,7 +113,7 @@ class TestImportFileValidation:
         csv_file.write_text("a,b,c\n1,2,3\n")
 
         result = runner.invoke(
-            app, ["file", str(csv_file), "--number-format", "badformat"]
+            app, ["files", str(csv_file), "--number-format", "badformat"]
         )
 
         assert result.exit_code == 2
@@ -123,7 +123,7 @@ class TestImportFileValidation:
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("a,b,c\n1,2,3\n")
 
-        result = runner.invoke(app, ["file", str(csv_file), "--override", "badformat"])
+        result = runner.invoke(app, ["files", str(csv_file), "--override", "badformat"])
 
         assert result.exit_code == 1
 
@@ -142,7 +142,7 @@ class TestImportFileValidation:
         )
 
         result = runner.invoke(
-            app, ["file", str(csv_file), "--sign", "negative_is_expense"]
+            app, ["files", str(csv_file), "--sign", "negative_is_expense"]
         )
 
         # Exit code 0 means validation passed (service may still fail with
@@ -163,7 +163,7 @@ class TestImportFileValidation:
         )
 
         result = runner.invoke(
-            app, ["file", str(csv_file), "--number-format", "european"]
+            app, ["files", str(csv_file), "--number-format", "european"]
         )
 
         assert result.exit_code == 0

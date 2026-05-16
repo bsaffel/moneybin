@@ -71,11 +71,11 @@ class TestCSVImportPipeline:
         # Import CSV
         result = run_cli(
             "import",
-            "file",
+            "files",
             str(fixture),
             "--account-id",
             "e2e-test-acct",
-            "--skip-transform",
+            "--no-apply-transforms",
             env=env,
         )
         result.assert_success()
@@ -111,9 +111,9 @@ class TestOFXImportPipeline:
         # Import OFX
         result = run_cli(
             "import",
-            "file",
+            "files",
             str(fixture),
-            "--skip-transform",
+            "--no-apply-transforms",
             env=env,
         )
         result.assert_success()
@@ -196,11 +196,11 @@ class TestCategorizationPipeline:
         # Import
         result = run_cli(
             "import",
-            "file",
+            "files",
             str(fixture),
             "--account-id",
             "e2e-cat-acct",
-            "--skip-transform",
+            "--no-apply-transforms",
             env=env,
         )
         result.assert_success()
@@ -243,11 +243,11 @@ class TestAutoRulePipeline:
         # back-fill in approve() to exercise.
         result = run_cli(
             "import",
-            "file",
+            "files",
             str(fixture),
             "--account-id",
             "wf-autorule-acct-a",
-            "--skip-transform",
+            "--no-apply-transforms",
             env=env,
         )
         result.assert_success()
@@ -309,11 +309,11 @@ class TestAutoRulePipeline:
         # inside approve() will then find and categorize it as 'auto_rule'.
         result = run_cli(
             "import",
-            "file",
+            "files",
             str(fixture),
             "--account-id",
             "wf-autorule-acct-b",
-            "--skip-transform",
+            "--no-apply-transforms",
             env=env,
         )
         result.assert_success()

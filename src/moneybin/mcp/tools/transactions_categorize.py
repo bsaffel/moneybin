@@ -81,7 +81,7 @@ def transactions_categorize_pending_list(
         return build_envelope(
             data=[],
             sensitivity="medium",
-            actions=["Import data first using import_file"],
+            actions=["Import data first using import_files"],
         )
     return build_envelope(
         data=records,

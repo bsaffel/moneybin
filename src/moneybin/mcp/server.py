@@ -67,8 +67,12 @@ mcp = FastMCP(
         - system_audit_list — unified audit log (filter by actor, action_pattern, target, time)
 
         Getting oriented:
-        - system_status — what data exists, freshness, pending review queues
+        - system_status — what data exists, freshness, pending review queues, transforms-pending signal
         - reports_spending_get — monthly spending trend with MoM/YoY/trailing deltas
+
+        Refreshing derived tables:
+        - import_files and import_inbox_sync apply transforms once at end of batch by default.
+        - When system_status.data.transforms.pending is true, call transform_apply to rebuild core.* tables.
 
         Conventions:
         - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
@@ -131,6 +135,32 @@ def table_exists(table: TableRef) -> bool:
 def init_db() -> None:
     """Register MCP tools."""
     register_core_tools()
+
+
+def check_schema_at_boot() -> None:
+    """Verify core.* materialized tables aren't stale vs. EXPECTED_CORE_COLUMNS.
+
+    Raises SchemaDriftError if any FULL-materialized core model is missing a
+    column the service code SELECTs. Single-tenant fail-fast policy; multi-
+    tenant degraded mode is a TODO when we get there.
+    """
+    from moneybin.database import (
+        DatabaseNotInitializedError,
+        SchemaDriftError,
+        check_core_schema_drift,
+        get_database,
+    )
+
+    try:
+        with get_database(read_only=True) as db:
+            drift = check_core_schema_drift(db)
+    except DatabaseNotInitializedError:
+        # No DB yet means no drift to check. moneybin mcp serve already
+        # surfaces a clean error for this case via classify_user_error.
+        return
+    if drift:
+        tables = ", ".join(sorted(drift.keys()))
+        raise SchemaDriftError(f"Stale materialized snapshots detected: {tables}")
 
 
 def close_db() -> None:

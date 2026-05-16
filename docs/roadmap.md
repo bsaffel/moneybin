@@ -90,6 +90,7 @@ The launchable beachhead — `brew install moneybin` works end-to-end on a clean
 - Monthly-ritual MCP prompts (close the month, anomaly walk-through, recurring review, uncategorized walkthrough)
 - First-run wizard
 - **Web UI prototype** (FastAPI + React, narrow scope): AI-categorization-proposal review queue + transactions list. Treated as the first iteration of the M3D UI, not throwaway. Stress-tests the writer-coordination architecture (M2B) under real concurrent load before M3A and M3D depend on it. Spec: `web-ui-prototype.md` (planned).
+- 📐 `smart-import-transform` — close the agent ingest loop: ship 5 `transform_*` MCP tools, batch `import_files`, `system_status.transforms` freshness block.
 - PyPI publish workflow + Homebrew formula
 - Static landing page + 60-second demo video
 

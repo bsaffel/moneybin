@@ -16,7 +16,7 @@ from typing import Any, Literal, cast
 
 import duckdb
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import Database
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -25,7 +25,6 @@ from moneybin.metrics.registry import (
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
     IMPORT_RECORDS_TOTAL,
-    SQLMESH_RUN_DURATION_SECONDS,
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
@@ -74,6 +73,63 @@ class ImportResult:
             lines.append("  Core tables rebuilt (dim_accounts, fct_transactions)")
 
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class PerFileResult:
+    """One file's outcome inside a batch import."""
+
+    path: str
+    status: Literal["imported", "failed", "skipped"]
+    source_type: str | None
+    rows_loaded: int = 0
+    rows_skipped: int = 0
+    import_id: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class PostImportHookResult:
+    """Outcome of running matching + transforms + categorization after a batch.
+
+    Captures whether transforms ran, how long they took, and any error so
+    callers (batch import, inbox sync) can surface the state to users without
+    swallowing the failure.
+    """
+
+    applied: bool
+    duration_seconds: float | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchImportResult:
+    """Outcome of an import_files call.
+
+    Note: ``per_file`` is a list (mutable), so instances aren't hashable —
+    matches the precedent set by other frozen result dataclasses in the
+    services layer.
+    """
+
+    per_file: list[PerFileResult]
+    transforms_applied: bool
+    transforms_duration_seconds: float | None
+    transforms_error: str | None = None
+
+    @property
+    def imported_count(self) -> int:
+        """Number of files that imported successfully."""
+        return sum(1 for r in self.per_file if r.status == "imported")
+
+    @property
+    def failed_count(self) -> int:
+        """Number of files that failed to import."""
+        return sum(1 for r in self.per_file if r.status == "failed")
+
+    @property
+    def total_count(self) -> int:
+        """Total number of files attempted in this batch."""
+        return len(self.per_file)
 
 
 @dataclass(frozen=True)
@@ -357,44 +413,20 @@ class ImportService:
         return slugify(account_name)
 
     def run_transforms(self) -> bool:
-        """Run SQLMesh transforms to rebuild core tables.
+        """Apply SQLMesh transforms via :class:`TransformService`.
 
-        Uses ``sqlmesh_context(self._db)`` to inject the caller-supplied
-        encrypted connection into SQLMesh's adapter cache. Typical caller
-        pattern: ``with get_database() as db: ImportService(db).run_transforms()``.
-
-        Seeds ``app.seed_source_priority`` from config before running so
-        ``int_transactions__merged`` can resolve per-field winners. Without
-        this, the LEFT JOIN onto ``seed_source_priority`` produces NULL
-        priorities for every row, causing ARG_MIN(value, NULL_key) to drop
-        non-NULL values for fields that key on a CASE-with-NULL-fallthrough
-        pattern (description, memo, etc.). Callers that go straight to
-        transforms (``transform apply``, synthetic generation) would
-        otherwise materialize NULL descriptions in core.fct_transactions.
-
-        Returns:
-            True if transforms ran successfully.
+        Transitional shim: callers will move to ``TransformService.apply()``
+        directly in a later phase. Preserves the original fail-loud contract
+        — ``TransformService.apply()`` soft-fails to ``ApplyResult(error=...)``,
+        but several callers here (``transactions matches run/backfill``,
+        ``synthetic generate``) ignore the return value, so raising on
+        failure is required to keep the exit code honest.
         """
-        from moneybin.config import get_settings
-        from moneybin.matching.priority import seed_source_priority
-        from moneybin.seeds import refresh_views
+        from moneybin.services.transform_service import TransformService
 
-        logger.info("Running SQLMesh transforms")
-
-        seed_source_priority(self._db, get_settings().matching)
-
-        t0 = time.monotonic()
-        try:
-            with sqlmesh_context(self._db) as ctx:
-                ctx.plan(auto_apply=True, no_prompts=True)
-            # Full plan rebuilds seeds.* too, so refresh the views that read them.
-            refresh_views(self._db)
-            elapsed = time.monotonic() - t0
-            logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
-        finally:
-            SQLMESH_RUN_DURATION_SECONDS.labels(model="import_plan_apply").observe(
-                time.monotonic() - t0
-            )
+        result = TransformService(self._db).apply()
+        if not result.applied:
+            raise RuntimeError(f"SQLMesh transforms failed: {result.error}")
         return True
 
     def _import_ofx(
@@ -1052,6 +1084,64 @@ class ImportService:
             FileNotFoundError: If the file does not exist.
             ValueError: If the file type is not supported.
         """
+        result = self._import_one(
+            file_path,
+            institution=institution,
+            force=force,
+            interactive=interactive,
+            account_id=account_id,
+            account_name=account_name,
+            format_name=format_name,
+            overrides=overrides,
+            sign=sign,
+            date_format=date_format,
+            number_format=number_format,
+            save_format=save_format,
+            sheet=sheet,
+            delimiter=delimiter,
+            encoding=encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
+            auto_accept=auto_accept,
+        )
+
+        if apply_transforms and result.file_type in ("ofx", "tabular"):
+            self._apply_post_import_hooks()
+            # TransformService.apply() is fail-loud: returns applied=True or raises.
+            # Reaching this line means hooks ran, so the rebuilt flag is unconditional.
+            result.core_tables_rebuilt = True
+
+        logger.info(f"Import complete: {result.summary()}")
+        return result
+
+    def _import_one(
+        self,
+        file_path: str | Path,
+        *,
+        institution: str | None = None,
+        force: bool = False,
+        interactive: bool = False,
+        account_id: str | None = None,
+        account_name: str | None = None,
+        format_name: str | None = None,
+        overrides: dict[str, str] | None = None,
+        sign: str | None = None,
+        date_format: str | None = None,
+        number_format: str | None = None,
+        save_format: bool = True,
+        sheet: str | None = None,
+        delimiter: str | None = None,
+        encoding: str | None = None,
+        no_row_limit: bool = False,
+        no_size_limit: bool = False,
+        auto_accept: bool = False,
+    ) -> ImportResult:
+        """Extract + load one file. Does NOT run matching/transforms/categorization.
+
+        End-of-batch hooks (matching, SQLMesh transforms, deterministic
+        categorization) are the caller's responsibility — see
+        ``_apply_post_import_hooks`` and ``import_files``.
+        """
         path = Path(file_path)
 
         if not path.exists():
@@ -1061,13 +1151,13 @@ class ImportService:
         logger.info(f"Importing {_display_label(file_type, path)} file: {path}")
 
         if file_type == "ofx":
-            result = self._import_ofx(
+            return self._import_ofx(
                 path, institution=institution, force=force, interactive=interactive
             )
-        elif file_type == "w2":
-            result = self._import_w2(path)
-        elif file_type == "tabular":
-            result = self._import_tabular(
+        if file_type == "w2":
+            return self._import_w2(path)
+        if file_type == "tabular":
+            return self._import_tabular(
                 path,
                 account_name=account_name,
                 account_id=account_id,
@@ -1084,24 +1174,132 @@ class ImportService:
                 no_size_limit=no_size_limit,
                 auto_accept=auto_accept,
             )
-        else:
-            raise ValueError(f"Unsupported file type: {file_type}")
+        raise ValueError(f"Unsupported file type: {file_type}")
 
-        # Run matching and SQLMesh transforms after loading raw data
-        if apply_transforms and file_type in ("ofx", "tabular"):
-            try:
-                self._run_matching()
-            except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
-                logger.debug(
-                    "Matching skipped (views may not exist yet)", exc_info=True
-                )
-            result.core_tables_rebuilt = self.run_transforms()
+    def _apply_post_import_hooks(self) -> None:
+        """Run matching, SQLMesh transforms, and deterministic categorization.
 
-            # Apply deterministic categorization to new transactions
+        Fail-loud variant used by single-file ``import_file()``: a transform
+        failure propagates so the CLI exit code reflects the broken state.
+        Batch callers should prefer :meth:`apply_post_import_hooks` for the
+        soft-fail variant that surfaces the error in a structured result.
+        """
+        from moneybin.services.transform_service import TransformService
+
+        try:
+            self._run_matching()
+        except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
+            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+        result = TransformService(self._db).apply()
+        if not result.applied:
+            # apply() now soft-fails; preserve the fail-loud contract here so
+            # single-file callers' exit codes reflect the broken state.
+            raise RuntimeError(f"SQLMesh transforms failed: {result.error}")
+        self._apply_categorization()
+
+    def apply_post_import_hooks(self) -> PostImportHookResult:
+        """Soft-fail end-of-batch hooks: matching + transforms + categorization.
+
+        Used by batch import and inbox sync — both want to preserve already-
+        imported rows and per-file move outcomes even if SQLMesh apply
+        explodes mid-batch. The transform error is returned in the result so
+        the caller can surface it in the response envelope or sidecar.
+        """
+        from moneybin.services.transform_service import TransformService
+
+        try:
+            self._run_matching()
+        except Exception:  # noqa: BLE001 — matching best-effort; first import may precede SQLMesh views
+            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+        apply_result = TransformService(self._db).apply()
+        if not apply_result.applied:
+            # apply() soft-fails to ApplyResult(error=...). Skip categorization
+            # on a partially-built core schema; surface the error so the
+            # response envelope shows it.
+            return PostImportHookResult(
+                applied=False,
+                duration_seconds=apply_result.duration_seconds,
+                error=apply_result.error,
+            )
+        try:
             self._apply_categorization()
+        except Exception as e:  # noqa: BLE001 — surface categorization error in envelope
+            error_type = type(e).__name__
+            logger.warning(f"Categorization failed after batch import: {error_type}")
+            return PostImportHookResult(
+                applied=apply_result.applied,
+                duration_seconds=apply_result.duration_seconds,
+                error=error_type,
+            )
+        return PostImportHookResult(
+            applied=apply_result.applied,
+            duration_seconds=apply_result.duration_seconds,
+        )
 
-        logger.info(f"Import complete: {result.summary()}")
-        return result
+    def import_files(
+        self,
+        paths: list[str | Path],
+        *,
+        apply_transforms: bool = True,
+        force: bool = False,
+        interactive: bool = False,
+    ) -> BatchImportResult:
+        """Import a list of files; apply transforms once at end of batch.
+
+        Per-file failures do not abort the batch. Transforms run only if at
+        least one file succeeded AND at least one file was transformable
+        (ofx/tabular — W-2 imports don't write to fct_transactions).
+
+        Per-file overrides (account_name, institution, format_name, etc.)
+        are not available for batch — use ``import_file()`` for single
+        imports with overrides.
+        """
+        from moneybin.metrics.registry import IMPORT_BATCH_SIZE
+
+        IMPORT_BATCH_SIZE.observe(len(paths))
+        per_file: list[PerFileResult] = []
+        any_succeeded = False
+        any_transformable = False
+        for raw_path in paths:
+            path = Path(raw_path)
+            try:
+                r = self._import_one(path, force=force, interactive=interactive)
+                rows_loaded = r.transactions or r.w2_forms
+                per_file.append(
+                    PerFileResult(
+                        path=str(path),
+                        status="imported",
+                        source_type=r.file_type,
+                        rows_loaded=rows_loaded,
+                        import_id=r.import_id,
+                    )
+                )
+                any_succeeded = True
+                if r.file_type in ("ofx", "tabular"):
+                    any_transformable = True
+            except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
+                # error_type only; raw str(e) may embed PII per ofx_extractor.py:228-232
+                error_type = type(e).__name__
+                logger.warning(f"Import failed for {path}: {error_type}")
+                per_file.append(
+                    PerFileResult(
+                        path=str(path),
+                        status="failed",
+                        source_type=None,
+                        error=error_type,
+                    )
+                )
+
+        hook_result = PostImportHookResult(applied=False, duration_seconds=None)
+        if apply_transforms and any_succeeded and any_transformable:
+            hook_result = self.apply_post_import_hooks()
+
+        return BatchImportResult(
+            per_file=per_file,
+            transforms_applied=hook_result.applied,
+            transforms_duration_seconds=hook_result.duration_seconds,
+            transforms_error=hook_result.error,
+        )
 
     def _run_matching(self) -> None:
         """Run transaction matching after import.

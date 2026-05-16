@@ -1,4 +1,4 @@
-"""Tests for the `moneybin import file` CLI command."""
+"""Tests for the `moneybin import files` CLI command."""
 
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -52,7 +52,7 @@ def test_import_file_passes_yes_flag_through(csv_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["file", str(csv_path), "--account-name", "Test", "--yes"],
+            ["files", str(csv_path), "--account-name", "Test", "--yes"],
         )
 
     assert result.exit_code == 0, result.output
@@ -83,7 +83,7 @@ def test_import_file_default_auto_accept_false(csv_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["file", str(csv_path), "--account-name", "Test"],
+            ["files", str(csv_path), "--account-name", "Test"],
         )
 
     assert result.exit_code == 0, result.output

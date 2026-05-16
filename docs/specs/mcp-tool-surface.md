@@ -697,15 +697,17 @@ Trigger the matching engine on-demand.
 
 **Service class:** `ImportService`
 
-### `import_file`
+### `import_files`
 
-Import a financial data file. Format detected automatically from extension (OFX/QFX, CSV, PDF/W-2, XLSX/XLS). CSV files require `account_id` and an existing format (see `import_list_formats`).
+Import one or more financial data files into MoneyBin. Format detected automatically per file from extension (OFX/QFX/QBO, CSV/TSV/Excel/Parquet/Feather, PDF/W-2). Per-file failures do not abort the batch; transforms run once at end of batch by default.
 
-- **Sensitivity:** `medium` — import results reference transaction descriptions and amounts.
-- **Unique parameters:** `file_path: str` (required), `account_id: str?` (required for CSV), `institution: str?` (override auto-detection).
-- **Behavior:** Delegates to the appropriate extractor, loads to raw schema, triggers `sqlmesh run` to rebuild prep/core. Returns `{file_type, records_extracted, records_loaded, records_skipped_duplicate, accounts_affected, date_range}`. Validates path is within home directory.
-- **Service:** `ImportService.import_file() -> ImportResult`
-- **CLI:** `moneybin import file PATH [--account-id ID] [--institution NAME]`
+- **Sensitivity:** `low` — return envelope reports per-file counts and status, not transaction content.
+- **Unique parameters:** `paths: list[str]` (required, each path must be within the user's home directory), `apply_transforms: bool = True`, `force: bool = False`.
+- **Behavior:** Validates each path, delegates to `ImportService.import_files()`. Returns envelope with `data.{imported_count, failed_count, total_count, transforms_applied, transforms_duration_seconds, files: list[{path, status, source_type, rows_loaded, import_id, error?}]}`. Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
+- **Service:** `ImportService.import_files() -> BatchImportResult`
+- **CLI:** `moneybin import files PATHS... [--no-apply-transforms] [--output json]`
+
+Per-file overrides (`account_name`, `institution`, `format_name`) are not exposed on the batch MCP surface — use the CLI for those.
 
 ### `import_status`
 
@@ -719,7 +721,7 @@ Show import history and data freshness per source.
 
 ### `import_folder`
 
-Batch import a directory of mixed file types.
+Batch import a directory of mixed file types. `import_files` now subsumes the variadic-paths case; `import_folder` remains the directory-walker variant.
 
 - **Sensitivity:** `medium`
 - **Unique parameters:** `folder_path: str` (required), `account_id: str?` (applied to CSV files), `recursive: bool = false`.
@@ -1189,7 +1191,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Guide a first-time user from empty database to imported, transformed, and categorized data.
 
-**Relevant tools:** `system_status`, `import_file`, `import_file_preview`, `import_list_formats`, `transactions_categorize_stats`
+**Relevant tools:** `system_status`, `import_files`, `import_file_preview`, `import_list_formats`, `transactions_categorize_stats`
 
 **Guardrails:**
 
@@ -1326,7 +1328,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `get_categorization_stats` | `categorize_stats` | |
 | `list_institutions` | `accounts_list` | Institution is a field on account |
 | `run_read_query` | `sql_query` | |
-| `import_file` | `import_file` | |
+| `import_file` | `import_files` | Renamed; accepts list of paths |
 | `categorize_transaction` | `categorize_apply` | Single-item removed; use list of one |
 | `get_uncategorized_transactions` | `categorize_uncategorized` | |
 | `seed_categories` | _removed_ | Seeds run automatically via `db init` / `transform seed` |
@@ -1345,7 +1347,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `find_recurring_transactions` | `transactions_recurring` | |
 | `csv_preview_file` | `import_csv_preview` | |
 | `csv_list_profiles` | `import_list_formats` | |
-| `csv_save_profile` | Absorbed into `import_file` via `save_format` flag | |
+| `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | |
 
 ### Prototype prompts
 
@@ -1495,7 +1497,7 @@ v2 splits them by their actual content. Status is a system meta-view; health is 
 
 | Namespace | Tools | Rationale |
 |---|---|---|
-| `import_*` | 6 of 7 unchanged; `import_csv_preview` → `import_file_preview` (format-agnostic) | Pipeline action, not entity-scoped |
+| `import_*` | `import_csv_preview` → `import_file_preview` (format-agnostic); `import_file` → `import_files` (batch); other tools unchanged | Pipeline action, not entity-scoped |
 | `privacy_*` | All 4 privacy tools unchanged | Cross-cutting consent/audit domain |
 | `sql_*` | `sql_query` unchanged | Infrastructure escape hatch |
 | `tax_*` | `tax_w2`, `tax_deductions` unchanged | Tax is its own domain — workflow that crosses spending, income, deductions, forms. Future tools (`tax_1099`, `tax_capital_gains`, `tax_estimate`) land here. |
@@ -1527,9 +1529,9 @@ Per the v2 MCP exposure principle, sync becomes nearly fully MCP-exposed. The AI
 |---|---|
 | `sync_review` | Agent-driven health check. Walks the agent through `sync_status` + optional `spending_summary` to flag errored institutions, stale connections (last_sync > 7 days), and volume anomalies. Output is constrained to counts/dates/status codes/institution names — no PII (account numbers, balances, descriptions, merchant names). |
 
-### `transform_*` (new MCP exposure — was CLI-only)
+### `transform_*`
 
-Routine pipeline operations the AI legitimately needs (e.g., ensure pipeline is up to date after a manual data change). Full surface except `_restate`.
+Routine pipeline operations the AI legitimately needs (e.g., ensure pipeline is up to date after a manual data change). Full surface except `_restate`. See [smart-import-transform.md](smart-import-transform.md).
 
 | v2 tool | Behavior |
 |---|---|

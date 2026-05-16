@@ -6,10 +6,11 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from moneybin.database import Database
+from moneybin.database import Database, check_core_schema_drift
 from moneybin.services.categorization_service import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.review_service import ReviewService
+from moneybin.services.transform_service import TransformService
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,9 @@ class SystemStatus:
     last_import_at: date | None
     matches_pending: int
     categorize_pending: int
+    transforms_pending: bool
+    transforms_last_apply_at: datetime | None
+    schema_drift: dict[str, list[str]]
 
 
 @dataclass(slots=True)
@@ -54,10 +58,13 @@ class SystemService:
         review = ReviewService(
             MatchingService(self._db), CategorizationService(self._db)
         ).status()
+        freshness = TransformService(self._db).freshness()
+        schema_drift = check_core_schema_drift(self._db)
 
         logger.info(
             f"System status: {accounts_count} accounts, {transactions_count} transactions, "
-            f"{review.matches_pending} matches pending, {review.categorize_pending} uncategorized"
+            f"{review.matches_pending} matches pending, {review.categorize_pending} uncategorized, "
+            f"transforms_pending={freshness.pending}"
         )
         return SystemStatus(
             accounts_count=accounts_count,
@@ -66,6 +73,9 @@ class SystemService:
             last_import_at=last_import_at,
             matches_pending=review.matches_pending,
             categorize_pending=review.categorize_pending,
+            transforms_pending=freshness.pending,
+            transforms_last_apply_at=freshness.last_apply_at,
+            schema_drift=schema_drift,
         )
 
     def _count_accounts(self) -> int:

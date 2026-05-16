@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -79,6 +79,8 @@ def test_status_has_required_fields(system_db: Database) -> None:
     assert hasattr(result, "last_import_at")
     assert hasattr(result, "matches_pending")
     assert hasattr(result, "categorize_pending")
+    assert hasattr(result, "transforms_pending")
+    assert hasattr(result, "transforms_last_apply_at")
 
 
 @pytest.mark.unit
@@ -167,3 +169,114 @@ def test_status_queue_counts_integer_types(system_db: Database) -> None:
     assert result.matches_pending == 0
     # categorize_pending reflects the 2 uncategorized transactions in the fixture
     assert result.categorize_pending == 2
+
+
+def _seed_import_log(db: Database, completed_at: datetime) -> None:
+    """Insert one complete import row at the given timestamp."""
+    db.conn.execute(
+        """
+        INSERT INTO raw.import_log (
+            import_id, source_file, source_type, source_origin, account_names,
+            status, started_at, completed_at
+        ) VALUES (?, 'test.qfx', 'ofx', 'test', '[]', 'complete', ?, ?)
+        """,
+        ["import-1", completed_at, completed_at],
+    )
+
+
+def _seed_raw_ofx_account(db: Database, extracted_at: datetime, import_id: str) -> None:
+    """Insert one raw.ofx_accounts row at the given extracted_at."""
+    db.conn.execute(
+        """
+        INSERT INTO raw.ofx_accounts
+        (account_id, source_file, extracted_at, import_id)
+        VALUES ('ACC001', 'test.qfx', ?, ?)
+        """,
+        [extracted_at, import_id],
+    )
+
+
+def _insert_dim_account(
+    db: Database, dim_extracted_at: datetime, dim_updated_at: datetime
+) -> None:
+    """Insert one dim_accounts row with the given extracted_at and updated_at."""
+    db.conn.execute(
+        """
+        INSERT INTO core.dim_accounts VALUES
+        ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
+         'test.qfx', ?, CURRENT_TIMESTAMP, ?,
+         'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD',
+         NULL, FALSE, TRUE)
+        """,
+        [dim_extracted_at, dim_updated_at],
+    )
+
+
+@pytest.mark.unit
+def test_status_transforms_pending_when_raw_newer_than_dim(
+    tmp_path: Path,
+) -> None:
+    """transforms_pending is True when a raw account row postdates dim_accounts.extracted_at."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+    database = Database(
+        tmp_path / "pending.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        create_core_tables_raw(database.conn)
+        dim_updated = datetime(2026, 5, 10, 12, 0)
+        _insert_dim_account(database, datetime(2025, 1, 1), dim_updated)
+        _seed_raw_ofx_account(database, datetime(2026, 5, 13, 18, 24), "import-1")
+        _seed_import_log(database, datetime(2026, 5, 13, 18, 24))
+
+        status = SystemService(db=database).status()
+        assert status.transforms_pending is True
+        assert status.transforms_last_apply_at == dim_updated
+    finally:
+        database.close()
+
+
+@pytest.mark.unit
+def test_status_transforms_not_pending_after_apply(tmp_path: Path) -> None:
+    """transforms_pending is False when dim_accounts.extracted_at >= raw max extracted_at."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+    database = Database(
+        tmp_path / "fresh.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        create_core_tables_raw(database.conn)
+        dim_updated = datetime(2026, 5, 13, 19, 0)
+        extracted = datetime(2026, 5, 13, 18, 24)
+        _insert_dim_account(database, extracted, dim_updated)
+        _seed_raw_ofx_account(database, extracted, "import-1")
+        _seed_import_log(database, datetime(2026, 5, 13, 18, 30))
+
+        status = SystemService(db=database).status()
+        assert status.transforms_pending is False
+        assert status.transforms_last_apply_at == dim_updated
+    finally:
+        database.close()
+
+
+@pytest.mark.unit
+def test_status_transforms_pending_false_with_no_imports(tmp_path: Path) -> None:
+    """transforms_pending is False on a fresh DB with no imports."""
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+    database = Database(
+        tmp_path / "empty.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+    )
+    try:
+        # No core.dim_accounts and no imports → freshness returns pending=False.
+        status = SystemService(db=database).status()
+        assert status.transforms_pending is False
+        assert status.transforms_last_apply_at is None
+    finally:
+        database.close()

@@ -40,6 +40,12 @@ INBOX_SYNC_DURATION_SECONDS = Histogram(
     "Duration of one inbox drain (seconds)",
 )
 
+IMPORT_BATCH_SIZE = Histogram(
+    "moneybin_import_batch_size",
+    "Files per ImportService.import_files() call",
+    buckets=(1, 2, 5, 10, 20, 50, 100, 500),
+)
+
 # ── Tabular import ───────────────────────────────────────────────────────────
 
 TABULAR_FORMAT_MATCHES = Counter(
