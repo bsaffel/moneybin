@@ -45,7 +45,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 - [`transaction-curation.md`](transaction-curation.md) §Audit log Req 25–31 — the spec that introduced `AuditService` and the `app.audit_log` schema. This spec extends that infrastructure to cover every protected `app.*` table.
 - [`categorization-overview.md`](categorization-overview.md) / [`categorization-auto-rules.md`](categorization-auto-rules.md) — the categorization writers that this spec migrates onto repositories.
 - [`account-management.md`](account-management.md) / [`net-worth.md`](net-worth.md) — owners of `app.account_settings` and `app.balance_assertions` respectively.
-- [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — owns `app.match_decisions`; routing decision discussed in [Open Questions](#open-questions).
+- [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — owns `app.match_decisions`; routing decision recorded in [Resolved Design Decisions](#resolved-design-decisions) §1.
 - [`moneybin-doctor.md`](moneybin-doctor.md) — adds new `app.*` invariants per [Requirement 9](#requirements).
 
 ## Requirements
@@ -98,7 +98,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 7. **Exempt tables.** `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`. These are named in Invariant 9 and allowlisted in the lint rule.
 
-8. **Lint rule.** A static check rejects `execute(...)` calls whose SQL literal matches `INSERT INTO app\.X|UPDATE app\.X|DELETE FROM app\.X` for any protected `X`, unless the enclosing module is `*_repo.py` or `audit_service.py`. The check MUST handle the project's `f"INSERT INTO {TABLEREF.full_name} …"` pattern by matching against the resolved schema-qualified name (TableRef constants are statically resolvable). Implementation approach (ruff plugin vs pytest) is decided during a one-day spike at the start of Phase 1 (see [Open Questions](#open-questions)).
+8. **Lint rule.** A static check rejects `execute(...)` calls whose SQL literal matches `INSERT INTO app\.X|UPDATE app\.X|DELETE FROM app\.X` for any protected `X`, unless the enclosing module is `*_repo.py` or `audit_service.py`. The check MUST handle the project's `f"INSERT INTO {TABLEREF.full_name} …"` pattern by matching against the resolved schema-qualified name (TableRef constants are statically resolvable). Implementation approach (ruff plugin vs pytest) is decided during a one-day spike at the start of Phase 1 (see [Resolved Design Decisions](#resolved-design-decisions) §4).
 
 9. **Doctor invariants.** `moneybin doctor` adds per-table checks for each protected table:
 
@@ -209,12 +209,12 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 
 ### PR 8 — `MatchDecisionsRepo`
 
-- `matching/persistence.py:70, 154, 172` → `MatchDecisionsRepo`. Routing decision confirmed in [Open Questions](#open-questions) §1.
+- `matching/persistence.py:70, 154, 172` → `MatchDecisionsRepo`. Routing decision confirmed in [Resolved Design Decisions](#resolved-design-decisions) §1.
 - Doctor invariant: audit coverage; FK on transaction-id columns where applicable.
 
 ### PR 9 — `BalanceAssertionsRepo`
 
-- `balance_service.py:151, 170` → `BalanceAssertionsRepo`. Not in the original plan; identified during spec drafting (see [Open Questions](#open-questions) §3).
+- `balance_service.py:151, 170` → `BalanceAssertionsRepo`. Not in the original plan; identified during spec drafting (see [Resolved Design Decisions](#resolved-design-decisions) §3).
 - Doctor invariant: audit coverage; FK from `account_id` to `core.dim_accounts`.
 
 ### PR 10 — `BudgetsRepo`
