@@ -404,7 +404,9 @@ def test_validate_reports_errors_on_raise(
 
     assert v.valid is False
     assert len(v.errors) == 1
-    assert "model parse error" in v.errors[0]["message"]
+    # message is the exception type name, not str(e) — see transform_service.validate
+    # docstring for the PII-safety rationale.
+    assert v.errors[0]["message"] == "RuntimeError"
 
 
 def test_audit_aggregates_pass_fail_counts(

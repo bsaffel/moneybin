@@ -1209,11 +1209,14 @@ class ImportService:
                 duration_seconds=apply_result.duration_seconds,
             )
         except Exception as e:  # noqa: BLE001 — surface transform error in envelope
-            logger.warning(f"Transform apply failed after batch import: {e}")
+            error_type = type(e).__name__
+            # error_type only: SQLMesh error messages can embed file paths and
+            # SQL fragments containing user data.
+            logger.warning(f"Transform apply failed after batch import: {error_type}")
             return PostImportHookResult(
                 applied=False,
                 duration_seconds=None,
-                error=str(e),
+                error=error_type,
             )
 
     def import_files(

@@ -10,6 +10,7 @@ from moneybin.database import Database, check_core_schema_drift
 from moneybin.services.categorization_service import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.review_service import ReviewService
+from moneybin.services.transform_service import TransformService
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,6 @@ class SystemService:
 
     def status(self) -> SystemStatus:
         """Return a current snapshot of data inventory and pending queue counts."""
-        # Function-local import mirrors ImportService.run_transforms() to avoid
-        # a top-level cycle between system/transform service modules.
-        from moneybin.services.transform_service import TransformService
-
         accounts_count = self._count_accounts()
         transactions_count, min_date, max_date = self._query_transactions()
         last_import_at = self._last_import_at()

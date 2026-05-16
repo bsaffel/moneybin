@@ -232,7 +232,9 @@ class TransformService:
             with sqlmesh_context(self._db) as ctx:
                 ctx.plan_builder().build()
         except Exception as e:  # noqa: BLE001 — SQLMesh raises a variety of parse/resolve errors
-            errors.append({"model": "<unknown>", "message": str(e)})
+            # type(e).__name__ instead of str(e): SQLMesh error messages can
+            # embed file paths and SQL fragments containing user data.
+            errors.append({"model": "<unknown>", "message": type(e).__name__})
         return ValidationResult(valid=not errors, errors=errors)
 
     def audit(self, start: str, end: str) -> AuditResult:
@@ -273,6 +275,8 @@ class TransformService:
                             })
                             passed += 1
         except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as one failed audit
+            # type(e).__name__ instead of str(e): SQLMesh error messages can
+            # embed file paths and SQL fragments containing user data.
             return AuditResult(
                 passed=0,
                 failed=1,
@@ -280,7 +284,7 @@ class TransformService:
                     {
                         "name": "<audit invocation>",
                         "status": "failed",
-                        "detail": str(e),
+                        "detail": type(e).__name__,
                     }
                 ],
             )
