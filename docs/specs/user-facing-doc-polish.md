@@ -145,12 +145,12 @@ None. This spec does not exercise the data pipeline.
 
 ## Out of Scope
 
-- **Static landing page** at `moneybin.dev` (or chosen domain). Tracked separately in `distribution-roadmap.md` as a M2C deliverable; not an in-repo artifact.
+- **Static landing page** at `moneybin.dev` (or chosen domain). Deferred to the *Public preview prerequisites* section of `docs/roadmap.md` as of 2026-05-16 — no longer a M2C deliverable; gated on the founder reopening the public-preview posture question. Not an in-repo artifact regardless.
 - **The architecture-shared-primitives spec itself** (`architecture-shared-primitives.md` — M2B). This spec only consumes its output via the `docs/architecture.md` distillation.
 - **`brew install` formula authoring and PyPI publish workflow.** Tracked in `distribution-roadmap.md` as M2C deliverables. This spec only updates the README's Quick Start framing to reflect them.
-- **Demo asciinema cast production.** Acknowledged here as forward-pointer; the actual recording and embedding ship at M2C close.
+- **Demo asciinema cast production.** Deferred to *Public preview prerequisites* as of 2026-05-16 (was an M2C-close item; cut along with the landing page).
 - **Telemetry / version-check / opt-in metrics in the package.** Tracked in `distribution-roadmap.md` §6 as post-launch consideration.
 - **Internationalization or translations.** No multi-language docs in scope at launch.
-- **Marketing-site copy beyond the README.** Out of repo; covered by M2C landing-page work.
+- **Marketing-site copy beyond the README.** Out of repo; covered by the deferred public-preview work.
 - **Mobile / responsive treatment of the in-repo docs.** README is read on GitHub, which handles this.
 - **First-class splits, envelope budgeting, ML categorization documentation.** Those features are parked or post-launch; their docs land when (and if) they ship.

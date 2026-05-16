@@ -12,7 +12,7 @@ MoneyBin's pre-launch plan is organized as **milestones**: M0 through M3, each w
 | **M1** | Data Integrity | — | ✅ shipped |
 | **M2A** | Curator State | — | 🚧 in flight |
 | **M2B** | Architecture Reference | — | 🚧 in flight |
-| **M2C** | Brand Surface + Distribution | — | 🚧 in flight |
+| **M2C** | Install & Onboarding | — | 🚧 in flight |
 | **M3A** | Plaid Transactions sync | Domain | ✅ shipped |
 | **M3B** | Investment tracking | Domain | 📐 designed |
 | **M3C** | Multi-currency + budget rollovers | Domain | 📐 designed |
@@ -80,19 +80,21 @@ Includes a **writer-coordination contract**: sync, MCP, and the local Web UI (M2
 
 Reference doc all M3 specs cite rather than re-deriving. Spec: `architecture-shared-primitives.md` (planned).
 
-#### M2C — Brand Surface + Distribution
+#### M2C — Install & Onboarding
 
-The launchable beachhead — `brew install moneybin` works end-to-end on a clean Mac:
+The installable beachhead — `brew install moneybin` works end-to-end on a clean Mac, and an evaluator who lands on the repo can get to a useful first answer without external hand-holding:
 
-- `moneybin doctor` — continuous integrity check (FK invariants, sign convention, balanced transfers, reconciliation deltas). Designed as the trust artifact: "✅ N invariants passing across M transactions." This is the surfaced form of *integrity by construction* — the brand's load-bearing claim.
+- `moneybin doctor` — continuous integrity check (FK invariants, sign convention, balanced transfers, reconciliation deltas). Designed as the trust artifact: "✅ N invariants passing across M transactions." This is the surfaced form of *integrity by construction* — the brand's load-bearing claim. An invariant audit + gap-fill against the architecture spec is tracked as an internal roadmap-review follow-up.
 - `reports.*` SQLMesh recipe library (`cash_flow`, `recurring_subscriptions`, `year_over_year_spending`, `top_merchants`, `uncategorized_queue`, `balance_drift`)
 - `moneybin demo` — instant synthetic-data preset
-- Monthly-ritual MCP prompts (close the month, anomaly walk-through, recurring review, uncategorized walkthrough)
 - First-run wizard
-- **Web UI prototype** (FastAPI + React, narrow scope): AI-categorization-proposal review queue + transactions list. Treated as the first iteration of the M3D UI, not throwaway. Stress-tests the writer-coordination architecture (M2B) under real concurrent load before M3A and M3D depend on it. Spec: `web-ui-prototype.md` (planned).
-- 📐 `smart-import-transform` — close the agent ingest loop: ship 5 `transform_*` MCP tools, batch `import_files`, `system_status.transforms` freshness block.
+- **Web UI prototype** (FastAPI + React, narrow scope): AI-categorization-proposal review queue + transactions list. Treated as the first iteration of the M3D UI, not throwaway. Stress-tests the writer-coordination architecture (M2B) under real concurrent load before M3A and M3D depend on it. **Scope is being narrowed** (internal roadmap review, 2026-05-16) — specific cuts pending and tracked as follow-up work. Spec: `web-ui-prototype.md` (planned).
+- 📐 `smart-import-transform` — close the agent ingest loop: ship 5 `transform_*` MCP tools, batch `import_files`, `system_status.transforms` freshness block. ✅ shipped.
 - PyPI publish workflow + Homebrew formula
-- Static landing page + 60-second demo video
+- README quickstart tightening + `docs/guides/setting-up-claude-desktop.md` — covers the genuinely confusing MCP-client setup step (internal roadmap review, replaces the earlier `moneybin tutorial` command proposal).
+- `docs/architecture.md` one-pager (closes M2B; structure: guarantees → diagram → read/write contract → negative space; internal roadmap review).
+
+**Cut from M2C scope (2026-05-16):** static landing page and 60-second demo video. These are *public-preview* surfaces and are intentionally deferred — the founder's stance is that the product reaches maturity before any external preview. Tracked in the *Public preview prerequisites* section below; revisit when launch posture is reopened. Monthly-ritual MCP prompts also cut from M2C scope — replaced by a single anomaly-detection tool (internal roadmap review; tracked in `docs/specs/INDEX.md`).
 
 Spec: [`docs/specs/user-facing-doc-polish.md`](specs/user-facing-doc-polish.md) (already shipped) plus `web-ui-prototype.md` (planned).
 
@@ -119,6 +121,18 @@ Two parallel tracks. Both must close for M3E (and launch).
 - **MCP Apps** (interactive UI inside Claude Desktop, VS Code, etc.). Revisit when client support widens.
 - **Mobile read-only viewer.**
 - **Export** (CSV, Excel, Google Sheets).
+
+## Public preview prerequisites
+
+A set of artifacts is intentionally deferred until the founder decides to expose MoneyBin to a large external audience. These are *not* feature work — they're presentation-and-distribution surfaces. They sit outside the M0–M3E milestone graph because they're gated on a posture decision, not on engineering work:
+
+- Static landing page (one-page brand + value-prop surface)
+- 60-second demo video / asciinema cast
+- AGPL + encryption visuals (icon cards or screenshots reinforcing the trust story)
+- README hoist of `moneybin doctor` as the lead trust artifact (if the README ever becomes a top funnel)
+- Show HN / external preview posture (anonymous vs. Auth0-attributed, etc.)
+
+Status decision (2026-05-16): no urgency. The product reaches the maturity bar first; preview surfaces get built when the founder reopens the launch question. Anything in this list that lands earlier should be on its own merit, not on launch-readiness grounds.
 
 ## Sub-milestone parallelism
 
@@ -160,7 +174,7 @@ M2A and M2B run in parallel (different cognitive modes). M2C depends on both —
 |---|---|
 | M2A | `transaction-curation.md` ships and curator-state features are usable end-to-end |
 | M2B | `architecture-shared-primitives.md` is published and the public distillation lands at `docs/architecture.md` |
-| M2C | `brew install moneybin && moneybin demo` works on a clean Mac with a clean `moneybin doctor` output, the Web UI prototype runs at `moneybin ui` and lets a user review AI-categorization proposals end-to-end, and the landing page is live |
+| M2C | `brew install moneybin && moneybin demo` works on a clean Mac with a clean `moneybin doctor` output, the Web UI prototype (descoped per internal roadmap review) runs at `moneybin ui` and lets a user review AI-categorization proposals end-to-end, the README quickstart + Claude Desktop guide carry a new user from zero to a first MCP answer, and `docs/architecture.md` ships as the one-page public distillation |
 | M3A | Plaid Production is approved and a first user syncs from a real bank |
 | M3B | Investment cost-basis numbers tie to at least one broker's official 1099-B for a full tax year |
 | M3C | A non-USD user can import multi-currency transactions, see home-currency equivalents, and FX gain/loss on a deliberate round-trip ties to bank-statement-derived expectation within $0.01 |

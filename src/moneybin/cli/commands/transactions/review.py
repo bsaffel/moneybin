@@ -1,6 +1,6 @@
 """Unified review queue: walks pending matches + uncategorized transactions.
 
-CLI-only collapse (per cli-restructure.md v2). MCP keeps separate
+CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
 ``transactions_matches_pending`` and ``transactions_categorize_pending_list``
 tools because their result shapes differ; the orientation tool
 ``transactions_review_status`` returns the counts.
@@ -60,11 +60,11 @@ def transactions_review(
 
     if confirm_id or reject_id or confirm_all:
         _not_implemented(
-            "cli-restructure.md (review collapse — non-interactive flags pending)"
+            "moneybin-cli.md (review collapse — non-interactive flags pending)"
         )
         return
 
-    _not_implemented("cli-restructure.md (review collapse — interactive loop pending)")
+    _not_implemented("moneybin-cli.md (review collapse — interactive loop pending)")
 
 
 def _print_status(type_: str, output: OutputFormat) -> None:

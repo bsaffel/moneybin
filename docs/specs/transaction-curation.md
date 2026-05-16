@@ -26,9 +26,9 @@ This spec ships the bundle as a single coherent surface. It is the lead M2A spec
 - [`categorization-overview.md`](categorization-overview.md) / [`categorization-auto-rules.md`](categorization-auto-rules.md) — `app.transaction_categories`, priority hierarchy, auto-rule training. This spec extends the auto-rule training query.
 - [`smart-import-tabular.md`](smart-import-tabular.md) — `raw.tabular_transactions` shape, `Database.ingest_dataframe()`, `raw.import_log` lifecycle. Manual entry mirrors this flow.
 - [`smart-import-financial.md`](smart-import-financial.md) — reversible imports via `import_id`. Manual entries are reversible by the same mechanism.
-- [`mcp-architecture.md`](mcp-architecture.md) / [`mcp-tool-surface.md`](mcp-tool-surface.md) — MCP v2 conventions, sensitivity tiers, response envelopes.
+- [`mcp-architecture.md`](mcp-architecture.md) / [`moneybin-mcp.md`](moneybin-mcp.md) — MCP v2 conventions, sensitivity tiers, response envelopes.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. New curation columns and tables register here.
-- [`cli-restructure.md`](cli-restructure.md) — CLI v2 entity-group taxonomy. New commands land under `transactions`, `import`, `system`.
+- [`moneybin-cli.md`](moneybin-cli.md) — CLI v2 entity-group taxonomy. New commands land under `transactions`, `import`, `system`.
 - [`net-worth.md`](net-worth.md) — balance-level reconciliation. This spec defers per-transaction reconciliation (the "verified" concept) to a future transaction-reconciliation spec; coordinates an Out-of-Scope addition there.
 - [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) — `app.ai_audit_log` schema. This spec subsumes that table into the unified `app.audit_log` and updates the privacy spec accordingly.
 - [`testing-synthetic-data.md`](testing-synthetic-data.md) — persona YAML format. This spec ships a new "curator" persona.
@@ -72,7 +72,7 @@ When write volume is low (e.g., import labels — once per batch, rarely edited)
 - **Symmetry contract**: any capability reachable from one surface is reachable from the other. The translation lives in the service layer, not in surface-specific business logic.
 - **When NOT to declarative-set**: when individual ops have distinct semantics that don't collapse into a target-state representation. Notes (`add`/`edit`/`delete` operate on individual `note_id`s with separate audit semantics) keep imperative verbs in both CLI and MCP.
 
-A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) is recommended for `mcp-tool-surface.md` v2 — several existing toggles (`accounts_include`, `accounts_archive`, `categories_toggle`) are candidates for declarative-set consolidation.
+A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) is recommended for `moneybin-mcp.md` v2 — several existing toggles (`accounts_include`, `accounts_archive`, `categories_toggle`) are candidates for declarative-set consolidation.
 
 ## Requirements
 
@@ -415,7 +415,7 @@ Verification (the deferred curator badge — see §Out of Scope) would have prom
 
 ## CLI Interface
 
-All commands follow `cli-restructure.md` v2 conventions: path-prefix-verb-suffix, plural top-level groups, singular sub-resource nouns, imperative leaf verbs, universal flags (`--profile`, `--verbose`, `--output`, `--yes`).
+All commands follow `moneybin-cli.md` v2 conventions: path-prefix-verb-suffix, plural top-level groups, singular sub-resource nouns, imperative leaf verbs, universal flags (`--profile`, `--verbose`, `--output`, `--yes`).
 
 ### `transactions create` — manual entry (single)
 
@@ -513,7 +513,7 @@ Per `feedback_cli_function_naming.md` and `.claude/rules/cli.md`: Typer subgroup
 
 ## MCP Interface
 
-Per `mcp-architecture.md` and `mcp-tool-surface.md` v2: path-prefix-verb-suffix names, sensitivity tiers, response envelopes, write-tool confirmation conventions.
+Per `mcp-architecture.md` and `moneybin-mcp.md` v2: path-prefix-verb-suffix names, sensitivity tiers, response envelopes, write-tool confirmation conventions.
 
 Nine new tools, two prompts, one new resource and two extended. Catalog grows from ~33 to ~42 — comfortably under the 50-tool friction line.
 
@@ -563,7 +563,7 @@ Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. C
 | `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions list` → `transactions_tags_set` / `transactions_notes_add` in a loop. |
 | `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit_list`. |
 
-Pure prompt content; no schema work. Aligned with the curator-segment "monthly-ritual prompt" theme.
+Pure prompt content; no schema work. These two prompts wrap the curation-specific tools and remain in scope on their own merit (curator-segment ritual surfaces); the broader "monthly-ritual prompt set" idea was retired 2026-05-16 in favor of a tool-first `reports-anomaly-detection.md` (internal roadmap review).
 
 ### Privacy and sensitivity
 
@@ -741,11 +741,11 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 - SQLMesh: existing model infrastructure; no new SQLMesh primitives needed
 - Existing services: `TransactionService`, `ImportService`, `CategorizationService`, `AutoRuleService`, matching engine
 - Existing infrastructure: `Database`, `TableRef`, `MoneyBinSettings`, `SanitizedLogFormatter`, `@mcp_tool` decorator + privacy middleware, `@tracked` / `track_duration`
-- Cross-spec dependencies: `matching-same-record-dedup.md` (gold-key contract), `categorization-overview.md` (priority hierarchy contract), `smart-import-tabular.md` (raw column shape, `Database.ingest_dataframe`), `cli-restructure.md` v2 (CLI/MCP taxonomy), `mcp-architecture.md` (sensitivity tiers, response envelopes), `mcp-tool-surface.md` v2 (in-progress; this spec contributes the declarative-set pattern)
+- Cross-spec dependencies: `matching-same-record-dedup.md` (gold-key contract), `categorization-overview.md` (priority hierarchy contract), `smart-import-tabular.md` (raw column shape, `Database.ingest_dataframe`), `moneybin-cli.md` v2 (CLI/MCP taxonomy), `mcp-architecture.md` (sensitivity tiers, response envelopes), `moneybin-mcp.md` v2 (in-progress; this spec contributes the declarative-set pattern)
 
 ## Out of Scope
 
-- **Verified curator flag.** Per-transaction trusted-data markers (cleared / reconciled / curator-attested) are dropped from this spec. The primary reason is brand-narrative: a per-row `verified` flag creates an implicit "unverified" category that the user must worry about, undermining MoneyBin's "integrity by construction" claim. Manually grooming each row to assert correctness is also a poor workflow at any meaningful volume. The trust-narrative work belongs on system-asserted invariants surfaced through `moneybin doctor` (M2C) — continuous integrity checks (FK, sign convention, balanced transfers, reconciliation deltas) producing a "✅ N invariants passing across M transactions" artifact. The secondary reason for dropping the flag is overlap with future transaction-level reconciliation: when *that* spec is designed, decisions about "does cleared count as trusted?" / "do auto-rule training and re-cat protection ride on cleared, reconciled, or a separate curator badge?" should be made together with a different vocabulary (`reconciled` / `matched_to_statement`) that doesn't collide with the integrity-by-construction framing. Cross-link from `net-worth.md` Out of Scope.
+- **Verified curator flag.** Per-transaction trusted-data markers (cleared / reconciled / curator-attested) are dropped from this spec. The primary reason is brand-narrative: a per-row `verified` flag creates an implicit "unverified" category that the user must worry about, undermining MoneyBin's "integrity by construction" claim. Manually grooming each row to assert correctness is also a poor workflow at any meaningful volume. The trust-narrative work belongs on system-asserted invariants surfaced through `moneybin doctor` (M2C) — continuous integrity checks (FK, sign convention, balanced transfers, reconciliation deltas) producing a "✅ N invariants passing across M transactions" artifact. The secondary reason for dropping the flag is overlap with future transaction-level reconciliation: when *that* spec is designed, decisions about "does cleared count as trusted?" / "do auto-rule training and re-cat protection ride on cleared, reconciled, or a separate curator badge?" should be made together with a different vocabulary (`reconciled` / `matched_to_statement`) that doesn't collide with the integrity-by-construction framing. Cross-link from `net-worth.md` Out of Scope. **Re-confirmed 2026-05-16** (internal roadmap review): the doctor pivot is the correct trust artifact; a verified flag would create a soft-gating UX problem that doctor sidesteps. Do not reverse.
 - **First-class splits.** `app.transaction_splits` and the `core.fct_transactions.splits LIST(STRUCT)` shape are designed to evolve into first-class splits without a schema fork. The evolution itself is its own spec — owned by whichever future work surfaces split-aware imports (e.g., Plaid line items) or split-aware budgeting.
 - **Transaction attachments / receipts.** Deferred until a UI surface exists. Receipt blob storage outside the encrypted DuckDB file is its own design problem.
 - **Category-id migration.** `app.transaction_splits.category` stays VARCHAR, matching how `app.transaction_categories` stores categories today. A future spec migrates both to `category_id` references when categories become first-class entities.
@@ -758,6 +758,6 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 
 ### Follow-ups
 
-- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. An MCP-vocabulary audit pass is added to `mcp-tool-surface.md` v2's remaining work (candidates: `accounts_include`, `accounts_archive`, `categories_toggle`).
-- Future `mcp-ux-standards.md` (in `cli-restructure.md`'s "Future Specs to Add") lifts the declarative-set principle from this spec's §Architectural Pattern.
+- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. An MCP-vocabulary audit pass is added to `moneybin-mcp.md` v2's remaining work (candidates: `accounts_include`, `accounts_archive`, `categories_toggle`).
+- Future `mcp-ux-standards.md` (in `moneybin-cli.md`'s "Future Specs to Add") lifts the declarative-set principle from this spec's §Architectural Pattern.
 - Future `architecture-shared-primitives.md` formalizes the `app.*` schema layer in `AGENTS.md` and the LIST/STRUCT presentation pattern in `.claude/rules/database.md`.

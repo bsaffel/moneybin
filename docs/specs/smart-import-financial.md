@@ -285,7 +285,7 @@ moneybin import history --limit 10
 moneybin import revert abc12345-...
 ```
 
-Removed: `moneybin data extract ofx ...` (the legacy command path). Replaced by the unified `moneybin import` golden path per `cli-restructure.md`. The legacy command is already aliased; this spec finalizes its removal.
+Removed: `moneybin data extract ofx ...` (the legacy command path). Replaced by the unified `moneybin import` golden path per `moneybin-cli.md`. The legacy command is already aliased; this spec finalizes its removal.
 
 ## MCP Interface
 

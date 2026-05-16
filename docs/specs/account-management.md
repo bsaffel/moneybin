@@ -11,7 +11,7 @@ Own the `accounts` entity namespace end-to-end for v1: list/show, user-controlle
 
 `core.dim_accounts` is built from upstream sources (OFX statements, tabular imports, Plaid in the future). The dimension is correct for *what the institution says*, but it lacks anything the *user* needs to decide about an account: a friendly name, whether to show it in the default account list, whether to count it in net worth, and the structural metadata (subtype, holder category, currency, credit limit) that Plaid surfaces but OFX/tabular sources don't.
 
-The v1 surface has no answer for any of this. Users see raw account IDs, every account counts toward net worth, and there is no place to record metadata that isn't carried by the import. The [v2 CLI restructure](cli-restructure.md) introduces the `accounts` top-level group as the home for these workflows; this spec defines what lives there.
+The v1 surface has no answer for any of this. Users see raw account IDs, every account counts toward net worth, and there is no place to record metadata that isn't carried by the import. The [v2 CLI restructure](moneybin-cli.md) introduces the `accounts` top-level group as the home for these workflows; this spec defines what lives there.
 
 Net worth ([`net-worth.md`](net-worth.md)) ships in the same release because the two specs share the `accounts` namespace and the `app.account_settings` table. Splitting them would mean two churning passes over the same files and a half-formed `accounts` group landing first. See [`net-worth.md` §Coordination](net-worth.md#coordination-with-account-managementmd) for the artifact ownership table.
 
@@ -19,8 +19,8 @@ The metadata schema mirrors **Plaid's account model** (Plaid Parity), so when [`
 
 Related specs and docs:
 - [`net-worth.md`](net-worth.md) — consumes `app.account_settings.include_in_net_worth` and `archived` for `agg_net_worth`; ships bundled with this spec
-- [`cli-restructure.md`](cli-restructure.md) v2 — defines the `accounts` top-level group; this spec extends with `archive` / `unarchive` / `set` (cli-restructure.md amendment landed alongside)
-- [`mcp-tool-surface.md`](mcp-tool-surface.md) v2 — `accounts_list` / `accounts_get` already enumerated; this spec adds the entity-mutation tools and `accounts_summary`
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — defines the `accounts` top-level group; this spec extends with `archive` / `unarchive` / `set` (moneybin-cli.md amendment landed alongside)
+- [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `accounts_list` / `accounts_get` already enumerated; this spec adds the entity-mutation tools and `accounts_summary`
 - [`privacy-data-protection.md`](privacy-data-protection.md) — settings table encrypted at rest; `last_four` and `credit_limit` are PII-adjacent and require sensitivity-tier handling
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 
@@ -175,7 +175,7 @@ moneybin accounts set <account_id>
 
 ## MCP Interface
 
-Naming follows [`mcp-tool-surface.md`](mcp-tool-surface.md) v2 (path-prefix-verb-suffix).
+Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix).
 
 ### Read tools
 
@@ -289,8 +289,8 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 - [`net-worth.md`](net-worth.md) — bundled co-release; consumes `app.account_settings.include_in_net_worth` and `archived`. Owns `accounts balance *` subcommands within `accounts.py`.
 - [`database-migration.md`](database-migration.md) — new table requires migration entry
 - [`privacy-data-protection.md`](privacy-data-protection.md) — `last_four` and `credit_limit` are PII-adjacent; sensitivity-tier handling enforced
-- [`mcp-tool-surface.md`](mcp-tool-surface.md) — registration of new write tools and sensitivity tiers
-- [`cli-restructure.md`](cli-restructure.md) v2 — defines `accounts` parent group; this spec extends with `archive` / `unarchive` / `set`
+- [`moneybin-mcp.md`](moneybin-mcp.md) — registration of new write tools and sensitivity tiers
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — defines `accounts` parent group; this spec extends with `archive` / `unarchive` / `set`
 - `core.dim_accounts` — extended to be the single resolved source of truth (per Requirement 7)
 
 ## Out of Scope
@@ -330,13 +330,13 @@ Tests:
 - `src/moneybin/sql/schema.py` — register `app_account_settings.sql`
 - `src/moneybin/services/account_service.py` — add settings CRUD, soft-validation classifier, summary aggregator; extend list / show / get with new fields
 - `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`net-worth.md`](net-worth.md) hasn't already (the two specs split the cleanup)
-- `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `cli-restructure.md` v2)
+- `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `moneybin-cli.md` v2)
 - `sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
 - `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary`, `accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_settings_update`; extend `accounts_list` with `redacted` param and revised sensitivity
 - `src/moneybin/mcp/resources/` — add `accounts://summary` resource
 - `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers
-- `docs/specs/cli-restructure.md` — amend the `accounts` subtree to include `archive` / `unarchive` / `set`
-- `docs/specs/mcp-tool-surface.md` — add the new `accounts_*` write tools and `accounts_summary` to the surface tables
+- `docs/specs/moneybin-cli.md` — amend the `accounts` subtree to include `archive` / `unarchive` / `set`
+- `docs/specs/moneybin-mcp.md` — add the new `accounts_*` write tools and `accounts_summary` to the surface tables
 - `docs/specs/INDEX.md` — flip status to `in-progress` on entry; flip to `implemented` when shipped
 - `.claude/rules/database.md` — strengthen with a new rule: "core dimensions are the single source of truth for entity attributes — when app-layer metadata refines or overrides a dim, join it into the core dim model itself, never duplicate join logic in consumers." Cite this spec as the precedent.
 

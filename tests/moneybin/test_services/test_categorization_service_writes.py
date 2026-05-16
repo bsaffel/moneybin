@@ -417,7 +417,7 @@ class TestCreateRules:
         """Same matcher with a different category is currently treated as a new rule.
 
         Conflict detection (same matcher, divergent output) is a deferred
-        follow-up — see docs/specs/mcp-tool-surface.md "Rule-conflict
+        follow-up — see docs/specs/moneybin-mcp.md "Rule-conflict
         detection (follow-up)".
         """
         svc = CategorizationService(db)

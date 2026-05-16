@@ -3,7 +3,7 @@
 > Last updated: 2026-04-26
 > Status: Implemented
 > Parent: [`categorization-overview.md`](categorization-overview.md) (pillar E)
-> Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: source-precedence enforcement on write, snowball auto-apply, `match_text` and exemplar accumulator that auto-rule writes interoperate with), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: source-precedence enforcement on write, snowball auto-apply, `match_text` and exemplar accumulator that auto-rule writes interoperate with), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`moneybin-mcp.md`](moneybin-mcp.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Goal
 

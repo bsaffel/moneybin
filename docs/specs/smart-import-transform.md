@@ -19,7 +19,7 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 ## Requirements
 
 1. Five MCP `transform_*` tools (`status`, `plan`, `validate`, `audit`, `apply`) return structured response envelopes per `mcp-server.md`. `transform_restate` stays CLI-only.
-2. `import_file` MCP tool is renamed to `import_files` and accepts `paths: list[str]`. The legacy singular name is removed (pre-1.0; surface-change discipline applied via CHANGELOG and `mcp-tool-surface.md` updates).
+2. `import_file` MCP tool is renamed to `import_files` and accepts `paths: list[str]`. The legacy singular name is removed (pre-1.0; surface-change discipline applied via CHANGELOG and `moneybin-mcp.md` updates).
 3. `import_files` runs `transform_apply` once at end-of-batch by default. Caller opts out by passing `apply_transforms=False`.
 4. Per-file failures inside an `import_files` call do not abort the batch. The transform apply runs if at least one file succeeded; skipped if zero succeeded.
 5. If `transform_apply` itself fails after successful imports, raw rows stay durable; the envelope reports `transforms_applied=false` with a generic `transforms_error` message and an action hint to retry.
@@ -73,7 +73,7 @@ No schema changes. The spec leans on three existing columns/tables:
 - `src/moneybin/cli/commands/transform.py` — switch from inline `sqlmesh_context` blocks to `TransformService` calls; add `--output json` to each command using the standard envelope.
 - `src/moneybin/cli/commands/import_cmd.py` — rename leaf command, accept variadic paths, add `--no-apply-transforms`.
 - `src/moneybin/metrics/registry.py` — add `IMPORT_BATCH_SIZE` histogram.
-- `docs/specs/mcp-tool-surface.md` — §1530 status update (transform_* shipped); §import_* renamed entry.
+- `docs/specs/moneybin-mcp.md` — §1530 status update (transform_* shipped); §import_* renamed entry.
 - `docs/specs/INDEX.md` — new row under MCP section, status `draft` → `ready` → `in-progress` → `implemented` across the lifecycle.
 - `docs/roadmap.md` — entry under the current milestone.
 - `docs/features.md` — MCP tools list + CLI list.
@@ -232,7 +232,7 @@ flowchart TD
 
 - `prep.stg_plaid__accounts` errors when the Plaid raw schema is empty/absent. Tracked separately as a staging-view-resilience follow-up.
 - Adding `updated_at` row metadata to `fct_transactions`, `dim_categories`, `dim_merchants` for consistency with `dim_accounts`. Tracked separately; not needed by this spec (only `dim_accounts.updated_at` is read).
-- `transform_restate` MCP exposure — remains CLI-only per existing operator-territory policy in `mcp-tool-surface.md`.
+- `transform_restate` MCP exposure — remains CLI-only per existing operator-territory policy in `moneybin-mcp.md`.
 - Scheduled/cron-style transform reruns — not needed once batch-boundary auto-apply works.
 - Capturing SQLMesh stdout. The Python API provides structured objects; stdout capture is neither attempted nor required.
 - Auto-running transforms on schema-drift detection. The `transform_apply` MCP/CLI surface this spec ships is the remediation path; drift detection only makes the problem loud and actionable.

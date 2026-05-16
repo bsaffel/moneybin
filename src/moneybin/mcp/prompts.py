@@ -4,7 +4,7 @@ Goal-oriented prompts that guide AI assistants through financial workflows.
 Each defines a goal, relevant tools, guardrails, and decision points —
 not step-by-step scripts.
 
-See ``mcp-tool-surface.md`` section 14.
+See ``moneybin-mcp.md`` section 14.
 """
 
 from __future__ import annotations

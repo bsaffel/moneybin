@@ -2,6 +2,41 @@
 
 Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP server.
 
+## Guiding Principle: Build the Inevitable Choice
+
+Be what `uv` and `ruff` are for Python tooling — the option a serious user
+converges on because the foundation is rock-solid. Not first, not fastest to
+ship. **Inevitable.** A longer development lifecycle is acceptable when it
+buys durability.
+
+Three axes, distinct from "Simplicity First" below:
+
+- **Path selection (this principle):** For one-way-door choices (public
+  contracts, security postures, critical-path deps — see
+  `.claude/rules/design-principles.md` for the trigger list and launch
+  trigger), default to the path that still feels right in five years,
+  even if it costs months more. Pre-launch: iterate. Post-launch: lock
+  hard.
+- **Coherence (every change):** When adding new X, follow the existing
+  pattern for X. If the pattern is wrong, fix it everywhere — don't
+  introduce a parallel pattern beside it. Two patterns for the same job is
+  the single largest source of codebase rot.
+- **Scope discipline ("Simplicity First"):** Two-way doors (internal
+  abstractions, module boundaries, refactors behind a stable contract) get
+  the minimum code that solves the problem. No protocol.
+
+**Agent protocol for one-way-door decisions:** Surface both paths. Name
+each cost concretely (time, surface area, migration risk). Recommend the
+durable path; state what durability costs. Use the worked example in
+`.claude/rules/design-principles.md` as the output template. Wait for
+explicit override before taking the fast path — or, in subagent /
+autonomous-loop contexts with no user, default to durable and document
+the choice for the parent. If you can't tell whether a decision is
+one-way: treat it as one-way and invoke.
+
+Heuristics, trigger list, the public-contract / internal-abstraction split,
+and the coherence rule: `.claude/rules/design-principles.md`.
+
 ## Think Before Coding
 Don't assume. Don't hide confusion. Surface tradeoffs.
 
@@ -125,6 +160,7 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 
 | Rule | Covers |
 |------|--------|
+| `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions and the trigger list for the agent protocol |
 | `shipping.md` | Post-implementation checklist: README updates, roadmap icons, `/simplify` pre-push pass |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |

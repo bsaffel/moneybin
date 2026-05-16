@@ -18,7 +18,7 @@ Design the first-run categorization experience: how a brand-new MoneyBin install
 - Downstream: [`categorization-auto-rules.md`](categorization-auto-rules.md) — auto-rules feed off cold-start categorizations
 - Layered on: [`categorize-bulk.md`](categorize-bulk.md) — the bulk categorize tool this spec wraps with a first-run prompt layer
 - Privacy alignment: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) — redaction aligns with this consent model
-- Tool registration: [`mcp-tool-surface.md`](mcp-tool-surface.md) — new MCP tools register here
+- Tool registration: [`moneybin-mcp.md`](moneybin-mcp.md) — new MCP tools register here
 - Architecture rules: `.claude/rules/mcp-server.md`, `.claude/rules/cli.md`, `.claude/rules/database.md`
 
 The categorization overview commits to several v1 bootstrap strategies (migration imports, Plaid pass-through) and acknowledges LLM-assist categorization as the lowest-priority solver in the precedence ladder. What's missing — and what this spec addresses — is the cold-start *workflow* that ties these solvers together for first-run, plus the PII redaction contract that makes LLM-assist privacy-defensible.

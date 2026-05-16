@@ -15,7 +15,7 @@ The dividing line between assets and investments: **if the value comes from a ma
 
 Related specs and docs:
 - [`net-worth.md`](net-worth.md) — balance tracking and `agg_net_worth`; this spec extends it to include physical assets
-- [`cli-restructure.md`](cli-restructure.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `core.agg_net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `core.agg_net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data encrypted at rest via `Database` class
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 - [`mcp-architecture.md`](mcp-architecture.md) — tool taxonomy and response envelope conventions
@@ -238,7 +238,7 @@ Staleness is informational only — never blocks queries or omits stale assets f
 
 ## CLI Interface
 
-All commands under `assets`, following [`cli-restructure.md`](cli-restructure.md). All support `--output json` for non-interactive parity.
+All commands under `assets`, following [`moneybin-cli.md`](moneybin-cli.md). All support `--output json` for non-interactive parity.
 
 ### Asset management
 
@@ -400,7 +400,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 - [`net-worth.md`](net-worth.md) — `agg_net_worth` view is extended; this spec cannot ship before or independently of net worth
 - [`database-migration.md`](database-migration.md) — new tables (`app.assets`, `app.asset_valuations`) require migration infrastructure
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data is sensitive; encrypted at rest via `Database` class
-- [`cli-restructure.md`](cli-restructure.md) — `assets` namespace defined by the CLI structure spec
+- [`moneybin-cli.md`](moneybin-cli.md) — `assets` namespace defined by the CLI structure spec
 - `core.dim_accounts` — liability linking references existing dimension
 
 ## Out of Scope
