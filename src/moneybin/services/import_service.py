@@ -416,12 +416,18 @@ class ImportService:
         """Apply SQLMesh transforms via :class:`TransformService`.
 
         Transitional shim: callers will move to ``TransformService.apply()``
-        directly in a later phase. Returns ``True`` on success for API parity
-        with the original method.
+        directly in a later phase. Preserves the original fail-loud contract
+        — ``TransformService.apply()`` soft-fails to ``ApplyResult(error=...)``,
+        but several callers here (``transactions matches run/backfill``,
+        ``synthetic generate``) ignore the return value, so raising on
+        failure is required to keep the exit code honest.
         """
         from moneybin.services.transform_service import TransformService
 
-        return TransformService(self._db).apply().applied
+        result = TransformService(self._db).apply()
+        if not result.applied:
+            raise RuntimeError(f"SQLMesh transforms failed: {result.error}")
+        return True
 
     def _import_ofx(
         self,

@@ -106,9 +106,15 @@ def transform_apply(
         if result.error is not None:
             data["error"] = result.error
         render_or_json(build_envelope(data=data, sensitivity="low"), output)
+        # JSON mode must still exit non-zero on failure so scripts can detect
+        # it from $?; the envelope alone isn't enough for shell pipelines.
+        if not result.applied:
+            raise typer.Exit(1)
         return
 
     if quiet:
+        if not result.applied:
+            raise typer.Exit(1)
         return
     if result.applied:
         logger.info(f"✅ SQLMesh transforms applied in {result.duration_seconds:.2f}s")
