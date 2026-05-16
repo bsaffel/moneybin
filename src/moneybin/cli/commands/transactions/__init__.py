@@ -1,7 +1,7 @@
 """Transactions top-level command group.
 
 Owns transaction entity operations and workflows on transactions
-(matches, categorize, review) per cli-restructure.md v2, plus curation
+(matches, categorize, review) per moneybin-cli.md v2, plus curation
 primitives (create, notes, tags, splits, audit) per
 ``docs/specs/transaction-curation.md``.
 """

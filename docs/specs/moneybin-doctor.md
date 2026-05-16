@@ -17,8 +17,8 @@ The `verified` flag was dropped from `transaction-curation.md` (PR #120) because
 Related specs:
 - [`transaction-curation.md`](transaction-curation.md) §"Dropped: verified flag" — original motivation
 - [`data-reconciliation.md`](data-reconciliation.md) — broader ETL integrity checks; doctor is a focused, user-facing subset
-- [`cli-restructure.md`](cli-restructure.md) — CLI v2 taxonomy; doctor is top-level, parallel to `transform`
-- [`mcp-tool-surface.md`](mcp-tool-surface.md) — `system_doctor` tool registration
+- [`moneybin-cli.md`](moneybin-cli.md) — CLI v2 taxonomy; doctor is top-level, parallel to `transform`
+- [`moneybin-mcp.md`](moneybin-mcp.md) — `system_doctor` tool registration
 
 ## Design
 
@@ -167,7 +167,7 @@ Always runs with `verbose=False` — affected IDs are omitted (agents can query 
 - `src/moneybin/cli/main.py` — register `doctor` command group
 - `src/moneybin/mcp/tools/system.py` — add `system_doctor`, register in `register_system_tools()`
 - `docs/specs/INDEX.md` — add this spec; update `data-reconciliation.md` entry with cross-reference
-- `docs/specs/mcp-tool-surface.md` — document `system_doctor`
+- `docs/specs/moneybin-mcp.md` — document `system_doctor`
 - `CHANGELOG.md` — `Added` entry under `Unreleased`
 - `docs/roadmap.md` — move to `✅ shipped` when complete
 

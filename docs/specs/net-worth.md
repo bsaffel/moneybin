@@ -34,7 +34,7 @@ Related specs and docs:
 8. **Manual balance assertions:** Users can assert a known balance via `moneybin accounts balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
 9. **No balance without an anchor:** Accounts with zero balance observations produce no `fct_balances_daily` rows. The system does not estimate an opening balance from transactions alone.
 10. **CLI commands:** `moneybin reports networth show`, `moneybin reports networth history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
-11. **MCP tools** (per [`mcp-tool-surface.md`](mcp-tool-surface.md) v2): `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions_list`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
+11. **MCP tools** (per [`moneybin-mcp.md`](moneybin-mcp.md) v2): `reports_networth_get`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions_list`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
 12. **All commands support `--output json`** for non-interactive parity.
 13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M3B and M3C respectively). Net worth v1 covers cash accounts only.
 
@@ -222,7 +222,7 @@ moneybin accounts balance reconcile [--account ACCOUNT_ID] [--threshold AMOUNT] 
 
 ## MCP Interface
 
-Tool naming follows [`mcp-tool-surface.md`](mcp-tool-surface.md) v2 (path-prefix-verb-suffix). Cross-domain rollups live under `reports_*`; per-account workflows live under `accounts_balance_*`.
+Tool naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix). Cross-domain rollups live under `reports_*`; per-account workflows live under `accounts_balance_*`.
 
 ### Read tools
 
@@ -382,7 +382,7 @@ Tests:
 - `src/moneybin/cli/main.py` — register the new top-level `reports` group; remove the `track networth` / `track balance` stubs from `commands/stubs.py` (they migrate to their v2 homes)
 - `src/moneybin/mcp/tools/__init__.py` (and the per-tool registry) — add tools listed in §MCP Interface
 - `src/moneybin/mcp/resources/` — add `net-worth://summary` resource
-- `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers per `mcp-tool-surface.md`
+- `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers per `moneybin-mcp.md`
 - `docs/specs/INDEX.md` — flip status to `in-progress` on entry; flip to `implemented` when shipped
 
 ### Key Decisions
@@ -392,5 +392,5 @@ Tests:
 3. **`fct_balances_daily` is FULL materialized.** Recomputed on every `sqlmesh run`. Ensures consistency after any data change.
 4. **Source precedence:** user assertion > institution snapshot > tabular running balance. Most authoritative source wins within a day.
 5. **Cash-only v1.** Investment and multi-currency extensions are designed to slot in without breaking changes.
-6. **CLI taxonomy follows `cli-restructure.md` v2.** Per-account workflows live under `accounts balance *`; cross-domain aggregation lives under `reports networth *`. The `track` group is dissolved by the v2 restructure — net-worth ships against the v2 surface, not v1.
+6. **CLI taxonomy follows `moneybin-cli.md` v2.** Per-account workflows live under `accounts balance *`; cross-domain aggregation lives under `reports networth *`. The `track` group is dissolved by the v2 restructure — net-worth ships against the v2 surface, not v1.
 7. **Bundled landing with `account-management.md`.** Shared `accounts` namespace and `app.account_settings` cross-reference make a single PR cycle the only sane shape. See §Coordination.

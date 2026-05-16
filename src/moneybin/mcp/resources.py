@@ -5,7 +5,7 @@ Resources provide ambient context loaded when the AI connects — schema
 information, account list, privacy status, data freshness. They are
 read-only, compact, and change infrequently.
 
-See ``mcp-tool-surface.md`` section 15.
+See ``moneybin-mcp.md`` section 15.
 """
 
 from __future__ import annotations

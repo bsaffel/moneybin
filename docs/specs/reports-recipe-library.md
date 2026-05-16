@@ -20,7 +20,7 @@ The dim migrations are bundled because we are already touching the `core/` SQLMe
 
 ## Background
 
-A starter library of named SQL models — one per common question a user or AI consumer will ask — is the read-only counterpart to the `transactions`, `accounts`, and `import` write surfaces. The CLI and MCP `reports` namespaces (per [`cli-restructure.md`](cli-restructure.md) v2) need backing models; without them, those subcommands are stubs.
+A starter library of named SQL models — one per common question a user or AI consumer will ask — is the read-only counterpart to the `transactions`, `accounts`, and `import` write surfaces. The CLI and MCP `reports` namespaces (per [`moneybin-cli.md`](moneybin-cli.md) v2) need backing models; without them, those subcommands are stubs.
 
 Beyond surface mechanics, the recipe library is what makes MoneyBin's lineage story land. When an AI consumer says "you spent $4,200 on dining last quarter," MoneyBin can answer with a named model file in `sqlmesh/models/reports/`, traceable through `core.fct_transactions` to the rows in `raw`. Hosted PFMs can't make that move; local-first PFMs without a curated model layer don't either. The view layer is the discoverability surface — `moneybin reports list` becomes the menu the user didn't know they needed, and `moneybin://schema` advertises every model and column to AI consumers automatically.
 
@@ -37,8 +37,8 @@ This spec is the inaugurating implementation of that convention. It exercises th
 ### Related specs
 
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — gate spec; defines the `reports.*` schema, layer rules, and the `core.agg_net_worth → reports.net_worth` cascading edit. **Carries one small follow-up amendment in this spec** (rename `reports.networth` → `reports.net_worth`); see [Migrations](#migrations).
-- [`cli-restructure.md`](cli-restructure.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`, `reports budget`, `reports health`). This spec adds five more subcommands (`reports recurring`, `reports merchants`, `reports uncategorized`, `reports large-transactions`, `reports balance-drift`).
-- [`mcp-tool-surface.md`](mcp-tool-surface.md) — v2 `reports_*` MCP tools mirror the CLI 1:1.
+- [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`, `reports budget`, `reports health`). This spec adds five more subcommands (`reports recurring`, `reports merchants`, `reports uncategorized`, `reports large-transactions`, `reports balance-drift`).
+- [`moneybin-mcp.md`](moneybin-mcp.md) — v2 `reports_*` MCP tools mirror the CLI 1:1.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. **Extended** by this spec to include the `reports` schema with `audience: "interface"`.
 - [`net-worth.md`](net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
 - [`transaction-curation.md`](transaction-curation.md) — sibling M2A spec that introduces `app.audit_log`, `app.transaction_tags`, etc. This spec does not depend on its tables; the doctor spec ([`moneybin-doctor.md`](moneybin-doctor.md), drafted next) will.
@@ -413,7 +413,7 @@ These are part of the spec's success criteria — without curated example querie
 
 ## CLI Interface
 
-Extends `cli-restructure.md` v2's `reports` namespace. Five new subcommands added; three existing subcommands (`networth`, `cashflow`, `spending`) backed by the new/migrated views.
+Extends `moneybin-cli.md` v2's `reports` namespace. Five new subcommands added; three existing subcommands (`networth`, `cashflow`, `spending`) backed by the new/migrated views.
 
 ```
 moneybin reports
@@ -429,7 +429,7 @@ moneybin reports
 +-- balance-drift show [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
 ```
 
-All commands support `--output json` per `cli-restructure.md`. JSON output uses `ResponseEnvelope` shape per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry.
+All commands support `--output json` per `moneybin-cli.md`. JSON output uses `ResponseEnvelope` shape per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry.
 
 CLI function naming follows `<group>_<verb>` convention (`reports_recurring_show`, etc.) per `.claude/rules/cli.md`.
 
@@ -622,7 +622,7 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 - **Forecast/projection models.** "What will my net worth be in 6 months?" is a separate concern (forecasting); recipe library is descriptive analytics only.
 - **Cancellation-as-a-service workflow.** Rocket Money-style cancellation concierge is out of scope and will likely never be in scope (it's their business model, not ours).
 - **Portfolio/holdings reports.** Gated on `investment-tracking.md`. Will land as `reports.portfolio`, `reports.holdings`, etc. once the schema decisions there are made.
-- **Tax reports.** Owned by `tax-*.md` specs (separate top-level CLI group per `cli-restructure.md` v2; `tax` is not nested under `reports`).
+- **Tax reports.** Owned by `tax-*.md` specs (separate top-level CLI group per `moneybin-cli.md` v2; `tax` is not nested under `reports`).
 
 ## Dependencies
 
@@ -642,8 +642,8 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 ### Authoritative
 
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — gate spec for `reports.*` schema convention.
-- [`cli-restructure.md`](cli-restructure.md) v2 — `reports` CLI namespace.
-- [`mcp-tool-surface.md`](mcp-tool-surface.md) v2 — `reports_*` MCP tools.
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — `reports` CLI namespace.
+- [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `reports_*` MCP tools.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource extended by this spec.
 - [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers.
 - [`net-worth.md`](net-worth.md) — owner of the migrated `agg_net_worth` model.

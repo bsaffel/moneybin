@@ -142,7 +142,7 @@ moneybin reconciliation check --layer import [--import-id UUID]
 ```
 - Filter to a specific import batch
 
-The financial balance reconciliation command (`moneybin accounts balance reconcile`) is defined in [`net-worth.md`](net-worth.md) and covers the institution-balance-vs-transactions concern. The financial reconciliation lives under `accounts balance reconcile` (per `net-worth.md` v2 + `cli-restructure.md` v2).
+The financial balance reconciliation command (`moneybin accounts balance reconcile`) is defined in [`net-worth.md`](net-worth.md) and covers the institution-balance-vs-transactions concern. The financial reconciliation lives under `accounts balance reconcile` (per `net-worth.md` v2 + `moneybin-cli.md` v2).
 
 ## MCP Interface
 

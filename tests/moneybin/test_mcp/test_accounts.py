@@ -2,7 +2,7 @@
 """Tests for accounts_resolve MCP tool.
 
 Other accounts.* tool wiring lives in test_tools.py. This module covers the
-free-text resolution tool added per docs/specs/mcp-tool-surface.md
+free-text resolution tool added per docs/specs/moneybin-mcp.md
 §accounts_resolve.
 """
 

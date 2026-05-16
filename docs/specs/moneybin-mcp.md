@@ -25,7 +25,7 @@ Together they replace the prototype-era MCP specs (read tools, write tools) with
 
 in-progress
 
-> **v2 revision (2026-05-02, in-progress):** Aligns MCP tool naming with the unified taxonomy in [`cli-restructure.md`](cli-restructure.md) v2. The convention is path-prefix-verb-suffix (`accounts_balance_list`), with cross-domain reports moving under a new `reports_*` namespace. v1 tool names existed before the cross-interface rule was settled and used noun-collection-as-list (`accounts_balances`) and standalone analytical domains (`spending_*`, `cashflow_*`, `tax_*`). v2 makes the verb explicit and groups analytical lenses under `reports`. Sync (9 tools) and transform (5 tools) gain MCP exposure under the v2 exposure principle. See [§16b. Rename Map (v1 → v2)](#16b-rename-map-v1--v2). Hard cut: no aliases. Implementation pass moves status `ready` → `in-progress`.
+> **v2 revision (2026-05-02, in-progress):** Aligns MCP tool naming with the unified taxonomy in [`moneybin-cli.md`](moneybin-cli.md) v2. The convention is path-prefix-verb-suffix (`accounts_balance_list`), with cross-domain reports moving under a new `reports_*` namespace. v1 tool names existed before the cross-interface rule was settled and used noun-collection-as-list (`accounts_balances`) and standalone analytical domains (`spending_*`, `cashflow_*`, `tax_*`). v2 makes the verb explicit and groups analytical lenses under `reports`. Sync (9 tools) and transform (5 tools) gain MCP exposure under the v2 exposure principle. See [§16b. Rename Map (v1 → v2)](#16b-rename-map-v1--v2). Hard cut: no aliases. Implementation pass moves status `ready` → `in-progress`.
 
 ---
 
@@ -101,7 +101,7 @@ Path-prefix-verb-suffix. Tool names mirror the CLI hierarchy with underscores in
 - **Pluralization:** singular for resource types (`balance`, `networth`, `category`); plural for relationship collections (`matches`); verb-suffix carries the list/single distinction so the noun stays consistent.
 - **Encoding constraint:** lowercase ASCII with underscores, ≤64 chars (`^[a-zA-Z0-9_-]{1,64}$` per Anthropic and OpenAI MCP client regex).
 
-This mirrors the CLI taxonomy in `cli-restructure.md` v2. A user who knows `accounts balance list` already knows `accounts_balance_list` and `GET /accounts/balances`.
+This mirrors the CLI taxonomy in `moneybin-cli.md` v2. A user who knows `accounts balance list` already knows `accounts_balance_list` and `GET /accounts/balances`.
 
 ### Service layer convention
 
@@ -1367,7 +1367,7 @@ All prototype prompts are replaced by the four v1 prompts. The prototype's step-
 
 ## 16b. Rename Map (v1 → v2)
 
-Per [`cli-restructure.md`](cli-restructure.md) v2. Hard cut: rename in place, no aliases. Update the tool registry, regenerate `mcp install` output for all client configs, and update any AI agent prompts or external references.
+Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no aliases. Update the tool registry, regenerate `mcp install` output for all client configs, and update any AI agent prompts or external references.
 
 ### `accounts_*`
 

@@ -258,7 +258,7 @@ class MCPConfig(BaseModel):
             "Validated at the decorator level for any tool whose signature includes "
             "list[X] / Sequence[X] / tuple[X, ...]. Exceeding returns a "
             "ResponseEnvelope.error with code='too_many_items'. Parallels max_rows "
-            "for read responses. See docs/specs/mcp-tool-surface.md §Collection size cap."
+            "for read responses. See docs/specs/moneybin-mcp.md §Collection size cap."
         ),
     )
     tool_timeout_seconds: float = Field(

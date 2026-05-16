@@ -21,8 +21,8 @@ The strategic review of 2026-05-04 (`private/strategy/2026-05-04-strategic-revie
 ### Related specs
 
 - [`mcp-architecture.md`](mcp-architecture.md) — authoritative on MCP design philosophy, tool taxonomy, sensitivity tiers, response envelope. This spec cites it; does not duplicate.
-- [`mcp-tool-surface.md`](mcp-tool-surface.md) — concrete tool/prompt enumeration. Cited for naming examples.
-- [`cli-restructure.md`](cli-restructure.md) — CLI v2 taxonomy and the cross-protocol naming rule (CLI ↔ MCP ↔ HTTP). Cited for the symmetry contract.
+- [`moneybin-mcp.md`](moneybin-mcp.md) — concrete tool/prompt enumeration. Cited for naming examples.
+- [`moneybin-cli.md`](moneybin-cli.md) — CLI v2 taxonomy and the cross-protocol naming rule (CLI ↔ MCP ↔ HTTP). Cited for the symmetry contract.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — encryption-at-rest, key management, file permissions. Cited for security baseline.
 - [`observability.md`](observability.md) — logging consolidation, metrics persistence, instrumentation API. Cited for the observability contract.
 - [`database-migration.md`](database-migration.md) — versioned migrations and rebaseline. Cited for connection lifecycle.
@@ -52,7 +52,7 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 | `prep` | Views | SQLMesh transforms | SQLMesh core models | `stg_<source>__<entity>`, `int_<entity>__<transformation>` | Light cleaning, type casting, source-system unioning. Internal to the pipeline; not exposed to consumers. |
 | `core` | Tables (canonical) and Views (derived-grain) | SQLMesh transforms | All consumers (services, MCP, CLI, reports) | `fct_<entity>` (event grain or alternate event grain), `dim_<entity>` (slowly-changing entity), `bridge_<entity>` (M:N relationship) | Canonical, deduplicated, multi-source. **One canonical table per real-world entity at its primary grain.** Alternate-grain facts use `fct_*` with a disambiguating name (`fct_transactions` header grain, `fct_transaction_lines` line grain). |
 | `app` | Tables | Services (write); migrations (DDL); managed-write MCP tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc. | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
-| `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports_*` tools; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `cli-restructure.md` v2. |
+| `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports_*` tools; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `moneybin-cli.md` v2. |
 | `meta` | Tables / Views | SQLMesh transforms | Reconciliation tooling; provenance queries; freshness probes | `fct_<entity>_provenance` (today: `fct_transaction_provenance`); `fct_<entity>_lineage` reserved; `model_freshness` | Provenance and pipeline metadata. Cross-source row lineage (`fct_*_provenance`) and model-level freshness (`model_freshness`, wrapping SQLMesh state). |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
 | `synthetic` | Tables | Synthetic data generator (`moneybin synthetic generate`) | Scenario tests | `ground_truth`, persona-named tables | Test scenario tables created on demand. Excluded from production builds. |
@@ -185,7 +185,7 @@ The CLI and MCP server are thin formatters around the service layer; neither con
 
 ### Cross-protocol naming rule
 
-Per [`cli-restructure.md`](cli-restructure.md) §"Cross-Interface Taxonomy":
+Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 
 > Hierarchy is the entity path. Verb is the leaf action. Aggregations live with their entity. Workflows live with the entity they operate on. Reports are cross-cutting analytical views.
 
@@ -212,7 +212,7 @@ Same noun ordering across all three; only the verb position and separators diffe
 
 Sensitivity tiers and the `ResponseEnvelope` are MoneyBin-specific primitives. They sit *alongside* — not in place of — the protocol-standard fields the MCP spec itself defines: tool `annotations` (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`), `Prompts`, `Resources`, `Sampling`, `Roots`, `Elicitation`, progress notifications, and `tools/list_changed`. Clients (Claude Desktop, Codex, Gemini CLI) consume those standard fields for confirmation UI, capability negotiation, and context injection — they do not consume MoneyBin's tier model.
 
-**Every new tool, prompt, or resource must satisfy both layers.** The MoneyBin layer (sensitivity, envelope, exposure principle) is reviewed against this spec; the protocol layer is reviewed against the [protocol-standard capability coverage matrix in `mcp-tool-surface.md`](mcp-tool-surface.md#protocol-standard-capability-coverage-matrix). Reject changes that update one without the other. The intent is that no future protocol capability is silently overlooked or surface-shipped without explicit account.
+**Every new tool, prompt, or resource must satisfy both layers.** The MoneyBin layer (sensitivity, envelope, exposure principle) is reviewed against this spec; the protocol layer is reviewed against the [protocol-standard capability coverage matrix in `moneybin-mcp.md`](moneybin-mcp.md#protocol-standard-capability-coverage-matrix). Reject changes that update one without the other. The intent is that no future protocol capability is silently overlooked or surface-shipped without explicit account.
 
 ### MCP exposure principle
 
@@ -413,8 +413,8 @@ Two narrow naming changes ride along with this spec landing. Both are mechanical
 ### Authoritative living docs
 
 - [`mcp-architecture.md`](mcp-architecture.md) — MCP design philosophy, tool taxonomy, sensitivity tiers, response envelope.
-- [`mcp-tool-surface.md`](mcp-tool-surface.md) — Concrete tool/prompt enumeration; v2 in progress.
-- [`cli-restructure.md`](cli-restructure.md) — CLI v2 taxonomy and cross-protocol naming rule.
+- [`moneybin-mcp.md`](moneybin-mcp.md) — Concrete tool/prompt enumeration; v2 in progress.
+- [`moneybin-cli.md`](moneybin-cli.md) — CLI v2 taxonomy and cross-protocol naming rule.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — Encryption at rest, key management, file permissions.
 - [`observability.md`](observability.md) — Logging consolidation, metrics persistence, instrumentation API.
 - [`database-migration.md`](database-migration.md) — Versioned migrations, rebaseline, SQLMesh version detection.

@@ -95,7 +95,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 
 ### sync, transform (taxonomy stubs)
 
-`sync_*` (9 tools: login/logout/connect/disconnect/pull/status/schedule_set/show/remove) and `transform_*` (5 tools: status/plan/validate/audit/apply) are registered but currently return `not_implemented` envelopes pointing at their owning specs (`sync-overview.md`, `mcp-tool-surface.md` §transform_*). They become real once the corresponding service layers land.
+`sync_*` (9 tools: login/logout/connect/disconnect/pull/status/schedule_set/show/remove) and `transform_*` (5 tools: status/plan/validate/audit/apply) are registered but currently return `not_implemented` envelopes pointing at their owning specs (`sync-overview.md`, `moneybin-mcp.md` §transform_*). They become real once the corresponding service layers land.
 
 ### sql
 

@@ -377,7 +377,7 @@ class TestMatchesMutating:
         and exits 0 without mutating the match queue. This test only guards
         that the stub does not crash. Replace with a behavioral assertion
         (e.g., pending matches consumed, decisions recorded) once the
-        non-interactive review loop lands. See cli-restructure.md (review
+        non-interactive review loop lands. See moneybin-cli.md (review
         collapse — non-interactive flags pending).
         """
         env = make_workflow_env_fast(

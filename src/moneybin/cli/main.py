@@ -2,7 +2,7 @@
 
 Unified entry point for MoneyBin CLI operations. Commands are organized into
 top-level groups for entity management, workflows, reports, and infrastructure
-per `docs/specs/cli-restructure.md` v2.
+per `docs/specs/moneybin-cli.md` v2.
 
 Cold-start cost is kept down by deferring heavy transitive imports
 (``fastmcp``, ``sqlmesh``, ``polars``) inside the command function bodies
