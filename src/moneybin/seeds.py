@@ -147,7 +147,8 @@ def refresh_views(db: Database) -> None:
             SELECT
                 merchant_id, raw_pattern, match_type, canonical_name,
                 category, subcategory, created_by, created_at,
-                CAST([] AS VARCHAR[]) AS exemplars
+                CAST([] AS VARCHAR[]) AS exemplars,
+                CAST(NULL AS TIMESTAMP) AS updated_at
             FROM app.merchants
             """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
         )
@@ -160,7 +161,8 @@ def refresh_views(db: Database) -> None:
             merchant_id, raw_pattern, match_type, canonical_name,
             category, subcategory, created_by,
             exemplars,
-            created_at
+            created_at,
+            updated_at
         FROM {USER_MERCHANTS.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
     )
