@@ -199,9 +199,56 @@ class TestImportFilesCommand:
         self,
         runner: CliRunner,
     ) -> None:
-        """Exit code 1 when any file does not exist."""
+        """Exit code 1 when a single missing file is passed (typo detection)."""
         result = runner.invoke(app, ["files", "/nonexistent/file.ofx"])
         assert result.exit_code == 1
+
+    def test_import_files_batch_continues_past_missing_file(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Multi-file batches defer missing-file handling to ImportService.
+
+        The CLI must NOT abort the batch when one path doesn't exist —
+        ImportService.import_files() records the FileNotFoundError as a
+        PerFileResult(status="failed") so the surviving files still
+        import. Mirrors the docstring contract: "Per-file failures do
+        not abort the batch."
+        """
+        good = tmp_path / "good.ofx"
+        good.touch()
+        missing = tmp_path / "missing.ofx"
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(good),
+                    status="imported",
+                    source_type="ofx",
+                    rows_loaded=1,
+                    import_id="x",
+                ),
+                PerFileResult(
+                    path=str(missing),
+                    status="failed",
+                    source_type=None,
+                    error="FileNotFoundError",
+                ),
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(good), str(missing)])
+        # Batch failures don't flip exit code; service is invoked for both paths.
+        assert result.exit_code == 0, result.output
+        mock_import_files.assert_called_once_with(
+            [str(good), str(missing)],
+            apply_transforms=True,
+            force=False,
+            interactive=False,
+        )
 
     def test_import_files_variadic_paths(
         self,

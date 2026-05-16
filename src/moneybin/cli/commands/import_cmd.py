@@ -230,10 +230,13 @@ def import_files_command(
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.import_service import ImportService
 
-    for p in file_paths:
-        if not p.exists():
-            logger.error(f"❌ File not found: {p}")
-            raise typer.Exit(1)
+    # Single-file invocations keep fast-fail on missing paths (typo
+    # detection). Multi-file batches defer to ImportService.import_files()
+    # which records per-file FileNotFoundError as PerFileResult so the
+    # batch contract ("per-file failures do not abort the batch") holds.
+    if len(file_paths) == 1 and not file_paths[0].exists():
+        logger.error(f"❌ File not found: {file_paths[0]}")
+        raise typer.Exit(1)
 
     overrides = _parse_overrides(override)
     interactive = not yes and sys.stdin.isatty()
