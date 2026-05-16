@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from moneybin.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 def column_info(db: Database, schema: str, table: str, column: str) -> tuple[str, bool]:
@@ -67,6 +70,6 @@ def run_migration(db: Database, migrate_fn: Callable[[object], None]) -> None:
         # original migration error.
         try:
             db.execute("ROLLBACK")
-        except Exception:  # noqa: BLE001 S110 — best-effort cleanup; original error re-raised below
-            pass
+        except Exception as rollback_exc:  # noqa: BLE001 — log and continue; original error re-raised below
+            logger.debug(f"ROLLBACK after migration failure raised: {rollback_exc!r}")
         raise
