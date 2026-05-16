@@ -70,7 +70,7 @@ def categorize_apply(
     from pathlib import Path
 
     from moneybin.cli.output import render_or_json
-    from moneybin.services.categorization_service import (
+    from moneybin.services.categorization import (
         CategorizationResult,
         CategorizationService,
         validate_items,
@@ -152,7 +152,7 @@ def stats(
 ) -> None:
     """Show categorization coverage summary."""
     from moneybin.cli.utils import emit_json
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():
         with get_database() as db:

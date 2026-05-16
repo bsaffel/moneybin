@@ -73,7 +73,7 @@ def rules_list(
 @app.command("apply")
 def rules_apply() -> None:
     """Run all active rules and merchant mappings against uncategorized transactions."""
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():
         with get_database() as db:

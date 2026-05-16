@@ -46,7 +46,7 @@ def categorize_export_uncategorized(
     from moneybin.config import get_settings
     from moneybin.mcp.privacy import audit_log
     from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:

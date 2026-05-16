@@ -49,7 +49,7 @@ def categorize_apply_from_file(
     Exit code is 1 if any item failed or was skipped.
     """
     from moneybin.cli.output import render_or_json
-    from moneybin.services.categorization_service import (
+    from moneybin.services.categorization import (
         CategorizationResult,
         validate_items,
     )
@@ -103,7 +103,7 @@ def categorize_apply_from_file(
     if items:
         with handle_cli_errors():
             with get_database() as db:
-                from moneybin.services.categorization_service import (
+                from moneybin.services.categorization import (
                     CategorizationService,
                 )
 

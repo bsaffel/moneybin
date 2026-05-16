@@ -8,7 +8,7 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization import CategorizationService
 
 
 @mcp_tool(sensitivity="low")

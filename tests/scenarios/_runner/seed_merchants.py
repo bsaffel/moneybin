@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from moneybin.database import Database
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization import CategorizationService
 from moneybin.synthetic.category_mapping import to_canonical
 from moneybin.synthetic.models import (
     PersonaConfig,

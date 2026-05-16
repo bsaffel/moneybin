@@ -21,9 +21,9 @@ import duckdb
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.services._text import build_match_inputs, normalize_description
-from moneybin.services.categorization_service import (
+from moneybin.services.categorization import (
     CategorizationService,
-    MerchantRow,
+    Merchant,
     matches_pattern,
 )
 from moneybin.tables import (
@@ -107,7 +107,7 @@ class RecordingContext:
 
     txn_rows: dict[str, TxnRow]
     active_rules: list[tuple[Any, ...]]
-    merchant_mappings: list[MerchantRow]
+    merchant_mappings: list[Merchant]
     new_merchant_count: int = field(default=0)
 
     def txn_row_for(self, transaction_id: str) -> TxnRow | None:
@@ -124,14 +124,14 @@ class RecordingContext:
         row = self.txn_rows.get(transaction_id)
         return row.memo if row else None
 
-    def merchant_row_for(self, merchant_id: str) -> MerchantRow | None:
+    def merchant_row_for(self, merchant_id: str) -> Merchant | None:
         """Return the cached merchant row for the given merchant_id, or None."""
         for merchant in self.merchant_mappings:
             if merchant.merchant_id == merchant_id:
                 return merchant
         return None
 
-    def register_new_merchant(self, merchant_row: MerchantRow) -> None:
+    def register_new_merchant(self, merchant_row: Merchant) -> None:
         """Insert at the canonical match-order position (before the first regex).
 
         Preserves the ordering from ``_fetch_merchants``

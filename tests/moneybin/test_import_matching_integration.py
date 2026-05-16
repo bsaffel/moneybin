@@ -94,7 +94,7 @@ class TestRefreshCategorizationProposalSummary:
     """Tests that pending auto-rule proposals appear in the refresh log output."""
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
-    @patch("moneybin.services.categorization_service.CategorizationService")
+    @patch("moneybin.services.categorization.CategorizationService")
     @patch("moneybin.services.transform_service.TransformService.apply")
     @patch("moneybin.matching.engine.TransactionMatcher")
     @patch("moneybin.matching.priority.seed_source_priority")
@@ -134,7 +134,7 @@ class TestRefreshCategorizationProposalSummary:
         assert "auto review" in text
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
-    @patch("moneybin.services.categorization_service.CategorizationService")
+    @patch("moneybin.services.categorization.CategorizationService")
     @patch("moneybin.services.transform_service.TransformService.apply")
     @patch("moneybin.matching.engine.TransactionMatcher")
     @patch("moneybin.matching.priority.seed_source_priority")

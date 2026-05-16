@@ -70,7 +70,7 @@ def transactions_review(
 def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_settings
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.categorization import CategorizationService
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.review_service import ReviewService
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from moneybin.database import Database, check_core_schema_drift
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.review_service import ReviewService
 from moneybin.services.transform_service import TransformService

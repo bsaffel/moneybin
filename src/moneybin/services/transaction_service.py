@@ -554,7 +554,7 @@ class TransactionService:
         # 0..N-1's category rows so the caller sees a clean failure rather
         # than partial categorization. The raw rows always remain — the next
         # pipeline pass picks them up uncategorized.
-        from moneybin.services.categorization_service import CategorizationService
+        from moneybin.services.categorization import CategorizationService
 
         cat_service = CategorizationService(self._db, audit=self._audit)
         cat_entries = [

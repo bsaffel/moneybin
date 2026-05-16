@@ -98,7 +98,7 @@ def transactions_review_status() -> ResponseEnvelope:
     Match review is CLI-only today (``moneybin transactions review --type
     matches``); a ``transactions_matches_pending`` MCP tool is planned.
     """
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.categorization import CategorizationService
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.review_service import ReviewService
 

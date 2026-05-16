@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization import CategorizationService
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
@@ -98,7 +98,7 @@ class TestUserMerchantsUpdatedAt:
         # _append_exemplar is an internal write site exercised here directly
         # so the updated_at refresh is pinned at the service boundary, not
         # several layers up through a categorization batch.
-        svc._append_exemplar(merchant_id, "STARBUCKS #5678")  # pyright: ignore[reportPrivateUsage]
+        svc._applier.append_exemplar(merchant_id, "STARBUCKS #5678")  # pyright: ignore[reportPrivateUsage]
         after = db.execute(
             "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
             [merchant_id],
@@ -129,7 +129,7 @@ class TestUserMerchantsUpdatedAt:
         ).fetchone()
         assert before is not None
         time.sleep(0.01)
-        svc._append_exemplar(merchant_id, "STARBUCKS #1234")  # pyright: ignore[reportPrivateUsage]
+        svc._applier.append_exemplar(merchant_id, "STARBUCKS #1234")  # pyright: ignore[reportPrivateUsage]
         after = db.execute(
             "SELECT updated_at FROM app.user_merchants WHERE merchant_id = ?",
             [merchant_id],

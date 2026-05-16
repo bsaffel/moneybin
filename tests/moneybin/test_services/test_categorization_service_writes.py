@@ -15,7 +15,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.services.categorization_service import (
+from moneybin.services.categorization import (
     CategorizationRuleInput,
     CategorizationService,
     validate_rule_items,

@@ -76,7 +76,7 @@ def refresh(db: Database) -> RefreshResult:
     from moneybin.matching.engine import TransactionMatcher  # noqa: PLC0415
     from moneybin.matching.priority import seed_source_priority  # noqa: PLC0415
     from moneybin.services.auto_rule_service import AutoRuleService  # noqa: PLC0415
-    from moneybin.services.categorization_service import (  # noqa: PLC0415
+    from moneybin.services.categorization import (  # noqa: PLC0415
         CategorizationService,
     )
 

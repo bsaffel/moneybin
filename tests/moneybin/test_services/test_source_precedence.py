@@ -15,10 +15,10 @@ from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.services.auto_rule_service import AutoRuleService
-from moneybin.services.categorization_service import (
-    _SOURCE_PRIORITY as _PRIORITY,  # pyright: ignore[reportPrivateUsage]  # test reads the canonical ladder
+from moneybin.services.categorization import (
+    SOURCE_PRIORITY as _PRIORITY,
 )
-from moneybin.services.categorization_service import (
+from moneybin.services.categorization import (
     CategorizationItem,
     CategorizationRuleInput,
     CategorizationService,
