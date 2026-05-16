@@ -178,6 +178,39 @@ class TestNoSelfHealOnLegacyNullHash:
             runner.apply_one(migration)
 
 
+class TestPreV013SchemaBootstrap:
+    """Runner must boot against databases that pre-date V013's content_hash column."""
+
+    def test_pending_does_not_crash_on_pre_v013_schema(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """pending() must add the column on the fly — Database.__init__ calls it before V013 runs."""
+        db.execute("ALTER TABLE app.schema_migrations DROP COLUMN content_hash")
+
+        sql_file = tmp_path / "V001__pre_v013.sql"
+        sql_file.write_text("SELECT 1;")
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+
+        # Would raise a DuckDB binder error before the bootstrap was added.
+        assert [m.version for m in runner.pending()] == [1]
+
+        column = db.execute(
+            "SELECT column_name FROM duckdb_columns() "
+            "WHERE schema_name = 'app' AND table_name = 'schema_migrations' "
+            "AND column_name = 'content_hash'"
+        ).fetchone()
+        assert column is not None
+
+    def test_check_stuck_does_not_crash_on_pre_v013_schema(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """check_stuck() must also tolerate the missing column."""
+        db.execute("ALTER TABLE app.schema_migrations DROP COLUMN content_hash")
+
+        runner = MigrationRunner(db, migrations_dir=tmp_path)
+        runner.check_stuck()  # must not raise
+
+
 class TestCheckStuckBranching:
     """check_stuck() raises only for unrecoverable stuck rows."""
 

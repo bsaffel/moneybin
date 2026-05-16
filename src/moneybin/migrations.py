@@ -224,6 +224,7 @@ class MigrationRunner:
         self._db = db
         self._migrations_dir = migrations_dir or _MIGRATIONS_DIR
         self._cached_migrations: list[Migration] | None = None
+        self._tracking_schema_bootstrapped = False
 
     @property
     def _migrations(self) -> list[Migration]:
@@ -231,6 +232,29 @@ class MigrationRunner:
         if self._cached_migrations is None:
             self._cached_migrations = discover_migrations(self._migrations_dir)
         return self._cached_migrations
+
+    def _ensure_tracking_schema(self) -> None:
+        """Add app.schema_migrations.content_hash on pre-V013 DBs.
+
+        The runner's self-heal logic queries content_hash before V013 has had
+        a chance to add it on databases created before this column existed
+        — including from inside the very ``pending()`` call that decides
+        whether V013 should run. Bootstrap the column here so the query
+        never references a missing identifier. Idempotent.
+        """
+        if self._tracking_schema_bootstrapped:
+            return
+        row = self._db.execute(
+            "SELECT 1 FROM duckdb_columns() "
+            "WHERE schema_name = 'app' "
+            "AND table_name = 'schema_migrations' "
+            "AND column_name = 'content_hash'"
+        ).fetchone()
+        if row is None:
+            self._db.execute(
+                "ALTER TABLE app.schema_migrations ADD COLUMN content_hash VARCHAR"
+            )
+        self._tracking_schema_bootstrapped = True
 
     def check_drift(self) -> list[DriftWarning]:
         """Check for checksum drift between applied migrations and current files.
@@ -316,6 +340,7 @@ class MigrationRunner:
         Self-heal-eligible rows are skipped — ``apply_one`` clears them on
         retry.
         """
+        self._ensure_tracking_schema()
         rows = self._db.execute(
             "SELECT version, filename, content_hash FROM app.schema_migrations "
             "WHERE success = FALSE ORDER BY version"
@@ -375,6 +400,7 @@ class MigrationRunner:
         stuck rows — check_stuck() raises for those before apply_all gets
         here.
         """
+        self._ensure_tracking_schema()
         rows = self._db.execute(
             "SELECT version, success, content_hash FROM app.schema_migrations"
         ).fetchall()
@@ -442,6 +468,7 @@ class MigrationRunner:
             MigrationError: If a stuck row blocks the retry, or if the
                 migration itself fails.
         """
+        self._ensure_tracking_schema()
         existing = self._db.execute(
             "SELECT success, content_hash FROM app.schema_migrations WHERE version = ?",
             [migration.version],
