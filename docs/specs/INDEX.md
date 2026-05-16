@@ -78,6 +78,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Tool Surface](mcp-tool-surface.md) | Architecture | in-progress | Concrete tool, prompt, resource, and service layer definitions for MCP. v2 (2026-05-02, in-progress) aligns naming with `cli-restructure.md` v2 taxonomy (path-prefix-verb-suffix), adds `reports_*` namespace, exposes sync + transform to MCP under the v2 exposure principle. |
 | [SQL Schema Discoverability](mcp-sql-discoverability.md) | Feature | implemented | `moneybin://schema` resource exposes curated interface tables (core + select app) with columns, comments, and example queries; eliminates per-session schema reconnaissance |
 | [Tool Timeouts & Cancellation](mcp-tool-timeouts.md) | Feature | implemented | Global 30s wall-clock cap on every tool dispatch with DuckDB `interrupt()` + connection close on timeout, so a hung call can't wedge the server's write lock |
+| `mcp-reports-lineage.md` | Feature | planned | "Show me the SQL" surface: a `reports_explain_last` (working name) MCP tool that returns the rendered SQL + SQLMesh model file path for a previous `reports_*` answer. Tool-only by design — keeps the normal response envelope clean and stays portable across tools-only clients. Origin: internal roadmap review 2026-05-16. |
 
 ## Sync
 
@@ -85,7 +86,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 |---|---|---|---|
 | [Overview](sync-overview.md) | Umbrella | ready | Provider-agnostic sync framework: interaction model, SyncClient, CLI/MCP surface, E2E encryption design, provider contract. Supersedes archived `sync-client-integration` spec. |
 | [Plaid Provider](sync-plaid.md) | Feature | implemented | First sync provider: Plaid Transactions. Raw schemas, staging views, core integration, Plaid Hosted Link flow, error codes. M3A Phase 1 shipped. |
-| `sync-simplefin.md` | Feature | planned | SimpleFIN aggregator provider (alternative to Plaid) |
+| `sync-simplefin.md` | Feature | planned | SimpleFIN aggregator provider (alternative to Plaid). **Deferred 2026-05-16** (internal roadmap review): no implementation work until M3A produces 30 days of real Plaid data from a real user — provider-ladder elaboration ahead of real user evidence is speculative. Spec may be drafted earlier; engineering work waits for the gate. |
 | `sync-plaid-investments.md` | Feature | planned | Plaid Investments product (gated on `investment-tracking.md`) |
 
 ## Testing & Validation
@@ -131,6 +132,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Reports Recipe Library](reports-recipe-library.md) | Feature | implemented | Eight `reports.*` SQLMesh views (`net_worth`, `cash_flow`, `spending_trend`, `recurring_subscriptions`, `uncategorized_queue`, `merchant_activity`, `large_transactions`, `balance_drift`) inaugurating the `reports` schema; one-time migration of `core.agg_net_worth → reports.net_worth`; CLI/MCP `reports_*` surfaces extended; `moneybin://schema` discoverability extended. M2C entry. |
+| `reports-anomaly-detection.md` | Feature | planned | Anomaly detection as a real tool (`reports_anomalies` or similar), not an MCP prompt: compare a window to a trailing-N-month baseline and surface deltas exceeding a threshold. Tool-first per internal roadmap review 2026-05-16 — replaces the earlier "monthly-ritual MCP prompt set" plan. Can be wrapped as a thin MCP prompt later. |
 
 ## Standalone
 | [Account Management](account-management.md) | Feature | implemented | Owns the `accounts` entity namespace: list/show/rename/archive/include, reversible account merging via bridge model, per-account settings (`app.account_settings`), display preferences. CLI per `cli-restructure.md` v2 (extends with archive/merge/unmerge): top-level `accounts` (entity ops; balance lives nested under `accounts balance` per `net-worth.md`). Bundles with `net-worth.md`. |
