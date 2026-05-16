@@ -17,7 +17,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 | Module | Status | Notes |
 |---|---|---|
 | `services/transaction_service.py` | ✅ routed (subset shape) | ~18 mutations, all audited via `AuditService`. Reference implementation for *routing* and *cascade threading* (parent event at L977, per-row child emissions at L994 — the `tag.rename` / `tag.rename_row` chain). Today's writes capture **column subsets** in `before`/`after` per `transaction-curation.md` Req 29 — this is the shape Req 4 supersedes; see Req 4 notes and PR 1 / PR 12 in the Implementation Plan. |
-| `services/import_service.py` | ✅ routed (lifecycle) | Audit emitted at import lifecycle boundaries; `app.imports` *labels* row written directly at L1484 (see open question 2). |
+| `services/import_service.py` | ✅ routed (lifecycle) | Audit emitted at import lifecycle boundaries; `app.imports` *labels* row written directly at L1484 (see [Resolved Design Decisions](#resolved-design-decisions) §2). |
 | `services/categorization_service.py` | ⚠️ partial | ~12 mutation sites against `app.transaction_categories`, `app.user_merchants`, `app.categorization_rules`, `app.user_categories`, `app.category_overrides`. Only the two `set_category` / `clear_category` paths (L758/795) emit audit. Imports `AuditService` but ignores it elsewhere. |
 | `services/auto_rule_service.py` | ❌ bypassed | 10 mutations on `app.proposed_rules` (L278, 287, 295, 408, 445, 575, 583), `app.categorization_rules` (L391 promotion INSERT, L570 deactivation UPDATE), `app.rule_deactivations` (L601) across rule proposal / promotion / deactivation. Highest-value forensics gap. |
 | `services/account_service.py` | ❌ bypassed | `app.account_settings` INSERT + DELETE (L259, L294), no audit. |
@@ -96,9 +96,11 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
    `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` are written by `transaction_service.py` which already routes through `AuditService` correctly; per Invariant 9 they require a `*_repo.py` home for lint-rule symmetry — wrapping the existing audited writes is mechanical and is included in Phase 1 (see [Implementation Plan](#implementation-plan)).
 
-7. **Exempt tables.** `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`. These are named in Invariant 9 and allowlisted in the lint rule.
+7. **Exempt tables and callers.** Two parallel exemptions:
+   - **Tables:** `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`. Named in Invariant 9 and allowlisted in the lint rule.
+   - **Callers:** files under `src/moneybin/sql/migrations/V*.py`. Migration scripts are historical, immutable (their content hashes are recorded and re-runs would break if the SQL changed), and several existing migrations write to protected tables — e.g., `V006:34` (`app.user_merchants`), `V007:107` (`app.transaction_notes`), `V012:55` (`app.transaction_categories`). Forcing migrations through repositories would break migration discipline; the boundary the spec actually cares about is "runtime writer modules," and migrations sit on the other side of it. This exemption is parallel in spirit to the migration-tables exemption above — both treat migration-system state and code as system-managed rather than runtime user state.
 
-8. **Lint rule.** A static check rejects `execute(...)` calls whose SQL literal matches `INSERT INTO app\.X|UPDATE app\.X|DELETE FROM app\.X` for any protected `X`, unless the enclosing module is `*_repo.py` or `audit_service.py`. The check MUST handle the project's `f"INSERT INTO {TABLEREF.full_name} …"` pattern by matching against the resolved schema-qualified name (TableRef constants are statically resolvable). Implementation approach (ruff plugin vs pytest) is decided during a one-day spike at the start of Phase 1 (see [Resolved Design Decisions](#resolved-design-decisions) §4).
+8. **Lint rule.** A static check rejects `execute(...)` calls whose SQL literal matches `INSERT INTO app\.X|UPDATE app\.X|DELETE FROM app\.X` for any protected `X`, unless the enclosing module is `*_repo.py`, `audit_service.py`, or a migration script under `src/moneybin/sql/migrations/V*.py` per Req 7. The check MUST handle the project's `f"INSERT INTO {TABLEREF.full_name} …"` pattern by matching against the resolved schema-qualified name (TableRef constants are statically resolvable). Implementation approach (ruff plugin vs pytest) is decided during a one-day spike at the start of Phase 1 (see [Resolved Design Decisions](#resolved-design-decisions) §4).
 
 9. **Doctor invariants.** `moneybin doctor` adds per-table checks for each protected table:
 
@@ -165,7 +167,7 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 
 ### PR 1 — Spec + Invariant 9 append + Req 29 supersession (no service code)
 
-- This spec → `ready` (after open questions resolve).
+- Spec status stays `ready` (already promoted on this spec-only PR). PR 1 is the first *implementation* PR in the sequence; no status change here.
 - Append Invariant 9 (Req 1 wording) to `architecture-shared-primitives.md` §Architecture Invariants. Update its [§Service-Layer Contract](architecture-shared-primitives.md#service-layer-contract) note: "Transactional services compose `*Repo` classes for protected `app.*` writes; raw mutation SQL inside services is a contract violation under Invariant 9."
 - Update `AGENTS.md` "Key Abstractions" table: add `Protected app.* mutation` → `*Repo` (compose; never raw SQL).
 - **Amend `transaction-curation.md` Req 29** to align with Req 4's full-row capture (replace "the relevant column subset of the affected row, not the entire table row" with full-row semantics; cascade-threading wording stays). **Update the `app.audit_log` schema column comments** in `src/moneybin/sql/schema/app_audit_log.sql` ("Prior column subset" → "Full prior row state"; "New column subset" → "Full resulting row state"). **Update `transaction-curation.md` §Data Model** prose on `before_value` / `after_value` snapshots (currently "snapshots of the relevant *column subset*"). No `TransactionService` code changes in PR 1 — the existing column-subset writes keep working under the new contract until PR 12 backfills them.
@@ -235,7 +237,7 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 ### PR 13 — Lint rule + final doctor invariants + spec → `implemented`
 
 - Lint rule per Req 8. Implementation chosen during PR 2's spike (ruff plugin if feasible, pytest as fallback). Allowlist:
-  - Path: `**/repositories/*_repo.py`, `services/audit_service.py`.
+  - Path: `**/repositories/*_repo.py`, `services/audit_service.py`, `src/moneybin/sql/migrations/V*.py` (historical migrations — per Req 7).
   - Tables: `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`.
 - Backfill any doctor invariants not yet added (audit coverage check is reusable; per-table FK/orphan checks land per-PR).
 - Spec status → `implemented`; `INDEX.md` updated; CHANGELOG entry under `Unreleased` per `.claude/rules/shipping.md`.
