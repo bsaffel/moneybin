@@ -619,7 +619,7 @@ The runner is being designed after several features have already shipped. Rather
 | [`observability.md`](observability.md) | None in v1 | Future: `assert_metrics_emitted(metric_name, min_count)` primitive once metric assertions are needed; defer until first observability regression |
 | [`testing-synthetic-data.md`](testing-synthetic-data.md) | Every scenario consumes the generator; `*-full-pipeline` doubles as the generator's regression test | None — generator is the runner's input, not its target |
 | [`e2e-testing.md`](e2e-testing.md) | Peer layer, not a target | None — the runner complements E2E rather than covering it |
-| [`cli-restructure.md`](cli-restructure.md) | E2E layer covers command tree | None — CLI surface wiring stays in E2E |
+| [`moneybin-cli.md`](moneybin-cli.md) | E2E layer covers command tree | None — CLI surface wiring stays in E2E |
 | [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (in-progress) | `dedup-cross-source` | Pillar A+C scenarios complete on landing |
 | [`matching-transfer-detection.md`](matching-transfer-detection.md) (in-progress) | `transfer-detection-cross-account` | Edge cases (FX legs, three-leg sweeps) deferred |
 
@@ -704,7 +704,7 @@ class MatchingService:
 
 The wrapper exists so:
 - The scenario runner step registry references service classes uniformly with `CategorizationService`, `TransactionService`, etc.
-- Future MCP matching tools (when `mcp-tool-surface.md` adds them) call the service rather than the raw primitive.
+- Future MCP matching tools (when `moneybin-mcp.md` adds them) call the service rather than the raw primitive.
 - The CLI (`cli/commands/matches.py`) migrates to `MatchingService(db).run()` at the same time, eliminating direct `TransactionMatcher` imports outside the service layer.
 
 This is in scope for the scenario-runner implementation plan.

@@ -106,7 +106,7 @@ The `FastMCP(instructions=...)` argument in `src/moneybin/mcp/server.py` is the 
 - **Required content:** one-line product description, top-level group enumeration, naming convention with examples, orientation pointers, response envelope shape, collection-cap convention (list-typed parameters are capped per-call), sensitivity tiers / degraded-response behavior.
 - **Length budget:** ~150–300 tokens. Loaded once per session, but competes with conversation and tool descriptions for working memory.
 - **Style:** triple-quoted string via `textwrap.dedent(...)` — not concatenated string literals.
-- See [`docs/specs/mcp-tool-surface.md`](../../docs/specs/mcp-tool-surface.md) §1 for required-content rationale.
+- See [`docs/specs/moneybin-mcp.md`](../../docs/specs/moneybin-mcp.md) §1 for required-content rationale.
 
 ## Connection Model
 
@@ -125,13 +125,19 @@ All tools use `get_database()` from `src/moneybin/database.py`. Each call return
 
 ## Surface change discipline
 
-Any PR that adds, renames, or removes an `@mcp_tool`-decorated function MUST update [`docs/specs/mcp-tool-surface.md`](../../docs/specs/mcp-tool-surface.md) in the same change. The spec is the authoritative documented surface; PR review is the enforcement mechanism.
+Any PR that adds, renames, or removes a tool (MCP) or command (CLI) MUST update **two** specs in the same change:
 
-- Reviewers grep for `@mcp_tool` diffs and verify each touches the spec.
-- Removed tools require both a spec entry removal AND a CHANGELOG.md `Removed` entry under `Unreleased`.
-- Renamed tools require updating every `### tool_name` reference in `mcp-tool-surface.md` plus tests, plus a `Changed` entry in the CHANGELOG.
+1. The **surface-specific spec** — [`docs/specs/moneybin-mcp.md`](../../docs/specs/moneybin-mcp.md) for MCP changes, [`docs/specs/moneybin-cli.md`](../../docs/specs/moneybin-cli.md) for CLI changes. Per-surface implementation detail (parameter schemas, sensitivity tiers, envelope shape, flag conventions) lives here.
+2. The **cross-surface capability map** — [`docs/specs/moneybin-capabilities.md`](../../docs/specs/moneybin-capabilities.md). Add a new row (new capability) or update the existing row's cell (rename, removed, exempt change).
 
-This rule replaces the proposed automated drift test (see `mcp-tool-surface.md` §18). Automated enforcement was rejected because a fixture-based test detects code-vs-fixture drift but not code-vs-spec drift, and a spec-parsing test is fragile to spec restructuring. Revisit this decision if PR review proves insufficient.
+Reviewers verify both updates AND that the capability's user-language description matches what the surface actually does.
+
+- Reviewers grep for `@mcp_tool` diffs and Typer command registrations and verify each touches both specs.
+- Removed tools/commands require both spec updates AND a CHANGELOG.md `Removed` entry under `Unreleased`.
+- Renamed tools/commands require updating every reference in the surface-specific spec, updating the relevant row in the capabilities map, plus tests, plus a `Changed` entry in the CHANGELOG.
+- Exempting a surface (e.g., CLI-only by secret-material policy) requires citing the category by number from "When CLI-only is justified" above; the citation must match the exemption-category index in the capabilities map.
+
+This rule replaces the proposed automated drift test (see `moneybin-mcp.md` §18). Automated enforcement was rejected because a fixture-based test detects code-vs-fixture drift but not code-vs-spec drift, and a spec-parsing test is fragile to spec restructuring. Revisit this decision if PR review proves insufficient.
 
 ## Description requirements
 

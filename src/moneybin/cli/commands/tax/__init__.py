@@ -13,10 +13,10 @@ app = typer.Typer(
 @app.command("w2")
 def tax_w2(year: str) -> None:
     """Show W-2 form data for a tax year."""
-    _not_implemented("cli-restructure.md")
+    _not_implemented("moneybin-cli.md")
 
 
 @app.command("deductions")
 def tax_deductions(year: str) -> None:
     """Show categorized deductible expenses for a tax year."""
-    _not_implemented("cli-restructure.md")
+    _not_implemented("moneybin-cli.md")

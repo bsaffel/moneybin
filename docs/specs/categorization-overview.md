@@ -2,7 +2,7 @@
 
 > Last updated: 2026-04-19
 > Status: Ready — umbrella doc for the categorization initiative. Child specs listed in [Pillars](#pillars) are written separately.
-> Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: `match_text` construction, exemplar accumulation, source-precedence enforcement on write, snowball auto-apply), [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`mcp-tool-surface.md`](mcp-tool-surface.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: `match_text` construction, exemplar accumulation, source-precedence enforcement on write, snowball auto-apply), [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`moneybin-mcp.md`](moneybin-mcp.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Purpose
 

@@ -1,6 +1,6 @@
 # Feature: Smart Import Inbox
 
-> Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella), [`smart-import-tabular.md`](smart-import-tabular.md) (importer used under the hood), [`cli-restructure.md`](cli-restructure.md) (CLI tree), [`mcp-architecture.md`](mcp-architecture.md) (MCP namespacing, response envelope), [`privacy-data-protection.md`](privacy-data-protection.md) (file permissions)
+> Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella), [`smart-import-tabular.md`](smart-import-tabular.md) (importer used under the hood), [`moneybin-cli.md`](moneybin-cli.md) (CLI tree), [`mcp-architecture.md`](mcp-architecture.md) (MCP namespacing, response envelope), [`privacy-data-protection.md`](privacy-data-protection.md) (file permissions)
 
 ## Status
 
@@ -47,7 +47,7 @@ The existing `~/.moneybin/` location is the older Unix dotdir form of platform c
 8. **Concurrency safety.** Sync acquires an exclusive lockfile at `<inbox_root>/<profile>/.inbox.lock` (per-profile lock; concurrent syncs across different profiles are allowed). A second concurrent sync of the same profile returns `inbox_busy` immediately rather than queuing.
 9. **Atomic file movement.** Each file is processed in three filesystem steps: source → staging path inside the destination directory → final destination. Movement uses `os.rename` (atomic on the same filesystem). A crash mid-import leaves the file either in `inbox/` (not yet moved), in a discoverable `staging-*` path inside `processed/` or `failed/`, or at its final destination — never partially written or duplicated. A startup recovery pass (run at the start of every sync) cleans up stale `staging-*` entries by reverting them to `inbox/`.
 10. **Out-of-scope on inbox/processed/failed boundaries.** Sync only acts on regular files directly inside `inbox/` (root) or directly inside `inbox/<single-subfolder>/`. Nested subfolders deeper than one level, symlinks, and hidden files (starting with `.`) are skipped with an `ignored` entry in the response. This rules out sync recursing into `processed/`, `failed/`, or accidentally following a symlink out of the home directory.
-11. **CLI surface.** `moneybin import inbox` drains the active profile's inbox. `moneybin import inbox list` previews without moving. `moneybin import inbox path` prints the active profile's inbox parent (`<inbox_root>/<profile>/`). All three live under the existing `import` group per `cli-restructure.md` and respect the global `--profile` flag.
+11. **CLI surface.** `moneybin import inbox` drains the active profile's inbox. `moneybin import inbox list` previews without moving. `moneybin import inbox path` prints the active profile's inbox parent (`<inbox_root>/<profile>/`). All three live under the existing `import` group per `moneybin-cli.md` and respect the global `--profile` flag.
 12. **MCP surface.** `import_inbox_sync` drains. `import_inbox_list` previews. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
 
 ### Non-Functional

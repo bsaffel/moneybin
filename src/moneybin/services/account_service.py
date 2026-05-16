@@ -301,7 +301,7 @@ class AccountSettingsRepository:
 class AccountResolution:
     """A single fuzzy-match candidate from AccountService.resolve().
 
-    See docs/specs/mcp-tool-surface.md §accounts_resolve.
+    See docs/specs/moneybin-mcp.md §accounts_resolve.
     """
 
     account_id: str
@@ -639,7 +639,7 @@ class AccountService:
         list — slicing with a negative value would silently return "all but the
         last N" matches, which violates the documented max-candidates semantics.
 
-        See docs/specs/mcp-tool-surface.md §accounts_resolve.
+        See docs/specs/moneybin-mcp.md §accounts_resolve.
         """
         query_clean = query.lower().strip()
         if not query_clean or limit < 1:

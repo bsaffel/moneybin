@@ -1,6 +1,6 @@
 """budget — budget target management.
 
-Vs-actual report lives under `reports budget` per cli-restructure.md v2.
+Vs-actual report lives under `reports budget` per moneybin-cli.md v2.
 """
 
 import typer

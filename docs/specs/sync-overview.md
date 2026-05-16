@@ -2,7 +2,7 @@
 
 > Last updated: 2026-05-14
 > Status: Ready — umbrella doc for the sync initiative. Phase 1 implementation underway in [`sync-plaid.md`](sync-plaid.md); Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`mcp-tool-surface.md`](mcp-tool-surface.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-server HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` and `sync-client-integration.md` (moved to `archived/`)
 

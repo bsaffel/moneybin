@@ -2,7 +2,7 @@
 
 Owns account entity operations (list, show, rename, include, archive,
 unarchive, set) and per-account workflows (balance, investments) per
-cli-restructure.md v2 + account-management.md.
+moneybin-cli.md v2 + account-management.md.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Reports namespace tools — v2 per docs/specs/mcp-tool-surface.md.
+"""Reports namespace tools — v2 per docs/specs/moneybin-mcp.md.
 
 Cross-domain analytical views (read-only). All tools delegate to a service
 layer; no business logic here.

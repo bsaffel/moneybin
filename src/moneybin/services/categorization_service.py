@@ -1016,7 +1016,7 @@ class CategorizationService:
 
         Same matcher with a *different* category output is currently
         treated as a new rule, not a conflict — see
-        ``docs/specs/mcp-tool-surface.md`` "Rule-conflict detection
+        ``docs/specs/moneybin-mcp.md`` "Rule-conflict detection
         (follow-up)" for the deferred conflict-resolution work.
 
         When ``reapply=True``, ``categorize_pending`` runs after the writes so

@@ -2,12 +2,12 @@
 
 > Last updated: 2026-04-17
 > Status: Ready
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`mcp-tool-surface.md`](mcp-tool-surface.md) (concrete tool/prompt/resource definitions), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 > Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
 
-This spec defines the architecture, design philosophy, and conventions for MoneyBin's MCP server and its symmetric CLI surface. It is the "how we think about MCP tools" document. The companion spec [`mcp-tool-surface.md`](mcp-tool-surface.md) defines every concrete tool, prompt, and resource — the "what we're building" document.
+This spec defines the architecture, design philosophy, and conventions for MoneyBin's MCP server and its symmetric CLI surface. It is the "how we think about MCP tools" document. The companion spec [`moneybin-mcp.md`](moneybin-mcp.md) defines every concrete tool, prompt, and resource — the "what we're building" document.
 
 Together they replace the prototype-era MCP specs (read tools, write tools, tier-1 tools) with a production-grade design built for modern AI desktop applications.
 
@@ -627,7 +627,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 
 | Spec | Disposition |
 |---|---|
-| [`mcp-tier1-tools.md`](mcp-tier1-tools.md) | Superseded. Prototype-era tool list designed before the privacy framework. Tool concepts that survive are redesigned in `mcp-tool-surface.md`. |
+| [`mcp-tier1-tools.md`](mcp-tier1-tools.md) | Superseded. Prototype-era tool list designed before the privacy framework. Tool concepts that survive are redesigned in `moneybin-mcp.md`. |
 | [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md) | Historical record of the prototype. Implementation will be replaced. |
 | [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md) | Historical record of the prototype. Implementation will be replaced. |
 
@@ -635,8 +635,8 @@ These decisions and their rationale should be documented in the 12-month plan.
 
 | Spec | Relationship |
 |---|---|
-| **`mcp-tool-surface.md`** | Concrete tool, prompt, and resource definitions. Consumes this architecture spec. |
-| **MCP Apps spec** (name TBD) | First MCP App MVP. Consumes the tool surface. Immediate follow-on to `mcp-tool-surface.md`. |
+| **`moneybin-mcp.md`** | Concrete tool, prompt, and resource definitions. Consumes this architecture spec. |
+| **MCP Apps spec** (name TBD) | First MCP App MVP. Consumes the tool surface. Immediate follow-on to `moneybin-mcp.md`. |
 
 ### Specs that reference or depend on this one
 
@@ -644,12 +644,12 @@ These decisions and their rationale should be documented in the 12-month plan.
 |---|---|
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
-| [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_matches_pending`, etc.) will be defined in `mcp-tool-surface.md`. Audit log is shared infrastructure. |
+| [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_matches_pending`, etc.) will be defined in `moneybin-mcp.md`. Audit log is shared infrastructure. |
 
 ## Resolved Decisions
 
-- **`sql_query` tool.** Kept as a power-user escape hatch with guardrails: read-only validation, file-access function blocking, `MAX_ROWS` cap. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §13.
-- **Prompt count.** Four prompts: `monthly-review`, `categorization-organize`, `onboarding`, `tax-prep`. Defined in [`mcp-tool-surface.md`](mcp-tool-surface.md) §14.
+- **`sql_query` tool.** Kept as a power-user escape hatch with guardrails: read-only validation, file-access function blocking, `MAX_ROWS` cap. Defined in [`moneybin-mcp.md`](moneybin-mcp.md) §13.
+- **Prompt count.** Four prompts: `monthly-review`, `categorization-organize`, `onboarding`, `tax-prep`. Defined in [`moneybin-mcp.md`](moneybin-mcp.md) §14.
 - **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
 - **Privacy middleware implementation.** Decorator-based (`@mcp_tool(sensitivity="medium")`) that delegates to a middleware class. Decorator for ergonomics at the tool definition site; class for testability of the consent/audit/redaction logic.
-- **Tool count strategy.** Progressive disclosure via namespace-based registration, not tool consolidation. The full surface (46+ tools) exceeds practical limits for AI tool selection (~20-30 tools). Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Instead: core namespaces (~19 tools) registered at connection time, extended namespaces loaded on demand via `moneybin_discover` meta-tool and `tools/list_changed` notification. Each tool stays clean and single-purpose. See §3 "Progressive disclosure via namespace registration" and [`mcp-tool-surface.md`](mcp-tool-surface.md) §15b.
+- **Tool count strategy.** Progressive disclosure via namespace-based registration, not tool consolidation. The full surface (46+ tools) exceeds practical limits for AI tool selection (~20-30 tools). Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Instead: core namespaces (~19 tools) registered at connection time, extended namespaces loaded on demand via `moneybin_discover` meta-tool and `tools/list_changed` notification. Each tool stays clean and single-purpose. See §3 "Progressive disclosure via namespace registration" and [`moneybin-mcp.md`](moneybin-mcp.md) §15b.

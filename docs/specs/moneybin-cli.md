@@ -32,7 +32,7 @@ Related specs and docs:
 - [`net-worth.md`](net-worth.md) — `accounts balance` / `accounts networth` commands (v2)
 - [`observability.md`](observability.md) — `logs` and `stats` commands
 - [`database-migration.md`](database-migration.md) — `db migrate` commands
-- [`mcp-architecture.md`](mcp-architecture.md) / [`mcp-tool-surface.md`](mcp-tool-surface.md) — MCP tool/prompt enumeration
+- [`mcp-architecture.md`](mcp-architecture.md) / [`moneybin-mcp.md`](moneybin-mcp.md) — MCP tool/prompt enumeration
 
 ## Design Principles
 
@@ -531,7 +531,7 @@ MCP tool names migrate to the path-prefix-verb-suffix convention. As with CLI, h
 | (existing match tools) | `transactions_matches_*` prefix |
 | (existing categorize tools) | `transactions_categorize_*` prefix |
 
-Specific existing-tool renames are enumerated in `mcp-tool-surface.md` as part of v2 implementation.
+Specific existing-tool renames are enumerated in `moneybin-mcp.md` as part of v2 implementation.
 
 ## Migration Table (v0 → v1, historical)
 
@@ -596,7 +596,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Rename `import_csv_preview` → `import_file_preview` (format-agnostic) | MCP tool rename + service method rename |
 | Expose `sync_*` to MCP (all except `sync_rotate_key`) — login, logout, connect, disconnect, pull, status, schedule_set/show/remove | New MCP tools wrapping existing CLI sync surface |
 | Expose `transform_*` to MCP (all except `transform_restate`) — status, plan, validate, audit, apply | New MCP tools wrapping existing CLI transform surface |
-| Update `mcp-tool-surface.md` with new names + new MCP exposures | Doc edit |
+| Update `moneybin-mcp.md` with new names + new MCP exposures | Doc edit |
 | Update specs that reference v1 CLI paths | Doc edits across specs (see [Specs Requiring CLI Section Updates](#specs-requiring-cli-section-updates)) |
 
 Hard cut. v1 paths break in the same release. Tests, scripts, docs, and `mcp install` output all update together.
@@ -676,7 +676,7 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorize-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
 | `budget-tracking.md` | `track budget *` → `budget *`; budget-vs-actual report goes under `reports budget` | When MCP tools are added, follow new naming |
-| `mcp-tool-surface.md` | n/a | Adopt path-prefix-verb-suffix convention; enumerate all existing tool renames |
+| `moneybin-mcp.md` | n/a | Adopt path-prefix-verb-suffix convention; enumerate all existing tool renames |
 | `observability.md` | No structural change. Verify command signatures match. | n/a |
 | `privacy-data-protection.md` | `db lock`/`unlock`/`rotate-key` already match. | n/a |
 | `database-migration.md` | Verify `db migrate apply/status` matches. | n/a |
@@ -742,7 +742,7 @@ These were identified during design and should be added to the spec index:
 - **MCP UX standards** (tool naming, error surfaces, prompt design). Deferred to `mcp-ux-standards.md`.
 - **`stats` implementation.** Depends on `observability.md` metrics tables. Stubbed only.
 - **`db migrate` implementation.** Depends on `database-migration.md` migration framework. Stubbed only.
-- **MCP and HTTP UX standards.** Naming and hierarchy are settled here. Tool-level error surfaces, prompt design, response envelopes, content negotiation, auth, and rate limiting belong in `mcp-tool-surface.md`, `mcp-ux-standards.md`, and a future `http-api.md`. v2 only mandates the naming convention.
+- **MCP and HTTP UX standards.** Naming and hierarchy are settled here. Tool-level error surfaces, prompt design, response envelopes, content negotiation, auth, and rate limiting belong in `moneybin-mcp.md`, `mcp-ux-standards.md`, and a future `http-api.md`. v2 only mandates the naming convention.
 - **Future HTTP layer.** No HTTP server is built or designed in v2. The cross-interface taxonomy reserves the URL paths and naming so future HTTP work inherits a coherent surface.
 
 ## Revision History
