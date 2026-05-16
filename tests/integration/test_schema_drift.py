@@ -1,8 +1,15 @@
 # ruff: noqa: S101
-"""Integration test: boot check raises when materialized columns drift.
+"""Integration test: MCP boot detects drift and exercises the self-heal path.
 
-Builds a SQLMesh-applied DB via ImportService, drops one column from
-core.dim_accounts, then verifies the MCP boot-time schema check fires.
+Builds a SQLMesh-applied DB via ImportService and simulates a drifted live
+view, then asserts ``check_schema_at_boot`` walks the full self-heal flow:
+detect drift → invoke ``TransformService.apply(restate_models=...)`` →
+re-verify. End-to-end "heal restores drift" relies on a real SQLMesh model-
+fingerprint change (the production trigger) which can't be reproduced from
+tmp_path without copying the model tree; that case lives in manual
+verification. This test guarantees the boot helper runs the heal pipeline
+under a live SQLMesh context and surfaces a clear error when the heal
+cannot resolve the divergence.
 """
 
 from __future__ import annotations
@@ -18,13 +25,14 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "tabular"
 
 
 @pytest.mark.integration
-def test_boot_check_raises_on_dropped_column(
+def test_boot_check_runs_self_heal_under_real_sqlmesh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """check_schema_at_boot() raises SchemaDriftError when a column is missing."""
+    """Boot helper triggers SQLMesh restate when live core.dim_accounts drifts."""
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.import_service import ImportService
+    from moneybin.services.transform_service import TransformService
 
     secret_store = MagicMock()
     secret_store.get_key.return_value = "integration-test-key-0123456789abcdef"
@@ -51,11 +59,10 @@ def test_boot_check_raises_on_dropped_column(
     )
     assert result.core_tables_rebuilt, "transforms must run to materialize core.*"
 
-    # SQLMesh exposes core.dim_accounts as a view over a versioned physical
-    # table in the sqlmesh__core schema. ALTER TABLE/VIEW DROP COLUMN won't
-    # work on a view, so simulate drift by replacing the view with a copy
-    # that omits display_name. The drift check reads duckdb_columns() and
-    # only cares about column-set membership.
+    # Simulate live-view drift by replacing the SQLMesh-managed view with
+    # one that omits display_name. The underlying physical snapshot is
+    # untouched, but the view's frozen column list now diverges from
+    # EXPECTED_CORE_COLUMNS.
     db.execute(
         "CREATE OR REPLACE TABLE core._dim_accounts_drift AS "
         "SELECT * EXCLUDE (display_name) FROM core.dim_accounts"
@@ -66,7 +73,28 @@ def test_boot_check_raises_on_dropped_column(
     )
     db.close()
 
-    with pytest.raises(SchemaDriftError) as exc_info:
+    # Capture the restate_models arg so we can assert the heal pipeline ran
+    # under a real SQLMesh context (not a mock).
+    seen_restate: list[list[str] | None] = []
+    original_apply = TransformService.apply
+
+    def _wrapping_apply(
+        self: TransformService, restate_models: list[str] | None = None
+    ) -> object:
+        seen_restate.append(restate_models)
+        return original_apply(self, restate_models=restate_models)
+
+    monkeypatch.setattr(TransformService, "apply", _wrapping_apply)
+
+    # SQLMesh's environment state still says "promoted = current", so a
+    # restate of a live-view-only divergence cannot re-promote the view —
+    # the post-heal re-verify is expected to still see drift, and the boot
+    # helper surfaces a clear "persist after auto-heal" error. This is the
+    # safety net: detect, attempt, escalate.
+    with pytest.raises(SchemaDriftError, match="persist after auto-heal"):
         check_schema_at_boot()
 
-    assert "dim_accounts" in str(exc_info.value)
+    assert seen_restate == [["core.dim_accounts"]], (
+        f"expected one apply(restate_models=['core.dim_accounts']) call, "
+        f"got {seen_restate}"
+    )

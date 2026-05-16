@@ -140,9 +140,13 @@ def init_db() -> None:
 def check_schema_at_boot() -> None:
     """Verify core.* materialized tables aren't stale vs. EXPECTED_CORE_COLUMNS.
 
-    Raises SchemaDriftError if any FULL-materialized core model is missing a
-    column the service code SELECTs. Single-tenant fail-fast policy; multi-
-    tenant degraded mode is a TODO when we get there.
+    Drift detected on a read-only check triggers one synchronous
+    ``TransformService.apply()`` self-heal attempt before raising. The MCP
+    transform_apply tool is the intended recovery path but lives inside this
+    server, so users hitting drift on reconnect would otherwise be stuck
+    behind a chicken-and-egg: the server can't boot to expose the fix.
+    Re-verifies with a fresh read-only connection after the heal; raises
+    SchemaDriftError only if drift persists.
     """
     from moneybin.database import (
         DatabaseNotInitializedError,
@@ -158,9 +162,41 @@ def check_schema_at_boot() -> None:
         # No DB yet means no drift to check. moneybin mcp serve already
         # surfaces a clean error for this case via classify_user_error.
         return
+    if not drift:
+        return
+
+    from moneybin.services.transform_service import TransformService
+
+    drifted_models = sorted(drift)
+    logger.info(
+        f"Stale snapshots detected for {drifted_models}; "
+        "running transform apply with restate to self-heal."
+    )
+    with get_database() as db:
+        # restate_models forces re-materialization regardless of SQLMesh
+        # state-store fingerprint — needed when the live snapshot has
+        # diverged from the model definition (the common bootstrap case
+        # is a model extended in code; this also handles tampered or
+        # partially-written snapshots).
+        result = TransformService(db).apply(restate_models=drifted_models)
+    if not result.applied:
+        # apply() soft-fails by returning applied=False with an error type
+        # name. Surface that directly — the underlying SQLMesh failure is
+        # more informative than a generic "drift persists" message.
+        raise RuntimeError(
+            f"Auto-heal failed: TransformService.apply() reported "
+            f"error={result.error} after {result.duration_seconds:.2f}s"
+        )
+    logger.info(f"Self-heal completed in {result.duration_seconds:.2f}s")
+
+    with get_database(read_only=True) as db:
+        drift = check_core_schema_drift(db)
     if drift:
-        tables = ", ".join(sorted(drift.keys()))
-        raise SchemaDriftError(f"Stale materialized snapshots detected: {tables}")
+        tables = ", ".join(sorted(drift))
+        logger.error(f"Schema drift persists after auto-heal: {tables}")
+        raise SchemaDriftError(
+            f"Stale materialized snapshots persist after auto-heal: {tables}"
+        )
 
 
 def close_db() -> None:

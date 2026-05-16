@@ -94,7 +94,7 @@ class TransformService:
         """Bind to an open Database connection."""
         self._db = db
 
-    def apply(self) -> ApplyResult:
+    def apply(self, restate_models: list[str] | None = None) -> ApplyResult:
         """Apply pending SQLMesh changes.
 
         Seeds ``app.seed_source_priority`` before running so
@@ -105,6 +105,12 @@ class TransformService:
         pattern (description, memo, etc.). Callers that go straight to
         transforms would otherwise materialize NULL descriptions in
         core.fct_transactions.
+
+        ``restate_models`` forces re-materialization of named models even
+        when their fingerprint is unchanged (used by the MCP boot-time
+        self-heal: SQLMesh state may match the model definition while the
+        live materialized snapshot has drifted, e.g. from a partial
+        write or an out-of-band ALTER).
 
         Soft-fails on SQLMesh errors: returns ``ApplyResult(applied=False,
         error=<type name>)`` instead of raising so MCP/CLI callers see a
@@ -122,7 +128,13 @@ class TransformService:
             # instead of propagating raw to MCP/CLI callers.
             seed_source_priority(self._db, get_settings().matching)
             with sqlmesh_context(self._db) as ctx:
-                ctx.plan(auto_apply=True, no_prompts=True)
+                plan_kwargs: dict[str, object] = {
+                    "auto_apply": True,
+                    "no_prompts": True,
+                }
+                if restate_models:
+                    plan_kwargs["restate_models"] = restate_models
+                ctx.plan(**plan_kwargs)
             # Full plan rebuilds seeds.* too, so refresh the views that read them.
             refresh_views(self._db)
             elapsed = time.monotonic() - t0
