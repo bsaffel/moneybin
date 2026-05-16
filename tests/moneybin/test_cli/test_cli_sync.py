@@ -148,6 +148,34 @@ def test_sync_pull_surfaces_transforms_error(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_json_mode_exits_nonzero_on_transforms_error(
+    mock_build: MagicMock,
+) -> None:
+    """JSON-mode `sync pull` must also exit non-zero when refresh failed.
+
+    Agents that gate on process status (e.g., Claude Code, Codex) parse
+    the JSON envelope on stdout but trust the exit code for branching.
+    Without this, a SQLMesh failure during the post-pull refresh would
+    return exit 0 with ``transforms_applied=false`` in the payload and
+    automation would treat stale ``core.*`` state as success.
+    """
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        transforms_applied=False,
+        transforms_error="SQLMeshError",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull", "--output", "json"])
+    assert result.exit_code == 1
+    # JSON payload must still be emitted on stdout so agents can read the
+    # structured error before observing the non-zero exit.
+    payload = json.loads(result.stdout)
+    assert payload["transforms_applied"] is False
+    assert payload["transforms_error"] == "SQLMeshError"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_connect_new_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = []

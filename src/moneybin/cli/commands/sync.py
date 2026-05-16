@@ -283,29 +283,35 @@ def sync_pull(
 
     if output == OutputFormat.JSON:
         typer.echo(result.model_dump_json(indent=2))
-        return
-
-    for inst in result.institutions:
-        icon = "✅" if inst.status == "completed" else "❌"
-        count = inst.transaction_count or 0
-        typer.echo(f"{icon} {inst.institution_name}: {count} transactions")
-        if inst.status == "failed" and inst.error_code:
-            typer.echo(f"   💡 error: {inst.error_code}")
-    completed = sum(1 for i in result.institutions if i.status == "completed")
-    typer.echo(
-        f"✅ Loaded {result.transactions_loaded} transactions from "
-        f"{completed} institutions."
-    )
-    if result.transactions_removed:
-        typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
-    if result.transforms_error:
-        # Mirror import_cmd.py: route the warning to stderr via the project
-        # logger and exit non-zero so scripts and agents detect that core
-        # tables are stale even though raw rows landed.
-        logger.warning(
-            f"⚠️  transforms failed ({result.transforms_error}); "
-            f"raw rows landed. Retry with `moneybin transform apply`."
+        # Fall through to the shared exit-code check so JSON-mode agents
+        # gating on process status see the same signal as text-mode users.
+    else:
+        for inst in result.institutions:
+            icon = "✅" if inst.status == "completed" else "❌"
+            count = inst.transaction_count or 0
+            typer.echo(f"{icon} {inst.institution_name}: {count} transactions")
+            if inst.status == "failed" and inst.error_code:
+                typer.echo(f"   💡 error: {inst.error_code}")
+        completed = sum(1 for i in result.institutions if i.status == "completed")
+        typer.echo(
+            f"✅ Loaded {result.transactions_loaded} transactions from "
+            f"{completed} institutions."
         )
+        if result.transactions_removed:
+            typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
+        if result.transforms_error:
+            # Mirror import_cmd.py: route the warning to stderr via the
+            # project logger so text-mode users see a human-readable hint.
+            # JSON mode already carries transforms_error in the envelope.
+            logger.warning(
+                f"⚠️  transforms failed ({result.transforms_error}); "
+                f"raw rows landed. Retry with `moneybin transform apply`."
+            )
+
+    # Non-zero exit on refresh failure applies to BOTH output modes — agents
+    # gating on process status need the signal whether they parse JSON or
+    # scrape text. Mirrors import_cmd.py:406.
+    if result.transforms_error:
         raise typer.Exit(1)
 
 
