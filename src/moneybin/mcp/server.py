@@ -140,9 +140,13 @@ def init_db() -> None:
 def check_schema_at_boot() -> None:
     """Verify core.* materialized tables aren't stale vs. EXPECTED_CORE_COLUMNS.
 
-    Raises SchemaDriftError if any FULL-materialized core model is missing a
-    column the service code SELECTs. Single-tenant fail-fast policy; multi-
-    tenant degraded mode is a TODO when we get there.
+    Drift detected on a read-only check triggers one synchronous
+    ``TransformService.apply()`` self-heal attempt before raising. The MCP
+    transform_apply tool is the intended recovery path but lives inside this
+    server, so users hitting drift on reconnect would otherwise be stuck
+    behind a chicken-and-egg: the server can't boot to expose the fix.
+    Re-verifies with a fresh read-only connection after the heal; raises
+    SchemaDriftError only if drift persists.
     """
     from moneybin.database import (
         DatabaseNotInitializedError,
@@ -158,9 +162,45 @@ def check_schema_at_boot() -> None:
         # No DB yet means no drift to check. moneybin mcp serve already
         # surfaces a clean error for this case via classify_user_error.
         return
-    if drift:
-        tables = ", ".join(sorted(drift.keys()))
-        raise SchemaDriftError(f"Stale materialized snapshots detected: {tables}")
+    if not drift:
+        return
+
+    from moneybin.services.transform_service import TransformService
+
+    logger.info(
+        f"Stale snapshots detected for {sorted(drift)}; "
+        "running transform apply to self-heal."
+    )
+    # Plain apply (no restate_models): a regular SQLMesh plan picks up
+    # model-fingerprint changes, which is exactly the production drift
+    # trigger (code extends a core model; existing snapshot lacks the new
+    # columns). SQLMesh's restatement mode explicitly ignores local file
+    # changes (see sqlmesh.core.context.Context.plan_builder
+    # `always_include_local_changes` docstring), so it would no-op against
+    # the very drift we need to fix.
+    with get_database() as db:
+        result = TransformService(db).apply()
+    if not result.applied:
+        # apply() soft-fails by returning applied=False with the SQLMesh
+        # error type name (apply() itself drops the full message for PII
+        # reasons). Raise SchemaDriftError so classify_user_error maps it
+        # to the standard "run moneybin transform apply" hint — the user's
+        # recovery path is to re-run apply manually and see the real
+        # SQLMesh error in the terminal.
+        raise SchemaDriftError(
+            f"Auto-heal failed: TransformService.apply() reported "
+            f"error={result.error} after {result.duration_seconds:.2f}s"
+        )
+    logger.info(f"Self-heal completed in {result.duration_seconds:.2f}s")
+
+    with get_database(read_only=True) as db:
+        post_heal_drift = check_core_schema_drift(db)
+    if post_heal_drift:
+        tables = ", ".join(sorted(post_heal_drift))
+        logger.error(f"Schema drift persists after auto-heal: {tables}")
+        raise SchemaDriftError(
+            f"Stale materialized snapshots persist after auto-heal: {tables}"
+        )
 
 
 def close_db() -> None:
