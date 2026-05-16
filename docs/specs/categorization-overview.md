@@ -16,7 +16,7 @@ Three commitments:
 
 1. **Accuracy over automation.** No silent miscategorization. Every automated decision is explainable and reversible. The user can trace any categorization to the rule, merchant mapping, or ML prediction that produced it.
 2. **The system learns.** User categorizations seed auto-rules. Accumulated history trains a local ML model. Coverage improves with every import.
-3. **Fully local for the automatic path.** Rules, merchant mappings, seed merchants, Plaid pass-through, migration imports, and ML models run entirely on the user's machine. No data leaves for *automatic* categorization. LLM-assisted categorization (priority 8) is opt-in, user-mediated, and bound by the redaction contract documented in [`categorization-cold-start.md`](categorization-cold-start.md) — no transaction data leaves except via that explicit workflow. Verifiable from the audit log: outbound categorization calls only appear when the user invoked `transactions_categorize_assist` or its CLI equivalent.
+3. **Fully local for the automatic path.** Rules, merchant mappings, Plaid pass-through, migration imports, and ML models run entirely on the user's machine. No data leaves for *automatic* categorization. LLM-assisted categorization (priority 7) is opt-in, user-mediated, and bound by the redaction contract documented in [`categorization-cold-start.md`](categorization-cold-start.md) — no transaction data leaves except via that explicit workflow. Verifiable from the audit log: outbound categorization calls only appear when the user invoked `transactions_categorize_assist` or its CLI equivalent.
 
 ## Target users
 
@@ -39,8 +39,7 @@ Every categorization source has a distinct `categorized_by` value for auditabili
 | 4 | Migration imports | `'migration'` | All above | 1.0 |
 | 5 | ML predictions | `'ml'` | All above | Model confidence (0–1) |
 | 6 | Plaid categories | `'plaid'` | All above | 1.0 (provider-supplied) |
-| 7 | Seed merchants | `'seed'` | All above | 1.0 (curated) |
-| 8 (lowest) | LLM-assist | `'ai'` | All above | 1.0 (user accepted batch) |
+| 7 (lowest) | LLM-assist | `'ai'` | All above | 1.0 (user accepted batch) |
 
 The deterministic pipeline respects this ordering — a transaction already categorized by a higher-priority source is never re-categorized by a lower one. See [`categorization-cold-start.md`](categorization-cold-start.md) for the full per-source mechanism description.
 
@@ -58,7 +57,7 @@ flowchart TD
     A2 -->|None| B
     AP --> B[1. User-defined rules\npriority order, first match wins\npattern + optional amount/account filters]
     AM --> B
-    B --> C[2. Merchant mappings\nmatch normalized description<br/>seed merchants → 'seed'<br/>user merchants → 'rule']
+    B --> C[2. Merchant mappings\nmatch normalized description<br/>user_merchants → 'rule']
     C --> D[3. Auto-rules\nsame mechanism as user rules\ncreated_by='auto_rule']
     D --> E[4. ML predictions\non remaining uncategorized]
     E --> F{Confidence level}
@@ -129,7 +128,6 @@ The v1 implementation uses TF-IDF (term frequency–inverse document frequency) 
 | `ml` | 0.0 | Excluded — circular (model training on its own output) |
 | `plaid` | 0.7 | Provider-supplied, generally accurate but unvalidated |
 | `ai` | 0.8 | LLM-decided, user accepted the batch |
-| `seed` | 0.5 | Generic curated mappings — may bias toward defaults; open question whether to exclude entirely (resolve during implementation) |
 
 - **Minimum training samples:** configurable, default 50 categorized transactions.
 - **Features:** TF-IDF on normalized transaction description (v1). Amount as an optional second feature for experimentation.
@@ -284,14 +282,6 @@ Every categorization is traceable to its origin. No black boxes.
 
 The categorization system starts cold — no rules, no merchant mappings, no ML model. These strategies accelerate the path to useful coverage. See [`categorization-cold-start.md`](categorization-cold-start.md) for the full cold-start workflow that ties them together.
 
-### Seed merchant mappings (v1)
-
-Ship a curated set of ~2,100 common merchant name-to-category mappings, organized per region (1000 US + 1000 CA + 100 global). These are deterministic — no ML needed — and provide immediate value on first import. Loaded as SQLMesh seed models (`seeds.merchants_global` / `seeds.merchants_us` / `seeds.merchants_ca`) and exposed alongside user-created merchants via the `app.merchants` view.
-
-Users can disable or override any seed mapping via `app.merchant_overrides`. User-created merchants outrank seeds in lookup ordering — user authority over curated defaults.
-
-See [`categorization-cold-start.md`](categorization-cold-start.md) for the multi-region design, curation strategy, and conflict-resolution rules.
-
 ### Migration-imported categories as bootstrap (v1)
 
 When users import data from competing tools (Mint, YNAB, Tiller, Monarch) via the
@@ -312,7 +302,7 @@ This is the highest-leverage bootstrap strategy for users switching from another
 
 ### LLM-assist cold-start workflow (v1)
 
-The first-run LLM-assisted categorization workflow — designed in [`categorization-cold-start.md`](categorization-cold-start.md) — turns the user's MCP-connected LLM (or any LLM via the CLI bridge) into the cold-start solver for transactions not covered by seeds, Plaid, or migration. PII redaction contract enforced at the type level: amounts, dates, and account references never leave; descriptions are stripped of card last-fours, emails, phones, and P2P recipient names before transmission. Auto-rule mining of LLM categorizations creates the snowball that reduces LLM involvement on subsequent imports.
+The first-run LLM-assisted categorization workflow — designed in [`categorization-cold-start.md`](categorization-cold-start.md) — turns the user's MCP-connected LLM (or any LLM via the CLI bridge) into the cold-start solver for transactions not covered by Plaid or migration. PII redaction contract enforced at the type level: amounts, dates, and account references never leave; descriptions are stripped of card last-fours, emails, phones, and P2P recipient names before transmission. Auto-rule mining of LLM categorizations creates the snowball that reduces LLM involvement on subsequent imports.
 
 ### Provider categories as training signal (automatic)
 
@@ -332,7 +322,7 @@ Users could opt in to share anonymized merchant-to-category mappings: normalized
 - Aggregation threshold — a mapping only enters the public dataset if multiple users contributed it (k-anonymity)
 - Aligns with `privacy-and-ai-trust.md` consent model
 
-This is a future initiative with real privacy design work. The architecture supports it — the seed merchant list is loadable from external sources — but the contribution pipeline is out of scope for this spec. When built, the community data could also feed a community-trained ML baseline model (see pre-trained baseline model above).
+This is a future initiative with real privacy design work. The contribution pipeline is out of scope for this spec. When built, the community data could also feed a community-trained ML baseline model (see pre-trained baseline model above).
 
 ---
 
@@ -345,7 +335,7 @@ This is a future initiative with real privacy design work. The architecture supp
 - `categorized_by` taxonomy and auditability
 - Confidence thresholds (configurable, independent from transaction-matching)
 - Observability: import summaries, per-transaction explainability, system-level stats
-- Bootstrap strategies: seed merchants (multi-region, ~2100 entries), migration imports, provider/LLM signal, LLM-assist cold-start workflow (per [`categorization-cold-start.md`](categorization-cold-start.md)), progressive confidence disclosure
+- Bootstrap strategies: migration imports, provider/LLM signal, LLM-assist cold-start workflow (per [`categorization-cold-start.md`](categorization-cold-start.md)), progressive confidence disclosure
 
 ## Out of scope
 
@@ -392,7 +382,7 @@ A future spec could add an opt-in path where MoneyBin invokes a locally-running 
 
 Not pillars, not designed in detail. Architectural constraints noted so the current design does not preclude them.
 
-1. **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Needed when the seed taxonomy no longer fits a user's needs. The existing `app.categories` table supports custom categories; this future work adds merge/rename operations.
+1. **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Needed when the default category taxonomy no longer fits a user's needs. The existing `app.categories` table supports custom categories; this future work adds merge/rename operations.
 
 2. **Community-contributed merchant mappings and community ML baseline** — see Bootstrap Strategies section. Merchant mappings and a community-trained ML model could both be built from anonymized opt-in data. Requires its own spec with privacy design work.
 
@@ -400,7 +390,7 @@ Not pillars, not designed in detail. Architectural constraints noted so the curr
 
 4. **Amount/account-aware rule proposals** — detect when the same merchant is categorized differently depending on amount range or account and propose filtered rules. Deferred to implementation experience with the basic proposal engine.
 
-5. **Merchant entity resolution** (`merchant-entity-resolution.md`) — evolve `app.merchants` from a pattern-to-category cache into a first-class entity model. Today, canonical names are LLM-assigned strings with no authority or consistency enforcement. This future spec would design: multiple description patterns per merchant entity, automated pattern discovery (from auto-rules, ML, LLM interactions, and seed data), query-time merchant resolution ("show me all Starbucks spending" finds all description variants), and conflict resolution UX (minimal user intervention — resolve ambiguities only, not manual mapping). Impacts auto-rules (merchant-first pattern extraction quality), ML (entity-level features), and analytics (merchant-level aggregation). See also the seed merchant list in Bootstrap Strategies — shipping seed merchants as entities with known description variants would bootstrap the entity model.
+5. **Merchant entity resolution** (`merchant-entity-resolution.md`) — evolve `app.user_merchants` from a pattern-to-category cache into a first-class entity model. Today, canonical names are LLM-assigned strings with no authority or consistency enforcement. This future spec would design: multiple description patterns per merchant entity, automated pattern discovery (from auto-rules, ML, LLM interactions), query-time merchant resolution ("show me all Starbucks spending" finds all description variants), and conflict resolution UX (minimal user intervention — resolve ambiguities only, not manual mapping). Impacts auto-rules (merchant-first pattern extraction quality), ML (entity-level features), and analytics (merchant-level aggregation).
 
 ## Success criteria
 

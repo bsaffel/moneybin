@@ -56,7 +56,6 @@ _SCHEMA_FILES: list[str] = [
     "raw_manual_transactions.sql",
     "app_categories.sql",
     "app_user_merchants.sql",
-    "app_merchant_overrides.sql",
     "app_categorization_rules.sql",
     "app_transaction_categories.sql",
     "app_budgets.sql",

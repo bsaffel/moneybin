@@ -1,13 +1,13 @@
-"""Seed `app.merchants` from a synthetic persona's catalog data.
+"""Seed `app.user_merchants` from a synthetic persona's catalog data.
 
 Scenarios need merchant rules to evaluate categorization — without them
 ``categorize_pending`` finds no matches and writes zero categories. The
 synthetic merchant catalogs already encode ``description_prefix → category``;
-this module materializes those mappings as `app.merchants` rows so the
+this module materializes those mappings as `app.user_merchants` rows so the
 categorize step has something to work against.
 
-Scope: scenario-runner only. Real product flow seeds merchants via the
-auto-rule pipeline / user actions, not from synthetic data.
+Scope: scenario-runner only. Real product flow populates merchants via the
+LLM-assist + auto-rule pipeline / user actions, not from synthetic data.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def seed_merchants_from_persona(db: Database, persona: PersonaConfig) -> int:
-    """Seed `app.merchants` with rules derived from a persona definition.
+    """Seed `app.user_merchants` with rules derived from a persona definition.
 
     Three sources contribute rules:
 

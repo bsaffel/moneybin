@@ -500,7 +500,9 @@ The view is a derivation (`seeds.categories ∪ app.user_categories \ app.catego
 
 ### 4. `app.merchants` (Python-built view) → `core.dim_merchants` (SQLMesh model)
 
-Same architectural fix as migration 3. The Python-built `app.merchants` view (also in `seeds.py:refresh_views()`) unions four sources (`app.user_merchants`, `seeds.merchants_global`, `seeds.merchants_us`, `seeds.merchants_ca`) and applies `app.merchant_overrides` and is exposed directly to consumers — same layer-rule violation.
+Same architectural fix as migration 3. The Python-built `app.merchants` view (in `seeds.py:refresh_views()`) was originally a union of `app.user_merchants` and three seed catalogs with `app.merchant_overrides` applied — exposed directly to consumers, same layer-rule violation.
+
+> **Amendment 2026-05-15:** seed merchant catalogs and `app.merchant_overrides` were retired. `core.dim_merchants` is now a thin SELECT over `app.user_merchants` only.
 
 **Migration:**
 
@@ -524,8 +526,10 @@ Same architectural fix as migration 3. The Python-built `app.merchants` view (al
 | `app.merchants` | Python-built view in `app` | dropped |
 | `core.dim_merchants` | (does not exist) | SQLMesh view in `core` (same body as old `app.merchants`) |
 | `app.user_categories`, `app.category_overrides` | tables (mutable user state) | unchanged |
-| `app.user_merchants`, `app.merchant_overrides` | tables (mutable user state) | unchanged |
-| `seeds.categories`, `seeds.merchants_*` | SQLMesh seeds | unchanged |
+| `app.user_merchants` | tables (mutable user state) | unchanged |
+| `app.merchant_overrides` | table (retired 2026-05-15, V012 drops) | removed |
+| `seeds.categories` | SQLMesh seed | unchanged |
+| `seeds.merchants_global/us/ca` | SQLMesh seeds (retired 2026-05-15) | removed |
 
 Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `app.*` and `raw.*` remain the only writable schemas. Writes against the user-state tables continue to work; reads from the resolution views move to `core.dim_*`.
 

@@ -1582,7 +1582,7 @@ These tools can be fully implemented with the current codebase and existing infr
 **`accounts.*`**: `list`, `balances`, `networth`, `resolve`
 **`transactions.*`**: `search`, `recurring`
 **`import.*`**: `file`, `status`, `csv_preview`, `list_formats`
-**`categorize.*`**: `uncategorized`, `apply`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `seed`, `stats`
+**`categorize.*`**: `uncategorized`, `apply`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `stats`
 **`budget.*`**: `set`, `status`, `delete`
 **`tax.*`**: `w2`
 **`overview.*`**: `status`, `health`

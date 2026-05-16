@@ -28,7 +28,7 @@ A separate concern is that two different questions get conflated under the name 
 
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Owns the data-layer table and the `core.*` / `meta.*` schema definitions. Receives a small scope-clarification edit from this spec (see [Cascading edits](#cascading-edits)).
 - [`account-management.md`](account-management.md) — Establishes `app.account_settings.updated_at` (with service-managed `NOW()` on UPDATE). This spec extends the same pattern to other `app.*` reference tables.
-- [`categorization-cold-start.md`](categorization-cold-start.md) — Establishes the seed/user/override layering for categories and merchants that this spec's per-row formulas reflect.
+- [`categorization-cold-start.md`](categorization-cold-start.md) — Establishes the seed (categories) / user layering that this spec's per-row formulas reflect. (Merchant seed catalogs retired 2026-05-15; `dim_merchants.updated_at` now reads from `app.user_merchants` only.)
 
 ### Non-goals
 
@@ -47,20 +47,20 @@ Two corollaries:
 
 ### Per-model formulas
 
-All `updated_at` columns are `TIMESTAMP` and may be `NULL` only where the row's inputs all contribute `NULL` (pure-seed rows in `dim_categories` / `dim_merchants`).
+All `updated_at` columns are `TIMESTAMP` and may be `NULL` only where the row's inputs all contribute `NULL` (pure-seed rows in `dim_categories`).
 
 | Model | `kind` | `updated_at` expression |
 |---|---|---|
 | `core.dim_accounts` | FULL | `GREATEST(winner.loaded_at, settings.updated_at)` |
 | `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.categorized_at, notes_latest, tags_latest, splits_latest)` where `notes_latest = MAX(notes.created_at)`, `tags_latest = MAX(tags.applied_at)`, `splits_latest = MAX(splits.created_at)`, each grouped per transaction. Notes/tags/splits are insert-only today, so their per-row freshness column is the create-time column. `c` is `app.transaction_categories`, whose write-time column is `categorized_at`. |
 | `core.dim_categories` | VIEW | `COALESCE(user_categories.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
-| `core.dim_merchants` | VIEW | `COALESCE(user_merchants.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
+| `core.dim_merchants` | VIEW | `user_merchants.updated_at` — never `NULL` (all rows are user/system-created). |
 | `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular staging sources, `updated_at` from `app.balance_assertions` (mutable; refreshed by `BalanceService.assert_balance` on conflict so edited assertions advance freshness). Requires extending `fct_balances` CTEs to project these timestamps through to a single `updated_at` output column. |
 
 ### Semantics for consumers
 
 - A row's `updated_at` advances if and only if a real input to that row changed (raw data reloaded, user edit, override toggled). It does *not* advance just because SQLMesh re-applied with no input change. This is the desired property — it lets consumers cheaply ask "what changed since timestamp X?" without false positives from idempotent reruns.
-- `NULL` `updated_at` means "this row's freshness is the model's freshness." Consumers needing a non-`NULL` answer should `COALESCE(updated_at, <meta.model_freshness.last_changed_at for this row's contributing seed model>)`. The model name is derivable from row-level fields where it matters (e.g., `is_user = FALSE` rows in `dim_categories` came from `seeds.categories`).
+- `NULL` `updated_at` means "this row's freshness is the model's freshness." Consumers needing a non-`NULL` answer should `COALESCE(updated_at, <meta.model_freshness.last_changed_at for this row's contributing seed model>)`. The model name is derivable from row-level fields where it matters (e.g., `is_default = TRUE` rows in `dim_categories` came from `seeds.categories`).
 - `updated_at` does not imply causality across rows. Two rows with the same `updated_at` may have changed for unrelated reasons.
 
 ### Known limitation: curation deletes and edits on `fct_transactions`
@@ -114,7 +114,7 @@ A thin wrapper over `meta.model_freshness`. Lives on `SystemService` because mod
 
 ## App-table schema changes
 
-The per-row formulas above require that every `app.*` reference table contributing to a `core.dim_*` row carries an `updated_at` column. Five already do (`app.account_settings`, `app.budgets`, `app.imports`, `app.category_overrides`, `app.merchant_overrides`); two do not. This spec adds:
+The per-row formulas above require that every `app.*` reference table contributing to a `core.dim_*` row carries an `updated_at` column. Four already do (`app.account_settings`, `app.budgets`, `app.imports`, `app.category_overrides`); two do not. This spec adds:
 
 | Table | DDL change |
 |---|---|
@@ -129,7 +129,7 @@ For the two existing `*_overrides` tables, the live schema is `updated_at TIMEST
 
 ## What ships
 
-1. **DDL migration** — `app.user_categories` and `app.user_merchants` gain `updated_at`. `app.category_overrides` and `app.merchant_overrides` tighten existing `updated_at` to `NOT NULL`.
+1. **DDL migration** — `app.user_categories` and `app.user_merchants` gain `updated_at`. `app.category_overrides` tightens existing `updated_at` to `NOT NULL`. (`app.merchant_overrides` was also tightened by V010 historically; V012 drops the table outright.)
 2. **Service writes** — every `INSERT … ON CONFLICT DO UPDATE` and bare `UPDATE` against the four tables above sets `updated_at = NOW()`. Specific call sites identified during plan execution.
 3. **SQLMesh model edits** — five core models (`dim_accounts`, `fct_transactions`, `dim_categories`, `dim_merchants`, `fct_balances`) gain/replace `updated_at` per the formulas above. The misleading `CURRENT_TIMESTAMP AS updated_at` on `dim_accounts` is replaced. `fct_balances` also gains `loaded_at` propagation through its source CTEs.
 4. **`meta.model_freshness` view** — new SQLMesh model in `sqlmesh/models/meta/` exposing the public column contract above.
@@ -166,7 +166,7 @@ Both consumers and reviewers should be able to read this without opening this sp
 | Layer | Coverage |
 |---|---|
 | **Unit** | `SystemService.model_freshness()` returns the right dataclass; returns `None` for unknown models. |
-| **SQLMesh model** | Each touched core model has an audit (or scenario assertion) that `updated_at` is non-`NULL` for rows whose inputs all have timestamps, and is `NULL` only where expected (pure-seed rows in `dim_categories` / `dim_merchants`). |
+| **SQLMesh model** | Each touched core model has an audit (or scenario assertion) that `updated_at` is non-`NULL` for rows whose inputs all have timestamps, and is `NULL` only where expected (pure-seed rows in `dim_categories`). |
 | **Migration** | DDL migration adds the column with the documented default; existing rows get `CURRENT_TIMESTAMP` at migration time. |
 | **Service** | Each updated write path sets `updated_at = NOW()` on UPDATE; verified by inspecting the row after edit. |
 | **Scenario** | One end-to-end scenario: edit a user-category, run `transform apply`, verify `core.dim_categories.updated_at` advances for that row and not for unrelated rows. |

@@ -126,8 +126,8 @@ Application-managed tables for categorization, budgeting, and notes. Separated f
 | `app.transaction_categories` | Category/subcategory assignments per transaction |
 | `app.budgets` | Monthly budget targets by category |
 | `app.transaction_notes` | Free-form notes on transactions |
-| `app.categories` | Category taxonomy (seeded from Plaid PFCv2) |
-| `app.merchants` | Merchant name normalization and category cache |
+| `app.user_categories` | User-added category entries; combined with the Plaid-PFCv2 seed via `core.dim_categories` |
+| `app.user_merchants` | Merchant name normalization and category cache; exposed via `core.dim_merchants` |
 | `app.categorization_rules` | Pattern-based auto-categorization rules |
 
 ## Data flow

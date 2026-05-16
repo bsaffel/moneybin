@@ -3,8 +3,10 @@
 ## Status
 implemented
 
-> Last updated: 2026-05-10
+> Last updated: 2026-05-15
 > Companion: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) — amends this spec's merchant-creation algorithm (exemplar accumulator replaces auto-generalized `contains` patterns), redaction contract (`v2` extends the LLM input to memo + structural fields), and apply order (auto-fan-out fires after every `categorize_apply` commit; this is the snowball mechanism the Vision section promises).
+>
+> **Amendment 2026-05-15:** seed merchant catalogs (`seeds.merchants_global/us/ca`) and the paired `app.merchant_overrides` table were removed. The "Seed merchant mappings" bootstrap strategy is retired; cold-start is now Plaid pass-through (when synced) + migration imports + LLM-assist. Rationale lives in `private/strategy/categorization-competitive-context.md`. References below have been updated; data-model and implementation-plan sections are kept as historical record but marked **(retired)**.
 
 ## Goal
 
@@ -19,9 +21,9 @@ Design the first-run categorization experience: how a brand-new MoneyBin install
 - Tool registration: [`mcp-tool-surface.md`](mcp-tool-surface.md) — new MCP tools register here
 - Architecture rules: `.claude/rules/mcp-server.md`, `.claude/rules/cli.md`, `.claude/rules/database.md`
 
-The categorization overview already commits to several v1 bootstrap strategies (seed merchants, migration imports, Plaid pass-through) and acknowledges LLM-assist categorization as the lowest-priority solver in the precedence ladder. What's missing — and what this spec addresses — is the cold-start *workflow* that ties these solvers together for first-run, plus the PII redaction contract that makes LLM-assist privacy-defensible.
+The categorization overview commits to several v1 bootstrap strategies (migration imports, Plaid pass-through) and acknowledges LLM-assist categorization as the lowest-priority solver in the precedence ladder. What's missing — and what this spec addresses — is the cold-start *workflow* that ties these solvers together for first-run, plus the PII redaction contract that makes LLM-assist privacy-defensible.
 
-This spec also drops two strategies the overview originally proposed (synthetic training data, pre-trained baseline ML model) — they were designed to give the ML pillar a cold-start, but the LLM-assist workflow covers cold-start better and the ML pillar's real value is learning user-specific patterns from organic data.
+This spec also drops three strategies the overview originally proposed (synthetic training data, pre-trained baseline ML model, **seed merchant catalogs**) — the first two were designed to give the ML pillar a cold-start (LLM-assist covers that better); seed merchants were retired because the 2100-entry curated catalog never matched the actual cold-start pain point (bank-formatted bill-pay strings dominate real checking-account data) and the LLM-assist + auto-rule snowball makes the layer redundant.
 
 ## Vision
 
@@ -29,8 +31,8 @@ This spec also drops two strategies the overview originally proposed (synthetic 
 
 Three commitments:
 
-1. **Useful coverage on import #1.** Seed merchants + Plaid pass-through + migration imports cover 50–95% of transactions before any LLM is invoked, depending on data sources.
-2. **LLM as long-tail solver, not primary.** When LLM-assist runs, it categorizes what deterministic solvers couldn't — and every categorization seeds auto-rules that handle the same patterns automatically next time.
+1. **Useful coverage on import #1.** Plaid pass-through + migration imports cover 50–95% of transactions before any LLM is invoked, when those sources are available. CSV/OFX imports start mostly uncategorized and LLM-assist handles the bulk.
+2. **LLM as long-tail solver, not primary.** When LLM-assist runs, it categorizes what deterministic solvers couldn't — and every categorization seeds auto-rules and merchants that handle the same patterns automatically next time.
 3. **Privacy-by-architecture.** The LLM never sees amounts, dates, or accounts. Descriptions are redacted via a typed contract that makes accidental leakage a compile-time impossibility.
 
 The snowball is implemented as auto-apply post-commit: `transactions_categorize_apply` invokes `categorize_pending()` after writes commit, fanning newly-created merchants and exemplars out to remaining uncategorized rows in the same dataset. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order.
@@ -53,7 +55,7 @@ flowchart LR
 | Job | What it does | Cold-start status |
 |---|---|---|
 | **Normalize** | Mechanical text cleanup. Pre-built code in `normalize_description()`. | Never cold — ships as logic. |
-| **Identify merchant** | Lookup in `app.merchants` to get `(merchant_id, canonical_name, default_category)`. | Cold by default — empty until seeded or learned. |
+| **Identify merchant** | Lookup in `core.dim_merchants` (over `app.user_merchants`) to get `(merchant_id, canonical_name, default_category)`. | Cold by default — empty until learned. |
 | **Categorize** | Assign a category via the priority ladder. | Cold by default — no rules, no merchants, no ML. |
 
 These have different cold-start cures and different long-term owners. Untangling them is the prerequisite to the rest of the spec.
@@ -62,9 +64,9 @@ These have different cold-start cures and different long-term owners. Untangling
 
 ```mermaid
 flowchart TD
-    A[First import:<br/>50 raw transactions] --> B{Seed merchant match?}
-    B -->|yes ~30%| C[Categorized deterministically]
-    B -->|no ~70%| D[Uncategorized]
+    A[First import:<br/>50 raw transactions] --> B{Plaid or migration<br/>category attached?}
+    B -->|yes| C[Categorized deterministically]
+    B -->|no| D[Uncategorized]
     D --> E[LLM-assist session<br/>via MCP or CLI bridge]
     E --> F[For each LLM categorization:<br/>1. Write category<br/>2. Auto-create merchant if new<br/>3. Auto-rule proposal]
     F --> G[User reviews auto-rule proposals<br/>accepts common patterns]
@@ -80,23 +82,7 @@ flowchart TD
 
 Each cold-start solver gets from raw transaction to categorized transaction differently. Making the mechanics explicit prevents confusion later.
 
-### Solver 1: Seed merchants (deterministic pattern match)
-
-```mermaid
-flowchart LR
-    A["Raw description<br/>'STARBUCKS #1234 SEATTLE WA'"] --> B[normalize_description]
-    B --> C["'STARBUCKS'"]
-    C --> D{"Match in app.merchants<br/>via seeds.merchants_*?"}
-    D -->|yes| E["merchant_id=seed_us_starbucks<br/>canonical_name='Starbucks'<br/>category='Coffee Shops'"]
-    D -->|no| F[Skip — next solver]
-    E --> G["Write to transaction_categories<br/>categorized_by='seed', confidence=1.0"]
-```
-
-**Mechanism:** Same SQL match used today by `_match_description()` in `categorization_service.py` — `exact` / `contains` / `regex` patterns. Seeds are rows in `seeds.merchants_global` / `seeds.merchants_us` / `seeds.merchants_ca` exposed via the `app.merchants` view.
-
-**Why this works:** Pre-curated entries arrive with high-quality canonical names. When the LLM later encounters `"AMZN MKTP US*AB1CD2"` and that hits a seed pattern for Amazon, the existing merchant is reused — no junk-canonical-name created.
-
-### Solver 2: Plaid pass-through (provider category lookup)
+### Solver 1: Plaid pass-through (provider category lookup)
 
 ```mermaid
 flowchart LR
@@ -112,7 +98,7 @@ flowchart LR
 
 **Mechanism:** Plaid supplies category string (PFCv2 taxonomy) and `merchant_name`. Category mapping is one-time work in `app.categories.plaid_detailed`. The merchant_name becomes a new entry in `app.user_merchants` if not already known.
 
-### Solver 3: Migration imports (source-tool category translation)
+### Solver 2: Migration imports (source-tool category translation)
 
 ```mermaid
 flowchart TD
@@ -130,11 +116,11 @@ flowchart TD
 
 **Mechanism:** Two-stage lookup. Source-tool category string maps to MoneyBin category via per-tool mapping table (owned by future migration spec). Merchant patterns from migration history seed `app.user_merchants`.
 
-### Solver 4: LLM-assist (semantic judgment)
+### Solver 3: LLM-assist (semantic judgment)
 
 ```mermaid
 flowchart TD
-    A["Uncategorized txns from steps 1-3<br/>typically 30-60% on first import"] --> B[Batch + redact]
+    A["Uncategorized txns from steps 1-2<br/>typically 30-95% on first import"] --> B[Batch + redact]
     B --> C["Send to LLM:<br/>list of redacted descriptions only<br/>NO amounts, dates, or accounts"]
     C --> D[LLM proposes:<br/>category + canonical merchant name<br/>per description]
     D --> E[User reviews batch<br/>via MCP elicitation or CLI prompt]
@@ -163,7 +149,7 @@ flowchart TD
     E --> F[Existing categorization pipeline<br/>operates on uncategorized only]
 
     F --> G[Step 1: User rules → 'rule']
-    G --> H[Step 2: Merchant mappings<br/>seed + LLM-created + plaid-created<br/>→ 'seed' or 'rule']
+    G --> H[Step 2: Merchant mappings<br/>LLM-created + plaid-created<br/>→ 'rule']
     H --> I[Step 3: Auto-rules → 'auto_rule']
     I --> J{ML model exists?<br/>≥50 training samples}
     J -->|yes| K[Step 4: ML predictions → 'ml']
@@ -193,7 +179,6 @@ User-level stickiness is handled by the existing priority ladder:
 |---|---|
 | Per-transaction stickiness — "this Starbucks was Business Meals" | User manual categorization writes `categorized_by='user'` (priority 1). Never overwritten by any rule. |
 | Per-merchant stickiness — "all Starbucks should be Coffee" | User authors a rule with `created_by='user'` (priority 2). Outranks auto-rules and ML. |
-| Per-seed-merchant override — "I disagree with seed default" | `app.merchant_overrides` row sets a different category. View applies overrides on top of seed. |
 | Finer-grained matching (amount/account/date filters) | **Future direction in overview** — "Amount/account-aware rule proposals". Not v1. |
 
 ## Requirements
@@ -204,114 +189,51 @@ User-level stickiness is handled by the existing priority ladder:
 4. New MCP tool returns invalid-category errors with structured `did_you_mean` field listing closest valid categories (Levenshtein/substring match).
 5. New CLI commands: `moneybin categorize export-uncategorized`, `moneybin categorize apply-from-file`, `moneybin privacy redact`. JSON I/O via stdin/stdout, Unix conventions.
 6. New `redact_for_llm()` function in `src/moneybin/services/_text.py` strips card last-fours, emails, phones, P2P recipient names from descriptions. Type-enforced via `RedactedTransaction` dataclass that excludes amount/date/account fields.
-7. Three new SQLMesh seed models: `seeds.merchants_global`, `seeds.merchants_us`, `seeds.merchants_ca`. Loaded from CSV files. Materialized via `moneybin transform apply`.
-8. `app.merchants` becomes a view assembled from `app.user_merchants ∪ seeds.merchants_*`, with `app.merchant_overrides` applied. User merchants outrank seeds in lookup ordering.
-9. New `app.merchant_overrides` table mirrors `app.category_overrides` pattern (deactivation + category override).
-10. New `categorized_by` enum values: `'seed'`, `'migration'`. New `created_by` values on `app.user_merchants`: `'plaid'`, `'migration'`.
-11. New configuration settings: `assist_offer_threshold` (default 10), `assist_default_batch_size` (default 100), `assist_max_batch_size` (default 200), ML training weights for `migration` (0.85) and `seed` (0.5, TBD).
+7. **(retired 2026-05-15)** Three SQLMesh seed models (`seeds.merchants_global/us/ca`) were originally introduced here; they are removed. See amendment at top.
+8. `app.merchants` is retired in favor of the `core.dim_merchants` view, which is a thin select over `app.user_merchants` (every merchant is user-created or system-created on the user's behalf).
+9. **(retired 2026-05-15)** `app.merchant_overrides` table was originally introduced here; it is removed (V012 migration).
+10. New `categorized_by` enum value: `'migration'`. New `created_by` values on `app.user_merchants`: `'plaid'`, `'migration'`.
+11. New configuration settings: `assist_offer_threshold` (default 10), `assist_default_batch_size` (default 100), `assist_max_batch_size` (default 200), ML training weight for `migration` (0.85).
 12. Every `transactions_categorize_assist` call audit-logged with `txn_count`, `account_filter`, `timestamp`. No descriptions or transaction IDs in audit log.
 13. Migration step preserves all existing `app.merchants` rows by moving them to `app.user_merchants`; existing `transaction_categories.merchant_id` references remain valid.
 14. Fuzz test suite generates synthetic transactions with embedded PII patterns and asserts no test value appears in `categorize_assist` output.
 
 ## Data Model
 
-### New SQLMesh seed models
+### New SQLMesh seed models (retired)
 
-```sql
--- sqlmesh/models/seeds/merchants_us.sql (similar files for _global and _ca)
-/* Seed merchant mappings for the US region. Edit the CSV; SQLMesh detects changes. */
-MODEL (
-  name seeds.merchants_us,
-  kind SEED (path 'merchants_us.csv'),
-  columns (
-    merchant_id TEXT,
-    raw_pattern TEXT,
-    match_type TEXT,
-    canonical_name TEXT,
-    category TEXT,
-    subcategory TEXT,
-    country TEXT
-  ),
-  grain merchant_id
-)
-```
-
-CSV format (illustrative):
-
-```csv
-merchant_id,raw_pattern,match_type,canonical_name,category,subcategory,country
-seed_us_starbucks,STARBUCKS,contains,Starbucks,Food & Dining,Coffee Shops,US
-seed_us_starbucks_sq,SQ *STARBUCKS,contains,Starbucks,Food & Dining,Coffee Shops,US
-seed_global_netflix,NETFLIX,contains,Netflix,Subscriptions,Streaming,global
-```
+> **Retired 2026-05-15.** The originally-shipped `seeds.merchants_global/us/ca` models are removed. Cold-start no longer relies on a curated merchant catalog; LLM-assist + auto-rules + Plaid pass-through cover the same ground without the maintenance burden. The historical SEED model definitions and CSV format are omitted from this spec.
 
 ### New tables
 
 ```sql
 -- src/moneybin/sql/schema/app_user_merchants.sql
 /* Mutable merchant entries: user-created, LLM-created, Plaid-created, migration-created.
-   Replaces today's app.merchants table. Exposed alongside seeds via the app.merchants view. */
+   Replaces today's app.merchants table. Exposed via the core.dim_merchants view. */
 CREATE TABLE IF NOT EXISTS app.user_merchants (
     merchant_id VARCHAR PRIMARY KEY,            -- 12-char UUID hex from uuid.uuid4().hex[:12]
     raw_pattern VARCHAR,                        -- match pattern (user-authored); NULL when merchant exists only via exemplars
     match_type VARCHAR NOT NULL DEFAULT 'oneOf',-- 'exact' | 'contains' | 'regex' | 'oneOf' (see categorization-matching-mechanics.md)
     canonical_name VARCHAR NOT NULL,            -- display name; LLM-proposed for created_by='ai'
     exemplars VARCHAR[] DEFAULT [],             -- accumulated normalized match_text values; populated by system-generated merchants
-    category VARCHAR,                           -- default category (joined to app.categories)
+    category VARCHAR,                           -- default category (joined to core.dim_categories)
     subcategory VARCHAR,                        -- default subcategory
     created_by VARCHAR NOT NULL,                -- 'user' | 'ai' | 'plaid' | 'migration'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- src/moneybin/sql/schema/app_merchant_overrides.sql
-/* User overrides on seed merchant entries. Mirrors app.category_overrides. */
-CREATE TABLE IF NOT EXISTS app.merchant_overrides (
-    merchant_id VARCHAR PRIMARY KEY,            -- references seeds.merchants_*.merchant_id
-    is_active BOOLEAN NOT NULL,                 -- false to hide a seed merchant
-    category VARCHAR,                           -- override default category (NULL = inherit seed)
-    subcategory VARCHAR,                        -- override default subcategory
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 ```
 
-### View: `app.merchants`
+> **Retired 2026-05-15.** `app.merchant_overrides` was originally introduced here as the user-disable/override surface for seed merchant rows. With seeds removed there is no override target; the table is dropped via V012.
 
-Replaces today's table. Assembled in `src/moneybin/seeds.py:refresh_views`:
+### View: `core.dim_merchants`
 
-```sql
-CREATE OR REPLACE VIEW app.merchants AS
--- User merchants first (user wins on overlap per the stickiness principle)
-SELECT
-    merchant_id, raw_pattern, match_type, canonical_name,
-    category, subcategory, created_by,
-    NULL::TIMESTAMP AS seed_created_at,
-    created_at,
-    true AS is_user
-FROM app.user_merchants
-UNION ALL
--- Global seeds
-SELECT
-    s.merchant_id, s.raw_pattern, s.match_type, s.canonical_name,
-    COALESCE(o.category, s.category) AS category,
-    COALESCE(o.subcategory, s.subcategory) AS subcategory,
-    'seed' AS created_by,
-    NULL::TIMESTAMP AS seed_created_at,
-    NULL::TIMESTAMP AS created_at,
-    false AS is_user
-FROM seeds.merchants_global s
-LEFT JOIN app.merchant_overrides o USING (merchant_id)
-WHERE COALESCE(o.is_active, true)
-UNION ALL
--- Same pattern for seeds.merchants_us, seeds.merchants_ca
-```
-
-The `country` column from seeds is intentionally not exposed in the view — overlap resolution happens at curation time (see Curation strategy below) and at lookup-ordering time (`is_user` flag in `_fetch_merchants` sort).
+A thin SELECT over `app.user_merchants`. Defined in `sqlmesh/models/core/dim_merchants.sql`; the equivalent view is built directly in `src/moneybin/seeds.py:refresh_views` for fresh test DBs so the dim is available before the first SQLMesh transform run.
 
 ### Enum additions
 
 | Enum | Existing values | New values |
 |---|---|---|
-| `app.transaction_categories.categorized_by` | `'user'`, `'rule'`, `'auto_rule'`, `'ml'`, `'plaid'`, `'ai'` | `'seed'`, `'migration'` |
+| `app.transaction_categories.categorized_by` | `'user'`, `'rule'`, `'auto_rule'`, `'ml'`, `'plaid'`, `'ai'` | `'migration'` |
 | `app.user_merchants.created_by` | `'user'`, `'ai'` (today on `app.merchants`) | `'plaid'`, `'migration'` |
 
 ### Revised priority ladder (for `categorization-overview.md`)
@@ -324,8 +246,7 @@ The `country` column from seeds is intentionally not exposed in the view — ove
 | 4 | Migration imports | `'migration'` | 1.0 | 0.85 |
 | 5 | ML predictions | `'ml'` | variable | 0.0 (circular) |
 | 6 | Plaid categories | `'plaid'` | 1.0 | 0.7 |
-| 7 | Seed merchants | `'seed'` | 1.0 | 0.5 (open question) |
-| 8 | LLM batch | `'ai'` | 1.0 | 0.8 |
+| 7 | LLM batch | `'ai'` | 1.0 | 0.8 |
 
 ## LLM-assist workflow
 
@@ -521,13 +442,15 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 
 ## Implementation Plan
 
+> **Implementation Plan (historical record — superseded 2026-05-15).** The original plan provisioned seed merchant CSVs (`sqlmesh/models/seeds/merchants_{global,us,ca}.*`), the `app.merchant_overrides` schema, and view assembly that unioned seeds into `app.merchants`. Those artifacts shipped, were never populated, and were retired in the seed-removal cleanup. The remaining infrastructure (`app.user_merchants` schema, `redact_for_llm`, `transactions_categorize_assist`, the rename to `categorize_apply` / `auto_accept`, the CLI bridge) is in place. The lists below are kept for traceability of what shipped, not as a forward plan.
+
 ### Files to Create
 
-- `sqlmesh/models/seeds/merchants_global.sql` + `.csv` (CSV initially empty/tiny; populated as last implementation step)
-- `sqlmesh/models/seeds/merchants_us.sql` + `.csv`
-- `sqlmesh/models/seeds/merchants_ca.sql` + `.csv`
+- ~~`sqlmesh/models/seeds/merchants_global.sql` + `.csv`~~ (retired 2026-05-15)
+- ~~`sqlmesh/models/seeds/merchants_us.sql` + `.csv`~~ (retired 2026-05-15)
+- ~~`sqlmesh/models/seeds/merchants_ca.sql` + `.csv`~~ (retired 2026-05-15)
 - `src/moneybin/sql/schema/app_user_merchants.sql`
-- `src/moneybin/sql/schema/app_merchant_overrides.sql`
+- ~~`src/moneybin/sql/schema/app_merchant_overrides.sql`~~ (retired 2026-05-15)
 - `src/moneybin/mcp/tools/transactions_categorize_assist.py` — new MCP tool
 - `src/moneybin/cli/commands/categorize/export.py` — `export-uncategorized` command
 - `src/moneybin/cli/commands/categorize/apply_from_file.py` — `apply-from-file` command
@@ -545,13 +468,11 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
   - Update `create_merchant` to write to `app.user_merchants`
   - Add `RedactedTransaction` dataclass for `categorize_assist` return
   - Add `categorize_assist()` method that fetches uncategorized + applies redaction
-  - Update `_match_description` and `_fetch_merchants` to sort by `(is_user, match_type)` so user merchants always win
+  - Update `_match_description` and `_fetch_merchants` ordering by `match_type` shape, `created_at`
   - Validate categories on apply; return structured `did_you_mean` errors
 - `src/moneybin/services/auto_rule_service.py` — rename `confirm()` → `accept()`
-- `src/moneybin/seeds.py`
-  - Add `SEED_MERCHANTS_GLOBAL`, `SEED_MERCHANTS_US`, `SEED_MERCHANTS_CA` to `_SEED_MODELS`
-  - Extend `refresh_views` with the merchants view assembly
-- `src/moneybin/tables.py` — add `SEED_MERCHANTS_*`, `USER_MERCHANTS`, `MERCHANT_OVERRIDES` constants
+- `src/moneybin/seeds.py` — assemble `core.dim_merchants` over `app.user_merchants` in `refresh_views`
+- `src/moneybin/tables.py` — `USER_MERCHANTS` constant
 - `src/moneybin/schema.py` — add new schema files to load order
 - `src/moneybin/database.py` — add migration step (move `app.merchants` rows to `app.user_merchants`, drop old table, create view)
 - `src/moneybin/mcp/tools/transactions_categorize.py`
@@ -572,11 +493,8 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 ### Key Decisions
 
 - **Drop synthetic training data and pre-trained baseline ML model** from overview spec. The LLM-assist workflow + auto-rule snowball covers cold-start better; the ML pillar's value is learning user-specific patterns from organic data, not synthetic warm-up.
-- **`app.merchants` becomes a view, not a table.** Mirrors the categories pattern. User merchants in `app.user_merchants`, seed merchants in `seeds.merchants_*`, overrides in `app.merchant_overrides`.
-- **Per-country seed structure with global fallback.** Three CSVs: `merchants_global.csv` (universal entries), `merchants_us.csv`, `merchants_ca.csv`. Curation rule: if a merchant is identical across regions, it belongs in global. CI lints for cross-region duplicates.
-- **User merchants outrank seeds in lookup ordering.** Sort by `(is_user, match_type)` — user wins regardless of match type granularity. Ensures user authority over curated defaults.
+- **Drop seed merchant catalogs (2026-05-15 amendment).** The 2100-entry catalog never matched real cold-start pain (bank-bill-pay strings dominate checking data); LLM-assist + auto-rules cover the same ground without maintenance burden. `app.merchants` is retired in favor of `core.dim_merchants`, a thin view over `app.user_merchants`.
 - **Type-enforced PII redaction.** `RedactedTransaction` dataclass excludes amount/date/account fields; tool return type makes leakage a compile-time impossibility.
-- **Build the actual seed CSVs as the last implementation step.** Architecture lands and is testable with minimal seed data; curation work happens after the pipeline is proven.
 - **No backwards compatibility shim for renames.** Existing tests and callers update in the same PR. CLI rename `categorize_bulk_apply` → `categorize_apply`, MCP rename, and `auto_confirm` → `auto_accept` (with `approve` → `accept` parameter) all happen together.
 
 ## CLI Interface
@@ -672,7 +590,7 @@ Per user research about "discretionary/mandatory" overlays. Future spec: `catego
 Future spec recommended (see Adjacent initiatives in overview).
 
 - Recurring detection is a transaction-relationship concern, not categorization.
-- Complements seed merchants — recurring detection identifies series and surfaces "you have N subscriptions."
+- Complements LLM-assist + auto-rules — recurring detection identifies series and surfaces "you have N subscriptions."
 - A future `transactions_recurring_assist` peer tool wouldn't change cold-start primitives.
 
 ### Server-side merchant DB enrichment
@@ -689,16 +607,16 @@ Future spec recommended.
 - Reuses the export/apply JSON contract from this spec — local LLM is just another consumer of the same primitives.
 - Closes cold-start gap for users who want LLM-assist with full offline operation.
 
-### Community-contributed seed merchant updates
+### Community-contributed merchant mappings
 
-Existing future direction in overview.
+Existing future direction in overview (retained at the architecture-future level only).
 
-- Per-region seed CSVs are version-controlled. PRs are the v1 contribution mechanism.
-- Future opt-in aggregation pipeline would feed back into the same CSV files via tooling.
+- A future opt-in aggregation pipeline would surface anonymized merchant→category mappings without re-introducing a shipped curated catalog.
+- Privacy gate, k-anonymity, and per-merchant allow/deny live in that future spec.
 
 ### Multi-region expansion (UK, EU, AU, etc.)
 
-Per-country seed file structure extends naturally — add `merchants_uk.csv` etc. View assembly in `seeds.py` follows the same pattern. Redaction internationalization tracked as recurring quality concern in followups.
+Redaction internationalization tracked as recurring quality concern in followups. No seed-catalog dimension to expand — international users build their own `app.user_merchants` via the same LLM-assist + auto-rule snowball as US/CA users.
 
 ### What's *not* in the forward-compatibility list
 
@@ -713,13 +631,13 @@ These would require revisiting cold-start design if they happen:
 This spec applies these surgical edits to the overview in the same PR:
 
 1. **Revise "Fully local" principle (line 19)** — clarify that automatic path is fully local; LLM-assist is opt-in, user-mediated, bound by this spec's redaction contract.
-2. **Revise priority hierarchy table (lines 30-43)** — add `'migration'` and `'seed'` values; revise priority numbering.
-3. **Revise pipeline diagram (lines 49-62)** — show seed merchants explicitly within step 2; show source-attached categorizations (Plaid, migration) pre-pipeline.
-4. **Revise "Bootstrap strategies" section (lines 270-331)** — drop "Synthetic training data" and "Pre-trained baseline model" entries (superseded); update "Seed merchant mappings" with cross-link to this spec; add "LLM-assist cold-start workflow" entry pointing here.
-5. **Update ML training weights table (lines 110-119)** — add `migration` (0.85), `seed` (0.5, with note that this is an open question).
-6. **Resolve and remove open questions (lines 410-416)** — remove "First-import prompt design" (resolved by this spec); revise "CLI-only cold start" to narrower "In-band LLM-assist for headless/automated CLI workflows" (manual bridge serves common case).
-7. **Add to "Adjacent initiatives" section (line 358-)** — recurring transaction detection (recommended future spec); local LLM-driven categorization (future spec).
-8. **Update "Out of scope" (line 346-356)** — narrow "LLM-assisted bulk categorization" entry to clarify the bulk *tool* is implemented; the cold-start *workflow* is owned by this spec.
+2. **Revise priority hierarchy table** — add `'migration'`; revise priority numbering. (Originally also added `'seed'`; retired 2026-05-15.)
+3. **Revise pipeline diagram** — show source-attached categorizations (Plaid, migration) pre-pipeline. (Originally also showed seed merchants; retired 2026-05-15.)
+4. **Revise "Bootstrap strategies" section** — drop "Synthetic training data" and "Pre-trained baseline model" entries (superseded); add "LLM-assist cold-start workflow" entry pointing here. (Originally also updated "Seed merchant mappings"; the entry was removed entirely 2026-05-15.)
+5. **Update ML training weights table** — add `migration` (0.85). (Originally also added `seed` (0.5); retired 2026-05-15.)
+6. **Resolve and remove open questions** — remove "First-import prompt design" (resolved by this spec); revise "CLI-only cold start" to narrower "In-band LLM-assist for headless/automated CLI workflows" (manual bridge serves common case).
+7. **Add to "Adjacent initiatives" section** — recurring transaction detection (recommended future spec); local LLM-driven categorization (future spec).
+8. **Update "Out of scope"** — narrow "LLM-assisted bulk categorization" entry to clarify the bulk *tool* is implemented; the cold-start *workflow* is owned by this spec.
 
 ## Testing Strategy
 
@@ -728,7 +646,7 @@ This spec applies these surgical edits to the overview in the same PR:
 | Unit | `redact_for_llm()` strips card last-fours, emails, phones, P2P names; preserves clean merchant patterns |
 | Unit | `RedactedTransaction` dataclass type-check: confirms no amount/date/account fields can be added without breaking existing call sites |
 | Unit | `did_you_mean` matcher returns reasonable suggestions for common typos |
-| Unit | Lookup ordering: user merchants beat seed merchants regardless of match_type |
+| Unit | Lookup ordering: match-shape DESC, created_at ASC over `app.user_merchants` |
 | Unit | Migration step idempotency: re-running migration on already-migrated DB is safe |
 | Fuzz | PII non-leakage: synthetic transactions with embedded last-4s, names, emails, phones — assert none appear in `categorize_assist` output |
 | Integration | `categorize_assist` end-to-end: load uncategorized, apply redaction, validate response shape |
@@ -736,14 +654,14 @@ This spec applies these surgical edits to the overview in the same PR:
 | Integration | Invalid category in apply returns structured error with `did_you_mean` |
 | Integration | Audit log entry created for every `categorize_assist` call with correct fields |
 | Integration | Migration: existing `app.merchants` rows survive split; `transaction_categories.merchant_id` references stay valid |
-| Scenario | `cold_start_first_import.yaml`: import 50 txns, verify seeds catch ~30%, simulate LLM-assist for the rest, verify auto-rule proposals generated |
+| Scenario | `cold_start_first_import.yaml`: import 50 txns, simulate LLM-assist, verify auto-rule proposals generated and snowball reduces uncategorized count |
 | E2E | Renamed CLI commands work (`transactions categorize apply`, `auto-accept`); old names removed |
 
 ## Synthetic Data Requirements
 
 The synthetic generator should support cold-start scenarios:
 
-- A "fresh install" persona that produces transactions matching common seed patterns (Starbucks, Amazon, Netflix, etc.) plus a long tail of region-specific or unusual merchants
+- A "fresh install" persona that produces transactions across common chains (Starbucks, Amazon, Netflix, etc.) plus a long tail of region-specific or unusual merchants — to exercise both the snowball repeat-pattern path and the LLM-assist long-tail path
 - An "uncategorized churn" pattern — many distinct merchants, each appearing 1–3 times — to exercise the LLM-assist long-tail path
 - Synthetic descriptions with embedded PII patterns (P2P transfers with names, emails, phone numbers) for fuzz-test fixtures
 - A "second import" scenario validating snowball behavior — generate import #1 with full uncategorized rate, simulate LLM-assist categorizations + auto-rule acceptance, then import #2 should hit auto-rules for repeat merchants
@@ -762,20 +680,20 @@ Prerequisite: `categorize-bulk.md` (implemented) — provides the underlying `bu
 
 Cross-cutting decisions deferred to implementation or future work.
 
-1. **ML training weight for `seed` categorizations.** Current proposal is 0.5; could be 0.0 (exclude — seeds bias toward generic patterns) or higher. Resolve during ML pillar implementation with empirical evaluation.
+1. ~~**ML training weight for `seed` categorizations.**~~ Resolved 2026-05-15: seed merchants retired.
 2. **Token/latency budgets for `categorize_assist` sessions.** No explicit per-session budgets. Default batch 100 unlikely to matter for v1; revisit when real usage data exists.
-3. **Regional ambiguity in seed entries.** Some merchants operate in multiple countries with subtly different categories. CSV format supports multiple rows; curation handles via global vs regional placement. Revisit if maintenance gets painful.
-4. **`country` column semantics on user-created merchants.** Seed entries have `country='US'`/`'CA'`/`'global'`. User-created merchants in `app.user_merchants` have no analog. View intentionally drops `country` exposure; resolution is via curation rules and lookup ordering.
-5. **Seed merchant updates: hot-reload vs migration.** SQLMesh seed model auto-detects CSV changes; `moneybin transform apply` re-materializes. Implementation should test the upgrade path explicitly, especially shadowing behavior between user merchants and new seeds.
+3. ~~**Regional ambiguity in seed entries.**~~ Resolved 2026-05-15: seed merchants retired, no regional surface.
+4. ~~**`country` column semantics on user-created merchants.**~~ Resolved 2026-05-15: seed merchants retired, no country exposure needed.
+5. ~~**Seed merchant updates: hot-reload vs migration.**~~ Resolved 2026-05-15: seed merchants retired.
 6. **CLI export format extensibility.** No versioning mechanism in v1. YAGNI applies; revisit when a real consumer needs additional fields.
 
 ## Success criteria
 
 ### Functional
 
-- **Cold-start coverage on first import (no Plaid, no migration):** ≥40% via seeds alone; ≥90% after LLM-assist session
+- **Cold-start coverage on first import (no Plaid, no migration):** ≥90% after LLM-assist session
 - **Cold-start coverage on first import (Plaid-sourced):** ≥85% pre-LLM
-- **Snowball trajectory:** by import #5, LLM-assist invocation reduces uncategorized count by ≤30% of pre-LLM total — meaning rules + seeds + auto-rules + ML are doing the work
+- **Snowball trajectory:** by import #5, LLM-assist invocation reduces uncategorized count by ≤30% of pre-LLM total — meaning rules + user_merchants + auto-rules + ML are doing the work
 - **Zero PII leakage in `categorize_assist` output** — fuzz suite with embedded PII patterns asserts no test value appears in output
 - **LLM categorization accuracy on redacted descriptions:** ≥80% on a held-out evaluation set (~200 transactions across common merchants and edge cases). Below 80% triggers redaction-contract revisit.
 - **Auto-rule generation from LLM-assist:** a 100-transaction LLM session produces ≥10 rule proposals on average
@@ -783,7 +701,6 @@ Cross-cutting decisions deferred to implementation or future work.
 
 ### Non-functional
 
-- **Seed load on `db init`:** <2 seconds for 2100 merchants across three CSVs
 - **`categorize_assist` server-side response time:** <500ms for batch of 100 (excludes LLM call latency)
 - **`categorize apply-from-file` server-side latency:** <2s for 100 transactions
 
@@ -801,7 +718,8 @@ Cross-cutting decisions deferred to implementation or future work.
 ## Out of Scope
 
 - Pre-trained baseline ML model (dropped from overview)
-- Synthetic training data from seed merchants (dropped from overview)
+- Synthetic training data (dropped from overview)
+- Seed merchant catalogs (retired 2026-05-15)
 - Tags / category groupings / discretionary-vs-mandatory (deferred to its own spec)
 - Migration mapping table schema design (separate open question, owned by future migration spec)
 - Merchant entity resolution / canonical name overhaul (existing future spec, untouched)

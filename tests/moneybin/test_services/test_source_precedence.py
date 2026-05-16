@@ -1,7 +1,7 @@
 """Tests for source-priority precedence enforcement on transaction_categories writes.
 
 Per categorization-matching-mechanics.md §Source precedence, the priority order is:
-user(1) > rule(2) > auto_rule(3) > migration(4) > ml(5) > plaid(6) > seed(7) > ai(8).
+user(1) > rule(2) > auto_rule(3) > migration(4) > ml(5) > plaid(6) > ai(7).
 A higher-priority source can never be overwritten by a lower-priority source.
 """
 
@@ -75,7 +75,7 @@ def _current_source(real_db: Database, txn_id: str) -> str | None:
 
 def test_user_overwrites_everything(real_db: Database, fresh_txn: str) -> None:
     svc = CategorizationService(real_db)
-    for predecessor in ["ai", "seed", "plaid", "ml", "migration", "auto_rule", "rule"]:
+    for predecessor in ["ai", "plaid", "ml", "migration", "auto_rule", "rule"]:
         svc.write_categorization(
             transaction_id=fresh_txn,
             category="Initial",

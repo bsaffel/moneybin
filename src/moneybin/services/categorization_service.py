@@ -97,9 +97,7 @@ def score_match_shape(match_type: str) -> int:
 # precedence. The SQL CASE expression in write_categorization is generated
 # from this dict via _priority_case_sql() so the Python dict stays the
 # canonical reference and SQL cannot drift from it.
-CategorizedBy = Literal[
-    "user", "rule", "auto_rule", "migration", "ml", "plaid", "seed", "ai"
-]
+CategorizedBy = Literal["user", "rule", "auto_rule", "migration", "ml", "plaid", "ai"]
 
 _SOURCE_PRIORITY: dict[str, int] = {
     "user": 1,
@@ -108,8 +106,7 @@ _SOURCE_PRIORITY: dict[str, int] = {
     "migration": 4,
     "ml": 5,
     "plaid": 6,
-    "seed": 7,
-    "ai": 8,
+    "ai": 7,
 }
 
 
@@ -519,16 +516,10 @@ def _fetch_merchants(
     """Fetch all merchant mappings ordered for lookup precedence.
 
     Ordering:
-    1. is_user DESC — user-created merchants outrank seed merchants
-    2. match-type OP_SCORE DESC — oneOf/exact (10) outrank contains/regex (0).
+    1. match-type OP_SCORE DESC — oneOf/exact (10) outrank contains/regex (0).
        CASE expression generated from :data:`_MATCH_SHAPE_SCORES` via
        :func:`_match_shape_case_sql` so SQL and Python ladders cannot drift.
-    3. created_at ASC — deterministic tie-break among same-score, same-author
-       merchants (NULL for seed rows; sorts last in DuckDB).
-
-    User outranks seed regardless of match-type granularity. A user 'contains'
-    rule beats a seed 'exact' rule because user authority over curated defaults
-    is the architectural commitment.
+    2. created_at ASC — deterministic tie-break among same-score merchants.
 
     Args:
         db: Database instance (read-only access is sufficient).
@@ -543,7 +534,6 @@ def _fetch_merchants(
                    canonical_name, category, subcategory, exemplars
             FROM {MERCHANTS.full_name}
             ORDER BY
-                is_user DESC,
                 {_match_shape_case_sql("match_type")} DESC,
                 created_at ASC
             """,  # noqa: S608  # MERCHANTS is a TableRef constant; CASE generated from _MATCH_SHAPE_SCORES
@@ -577,9 +567,9 @@ def _match_exemplar(
     """Match match_text against merchants' oneOf exemplar sets (set membership).
 
     Returns the first merchant whose exemplars contain ``match_text`` exactly.
-    Iteration order is the same as ``_fetch_merchants`` (is_user DESC, oneOf
-    first), so user merchants win and exact-string membership fires before
-    pattern-based shapes. Records ``outcome='exemplar'`` on a hit.
+    Iteration order is the same as ``_fetch_merchants`` (oneOf first), so
+    exact-string membership fires before pattern-based shapes. Records
+    ``outcome='exemplar'`` on a hit.
     """
     shape = _match_shape_label(description_present, memo_present)
 
@@ -1130,7 +1120,7 @@ class CategorizationService:
         (``categorized_by IN ('rule', 'auto_rule')`` with this rule_id) so
         those rows become pending again, then runs ``categorize_pending`` to
         re-evaluate them against the remaining active matchers. Writes from
-        higher-priority sources (user/migration/ml/plaid/seed) that happen to
+        higher-priority sources (user/migration/ml/plaid) that happen to
         share this rule_id reference are left intact.
         """
         row = self._db.execute(
@@ -1417,7 +1407,7 @@ class CategorizationService:
                 ).fetchall()
             }
         except duckdb.CatalogException:
-            # View not yet materialized (e.g., no seeds loaded); skip validation.
+            # View not yet materialized (e.g., seed categories not loaded); skip validation.
             valid_category_set = None
 
         if valid_category_set:
@@ -1751,7 +1741,7 @@ class CategorizationService:
             )
             if merchant and merchant.get("category"):
                 # Merchants don't have a dedicated source-priority slot in the v1
-                # ladder (user/rule/auto_rule/migration/ml/plaid/seed/ai). Recording
+                # ladder (user/rule/auto_rule/migration/ml/plaid/ai). Recording
                 # merchant matches as 'rule' preserves historical behavior; a
                 # follow-up spec may introduce a dedicated 'merchant' priority
                 # between auto_rule and migration.

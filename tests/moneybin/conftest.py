@@ -170,8 +170,9 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS category, "
         "CAST(NULL AS VARCHAR) AS subcategory, "
         "CAST(NULL AS VARCHAR) AS created_by, "
+        "CAST(NULL AS VARCHAR[]) AS exemplars, "
         "CAST(NULL AS TIMESTAMP) AS created_at, "
-        "CAST(NULL AS BOOLEAN) AS is_user "
+        "CAST(NULL AS TIMESTAMP) AS updated_at "
         "WHERE FALSE"
     )
     # Reports.* views — production builds these via SQLMesh; tests stub the
