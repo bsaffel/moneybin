@@ -61,5 +61,12 @@ def run_migration(db: Database, migrate_fn: Callable[[object], None]) -> None:
         migrate_fn(db._conn)  # pyright: ignore[reportPrivateUsage]
         db.execute("COMMIT")
     except Exception:
-        db.execute("ROLLBACK")
+        # Rollback is best-effort: V010/V011-style migrations may have already
+        # COMMITted and reopened a transaction, so we may rollback either an
+        # empty tx or none at all. Don't let a rollback failure mask the
+        # original migration error.
+        try:
+            db.execute("ROLLBACK")
+        except Exception:  # noqa: BLE001 S110 — best-effort cleanup; original error re-raised below
+            pass
         raise

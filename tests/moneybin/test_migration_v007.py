@@ -223,26 +223,20 @@ class TestV007Migration:
     def test_v007_idempotent_on_second_run(self, db: Database) -> None:
         """Second migrate run must leave state byte-identical to first run."""
         _drop_and_recreate_legacy_notes(db)
-        db.execute(
-            "INSERT INTO app.transaction_notes (transaction_id, note, created_at) "
-            "VALUES (?, ?, ?)",
-            ["txn_idem_1", "first legacy note", "2025-03-01 09:00:00"],
-        )
-        db.execute(
-            "INSERT INTO app.transaction_notes (transaction_id, note, created_at) "
-            "VALUES (?, ?, ?)",
-            ["txn_idem_2", "second legacy note", "2025-03-02 09:00:00"],
-        )
+        idem_notes = [
+            ("txn_idem_1", "first legacy note", "2025-03-01 09:00:00"),
+            ("txn_idem_2", "second legacy note", "2025-03-02 09:00:00"),
+            ("txn_idem_3", "third legacy note", "2025-03-03 09:00:00"),
+        ]
+        for transaction_id, note, created_at in idem_notes:
+            db.execute(
+                "INSERT INTO app.transaction_notes "
+                "(transaction_id, note, created_at) VALUES (?, ?, ?)",
+                [transaction_id, note, created_at],
+            )
         _create_legacy_ai_audit_log(db)
-        db.execute(
-            """
-            INSERT INTO app.ai_audit_log (
-                audit_id, timestamp, flow_tier, feature, backend, model,
-                data_sent_summary, data_sent_hash, response_summary,
-                consent_reference, user_initiated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
+        idem_ai_rows = [
+            (
                 "ai_idem_1",
                 "2025-03-03 09:00:00",
                 1,
@@ -254,8 +248,45 @@ class TestV007Migration:
                 "response",
                 "consent_xyz",
                 True,
-            ],
-        )
+            ),
+            (
+                "ai_idem_2",
+                "2025-03-04 10:30:00",
+                2,
+                "smart_import_parse",
+                "anthropic",
+                "claude-haiku-4-5",
+                "8 rows redacted",
+                "deadbeef" * 8,
+                "category labels",
+                "consent_abc",
+                False,
+            ),
+            (
+                "ai_idem_3",
+                "2025-03-05 14:15:00",
+                3,
+                "merchant_normalize",
+                "openai",
+                "gpt-4o-mini",
+                "20 merchants",
+                "feedface" * 8,
+                "canonical names",
+                "consent_def",
+                True,
+            ),
+        ]
+        for row in idem_ai_rows:
+            db.execute(
+                """
+                INSERT INTO app.ai_audit_log (
+                    audit_id, timestamp, flow_tier, feature, backend, model,
+                    data_sent_summary, data_sent_hash, response_summary,
+                    consent_reference, user_initiated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                list(row),
+            )
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
@@ -279,7 +310,7 @@ class TestV007Migration:
             "FROM app.audit_log ORDER BY audit_id"
         ).fetchall()
 
-        assert len(notes_after_first) == 2
-        assert len(audit_after_first) == 1
+        assert len(notes_after_first) == len(idem_notes)
+        assert len(audit_after_first) == len(idem_ai_rows)
         assert notes_after_second == notes_after_first
         assert audit_after_second == audit_after_first

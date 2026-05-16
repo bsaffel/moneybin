@@ -36,7 +36,11 @@ def migrate(conn: object) -> None:
             "ALTER TABLE app.balance_assertions "
             "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
         )
-        # Commit the backfill before SET NOT NULL — see module docstring.
+        # Commit the backfill before SET NOT NULL. A crash in the window
+        # between this COMMIT and the SET NOT NULL below leaves the column
+        # added-but-nullable with a success=false schema_migrations row;
+        # recovery is: delete that row, re-run, and the `elif` branch below
+        # tightens the constraint.
         conn.execute("COMMIT")  # type: ignore[union-attr]
         conn.execute("BEGIN TRANSACTION")  # type: ignore[union-attr]
         conn.execute(  # type: ignore[union-attr]
