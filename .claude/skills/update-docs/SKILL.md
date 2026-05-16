@@ -117,7 +117,8 @@ If a change has no user-visible effect, say so in the report and move on.
 
 ### 2. Dispatch one subagent per affected doc file, in parallel
 
-Cap at **3 in flight** per CLAUDE.md. Larger sets process in waves.
+Cap at **3 in flight** to avoid overwhelming Claude Code's subagent
+capacity. Larger sets process in waves.
 
 Each subagent receives a self-contained prompt with:
 

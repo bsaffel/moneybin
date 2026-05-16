@@ -434,7 +434,6 @@ Two narrow naming changes ride along with this spec landing. Both are mechanical
 ### Strategic context
 
 - `private/strategy/2026-05-04-strategic-review-engineering.md` §(b) — Architectural review that catalogued the 12 primitives and recommended this spec.
-- `private/design.md` — Spec milestones and sequencing (this spec is M2B entry, sibling to `transaction-curation.md`).
 
 ### Source files (primitives)
 

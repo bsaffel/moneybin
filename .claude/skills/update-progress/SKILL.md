@@ -34,8 +34,9 @@ These files live at the **main repo root**, not inside any worktree.
 (see CLAUDE.md and AGENTS.md `../../private/` reference).
 
 When invoking from a worktree, paths look like `../../private/followups.md`
-or the absolute `/Users/bsaffel/Workspace/moneybin/private/followups.md`.
-Pass absolute paths to subagents to remove ambiguity.
+or the absolute form derived dynamically (e.g.,
+`$(git rev-parse --show-toplevel)/private/followups.md`). Pass absolute
+paths to subagents to remove ambiguity.
 
 ## Pruning rule (the core discipline)
 
@@ -81,7 +82,8 @@ Print a one-line scope summary before doing anything:
 ### 1. Dispatch one subagent per file, in parallel
 
 Four files → process in two waves of two (or one wave of three + one solo)
-to respect the **3-in-flight cap** from CLAUDE.md.
+to stay within a **3-in-flight cap** (a safe default to avoid overwhelming
+Claude Code's subagent capacity).
 
 Each subagent receives a self-contained prompt with:
 

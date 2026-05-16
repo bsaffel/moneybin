@@ -60,8 +60,8 @@ each in-scope source file, infer which specs it touches:
 
 ### 2. Dispatch one subagent per spec, in parallel
 
-Cap at **3 in flight** per Brandon's CLAUDE.md guidance on parallel agents.
-If more than 3 specs are touched, process in waves.
+Cap at **3 in flight** to avoid overwhelming Claude Code's subagent
+capacity. If more than 3 specs are touched, process in waves.
 
 Each subagent receives a self-contained prompt with:
 
@@ -115,4 +115,4 @@ After all subagents complete, summarize for Brandon:
 - Touch `private/` tracking docs — that's `/update-progress`.
 - Touch public guides, README, CHANGELOG, roadmap — that's `/update-docs`.
 - Expand scope beyond what was detected without explicit user approval.
-- Reintroduce private/ path references in specs (memory: "no private/ refs in public docs").
+- Add new `private/` path references in specs. Existing references should be **removed when encountered** in the pass, matching the stored "no private/ refs in public docs" guidance — do not preserve them just because they were there before.
