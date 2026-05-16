@@ -89,27 +89,5 @@ def test_multifile_import_makes_all_accounts_visible(
     assert post_max[0] is not None, "core.dim_accounts.updated_at is NULL"
 
     status = SystemService(db).status()
-    if status.transforms_pending:
-        # Capture both sides of the freshness comparison so a CI failure tells
-        # us which side is newer. Pre-amble for debugging timestamp-precision
-        # or timezone-cast issues between raw.import_log.completed_at (naive
-        # TIMESTAMP) and core.dim_accounts.updated_at (TIMESTAMPTZ → naive).
-        diag_import = db.execute(
-            "SELECT MAX(completed_at)::TIMESTAMP, MAX(completed_at) "
-            "FROM raw.import_log WHERE status NOT IN ('reverted', 'failed')"
-        ).fetchone()
-        diag_dim = db.execute(
-            "SELECT MAX(updated_at)::TIMESTAMP, MAX(updated_at), TYPEOF(MAX(updated_at)) "
-            "FROM core.dim_accounts"
-        ).fetchone()
-        diag_log = db.execute(
-            "SELECT import_id, source_file, status, started_at, completed_at "
-            "FROM raw.import_log ORDER BY started_at"
-        ).fetchall()
-        raise AssertionError(
-            f"transforms_pending=True after apply.\n"
-            f"  import_log max (cast TIMESTAMP, raw): {diag_import}\n"
-            f"  dim_accounts max (cast TIMESTAMP, raw, typeof): {diag_dim}\n"
-            f"  import_log rows: {diag_log}"
-        )
+    assert status.transforms_pending is False
     assert status.transforms_last_apply_at is not None

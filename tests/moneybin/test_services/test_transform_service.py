@@ -22,18 +22,19 @@ _INSERT_IMPORT = (
     "VALUES (?, '/tmp/f.csv', 'csv', 'test', '[]'::JSON, ?, ?)"
 )
 
+# raw.ofx_accounts NOT NULL columns. Tests only care about account_id,
+# extracted_at, and import_id; the rest are stubs.
+_INSERT_RAW_ACCOUNT = (
+    "INSERT INTO raw.ofx_accounts "
+    "(account_id, source_file, extracted_at, import_id) "
+    "VALUES (?, '/tmp/f.ofx', ?, ?)"
+)
+
 
 def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    # Naive timestamp; mirrors raw.import_log.completed_at (TIMESTAMP).
+    # Naive timestamp; mirrors raw.*_accounts.extracted_at and
+    # raw.import_log.completed_at (both TIMESTAMP).
     return datetime(year, month, day, hour, minute)
-
-
-def _tz(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    # tz-aware (UTC); mirrors core.dim_accounts.updated_at in production. SQLMesh
-    # materializes the column from CURRENT_TIMESTAMP, which DuckDB types as
-    # TIMESTAMP WITH TIME ZONE. The unit fixture matches that type so a naive-vs-
-    # aware comparison bug in TransformService.freshness() surfaces in tests.
-    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
@@ -48,31 +49,36 @@ def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
 def freshness_db(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> Generator[Database, None, None]:
-    """Empty DB with core.dim_accounts shimmed in (raw.import_log is auto-created).
+    """Empty DB with core.dim_accounts shimmed in (raw.* are auto-created).
 
-    The session TZ is pinned to UTC so tz-aware datetimes inserted into
-    ``dim_accounts.updated_at`` round-trip predictably through the
-    ``::TIMESTAMP`` cast in ``TransformService.freshness()`` (DuckDB casts
-    ``TIMESTAMPTZ`` to ``TIMESTAMP`` using the session TZ).
+    The shimmed dim has both ``extracted_at`` (the propagated raw value
+    that drives the pending comparison) and ``updated_at`` (the SQLMesh
+    CURRENT_TIMESTAMP retained for the informational ``last_apply_at``
+    field). The session TZ is pinned to UTC so naive vs. tz-aware
+    inserts round-trip predictably through the ``updated_at::TIMESTAMP``
+    cast in :meth:`TransformService._max_dim_accounts_updated_at`.
     """
     db = _open_db(tmp_path, mock_secret_store)
     try:
         db.execute("SET TimeZone = 'UTC'")
         db.execute(
             "CREATE TABLE core.dim_accounts "
-            "(account_id VARCHAR, updated_at TIMESTAMP WITH TIME ZONE)"
+            "(account_id VARCHAR, extracted_at TIMESTAMP, "
+            "updated_at TIMESTAMP WITH TIME ZONE)"
         )
         yield db
     finally:
         db.close()
 
 
-def test_freshness_pending_when_import_newer_than_apply(
+def test_freshness_pending_when_raw_newer_than_dim(
     freshness_db: Database,
 ) -> None:
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
+        [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
     )
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), "i1"])
     freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is True
@@ -80,11 +86,14 @@ def test_freshness_pending_when_import_newer_than_apply(
     assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
 
 
-def test_freshness_not_pending_when_apply_newer(freshness_db: Database) -> None:
+def test_freshness_not_pending_when_dim_caught_up(freshness_db: Database) -> None:
+    extracted = _ts(2026, 5, 13, 18, 24)
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 13, 19, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
+        [extracted, _ts(2026, 5, 13, 19, 0)],
     )
-    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", extracted, "i1"])
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 30)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is False
 
@@ -92,10 +101,10 @@ def test_freshness_not_pending_when_apply_newer(freshness_db: Database) -> None:
 def test_freshness_pending_when_dim_table_missing(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
-    """Pre-first-transform: dim_accounts doesn't exist; pending if any imports."""
+    """Pre-first-transform: dim_accounts doesn't exist; pending if any raw rows."""
     db = _open_db(tmp_path, mock_secret_store)
     try:
-        db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
+        db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), None])
         f = TransformService(db).freshness()
         assert f.pending is True
         assert f.last_apply_at is None
@@ -103,10 +112,10 @@ def test_freshness_pending_when_dim_table_missing(
         db.close()
 
 
-def test_freshness_no_imports_no_pending(
+def test_freshness_no_raw_no_pending(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
-    """No imports yet: pending=False (nothing waiting to be refreshed)."""
+    """No raw rows yet: pending=False (nothing waiting to be refreshed)."""
     db = _open_db(tmp_path, mock_secret_store)
     try:
         f = TransformService(db).freshness()
@@ -120,10 +129,15 @@ def test_freshness_no_imports_no_pending(
 def test_freshness_filters_reverted_and_failed_imports(
     freshness_db: Database,
 ) -> None:
-    """Reverted and failed rows must not count toward staleness."""
+    """Raw rows tied to reverted/failed imports must not count toward staleness."""
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
+        [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
     )
+    # Reverted revert deletes raw rows in production; failed imports may leave
+    # partial raw rows. Both should be filtered by import_log status.
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), "i1"])
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["b", _ts(2026, 5, 13, 18, 30), "i2"])
     freshness_db.execute(_INSERT_IMPORT, ["i1", "reverted", _ts(2026, 5, 13, 18, 24)])
     freshness_db.execute(_INSERT_IMPORT, ["i2", "failed", _ts(2026, 5, 13, 18, 30)])
     f = TransformService(freshness_db).freshness()
@@ -134,8 +148,10 @@ def test_freshness_filters_reverted_and_failed_imports(
 def test_freshness_counts_partial_imports(freshness_db: Database) -> None:
     """Partial imports landed some rows; they count toward staleness."""
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?)", [_tz(2026, 5, 10, 12, 0)]
+        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
+        [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
     )
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), "i1"])
     freshness_db.execute(_INSERT_IMPORT, ["i1", "partial", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is True

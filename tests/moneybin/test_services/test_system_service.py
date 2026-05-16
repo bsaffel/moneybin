@@ -184,11 +184,39 @@ def _seed_import_log(db: Database, completed_at: datetime) -> None:
     )
 
 
+def _seed_raw_ofx_account(db: Database, extracted_at: datetime, import_id: str) -> None:
+    """Insert one raw.ofx_accounts row at the given extracted_at."""
+    db.conn.execute(
+        """
+        INSERT INTO raw.ofx_accounts
+        (account_id, source_file, extracted_at, import_id)
+        VALUES ('ACC001', 'test.qfx', ?, ?)
+        """,
+        [extracted_at, import_id],
+    )
+
+
+def _insert_dim_account(
+    db: Database, dim_extracted_at: datetime, dim_updated_at: datetime
+) -> None:
+    """Insert one dim_accounts row with the given extracted_at and updated_at."""
+    db.conn.execute(
+        """
+        INSERT INTO core.dim_accounts VALUES
+        ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
+         'test.qfx', ?, CURRENT_TIMESTAMP, ?,
+         'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD',
+         NULL, FALSE, TRUE)
+        """,
+        [dim_extracted_at, dim_updated_at],
+    )
+
+
 @pytest.mark.unit
-def test_status_transforms_pending_when_import_newer_than_apply(
+def test_status_transforms_pending_when_raw_newer_than_dim(
     tmp_path: Path,
 ) -> None:
-    """transforms_pending is True when newest import postdates dim_accounts.updated_at."""
+    """transforms_pending is True when a raw account row postdates dim_accounts.extracted_at."""
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
     database = Database(
@@ -199,16 +227,8 @@ def test_status_transforms_pending_when_import_newer_than_apply(
     try:
         create_core_tables_raw(database.conn)
         dim_updated = datetime(2026, 5, 10, 12, 0)
-        database.conn.execute(
-            """
-            INSERT INTO core.dim_accounts VALUES
-            ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
-             'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, ?,
-             'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD',
-             NULL, FALSE, TRUE)
-            """,
-            [dim_updated],
-        )
+        _insert_dim_account(database, datetime(2025, 1, 1), dim_updated)
+        _seed_raw_ofx_account(database, datetime(2026, 5, 13, 18, 24), "import-1")
         _seed_import_log(database, datetime(2026, 5, 13, 18, 24))
 
         status = SystemService(db=database).status()
@@ -220,7 +240,7 @@ def test_status_transforms_pending_when_import_newer_than_apply(
 
 @pytest.mark.unit
 def test_status_transforms_not_pending_after_apply(tmp_path: Path) -> None:
-    """transforms_pending is False when dim_accounts.updated_at postdates last import."""
+    """transforms_pending is False when dim_accounts.extracted_at >= raw max extracted_at."""
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
     database = Database(
@@ -231,17 +251,10 @@ def test_status_transforms_not_pending_after_apply(tmp_path: Path) -> None:
     try:
         create_core_tables_raw(database.conn)
         dim_updated = datetime(2026, 5, 13, 19, 0)
-        database.conn.execute(
-            """
-            INSERT INTO core.dim_accounts VALUES
-            ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
-             'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, ?,
-             'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD',
-             NULL, FALSE, TRUE)
-            """,
-            [dim_updated],
-        )
-        _seed_import_log(database, datetime(2026, 5, 13, 18, 24))
+        extracted = datetime(2026, 5, 13, 18, 24)
+        _insert_dim_account(database, extracted, dim_updated)
+        _seed_raw_ofx_account(database, extracted, "import-1")
+        _seed_import_log(database, datetime(2026, 5, 13, 18, 30))
 
         status = SystemService(db=database).status()
         assert status.transforms_pending is False

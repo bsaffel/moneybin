@@ -141,37 +141,34 @@ class TransformService:
     def freshness(self) -> TransformFreshness:
         """Return raw-vs-dim staleness without initializing SQLMesh.
 
-        Pending iff the newest completed import is newer than the newest
-        ``core.dim_accounts.updated_at``. When ``core.dim_accounts`` is
-        missing (pre-first-transform), pending=True if any imports exist.
+        Pending iff a raw account row exists whose ``extracted_at`` is
+        newer than the newest ``core.dim_accounts.extracted_at``. Both
+        sides compare the same propagated data value (Python-set when
+        the loader parses the file, carried unchanged through SQLMesh
+        into ``dim_accounts.extracted_at``) — so the check is immune to
+        the DuckDB ``CURRENT_TIMESTAMP`` transaction-start race that
+        affects clock-derived columns when autocommit writes and a
+        longer SQLMesh apply transaction interleave.
 
-        Both timestamps are cast to naive ``TIMESTAMP`` in SQL before being
-        returned to Python. ``raw.import_log.completed_at`` is already naive
-        ``TIMESTAMP``, but ``core.dim_accounts.updated_at`` is materialized
-        from ``CURRENT_TIMESTAMP`` by SQLMesh, which DuckDB types as
-        ``TIMESTAMP WITH TIME ZONE``. Mixing tz-aware and naive datetimes in
-        Python's ``>`` comparison raises ``TypeError`` — normalize in SQL so
-        both sides of the comparison are the same type.
+        ``last_apply_at`` (``dim_accounts.updated_at``) and
+        ``latest_import_at`` (``import_log.completed_at``) remain
+        wall-clock values for display only; they do not drive the
+        pending decision.
         """
-        latest_import_at = self._max_completed_import_at()
-        last_apply_at = self._max_dim_accounts_updated_at()
+        pending_extracted = self._max_unapplied_raw_extracted_at()
+        dim_extracted = self._max_dim_accounts_extracted_at()
 
-        if latest_import_at is None:
-            return TransformFreshness(
-                pending=False,
-                last_apply_at=last_apply_at,
-                latest_import_at=None,
-            )
-        if last_apply_at is None:
-            return TransformFreshness(
-                pending=True,
-                last_apply_at=None,
-                latest_import_at=latest_import_at,
-            )
+        if pending_extracted is None:
+            pending = False
+        elif dim_extracted is None:
+            pending = True
+        else:
+            pending = pending_extracted > dim_extracted
+
         return TransformFreshness(
-            pending=latest_import_at > last_apply_at,
-            last_apply_at=last_apply_at,
-            latest_import_at=latest_import_at,
+            pending=pending,
+            last_apply_at=self._max_dim_accounts_updated_at(),
+            latest_import_at=self._max_completed_import_at(),
         )
 
     def status(self) -> TransformStatus:
@@ -332,5 +329,46 @@ class TransformService:
             ).fetchone()
         except duckdb.CatalogException:
             # CatalogException when core.dim_accounts not yet created (pre-first-transform)
+            return None
+        return row[0] if row and row[0] is not None else None
+
+    def _max_dim_accounts_extracted_at(self) -> datetime | None:
+        try:
+            row = self._db.execute(
+                f"SELECT MAX(extracted_at) FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant
+            ).fetchone()
+        except duckdb.CatalogException:
+            return None
+        return row[0] if row and row[0] is not None else None
+
+    def _max_unapplied_raw_extracted_at(self) -> datetime | None:
+        """MAX(extracted_at) across raw account staging, excluding bad imports.
+
+        Mirrors :meth:`_max_completed_import_at`'s status filter so a
+        partially-loaded failed batch (rows landed before the ingest
+        errored) doesn't permanently trigger pending=True. ``raw.plaid_accounts``
+        has no ``import_id`` column (Plaid sync doesn't use ``import_log``),
+        so its rows always pass the filter.
+        """
+        try:
+            row = self._db.execute(
+                """
+                WITH bad_imports AS (
+                    SELECT import_id FROM raw.import_log
+                    WHERE status IN ('reverted', 'failed')
+                ), candidates AS (
+                    SELECT extracted_at, import_id FROM raw.ofx_accounts
+                    UNION ALL
+                    SELECT extracted_at, import_id FROM raw.tabular_accounts
+                    UNION ALL
+                    SELECT extracted_at, NULL::VARCHAR AS import_id
+                    FROM raw.plaid_accounts
+                )
+                SELECT MAX(extracted_at) FROM candidates
+                WHERE import_id IS NULL
+                   OR import_id NOT IN (SELECT import_id FROM bad_imports)
+                """
+            ).fetchone()
+        except duckdb.CatalogException:
             return None
         return row[0] if row and row[0] is not None else None
