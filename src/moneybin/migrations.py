@@ -31,6 +31,16 @@ _MIGRATIONS_DIR = Path(__file__).resolve().parent / "sql" / "migrations"
 # V<3+ digits>__<snake_case>.<sql|py>
 _MIGRATION_PATTERN = re.compile(r"^V(\d{3,})__(\w+)\.(sql|py)$")
 
+# Truncated SHA-256 length used for content_hash. 16 hex chars (64 bits) per
+# .claude/rules/identifiers.md "Content Hashes" — readable in logs, ample
+# collision margin across the small migration ladder.
+_CONTENT_HASH_LEN = 16
+
+
+def short_hash(content: bytes) -> str:
+    """Return the 16-hex-char truncated SHA-256 used for content_hash."""
+    return hashlib.sha256(content).hexdigest()[:_CONTENT_HASH_LEN]
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -214,6 +224,7 @@ class MigrationRunner:
         self._db = db
         self._migrations_dir = migrations_dir or _MIGRATIONS_DIR
         self._cached_migrations: list[Migration] | None = None
+        self._tracking_schema_bootstrapped = False
 
     @property
     def _migrations(self) -> list[Migration]:
@@ -221,6 +232,29 @@ class MigrationRunner:
         if self._cached_migrations is None:
             self._cached_migrations = discover_migrations(self._migrations_dir)
         return self._cached_migrations
+
+    def _ensure_tracking_schema(self) -> None:
+        """Add app.schema_migrations.content_hash on pre-V013 DBs.
+
+        The runner's self-heal logic queries content_hash before V013 has had
+        a chance to add it on databases created before this column existed
+        — including from inside the very ``pending()`` call that decides
+        whether V013 should run. Bootstrap the column here so the query
+        never references a missing identifier. Idempotent.
+        """
+        if self._tracking_schema_bootstrapped:
+            return
+        row = self._db.execute(
+            "SELECT 1 FROM duckdb_columns() "
+            "WHERE schema_name = 'app' "
+            "AND table_name = 'schema_migrations' "
+            "AND column_name = 'content_hash'"
+        ).fetchone()
+        if row is None:
+            self._db.execute(
+                "ALTER TABLE app.schema_migrations ADD COLUMN content_hash VARCHAR"
+            )
+        self._tracking_schema_bootstrapped = True
 
     def check_drift(self) -> list[DriftWarning]:
         """Check for checksum drift between applied migrations and current files.
@@ -264,22 +298,66 @@ class MigrationRunner:
 
         return warnings
 
-    def check_stuck(self) -> None:
-        """Check for stuck migrations (success=false in tracking table).
+    def _stuck_blocker(
+        self,
+        *,
+        version: int,
+        filename: str,
+        stored_hash: str | None,
+        migration: Migration | None,
+    ) -> MigrationError | None:
+        """Classify a stuck (success=false) row.
 
-        Raises:
-            MigrationError: If any migration has success=false.
+        Returns ``None`` when the row is self-heal-eligible (a migration body
+        whose hash no longer matches the recorded failure). Returns a ready-to-
+        raise ``MigrationError`` for the unrecoverable cases: matching hash,
+        NULL hash (pre-V013), and missing file.
         """
-        stuck = self._db.execute(
-            "SELECT version, filename FROM app.schema_migrations "
-            "WHERE success = FALSE ORDER BY version LIMIT 1"
-        ).fetchone()
-        if stuck is not None:
-            raise MigrationError(
-                f"Stuck migration: {stuck[1]} (version {stuck[0]}) failed previously. "
-                f"Fix the issue and delete the row from app.schema_migrations to retry, "
-                f"or apply a corrective migration with a higher version number."
+        if migration is None:
+            return MigrationError(
+                f"Stuck migration: {filename} (version {version}) failed "
+                f"previously and the migration file no longer exists on disk. "
+                f"Delete the row from app.schema_migrations or restore the file."
             )
+        if stored_hash is None:
+            return MigrationError(
+                f"Stuck migration: {filename} (version {version}) failed "
+                f"previously (existing row has no content_hash; pre-dates "
+                f"self-heal). Manually clear the row if the code has been fixed."
+            )
+        if stored_hash == short_hash(migration.content):
+            return MigrationError(
+                f"Stuck migration: {filename} (version {version}) failed "
+                f"previously with the same code (hash {stored_hash}). Fix the "
+                f"issue and re-run; the runner will auto-clear the failure row "
+                f"once the migration body changes."
+            )
+        return None
+
+    def check_stuck(self) -> None:
+        """Raise for stuck rows the runner can't self-heal.
+
+        Self-heal-eligible rows are skipped — ``apply_one`` clears them on
+        retry.
+        """
+        self._ensure_tracking_schema()
+        rows = self._db.execute(
+            "SELECT version, filename, content_hash FROM app.schema_migrations "
+            "WHERE success = FALSE ORDER BY version"
+        ).fetchall()
+        if not rows:
+            return
+
+        files_by_version = {m.version: m for m in self._migrations}
+        for version, filename, stored_hash in rows:
+            blocker = self._stuck_blocker(
+                version=version,
+                filename=filename,
+                stored_hash=stored_hash,
+                migration=files_by_version.get(version),
+            )
+            if blocker is not None:
+                raise blocker
 
     def applied_versions(self) -> dict[int, str]:
         """Return applied migration versions and their checksums.
@@ -314,13 +392,36 @@ class MigrationRunner:
         ]
 
     def pending(self) -> list[Migration]:
-        """Return migrations that have not yet been applied, sorted by version.
+        """Return migrations needing application, sorted by version.
 
-        Returns:
-            List of unapplied Migration objects in version order.
+        Includes never-applied migrations and self-heal-eligible stuck
+        migrations (failure row present with a content_hash that no longer
+        matches the file body). Excludes successful runs and unrecoverable
+        stuck rows — check_stuck() raises for those before apply_all gets
+        here.
         """
-        applied = self.applied_versions()
-        return [m for m in self._migrations if m.version not in applied]
+        self._ensure_tracking_schema()
+        rows = self._db.execute(
+            "SELECT version, success, content_hash FROM app.schema_migrations"
+        ).fetchall()
+        state_by_version: dict[int, tuple[bool, str | None]] = {
+            row[0]: (row[1], row[2]) for row in rows
+        }
+
+        result: list[Migration] = []
+        for migration in self._migrations:
+            state = state_by_version.get(migration.version)
+            if state is None:
+                result.append(migration)
+                continue
+            success, stored_hash = state
+            if success:
+                continue
+            # Stuck row — include only when self-heal can clear it. Conservative
+            # for standalone callers; apply_one re-validates before clearing.
+            if stored_hash is not None and stored_hash != short_hash(migration.content):
+                result.append(migration)
+        return result
 
     def _record_migration(
         self,
@@ -338,40 +439,70 @@ class MigrationRunner:
         """
         self._db.execute(
             "INSERT INTO app.schema_migrations "
-            "(version, filename, checksum, success, execution_ms) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(version, filename, checksum, success, execution_ms, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             [
                 migration.version,
                 migration.filename,
                 migration.checksum,
                 success,
                 elapsed_ms,
+                short_hash(migration.content),
             ],
         )
 
     def apply_one(self, migration: Migration) -> None:
         """Apply a single migration within a transaction.
 
-        If the migration version is already recorded in the tracking table,
-        this is a silent no-op (idempotent). On failure, the migration DDL
-        is rolled back but a tracking row with success=false is recorded.
+        Idempotent on success: a recorded success row makes this a no-op.
+        Self-healing on failure: if a previous attempt left a success=false
+        row but the migration body has changed since that failure, the
+        stale row is cleared and the migration is retried once. A matching
+        hash (or a legacy NULL hash) preserves the guard and raises
+        MigrationError so a human can decide.
 
         Args:
             migration: The migration to apply.
 
         Raises:
-            MigrationError: If the migration fails to execute.
+            MigrationError: If a stuck row blocks the retry, or if the
+                migration itself fails.
         """
-        # Idempotent: skip if already applied
+        self._ensure_tracking_schema()
         existing = self._db.execute(
-            "SELECT version FROM app.schema_migrations WHERE version = ?",
+            "SELECT success, content_hash FROM app.schema_migrations WHERE version = ?",
             [migration.version],
         ).fetchone()
         if existing is not None:
-            logger.debug(
-                f"Migration V{migration.version:03d} already applied, skipping"
+            success, stored_hash = existing
+            if success:
+                logger.debug(
+                    f"Migration V{migration.version:03d} already applied, skipping"
+                )
+                return
+            blocker = self._stuck_blocker(
+                version=migration.version,
+                filename=migration.filename,
+                stored_hash=stored_hash,
+                migration=migration,
             )
-            return
+            if blocker is not None:
+                raise blocker
+            # Hash mismatch — maintainer has shipped a fix since the failure.
+            # Clear the stale row outside the migration transaction so the
+            # retry sees a clean slate. A failed retry records a fresh
+            # success=false row with the new hash; the next attempt against
+            # newer code will self-heal again.
+            logger.info(
+                f"Migration V{migration.version:03d} previously failed but body "
+                f"has changed (old hash {stored_hash} → new "
+                f"{short_hash(migration.content)}); clearing failure record "
+                f"and retrying."
+            )
+            self._db.execute(
+                "DELETE FROM app.schema_migrations WHERE version = ?",
+                [migration.version],
+            )
 
         logger.debug(f"Applying migration {migration.filename}")
         start = time.monotonic()
