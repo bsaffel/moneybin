@@ -12,20 +12,26 @@ paths: ["tests/**", "**/conftest.py", "src/moneybin/testing/**"]
 
 ## Markers
 
+Every test belongs to exactly one **category**: `unit`, `integration`, `e2e`, or `scenarios`. `tests/conftest.py` auto-applies `unit` to any test that lacks a category marker, so unit tests need no marker; everything else declares its category explicitly. The conftest hook errors at collection if a test ends up with more than one category. `slow` is orthogonal — it can stack on any category to flag long-running tests for local-dev opt-out.
+
 ```python
-@pytest.mark.unit         # Fast unit tests (default)
-@pytest.mark.integration  # Requires external systems
+@pytest.mark.unit         # Fast unit tests (default — auto-applied when no category present)
+@pytest.mark.integration  # Requires external systems / real DB / SQLMesh
 @pytest.mark.e2e          # End-to-end subprocess tests
-@pytest.mark.slow         # Long-running
+@pytest.mark.scenarios    # Whole-pipeline scenario tests (real DB, real SQLMesh, slow)
+@pytest.mark.slow         # Orthogonal: stacks on any category; locally opt out via `-m "not slow"`
 ```
 
 ## Commands
 
 ```bash
 uv run pytest tests/ -v                                       # All tests
-uv run pytest tests/ -v -m "not integration and not e2e"      # Unit only
+uv run pytest tests/ -m unit                                  # Unit only
+uv run pytest tests/ -m integration                           # Integration only
+uv run pytest tests/ -m e2e                                   # E2E only
+uv run pytest tests/ -m scenarios                             # Scenarios only
+uv run pytest tests/ -m "unit and not slow"                   # Fast local dev loop (matches `make test`)
 uv run pytest tests/test_file.py -v                           # Specific file
-uv run pytest tests/e2e/ -m "e2e" -v                          # E2E only
 uv run pytest tests/ --cov=src/moneybin --cov-report=html     # Coverage
 uv run pytest tests/path/to/test.py -n0 -v                    # Disable xdist (for pdb / clean output)
 ```

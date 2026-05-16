@@ -7,7 +7,7 @@ on:
 
 jobs:
   # Detect whether any non-docs files changed. For pushes to main we always
-  # run the full suite; for PRs we skip lint/type/test when only docs changed.
+  # run the full suite; for PRs we skip code jobs when only docs changed.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -37,8 +37,10 @@ jobs:
             echo "code=true" >> $GITHUB_OUTPUT
           fi
 
-  format:
-    name: Format Check
+  checks:
+    name: Checks
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -51,11 +53,22 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Check formatting
+      - name: Format check
         run: uv run ruff format --check .
 
-  ci:
-    name: Lint, Type Check & Test
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run pyright
+
+  # Test jobs select by marker across the whole tests/ tree, not by
+  # directory. Every test ends up with exactly one of
+  # {unit, integration, e2e, scenarios} — the root conftest auto-applies
+  # `unit` when no category marker is present and errors on conflicts,
+  # so each job can use a plain `-m <category>` selection.
+  test-unit:
+    name: Unit tests
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -75,14 +88,8 @@ jobs:
           curl -fsSL https://install.duckdb.org | sh
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Type check
-        run: uv run pyright
-
       - name: Test
-        run: uv run pytest tests/ -v --cov=src --cov-report=xml --durations=25
+        run: uv run pytest tests/ -m unit -v --cov=src --cov-report=xml --durations=25
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v7
@@ -90,3 +97,51 @@ jobs:
         with:
           name: coverage
           path: coverage.xml
+
+  test-integration:
+    name: Integration tests
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://install.duckdb.org | sh
+          echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
+
+      - name: Test
+        run: uv run pytest tests/ -m integration -v --durations=25
+
+  test-e2e:
+    name: E2E tests
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://install.duckdb.org | sh
+          echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
+
+      - name: Test
+        run: uv run pytest tests/ -m e2e -v --durations=25
