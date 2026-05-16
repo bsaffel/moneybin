@@ -14,10 +14,8 @@ import re
 import duckdb
 
 from moneybin.database import Database, get_database
-from moneybin.services.categorization import (
-    CategorizationService,
-    normalize_description,
-)
+from moneybin.services._text import normalize_description
+from moneybin.services.categorization import CategorizationService
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,

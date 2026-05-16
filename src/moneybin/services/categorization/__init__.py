@@ -7,7 +7,10 @@ auto-categorization lives in the MCP layer (auto_categorize tool).
 The public API is the ``CategorizationService`` class. The companion
 ``AutoRuleService`` (``auto_rule_service.py``) handles the auto-rule
 proposal/approval/deactivation lifecycle and depends on this module's
-``find_matching_rule`` and ``normalize_description``.
+``find_matching_rule``. Pure text helpers (``normalize_description``,
+``build_match_inputs``, ``redact_for_llm``) live in
+``moneybin.services._text`` so both packages can import from there
+without a circular dependency.
 """
 
 import logging
