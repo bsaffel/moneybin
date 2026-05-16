@@ -85,10 +85,12 @@ import typer
 from moneybin.cli.main import app as cli_app
 from moneybin.mcp import server as mcp_server
 
-# CLI-only by security policy: secret material through the LLM context
-# window. See `.claude/rules/mcp-server.md` "When CLI-only is justified"
-# category 1.
-_SECRET_MATERIAL: frozenset[str] = frozenset({
+# Names allowed CLI-only by `.claude/rules/mcp-server.md` "When CLI-only
+# is justified." Grouped by category for documentation; the test only
+# uses the union.
+CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
+    # Category 1 — secret material through the LLM context window
+    # (passphrases, encryption keys, key-derivation material).
     "db_init",
     "db_unlock",
     "db_key_rotate",
@@ -97,16 +99,7 @@ _SECRET_MATERIAL: frozenset[str] = frozenset({
     "db_key_import",
     "db_key_verify",
     "sync_key_rotate",
-})
-
-# CLI-only by operator policy: bootstrapping, recovery, and developer-
-# tooling that require physical operator presence. See
-# `.claude/rules/mcp-server.md` "When CLI-only is justified" category 2.
-# Note: ``db_init`` belongs to ``_SECRET_MATERIAL`` (it accepts a
-# passphrase) — secret-material is the load-bearing justification per
-# the rule's NOT-valid list. Not duplicated here.
-_OPERATOR_TERRITORY: frozenset[str] = frozenset({
-    # Database lifecycle
+    # Category 2 — operator territory. Database lifecycle:
     "db_lock",
     "db_ps",
     "db_kill",
@@ -117,22 +110,21 @@ _OPERATOR_TERRITORY: frozenset[str] = frozenset({
     "db_backup",
     "db_restore",
     "db_info",
-    # Raw SQL access — agent path is `sql_query` MCP tool.
-    "db_query",
-    # MCP server lifecycle + operator introspection
+    "db_query",  # raw SQL access; agent path is `sql_query` MCP tool
+    # MCP server lifecycle + operator introspection:
     "mcp_serve",
     "mcp_install",
     "mcp_config_path",
     "mcp_list_tools",
     "mcp_list_prompts",
-    # Profile + identity
+    # Profile + identity:
     "profile_create",
     "profile_delete",
     "profile_list",
     "profile_set",
     "profile_show",
     "profile_switch",
-    # Developer tooling
+    # Developer tooling:
     "logs",
     "stats",
     "synthetic_generate",
@@ -140,8 +132,6 @@ _OPERATOR_TERRITORY: frozenset[str] = frozenset({
     "transform_seed",
     "transform_restate",
 })
-
-CLI_ONLY_ALLOWED: frozenset[str] = _SECRET_MATERIAL | _OPERATOR_TERRITORY
 
 # MCP-only by design — tools that implement MCP-protocol-specific
 # mechanisms with no CLI semantic. ``moneybin_discover`` is the
@@ -205,12 +195,6 @@ def _format_diff(label: str, names: set[str]) -> str:
     return f"{label} ({len(names)}):\n  " + "\n  ".join(sorted(names))
 
 
-# Marker: integration. The test runs in-process with no DB / SQLMesh /
-# subprocess, but it exercises the wiring between two subsystems (MCP
-# registration + Typer CLI tree) and registers the full MCP tool surface
-# at import time — broader than a single unit. Placement under
-# ``tests/integration/`` matches the directory convention from
-# ``.claude/rules/testing.md`` "Test Coverage by Layer."
 @pytest.mark.integration
 @pytest.mark.xfail(
     strict=True,
