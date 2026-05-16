@@ -147,6 +147,9 @@ class PullResult(BaseModel):
     balances_loaded: int
     transactions_removed: int
     institutions: list[InstitutionResult]
+    transforms_applied: bool = False
+    transforms_duration_seconds: float | None = None
+    transforms_error: str | None = None
 
 
 class ConnectResult(BaseModel):

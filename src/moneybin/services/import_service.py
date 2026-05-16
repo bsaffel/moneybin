@@ -30,6 +30,7 @@ from moneybin.metrics.registry import (
 )
 from moneybin.services._validators import validate_slug
 from moneybin.services.audit_service import AuditService
+from moneybin.services.refresh import refresh as _refresh
 
 logger = logging.getLogger(__name__)
 
@@ -85,20 +86,6 @@ class PerFileResult:
     rows_loaded: int = 0
     rows_skipped: int = 0
     import_id: str | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class PostImportHookResult:
-    """Outcome of running matching + transforms + categorization after a batch.
-
-    Captures whether transforms ran, how long they took, and any error so
-    callers (batch import, inbox sync) can surface the state to users without
-    swallowing the failure.
-    """
-
-    applied: bool
-    duration_seconds: float | None
     error: str | None = None
 
 
@@ -1027,7 +1014,7 @@ class ImportService:
         self,
         file_path: str | Path,
         *,
-        apply_transforms: bool = True,
+        refresh: bool = True,
         institution: str | None = None,
         force: bool = False,
         interactive: bool = False,
@@ -1053,8 +1040,8 @@ class ImportService:
 
         Args:
             file_path: Path to the file to import.
-            apply_transforms: Whether to run SQLMesh transforms after loading.
-                Defaults to True.
+            refresh: Whether to run the post-load refresh pipeline (matching +
+                SQLMesh apply + categorization) after loading. Defaults to True.
             institution: Institution name override (OFX only). Auto-detected if
                 omitted.
             force: Re-import even if the file has been imported before (OFX only).
@@ -1105,10 +1092,13 @@ class ImportService:
             auto_accept=auto_accept,
         )
 
-        if apply_transforms and result.file_type in ("ofx", "tabular"):
-            self._apply_post_import_hooks()
-            # TransformService.apply() is fail-loud: returns applied=True or raises.
-            # Reaching this line means hooks ran, so the rebuilt flag is unconditional.
+        if refresh and result.file_type in ("ofx", "tabular"):
+            # Single-file imports preserve the legacy fail-loud contract so
+            # CLI exit codes reflect the broken state. Batch imports use the
+            # soft-fail variant via import_files() instead.
+            refresh_result = _refresh(self._db)
+            if not refresh_result.applied:
+                raise RuntimeError(f"SQLMesh transforms failed: {refresh_result.error}")
             result.core_tables_rebuilt = True
 
         logger.info(f"Import complete: {result.summary()}")
@@ -1136,11 +1126,11 @@ class ImportService:
         no_size_limit: bool = False,
         auto_accept: bool = False,
     ) -> ImportResult:
-        """Extract + load one file. Does NOT run matching/transforms/categorization.
+        """Extract + load one file. Does NOT run the refresh pipeline.
 
-        End-of-batch hooks (matching, SQLMesh transforms, deterministic
-        categorization) are the caller's responsibility — see
-        ``_apply_post_import_hooks`` and ``import_files``.
+        Refresh (matching, SQLMesh apply, categorization) is the caller's
+        responsibility — see :func:`moneybin.services.refresh.refresh` and
+        ``import_files``.
         """
         path = Path(file_path)
 
@@ -1176,79 +1166,21 @@ class ImportService:
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 
-    def _apply_post_import_hooks(self) -> None:
-        """Run matching, SQLMesh transforms, and deterministic categorization.
-
-        Fail-loud variant used by single-file ``import_file()``: a transform
-        failure propagates so the CLI exit code reflects the broken state.
-        Batch callers should prefer :meth:`apply_post_import_hooks` for the
-        soft-fail variant that surfaces the error in a structured result.
-        """
-        from moneybin.services.transform_service import TransformService
-
-        try:
-            self._run_matching()
-        except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
-            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
-        result = TransformService(self._db).apply()
-        if not result.applied:
-            # apply() now soft-fails; preserve the fail-loud contract here so
-            # single-file callers' exit codes reflect the broken state.
-            raise RuntimeError(f"SQLMesh transforms failed: {result.error}")
-        self._apply_categorization()
-
-    def apply_post_import_hooks(self) -> PostImportHookResult:
-        """Soft-fail end-of-batch hooks: matching + transforms + categorization.
-
-        Used by batch import and inbox sync — both want to preserve already-
-        imported rows and per-file move outcomes even if SQLMesh apply
-        explodes mid-batch. The transform error is returned in the result so
-        the caller can surface it in the response envelope or sidecar.
-        """
-        from moneybin.services.transform_service import TransformService
-
-        try:
-            self._run_matching()
-        except Exception:  # noqa: BLE001 — matching best-effort; first import may precede SQLMesh views
-            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
-        apply_result = TransformService(self._db).apply()
-        if not apply_result.applied:
-            # apply() soft-fails to ApplyResult(error=...). Skip categorization
-            # on a partially-built core schema; surface the error so the
-            # response envelope shows it.
-            return PostImportHookResult(
-                applied=False,
-                duration_seconds=apply_result.duration_seconds,
-                error=apply_result.error,
-            )
-        try:
-            self._apply_categorization()
-        except Exception as e:  # noqa: BLE001 — surface categorization error in envelope
-            error_type = type(e).__name__
-            logger.warning(f"Categorization failed after batch import: {error_type}")
-            return PostImportHookResult(
-                applied=apply_result.applied,
-                duration_seconds=apply_result.duration_seconds,
-                error=error_type,
-            )
-        return PostImportHookResult(
-            applied=apply_result.applied,
-            duration_seconds=apply_result.duration_seconds,
-        )
-
     def import_files(
         self,
         paths: list[str | Path],
         *,
-        apply_transforms: bool = True,
+        refresh: bool = True,
         force: bool = False,
         interactive: bool = False,
     ) -> BatchImportResult:
-        """Import a list of files; apply transforms once at end of batch.
+        """Import a list of files; run refresh once at end of batch.
 
-        Per-file failures do not abort the batch. Transforms run only if at
+        Per-file failures do not abort the batch. Refresh runs only if at
         least one file succeeded AND at least one file was transformable
-        (ofx/tabular — W-2 imports don't write to fct_transactions).
+        (ofx/tabular — W-2 imports don't write to fct_transactions). On
+        SQLMesh failure the per-file outcomes are preserved and the error
+        surfaces in ``transforms_error`` on the result envelope.
 
         Per-file overrides (account_name, institution, format_name, etc.)
         are not available for batch — use ``import_file()`` for single
@@ -1290,67 +1222,21 @@ class ImportService:
                     )
                 )
 
-        hook_result = PostImportHookResult(applied=False, duration_seconds=None)
-        if apply_transforms and any_succeeded and any_transformable:
-            hook_result = self.apply_post_import_hooks()
+        applied = False
+        duration_seconds: float | None = None
+        error: str | None = None
+        if refresh and any_succeeded and any_transformable:
+            refresh_result = _refresh(self._db)
+            applied = refresh_result.applied
+            duration_seconds = refresh_result.duration_seconds
+            error = refresh_result.error
 
         return BatchImportResult(
             per_file=per_file,
-            transforms_applied=hook_result.applied,
-            transforms_duration_seconds=hook_result.duration_seconds,
-            transforms_error=hook_result.error,
+            transforms_applied=applied,
+            transforms_duration_seconds=duration_seconds,
+            transforms_error=error,
         )
-
-    def _run_matching(self) -> None:
-        """Run transaction matching after import.
-
-        Seeds source priority from config and runs the matcher engine.
-        Results are logged; pending matches prompt user action.
-        """
-        from moneybin.config import get_settings
-        from moneybin.matching.engine import TransactionMatcher
-        from moneybin.matching.priority import seed_source_priority
-
-        settings = get_settings().matching
-        seed_source_priority(self._db, settings)
-        matcher = TransactionMatcher(self._db, settings)
-        result = matcher.run()
-
-        if result.has_matches:
-            logger.info(f"Matching: {result.summary()}")
-            if result.has_pending:
-                logger.info(
-                    "Run 'moneybin transactions review --type matches' when ready"
-                )
-
-    def _apply_categorization(self) -> None:
-        """Run deterministic categorization on uncategorized transactions.
-
-        Called after SQLMesh transforms complete. Applies merchant lookups
-        and active rules — no LLM dependency.
-        """
-        from moneybin.services.auto_rule_service import AutoRuleService
-        from moneybin.services.categorization_service import CategorizationService
-
-        try:
-            service = CategorizationService(self._db)
-            stats = service.categorize_pending()
-            if stats["total"] > 0:
-                logger.info(
-                    f"Auto-categorized {stats['total']} transactions "
-                    f"({stats['merchant']} merchant, {stats['rule']} rule)"
-                )
-            pending = AutoRuleService(self._db).stats().pending_proposals
-            if pending:
-                logger.info(f"  {pending} new auto-rule proposals")
-                logger.info(
-                    "  💡 Run 'moneybin transactions categorize auto review' to review proposed rules"
-                )
-        except Exception:  # noqa: BLE001 — categorization is best-effort; failure skips without aborting import
-            logger.debug(
-                "Categorization skipped (tables may not exist yet)",
-                exc_info=True,
-            )
 
     # ------------------------------------------------------------------
     # Import labels (spec Req 22–24).

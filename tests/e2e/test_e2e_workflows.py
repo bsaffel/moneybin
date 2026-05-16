@@ -75,7 +75,7 @@ class TestCSVImportPipeline:
             str(fixture),
             "--account-id",
             "e2e-test-acct",
-            "--no-apply-transforms",
+            "--no-refresh",
             env=env,
         )
         result.assert_success()
@@ -113,7 +113,7 @@ class TestOFXImportPipeline:
             "import",
             "files",
             str(fixture),
-            "--no-apply-transforms",
+            "--no-refresh",
             env=env,
         )
         result.assert_success()
@@ -200,7 +200,7 @@ class TestCategorizationPipeline:
             str(fixture),
             "--account-id",
             "e2e-cat-acct",
-            "--no-apply-transforms",
+            "--no-refresh",
             env=env,
         )
         result.assert_success()
@@ -247,7 +247,7 @@ class TestAutoRulePipeline:
             str(fixture),
             "--account-id",
             "wf-autorule-acct-a",
-            "--no-apply-transforms",
+            "--no-refresh",
             env=env,
         )
         result.assert_success()
@@ -313,7 +313,7 @@ class TestAutoRulePipeline:
             str(fixture),
             "--account-id",
             "wf-autorule-acct-b",
-            "--no-apply-transforms",
+            "--no-refresh",
             env=env,
         )
         result.assert_success()

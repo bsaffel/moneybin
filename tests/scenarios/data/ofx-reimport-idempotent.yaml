@@ -9,10 +9,10 @@ setup:
   imports:
     # First import succeeds and creates a single batch.
     - path: ofx/sample_minimal.ofx
-      apply_transforms: false
+      refresh: false
     # Second import without force must fail with the canonical 'already imported' message.
     - path: ofx/sample_minimal.ofx
-      apply_transforms: false
+      refresh: false
       expect_failure: true
       expect_error_substring: "already imported"
 

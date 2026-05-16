@@ -184,6 +184,15 @@ def sync_connect(
     typer.echo(f"✅ Connected {result.institution_name}")
     if result.pull_result is not None:
         typer.echo(f"   Pulled {result.pull_result.transactions_loaded} transactions")
+        if result.pull_result.transforms_error:
+            # Same fail-loud contract as `sync pull`: connect's auto-pull is
+            # the common path, so a silent transforms failure here would
+            # leave the success-looking ✅ line hiding stale core.* tables.
+            logger.warning(
+                f"⚠️  transforms failed ({result.pull_result.transforms_error}); "
+                f"raw rows landed. Retry with `moneybin transform apply`."
+            )
+            raise typer.Exit(1)
 
 
 @app.command("connect-status")
@@ -246,6 +255,18 @@ def sync_pull(
     force: bool = typer.Option(
         False, "--force", "-f", help="Reset cursor and re-fetch full history."
     ),
+    refresh: bool = typer.Option(
+        True,
+        "--refresh/--no-refresh",
+        help=(
+            "Run the post-load refresh pipeline (matching + SQLMesh apply + "
+            "categorization) after a successful pull so core.* models "
+            "(dim_accounts, etc.) reflect the new data before this command "
+            "returns. Default: on. Pass --no-refresh to defer; SQLMesh apply "
+            "dominates pull latency, so high-frequency callers should defer "
+            "and run refresh on a separate schedule."
+        ),
+    ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -254,25 +275,44 @@ def sync_pull(
         with _build_sync_service() as service:
             if not quiet and output == OutputFormat.TEXT:
                 typer.echo("⚙️  Syncing… (this may take up to 2 minutes)")
-            result = service.pull(institution=institution, force=force)
+            result = service.pull(
+                institution=institution,
+                force=force,
+                refresh=refresh,
+            )
 
     if output == OutputFormat.JSON:
         typer.echo(result.model_dump_json(indent=2))
-        return
+        # Fall through to the shared exit-code check so JSON-mode agents
+        # gating on process status see the same signal as text-mode users.
+    else:
+        for inst in result.institutions:
+            icon = "✅" if inst.status == "completed" else "❌"
+            count = inst.transaction_count or 0
+            typer.echo(f"{icon} {inst.institution_name}: {count} transactions")
+            if inst.status == "failed" and inst.error_code:
+                typer.echo(f"   💡 error: {inst.error_code}")
+        completed = sum(1 for i in result.institutions if i.status == "completed")
+        typer.echo(
+            f"✅ Loaded {result.transactions_loaded} transactions from "
+            f"{completed} institutions."
+        )
+        if result.transactions_removed:
+            typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
+        if result.transforms_error:
+            # Mirror import_cmd.py: route the warning to stderr via the
+            # project logger so text-mode users see a human-readable hint.
+            # JSON mode already carries transforms_error in the envelope.
+            logger.warning(
+                f"⚠️  transforms failed ({result.transforms_error}); "
+                f"raw rows landed. Retry with `moneybin transform apply`."
+            )
 
-    for inst in result.institutions:
-        icon = "✅" if inst.status == "completed" else "❌"
-        count = inst.transaction_count or 0
-        typer.echo(f"{icon} {inst.institution_name}: {count} transactions")
-        if inst.status == "failed" and inst.error_code:
-            typer.echo(f"   💡 error: {inst.error_code}")
-    completed = sum(1 for i in result.institutions if i.status == "completed")
-    typer.echo(
-        f"✅ Loaded {result.transactions_loaded} transactions from "
-        f"{completed} institutions."
-    )
-    if result.transactions_removed:
-        typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
+    # Non-zero exit on refresh failure applies to BOTH output modes — agents
+    # gating on process status need the signal whether they parse JSON or
+    # scrape text. Mirrors import_cmd.py:406.
+    if result.transforms_error:
+        raise typer.Exit(1)
 
 
 @app.command("status")

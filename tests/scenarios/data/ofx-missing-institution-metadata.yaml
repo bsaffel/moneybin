@@ -9,14 +9,14 @@ setup:
   imports:
     # No <FI> block + filename doesn't match any pattern → resolution fails.
     - path: ofx/missing_institution_sample.ofx
-      apply_transforms: false
+      refresh: false
       expect_failure: true
       expect_error_substring: "could not be derived"
     # Same file with explicit institution override resolves successfully.
     # No force needed: the first import raised before begin_import() wrote
     # an import_log row, so the re-import guard sees no prior batch.
     - path: ofx/missing_institution_sample.ofx
-      apply_transforms: false
+      refresh: false
       institution: "Local Bank"
 
 pipeline:

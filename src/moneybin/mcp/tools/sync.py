@@ -71,6 +71,7 @@ def _build_sync_service() -> Generator[Any, None, None]:
 def sync_pull(
     institution: str | None = None,
     force: bool = False,
+    refresh: bool = True,
 ) -> ResponseEnvelope:
     """Pull transactions, accounts, balances from connected institutions via moneybin-server.
 
@@ -79,9 +80,20 @@ def sync_pull(
     results including error_code for any failed institutions. Mutates raw.plaid_* tables and
     propagates through SQLMesh to core; idempotent on re-run (transactions upsert by
     (transaction_id, provider_item_id)).
+
+    When refresh=True (default) and the sync changes raw state, runs the post-load
+    refresh pipeline (matching + SQLMesh apply + categorization) so core.dim_accounts
+    and friends reflect the new data before returning. Pass refresh=False to defer
+    (raw rows still land durably; derived models become stale until the next refresh).
+    High-frequency callers should pass refresh=False and schedule refresh separately —
+    SQLMesh apply dominates pull latency (typically 5–30s).
     """
     with _build_sync_service() as service:
-        result = service.pull(institution=institution, force=force)
+        result = service.pull(
+            institution=institution,
+            force=force,
+            refresh=refresh,
+        )
     return build_envelope(
         data=result.model_dump(mode="json"),
         sensitivity="medium",

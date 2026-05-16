@@ -20,10 +20,10 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 
 1. Five MCP `transform_*` tools (`status`, `plan`, `validate`, `audit`, `apply`) return structured response envelopes per `mcp-server.md`. `transform_restate` stays CLI-only.
 2. `import_file` MCP tool is renamed to `import_files` and accepts `paths: list[str]`. The legacy singular name is removed (pre-1.0; surface-change discipline applied via CHANGELOG and `moneybin-mcp.md` updates).
-3. `import_files` runs `transform_apply` once at end-of-batch by default. Caller opts out by passing `apply_transforms=False`.
+3. `import_files` runs `transform_apply` once at end-of-batch by default. Caller opts out by passing `refresh=False`.
 4. Per-file failures inside an `import_files` call do not abort the batch. The transform apply runs if at least one file succeeded; skipped if zero succeeded.
 5. If `transform_apply` itself fails after successful imports, raw rows stay durable; the envelope reports `transforms_applied=false` with a generic `transforms_error` message and an action hint to retry.
-6. `import_inbox_sync` internally builds the discovered-file list and calls the same batch path. New `apply_transforms` parameter on the MCP tool and `--no-apply-transforms` flag on the CLI.
+6. `import_inbox_sync` internally builds the discovered-file list and calls the same batch path. New `refresh` parameter on the MCP tool and `--no-refresh` flag on the CLI.
 7. CLI command renamed to `moneybin import files PATHS...` (variadic). `--output json` parity for all transform commands and the renamed import command per `cli.md`.
 8. `system_status` adds a `transforms` block: `{"pending": bool, "last_apply_at": iso|None}`. Pending heuristic: `MAX(app.import_log.completed_at WHERE status='complete') > MAX(core.dim_accounts.updated_at)`. When pending, `actions` includes a hint to run `transform_apply`. No SQLMesh Context init on the `system_status` hot path.
 9. A new `TransformService` owns SQLMesh interaction. `ImportService.run_transforms()` moves here as `TransformService.apply()`; the source-priority seeding and `refresh_views` calls migrate with it. `ImportService` calls `TransformService(db).apply()` at end-of-batch.
@@ -53,7 +53,7 @@ No schema changes. The spec leans on three existing columns/tables:
 - `tests/moneybin/test_mcp/test_transform_tools.py` — envelope-shape and error-path tests for the five MCP tools.
 - `tests/moneybin/test_mcp/test_import_files.py` — list-shape, per-file results, transforms_applied flag.
 - `tests/moneybin/test_mcp/test_system_status_transforms.py` — pending/last_apply_at semantics.
-- `tests/moneybin/test_cli/test_import_files_cli.py` — variadic, `--no-apply-transforms`, `--output json` parity.
+- `tests/moneybin/test_cli/test_import_files_cli.py` — variadic, `--no-refresh`, `--output json` parity.
 - `tests/moneybin/test_cli/test_transform_json_output.py` — `--output json` parity for the five transform commands.
 - `tests/scenarios/test_scenario_import_dim_freshness.py` — regression test for the originating finding.
 - `tests/integration/test_schema_drift.py` — upgrade-path test: build SQLMesh-applied DB, drop a column, start server, assert `SchemaDriftError`.
@@ -62,7 +62,7 @@ No schema changes. The spec leans on three existing columns/tables:
 ### Files to Modify
 
 - `src/moneybin/mcp/tools/transform.py` — replace all five stubs with thin wrappers over `TransformService`.
-- `src/moneybin/mcp/tools/import_tools.py` — rename `import_file` → `import_files`, take `paths: list[str]`, add `apply_transforms: bool = True`, return per-file rows.
+- `src/moneybin/mcp/tools/import_tools.py` — rename `import_file` → `import_files`, take `paths: list[str]`, add `refresh: bool = True`, return per-file rows.
 - `src/moneybin/mcp/tools/system.py` — extend `system_status` envelope with the `transforms` block; add the pending-state action hint.
 - `src/moneybin/mcp/server.py` — instructions text edits if it names `import_file` directly (per `mcp-server.md` Server Instructions Field rule).
 - `src/moneybin/services/import_service.py` — split `import_file()` into `_import_one()` (private) and `import_files()` (public batch). Remove `run_transforms()`; call `TransformService(self._db).apply()` instead.
@@ -71,7 +71,7 @@ No schema changes. The spec leans on three existing columns/tables:
 - `src/moneybin/mcp/server.py` — invoke `check_core_schema_drift()` at FastMCP startup; on mismatch, run one `TransformService.apply()` self-heal, then re-verify and raise `SchemaDriftError` only if drift persists. Leave a `# TODO multi-tenant:` comment noting degraded-mode is the alternative if we ever go multi-tenant.
 - `src/moneybin/cli/_errors.py` (or equivalent error-mapping module) — map `SchemaDriftError` to the user-facing remediation message ("Run `moneybin transform apply` to rebuild stale models. Tables: …").
 - `src/moneybin/cli/commands/transform.py` — switch from inline `sqlmesh_context` blocks to `TransformService` calls; add `--output json` to each command using the standard envelope.
-- `src/moneybin/cli/commands/import_cmd.py` — rename leaf command, accept variadic paths, add `--no-apply-transforms`.
+- `src/moneybin/cli/commands/import_cmd.py` — rename leaf command, accept variadic paths, add `--no-refresh`.
 - `src/moneybin/metrics/registry.py` — add `IMPORT_BATCH_SIZE` histogram.
 - `docs/specs/moneybin-mcp.md` — §1530 status update (transform_* shipped); §import_* renamed entry.
 - `docs/specs/INDEX.md` — new row under MCP section, status `draft` → `ready` → `in-progress` → `implemented` across the lifecycle.
@@ -85,7 +85,7 @@ No schema changes. The spec leans on three existing columns/tables:
 |---|---|
 | Rename MCP `import_file` → `import_files` and CLI `import file` → `import files` | Contract change is real (batch + auto-apply). Agents reading two names get a footgun if surfaces diverge. Pre-1.0 cost of rename is bounded. |
 | Auto-apply transforms at end-of-batch by default | Honors "data immediately query-ready" without paying latency per-file. Matches the finding's intent: the agent's mental model is the batch, not the file. |
-| Batch boundary = the list passed in one call | Multi-file batches pay one transform cost. Single-file calls still pay it (one-element list). Agents that want to defer pass `apply_transforms=False`. |
+| Batch boundary = the list passed in one call | Multi-file batches pay one transform cost. Single-file calls still pay it (one-element list). Agents that want to defer pass `refresh=False`. |
 | Continue past per-file failures; apply for what succeeded | Matches existing inbox-sync tolerance. One corrupt statement shouldn't block 49 good ones. |
 | Use `core.dim_accounts.updated_at` for last-apply timestamp, not SQLMesh `_environments` | No SQLMesh-internal coupling; uses MoneyBin's own data; survives SQLMesh version changes; proves the apply happened rather than asserting a state record. |
 | Direct DuckDB query in `freshness()`, no SQLMesh Context init | `system_status` is `read_only=True` and called often for orientation. A Context init has side effects (writes state tables on first init) and multi-second latency. The freshness check is two cheap MAX queries. |
@@ -97,13 +97,13 @@ No schema changes. The spec leans on three existing columns/tables:
 ```
 moneybin import files PATHS...
   PATHS                              One or more files to import
-  --no-apply-transforms              Skip end-of-batch transform apply
+  --no-refresh              Skip end-of-batch transform apply
   --interactive                      Prompt for ambiguous account mappings
   -o, --output {text,json}           Output format (json mirrors MCP envelope)
   -q, --quiet                        Suppress informational output
 
 moneybin import inbox sync
-  --no-apply-transforms              Skip end-of-batch transform apply
+  --no-refresh              Skip end-of-batch transform apply
   ... (existing flags unchanged)
 
 moneybin transform {status,plan,validate,audit,apply}
@@ -119,7 +119,7 @@ moneybin transform restate           (unchanged; remains operator-territory)
 @mcp_tool(sensitivity="medium", read_only=False)
 def import_files(
     paths: list[str],
-    apply_transforms: bool = True,
+    refresh: bool = True,
     interactive: bool = False,
 ) -> ResponseEnvelope:
     """Import one or more files. Applies transforms once at end of batch by default."""
@@ -160,7 +160,7 @@ def transform_apply() -> ResponseEnvelope: ...
 # data: {applied, duration_seconds, models_refreshed}
 ```
 
-`import_inbox_sync` gains the same `apply_transforms: bool = True` parameter for symmetry. No other shape changes to that tool.
+`import_inbox_sync` gains the same `refresh: bool = True` parameter for symmetry. No other shape changes to that tool.
 
 `system_status` envelope adds two new blocks (`transforms` always; `schema_drift` only when drift is detected):
 
@@ -190,7 +190,7 @@ The `transforms` action appears only when `pending=true`. The `schema_drift` act
 flowchart TD
     Agent[Agent or Human]
 
-    Agent -->|"import_files(paths=[a,b,c], apply_transforms=true)"| MCP_IF[import_files MCP tool]
+    Agent -->|"import_files(paths=[a,b,c], refresh=true)"| MCP_IF[import_files MCP tool]
     Agent -->|"moneybin import files a b c"| CLI_IF[CLI import files]
     MCP_IF --> IS[ImportService.import_files]
     CLI_IF --> IS
@@ -212,8 +212,8 @@ flowchart TD
 |---|---|---|
 | Unit | `test_services/test_transform_service.py` | `freshness()` returns correct pending/last_apply_at under controlled `dim_accounts.updated_at` and `import_log.completed_at`. Includes "dim_accounts schema missing" edge case. |
 | Integration | `test_services/test_transform_service.py` | `apply()`, `plan()`, `validate()`, `audit()` against a real SQLMesh context. `apply()` increments `MAX(dim_accounts.updated_at)`. |
-| Service | `test_services/test_import_service.py` (extended) | `import_files([good, bad, good])` returns 2 imported + 1 failed, transforms ran once, partial failures don't block apply. `apply_transforms=False` skips. Empty-success skips. Transform-fails-after-import path. |
-| CLI | `test_cli/test_import_files_cli.py` | Variadic `import files a b c`, `--no-apply-transforms`, `--output json` envelope matches MCP. |
+| Service | `test_services/test_import_service.py` (extended) | `import_files([good, bad, good])` returns 2 imported + 1 failed, transforms ran once, partial failures don't block apply. `refresh=False` skips. Empty-success skips. Transform-fails-after-import path. |
+| CLI | `test_cli/test_import_files_cli.py` | Variadic `import files a b c`, `--no-refresh`, `--output json` envelope matches MCP. |
 | CLI | `test_cli/test_transform_json_output.py` | `--output json` parity for the five transform commands. |
 | MCP | `test_mcp/test_transform_tools.py` | All five `transform_*` envelope shapes, sensitivities, error paths. |
 | MCP | `test_mcp/test_import_files.py` | List-shaped `paths`, per-file result rows, `transforms_applied` summary flag. |

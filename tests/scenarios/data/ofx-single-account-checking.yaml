@@ -9,7 +9,7 @@ setup:
   fixtures: []
   imports:
     - path: ofx/sample_minimal.ofx
-      apply_transforms: false
+      refresh: false
 
 pipeline:
   - import_file

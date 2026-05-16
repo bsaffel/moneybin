@@ -95,13 +95,14 @@ def import_files_command(
     file_paths: list[Path] = typer.Argument(
         ..., help="One or more financial data files to import"
     ),
-    apply_transforms: bool = typer.Option(
+    refresh: bool = typer.Option(
         True,
-        "--apply-transforms/--no-apply-transforms",
+        "--refresh/--no-refresh",
         help=(
-            "Run SQLMesh transforms once after the batch completes. "
-            "Pass --no-apply-transforms to defer; system_status will show "
-            "transforms_pending and a later 'transform apply' will catch up."
+            "Run the post-load refresh pipeline (matching + SQLMesh apply + "
+            "categorization) once after the batch completes. Pass --no-refresh "
+            "to defer; system_status will show transforms_pending and a later "
+            "'transform apply' or refresh will catch up."
         ),
     ),
     institution: str | None = typer.Option(
@@ -211,8 +212,8 @@ def import_files_command(
       - Parquet/Feather: Data warehouse exports
       - PDF: IRS Form W-2 wage and tax statements
 
-    Per-file failures do not abort the batch. Transforms run once at end
-    of the batch by default; pass --no-apply-transforms to defer.
+    Per-file failures do not abort the batch. The refresh pipeline runs
+    once at end of the batch by default; pass --no-refresh to defer.
 
     Per-file overrides (--institution, --account-name, --format, --override,
     etc.) apply only when a single path is supplied. Pass one file per
@@ -222,7 +223,7 @@ def import_files_command(
         moneybin import files ~/Downloads/WellsFargo_2025.qfx
         moneybin import files ~/Downloads/*.ofx
         moneybin import files ~/Downloads/chase_activity.csv --account-name "Chase Checking"
-        moneybin import files ~/Downloads/2024_W2.pdf --no-apply-transforms
+        moneybin import files ~/Downloads/2024_W2.pdf --no-refresh
         moneybin import files statement.ofx --output json
     """
     from moneybin.cli.output import render_or_json
@@ -285,7 +286,7 @@ def import_files_command(
                 if len(file_paths) == 1 and has_single_file_knobs:
                     result = svc.import_file(
                         file_path=file_paths[0],
-                        apply_transforms=apply_transforms,
+                        refresh=refresh,
                         institution=institution,
                         force=force,
                         interactive=interactive,
@@ -317,15 +318,14 @@ def import_files_command(
                         "imported_count": 1,
                         "failed_count": 0,
                         "total_count": 1,
-                        "transforms_applied": apply_transforms
-                        and result.core_tables_rebuilt,
+                        "transforms_applied": refresh and result.core_tables_rebuilt,
                         "transforms_duration_seconds": None,
                         "files": files_list,
                     }
                 else:
                     batch = svc.import_files(
                         [str(p) for p in file_paths],
-                        apply_transforms=apply_transforms,
+                        refresh=refresh,
                         force=force,
                         interactive=interactive,
                     )
@@ -402,7 +402,7 @@ def import_files_command(
     # Batch import succeeds file-by-file but the post-import SQLMesh apply is
     # a separate failure surface. Exit non-zero so scripts and agents detect
     # that core tables were not refreshed even when every file imported.
-    # Mirrors the fail-loud single-file path via _apply_post_import_hooks().
+    # Mirrors the fail-loud single-file path that raises on refresh() error.
     if data.get("transforms_error"):
         raise typer.Exit(1)
 

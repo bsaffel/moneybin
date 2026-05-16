@@ -20,7 +20,11 @@ from moneybin.connectors.sync_models import (
 runner = CliRunner()
 
 
-def _fake_pull_result() -> PullResult:
+def _fake_pull_result(
+    *,
+    transforms_applied: bool = True,
+    transforms_error: str | None = None,
+) -> PullResult:
     return PullResult(
         job_id="job-xyz",
         transactions_loaded=10,
@@ -35,6 +39,9 @@ def _fake_pull_result() -> PullResult:
                 transaction_count=10,
             )
         ],
+        transforms_applied=transforms_applied,
+        transforms_duration_seconds=0.05 if transforms_applied else None,
+        transforms_error=transforms_error,
     )
 
 
@@ -102,7 +109,69 @@ def test_sync_pull_with_institution_and_force(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--institution", "Chase", "--force"])
     assert result.exit_code == 0, result.output
-    service.pull.assert_called_once_with(institution="Chase", force=True)
+    service.pull.assert_called_once_with(institution="Chase", force=True, refresh=True)
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_no_refresh_flag(mock_build: MagicMock) -> None:
+    """--no-refresh threads refresh=False to the service."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result()
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull", "--no-refresh"])
+    assert result.exit_code == 0, result.output
+    service.pull.assert_called_once_with(institution=None, force=False, refresh=False)
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_surfaces_transforms_error(mock_build: MagicMock) -> None:
+    """Transform failure on pull warns via logger and exits non-zero.
+
+    Mirrors import_cmd.py: agents and scripts need an exit-code signal that
+    core.* tables are stale, not just text on stdout. The warning text
+    itself is not asserted here — ``setup_observability`` reconfigures
+    logging via ``basicConfig(force=True)`` inside the Typer ``CliRunner``
+    invocation, which wipes ``caplog``'s root handler.
+    """
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        transforms_applied=False,
+        transforms_error="SQLMeshError",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 1
+    service.pull.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_json_mode_exits_nonzero_on_transforms_error(
+    mock_build: MagicMock,
+) -> None:
+    """JSON-mode `sync pull` must also exit non-zero when refresh failed.
+
+    Agents that gate on process status (e.g., Claude Code, Codex) parse
+    the JSON envelope on stdout but trust the exit code for branching.
+    Without this, a SQLMesh failure during the post-pull refresh would
+    return exit 0 with ``transforms_applied=false`` in the payload and
+    automation would treat stale ``core.*`` state as success.
+    """
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        transforms_applied=False,
+        transforms_error="SQLMeshError",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull", "--output", "json"])
+    assert result.exit_code == 1
+    # JSON payload must still be emitted on stdout so agents can read the
+    # structured error before observing the non-zero exit.
+    payload = json.loads(result.stdout)
+    assert payload["transforms_applied"] is False
+    assert payload["transforms_error"] == "SQLMeshError"
 
 
 @pytest.mark.unit
@@ -121,6 +190,33 @@ def test_sync_connect_new_institution(mock_build: MagicMock) -> None:
     service.connect.assert_called_once()
     # auto_pull defaults to True
     assert service.connect.call_args.kwargs.get("auto_pull", True) is True
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_connect_surfaces_transforms_error_from_auto_pull(
+    mock_build: MagicMock,
+) -> None:
+    """Connect's auto-pull transform failure must warn and exit non-zero.
+
+    Without this, the ✅ Connected line would hide stale core.* tables. See
+    ``test_sync_pull_surfaces_transforms_error`` for why the warning text
+    itself is not asserted.
+    """
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.connect.return_value = ConnectResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=_fake_pull_result(
+            transforms_applied=False,
+            transforms_error="SQLMeshError",
+        ),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "connect"])
+    assert result.exit_code == 1
+    service.connect.assert_called_once()
 
 
 @pytest.mark.unit

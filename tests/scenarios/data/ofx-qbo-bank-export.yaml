@@ -8,7 +8,7 @@ setup:
   fixtures: []
   imports:
     - path: ofx/qbo_bank_sample.qbo
-      apply_transforms: false
+      refresh: false
 
 pipeline:
   - import_file

@@ -14,7 +14,7 @@ fail this test — even though the agent's call path is strictly better.
 Functional-parity (every user-outcome reachable from every supported
 surface, with surface-appropriate idioms) lives in a separate
 N-surface coverage spec (planned, see `docs/specs/` once authored) and
-is enforced by PR review against `mcp-tool-surface.md`'s
+is enforced by PR review against `moneybin-mcp.md`'s
 "Surface change discipline" rule, not by this test.
 
 **Mechanism.** Walks the live FastMCP tool registry and the live Typer
