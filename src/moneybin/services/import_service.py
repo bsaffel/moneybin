@@ -1330,7 +1330,7 @@ class ImportService:
         and active rules — no LLM dependency.
         """
         from moneybin.services.auto_rule_service import AutoRuleService
-        from moneybin.services.categorization_service import CategorizationService
+        from moneybin.services.categorization import CategorizationService
 
         try:
             service = CategorizationService(self._db)

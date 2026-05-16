@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization import CategorizationService
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 

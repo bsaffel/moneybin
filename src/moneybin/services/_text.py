@@ -1,6 +1,6 @@
 """Pure text-normalization helpers shared across categorization services.
 
-Lives outside ``categorization_service`` and ``auto_rule_service`` so both
+Lives outside ``categorization`` and ``auto_rule_service`` so both
 can import from here without a circular dependency.
 """
 

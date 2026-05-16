@@ -8,7 +8,7 @@ import subprocess  # noqa: S404 — explicit command list, never shell=True
 from collections.abc import Callable
 
 from moneybin.database import Database, sqlmesh_context
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.synthetic.engine import GeneratorEngine
 from moneybin.synthetic.models import load_persona

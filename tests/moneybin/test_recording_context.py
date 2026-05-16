@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from moneybin.services.auto_rule_service import RecordingContext, TxnRow
-from moneybin.services.categorization_service import MerchantRow
+from moneybin.services.categorization import MerchantRow
 
 
 def _merchant(

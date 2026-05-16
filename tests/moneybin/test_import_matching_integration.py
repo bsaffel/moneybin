@@ -112,7 +112,7 @@ class TestApplyCategorizationProposalSummary:
     """Tests that pending auto-rule proposals appear in the import summary."""
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
-    @patch("moneybin.services.categorization_service.CategorizationService")
+    @patch("moneybin.services.categorization.CategorizationService")
     def test_logs_proposal_count_when_pending(
         self,
         mock_cat_cls: MagicMock,
@@ -144,7 +144,7 @@ class TestApplyCategorizationProposalSummary:
         assert "auto review" in text
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
-    @patch("moneybin.services.categorization_service.CategorizationService")
+    @patch("moneybin.services.categorization.CategorizationService")
     def test_no_proposal_line_when_zero(
         self,
         mock_cat_cls: MagicMock,

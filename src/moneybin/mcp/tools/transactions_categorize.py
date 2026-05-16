@@ -18,7 +18,7 @@ from moneybin.mcp.adapters.categorize_adapters import (
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
-from moneybin.services.categorization_service import (
+from moneybin.services.categorization import (
     CategorizationResult,
     CategorizationService,
     validate_items,

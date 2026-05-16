@@ -1449,7 +1449,7 @@ class CategorizationService:
         txn_ids = [item.transaction_id for item in items]
         placeholders = ",".join(["?"] * len(txn_ids))
         # Lazy import keeps the module-level dependency one-way
-        # (auto_rule_service → categorization_service).
+        # (auto_rule_service → categorization).
         from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
             AutoRuleService,
             RecordingContext,

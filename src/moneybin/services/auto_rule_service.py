@@ -21,7 +21,7 @@ import duckdb
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.services._text import build_match_inputs, normalize_description
-from moneybin.services.categorization_service import (
+from moneybin.services.categorization import (
     CategorizationService,
     MerchantRow,
     matches_pattern,

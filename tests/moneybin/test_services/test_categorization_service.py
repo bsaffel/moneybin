@@ -14,7 +14,7 @@ import yaml
 
 from moneybin.database import Database
 from moneybin.services._text import normalize_description
-from moneybin.services.categorization_service import (
+from moneybin.services.categorization import (
     CategorizationItem,
     CategorizationService,
     _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
@@ -707,7 +707,7 @@ def test_service_auto_review_returns_pending_proposals(real_db: Database) -> Non
 
 def test_no_public_module_level_categorization_functions() -> None:
     """Surface contract: only CategorizationService is the public API."""
-    import moneybin.services.categorization_service as mod
+    import moneybin.services.categorization as mod
 
     forbidden = {
         "categorize_items",
@@ -840,7 +840,7 @@ def test_list_auto_rules_returns_active_auto_rules(real_db: Database) -> None:
 
 def test_categorize_items_creates_auto_rule_proposal(real_db: Database) -> None:
     """categorize_items records a pending proposal for novel txn → category mappings."""
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.categorization import CategorizationService
 
     real_db.execute(
         "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
@@ -1110,7 +1110,7 @@ def test_categorize_assist_returns_redacted_uncategorized(
     db_with_uncategorized_txns: Database,
 ) -> None:
     """categorize_assist should return uncategorized txns with redacted descriptions only."""
-    from moneybin.services.categorization_service import (
+    from moneybin.services.categorization import (
         CategorizationService,
         RedactedTransaction,
     )
@@ -1131,7 +1131,7 @@ def test_categorize_assist_returns_redacted_uncategorized(
 
 def test_categorize_assist_respects_limit(db_with_uncategorized_txns: Database) -> None:
     """categorize_assist returns no more rows than the requested limit."""
-    from moneybin.services.categorization_service import CategorizationService
+    from moneybin.services.categorization import CategorizationService
 
     svc = CategorizationService(db_with_uncategorized_txns)
     result = svc.categorize_assist(limit=5)
@@ -1144,7 +1144,7 @@ def test_categorize_assist_clamps_to_max_batch_size(
     """Server enforces assist_max_batch_size hard ceiling."""
     from unittest.mock import MagicMock as _MagicMock
 
-    from moneybin.services import categorization_service as _cs
+    from moneybin.services import categorization as _cs
 
     mock_settings = _MagicMock()
     mock_settings.categorization.assist_max_batch_size = 3

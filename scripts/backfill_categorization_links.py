@@ -14,7 +14,7 @@ import re
 import duckdb
 
 from moneybin.database import Database, get_database
-from moneybin.services.categorization_service import (
+from moneybin.services.categorization import (
     CategorizationService,
     normalize_description,
 )

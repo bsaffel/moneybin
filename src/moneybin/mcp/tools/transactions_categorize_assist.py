@@ -13,7 +13,7 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import audit_log
 from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.categorization_service import CategorizationService
+from moneybin.services.categorization import CategorizationService
 
 logger = logging.getLogger(__name__)
 
