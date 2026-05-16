@@ -89,6 +89,24 @@ uv run sqlmesh -p sqlmesh format
 - **Raw schema** (`src/moneybin/sql/schema/*.sql`): Plain SQL DDL.
 - **SQLMesh models** (`sqlmesh/models/**/*.sql`): Plain SQL with `MODEL()` block header.
 
+## Migrations
+
+### Migration test data realism
+
+Migrations that touch existing data MUST be tested against pre-populated tables. "Touches existing data" means any of:
+
+- `ADD COLUMN` with `DEFAULT` (backfill)
+- `ALTER COLUMN SET NOT NULL`
+- `ADD CONSTRAINT UNIQUE / CHECK / FOREIGN KEY`
+- `UPDATE` / data reshape
+- `DROP` / `RENAME` of a column the app writes to
+
+Pure additive DDL (new tables, `ADD COLUMN ... NULL` with no `DEFAULT`, indexes on non-unique columns) does not require populated fixtures — add them only if the test would gain coverage.
+
+Fixtures must insert **≥3 rows** into each affected table with realistic shapes (real-looking IDs, timestamps, non-trivial values in nullable columns). Minimal one-row stubs miss edge cases — e.g., V010's "Cannot create index with outstanding updates" only reproduces when the `ADD COLUMN ... DEFAULT` backfill has real rows to write.
+
+Tests must also reproduce the runner's enclosing `BEGIN TRANSACTION` wrap when the bug class depends on it. Wrap the `migrate()` call in `BEGIN`/`COMMIT` (or call through `MigrationRunner.apply_one`) so any "outstanding writes" interaction with subsequent DDL surfaces in the test.
+
 ## Table and Column Comments
 
 Every column should have a comment. Use existing schema files as examples for style and content.

@@ -1,13 +1,12 @@
 """Add updated_at to app.user_categories/user_merchants; tighten override columns to NOT NULL.
 
-Per docs/specs/core-updated-at-convention.md — every app/core table that
-participates in `updated_at` provenance must carry a non-null TIMESTAMP. This
-migration brings the four affected app tables in line with the convention.
-
-DuckDB does not support `ADD COLUMN ... NOT NULL` in a single statement
-(Parser Error: 'Adding columns with constraints not yet supported'). We add
-the column with a DEFAULT — every existing row receives CURRENT_TIMESTAMP —
-then SET NOT NULL. Idempotent: re-running detects the end-state and skips.
+Per docs/specs/core-updated-at-convention.md. DuckDB rejects
+`ADD COLUMN ... NOT NULL` in one statement, so we ADD with DEFAULT (backfills
+every existing row) then SET NOT NULL. The interim COMMIT is required because
+DuckDB refuses to create the SET NOT NULL index while backfill writes from
+the same transaction are still outstanding. Recovery from a crash between
+those two statements goes through the idempotent re-run branch
+(`elif col_map["updated_at"] is True`).
 """
 
 import logging
@@ -38,18 +37,26 @@ def migrate(conn: object) -> None:
                 f"ALTER TABLE app.{table} "  # noqa: S608  # allowlisted table names, not user input
                 "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
             )
+            # Commit the backfill before SET NOT NULL — see module docstring.
+            conn.execute("COMMIT")  # type: ignore[union-attr]
+            conn.execute("BEGIN TRANSACTION")  # type: ignore[union-attr]
             conn.execute(  # type: ignore[union-attr]
                 f"ALTER TABLE app.{table} "  # noqa: S608  # allowlisted table names
                 "ALTER COLUMN updated_at SET NOT NULL"
             )
         elif col_map["updated_at"] is True:
-            # Column exists but is nullable (partial prior run).
+            # Column exists but is nullable (partial prior run, or a crash
+            # between the two ALTERs above). No outstanding writes, so
+            # SET NOT NULL is safe inside the runner's enclosing transaction.
             logger.info(f"Tightening app.{table}.updated_at to NOT NULL")
             conn.execute(  # type: ignore[union-attr]
                 f"ALTER TABLE app.{table} "  # noqa: S608  # allowlisted table names
                 "ALTER COLUMN updated_at SET NOT NULL"
             )
 
+    # category_overrides / merchant_overrides: SET NOT NULL only — no
+    # ADD COLUMN, no backfill, no outstanding writes. Safe inside the
+    # runner's transaction. (V012 drops merchant_overrides outright.)
     for table in ("category_overrides", "merchant_overrides"):
         cols = conn.execute(  # type: ignore[union-attr]
             """
