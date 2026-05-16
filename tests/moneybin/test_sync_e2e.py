@@ -14,6 +14,8 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.loaders.plaid_loader import PlaidLoader
 from moneybin.services.sync_service import SyncService
 
+pytestmark = pytest.mark.integration
+
 FIXTURE = (
     Path(__file__).parent / "test_loaders" / "fixtures" / "plaid_sync_response.yaml"
 )

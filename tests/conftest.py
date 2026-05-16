@@ -22,7 +22,29 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 os.environ["MAX_FORK_WORKERS"] = "1"
+
+# Test categories partition the suite. Every collected test gets exactly
+# one of these; `unit` is auto-applied below if none is present, so test
+# authors only mark when departing from unit. CI selects per-category
+# with a single `-m <category>` (no exclusion gymnastics).
+_CATEGORY_MARKERS = ("unit", "integration", "e2e", "scenarios")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    categories = set(_CATEGORY_MARKERS)
+    for item in items:
+        present = {m.name for m in item.iter_markers()} & categories
+        if not present:
+            item.add_marker(pytest.mark.unit)
+        elif len(present) > 1:
+            raise pytest.UsageError(
+                f"{item.nodeid}: multiple category markers {sorted(present)}; "
+                f"each test must have exactly one of {sorted(categories)}"
+            )
+
 
 # Force every Typer app to use plain Click help rendering during tests.
 # Rich-mode help wraps option names in bold/dim ANSI escapes

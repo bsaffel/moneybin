@@ -62,6 +62,11 @@ jobs:
       - name: Type check
         run: uv run pyright
 
+  # Test jobs select by marker across the whole tests/ tree, not by
+  # directory. Every test ends up with exactly one of
+  # {unit, integration, e2e, scenarios} — the root conftest auto-applies
+  # `unit` when no category marker is present and errors on conflicts,
+  # so each job can use a plain `-m <category>` selection.
   test-unit:
     name: Unit tests
     needs: [changes]
@@ -84,7 +89,7 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Test
-        run: uv run pytest tests/moneybin/ -m "not integration and not e2e and not slow" -v --cov=src --cov-report=xml --durations=25
+        run: uv run pytest tests/ -m unit -v --cov=src --cov-report=xml --durations=25
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v7
@@ -115,7 +120,7 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Test
-        run: uv run pytest tests/integration/ -v --durations=25
+        run: uv run pytest tests/ -m integration -v --durations=25
 
   test-e2e:
     name: E2E tests
@@ -139,4 +144,4 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Test
-        run: uv run pytest tests/e2e/ -v --durations=25
+        run: uv run pytest tests/ -m e2e -v --durations=25
