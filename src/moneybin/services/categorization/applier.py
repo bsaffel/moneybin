@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -127,6 +128,17 @@ class MatchApplier:
         self._db = db
         self._audit = audit
 
+    @contextmanager
+    def _transaction(self) -> Generator[None]:
+        """Run the wrapped block inside a DB transaction; rollback on exception."""
+        self._db.begin()
+        try:
+            yield
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
     # -- Per-transaction category writes (audit emission) --
 
     def set_category(
@@ -144,8 +156,7 @@ class MatchApplier:
         ``after`` so the audit trail can reconstruct overwrites. Mutation +
         audit row commit atomically.
         """
-        self._db.begin()
-        try:
+        with self._transaction():
             self.set_category_in_active_txn(
                 transaction_id,
                 category=category,
@@ -153,10 +164,6 @@ class MatchApplier:
                 categorized_by=categorized_by,
                 actor=actor,
             )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
 
     def set_category_in_active_txn(
         self,
@@ -212,11 +219,9 @@ class MatchApplier:
 
         No-op (and no audit event) when no row exists.
         """
-        self._db.begin()
-        try:
+        with self._transaction():
             prior = self._fetch_category_row(transaction_id)
             if prior is None:
-                self._db.commit()
                 return
             self._db.conn.execute(
                 f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",  # noqa: S608  # TableRef constant
@@ -229,10 +234,6 @@ class MatchApplier:
                 after=None,
                 actor=actor,
             )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
 
     def _fetch_category_row(self, transaction_id: str) -> dict[str, Any] | None:
         """Return the current category row for ``transaction_id`` as a JSON-safe dict."""
@@ -337,22 +338,16 @@ class MatchApplier:
         merchant alongside it — the two coexist, each doing its own job.
         """
         try:
-            if subcategory is None:
-                row = self._db.execute(
-                    f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
-                    "WHERE canonical_name = ? AND match_type = 'oneOf' "
-                    "AND category = ? AND subcategory IS NULL "
-                    "LIMIT 1",  # noqa: S608  # TableRef constant
-                    [canonical_name, category],
-                ).fetchone()
-            else:
-                row = self._db.execute(
-                    f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
-                    "WHERE canonical_name = ? AND match_type = 'oneOf' "
-                    "AND category = ? AND subcategory = ? "
-                    "LIMIT 1",  # noqa: S608  # TableRef constant
-                    [canonical_name, category, subcategory],
-                ).fetchone()
+            # IS NOT DISTINCT FROM treats NULL = NULL as true, so both
+            # exemplar-set-only merchants (subcategory IS NULL) and ones with
+            # a specific subcategory match on a single parameterized query.
+            row = self._db.execute(
+                f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
+                "WHERE canonical_name = ? AND match_type = 'oneOf' "
+                "AND category = ? AND subcategory IS NOT DISTINCT FROM ? "
+                "LIMIT 1",  # noqa: S608  # TableRef constant
+                [canonical_name, category, subcategory],
+            ).fetchone()
         except duckdb.CatalogException:
             return None
         return row[0] if row else None

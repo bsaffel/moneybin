@@ -574,11 +574,12 @@ class CategorizationOrchestrator:
                 # merchant matches as 'rule' preserves historical behavior; a
                 # follow-up spec may introduce a dedicated 'merchant' priority
                 # between auto_rule and migration.
+                categorized_by: CategorizedBy = "rule"
                 outcome = self._applier.write_categorization(
                     transaction_id=txn_id,
                     category=str(merchant["category"]),
                     subcategory=merchant["subcategory"],
-                    categorized_by="rule",
+                    categorized_by=categorized_by,
                     merchant_id=merchant["merchant_id"],
                     confidence=1.0,
                 )

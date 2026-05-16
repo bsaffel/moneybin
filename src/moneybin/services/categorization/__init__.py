@@ -155,7 +155,6 @@ class CategorizationService:
         ``category.set`` / ``category.clear`` audit events alongside the
         ``app.transaction_categories`` mutation.
         """
-        self._db = db
         self._audit = audit if audit is not None else AuditService(db)
         self._matcher = CategorizationMatcher(db)
         self._applier = MatchApplier(db, audit=self._audit)
