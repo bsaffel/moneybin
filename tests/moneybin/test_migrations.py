@@ -34,6 +34,7 @@ class TestMigrationSchema:
         assert "success" in columns
         assert "execution_ms" in columns
         assert "applied_at" in columns
+        assert "content_hash" in columns
 
     def test_versions_table_exists(self, db: Database) -> None:
         """app.versions table is created during init."""
