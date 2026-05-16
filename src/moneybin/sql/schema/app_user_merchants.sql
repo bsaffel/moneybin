@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS app.user_merchants (
     canonical_name VARCHAR NOT NULL, -- display name; LLM-proposed for created_by='ai'
     category VARCHAR, -- default category (joined to core.dim_categories)
     subcategory VARCHAR, -- default subcategory
-    created_by VARCHAR NOT NULL, -- 'user' | 'ai' | 'plaid' | 'migration'
+    created_by VARCHAR NOT NULL, -- 'user' | 'ai' | 'rule' | 'plaid' | 'migration'
     exemplars VARCHAR[] DEFAULT [], -- exact match_text values for oneOf set-membership lookup
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- when this entry was added
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Latest of all per-row input timestamps contributing to this row's current values. Set on UPDATE by service writes.
