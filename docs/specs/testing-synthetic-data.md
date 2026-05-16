@@ -817,7 +817,7 @@ Requirements" section describing what the generator should produce to exercise t
 feature. This becomes the contract between feature authors and generator maintainers.
 
 The spec template (`_template.md`) includes this as an optional section. See
-`spec_implementation.md` for an audit of which specs need and have this section.
+`design.md` for an audit of which specs need and have this section.
 
 ---
 
