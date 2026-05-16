@@ -26,7 +26,7 @@ downstream agents.
 - Encryption parameters and key-derivation choices
 - Critical-path dependency choices that leak into public types
 
-**Pre-launch posture (current — M2A/M2B):** iterate aggressively to find
+**Pre-launch posture (current):** iterate aggressively to find
 the right shape. This is the cheapest moment to fix mistakes. Don't
 prematurely freeze a surface before you know it's right.
 

@@ -13,9 +13,10 @@ Three axes, distinct from "Simplicity First" below:
 
 - **Path selection (this principle):** For one-way-door choices (public
   contracts, security postures, critical-path deps — see
-  design-principles.md for the trigger list and launch trigger), default
-  to the path that still feels right in five years, even if it costs
-  months more. Pre-launch (M2A/M2B): iterate. Post-launch: lock hard.
+  `.claude/rules/design-principles.md` for the trigger list and launch
+  trigger), default to the path that still feels right in five years,
+  even if it costs months more. Pre-launch: iterate. Post-launch: lock
+  hard.
 - **Coherence (every change):** When adding new X, follow the existing
   pattern for X. If the pattern is wrong, fix it everywhere — don't
   introduce a parallel pattern beside it. Two patterns for the same job is
@@ -27,11 +28,11 @@ Three axes, distinct from "Simplicity First" below:
 **Agent protocol for one-way-door decisions:** Surface both paths. Name
 each cost concretely (time, surface area, migration risk). Recommend the
 durable path; state what durability costs. Use the worked example in
-design-principles.md as the output template. Wait for explicit override
-before taking the fast path — or, in subagent / autonomous-loop contexts
-with no user, default to durable and document the choice for the parent.
-If you can't tell whether a decision is one-way: treat it as one-way and
-invoke.
+`.claude/rules/design-principles.md` as the output template. Wait for
+explicit override before taking the fast path — or, in subagent /
+autonomous-loop contexts with no user, default to durable and document
+the choice for the parent. If you can't tell whether a decision is
+one-way: treat it as one-way and invoke.
 
 Heuristics, trigger list, the public-contract / internal-abstraction split,
 and the coherence rule: `.claude/rules/design-principles.md`.
