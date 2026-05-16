@@ -81,40 +81,47 @@ class TestV007Migration:
     ) -> None:
         """Single-note rows get note_id (12 hex), author='legacy', preserved created_at."""
         _drop_and_recreate_legacy_notes(db)
-        db.execute(
-            "INSERT INTO app.transaction_notes (transaction_id, note, created_at) "
-            "VALUES (?, ?, ?)",
-            ["txn_legacy_1", "old single note", "2025-01-15 10:00:00"],
-        )
+        legacy_notes = [
+            ("txn_legacy_1", "old single note", "2025-01-15 10:00:00"),
+            ("txn_legacy_2", "grocery run on the road", "2025-01-16 09:30:00"),
+            (
+                "txn_legacy_3",
+                "split rent w/ roommate — paid back via venmo",
+                "2025-01-17 18:45:00",
+            ),
+        ]
+        for transaction_id, note, created_at in legacy_notes:
+            db.execute(
+                "INSERT INTO app.transaction_notes "
+                "(transaction_id, note, created_at) VALUES (?, ?, ?)",
+                [transaction_id, note, created_at],
+            )
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
-        row = db.execute(
+        rows = db.execute(
             "SELECT note_id, transaction_id, text, author, created_at "
-            "FROM app.transaction_notes WHERE transaction_id = 'txn_legacy_1'"
-        ).fetchone()
-        assert row is not None
-        note_id, transaction_id, text, author, created_at = row
-        assert isinstance(note_id, str)
-        assert len(note_id) == 12
-        assert all(c in "0123456789abcdef" for c in note_id)
-        assert transaction_id == "txn_legacy_1"
-        assert text == "old single note"
-        assert author == "legacy"
-        assert str(created_at).startswith("2025-01-15 10:00:00")
+            "FROM app.transaction_notes ORDER BY transaction_id"
+        ).fetchall()
+        assert len(rows) == len(legacy_notes)
+        for (note_id, transaction_id, text, author, created_at), (
+            expected_txn,
+            expected_text,
+            expected_ts,
+        ) in zip(rows, legacy_notes, strict=True):
+            assert isinstance(note_id, str)
+            assert len(note_id) == 12
+            assert all(c in "0123456789abcdef" for c in note_id)
+            assert transaction_id == expected_txn
+            assert text == expected_text
+            assert author == "legacy"
+            assert str(created_at).startswith(expected_ts)
 
     def test_v007_retires_ai_audit_log_table(self, db: Database) -> None:
         """ai_audit_log rows move to audit_log with AI fields in context_json; old table dropped."""
         _create_legacy_ai_audit_log(db)
-        db.execute(
-            """
-            INSERT INTO app.ai_audit_log (
-                audit_id, timestamp, flow_tier, feature, backend, model,
-                data_sent_summary, data_sent_hash, response_summary,
-                consent_reference, user_initiated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
+        legacy_ai_rows = [
+            (
                 "ai_audit_1",
                 "2025-02-01 12:00:00",
                 2,
@@ -126,12 +133,48 @@ class TestV007Migration:
                 "category labels list",
                 "consent_grant_xyz",
                 False,
-            ],
-        )
+            ),
+            (
+                "ai_audit_2",
+                "2025-02-02 14:30:00",
+                1,
+                "categorize",
+                "anthropic",
+                "claude-haiku-4-5",
+                "12 txns, masked merchants",
+                "cafef00d" * 8,
+                "category assignments",
+                "consent_grant_abc",
+                True,
+            ),
+            (
+                "ai_audit_3",
+                "2025-02-03 09:15:00",
+                3,
+                "merchant_normalize",
+                "openai",
+                "gpt-4o-mini",
+                "30 merchant strings",
+                "feedface" * 8,
+                "canonical names",
+                "consent_grant_def",
+                True,
+            ),
+        ]
+        for row in legacy_ai_rows:
+            db.execute(
+                """
+                INSERT INTO app.ai_audit_log (
+                    audit_id, timestamp, flow_tier, feature, backend, model,
+                    data_sent_summary, data_sent_hash, response_summary,
+                    consent_reference, user_initiated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                list(row),
+            )
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
-        # Old table is gone.
         result = db.execute(
             "SELECT COUNT(*) FROM information_schema.tables "
             "WHERE table_schema = 'app' AND table_name = 'ai_audit_log'"
@@ -139,52 +182,61 @@ class TestV007Migration:
         assert result is not None
         assert result[0] == 0
 
-        # Row re-routed into app.audit_log.
-        row = db.execute(
+        rows = db.execute(
             "SELECT audit_id, action, actor, occurred_at, context_json "
-            "FROM app.audit_log WHERE audit_id = 'ai_audit_1'"
-        ).fetchone()
-        assert row is not None
-        audit_id, action, actor, occurred_at, context_json = row
-        assert audit_id == "ai_audit_1"
-        assert action == "ai.external_call"
-        assert actor == "ai:anthropic:claude-sonnet-4-6"
-        assert str(occurred_at).startswith("2025-02-01 12:00:00")
-        ctx = (
-            json.loads(context_json) if isinstance(context_json, str) else context_json
-        )
-        assert ctx["flow_tier"] == 2
-        assert ctx["feature"] == "smart_import_parse"
-        assert ctx["backend"] == "anthropic"
-        assert ctx["model"] == "claude-sonnet-4-6"
-        assert ctx["data_sent_hash"] == "deadbeef" * 8
-        assert ctx["consent_reference"] == "consent_grant_xyz"
-        assert ctx["user_initiated"] is False
+            "FROM app.audit_log ORDER BY audit_id"
+        ).fetchall()
+        assert len(rows) == len(legacy_ai_rows)
+        for (audit_id, action, actor, occurred_at, context_json), legacy in zip(
+            rows, legacy_ai_rows, strict=True
+        ):
+            (
+                expected_audit_id,
+                expected_ts,
+                expected_flow_tier,
+                expected_feature,
+                expected_backend,
+                expected_model,
+                _summary,
+                expected_hash,
+                _response,
+                expected_consent,
+                expected_user_initiated,
+            ) = legacy
+            assert audit_id == expected_audit_id
+            assert action == "ai.external_call"
+            assert actor == f"ai:{expected_backend}:{expected_model}"
+            assert str(occurred_at).startswith(expected_ts)
+            ctx = (
+                json.loads(context_json)
+                if isinstance(context_json, str)
+                else context_json
+            )
+            assert ctx["flow_tier"] == expected_flow_tier
+            assert ctx["feature"] == expected_feature
+            assert ctx["backend"] == expected_backend
+            assert ctx["model"] == expected_model
+            assert ctx["data_sent_hash"] == expected_hash
+            assert ctx["consent_reference"] == expected_consent
+            assert ctx["user_initiated"] is expected_user_initiated
 
     def test_v007_idempotent_on_second_run(self, db: Database) -> None:
         """Second migrate run must leave state byte-identical to first run."""
-        # Seed both legacy structures so the migration has real work to do.
         _drop_and_recreate_legacy_notes(db)
-        db.execute(
-            "INSERT INTO app.transaction_notes (transaction_id, note, created_at) "
-            "VALUES (?, ?, ?)",
-            ["txn_idem_1", "first legacy note", "2025-03-01 09:00:00"],
-        )
-        db.execute(
-            "INSERT INTO app.transaction_notes (transaction_id, note, created_at) "
-            "VALUES (?, ?, ?)",
-            ["txn_idem_2", "second legacy note", "2025-03-02 09:00:00"],
-        )
+        idem_notes = [
+            ("txn_idem_1", "first legacy note", "2025-03-01 09:00:00"),
+            ("txn_idem_2", "second legacy note", "2025-03-02 09:00:00"),
+            ("txn_idem_3", "third legacy note", "2025-03-03 09:00:00"),
+        ]
+        for transaction_id, note, created_at in idem_notes:
+            db.execute(
+                "INSERT INTO app.transaction_notes "
+                "(transaction_id, note, created_at) VALUES (?, ?, ?)",
+                [transaction_id, note, created_at],
+            )
         _create_legacy_ai_audit_log(db)
-        db.execute(
-            """
-            INSERT INTO app.ai_audit_log (
-                audit_id, timestamp, flow_tier, feature, backend, model,
-                data_sent_summary, data_sent_hash, response_summary,
-                consent_reference, user_initiated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
+        idem_ai_rows = [
+            (
                 "ai_idem_1",
                 "2025-03-03 09:00:00",
                 1,
@@ -196,8 +248,45 @@ class TestV007Migration:
                 "response",
                 "consent_xyz",
                 True,
-            ],
-        )
+            ),
+            (
+                "ai_idem_2",
+                "2025-03-04 10:30:00",
+                2,
+                "smart_import_parse",
+                "anthropic",
+                "claude-haiku-4-5",
+                "8 rows redacted",
+                "deadbeef" * 8,
+                "category labels",
+                "consent_abc",
+                False,
+            ),
+            (
+                "ai_idem_3",
+                "2025-03-05 14:15:00",
+                3,
+                "merchant_normalize",
+                "openai",
+                "gpt-4o-mini",
+                "20 merchants",
+                "feedface" * 8,
+                "canonical names",
+                "consent_def",
+                True,
+            ),
+        ]
+        for row in idem_ai_rows:
+            db.execute(
+                """
+                INSERT INTO app.ai_audit_log (
+                    audit_id, timestamp, flow_tier, feature, backend, model,
+                    data_sent_summary, data_sent_hash, response_summary,
+                    consent_reference, user_initiated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                list(row),
+            )
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
@@ -221,8 +310,7 @@ class TestV007Migration:
             "FROM app.audit_log ORDER BY audit_id"
         ).fetchall()
 
-        # Same row counts, same identifiers, same content.
-        assert len(notes_after_first) == 2
-        assert len(audit_after_first) == 1
+        assert len(notes_after_first) == len(idem_notes)
+        assert len(audit_after_first) == len(idem_ai_rows)
         assert notes_after_second == notes_after_first
         assert audit_after_second == audit_after_first

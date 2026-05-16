@@ -1,16 +1,14 @@
 """Add updated_at to app.balance_assertions so edits advance freshness.
 
 Per docs/specs/core-updated-at-convention.md, `core.fct_balances.updated_at`
-sources its user-assertion timestamps from `app.balance_assertions`. Today
-the assertion table tracks only `created_at`, which is preserved on
-re-assertion (per BalanceService.assert_balance ON CONFLICT semantics), so
-edits to an existing assertion (corrected `balance` / updated `notes`) are
-invisible to any "changed since T" consumer. This migration adds a
-mutable `updated_at` column; the service write path refreshes it on the
-ON CONFLICT DO UPDATE branch.
+sources its user-assertion timestamps from `app.balance_assertions`. The
+existing `created_at` is preserved on re-assertion (BalanceService.assert_balance
+ON CONFLICT semantics), so edits to an existing assertion are invisible to
+"changed since T" consumers without a separate mutable column. The write path
+refreshes `updated_at` on the ON CONFLICT DO UPDATE branch.
 
-Two-step ADD then SET NOT NULL pattern per V010 (DuckDB doesn't support
-combined inline NOT NULL). Idempotent: re-runs detect the end state.
+Two-step ADD then SET NOT NULL with an interim COMMIT — see V010 for the
+DuckDB "outstanding updates" rationale and the idempotent recovery branch.
 """
 
 import logging
@@ -38,6 +36,14 @@ def migrate(conn: object) -> None:
             "ALTER TABLE app.balance_assertions "
             "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
         )
+        # Commit the backfill before SET NOT NULL. A failure between this
+        # COMMIT and the SET NOT NULL below leaves the column added-but-
+        # nullable; the next migration run hits the `elif` branch below and
+        # finishes the tightening. (Exception path also writes a
+        # success=false schema_migrations row that the operator must delete
+        # first; a hard crash leaves no such row.)
+        conn.execute("COMMIT")  # type: ignore[union-attr]
+        conn.execute("BEGIN TRANSACTION")  # type: ignore[union-attr]
         conn.execute(  # type: ignore[union-attr]
             "ALTER TABLE app.balance_assertions ALTER COLUMN updated_at SET NOT NULL"
         )

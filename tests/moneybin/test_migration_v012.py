@@ -111,25 +111,51 @@ class TestV012Migration:
         Without this, the post-migration `_SOURCE_PRIORITY` CASE returns NULL
         for these rows and every subsequent precedence check (including user
         writes) silently fails because `priority <= NULL` is NULL.
+
+        Populates >=3 'seed' rows alongside non-seed rows to verify selectivity:
+        only 'seed' is rewritten, other categorized_by values survive.
         """
         # Bypass the service-layer Literal check; this is the pre-migration shape.
         # No FK enforcement against core.fct_transactions (which is a view), so a
         # bare insert into app.transaction_categories is sufficient.
-        db.execute(
-            "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, subcategory, categorized_at, categorized_by) "
-            "VALUES ('t_legacy_seed', 'Food & Dining', 'Coffee Shops', "
-            "CURRENT_TIMESTAMP, 'seed')"
-        )
+        seed_rows = [
+            ("t_legacy_seed_1", "Food & Dining", "Coffee Shops", "seed"),
+            ("t_legacy_seed_2", "Transport", "Rideshare", "seed"),
+            ("t_legacy_seed_3", "Shopping", "General Merchandise", "seed"),
+        ]
+        non_seed_rows = [
+            ("t_user_1", "Food & Dining", "Restaurants", "user"),
+            ("t_rule_1", "Bills & Utilities", "Internet", "rule"),
+        ]
+        for transaction_id, category, subcategory, categorized_by in (
+            seed_rows + non_seed_rows
+        ):
+            db.execute(
+                "INSERT INTO app.transaction_categories "
+                "(transaction_id, category, subcategory, categorized_at, categorized_by) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)",
+                [transaction_id, category, subcategory, categorized_by],
+            )
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
-        row = db.execute(
-            "SELECT categorized_by FROM app.transaction_categories "
-            "WHERE transaction_id = 't_legacy_seed'"
-        ).fetchone()
-        assert row is not None
-        assert row[0] == "rule"
+        for transaction_id, _category, _sub, _by in seed_rows:
+            row = db.execute(
+                "SELECT categorized_by FROM app.transaction_categories "
+                "WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "rule"
+
+        for transaction_id, _category, _sub, original_by in non_seed_rows:
+            row = db.execute(
+                "SELECT categorized_by FROM app.transaction_categories "
+                "WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+            assert row is not None
+            assert row[0] == original_by
 
     def test_v012_seed_rewrite_is_noop_when_absent(self, db: Database) -> None:
         """No legacy 'seed' rows → UPDATE is a clean no-op; migration completes."""
