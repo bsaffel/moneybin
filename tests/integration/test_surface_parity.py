@@ -62,13 +62,14 @@ introduction:
   (``accounts_show``, ``accounts_balance_show``,
   ``accounts_investments_show``).
 - **D. CLI gaps.** MCP tools that need a CLI sibling but lack one:
-  ``moneybin_discover`` (MCP-only by design — the visibility-disclosure
-  tool), ``accounts_summary``, ``import_inbox_sync``,
+  ``accounts_summary``, ``import_inbox_sync``,
   ``transactions_categorize_assist``,
   ``transactions_categorize_pending_list``,
   ``transactions_categorize_rule_delete``,
   ``transactions_categorize_rules_create``, ``transactions_get``,
-  ``transactions_recurring_list``.
+  ``transactions_recurring_list``. ``moneybin_discover`` is MCP-only by
+  design (visibility-disclosure mechanism) and lives in
+  ``MCP_ONLY_ALLOWED`` rather than the drift backlog.
 """
 
 # ruff: noqa: S101
@@ -101,9 +102,11 @@ _SECRET_MATERIAL: frozenset[str] = frozenset({
 # CLI-only by operator policy: bootstrapping, recovery, and developer-
 # tooling that require physical operator presence. See
 # `.claude/rules/mcp-server.md` "When CLI-only is justified" category 2.
+# Note: ``db_init`` belongs to ``_SECRET_MATERIAL`` (it accepts a
+# passphrase) — secret-material is the load-bearing justification per
+# the rule's NOT-valid list. Not duplicated here.
 _OPERATOR_TERRITORY: frozenset[str] = frozenset({
     # Database lifecycle
-    "db_init",
     "db_lock",
     "db_ps",
     "db_kill",
@@ -140,22 +143,31 @@ _OPERATOR_TERRITORY: frozenset[str] = frozenset({
 
 CLI_ONLY_ALLOWED: frozenset[str] = _SECRET_MATERIAL | _OPERATOR_TERRITORY
 
-# No MCP tool should be missing its CLI sibling. If a justification ever
-# exists, document it here with a citation to the spec section that
-# approves it.
-MCP_ONLY_ALLOWED: frozenset[str] = frozenset()
+# MCP-only by design — tools that implement MCP-protocol-specific
+# mechanisms with no CLI semantic. ``moneybin_discover`` is the
+# visibility-disclosure tool that re-enables extended-namespace tools
+# per MCP session; the CLI has no notion of session-scoped tool
+# visibility. See `.claude/rules/mcp-server.md` Tool Taxonomy
+# (progressive disclosure paragraph) and `docs/specs/mcp-architecture.md`
+# §3.
+MCP_ONLY_ALLOWED: frozenset[str] = frozenset({
+    "moneybin_discover",
+})
 
 
 def _collect_mcp_tool_names() -> set[str]:
     """Every registered MCP tool name, transforms bypassed.
 
-    Uses ``_local_provider.list_tools()`` (FastMCP 3.x internal) so the
-    parity check sees the full registered surface regardless of the
+    Uses ``_list_tools()`` (FastMCP 3.x internal) so the parity check
+    sees the full registered surface regardless of the
     ``progressive_disclosure`` setting — a tool hidden by the Visibility
-    transform is still registered and still owes a CLI sibling.
+    transform is still registered and still owes a CLI sibling. The
+    public ``list_tools()`` filters by visibility. Matches the
+    established convention used by ``src/moneybin/mcp/resources.py:150``
+    and ``src/moneybin/cli/commands/mcp.py:597``.
     """
     mcp_server.register_core_tools()
-    raw = asyncio.run(mcp_server.mcp._local_provider.list_tools())  # pyright: ignore[reportPrivateUsage]
+    raw = asyncio.run(mcp_server.mcp._list_tools())  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
     return {tool.name for tool in raw}
 
 
@@ -173,6 +185,12 @@ def _collect_cli_command_names() -> set[str]:
         for cmd_name, cmd in group.commands.items():
             path = (*prefix, cmd_name.replace("-", "_"))
             if isinstance(cmd, click.Group):
+                # Groups with `invoke_without_command=True` are also callable
+                # bare (e.g., `moneybin import inbox` drains the inbox via its
+                # callback). Record the group path as a command in addition
+                # to recursing into subcommands.
+                if cmd.invoke_without_command:
+                    names.add("_".join(path))
                 names |= walk(cmd, path)
             else:
                 names.add("_".join(path))
@@ -187,14 +205,23 @@ def _format_diff(label: str, names: set[str]) -> str:
     return f"{label} ({len(names)}):\n  " + "\n  ".join(sorted(names))
 
 
+# Marker: integration. The test runs in-process with no DB / SQLMesh /
+# subprocess, but it exercises the wiring between two subsystems (MCP
+# registration + Typer CLI tree) and registers the full MCP tool surface
+# at import time — broader than a single unit. Placement under
+# ``tests/integration/`` matches the directory convention from
+# ``.claude/rules/testing.md`` "Test Coverage by Layer."
 @pytest.mark.integration
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "Pre-existing canonical-name drift exceeds current allowlists. "
         "See module docstring for the A–D triage backlog (rename / "
         "allowlist / build). Strict xfail flips to FAIL the moment drift "
-        "resolves — remove this marker then."
+        "resolves — remove this marker then. ``raises=AssertionError`` "
+        "ensures only the parity assertion is masked; setup or "
+        "introspection errors still fail the test."
     ),
 )
 def test_cli_mcp_name_drift() -> None:
