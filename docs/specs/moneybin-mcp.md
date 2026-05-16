@@ -1515,7 +1515,7 @@ Per the v2 MCP exposure principle, sync becomes nearly fully MCP-exposed. The AI
 | `sync_connect [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
 | `sync_connect_status <session_id>` | low | Single-shot check of a connect session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
 | `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
-| `sync_pull [institution] [force]` | medium | Triggers sync for one or all institutions; loads raw.plaid_* and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). |
+| `sync_pull [institution] [force] [apply_transforms=true]` | medium | Triggers sync for one or all institutions; loads raw.plaid_* and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `apply_transforms` (default true) and the sync lands new rows, SQLMesh transforms run once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error`. |
 | `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
 | `sync_schedule_set --time HH:MM` | low | Stub — installs daily sync (launchd/cron). |
 | `sync_schedule_show` | low | Stub — read-only schedule details. |

@@ -71,6 +71,7 @@ def _build_sync_service() -> Generator[Any, None, None]:
 def sync_pull(
     institution: str | None = None,
     force: bool = False,
+    apply_transforms: bool = True,
 ) -> ResponseEnvelope:
     """Pull transactions, accounts, balances from connected institutions via moneybin-server.
 
@@ -79,9 +80,18 @@ def sync_pull(
     results including error_code for any failed institutions. Mutates raw.plaid_* tables and
     propagates through SQLMesh to core; idempotent on re-run (transactions upsert by
     (transaction_id, provider_item_id)).
+
+    When apply_transforms=True (default) and rows are loaded, SQLMesh transforms run once
+    at end-of-pull so core.dim_accounts and friends reflect the new data before returning.
+    Pass apply_transforms=False to defer the transform pass (raw rows still land durably;
+    derived models become stale until the next transform_apply).
     """
     with _build_sync_service() as service:
-        result = service.pull(institution=institution, force=force)
+        result = service.pull(
+            institution=institution,
+            force=force,
+            apply_transforms=apply_transforms,
+        )
     return build_envelope(
         data=result.model_dump(mode="json"),
         sensitivity="medium",

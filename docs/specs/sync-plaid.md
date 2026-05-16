@@ -28,6 +28,7 @@ Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checkin
 7. `app.sync_connections` is updated after every sync with per-institution status, transaction counts, and error details.
 8. Plaid-specific error codes are mapped to actionable user guidance per `sync-overview.md` error handling patterns.
 9. No PII or financial data in logs. Transaction counts, institution names, and masked account numbers only.
+10. After a successful sync that lands new raw rows, `SyncService.pull()` auto-applies SQLMesh transforms once before returning, so derived `core.*` models (notably `core.dim_accounts`) reflect the new data immediately. Mirrors the end-of-batch contract from [`smart-import-transform.md`](smart-import-transform.md) for the import path. Callers opt out via `apply_transforms=False` (MCP `sync_pull`) / `--no-apply-transforms` (CLI `moneybin sync pull`). Transform failures soft-fail: raw rows remain durable; the result envelope reports `transforms_applied=false` with a `transforms_error` string. Zero-row syncs skip the transform call entirely.
 
 ---
 

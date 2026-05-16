@@ -31,6 +31,7 @@ from moneybin.metrics.registry import (
     SYNC_PULL_OUTCOMES_TOTAL,
     SYNC_PULL_TRANSACTIONS_LOADED,
 )
+from moneybin.services.transform_service import TransformService
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,20 @@ class SyncService:
         institution: str | None = None,
         provider_item_id: str | None = None,
         force: bool = False,
+        apply_transforms: bool = True,
     ) -> PullResult:
-        """Trigger a sync, fetch data, load into raw tables, return counts."""
+        """Trigger a sync, fetch data, load into raw tables, return counts.
+
+        When ``apply_transforms`` is True (default) and the sync wrote at
+        least one raw row, runs :meth:`TransformService.apply` once after
+        the load so derived ``core.*`` models (especially ``dim_accounts``)
+        reflect the new data before this call returns. Mirrors the
+        end-of-batch contract documented in
+        ``docs/specs/smart-import-transform.md`` for the import path.
+
+        Transform failures soft-fail: raw rows stay durable, and the result
+        envelope reports ``transforms_applied=False`` with ``transforms_error``.
+        """
         if institution is not None and provider_item_id is not None:
             raise ValueError(
                 "institution and provider_item_id are mutually exclusive — pass one or neither"
@@ -112,7 +125,7 @@ class SyncService:
                     SYNC_INSTITUTION_ERRORS_TOTAL.labels(
                         error_code=inst.error_code
                     ).inc()
-        return PullResult(
+        result = PullResult(
             job_id=trigger_resp.job_id,
             transactions_loaded=load_result.transactions_loaded,
             accounts_loaded=load_result.accounts_loaded,
@@ -120,6 +133,17 @@ class SyncService:
             transactions_removed=removed_count,
             institutions=sync_data.metadata.institutions,
         )
+        rows_landed = (
+            load_result.transactions_loaded
+            + load_result.accounts_loaded
+            + load_result.balances_loaded
+        )
+        if apply_transforms and rows_landed > 0:
+            apply_result = TransformService(self.db).apply()
+            result.transforms_applied = apply_result.applied
+            result.transforms_duration_seconds = apply_result.duration_seconds
+            result.transforms_error = apply_result.error
+        return result
 
     # ------------------------------ Connect ------------------------------
 

@@ -246,6 +246,15 @@ def sync_pull(
     force: bool = typer.Option(
         False, "--force", "-f", help="Reset cursor and re-fetch full history."
     ),
+    apply_transforms: bool = typer.Option(
+        True,
+        "--apply-transforms/--no-apply-transforms",
+        help=(
+            "Run SQLMesh transforms after a successful pull so core.* models "
+            "(dim_accounts, etc.) reflect the new data before this command "
+            "returns. Default: on. Pass --no-apply-transforms to defer."
+        ),
+    ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -254,7 +263,11 @@ def sync_pull(
         with _build_sync_service() as service:
             if not quiet and output == OutputFormat.TEXT:
                 typer.echo("⚙️  Syncing… (this may take up to 2 minutes)")
-            result = service.pull(institution=institution, force=force)
+            result = service.pull(
+                institution=institution,
+                force=force,
+                apply_transforms=apply_transforms,
+            )
 
     if output == OutputFormat.JSON:
         typer.echo(result.model_dump_json(indent=2))
@@ -273,6 +286,11 @@ def sync_pull(
     )
     if result.transactions_removed:
         typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
+    if result.transforms_error:
+        typer.echo(
+            f"   ⚠️  transforms failed ({result.transforms_error}); "
+            f"raw rows landed. Retry with `moneybin transform apply`."
+        )
 
 
 @app.command("status")

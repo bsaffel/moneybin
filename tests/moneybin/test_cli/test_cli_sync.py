@@ -20,7 +20,11 @@ from moneybin.connectors.sync_models import (
 runner = CliRunner()
 
 
-def _fake_pull_result() -> PullResult:
+def _fake_pull_result(
+    *,
+    transforms_applied: bool = True,
+    transforms_error: str | None = None,
+) -> PullResult:
     return PullResult(
         job_id="job-xyz",
         transactions_loaded=10,
@@ -35,6 +39,9 @@ def _fake_pull_result() -> PullResult:
                 transaction_count=10,
             )
         ],
+        transforms_applied=transforms_applied,
+        transforms_duration_seconds=0.05 if transforms_applied else None,
+        transforms_error=transforms_error,
     )
 
 
@@ -102,7 +109,39 @@ def test_sync_pull_with_institution_and_force(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--institution", "Chase", "--force"])
     assert result.exit_code == 0, result.output
-    service.pull.assert_called_once_with(institution="Chase", force=True)
+    service.pull.assert_called_once_with(
+        institution="Chase", force=True, apply_transforms=True
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_no_apply_transforms_flag(mock_build: MagicMock) -> None:
+    """--no-apply-transforms threads apply_transforms=False to the service."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result()
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull", "--no-apply-transforms"])
+    assert result.exit_code == 0, result.output
+    service.pull.assert_called_once_with(
+        institution=None, force=False, apply_transforms=False
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_surfaces_transforms_error(mock_build: MagicMock) -> None:
+    """Transform failure on pull renders a hint suggesting transform apply."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        transforms_applied=False,
+        transforms_error="SQLMeshError",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 0, result.output
+    assert "transforms failed (SQLMeshError)" in result.output
+    assert "moneybin transform apply" in result.output
 
 
 @pytest.mark.unit

@@ -38,6 +38,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - `pyproject.toml` PyPI-publish-ready metadata (description, classifiers, URLs, keywords). Bumped setuptools floor to ≥77.0 for PEP 639 license metadata.
 
 ### Changed
+- **`moneybin sync pull` auto-applies SQLMesh transforms by default.** After a successful Plaid sync that lands new raw rows, `SyncService.pull()` runs `TransformService.apply()` once before returning, so `core.dim_accounts` and other derived models reflect the new data immediately. Mirrors the end-of-batch contract on the import path. Pass `--no-apply-transforms` (CLI) or `apply_transforms=False` (MCP `sync_pull`) to defer. Transform failures surface as `transforms_applied=false` + `transforms_error` in the result envelope; raw rows stay durable.
 - **Breaking:** MCP `import_file` renamed to `import_files`; accepts `paths: list[str]` and applies transforms once at end of batch. Per-file overrides (`account_name`, `institution`, `format_name`) are no longer exposed on the MCP surface — use the CLI for those.
 - **Breaking:** CLI `moneybin import file PATH` renamed to `moneybin import files PATHS...`; the `--skip-transform` flag is replaced by `--apply-transforms / --no-apply-transforms` (default on).
 - `moneybin import inbox` and the `import_inbox_sync` MCP tool route through the batch import path; transforms now run once per inbox drain instead of once per file.

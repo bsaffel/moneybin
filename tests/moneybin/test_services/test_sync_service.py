@@ -431,3 +431,141 @@ def test_disconnect_unknown_institution_raises(
     service = SyncService(client=mock_client, db=db, loader=loader)
     with pytest.raises(ValueError, match="no connected institution"):
         service.disconnect(institution="UnknownBank")
+
+
+class TestPullAutoAppliesTransforms:
+    """sync.pull() runs SQLMesh transforms after a successful load by default.
+
+    Mirrors the contract established for the import path in
+    smart-import-transform.md: callers opt out with apply_transforms=False, and
+    the result envelope reports transforms_applied / transforms_error.
+    """
+
+    def test_pull_applies_transforms_by_default_when_rows_loaded(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidLoader,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin.services import sync_service as mod
+        from moneybin.services.transform_service import ApplyResult
+
+        apply_calls = 0
+
+        class FakeTransformService:
+            def __init__(self, _db: object) -> None:
+                pass
+
+            def apply(self) -> ApplyResult:
+                nonlocal apply_calls
+                apply_calls += 1
+                return ApplyResult(applied=True, duration_seconds=0.05)
+
+        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        result = service.pull()
+
+        assert apply_calls == 1
+        assert result.transforms_applied is True
+        assert result.transforms_duration_seconds == 0.05
+        assert result.transforms_error is None
+
+    def test_pull_no_apply_transforms_skips_apply(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidLoader,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin.services import sync_service as mod
+        from moneybin.services.transform_service import ApplyResult
+
+        apply_calls = 0
+
+        class FakeTransformService:
+            def __init__(self, _db: object) -> None:
+                pass
+
+            def apply(self) -> ApplyResult:
+                nonlocal apply_calls
+                apply_calls += 1
+                return ApplyResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        result = service.pull(apply_transforms=False)
+
+        assert apply_calls == 0
+        assert result.transforms_applied is False
+        assert result.transforms_duration_seconds is None
+        assert result.transforms_error is None
+
+    def test_pull_skips_transforms_when_no_rows_loaded(
+        self,
+        db: Database,
+        loader: PlaidLoader,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No raw rows landed → nothing for SQLMesh to rebuild, skip apply."""
+        from moneybin.services import sync_service as mod
+        from moneybin.services.transform_service import ApplyResult
+
+        apply_calls = 0
+
+        class FakeTransformService:
+            def __init__(self, _db: object) -> None:
+                pass
+
+            def apply(self) -> ApplyResult:
+                nonlocal apply_calls
+                apply_calls += 1
+                return ApplyResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+
+        empty_client = MagicMock()
+        empty_client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_empty", status="completed", transaction_count=0
+        )
+        empty_data = sync_data.model_copy(
+            update={"accounts": [], "transactions": [], "balances": []}
+        )
+        empty_client.get_data.return_value = empty_data
+
+        service = SyncService(client=empty_client, db=db, loader=loader)
+        result = service.pull()
+
+        assert apply_calls == 0
+        assert result.transforms_applied is False
+        assert result.transforms_error is None
+
+    def test_pull_surfaces_transforms_error_on_apply_failure(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidLoader,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """TransformService.apply() soft-fails — error must reach the envelope."""
+        from moneybin.services import sync_service as mod
+        from moneybin.services.transform_service import ApplyResult
+
+        class FakeTransformService:
+            def __init__(self, _db: object) -> None:
+                pass
+
+            def apply(self) -> ApplyResult:
+                return ApplyResult(
+                    applied=False, duration_seconds=0.12, error="SQLMeshError"
+                )
+
+        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        result = service.pull()
+
+        assert result.transactions_loaded == 3
+        assert result.transforms_applied is False
+        assert result.transforms_duration_seconds == 0.12
+        assert result.transforms_error == "SQLMeshError"
