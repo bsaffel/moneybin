@@ -1,22 +1,39 @@
-"""Enforce MCP ↔ CLI surface parity by walking the live registries.
+"""Detect accidental MCP ↔ CLI canonical-name drift.
 
-Encodes the contract from `.claude/rules/mcp-server.md` and
-`docs/specs/architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry:
-every MCP tool has a CLI sibling under the same canonical name (and vice
-versa) unless the divergence falls into a documented exemption category.
+**Scope.** This test compares the canonical *names* registered on each
+surface, not the functional coverage. Names should match where doing so
+costs nothing; divergence is allowed when it has a documented reason
+(batch-vs-fine-grained shape, surface-idiom conventions, secret-material
+or operator-territory exemptions per `.claude/rules/mcp-server.md`). The
+allowlists below carry those citations inline.
 
-The test walks the live FastMCP tool registry and the live Typer command
-tree (no fixture file — a fixture would record drift, not prevent it),
-canonicalizes both into underscore-joined names, and asserts the
-symmetric difference is empty modulo the allowlists below.
+**What this test is NOT.** It is not a functional-parity check. Two
+surfaces with identical user-outcome coverage but different names will
+fail this test; one MCP batch tool replacing four CLI commands will
+fail this test — even though the agent's call path is strictly better.
+Functional-parity (every user-outcome reachable from every supported
+surface, with surface-appropriate idioms) lives in a separate
+N-surface coverage spec (planned, see `docs/specs/` once authored) and
+is enforced by PR review against `mcp-tool-surface.md`'s
+"Surface change discipline" rule, not by this test.
+
+**Mechanism.** Walks the live FastMCP tool registry and the live Typer
+command tree (no fixture file — a fixture would record drift, not
+prevent it), canonicalizes both into underscore-joined names, and
+asserts the symmetric difference is empty modulo the allowlists.
 
 ## Known drift (xfail backlog)
 
-The test is marked ``xfail(strict=True)`` because pre-existing drift
-between the two surfaces exceeds the documented exemption categories.
+The test is marked ``xfail(strict=True)`` because pre-existing
+canonical-name divergence exceeds what the current allowlists cover.
 Strict mode flips to a CI failure the moment the drift resolves,
-prompting removal of the xfail. Categories of pending drift, captured
-from the diff at test introduction:
+prompting removal of the xfail. Each backlog item is one of:
+**rename** (accidental drift; pick the canonical form and update one
+side), **allowlist** (intentional divergence; add to the relevant
+frozen set below with a citation), or **build** (functional gap; add
+the missing tool/command — caught by the functional-coverage check,
+not by this test). Categories captured from the diff at test
+introduction:
 
 - **A. Naming-pattern mismatches.** MCP ``*_get`` vs CLI ``*_show``
   across the ``reports_*`` family (9 tools), ``accounts_get`` vs
@@ -174,14 +191,14 @@ def _format_diff(label: str, names: set[str]) -> str:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Pre-existing MCP↔CLI drift exceeds the documented exemption "
-        "categories. See module docstring for the A–D backlog. Strict "
-        "xfail flips to FAIL the moment drift resolves — remove this "
-        "marker then."
+        "Pre-existing canonical-name drift exceeds current allowlists. "
+        "See module docstring for the A–D triage backlog (rename / "
+        "allowlist / build). Strict xfail flips to FAIL the moment drift "
+        "resolves — remove this marker then."
     ),
 )
-def test_cli_mcp_surface_parity() -> None:
-    """Every MCP tool has a CLI sibling (or is allowlisted), and vice versa."""
+def test_cli_mcp_name_drift() -> None:
+    """Every registered name matches across surfaces, or is allowlisted."""
     mcp_names = _collect_mcp_tool_names()
     cli_names = _collect_cli_command_names()
 
