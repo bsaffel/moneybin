@@ -53,7 +53,7 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 | `core` | Tables (canonical) and Views (derived-grain) | SQLMesh transforms | All consumers (services, MCP, CLI, reports) | `fct_<entity>` (event grain or alternate event grain), `dim_<entity>` (slowly-changing entity), `bridge_<entity>` (M:N relationship) | Canonical, deduplicated, multi-source. **One canonical table per real-world entity at its primary grain.** Alternate-grain facts use `fct_*` with a disambiguating name (`fct_transactions` header grain, `fct_transaction_lines` line grain). |
 | `app` | Tables | Services (write); migrations (DDL); managed-write MCP tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc. | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
 | `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports_*` tools; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `cli-restructure.md` v2. |
-| `meta` | Tables | SQLMesh transforms | Reconciliation tooling; provenance queries | `fct_<entity>_provenance` (today: `fct_transaction_provenance`); `fct_<entity>_lineage` reserved | Cross-source provenance. Tracks which source row(s) contributed to each canonical row in `core`. |
+| `meta` | Tables / Views | SQLMesh transforms | Reconciliation tooling; provenance queries; freshness probes | `fct_<entity>_provenance` (today: `fct_transaction_provenance`); `fct_<entity>_lineage` reserved; `model_freshness` | Provenance and pipeline metadata. Cross-source row lineage (`fct_*_provenance`) and model-level freshness (`model_freshness`, wrapping SQLMesh state). |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
 | `synthetic` | Tables | Synthetic data generator (`moneybin synthetic generate`) | Scenario tests | `ground_truth`, persona-named tables | Test scenario tables created on demand. Excluded from production builds. |
 
@@ -306,6 +306,10 @@ Per `.claude/rules/database.md` "Table and Column Comments":
 - Do not use the `column_descriptions` block in `MODEL()` together with inline comments — SQLMesh disables auto-detection if both are present.
 
 Both styles reach DuckDB's catalog: SQLMesh applies them on every `sqlmesh run` via `register_comments`; schema DDL applies them on every app startup via `init_schemas`.
+
+### Row-level freshness convention
+
+Every `core.*` model exposes an `updated_at` column whose value is the `MAX` of timestamps from inputs that change *per row*. Inputs that change *per model* (seeds, reference tables) contribute `NULL` and are surfaced through `meta.model_freshness`. `CURRENT_TIMESTAMP AS updated_at` inside a model is an anti-pattern — it evaluates at write time only for `FULL` tables and at query time for views, so it never reliably means "this row's freshness." See [`core-updated-at-convention.md`](core-updated-at-convention.md) for per-model formulas.
 
 ### Model and seed naming details
 

@@ -18,6 +18,7 @@ SELECT
   created_by, /* 'user', 'ai', 'rule' for user_merchants; 'seed' for seeds */
   exemplars, /* Exact match_text values for oneOf set-membership lookup; empty for seeds */
   created_at, /* Timestamp of user creation; NULL for seeds */
+  updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. NULL for pure-seed rows; query meta.model_freshness for seed model freshness. */
   is_user /* TRUE for user-created, FALSE for seeded */
 FROM (
   -- User merchants first (user wins on overlap with seeds)
@@ -31,6 +32,7 @@ FROM (
     created_by,
     exemplars,
     created_at,
+    updated_at,
     TRUE AS is_user
   FROM app.user_merchants
   UNION ALL
@@ -45,6 +47,7 @@ FROM (
     'seed' AS created_by,
     CAST([] AS VARCHAR[]) AS exemplars,
     NULL::TIMESTAMP AS created_at,
+    o.updated_at AS updated_at,
     FALSE AS is_user
   FROM seeds.merchants_global AS s
   LEFT JOIN app.merchant_overrides AS o USING (merchant_id)
@@ -61,6 +64,7 @@ FROM (
     'seed' AS created_by,
     CAST([] AS VARCHAR[]) AS exemplars,
     NULL::TIMESTAMP AS created_at,
+    o.updated_at AS updated_at,
     FALSE AS is_user
   FROM seeds.merchants_us AS s
   LEFT JOIN app.merchant_overrides AS o USING (merchant_id)
@@ -77,6 +81,7 @@ FROM (
     'seed' AS created_by,
     CAST([] AS VARCHAR[]) AS exemplars,
     NULL::TIMESTAMP AS created_at,
+    o.updated_at AS updated_at,
     FALSE AS is_user
   FROM seeds.merchants_ca AS s
   LEFT JOIN app.merchant_overrides AS o USING (merchant_id)

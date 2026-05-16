@@ -103,3 +103,21 @@
     created_by: VARCHAR
     created_at: TIMESTAMP
     updated_at: TIMESTAMP
+
+# SQLMesh internal state — snapshot metadata. Wrapped by meta.model_freshness
+# to expose a stable public contract for model-level freshness.
+
+- name: '"moneybin"."sqlmesh"."_snapshots"'
+  columns:
+    name: VARCHAR
+    identifier: VARCHAR
+    version: VARCHAR
+    dev_version: VARCHAR
+    snapshot: BLOB
+    kind_name: VARCHAR
+    updated_ts: BIGINT
+    unpaused_ts: BIGINT
+    ttl_ms: BIGINT
+    unrestorable: BOOLEAN
+    forward_only: BOOLEAN
+    fingerprint: BLOB

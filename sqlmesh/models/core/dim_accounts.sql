@@ -69,7 +69,7 @@ SELECT
   w.source_file, /* Path to the source file from which this record was loaded */
   w.extracted_at, /* When the data was parsed from the source file */
   w.loaded_at, /* When the record was written to the raw table */
-  CURRENT_TIMESTAMP AS updated_at, /* When this core record was last refreshed by SQLMesh */
+  GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
     w.institution_name || ' ' || w.account_type || ' …' || RIGHT(w.account_id, 4),
