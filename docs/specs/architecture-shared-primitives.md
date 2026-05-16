@@ -3,7 +3,7 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** ready
+- **Status:** implemented
 - **Authority:** Reference doc cited by every M2+ spec rather than re-derived. Documents what is true in the code today, plus two narrowly-scoped naming changes that land with this spec (see [Cascading edits](#cascading-edits)).
 
 ## Goal
