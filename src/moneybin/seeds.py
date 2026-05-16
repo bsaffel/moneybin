@@ -1,4 +1,4 @@
-"""SQLMesh seed materialization + the views that expose seeds alongside user data.
+"""SQLMesh seed materialization + the views that expose seeded data.
 
 Seeds are managed by SQLMesh (``seeds.*`` schema, populated from CSV). The
 canonical resolved dimensions — categories and merchants — are exposed as
@@ -22,12 +22,8 @@ from typing import TYPE_CHECKING
 from moneybin.tables import (
     CATEGORIES,
     CATEGORY_OVERRIDES,
-    MERCHANT_OVERRIDES,
     MERCHANTS,
     SEED_CATEGORIES,
-    SEED_MERCHANTS_CA,
-    SEED_MERCHANTS_GLOBAL,
-    SEED_MERCHANTS_US,
     USER_CATEGORIES,
     USER_MERCHANTS,
 )
@@ -38,12 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_SEED_MODELS: list[str] = [
-    SEED_CATEGORIES.full_name,
-    SEED_MERCHANTS_GLOBAL.full_name,
-    SEED_MERCHANTS_US.full_name,
-    SEED_MERCHANTS_CA.full_name,
-]
+_SEED_MODELS: list[str] = [SEED_CATEGORIES.full_name]
 
 
 def materialize_seeds(db: Database) -> None:
@@ -63,13 +54,13 @@ def materialize_seeds(db: Database) -> None:
 
 
 def _ensure_seed_tables_exist(db: Database) -> None:
-    """Create seed tables if they don't exist yet.
+    """Create the categories seed table if it doesn't exist yet.
 
-    In production, SQLMesh has already created and populated these tables —
-    the CREATE TABLE IF NOT EXISTS calls are no-ops. In fresh test DBs (where
-    SQLMesh hasn't run), the empty tables let ``refresh_views`` assemble the
-    ``core.dim_*`` views without hitting a CatalogException on missing
-    source tables.
+    In production, SQLMesh has already created and populated this table —
+    the CREATE TABLE IF NOT EXISTS call is a no-op. In fresh test DBs (where
+    SQLMesh hasn't run), the empty table lets ``refresh_views`` assemble the
+    ``core.dim_categories`` view without hitting a CatalogException on the
+    missing source.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
     db.execute(
@@ -81,25 +72,7 @@ def _ensure_seed_tables_exist(db: Database) -> None:
             description VARCHAR,
             plaid_detailed VARCHAR
         )
-        """  # noqa: S608  # all interpolated names are TableRef constants, not user input
-    )
-    merchant_ddl = """(
-            merchant_id VARCHAR PRIMARY KEY,
-            raw_pattern VARCHAR,
-            match_type VARCHAR,
-            canonical_name VARCHAR,
-            category VARCHAR,
-            subcategory VARCHAR,
-            country VARCHAR
-        )"""
-    db.execute(
-        f"CREATE TABLE IF NOT EXISTS {SEED_MERCHANTS_GLOBAL.full_name} {merchant_ddl}"  # noqa: S608
-    )
-    db.execute(
-        f"CREATE TABLE IF NOT EXISTS {SEED_MERCHANTS_US.full_name} {merchant_ddl}"  # noqa: S608
-    )
-    db.execute(
-        f"CREATE TABLE IF NOT EXISTS {SEED_MERCHANTS_CA.full_name} {merchant_ddl}"  # noqa: S608
+        """  # noqa: S608  # SEED_CATEGORIES is a TableRef constant, not user input
     )
 
 
@@ -114,8 +87,7 @@ def refresh_views(db: Database) -> None:
     If V006 has not yet run — ``app.merchants`` is still a TABLE because the
     operator opened the database with ``no_auto_upgrade=True`` — build a
     backward-compat passthrough that wraps the legacy table so categorization
-    reads still resolve. The full union (user + seeds + overrides) lands once
-    migrations complete.
+    reads still resolve. The pure user view lands once migrations complete.
     """
     _ensure_seed_tables_exist(db)
     legacy = db.execute(
@@ -175,66 +147,20 @@ def refresh_views(db: Database) -> None:
             SELECT
                 merchant_id, raw_pattern, match_type, canonical_name,
                 category, subcategory, created_by, created_at,
-                CAST([] AS VARCHAR[]) AS exemplars,
-                true AS is_user
+                CAST([] AS VARCHAR[]) AS exemplars
             FROM app.merchants
             """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
         )
         return
 
-    # Seed rows have no exemplars — exemplar accumulation is a system-created
-    # merchant feature (categorization-matching-mechanics.md §Schema changes).
-    # CAST([] AS VARCHAR[]) gives the empty-list literal the correct typed
-    # element so the UNION ALL columns align across branches.
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
-        -- User merchants first (user wins on overlap)
         SELECT
             merchant_id, raw_pattern, match_type, canonical_name,
             category, subcategory, created_by,
             exemplars,
-            created_at,
-            true AS is_user
+            created_at
         FROM {USER_MERCHANTS.full_name}
-        UNION ALL
-        -- Global seeds
-        SELECT
-            s.merchant_id, s.raw_pattern, s.match_type, s.canonical_name,
-            COALESCE(o.category, s.category) AS category,
-            COALESCE(o.subcategory, s.subcategory) AS subcategory,
-            'seed' AS created_by,
-            CAST([] AS VARCHAR[]) AS exemplars,
-            NULL::TIMESTAMP AS created_at,
-            false AS is_user
-        FROM {SEED_MERCHANTS_GLOBAL.full_name} s
-        LEFT JOIN {MERCHANT_OVERRIDES.full_name} o USING (merchant_id)
-        WHERE COALESCE(o.is_active, true)
-        UNION ALL
-        -- US seeds
-        SELECT
-            s.merchant_id, s.raw_pattern, s.match_type, s.canonical_name,
-            COALESCE(o.category, s.category) AS category,
-            COALESCE(o.subcategory, s.subcategory) AS subcategory,
-            'seed' AS created_by,
-            CAST([] AS VARCHAR[]) AS exemplars,
-            NULL::TIMESTAMP AS created_at,
-            false AS is_user
-        FROM {SEED_MERCHANTS_US.full_name} s
-        LEFT JOIN {MERCHANT_OVERRIDES.full_name} o USING (merchant_id)
-        WHERE COALESCE(o.is_active, true)
-        UNION ALL
-        -- CA seeds
-        SELECT
-            s.merchant_id, s.raw_pattern, s.match_type, s.canonical_name,
-            COALESCE(o.category, s.category) AS category,
-            COALESCE(o.subcategory, s.subcategory) AS subcategory,
-            'seed' AS created_by,
-            CAST([] AS VARCHAR[]) AS exemplars,
-            NULL::TIMESTAMP AS created_at,
-            false AS is_user
-        FROM {SEED_MERCHANTS_CA.full_name} s
-        LEFT JOIN {MERCHANT_OVERRIDES.full_name} o USING (merchant_id)
-        WHERE COALESCE(o.is_active, true)
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
     )

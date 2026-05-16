@@ -8,7 +8,7 @@ evaluations and sign-convention assertions compare values from different
 naming conventions and always fail.
 
 This mapping lives at the synthetic boundary so ground-truth labels and
-seeded merchant rules both speak the canonical vocabulary.
+user-created merchant rules both speak the canonical vocabulary.
 """
 
 from __future__ import annotations

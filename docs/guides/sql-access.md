@@ -76,8 +76,8 @@ df = conn.execute("SELECT * FROM core.fct_transactions").fetchdf()
 | Table | Description |
 |-------|-------------|
 | `app.categorization_rules` | Active rules (manual + auto-rules; `created_by` distinguishes) |
-| `app.merchants` | Merchant name normalization mappings |
-| `app.categories` | Category taxonomy |
+| `app.user_merchants` | Merchant name normalization mappings (read via `core.dim_merchants`) |
+| `app.user_categories` | User-added category entries (read via `core.dim_categories`) |
 | `app.transaction_categories` | Manual per-transaction category overrides |
 | `app.transaction_notes` | User-attached notes on transactions |
 | `app.budgets` | Monthly budget targets |

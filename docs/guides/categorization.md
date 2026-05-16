@@ -48,8 +48,7 @@ Every categorization is tagged with a source. Higher in the list wins:
 4. `migration` — imported from another tool (Mint, YNAB, etc.)
 5. `ml` — local ML prediction
 6. `plaid` — Plaid-supplied category
-7. `seed` — shipped seed merchant
-8. `ai` — LLM-assist
+7. `ai` — LLM-assist
 
 **User edits are immune to automated overwrites.** A category you set manually is never overwritten by any subsequent rule, merchant mapping, or LLM-assist run. The lock is the `categorized_by` column on `app.transaction_categories` — enforcement happens at the SQL write, not after the fact.
 
@@ -242,6 +241,6 @@ Over time, the rule engine, merchant mappings (with their exemplar sets), and au
 
 - [Categorization matching mechanics spec](../specs/categorization-matching-mechanics.md) — algorithm contract: `match_text` construction, exemplar accumulation, source-precedence enforcement, snowball auto-apply, OP_SCORES specificity ranking.
 - [Categorization overview spec](../specs/categorization-overview.md) — umbrella spec: priority hierarchy, deterministic pipeline, pillars.
-- [Cold-start spec](../specs/categorization-cold-start.md) — LLM-assist workflow, redaction contract, seed merchants.
+- [Cold-start spec](../specs/categorization-cold-start.md) — LLM-assist workflow, redaction contract.
 
 For the architecture and lifecycle internals (state diagrams, sequence diagrams, atomicity guarantees), see [auto-rule pipeline tech brief](../tech/auto-rule-pipeline.md).

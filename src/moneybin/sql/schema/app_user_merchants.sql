@@ -1,5 +1,5 @@
 /* Mutable merchant entries: user-created, LLM-created, Plaid-created, migration-created.
-   Replaces the legacy app.merchants table. Exposed alongside seeds via the
+   Replaces the legacy app.merchants table. Exposed via the
    core.dim_merchants resolved-dim view. */
 CREATE TABLE IF NOT EXISTS app.user_merchants (
     merchant_id VARCHAR PRIMARY KEY, -- 12-char UUID hex from uuid.uuid4().hex[:12]

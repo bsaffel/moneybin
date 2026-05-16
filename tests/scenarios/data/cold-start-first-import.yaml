@@ -1,15 +1,15 @@
 scenario: cold-start-first-import
 description: >
-  Exercises the cold-start branch's merchants split end-to-end on a fresh DB:
-  core.dim_merchants view assembled over app.user_merchants ∪ seeds.merchants_*,
-  _fetch_merchants ordering with is_user discriminator, create_merchant routing
-  to user_merchants. seed_merchants writes the persona's full merchant catalog
-  to app.user_merchants (via service.create_merchant) and categorize_pending
-  reads the merged view; accuracy proves the integration is intact.
-  Note: this models the snowball endpoint (full seeds), not the literal
-  first-run minimal-seed state. A true cold-start scenario (placeholder seeds +
-  simulate_llm_assist) requires Phase 12 seed curation and runner support for
-  the assist step.
+  Exercises the merchants matcher end-to-end on a fresh DB:
+  core.dim_merchants view over app.user_merchants, create_merchant routing
+  to user_merchants, _fetch_merchants ordering. The seed_merchants pipeline
+  step writes the persona's full merchant catalog to app.user_merchants (via
+  service.create_merchant) and categorize_pending reads the resolved view;
+  accuracy proves the integration is intact.
+  Note: this models the snowball endpoint (a fully-populated user_merchants
+  table), not the literal first-run state with an empty matcher. A true
+  cold-start scenario (empty user_merchants + simulate_llm_assist) requires
+  runner support for the assist step.
 
 setup:
   persona: basic
@@ -20,9 +20,9 @@ setup:
 # Pipeline rationale:
 #   generate   — synthetic transactions from the basic persona (1 year).
 #   transform  — materialize core.fct_transactions and dim_accounts.
-#   seed_merchants — populate core.dim_merchants from the persona's merchant catalog;
-#                    this approximates the global seed merchants a fresh install
-#                    would have (common chains like Starbucks, Netflix, etc.).
+#   seed_merchants — populate app.user_merchants from the persona's merchant
+#                    catalog (test fixture step; production flow seeds merchants
+#                    via LLM-assist + auto-rules).
 #   categorize — categorize_pending() matches transaction descriptions against
 #                core.dim_merchants rules; covered transactions get categories.
 #   transform  — re-materialize fct_transactions so the category LEFT JOIN
@@ -55,7 +55,7 @@ assertions:
 # identical: seed_merchants populates app.user_merchants from the persona's
 # full merchant catalog, so categorize_pending should achieve the same
 # coverage it does in basic-full-pipeline. A regression here below 0.70 would
-# indicate the merchants view assembly or _fetch_merchants ordering is broken.
+# indicate the merchants view or _fetch_merchants ordering is broken.
 evaluations:
   - name: cold_start_categorization_coverage
     fn: score_categorization

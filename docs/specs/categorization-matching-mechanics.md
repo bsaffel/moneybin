@@ -2,7 +2,9 @@
 
 > Last updated: 2026-05-10
 > Status: Implemented
-> Companions: [`categorization-overview.md`](categorization-overview.md) (parent — priority hierarchy, pipeline contract), [`categorization-cold-start.md`](categorization-cold-start.md) (LLM-assist + seed merchants; this spec amends its merchant-creation and redaction behavior), [`categorization-auto-rules.md`](categorization-auto-rules.md) (auto-rule generation; consumes the precedence model), [`matching-transfer-detection.md`](matching-transfer-detection.md) (transfer subsystem; categorization runs independent of `is_transfer` per its principles), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (schema reference), [`observability.md`](observability.md) (metrics wiring)
+> Companions: [`categorization-overview.md`](categorization-overview.md) (parent — priority hierarchy, pipeline contract), [`categorization-cold-start.md`](categorization-cold-start.md) (LLM-assist workflow; this spec amends its merchant-creation and redaction behavior), [`categorization-auto-rules.md`](categorization-auto-rules.md) (auto-rule generation; consumes the precedence model), [`matching-transfer-detection.md`](matching-transfer-detection.md) (transfer subsystem; categorization runs independent of `is_transfer` per its principles), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (schema reference), [`observability.md`](observability.md) (metrics wiring)
+>
+> **Amendment 2026-05-15:** seed merchant catalogs were removed (see `categorization-cold-start.md` amendment). The `'seed'` value in the source-precedence ladder is retired. Numbering compacts: priority 7 is now `'ai'` (was 8). Lookup ordering drops the `is_user` discriminator since every merchant in `core.dim_merchants` is user/system-created.
 
 ## Purpose
 
@@ -102,7 +104,7 @@ flowchart TD
     E -->|no| F[no merchant]
 ```
 
-User-authored merchants outrank seed merchants regardless of match type — the existing `is_user DESC` ordering is preserved.
+Every merchant in `core.dim_merchants` is user-created or system-created on the user's behalf (created_by: `user`, `ai`, `rule`, `plaid`, `migration`). Ordering is by match-shape specificity then `created_at ASC`.
 
 ### OP_SCORES specificity ranking
 
@@ -116,7 +118,7 @@ Within a source, specificity is scored to break ties when multiple rules or merc
 | `gt` / `gte` / `lt` / `lte` | 1 |
 | `contains` / `regex` | 0 |
 
-A rule's total score is the sum across its conditions. If every condition uses a "specific" operator (`is`, `oneOf`, `isApprox`, `between`), the score is doubled. Higher score wins; tie-broken by `is_user DESC`, then by `created_at ASC`. This replaces the current ad-hoc `CASE match_type WHEN 'exact' THEN 1 WHEN 'contains' THEN 2 WHEN 'regex' THEN 3` ordering.
+A rule's total score is the sum across its conditions. If every condition uses a "specific" operator (`is`, `oneOf`, `isApprox`, `between`), the score is doubled. Higher score wins; tie-broken by `created_at ASC`. This replaces the current ad-hoc `CASE match_type WHEN 'exact' THEN 1 WHEN 'contains' THEN 2 WHEN 'regex' THEN 3` ordering.
 
 Implementation: a small `score_match_shape(rule)` helper in the matcher; called once per rule at fetch time, cached on the rule row in memory.
 
@@ -127,8 +129,6 @@ Each merchant carries an exemplar set in addition to its (optional) authored pat
 ```sql
 ALTER TABLE app.user_merchants ADD COLUMN exemplars TEXT[] DEFAULT [];
 ```
-
-(Seed merchants in `seeds.merchants_*` have no exemplars — they ship with a curated pattern only.)
 
 When the system (LLM-assist or another auto-pillar) creates or augments a merchant from a categorized row:
 
@@ -158,8 +158,7 @@ Per `categorization-overview.md` priority hierarchy, with a single normative ord
 | 4 | `'migration'` | Migration import |
 | 5 | `'ml'` | ML prediction |
 | 6 | `'plaid'` | Plaid pass-through |
-| 7 | `'seed'` | Seed merchant |
-| 8 (lowest) | `'ai'` | LLM-assist |
+| 7 (lowest) | `'ai'` | LLM-assist |
 
 ### Enforcement on write
 
@@ -198,11 +197,11 @@ WHERE
   (CASE EXCLUDED.categorized_by
      WHEN 'user' THEN 1 WHEN 'rule' THEN 2 WHEN 'auto_rule' THEN 3
      WHEN 'migration' THEN 4 WHEN 'ml' THEN 5 WHEN 'plaid' THEN 6
-     WHEN 'seed' THEN 7 WHEN 'ai' THEN 8 END)
+     WHEN 'ai' THEN 7 END)
   <= (CASE transaction_categories.categorized_by
         WHEN 'user' THEN 1 WHEN 'rule' THEN 2 WHEN 'auto_rule' THEN 3
         WHEN 'migration' THEN 4 WHEN 'ml' THEN 5 WHEN 'plaid' THEN 6
-        WHEN 'seed' THEN 7 WHEN 'ai' THEN 8 END);
+        WHEN 'ai' THEN 7 END);
 ```
 
 Lower number = higher authority; new write replaces only if its priority is ≤ the existing row's. The `CASE` block is duplicated by design — the precedence comparison is needed at exactly this one call site, and a UDF would be over-abstraction per AGENTS.md "no abstractions for single-use code." If a second call site appears later, promote to a SQL or Python UDF then.
@@ -282,7 +281,7 @@ The `MatchType` literal in `categorization_service.py` extends to `'exact' | 'co
 
 ### `app.merchants` view
 
-The view assembling user merchants ∪ seed merchants ∪ overrides preserves `exemplars` as an empty list for seed rows (seeds have no exemplars). No structural change beyond the column union.
+`core.dim_merchants` is a thin SELECT over `app.user_merchants` (no seed catalog, no overrides table). `exemplars` is the user-merchant column directly.
 
 ### `app.transaction_categories`
 
@@ -329,7 +328,6 @@ The work lands in a single PR but proceeds in this internal order. Each step has
 - `src/moneybin/mcp/tools/transactions_categorize.py` — `apply` tool calls `categorize_pending()` after `bulk_categorize`. Edit ops grow a `reapply` parameter.
 - `src/moneybin/mcp/tools/transactions_categorize_assist.py` — response envelope includes new fields.
 - `src/moneybin/cli/commands/transactions/categorize/apply.py` — same auto-apply behavior as the MCP tool.
-- `sqlmesh/models/seeds/*.sql` — no schema changes; seeds remain `exemplars`-free.
 - `src/moneybin/sql/schema/app_user_merchants.sql` — add `exemplars` column, drop NOT NULL on `raw_pattern`.
 - `src/moneybin/sql/migrations/V###__user_merchants_exemplars.py` — DuckDB migration.
 - `src/moneybin/config.py` — add temporary `assist_bypass_redaction` flag (removed after baseline experiment).

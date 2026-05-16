@@ -1,2 +1,0 @@
-merchant_id,raw_pattern,match_type,canonical_name,category,subcategory,country
-seed_global_netflix,NETFLIX,contains,Netflix,Subscriptions,Streaming,global
