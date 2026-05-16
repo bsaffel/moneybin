@@ -20,7 +20,7 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        result = service.import_file(fixture, apply_transforms=False)
+        result = service.import_file(fixture, refresh=False)
 
         assert result.transactions > 0
 
@@ -47,7 +47,7 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        service.import_file(fixture, apply_transforms=False)
+        service.import_file(fixture, refresh=False)
 
         history = import_log.get_import_history(db, limit=5)
         latest = [h for h in history if h["source_type"] == "ofx"][0]
@@ -72,10 +72,10 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        service.import_file(fixture, apply_transforms=False)
+        service.import_file(fixture, refresh=False)
 
         with pytest.raises(ValueError, match="already imported"):
-            service.import_file(fixture, apply_transforms=False)
+            service.import_file(fixture, refresh=False)
 
     def test_reimport_with_force_creates_new_batch(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
@@ -85,8 +85,8 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        service.import_file(fixture, apply_transforms=False)
-        service.import_file(fixture, apply_transforms=False, force=True)
+        service.import_file(fixture, refresh=False)
+        service.import_file(fixture, refresh=False, force=True)
 
         canonical = str(fixture.resolve())
         history = import_log.get_import_history(db, limit=10)

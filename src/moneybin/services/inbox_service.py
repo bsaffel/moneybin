@@ -329,15 +329,18 @@ class InboxService:
         self,
         year_month: str | None = None,
         *,
-        apply_transforms: bool = True,
+        refresh: bool = True,
     ) -> InboxSyncResult:
         """Drain the inbox: import each eligible file and move it.
 
-        Per-file imports run with ``apply_transforms=False`` so SQLMesh runs
-        once at end-of-batch instead of N times. When at least one file
-        imported successfully, ``ImportService.apply_post_import_hooks()`` is
-        invoked once and the timing/error fields land in the result.
+        Per-file imports run with ``refresh=False`` so the refresh pipeline
+        runs once at end-of-batch instead of N times. When at least one
+        transformable file imported successfully, :func:`moneybin.services.refresh.refresh`
+        is invoked once and the SQLMesh-step timing/error fields land in
+        the result.
         """
+        from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
+
         if self._db is None:
             raise RuntimeError("InboxService.sync() requires a database connection")
         ym = year_month or datetime.now(UTC).strftime("%Y-%m")
@@ -354,19 +357,19 @@ class InboxService:
                     self._sync_one(
                         item, importer=importer, year_month=ym, result=result
                     )
-                # Mirror ImportService.import_files: skip the SQLMesh apply
-                # when nothing transformable landed. W-2 PDFs never populate
-                # core.fct_transactions, so a pure-W-2 drain has nothing for
-                # transforms to rebuild.
+                # Mirror ImportService.import_files: skip the refresh when
+                # nothing transformable landed. W-2 PDFs never populate
+                # core.fct_transactions, so a pure-W-2 drain has nothing to
+                # refresh.
                 any_transformable = any(
                     entry.get("file_type") in ("ofx", "tabular")
                     for entry in result.processed
                 )
-                if apply_transforms and any_transformable:
-                    hook_result = importer.apply_post_import_hooks()
-                    result.transforms_applied = hook_result.applied
-                    result.transforms_duration_seconds = hook_result.duration_seconds
-                    result.transforms_error = hook_result.error
+                if refresh and any_transformable:
+                    refresh_result = run_refresh(self._db)
+                    result.transforms_applied = refresh_result.applied
+                    result.transforms_duration_seconds = refresh_result.duration_seconds
+                    result.transforms_error = refresh_result.error
                 INBOX_SYNC_DURATION_SECONDS.observe(time.monotonic() - t0)
                 return result
         except InboxBusyError:
@@ -383,8 +386,8 @@ class InboxService:
     ) -> None:
         """Import one inbox item and move it to the processed/ bucket.
 
-        Transforms are deferred: passed ``apply_transforms=False`` here so the
-        whole batch runs SQLMesh once at the end of :meth:`sync` instead of
+        Refresh is deferred: passed ``refresh=False`` here so the whole
+        batch runs the pipeline once at the end of :meth:`sync` instead of
         per-file.
         """
         rel_filename = str(item["filename"])
@@ -393,7 +396,7 @@ class InboxService:
         try:
             import_result = importer.import_file(
                 str(src),
-                apply_transforms=False,
+                refresh=False,
                 account_name=account_hint if isinstance(account_hint, str) else None,
             )
         except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry

@@ -65,3 +65,12 @@ creates.
 | Creating/dropping indexes | Importing seed data from external files |
 | Simple INSERT/UPDATE with literal values | Conditional logic (if column exists, skip) |
 | Any DDL that is purely structural | Reading Python package versions or metadata |
+
+## Recovering from a failed migration
+
+The runner hashes every migration body into `app.schema_migrations.content_hash`.
+When a previously-failed migration's body has changed since the failure, the
+next run auto-clears the failure row and retries once — push the fix and tell
+users to re-run, no manual row deletion needed. A retry that fails with the
+same code re-arms the guard. Rows with NULL `content_hash` (pre-V013 or files
+deleted before backfill) still need manual clearing.

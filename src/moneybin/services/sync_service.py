@@ -31,6 +31,7 @@ from moneybin.metrics.registry import (
     SYNC_PULL_OUTCOMES_TOTAL,
     SYNC_PULL_TRANSACTIONS_LOADED,
 )
+from moneybin.services.refresh import refresh as _refresh
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,24 @@ class SyncService:
         institution: str | None = None,
         provider_item_id: str | None = None,
         force: bool = False,
+        refresh: bool = True,
     ) -> PullResult:
-        """Trigger a sync, fetch data, load into raw tables, return counts."""
+        """Trigger a sync, fetch data, load into raw tables, return counts.
+
+        When ``refresh`` is True (default) and the sync changed raw state
+        (loaded new rows or processed removals), runs the post-load
+        :func:`moneybin.services.refresh.refresh` pipeline — matching,
+        SQLMesh apply, and categorization — so derived ``core.*`` models
+        reflect the new data before this call returns.
+
+        Transform failures soft-fail: raw rows stay durable, and the result
+        envelope reports ``transforms_applied=False`` with ``transforms_error``
+        (matching and categorization are best-effort and log-only on failure).
+
+        High-frequency callers (scheduled syncs, webhooks) should pass
+        ``refresh=False`` and run refresh on a separate schedule; see
+        ``docs/specs/sync-plaid.md`` Req 10 for the latency profile.
+        """
         if institution is not None and provider_item_id is not None:
             raise ValueError(
                 "institution and provider_item_id are mutually exclusive — pass one or neither"
@@ -112,7 +129,7 @@ class SyncService:
                     SYNC_INSTITUTION_ERRORS_TOTAL.labels(
                         error_code=inst.error_code
                     ).inc()
-        return PullResult(
+        result = PullResult(
             job_id=trigger_resp.job_id,
             transactions_loaded=load_result.transactions_loaded,
             accounts_loaded=load_result.accounts_loaded,
@@ -120,6 +137,22 @@ class SyncService:
             transactions_removed=removed_count,
             institutions=sync_data.metadata.institutions,
         )
+        # Removals are a state change too: a pure-removal sync deletes from
+        # raw.plaid_transactions and the deletion must propagate through
+        # SQLMesh into core.fct_transactions. Gating only on loaded rows
+        # would leave the deleted row visible in core.
+        rows_changed = (
+            load_result.transactions_loaded
+            + load_result.accounts_loaded
+            + load_result.balances_loaded
+            + removed_count
+        )
+        if refresh and rows_changed > 0:
+            refresh_result = _refresh(self.db)
+            result.transforms_applied = refresh_result.applied
+            result.transforms_duration_seconds = refresh_result.duration_seconds
+            result.transforms_error = refresh_result.error
+        return result
 
     # ------------------------------ Connect ------------------------------
 

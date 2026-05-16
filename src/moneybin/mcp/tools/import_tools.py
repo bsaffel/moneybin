@@ -43,7 +43,7 @@ def _validate_file_path(file_path: str) -> Path:
 @mcp_tool(sensitivity="low", read_only=False, idempotent=False)
 def import_files(
     paths: list[str],
-    apply_transforms: bool = True,
+    refresh: bool = True,
     force: bool = False,
 ) -> ResponseEnvelope:
     """Import one or more financial data files into MoneyBin.
@@ -53,17 +53,18 @@ def import_files(
       - .pdf -- W-2 tax forms
       - .csv / .tsv / .xlsx / .parquet / .feather -- tabular transaction exports
 
-    Per-file failures do not abort the batch. Transforms run once at end
-    of batch by default; pass apply_transforms=False to defer.
+    Per-file failures do not abort the batch. The post-load refresh pipeline
+    (matching + SQLMesh apply + categorization) runs once at end of batch by
+    default; pass refresh=False to defer.
 
     Args:
         paths: One or more absolute file paths to import. Each path must
             be within the user's home directory.
-        apply_transforms: Run SQLMesh transforms once after the batch
-            completes. Defaults to True. Pass False to import without
-            refreshing core tables; the transforms_pending signal in
-            system_status will indicate the pending state, and a later
-            transform_apply call will catch the data up.
+        refresh: Run the refresh pipeline once after the batch completes.
+            Defaults to True. Pass False to import without refreshing core
+            tables; the transforms_pending signal in system_status will
+            indicate the pending state, and a later transform_apply or
+            refresh call will catch the data up.
         force: If True, re-import files already in the import log.
 
     Returns:
@@ -79,7 +80,7 @@ def import_files(
     with get_database() as db:
         batch = ImportService(db).import_files(
             [str(p) for p in validated],
-            apply_transforms=apply_transforms,
+            refresh=refresh,
             force=force,
         )
 

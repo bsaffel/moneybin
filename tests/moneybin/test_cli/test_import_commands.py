@@ -99,26 +99,26 @@ class TestImportFilesCommand:
         assert result.exit_code == 0, result.output
         mock_import_files.assert_called_once_with(
             [str(test_file)],
-            apply_transforms=True,
+            refresh=True,
             force=False,
             interactive=False,
         )
 
-    def test_import_files_no_apply_transforms(
+    def test_import_files_no_refresh(
         self,
         runner: CliRunner,
         mock_import_files: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """--no-apply-transforms forwards apply_transforms=False to the batch."""
+        """--no-refresh forwards refresh=False to the batch."""
         test_file = tmp_path / "test.ofx"
         test_file.touch()
 
-        result = runner.invoke(app, ["files", str(test_file), "--no-apply-transforms"])
+        result = runner.invoke(app, ["files", str(test_file), "--no-refresh"])
         assert result.exit_code == 0, result.output
         call_kwargs = mock_import_files.call_args.kwargs
-        assert call_kwargs["apply_transforms"] is False
+        assert call_kwargs["refresh"] is False
 
     def test_import_files_with_institution(
         self,
@@ -137,7 +137,7 @@ class TestImportFilesCommand:
         assert result.exit_code == 0, result.output
         mock_import_file.assert_called_once_with(
             file_path=test_file,
-            apply_transforms=True,
+            refresh=True,
             institution="Wells Fargo",
             force=False,
             interactive=False,
@@ -245,7 +245,7 @@ class TestImportFilesCommand:
         assert result.exit_code == 0, result.output
         mock_import_files.assert_called_once_with(
             [str(good), str(missing)],
-            apply_transforms=True,
+            refresh=True,
             force=False,
             interactive=False,
         )
@@ -287,7 +287,7 @@ class TestImportFilesCommand:
         assert result.exit_code == 0, result.output
         mock_import_files.assert_called_once_with(
             [str(a), str(b)],
-            apply_transforms=True,
+            refresh=True,
             force=False,
             interactive=False,
         )

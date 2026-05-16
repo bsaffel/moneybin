@@ -46,7 +46,7 @@ def test_import_files_runs_transforms_once_for_batch(
     for p in paths:
         assert p.exists(), f"missing fixture: {p}"
 
-    result = ImportService(db).import_files(list(paths), apply_transforms=True)
+    result = ImportService(db).import_files(list(paths), refresh=True)
     assert result.imported_count == 3
     assert result.failed_count == 0
     assert result.transforms_applied is True
@@ -66,7 +66,7 @@ def test_import_files_continues_past_per_file_failure(
         bogus,
         FIXTURES_DIR / "multi_account_sample.ofx",
     ]
-    result = ImportService(db).import_files(paths, apply_transforms=True)
+    result = ImportService(db).import_files(paths, refresh=True)
     assert result.imported_count == 2
     assert result.failed_count == 1
     assert result.transforms_applied is True
@@ -80,18 +80,18 @@ def test_import_files_skips_apply_when_zero_succeeded(
     db = _build_db(tmp_path, monkeypatch)
     bogus = tmp_path / "bogus.ofx"
     bogus.write_text("not actually OFX content\n")
-    result = ImportService(db).import_files([bogus], apply_transforms=True)
+    result = ImportService(db).import_files([bogus], refresh=True)
     assert result.imported_count == 0
     assert result.failed_count == 1
     assert result.transforms_applied is False
 
 
-def test_import_files_respects_apply_transforms_false(
+def test_import_files_respects_refresh_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """apply_transforms=False suppresses end-of-batch transform run."""
+    """refresh=False suppresses end-of-batch transform run."""
     db = _build_db(tmp_path, monkeypatch)
     paths: list[str | Path] = [FIXTURES_DIR / "sample_minimal.ofx"]
-    result = ImportService(db).import_files(paths, apply_transforms=False)
+    result = ImportService(db).import_files(paths, refresh=False)
     assert result.imported_count == 1
     assert result.transforms_applied is False

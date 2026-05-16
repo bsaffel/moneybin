@@ -39,20 +39,21 @@ def _uncategorized_count() -> int:
 
 
 @mcp_tool(sensitivity="low", read_only=False, idempotent=False)
-def inbox_sync(apply_transforms: bool = True) -> ResponseEnvelope:
+def inbox_sync(refresh: bool = True) -> ResponseEnvelope:
     """Drain the active profile's import inbox.
 
     Args:
-        apply_transforms: When True (default), run SQLMesh transforms once
-            after all files have been imported. Set to False to defer the
-            rebuild — useful when chaining several writes before invoking
-            ``transform_apply`` explicitly.
+        refresh: When True (default), run the post-load refresh pipeline
+            (matching + SQLMesh apply + categorization) once after all files
+            have been imported. Set to False to defer — useful when chaining
+            several writes before invoking ``transform_apply`` or refresh
+            explicitly.
     """
     from moneybin.config import get_settings
 
     with get_database() as db:
         service = InboxService(db=db, settings=get_settings())
-        result = dataclasses.asdict(service.sync(apply_transforms=apply_transforms))
+        result = dataclasses.asdict(service.sync(refresh=refresh))
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
     if result["failed"]:
@@ -94,8 +95,8 @@ def register_inbox_tools(mcp: FastMCP) -> None:
         "import_inbox_sync",
         "Drain the active profile's import inbox; move successes to "
         "processed/ and failures to failed/ with structured error sidecars. "
-        "Runs SQLMesh transforms once at end-of-batch when any file succeeded; "
-        "pass apply_transforms=false to defer the rebuild and call transform_apply later. "
+        "Runs the post-load refresh pipeline once at end-of-batch when any file succeeded; "
+        "pass refresh=false to defer the rebuild and call transform_apply or refresh later. "
         "Writes to raw.* source tables and moves files within the inbox directory; revert by manually moving processed files back into inbox/<account-slug>/ and accepting that already-imported source rows are deduplicated on the next sync.",
     )
     register(

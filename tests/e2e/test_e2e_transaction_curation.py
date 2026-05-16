@@ -56,7 +56,7 @@ def _bootstrap_account(env: dict[str, str], account_id: str) -> None:
         str(fixture),
         "--account-id",
         account_id,
-        "--no-apply-transforms",
+        "--no-refresh",
         env=env,
     ).assert_success()
     run_cli("transform", "apply", env=env, timeout=180).assert_success()
@@ -260,7 +260,7 @@ class TestImportLabelsGoldenPath:
             str(fixture),
             "--account-id",
             "labels-acct",
-            "--no-apply-transforms",
+            "--no-refresh",
             env=env,
         )
         result.assert_success()

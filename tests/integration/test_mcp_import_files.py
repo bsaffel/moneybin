@@ -58,7 +58,7 @@ async def test_import_files_accepts_list(
         _copy_fixture(FIXTURES_DIR / "qbo_bank_sample.qbo", tmp_path),
     ]
     paths = [str(p) for p in fixtures]
-    env = await import_files(paths=paths, apply_transforms=True)
+    env = await import_files(paths=paths, refresh=True)
     assert env.data["total_count"] == 3
     assert env.data["imported_count"] == 3
     assert env.data["transforms_applied"] is True
@@ -78,20 +78,20 @@ async def test_import_files_continues_past_failure(
 
     env = await import_files(
         paths=[str(good_a), str(bogus), str(good_b)],
-        apply_transforms=True,
+        refresh=True,
     )
     assert env.data["imported_count"] == 2
     assert env.data["failed_count"] == 1
     assert any(r["status"] == "failed" for r in env.data["files"])
 
 
-async def test_import_files_apply_transforms_false_skips(
+async def test_import_files_refresh_false_skips(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """apply_transforms=False suppresses transforms; action hints transform_apply."""
+    """refresh=False suppresses transforms; action hints transform_apply."""
     _setup_db(tmp_path, monkeypatch)
     fixture = _copy_fixture(FIXTURES_DIR / "sample_minimal.ofx", tmp_path)
-    env = await import_files(paths=[str(fixture)], apply_transforms=False)
+    env = await import_files(paths=[str(fixture)], refresh=False)
     assert env.data["transforms_applied"] is False
     assert any("transform_apply" in a for a in env.actions)
 
