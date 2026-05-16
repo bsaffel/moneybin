@@ -167,18 +167,19 @@ def check_schema_at_boot() -> None:
 
     from moneybin.services.transform_service import TransformService
 
-    drifted_models = sorted(drift)
     logger.info(
-        f"Stale snapshots detected for {drifted_models}; "
-        "running transform apply with restate to self-heal."
+        f"Stale snapshots detected for {sorted(drift)}; "
+        "running transform apply to self-heal."
     )
+    # Plain apply (no restate_models): a regular SQLMesh plan picks up
+    # model-fingerprint changes, which is exactly the production drift
+    # trigger (code extends a core model; existing snapshot lacks the new
+    # columns). SQLMesh's restatement mode explicitly ignores local file
+    # changes (see sqlmesh.core.context.Context.plan_builder
+    # `always_include_local_changes` docstring), so it would no-op against
+    # the very drift we need to fix.
     with get_database() as db:
-        # restate_models forces re-materialization regardless of SQLMesh
-        # state-store fingerprint — needed when the live snapshot has
-        # diverged from the model definition (the common bootstrap case
-        # is a model extended in code; this also handles tampered or
-        # partially-written snapshots).
-        result = TransformService(db).apply(restate_models=drifted_models)
+        result = TransformService(db).apply()
     if not result.applied:
         # apply() soft-fails by returning applied=False with an error type
         # name. Surface that directly — the underlying SQLMesh failure is
@@ -190,9 +191,9 @@ def check_schema_at_boot() -> None:
     logger.info(f"Self-heal completed in {result.duration_seconds:.2f}s")
 
     with get_database(read_only=True) as db:
-        drift = check_core_schema_drift(db)
-    if drift:
-        tables = ", ".join(sorted(drift))
+        post_heal_drift = check_core_schema_drift(db)
+    if post_heal_drift:
+        tables = ", ".join(sorted(post_heal_drift))
         logger.error(f"Schema drift persists after auto-heal: {tables}")
         raise SchemaDriftError(
             f"Stale materialized snapshots persist after auto-heal: {tables}"

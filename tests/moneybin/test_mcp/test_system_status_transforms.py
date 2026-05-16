@@ -112,9 +112,7 @@ def testcheck_schema_at_boot_self_heals_drift(mcp_db: object, mocker: object) ->
     with get_database() as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
-    def _fake_apply(
-        svc: TransformService, restate_models: list[str] | None = None
-    ) -> ApplyResult:
+    def _fake_apply(svc: TransformService) -> ApplyResult:
         # Simulate SQLMesh restoring the dropped column.
         svc._db.execute(  # pyright: ignore[reportPrivateUsage]  # test mock reaches into service
             "ALTER TABLE core.dim_accounts ADD COLUMN display_name VARCHAR"
@@ -138,9 +136,7 @@ def testcheck_schema_at_boot_raises_when_heal_does_not_resolve(
     with get_database() as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
-    def _fake_apply(
-        svc: TransformService, restate_models: list[str] | None = None
-    ) -> ApplyResult:
+    def _fake_apply(svc: TransformService) -> ApplyResult:
         return ApplyResult(applied=True, duration_seconds=0.01)
 
     mocker.patch.object(TransformService, "apply", _fake_apply)  # type: ignore[attr-defined]
@@ -160,9 +156,7 @@ def testcheck_schema_at_boot_propagates_apply_failure(
     with get_database() as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
-    def _failing_apply(
-        svc: TransformService, restate_models: list[str] | None = None
-    ) -> ApplyResult:
+    def _failing_apply(svc: TransformService) -> ApplyResult:
         return ApplyResult(applied=False, duration_seconds=0.01, error="PlanError")
 
     mocker.patch.object(TransformService, "apply", _failing_apply)  # type: ignore[attr-defined]

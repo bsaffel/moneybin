@@ -3,13 +3,13 @@
 
 Builds a SQLMesh-applied DB via ImportService and simulates a drifted live
 view, then asserts ``check_schema_at_boot`` walks the full self-heal flow:
-detect drift → invoke ``TransformService.apply(restate_models=...)`` →
-re-verify. End-to-end "heal restores drift" relies on a real SQLMesh model-
-fingerprint change (the production trigger) which can't be reproduced from
-tmp_path without copying the model tree; that case lives in manual
-verification. This test guarantees the boot helper runs the heal pipeline
-under a live SQLMesh context and surfaces a clear error when the heal
-cannot resolve the divergence.
+detect drift → invoke ``TransformService.apply()`` → re-verify. End-to-end
+"heal restores drift" relies on a real SQLMesh model-fingerprint change
+(the production trigger) which can't be reproduced from tmp_path without
+copying the model tree; that case lives in manual verification. This test
+guarantees the boot helper runs the heal pipeline under a live SQLMesh
+context and surfaces a clear error when the heal cannot resolve the
+divergence.
 """
 
 from __future__ import annotations
@@ -73,28 +73,26 @@ def test_boot_check_runs_self_heal_under_real_sqlmesh(
     )
     db.close()
 
-    # Capture the restate_models arg so we can assert the heal pipeline ran
-    # under a real SQLMesh context (not a mock).
-    seen_restate: list[list[str] | None] = []
+    # Count apply() invocations to confirm the heal pipeline ran under a
+    # real SQLMesh context (not a mock).
+    apply_calls = 0
     original_apply = TransformService.apply
 
-    def _wrapping_apply(
-        self: TransformService, restate_models: list[str] | None = None
-    ) -> object:
-        seen_restate.append(restate_models)
-        return original_apply(self, restate_models=restate_models)
+    def _counting_apply(self: TransformService) -> object:
+        nonlocal apply_calls
+        apply_calls += 1
+        return original_apply(self)
 
-    monkeypatch.setattr(TransformService, "apply", _wrapping_apply)
+    monkeypatch.setattr(TransformService, "apply", _counting_apply)
 
-    # SQLMesh's environment state still says "promoted = current", so a
-    # restate of a live-view-only divergence cannot re-promote the view —
-    # the post-heal re-verify is expected to still see drift, and the boot
-    # helper surfaces a clear "persist after auto-heal" error. This is the
-    # safety net: detect, attempt, escalate.
+    # SQLMesh's regular plan sees no model-file changes (the simulation
+    # only tampered with the live view), so the plain apply re-promotes
+    # nothing. The post-heal re-verify is expected to still see drift,
+    # and the boot helper surfaces a clear "persist after auto-heal"
+    # error. This is the safety net: detect, attempt, escalate.
     with pytest.raises(SchemaDriftError, match="persist after auto-heal"):
         check_schema_at_boot()
 
-    assert seen_restate == [["core.dim_accounts"]], (
-        f"expected one apply(restate_models=['core.dim_accounts']) call, "
-        f"got {seen_restate}"
+    assert apply_calls == 1, (
+        f"expected exactly one TransformService.apply() call, got {apply_calls}"
     )
