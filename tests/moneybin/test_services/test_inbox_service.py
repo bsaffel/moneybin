@@ -11,6 +11,7 @@ import pytest
 from moneybin.config import ImportSettings, MoneyBinSettings
 from moneybin.database import Database
 from moneybin.services.inbox_service import InboxService
+from moneybin.services.refresh import RefreshResult
 
 
 def _make_settings(tmp_path: Path, profile: str = "test") -> MoneyBinSettings:
@@ -18,6 +19,15 @@ def _make_settings(tmp_path: Path, profile: str = "test") -> MoneyBinSettings:
         profile=profile,
         import_=ImportSettings(inbox_root=tmp_path / "MoneyBin"),
     )
+
+
+def _fake_refresh(_db: Database) -> RefreshResult:
+    """Default no-op stand-in for moneybin.services.refresh.refresh.
+
+    Tests monkeypatch this in to keep refresh out of the inbox sync path
+    when they only care about per-file move behavior.
+    """
+    return RefreshResult(applied=True, duration_seconds=0.0)
 
 
 @pytest.fixture
@@ -303,7 +313,6 @@ class TestSyncHappyPath:
     ) -> None:
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         captured_kwargs: dict[str, object] = {}
 
@@ -318,7 +327,7 @@ class TestSyncHappyPath:
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
             "moneybin.services.refresh.refresh",
-            lambda db: RefreshResult(applied=True, duration_seconds=0.0),
+            _fake_refresh,
             raising=True,
         )
 
@@ -660,7 +669,6 @@ class TestRecovery:
     ) -> None:
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         db = MagicMock(spec=Database)
         svc = InboxService(db=db, settings=_make_settings(tmp_path))
@@ -678,7 +686,7 @@ class TestRecovery:
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
             "moneybin.services.refresh.refresh",
-            lambda db: RefreshResult(applied=True, duration_seconds=0.0),
+            _fake_refresh,
             raising=True,
         )
 
@@ -787,7 +795,6 @@ class TestSyncMoveRace:
         """If src vanishes after import_file() succeeds, batch continues."""
         from moneybin.services import inbox_service as mod
         from moneybin.services.import_service import ImportResult
-        from moneybin.services.refresh import RefreshResult
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
@@ -801,7 +808,7 @@ class TestSyncMoveRace:
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
         monkeypatch.setattr(
             "moneybin.services.refresh.refresh",
-            lambda db: RefreshResult(applied=True, duration_seconds=0.0),
+            _fake_refresh,
             raising=True,
         )
 
