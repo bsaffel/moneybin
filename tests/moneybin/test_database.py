@@ -712,6 +712,19 @@ class TestCheckCoreSchemaDrift:
         drift = check_core_schema_drift(db)
         assert drift == {}
 
+    def test_check_core_schema_drift_returns_empty_on_pre_first_transform_db(
+        self, db: Database
+    ) -> None:
+        """A fresh DB with no materialized core tables must not register drift.
+
+        Regression guard: an earlier version reported every expected column
+        as missing when core.dim_accounts didn't exist yet, blocking
+        ``moneybin mcp serve`` from booting on a freshly initialized profile.
+        """
+        from moneybin.database import check_core_schema_drift
+
+        assert check_core_schema_drift(db) == {}
+
     def test_check_core_schema_drift_detects_missing_columns(
         self, db: Database
     ) -> None:

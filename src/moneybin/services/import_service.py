@@ -1184,7 +1184,11 @@ class ImportService:
             self._run_matching()
         except Exception:  # noqa: BLE001 — matching is best-effort; first import may precede SQLMesh views
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
-        TransformService(self._db).apply()
+        result = TransformService(self._db).apply()
+        if not result.applied:
+            # apply() now soft-fails; preserve the fail-loud contract here so
+            # single-file callers' exit codes reflect the broken state.
+            raise RuntimeError(f"SQLMesh transforms failed: {result.error}")
         self._apply_categorization()
 
     def apply_post_import_hooks(self) -> PostImportHookResult:
@@ -1201,23 +1205,30 @@ class ImportService:
             self._run_matching()
         except Exception:  # noqa: BLE001 — matching best-effort; first import may precede SQLMesh views
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+        apply_result = TransformService(self._db).apply()
+        if not apply_result.applied:
+            # apply() soft-fails to ApplyResult(error=...). Skip categorization
+            # on a partially-built core schema; surface the error so the
+            # response envelope shows it.
+            return PostImportHookResult(
+                applied=False,
+                duration_seconds=apply_result.duration_seconds,
+                error=apply_result.error,
+            )
         try:
-            apply_result = TransformService(self._db).apply()
             self._apply_categorization()
+        except Exception as e:  # noqa: BLE001 — surface categorization error in envelope
+            error_type = type(e).__name__
+            logger.warning(f"Categorization failed after batch import: {error_type}")
             return PostImportHookResult(
                 applied=apply_result.applied,
                 duration_seconds=apply_result.duration_seconds,
-            )
-        except Exception as e:  # noqa: BLE001 — surface transform error in envelope
-            error_type = type(e).__name__
-            # error_type only: SQLMesh error messages can embed file paths and
-            # SQL fragments containing user data.
-            logger.warning(f"Transform apply failed after batch import: {error_type}")
-            return PostImportHookResult(
-                applied=False,
-                duration_seconds=None,
                 error=error_type,
             )
+        return PostImportHookResult(
+            applied=apply_result.applied,
+            duration_seconds=apply_result.duration_seconds,
+        )
 
     def import_files(
         self,

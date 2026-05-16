@@ -105,6 +105,12 @@ class TransformService:
         pattern (description, memo, etc.). Callers that go straight to
         transforms would otherwise materialize NULL descriptions in
         core.fct_transactions.
+
+        Soft-fails on SQLMesh errors: returns ``ApplyResult(applied=False,
+        error=<type name>)`` instead of raising so MCP/CLI callers see a
+        structured error envelope. The exception type name is surfaced (not
+        ``str(e)``) because SQLMesh error messages can embed file paths and
+        SQL fragments containing user data.
         """
         logger.info("Running SQLMesh transforms")
         seed_source_priority(self._db, get_settings().matching)
@@ -118,6 +124,15 @@ class TransformService:
             elapsed = time.monotonic() - t0
             logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
             return ApplyResult(applied=True, duration_seconds=elapsed)
+        except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as structured result
+            elapsed = time.monotonic() - t0
+            error_type = type(e).__name__
+            logger.warning(
+                f"SQLMesh transforms failed after {elapsed:.2f}s: {error_type}"
+            )
+            return ApplyResult(
+                applied=False, duration_seconds=elapsed, error=error_type
+            )
         finally:
             SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_apply").observe(
                 time.monotonic() - t0
@@ -291,6 +306,15 @@ class TransformService:
         return AuditResult(passed=passed, failed=failed, audits=audits)
 
     def _max_completed_import_at(self) -> datetime | None:
+        # Status filter is deliberately broader than
+        # SystemService._last_import_at (which restricts to status='complete').
+        # Here we want any non-aborted import to count as pending data the
+        # transforms haven't seen yet — including 'partial' (some rows landed
+        # but the batch errored) and 'importing' (an in-flight write that
+        # already produced rows). The system_status user-facing
+        # "last_import_at" should only show fully-complete imports; the
+        # transforms-pending freshness signal should fire as soon as any
+        # non-reverted raw row exists newer than the latest dim refresh.
         try:
             row = self._db.execute(
                 f"SELECT MAX(completed_at)::TIMESTAMP FROM {IMPORT_LOG.full_name} "

@@ -262,6 +262,7 @@ def import_files_command(
         or yes
         or no_row_limit
         or no_size_limit
+        or not save_format
     )
 
     if len(file_paths) > 1 and has_single_file_knobs:
