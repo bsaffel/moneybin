@@ -17,8 +17,10 @@ from moneybin.services._text import normalize_description
 from moneybin.services.categorization import (
     CategorizationItem,
     CategorizationService,
-    _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
     score_match_shape,
+)
+from moneybin.services.categorization.assist import (
+    _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
 )
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
@@ -1145,10 +1147,11 @@ def test_categorize_assist_clamps_to_max_batch_size(
     from unittest.mock import MagicMock as _MagicMock
 
     from moneybin.services import categorization as _cs
+    from moneybin.services.categorization import assist as _assist
 
     mock_settings = _MagicMock()
     mock_settings.categorization.assist_max_batch_size = 3
-    monkeypatch.setattr(_cs, "get_settings", lambda: mock_settings)
+    monkeypatch.setattr(_assist, "get_settings", lambda: mock_settings)
 
     svc = _cs.CategorizationService(db_with_uncategorized_txns)
     result = svc.categorize_assist(limit=100)  # over the ceiling
