@@ -181,10 +181,13 @@ def check_schema_at_boot() -> None:
     with get_database() as db:
         result = TransformService(db).apply()
     if not result.applied:
-        # apply() soft-fails by returning applied=False with an error type
-        # name. Surface that directly — the underlying SQLMesh failure is
-        # more informative than a generic "drift persists" message.
-        raise RuntimeError(
+        # apply() soft-fails by returning applied=False with the SQLMesh
+        # error type name (apply() itself drops the full message for PII
+        # reasons). Raise SchemaDriftError so classify_user_error maps it
+        # to the standard "run moneybin transform apply" hint — the user's
+        # recovery path is to re-run apply manually and see the real
+        # SQLMesh error in the terminal.
+        raise SchemaDriftError(
             f"Auto-heal failed: TransformService.apply() reported "
             f"error={result.error} after {result.duration_seconds:.2f}s"
         )

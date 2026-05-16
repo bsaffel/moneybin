@@ -29,7 +29,7 @@ def test_boot_check_runs_self_heal_under_real_sqlmesh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Boot helper triggers SQLMesh restate when live core.dim_accounts drifts."""
+    """Boot helper runs plain TransformService.apply() when live core.dim_accounts drifts."""
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.import_service import ImportService
     from moneybin.services.transform_service import TransformService

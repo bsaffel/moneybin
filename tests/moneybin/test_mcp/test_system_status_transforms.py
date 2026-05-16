@@ -104,7 +104,7 @@ async def test_system_status_action_hint_for_schema_drift(mcp_db: object) -> Non
 
 
 @pytest.mark.unit
-def testcheck_schema_at_boot_self_heals_drift(mcp_db: object, mocker: object) -> None:
+def test_check_schema_at_boot_self_heals_drift(mcp_db: object, mocker: object) -> None:
     """Drift triggers one apply() attempt and boot completes when it resolves."""
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.transform_service import ApplyResult, TransformService
@@ -125,7 +125,7 @@ def testcheck_schema_at_boot_self_heals_drift(mcp_db: object, mocker: object) ->
 
 
 @pytest.mark.unit
-def testcheck_schema_at_boot_raises_when_heal_does_not_resolve(
+def test_check_schema_at_boot_raises_when_heal_does_not_resolve(
     mcp_db: object, mocker: object
 ) -> None:
     """apply() succeeds but post-verify still finds drift → SchemaDriftError."""
@@ -146,10 +146,11 @@ def testcheck_schema_at_boot_raises_when_heal_does_not_resolve(
 
 
 @pytest.mark.unit
-def testcheck_schema_at_boot_propagates_apply_failure(
+def test_check_schema_at_boot_propagates_apply_failure(
     mcp_db: object, mocker: object
 ) -> None:
-    """apply() soft-fails (applied=False) → RuntimeError mentions the apply error."""
+    """apply() soft-fails (applied=False) → SchemaDriftError mentions the apply error."""
+    from moneybin.database import SchemaDriftError
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.transform_service import ApplyResult, TransformService
 
@@ -161,12 +162,12 @@ def testcheck_schema_at_boot_propagates_apply_failure(
 
     mocker.patch.object(TransformService, "apply", _failing_apply)  # type: ignore[attr-defined]
 
-    with pytest.raises(RuntimeError, match="PlanError"):
+    with pytest.raises(SchemaDriftError, match="Auto-heal failed.*PlanError"):
         check_schema_at_boot()
 
 
 @pytest.mark.unit
-def testcheck_schema_at_boot_silent_on_healthy(mcp_db: object) -> None:
+def test_check_schema_at_boot_silent_on_healthy(mcp_db: object) -> None:
     """check_schema_at_boot returns silently when no drift detected."""
     from moneybin.mcp.server import check_schema_at_boot
 
