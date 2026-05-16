@@ -86,8 +86,12 @@ The `detail` parameter (`summary`, `standard`, `full`) lets the AI self-select v
 
 Default: every operation is MCP-exposed. CLI-only status requires a justified exception. Two acceptable justifications:
 
-1. **Secret material through the LLM context window.** Tools that accept passphrases or encryption keys (`db_unlock`, `db_rotate_key`, `sync_rotate_key`, `db_init`). Routing those through an LLM-mediated channel is a security model violation, not a capability gap.
-2. **Hands-on operator territory.** Bootstrapping, troubleshooting, and developer-tooling operations that require physical operator presence (`db_init/lock/ps/kill/migrate/shell/ui`, `mcp_serve`, `mcp_install`, `mcp_config_path`, `profile_*`, `transform_restate`). The MCP server can't even start when the database is locked, so exposing recovery/lifecycle tools to MCP would be meaningless.
+1. **Secret material through the LLM context window.** Tools that accept or display passphrases, encryption keys, or key-derivation material (`db_init`, `db_unlock`, `db_key_rotate`, `db_key_show`, `db_key_export`, `db_key_import`, `db_key_verify`, `sync_key_rotate`). Routing those through an LLM-mediated channel is a security model violation, not a capability gap.
+2. **Hands-on operator territory.** Bootstrapping, recovery, and developer-tooling operations that require physical operator presence. The MCP server cannot even start when the database is locked, so exposing lifecycle tools to MCP would be meaningless. Covers:
+   - **Database lifecycle:** `db_init`, `db_lock`, `db_ps`, `db_kill`, `db_shell`, `db_ui`, `db_migrate_apply`, `db_migrate_status`, `db_backup`, `db_restore`, `db_info`, `db_query` (raw SQL access; agent path is `sql_query`).
+   - **Server lifecycle:** `mcp_serve`, `mcp_install`, `mcp_config_path`, `mcp_list_tools`, `mcp_list_prompts` (operator introspection of the local MCP surface).
+   - **Profile + identity:** `profile_*`.
+   - **Developer tooling:** `logs`, `stats`, `synthetic_generate`, `synthetic_reset`, `transform_seed`, `transform_restate`.
 
 What is NOT a valid CLI-only justification:
 - "Long-running" — MCP supports progress notifications.
