@@ -8,7 +8,7 @@ setup:
   fixtures: []
   imports:
     - path: ofx/multi_account_sample.ofx
-      apply_transforms: false
+      refresh: false
 
 pipeline:
   - import_file

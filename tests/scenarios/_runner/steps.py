@@ -44,8 +44,8 @@ def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> No
     Each entry is processed in order so scenarios can stack the same path
     twice (re-import). ``expect_failure=True`` inverts the success check
     and may require ``expect_error_substring`` to appear in the raised
-    exception. ``apply_transforms`` defaults off here — scenarios group
-    transforms via the explicit ``transform`` step instead.
+    exception. ``refresh`` defaults off here — scenarios group transforms
+    via the explicit ``transform`` step instead.
     """
     from moneybin.services.import_service import ImportService
 
@@ -55,7 +55,7 @@ def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> No
         try:
             service.import_file(
                 path,
-                apply_transforms=spec.apply_transforms,
+                refresh=spec.refresh,
                 institution=spec.institution,
                 force=spec.force,
                 interactive=False,

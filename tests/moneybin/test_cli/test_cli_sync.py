@@ -109,29 +109,32 @@ def test_sync_pull_with_institution_and_force(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--institution", "Chase", "--force"])
     assert result.exit_code == 0, result.output
-    service.pull.assert_called_once_with(
-        institution="Chase", force=True, apply_transforms=True
-    )
+    service.pull.assert_called_once_with(institution="Chase", force=True, refresh=True)
 
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
-def test_sync_pull_no_apply_transforms_flag(mock_build: MagicMock) -> None:
-    """--no-apply-transforms threads apply_transforms=False to the service."""
+def test_sync_pull_no_refresh_flag(mock_build: MagicMock) -> None:
+    """--no-refresh threads refresh=False to the service."""
     service = MagicMock()
     service.pull.return_value = _fake_pull_result()
     mock_build.return_value.__enter__.return_value = service
-    result = runner.invoke(app, ["sync", "pull", "--no-apply-transforms"])
+    result = runner.invoke(app, ["sync", "pull", "--no-refresh"])
     assert result.exit_code == 0, result.output
-    service.pull.assert_called_once_with(
-        institution=None, force=False, apply_transforms=False
-    )
+    service.pull.assert_called_once_with(institution=None, force=False, refresh=False)
 
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_pull_surfaces_transforms_error(mock_build: MagicMock) -> None:
-    """Transform failure on pull renders a hint suggesting transform apply."""
+    """Transform failure on pull warns via logger and exits non-zero.
+
+    Mirrors import_cmd.py: agents and scripts need an exit-code signal that
+    core.* tables are stale, not just text on stdout. The warning text
+    itself is not asserted here — ``setup_observability`` reconfigures
+    logging via ``basicConfig(force=True)`` inside the Typer ``CliRunner``
+    invocation, which wipes ``caplog``'s root handler.
+    """
     service = MagicMock()
     service.pull.return_value = _fake_pull_result(
         transforms_applied=False,
@@ -139,9 +142,8 @@ def test_sync_pull_surfaces_transforms_error(mock_build: MagicMock) -> None:
     )
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull"])
-    assert result.exit_code == 0, result.output
-    assert "transforms failed (SQLMeshError)" in result.output
-    assert "moneybin transform apply" in result.output
+    assert result.exit_code == 1
+    service.pull.assert_called_once()
 
 
 @pytest.mark.unit
@@ -160,6 +162,33 @@ def test_sync_connect_new_institution(mock_build: MagicMock) -> None:
     service.connect.assert_called_once()
     # auto_pull defaults to True
     assert service.connect.call_args.kwargs.get("auto_pull", True) is True
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_connect_surfaces_transforms_error_from_auto_pull(
+    mock_build: MagicMock,
+) -> None:
+    """Connect's auto-pull transform failure must warn and exit non-zero.
+
+    Without this, the ✅ Connected line would hide stale core.* tables. See
+    ``test_sync_pull_surfaces_transforms_error`` for why the warning text
+    itself is not asserted.
+    """
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.connect.return_value = ConnectResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=_fake_pull_result(
+            transforms_applied=False,
+            transforms_error="SQLMeshError",
+        ),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "connect"])
+    assert result.exit_code == 1
+    service.connect.assert_called_once()
 
 
 @pytest.mark.unit

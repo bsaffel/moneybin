@@ -4,7 +4,7 @@
 Guards against the 2026-05-15 finding: a multi-file import previously left
 core.dim_accounts stale because transforms ran per-file (last-write-wins on
 side effects) instead of once after the batch landed.  With import_files()
-applying transforms at end-of-batch via ImportService.apply_post_import_hooks,
+applying transforms at end-of-batch via the refresh pipeline,
 all distinct accounts from every imported file must be visible after one call,
 and ``updated_at`` must advance.
 """
@@ -69,7 +69,7 @@ def test_multifile_import_makes_all_accounts_visible(
     for p in paths:
         assert p.exists(), f"missing fixture: {p}"
 
-    batch = ImportService(db).import_files(list(paths), apply_transforms=True)
+    batch = ImportService(db).import_files(list(paths), refresh=True)
     assert batch.imported_count == 4
     assert batch.failed_count == 0
     assert batch.transforms_applied is True

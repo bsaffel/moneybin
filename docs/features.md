@@ -9,7 +9,7 @@ Snapshot of MoneyBin's shipped capabilities, with links to the per-feature guide
 - **Smart tabular import** (CSV / TSV / Excel / Parquet / Feather) with heuristic column detection, multi-account support, and migration profiles for Tiller, Mint, YNAB, and Maybe. Five-stage pipeline (Format Detection → Reader → Column Mapping → Transform & Validate → Load). Three-tier confidence model. → [Data Import guide](guides/data-import.md)
 - **OFX / QFX / QBO import** through the same `import_log` infrastructure as tabular: re-import detection, `--force` override, institution name auto-resolution from `<FI><ORG>` / FID lookup / filename heuristics, batch revert via `moneybin import revert <id>`. → [Data Import guide](guides/data-import.md)
 - **W-2 PDF extraction.**
-- **Batch-shaped imports.** `moneybin import files PATHS...` (or `import_files(paths)` via MCP) imports one or more files in a single call; per-file failures don't abort the batch, and transforms run once at end of batch (toggle with `--no-apply-transforms`).
+- **Batch-shaped imports.** `moneybin import files PATHS...` (or `import_files(paths)` via MCP) imports one or more files in a single call; per-file failures don't abort the batch, and the post-load refresh pipeline runs once at end of batch (toggle with `--no-refresh`).
 - **Watched-folder inbox UX.** Drop files in `~/Documents/MoneyBin/<profile>/inbox/`; `moneybin import inbox` drains successes to `processed/YYYY-MM/` and failures to `failed/YYYY-MM/` with YAML error sidecars. Per-profile lockfile + crash-recovery via staging-rename. Routes through the batch import path so transforms run once per drain. → [Smart Import Inbox spec](specs/smart-import-inbox.md)
 
 ## Sync

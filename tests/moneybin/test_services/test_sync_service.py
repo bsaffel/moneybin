@@ -433,15 +433,16 @@ def test_disconnect_unknown_institution_raises(
         service.disconnect(institution="UnknownBank")
 
 
-class TestPullAutoAppliesTransforms:
-    """sync.pull() runs SQLMesh transforms after a successful load by default.
+class TestPullAutoRefreshes:
+    """sync.pull() runs the post-load refresh pipeline by default.
 
     Mirrors the contract established for the import path in
-    smart-import-transform.md: callers opt out with apply_transforms=False, and
-    the result envelope reports transforms_applied / transforms_error.
+    smart-import-transform.md: callers opt out with refresh=False, and the
+    result envelope reports transforms_applied / transforms_error from the
+    SQLMesh step of the pipeline.
     """
 
-    def test_pull_applies_transforms_by_default_when_rows_loaded(
+    def test_pull_refreshes_by_default_when_rows_loaded(
         self,
         mock_client: MagicMock,
         db: Database,
@@ -449,29 +450,25 @@ class TestPullAutoAppliesTransforms:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from moneybin.services import sync_service as mod
-        from moneybin.services.transform_service import ApplyResult
+        from moneybin.services.refresh import RefreshResult
 
-        apply_calls = 0
+        calls = 0
 
-        class FakeTransformService:
-            def __init__(self, _db: object) -> None:
-                pass
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.05)
 
-            def apply(self) -> ApplyResult:
-                nonlocal apply_calls
-                apply_calls += 1
-                return ApplyResult(applied=True, duration_seconds=0.05)
-
-        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
         service = SyncService(client=mock_client, db=db, loader=loader)
         result = service.pull()
 
-        assert apply_calls == 1
+        assert calls == 1
         assert result.transforms_applied is True
         assert result.transforms_duration_seconds == 0.05
         assert result.transforms_error is None
 
-    def test_pull_no_apply_transforms_skips_apply(
+    def test_pull_no_refresh_skips_pipeline(
         self,
         mock_client: MagicMock,
         db: Database,
@@ -479,51 +476,43 @@ class TestPullAutoAppliesTransforms:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from moneybin.services import sync_service as mod
-        from moneybin.services.transform_service import ApplyResult
+        from moneybin.services.refresh import RefreshResult
 
-        apply_calls = 0
+        calls = 0
 
-        class FakeTransformService:
-            def __init__(self, _db: object) -> None:
-                pass
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
 
-            def apply(self) -> ApplyResult:
-                nonlocal apply_calls
-                apply_calls += 1
-                return ApplyResult(applied=True, duration_seconds=0.0)
-
-        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
         service = SyncService(client=mock_client, db=db, loader=loader)
-        result = service.pull(apply_transforms=False)
+        result = service.pull(refresh=False)
 
-        assert apply_calls == 0
+        assert calls == 0
         assert result.transforms_applied is False
         assert result.transforms_duration_seconds is None
         assert result.transforms_error is None
 
-    def test_pull_skips_transforms_when_no_rows_loaded(
+    def test_pull_skips_refresh_when_no_rows_loaded(
         self,
         db: Database,
         loader: PlaidLoader,
         sync_data: SyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """No raw rows landed → nothing for SQLMesh to rebuild, skip apply."""
+        """No raw rows landed → nothing to refresh."""
         from moneybin.services import sync_service as mod
-        from moneybin.services.transform_service import ApplyResult
+        from moneybin.services.refresh import RefreshResult
 
-        apply_calls = 0
+        calls = 0
 
-        class FakeTransformService:
-            def __init__(self, _db: object) -> None:
-                pass
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
 
-            def apply(self) -> ApplyResult:
-                nonlocal apply_calls
-                apply_calls += 1
-                return ApplyResult(applied=True, duration_seconds=0.0)
-
-        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
 
         empty_client = MagicMock()
         empty_client.trigger_sync.return_value = SyncTriggerResponse(
@@ -537,31 +526,94 @@ class TestPullAutoAppliesTransforms:
         service = SyncService(client=empty_client, db=db, loader=loader)
         result = service.pull()
 
-        assert apply_calls == 0
+        assert calls == 0
         assert result.transforms_applied is False
         assert result.transforms_error is None
 
-    def test_pull_surfaces_transforms_error_on_apply_failure(
+    def test_pull_refreshes_when_only_removals_landed(
+        self,
+        db: Database,
+        loader: PlaidLoader,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Removal-only sync: deletions are a state change too.
+
+        Guards against a bug where the gate counted only loaded rows: a
+        sync that only carried ``removed_transactions`` would delete from
+        raw but skip refresh, leaving the deleted row visible in
+        core.fct_transactions.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.04)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        # First populate raw with a transaction whose id matches what the
+        # next sync will mark removed — otherwise handle_removed_transactions
+        # returns 0 and the gate stays closed for legitimate reasons.
+        seed_data = sync_data.model_copy(update={"removed_transactions": []})
+        seed_client = MagicMock()
+        seed_client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_seed", status="completed", transaction_count=3
+        )
+        seed_client.get_data.return_value = seed_data
+        seed_service = SyncService(client=seed_client, db=db, loader=loader)
+        seed_service.pull(refresh=False)
+        calls = 0  # reset after seeding
+
+        # Now: removal-only sync — empty accounts/transactions/balances,
+        # but a real removed_transactions id pointing at a seeded row.
+        removal_data = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": ["txn_001"],
+            }
+        )
+        removal_client = MagicMock()
+        removal_client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_removal", status="completed", transaction_count=0
+        )
+        removal_client.get_data.return_value = removal_data
+        service = SyncService(client=removal_client, db=db, loader=loader)
+        result = service.pull()
+
+        assert result.transactions_loaded == 0
+        assert result.accounts_loaded == 0
+        assert result.balances_loaded == 0
+        assert result.transactions_removed == 1
+        assert calls == 1, (
+            "pure-removal sync must still refresh so deletes propagate from "
+            "raw.plaid_transactions to core.fct_transactions"
+        )
+        assert result.transforms_applied is True
+
+    def test_pull_surfaces_refresh_error_on_failure(
         self,
         mock_client: MagicMock,
         db: Database,
         loader: PlaidLoader,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """TransformService.apply() soft-fails — error must reach the envelope."""
+        """Refresh soft-fails — the SQLMesh error must reach the envelope."""
         from moneybin.services import sync_service as mod
-        from moneybin.services.transform_service import ApplyResult
+        from moneybin.services.refresh import RefreshResult
 
-        class FakeTransformService:
-            def __init__(self, _db: object) -> None:
-                pass
+        def fake_refresh(_db: object) -> RefreshResult:
+            return RefreshResult(
+                applied=False, duration_seconds=0.12, error="SQLMeshError"
+            )
 
-            def apply(self) -> ApplyResult:
-                return ApplyResult(
-                    applied=False, duration_seconds=0.12, error="SQLMeshError"
-                )
-
-        monkeypatch.setattr(mod, "TransformService", FakeTransformService)
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
         service = SyncService(client=mock_client, db=db, loader=loader)
         result = service.pull()
 

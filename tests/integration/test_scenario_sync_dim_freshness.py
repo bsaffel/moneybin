@@ -3,7 +3,7 @@
 
 Mirrors test_scenario_import_dim_freshness.py for the sync path. Guards the
 contract from smart-import-transform.md (extended to sync in this change):
-after SyncService.pull() succeeds with apply_transforms=True (default),
+after SyncService.pull() succeeds with refresh=True (default),
 core.dim_accounts must reflect every account from the sync payload, with
 ``updated_at`` populated. Without the end-of-pull transform call,
 dim_accounts stays stale until the next import or manual transform_apply —
@@ -109,10 +109,10 @@ def test_sync_pull_makes_new_accounts_visible_in_dim_accounts(
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_sync_pull_no_apply_transforms_leaves_dim_accounts_empty(
+def test_sync_pull_no_refresh_leaves_dim_accounts_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """apply_transforms=False loads raw but defers SQLMesh; dim_accounts stays empty.
+    """refresh=False loads raw but defers SQLMesh; dim_accounts stays empty.
 
     This is the opt-out branch of the contract: raw rows must land durably
     but core.* models stay stale until the next transform_apply.
@@ -132,7 +132,7 @@ def test_sync_pull_no_apply_transforms_leaves_dim_accounts_empty(
 
     loader = PlaidLoader(db)
     service = SyncService(client=client, db=db, loader=loader)
-    result = service.pull(apply_transforms=False)
+    result = service.pull(refresh=False)
 
     assert result.accounts_loaded == 2
     assert result.transforms_applied is False

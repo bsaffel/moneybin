@@ -93,7 +93,7 @@ class ImportFileSpec(BaseModel):
     account_name: str | None = None
     institution: str | None = None
     force: bool = False
-    apply_transforms: bool = False
+    refresh: bool = False
     expect_failure: bool = False
     expect_error_substring: str | None = None
 

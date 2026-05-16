@@ -184,6 +184,15 @@ def sync_connect(
     typer.echo(f"✅ Connected {result.institution_name}")
     if result.pull_result is not None:
         typer.echo(f"   Pulled {result.pull_result.transactions_loaded} transactions")
+        if result.pull_result.transforms_error:
+            # Same fail-loud contract as `sync pull`: connect's auto-pull is
+            # the common path, so a silent transforms failure here would
+            # leave the success-looking ✅ line hiding stale core.* tables.
+            logger.warning(
+                f"⚠️  transforms failed ({result.pull_result.transforms_error}); "
+                f"raw rows landed. Retry with `moneybin transform apply`."
+            )
+            raise typer.Exit(1)
 
 
 @app.command("connect-status")
@@ -246,13 +255,16 @@ def sync_pull(
     force: bool = typer.Option(
         False, "--force", "-f", help="Reset cursor and re-fetch full history."
     ),
-    apply_transforms: bool = typer.Option(
+    refresh: bool = typer.Option(
         True,
-        "--apply-transforms/--no-apply-transforms",
+        "--refresh/--no-refresh",
         help=(
-            "Run SQLMesh transforms after a successful pull so core.* models "
+            "Run the post-load refresh pipeline (matching + SQLMesh apply + "
+            "categorization) after a successful pull so core.* models "
             "(dim_accounts, etc.) reflect the new data before this command "
-            "returns. Default: on. Pass --no-apply-transforms to defer."
+            "returns. Default: on. Pass --no-refresh to defer; SQLMesh apply "
+            "dominates pull latency, so high-frequency callers should defer "
+            "and run refresh on a separate schedule."
         ),
     ),
     output: OutputFormat = output_option,
@@ -266,7 +278,7 @@ def sync_pull(
             result = service.pull(
                 institution=institution,
                 force=force,
-                apply_transforms=apply_transforms,
+                refresh=refresh,
             )
 
     if output == OutputFormat.JSON:
@@ -287,10 +299,14 @@ def sync_pull(
     if result.transactions_removed:
         typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
     if result.transforms_error:
-        typer.echo(
-            f"   ⚠️  transforms failed ({result.transforms_error}); "
+        # Mirror import_cmd.py: route the warning to stderr via the project
+        # logger and exit non-zero so scripts and agents detect that core
+        # tables are stale even though raw rows landed.
+        logger.warning(
+            f"⚠️  transforms failed ({result.transforms_error}); "
             f"raw rows landed. Retry with `moneybin transform apply`."
         )
+        raise typer.Exit(1)
 
 
 @app.command("status")

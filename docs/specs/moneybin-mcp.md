@@ -702,10 +702,10 @@ Trigger the matching engine on-demand.
 Import one or more financial data files into MoneyBin. Format detected automatically per file from extension (OFX/QFX/QBO, CSV/TSV/Excel/Parquet/Feather, PDF/W-2). Per-file failures do not abort the batch; transforms run once at end of batch by default.
 
 - **Sensitivity:** `low` — return envelope reports per-file counts and status, not transaction content.
-- **Unique parameters:** `paths: list[str]` (required, each path must be within the user's home directory), `apply_transforms: bool = True`, `force: bool = False`.
+- **Unique parameters:** `paths: list[str]` (required, each path must be within the user's home directory), `refresh: bool = True`, `force: bool = False`.
 - **Behavior:** Validates each path, delegates to `ImportService.import_files()`. Returns envelope with `data.{imported_count, failed_count, total_count, transforms_applied, transforms_duration_seconds, files: list[{path, status, source_type, rows_loaded, import_id, error?}]}`. Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
 - **Service:** `ImportService.import_files() -> BatchImportResult`
-- **CLI:** `moneybin import files PATHS... [--no-apply-transforms] [--output json]`
+- **CLI:** `moneybin import files PATHS... [--no-refresh] [--output json]`
 
 Per-file overrides (`account_name`, `institution`, `format_name`) are not exposed on the batch MCP surface — use the CLI for those.
 
@@ -1515,7 +1515,7 @@ Per the v2 MCP exposure principle, sync becomes nearly fully MCP-exposed. The AI
 | `sync_connect [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
 | `sync_connect_status <session_id>` | low | Single-shot check of a connect session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
 | `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
-| `sync_pull [institution] [force] [apply_transforms=true]` | medium | Triggers sync for one or all institutions; loads raw.plaid_* and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `apply_transforms` (default true) and the sync lands new rows, SQLMesh transforms run once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error`. |
+| `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads raw.plaid_* and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure). |
 | `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
 | `sync_schedule_set --time HH:MM` | low | Stub — installs daily sync (launchd/cron). |
 | `sync_schedule_show` | low | Stub — read-only schedule details. |
