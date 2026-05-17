@@ -50,5 +50,4 @@ async def test_register_includes_transactions_get() -> None:
     assert "transactions_get" in names
     assert "transactions_search" not in names
     assert "transactions_review" in names
-    # transactions_recurring_list removed in Group 12 — survivor is reports_recurring.
     assert "transactions_recurring_list" not in names
