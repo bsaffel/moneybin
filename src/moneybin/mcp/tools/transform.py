@@ -1,6 +1,8 @@
 """transform_* tools — thin wrappers over ``TransformService``.
 
-Excludes ``transform_restate`` (operator territory: destructive force-recompute,
+Excludes ``transform_apply`` (folded into ``refresh_run(steps=["transform"])``
+per the refresh umbrella; see ``src/moneybin/mcp/tools/refresh.py``) and
+``transform_restate`` (operator territory: destructive force-recompute,
 CLI-only).
 """
 
@@ -23,7 +25,9 @@ def transform_status() -> ResponseEnvelope:
         status = TransformService(db).status()
     actions: list[str] = []
     if status.pending:
-        actions.append("Run transform_apply to refresh derived tables")
+        actions.append(
+            "Run refresh_run with steps=['transform'] to refresh derived tables"
+        )
     return build_envelope(
         data={
             "environment": status.environment,
@@ -97,26 +101,6 @@ def transform_audit(start: str, end: str) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False)
-def transform_apply() -> ResponseEnvelope:
-    """Apply pending SQLMesh changes.
-
-    Mutation surface: rebuilds ``core.*`` and ``reports.*`` from raw/prep
-    inputs. No revert — re-run after fixing inputs.
-    """
-    from moneybin.services.transform_service import TransformService
-
-    with get_database() as db:
-        result = TransformService(db).apply()
-    data: dict[str, object] = {
-        "applied": result.applied,
-        "duration_seconds": result.duration_seconds,
-    }
-    if result.error is not None:
-        data["error"] = result.error
-    return build_envelope(data=data, sensitivity="low")
-
-
 def register_transform_tools(mcp: FastMCP) -> None:
     """Register all transform namespace tools with the FastMCP server."""
     register(
@@ -147,12 +131,4 @@ def register_transform_tools(mcp: FastMCP) -> None:
         "Run SQLMesh data-quality audits over [start, end] (YYYY-MM-DD). "
         "Returns per-audit pass/fail counts. "
         "May write SQLMesh state tables on first Context init.",
-    )
-    register(
-        mcp,
-        transform_apply,
-        "transform_apply",
-        "Apply pending SQLMesh changes to refresh derived tables. "
-        "Idempotent — safe to retry after a failure. "
-        "Writes to core.* and app.seed_source_priority; no revert path (re-run to rebuild).",
     )
