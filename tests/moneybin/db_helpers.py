@@ -165,6 +165,49 @@ SELECT
 WHERE FALSE;
 """
 
+# core.dim_categories / core.dim_merchants are SQLMesh-managed views in
+# production. Tests stub their shape so schema-catalog and classification
+# checks resolve the names. Column shapes mirror the SQLMesh models.
+CORE_DIM_CATEGORIES_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.dim_categories AS
+SELECT CAST(NULL AS VARCHAR) AS category_id,
+       CAST(NULL AS VARCHAR) AS category,
+       CAST(NULL AS VARCHAR) AS subcategory,
+       CAST(NULL AS VARCHAR) AS description,
+       CAST(NULL AS VARCHAR) AS plaid_detailed,
+       CAST(NULL AS BOOLEAN) AS is_default,
+       CAST(NULL AS BOOLEAN) AS is_active,
+       CAST(NULL AS TIMESTAMP) AS created_at,
+       CAST(NULL AS TIMESTAMP) AS updated_at
+WHERE FALSE;
+"""
+
+CORE_DIM_MERCHANTS_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.dim_merchants AS
+SELECT CAST(NULL AS VARCHAR) AS merchant_id,
+       CAST(NULL AS VARCHAR) AS raw_pattern,
+       CAST(NULL AS VARCHAR) AS match_type,
+       CAST(NULL AS VARCHAR) AS canonical_name,
+       CAST(NULL AS VARCHAR) AS category,
+       CAST(NULL AS VARCHAR) AS subcategory,
+       CAST(NULL AS VARCHAR) AS created_by,
+       CAST(NULL AS VARCHAR[]) AS exemplars,
+       CAST(NULL AS TIMESTAMP) AS created_at,
+       CAST(NULL AS TIMESTAMP) AS updated_at
+WHERE FALSE;
+"""
+
+
+def create_core_dim_stub_views(db: Database) -> None:
+    """Materialize `core.dim_categories` and `core.dim_merchants` as empty views.
+
+    Production builds these via SQLMesh; tests stub them so anything
+    inspecting the catalog (schema-catalog tests, classification
+    completeness tests) sees the expected column shape.
+    """
+    db.execute(CORE_DIM_CATEGORIES_STUB_DDL)
+    db.execute(CORE_DIM_MERCHANTS_STUB_DDL)
+
 
 def create_core_tables(db: Database) -> None:
     """Create core tables for testing.

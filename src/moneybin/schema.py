@@ -78,7 +78,12 @@ _SCHEMA_FILES: list[str] = [
 ]
 
 
-def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
+def _apply_comments(
+    conn: duckdb.DuckDBPyConnection,
+    sql: str,
+    table_snapshot: dict[tuple[str, str], str | None],
+    column_snapshot: dict[tuple[str, str, str], str | None],
+) -> None:
     """Parse SQL with sqlglot and apply table and column comments to DuckDB catalog.
 
     sqlglot attaches SQL comments to adjacent AST nodes during parsing:
@@ -93,9 +98,11 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
     Tables that do not exist yet (e.g. core tables before SQLMesh has run) are
     silently skipped.
 
-    Args:
-        conn: An active read-write DuckDB connection.
-        sql: Full SQL text of a schema file.
+    The snapshots are pre-loop catalog reads (``duckdb_tables()`` /
+    ``duckdb_columns()``) so the comparison is a dict lookup, not a
+    per-column ``SELECT``. A row whose human-prefix already matches the
+    DDL comment is skipped so the privacy sigil suffix written by
+    ``sync_classification_comments`` survives across startups.
     """
     for statement in sqlglot.parse(sql, dialect="duckdb"):
         if not isinstance(statement, exp.Create) or statement.kind != "TABLE":
@@ -107,15 +114,16 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
         table_name = table.sql(dialect="duckdb")
         schema_str = table.args["db"].name if table.args.get("db") else None
         table_str = table.name
+        if schema_str is None:
+            continue
 
         # Table-level comment: /* description */ on the line before CREATE TABLE.
         # Use [-1] (the closest comment) to match SQLMesh's own pattern and avoid
         # picking up unrelated -- notes that may also precede the /* */ block.
-        if statement.comments and schema_str is not None:
+        if statement.comments:
             description = statement.comments[-1].strip()
-            if description and not _table_comment_matches(
-                conn, schema_str, table_str, description
-            ):
+            existing = table_snapshot.get((schema_str, table_str))
+            if description and strip_sigil(existing or "") != description:
                 try:
                     safe_desc = escape_sql_literal(description)
                     conn.execute(f"COMMENT ON TABLE {table_name} IS '{safe_desc}'")
@@ -130,11 +138,10 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
             if not col_def.comments:
                 continue
             comment = col_def.comments[-1].strip()
-            if not comment or schema_str is None:
+            if not comment:
                 continue
-            if _column_comment_matches(
-                conn, schema_str, table_str, col_def.name, comment
-            ):
+            existing = column_snapshot.get((schema_str, table_str, col_def.name))
+            if strip_sigil(existing or "") == comment:
                 continue
             try:
                 safe_comment = escape_sql_literal(comment)
@@ -152,53 +159,26 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                 )
 
 
-def _table_comment_matches(
-    conn: duckdb.DuckDBPyConnection, schema: str, table: str, expected: str
-) -> bool:
-    """Return True iff the catalog table comment matches ``expected``.
-
-    Compares after stripping any privacy sigil suffix. Skipping the write
-    when True preserves the sigil applied by
-    ``sync_classification_comments`` across startups. Table comments
-    don't currently carry sigils, but the same semantics apply for
-    symmetry with columns and future-proofing.
-    """
-    row = conn.execute(
-        """
-        SELECT comment FROM duckdb_tables()
-        WHERE schema_name = ? AND table_name = ?
-        """,
-        [schema, table],
-    ).fetchone()
-    if row is None or row[0] is None:
-        return False
-    return strip_sigil(row[0]) == expected
-
-
-def _column_comment_matches(
+def _snapshot_catalog_comments(
     conn: duckdb.DuckDBPyConnection,
-    schema: str,
-    table: str,
-    column: str,
-    expected: str,
-) -> bool:
-    """Return True iff the catalog column comment matches ``expected``.
-
-    Compares after stripping any privacy sigil suffix. Skipping the write
-    preserves the sigil applied by ``sync_classification_comments`` so
-    that startups don't churn ~200 redundant ``COMMENT ON COLUMN``
-    statements.
-    """
-    row = conn.execute(
-        """
-        SELECT comment FROM duckdb_columns()
-        WHERE schema_name = ? AND table_name = ? AND column_name = ?
-        """,
-        [schema, table, column],
-    ).fetchone()
-    if row is None or row[0] is None:
-        return False
-    return strip_sigil(row[0]) == expected
+) -> tuple[
+    dict[tuple[str, str], str | None],
+    dict[tuple[str, str, str], str | None],
+]:
+    """Read every table and column comment in one pair of queries."""
+    table_rows = conn.execute(
+        "SELECT schema_name, table_name, comment FROM duckdb_tables()"
+    ).fetchall()
+    column_rows = conn.execute(
+        "SELECT schema_name, table_name, column_name, comment FROM duckdb_columns()"
+    ).fetchall()
+    table_snapshot: dict[tuple[str, str], str | None] = {
+        (s, t): c for s, t, c in table_rows
+    }
+    column_snapshot: dict[tuple[str, str, str], str | None] = {
+        (s, t, col): c for s, t, col, c in column_rows
+    }
+    return table_snapshot, column_snapshot
 
 
 def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
@@ -207,6 +187,7 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     Args:
         conn: An active read-write DuckDB connection.
     """
+    table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
     for sql_file in _SCHEMA_FILES:
         sql_path = _SQL_DIR / sql_file
         if not sql_path.exists():
@@ -214,7 +195,7 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
-        _apply_comments(conn, sql)
+        _apply_comments(conn, sql, table_snapshot, column_snapshot)
         logger.debug(f"Executed {sql_file}")
 
     logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")

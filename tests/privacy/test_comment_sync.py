@@ -65,7 +65,7 @@ def test_first_sync_appends_sigil(populated_db: Database) -> None:
     schema, table, col, cls = _pick_classified_column(populated_db)
     _set_comment(populated_db, schema, table, col, "Human description")
 
-    sync_classification_comments(populated_db)
+    sync_classification_comments(populated_db.conn)
 
     assert _get_comment(populated_db, schema, table, col) == (
         f"Human description [class: {cls.value}]"
@@ -75,9 +75,9 @@ def test_first_sync_appends_sigil(populated_db: Database) -> None:
 def test_sync_is_idempotent(populated_db: Database) -> None:
     schema, table, col, _cls = _pick_classified_column(populated_db)
     _set_comment(populated_db, schema, table, col, "Human description")
-    sync_classification_comments(populated_db)
+    sync_classification_comments(populated_db.conn)
 
-    updated = sync_classification_comments(populated_db)
+    updated = sync_classification_comments(populated_db.conn)
 
     assert updated == 0
 
@@ -86,9 +86,9 @@ def test_sync_preserves_human_description(populated_db: Database) -> None:
     schema, table, col, cls = _pick_classified_column(populated_db)
     _set_comment(populated_db, schema, table, col, "Account identifier")
 
-    sync_classification_comments(populated_db)
+    sync_classification_comments(populated_db.conn)
     first = _get_comment(populated_db, schema, table, col)
-    sync_classification_comments(populated_db)
+    sync_classification_comments(populated_db.conn)
     second = _get_comment(populated_db, schema, table, col)
 
     assert first == f"Account identifier [class: {cls.value}]"
@@ -106,7 +106,7 @@ def test_sync_replaces_stale_sigil(populated_db: Database) -> None:
         "Account identifier [class: stale_value]",
     )
 
-    sync_classification_comments(populated_db)
+    sync_classification_comments(populated_db.conn)
 
     comment = _get_comment(populated_db, schema, table, col)
     assert comment == f"Account identifier [class: {cls.value}]"
@@ -136,6 +136,6 @@ def test_sync_strips_sigil_for_unregistered_column(
     }
     monkeypatch.setattr(cs, "CLASSIFICATION", registry_copy)
 
-    cs.sync_classification_comments(populated_db)
+    cs.sync_classification_comments(populated_db.conn)
 
     assert _get_comment(populated_db, schema, table, col) == "Account identifier"

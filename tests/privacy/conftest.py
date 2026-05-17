@@ -11,6 +11,7 @@ import pytest
 from moneybin.database import Database
 from tests.moneybin.db_helpers import (
     apply_core_table_comments,
+    create_core_dim_stub_views,
     create_core_tables_raw,
 )
 
@@ -35,36 +36,7 @@ def populated_db(tmp_path: Path) -> Generator[Database, None, None]:
     )
     create_core_tables_raw(database.conn)
     apply_core_table_comments(database)
-    # core.dim_categories / core.dim_merchants are SQLMesh-managed views in
-    # production. Stub them here with the column shape the registry expects
-    # so the completeness check covers them too.
-    database.execute(
-        "CREATE OR REPLACE VIEW core.dim_categories AS "
-        "SELECT CAST(NULL AS VARCHAR) AS category_id, "
-        "CAST(NULL AS VARCHAR) AS category, "
-        "CAST(NULL AS VARCHAR) AS subcategory, "
-        "CAST(NULL AS VARCHAR) AS description, "
-        "CAST(NULL AS VARCHAR) AS plaid_detailed, "
-        "CAST(NULL AS BOOLEAN) AS is_default, "
-        "CAST(NULL AS BOOLEAN) AS is_active, "
-        "CAST(NULL AS TIMESTAMP) AS created_at, "
-        "CAST(NULL AS TIMESTAMP) AS updated_at "
-        "WHERE FALSE"
-    )
-    database.execute(
-        "CREATE OR REPLACE VIEW core.dim_merchants AS "
-        "SELECT CAST(NULL AS VARCHAR) AS merchant_id, "
-        "CAST(NULL AS VARCHAR) AS raw_pattern, "
-        "CAST(NULL AS VARCHAR) AS match_type, "
-        "CAST(NULL AS VARCHAR) AS canonical_name, "
-        "CAST(NULL AS VARCHAR) AS category, "
-        "CAST(NULL AS VARCHAR) AS subcategory, "
-        "CAST(NULL AS VARCHAR) AS created_by, "
-        "CAST(NULL AS VARCHAR[]) AS exemplars, "
-        "CAST(NULL AS TIMESTAMP) AS created_at, "
-        "CAST(NULL AS TIMESTAMP) AS updated_at "
-        "WHERE FALSE"
-    )
+    create_core_dim_stub_views(database)
     try:
         yield database
     finally:

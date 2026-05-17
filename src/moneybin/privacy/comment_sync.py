@@ -19,28 +19,12 @@ suffix.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
 
+import duckdb
 import sqlglot.expressions as exp
 
 from moneybin.database import escape_sql_literal
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, strip_sigil
-
-
-class _SupportsExecute(Protocol):
-    """Minimal protocol for the comment-sync's database dependency.
-
-    Both ``moneybin.database.Database`` and a raw
-    ``duckdb.DuckDBPyConnection`` satisfy this — the sync runs from
-    contexts that have only the raw connection (``schema.init_schemas``)
-    and from contexts that have the wrapped ``Database``
-    (``database.sqlmesh_context``). The sync issues bare ``COMMENT ON``
-    DDL with no bound parameters, so the protocol's surface is a single
-    positional ``str`` argument.
-    """
-
-    def execute(self, query: str, /) -> object: ...
-
 
 logger = logging.getLogger(__name__)
 
@@ -55,30 +39,24 @@ def _desired_comment(human: str | None, cls: DataClass) -> str:
     return f"{base} {sigil}".strip() if base else sigil
 
 
-def sync_classification_comments(db: _SupportsExecute) -> int:
+def sync_classification_comments(conn: duckdb.DuckDBPyConnection) -> int:
     """Reconcile each ``core``/``app`` column comment with the registry.
 
     Classified columns get a ``[class: <value>]`` suffix appended (or
     replaced if stale). Columns not in ``CLASSIFICATION`` have any prior
     sigil stripped so the human comment is restored.
 
-    Args:
-        db: An object exposing ``execute(sql)`` — either a ``Database``
-            or a raw ``duckdb.DuckDBPyConnection``.
-
-    Returns:
-        Number of ``COMMENT ON COLUMN`` statements actually executed.
-        Zero on a no-op run (idempotent).
+    Returns the number of ``COMMENT ON COLUMN`` statements executed.
+    Zero on a no-op run (idempotent).
     """
     current: dict[tuple[str, str, str], str | None] = {}
-    # Protocol doesn't model cursor methods; both Database and DuckDBPyConnection return DuckDB cursors.
-    rows = db.execute(
+    rows = conn.execute(
         """
         SELECT schema_name, table_name, column_name, comment
         FROM duckdb_columns()
         WHERE schema_name IN ('core', 'app')
         """
-    ).fetchall()  # type: ignore[attr-defined]
+    ).fetchall()
     for schema, table, col, comment in rows:
         current[(schema, table, col)] = comment
 
@@ -98,12 +76,12 @@ def sync_classification_comments(db: _SupportsExecute) -> int:
         # comment cleanly so the catalog matches the original
         # "no comment" state rather than holding an empty string.
         if desired is None:
-            db.execute(
+            conn.execute(
                 f"COMMENT ON COLUMN {_quote(schema)}.{_quote(table)}."
                 f"{_quote(col)} IS NULL"
             )
         else:
-            db.execute(
+            conn.execute(
                 f"COMMENT ON COLUMN {_quote(schema)}.{_quote(table)}."
                 f"{_quote(col)} IS '{escape_sql_literal(desired)}'"
             )
