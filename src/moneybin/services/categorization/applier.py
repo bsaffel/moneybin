@@ -466,14 +466,22 @@ class MatchApplier:
                     rule_ids.append(found[0])
                     continue
                 rule_id = uuid.uuid4().hex[:12]
+                # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+                # `None` is a permitted write — orphaned text is a real state
+                # during the dual-write window. Dedup posture is unchanged:
+                # text remains the canonical comparator for "same rule" in
+                # Phase 1.
+                category_id = resolve_category_id(
+                    self._db, item.category, item.subcategory
+                )
                 self._db.execute(
                     f"""
                     INSERT INTO {CATEGORIZATION_RULES.full_name}
                     (rule_id, name, merchant_pattern, match_type,
                      min_amount, max_amount, account_id,
-                     category, subcategory, priority, is_active,
+                     category, subcategory, category_id, priority, is_active,
                      created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
                             'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,  # noqa: S608  # TableRef constant, no user input interpolated
                     [
@@ -486,6 +494,7 @@ class MatchApplier:
                         item.account_id,
                         item.category,
                         item.subcategory,
+                        category_id,
                         item.priority,
                     ],
                 )

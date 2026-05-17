@@ -26,6 +26,7 @@ from moneybin.services.categorization import (
     Merchant,
     matches_pattern,
 )
+from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
@@ -384,14 +385,20 @@ class AutoRuleService:
             # transaction so a partial failure (e.g., interrupt between steps)
             # cannot leave an active rule whose source proposal is still 'pending'
             # — which would let approve() create a duplicate rule on retry.
+            # Phase 1 dual-write: re-resolve the FK from the text snapshot at
+            # write time. The proposed_rule row carries its own `category_id`
+            # but it may have been NULL during V014 backfill if the target
+            # category didn't yet exist; the rule we are now promoting can
+            # find it.
+            category_id = resolve_category_id(self._db, category, subcategory)
             self._db.begin()
             try:
                 self._db.execute(
                     f"""
                     INSERT INTO {CATEGORIZATION_RULES.full_name}
                     (rule_id, name, merchant_pattern, match_type, category, subcategory,
-                     priority, is_active, created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                     category_id, priority, is_active, created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     [
                         rule_id,
@@ -400,6 +407,7 @@ class AutoRuleService:
                         match_type,
                         category,
                         subcategory,
+                        category_id,
                         settings.auto_rule_default_priority,
                     ],
                 )

@@ -17,6 +17,7 @@ from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
+from moneybin.services.categorization import CategorizationService
 from moneybin.tables import PROPOSED_RULES
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -486,3 +487,25 @@ def test_manual_user_category_does_not_count_as_override(
         "SELECT is_active FROM app.categorization_rules WHERE created_by = 'auto_rule'"
     ).fetchone()
     assert active_row == (True,)
+
+
+class TestPromoteProposedRuleDualWrite:
+    """Phase 1 dual-write: approving a proposal populates category_id on the rule."""
+
+    def test_promoted_rule_carries_category_id(self, real_db: Database) -> None:
+        cat_id = CategorizationService(real_db).create_category("PromoteMe")
+        _seed_transaction(real_db, "t_promote")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t_promote", "PromoteMe")
+        assert pid is not None
+
+        result = svc.accept(accept=[pid])
+        assert result.approved == 1
+        rule_id = result.rule_ids[0]
+
+        row = real_db.execute(
+            "SELECT category, category_id FROM app.categorization_rules "
+            "WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row == ("PromoteMe", cat_id)

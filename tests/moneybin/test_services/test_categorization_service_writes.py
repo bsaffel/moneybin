@@ -781,6 +781,48 @@ class TestWriteCategorizationDualWrite:
         assert row == (cat_id,)
 
 
+class TestCreateRulesDualWrite:
+    """Phase 1 dual-write: create_rules populates category_id on categorization_rules."""
+
+    @pytest.mark.unit
+    def test_create_rules_populates_category_id(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("RulesCat")
+        result = svc.create_rules([
+            CategorizationRuleInput(
+                name="Resolved rule",
+                merchant_pattern="RULESCAT-PATTERN",
+                category="RulesCat",
+            )
+        ])
+        rule_id = result.rule_ids[0]
+        row = db.execute(
+            "SELECT category, category_id FROM app.categorization_rules "
+            "WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row == ("RulesCat", cat_id)
+
+    @pytest.mark.unit
+    def test_create_rules_unresolved_text_leaves_fk_null(self, db: Database) -> None:
+        """Unresolvable category text stores the text snapshot with category_id NULL."""
+        svc = CategorizationService(db)
+        result = svc.create_rules([
+            CategorizationRuleInput(
+                name="Orphan rule",
+                merchant_pattern="ORPHAN-PATTERN",
+                category="NeverDefined",
+            )
+        ])
+        rule_id = result.rule_ids[0]
+        row = db.execute(
+            "SELECT category, category_id FROM app.categorization_rules "
+            "WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row == ("NeverDefined", None)
+
+
 class TestCreateMerchantDualWrite:
     """Phase 1 dual-write: create_merchant populates category_id on user_merchants."""
 
