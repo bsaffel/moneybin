@@ -1,4 +1,4 @@
-"""Tests for import_inbox_sync / import_inbox MCP tools."""
+"""Tests for import_inbox_sync / import_inbox_pending MCP tools."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.mcp.tools.import_inbox import import_inbox as import_inbox_tool
-from moneybin.mcp.tools.import_inbox import inbox_sync as inbox_sync_tool
+from moneybin.mcp.tools.import_inbox import import_inbox_pending, import_inbox_sync
 from moneybin.services.inbox_service import (
     InboxListResult,
     InboxSyncResult,
@@ -22,7 +21,6 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     fake = MagicMock()
     fake.root = tmp_path / "inbox-root"
 
-    # Patch get_database used inside inbox_sync to return a dummy context manager.
     @contextmanager
     def _fake_get_database(*args, **kwargs):  # type: ignore[misc]
         yield MagicMock()
@@ -33,7 +31,8 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     )
 
     # Patch InboxService in the tool module so both the constructor call in
-    # inbox_sync AND for_active_profile_no_db in import_inbox return `fake`.
+    # import_inbox_sync AND for_active_profile_no_db in import_inbox_pending
+    # return `fake`.
     fake_cls = MagicMock(return_value=fake)
     fake_cls.for_active_profile_no_db = MagicMock(return_value=fake)
     monkeypatch.setattr(
@@ -43,7 +42,7 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     return fake
 
 
-class TestInboxSyncTool:
+class TestImportInboxSync:
     """import_inbox_sync envelope shape and actions."""
 
     async def test_returns_low_sensitivity_envelope(
@@ -52,7 +51,7 @@ class TestInboxSyncTool:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 3}],
         )
-        envelope = await inbox_sync_tool()
+        envelope = await import_inbox_sync()
         assert envelope.summary.sensitivity == "low"
         assert envelope.data["processed"][0]["filename"] == "a.csv"
 
@@ -62,7 +61,7 @@ class TestInboxSyncTool:
         patch_service.sync.return_value = InboxSyncResult(
             failed=[{"filename": "x.csv", "error_code": "needs_account_name"}],
         )
-        envelope = await inbox_sync_tool()
+        envelope = await import_inbox_sync()
         assert any("inbox/<account-slug>" in a for a in envelope.actions)
 
     async def test_no_failure_no_resolution_hint(
@@ -71,7 +70,7 @@ class TestInboxSyncTool:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 1}],
         )
-        envelope = await inbox_sync_tool()
+        envelope = await import_inbox_sync()
         assert not any("inbox/<account-slug>" in a for a in envelope.actions)
 
     async def test_categorize_hint_appears_when_above_threshold(
@@ -85,7 +84,7 @@ class TestInboxSyncTool:
             "moneybin.mcp.tools.import_inbox._uncategorized_count",
             lambda: 50,
         )
-        envelope = await inbox_sync_tool()
+        envelope = await import_inbox_sync()
         assert any("categorize_assist" in a for a in envelope.actions)
         assert any("50" in a for a in envelope.actions)
 
@@ -100,17 +99,17 @@ class TestInboxSyncTool:
             "moneybin.mcp.tools.import_inbox._uncategorized_count",
             lambda: 0,
         )
-        envelope = await inbox_sync_tool()
+        envelope = await import_inbox_sync()
         assert not any("categorize_assist" in a for a in envelope.actions)
 
 
-class TestImportInbox:
-    """import_inbox envelope shape."""
+class TestImportInboxPending:
+    """import_inbox_pending envelope shape."""
 
     async def test_returns_would_process_shape(self, patch_service: MagicMock) -> None:
         patch_service.enumerate.return_value = InboxListResult(
             would_process=[{"filename": "a.csv", "account_hint": None}],
         )
-        envelope = await import_inbox_tool()
+        envelope = await import_inbox_pending()
         assert envelope.summary.sensitivity == "low"
         assert envelope.data["would_process"][0]["filename"] == "a.csv"

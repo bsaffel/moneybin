@@ -97,8 +97,8 @@ Path-prefix-verb-suffix. Tool names mirror the CLI hierarchy with underscores in
 
 - **Pattern:** `<entity_or_domain>[_<sub_resource>]_<verb>`
 - **Examples:** `accounts`, `accounts_balances`, `accounts_balance_assert`, `reports_networth`, `transactions_matches_confirm`, `reports_spending_summary`
-- **Verbs:** `_list` (collection get), `_get` (single instance), `_assert`, `_confirm`, `_reject`, `_apply`, `_delete`, `_create`, `_update`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`).
-- **Pluralization:** singular for resource types (`balance`, `networth`, `category`); plural for relationship collections (`matches`); verb-suffix carries the list/single distinction so the noun stays consistent.
+- **Verbs:** noun-only for collection / summary / aggregate / time-series reads (shape 5 of `.claude/rules/surface-design.md`); `_get` (single instance by id); `_assert`, `_confirm`, `_reject`, `_delete`, `_create`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`). `_set` for idempotent state assertions (shape 1a/1b). `_list` is forbidden on read tools.
+- **Pluralization:** singular for single-entity reads (`accounts_get`); noun-only for collection reads, pluralized to match the noun (`accounts`, `accounts_balances`, `merchants`, `system_audit`); singular for sub-resources inside compound names (`balance`, `networth`, `category`); plural for relationship collections (`matches`).
 - **Encoding constraint:** lowercase ASCII with underscores, ≤64 chars (`^[a-zA-Z0-9_-]{1,64}$` per Anthropic and OpenAI MCP client regex).
 
 This mirrors the CLI taxonomy in `moneybin-cli.md` v2. A user who knows `accounts balance list` already knows `accounts_balances` and `GET /accounts/balances`.

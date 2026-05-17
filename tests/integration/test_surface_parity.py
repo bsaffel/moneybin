@@ -139,12 +139,18 @@ CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
     "accounts_balance_list",
     "accounts_balance_assertions_list",
     "transactions_categorize_rules_list",
+    "import_inbox_list",
     # `transactions_categorize_pending_list` is OMITTED: no CLI subcommand
     # exists (`moneybin transactions categorize pending` is a D-backlog gap,
     # listed in the module docstring above).
-    # `import_inbox_list` is OMITTED: see MCP_ONLY_ALLOWED note below —
-    # the `moneybin import inbox` group is callable bare, so its bare
-    # canonical name matches the MCP noun-only `import_inbox` directly.
+    # Category 4 — CLI bare-callable convenience aliases for an `<group>
+    # <verb>` subcommand. `moneybin import inbox` (bare) is
+    # `invoke_without_command=True` and drains, equivalent to
+    # `moneybin import inbox sync` / MCP `import_inbox_sync`. The bare
+    # form has no MCP analog (MCP requires explicit tool names; the read
+    # tool that shares this canonical name would create the semantic
+    # collision flagged in PR #172 review).
+    "import_inbox",
 })
 
 # MCP-only by design — tools that implement MCP-protocol-specific
@@ -167,10 +173,12 @@ MCP_ONLY_ALLOWED: frozenset[str] = frozenset({
     "accounts_balance_assertions",
     "transactions_categorize_rules",
     "transactions_categorize_pending",
-    # `import_inbox` is intentionally OMITTED: the CLI group `moneybin
-    # import inbox` is `invoke_without_command=True`, so the bare
-    # canonical name `import_inbox` is also emitted by the CLI walker.
-    # That makes the MCP/CLI names match natively; no allowlist needed.
+    # `import_inbox_pending` mirrors the convention but carries a `_pending`
+    # qualifier rather than bare `import_inbox` — the noun-only form would
+    # collide with the CLI bare-callable drain (`moneybin import inbox`),
+    # which is the opposite mutation semantic. Disambiguation is mandatory,
+    # not stylistic. See PR #172 review for the collision analysis.
+    "import_inbox_pending",
 })
 
 
