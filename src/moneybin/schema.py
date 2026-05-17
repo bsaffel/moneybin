@@ -160,3 +160,16 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
         logger.debug(f"Executed {sql_file}")
 
     logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
+
+    # Mirror the DataClass registry into the catalog (suffix comments
+    # with `[class: ...]`). Imported lazily so this module doesn't pull
+    # in the privacy package during very-early bootstrap paths.
+    from moneybin.privacy.comment_sync import sync_classification_comments
+
+    try:
+        sync_classification_comments(conn)
+    except duckdb.CatalogException:
+        # Core tables managed by SQLMesh may not exist yet on a fresh
+        # DB — they appear after the first `sqlmesh run`. The sync
+        # runs again from sqlmesh_context() once those tables land.
+        logger.debug("Skipping classification sync — core tables not yet present")

@@ -20,15 +20,28 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 import sqlglot.expressions as exp
 
 from moneybin.database import escape_sql_literal
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 
-if TYPE_CHECKING:
-    from moneybin.database import Database
+
+class _SupportsExecute(Protocol):
+    """Minimal protocol for the comment-sync's database dependency.
+
+    Both ``moneybin.database.Database`` and a raw
+    ``duckdb.DuckDBPyConnection`` satisfy this — the sync runs from
+    contexts that have only the raw connection (``schema.init_schemas``)
+    and from contexts that have the wrapped ``Database``
+    (``database.sqlmesh_context``). The sync issues bare ``COMMENT ON``
+    DDL with no bound parameters, so the protocol's surface is a single
+    positional ``str`` argument.
+    """
+
+    def execute(self, query: str, /) -> object: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +60,7 @@ def _desired_comment(human: str | None, cls: DataClass) -> str:
     return f"{base} {sigil}".strip() if base else sigil
 
 
-def sync_classification_comments(db: Database) -> int:
+def sync_classification_comments(db: _SupportsExecute) -> int:
     """Reconcile each ``core``/``app`` column comment with the registry.
 
     Classified columns get a ``[class: <value>]`` suffix appended (or
@@ -55,20 +68,22 @@ def sync_classification_comments(db: Database) -> int:
     sigil stripped so the human comment is restored.
 
     Args:
-        db: An open read-write ``Database``.
+        db: An object exposing ``execute(sql, parameters=...)`` — either
+            a ``Database`` or a raw ``duckdb.DuckDBPyConnection``.
 
     Returns:
         Number of ``COMMENT ON COLUMN`` statements actually executed.
         Zero on a no-op run (idempotent).
     """
     current: dict[tuple[str, str, str], str | None] = {}
+    # Protocol doesn't model cursor methods; both Database and DuckDBPyConnection return DuckDB cursors.
     rows = db.execute(
         """
         SELECT schema_name, table_name, column_name, comment
         FROM duckdb_columns()
         WHERE schema_name IN ('core', 'app')
         """
-    ).fetchall()
+    ).fetchall()  # type: ignore[attr-defined]
     for schema, table, col, comment in rows:
         current[(schema, table, col)] = comment
 
