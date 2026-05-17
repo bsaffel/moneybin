@@ -394,7 +394,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "authorized_date": DataClass.TXN_DATE,
         "categorized_by": DataClass.TXN_TYPE,
         "category": DataClass.CATEGORY,
-        "check_number": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "check_number": DataClass.DESCRIPTION,
         "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "has_splits": DataClass.AGGREGATE,

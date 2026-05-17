@@ -152,7 +152,7 @@ beyond what the schema files declare.
 | (core, dim_accounts) | institution_fid | INSTITUTION | OFX financial-institution identifier; identifies the institution, not the account. |
 | (core, dim_accounts) | source_file | RECORD_ID | path of the source file; internal provenance, not an external identifier. |
 | (core, dim_categories) | description, plaid_detailed | CATEGORY | category metadata (definition text, Plaid PFC mapping); travels with the category, not with user transactions. |
-| (core, fct_transactions) | check_number | INSTITUTION_ACCOUNT_NUMBER | conservative classification: identifies a specific account-bound payment instrument. The class name is imperfect (check numbers aren't strictly account numbers); a future `PAYMENT_INSTRUMENT` class would be more accurate. Listed as PR 2 follow-up. |
+| (core, fct_transactions) | check_number | DESCRIPTION | a check number identifies a payment instrument, not an account; parked at MEDIUM until PR 2 introduces `PAYMENT_INSTRUMENT` (CRITICAL). Knowingly underclassified — check numbers are not account numbers. |
 | (core, fct_transactions) | location_* (address, city, region, postal_code, country, latitude, longitude) | MERCHANT_NAME | merchant geographic detail; classified under MERCHANT_NAME because they describe the merchant the user transacted with, and inherit the same MEDIUM sensitivity. |
 | (core, fct_transactions) | memo | DESCRIPTION | additional source-provided notes on the transaction; rule 6 (free-text on transaction tables). |
 | (core, fct_transactions) | splits | TXN_AMOUNT | LIST of split STRUCTs; contains per-split `amount` (HIGH-tier). Classify by the highest-sensitivity component. |
@@ -182,7 +182,9 @@ introduce new members before locking in formatting behavior:
   `after_value` (mixed-content blobs). Currently `TXN_AMOUNT` (correct
   tier, wrong class — PR 2's redaction will format these as money).
 - **`PAYMENT_INSTRUMENT`** (CRITICAL) — for `check_number`. Currently
-  routed to `INSTITUTION_ACCOUNT_NUMBER` as the closest existing class.
+  parked at `DESCRIPTION` (MEDIUM) — a knowing underclassification
+  pending the new class. Check numbers aren't account numbers, so
+  `INSTITUTION_ACCOUNT_NUMBER` was rejected.
 - **`LOCATION`** (MEDIUM or HIGH) — for `fct_transactions.location_*`
   (especially `location_latitude`/`location_longitude`). Currently
   `MERCHANT_NAME` (tier is right; semantic is off — geolocation
