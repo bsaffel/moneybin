@@ -179,7 +179,7 @@ def schema_catalog_db(
     # shape so schema-catalog interface tests can resolve the names.
     database.execute(
         "CREATE OR REPLACE VIEW reports.cash_flow AS "
-        "SELECT CAST(NULL AS DATE) AS year_month, "
+        "SELECT CAST(NULL AS VARCHAR) AS year_month, "
         "CAST(NULL AS VARCHAR) AS account_id, "
         "CAST(NULL AS VARCHAR) AS account_name, "
         "CAST(NULL AS VARCHAR) AS category, "
@@ -191,7 +191,7 @@ def schema_catalog_db(
     )
     database.execute(
         "CREATE OR REPLACE VIEW reports.spending_trend AS "
-        "SELECT CAST(NULL AS DATE) AS year_month, "
+        "SELECT CAST(NULL AS VARCHAR) AS year_month, "
         "CAST(NULL AS VARCHAR) AS category, "
         "CAST(NULL AS DECIMAL(18,2)) AS total_spend, "
         "CAST(NULL AS BIGINT) AS txn_count, "

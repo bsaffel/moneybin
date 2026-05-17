@@ -133,3 +133,49 @@ class TestToolRegistration:
         names = {t["name"] for t in data["tables"]}
         assert "core.fct_transactions" in names
         assert "core.dim_accounts" in names
+
+    @pytest.mark.unit
+    async def test_sql_schema_compact_default_omits_columns(
+        self, mcp_db: object
+    ) -> None:
+        """The default (no-arg) response is the compact catalog, not the full doc."""
+        result = await sql_schema()
+        data = result.to_dict()["data"]
+        # Compact entries carry counts, not the per-column detail.
+        sample = next(iter(data["tables"]))
+        assert "column_count" in sample
+        assert "columns" not in sample
+        # `beyond_the_interface` must survive into the compact view.
+        assert data["beyond_the_interface"] is not None
+        # Actions point at the drill-in / full-doc paths.
+        actions = result.to_dict()["actions"]
+        assert any("table='" in a for a in actions)
+
+    @pytest.mark.unit
+    async def test_sql_schema_full_doc_with_star(self, mcp_db: object) -> None:
+        """table='*' returns the full schema document with column detail."""
+        result = await sql_schema(table="*")
+        data = result.to_dict()["data"]
+        # Full doc keeps the per-column detail for every table.
+        for entry in data["tables"]:
+            assert "columns" in entry
+            assert isinstance(entry["columns"], list)
+
+    @pytest.mark.unit
+    async def test_sql_schema_drill_into_single_table(self, mcp_db: object) -> None:
+        """table='<schema.name>' returns only that table with full detail."""
+        result = await sql_schema(table="core.fct_transactions")
+        data = result.to_dict()["data"]
+        assert [t["name"] for t in data["tables"]] == ["core.fct_transactions"]
+        assert data["tables"][0]["columns"]
+
+    @pytest.mark.unit
+    async def test_sql_schema_unknown_table_returns_error_envelope(
+        self, mcp_db: object
+    ) -> None:
+        """Unknown table routes through build_error_envelope (status='error')."""
+        result = await sql_schema(table="core.nonexistent")
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "unknown_table"
+        assert "core.fct_transactions" in parsed["error"]["details"]["available_tables"]

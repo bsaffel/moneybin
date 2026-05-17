@@ -86,7 +86,10 @@ class TestResponseEnvelope:
         text = envelope.to_json()
         parsed = json.loads(text)
         assert parsed["summary"]["total_count"] == 1
-        assert parsed["data"][0]["amount"] == "42.50"
+        # Money values are emitted as JSON numbers, not quoted strings —
+        # see `_DecimalEncoder` docstring for the wire contract.
+        assert parsed["data"][0]["amount"] == 42.5
+        assert isinstance(parsed["data"][0]["amount"], float)
 
     @pytest.mark.unit
     def test_empty_actions_default(self) -> None:

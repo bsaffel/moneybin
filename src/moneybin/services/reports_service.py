@@ -101,10 +101,10 @@ class ReportsService:
         """  # noqa: S608  # select_cols + TableRef allowlists
         params: list[object] = []
         if from_month:
-            sql += " AND year_month >= ?"
+            sql += " AND year_month >= substr(?, 1, 7)"
             params.append(from_month)
         if to_month:
-            sql += " AND year_month <= ?"
+            sql += " AND year_month <= substr(?, 1, 7)"
             params.append(to_month)
         sql += f" GROUP BY {group_cols} ORDER BY year_month"  # noqa: S608  # group_cols allowlist
         return self._execute(sql, params)
@@ -134,10 +134,10 @@ class ReportsService:
         """  # noqa: S608  # TableRef interpolation
         params: list[object] = []
         if from_month:
-            sql += " AND year_month >= ?"
+            sql += " AND year_month >= substr(?, 1, 7)"
             params.append(from_month)
         if to_month:
-            sql += " AND year_month <= ?"
+            sql += " AND year_month <= substr(?, 1, 7)"
             params.append(to_month)
         if category:
             sql += " AND category = ?"
