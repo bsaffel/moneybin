@@ -105,6 +105,7 @@ class TestEmptyResults:
         assert result.transactions == []
         assert result.next_cursor is None
 
+
 class TestNotes:
     """Tests for TransactionService note operations (multi-note shape)."""
 

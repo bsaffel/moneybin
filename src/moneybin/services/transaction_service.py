@@ -176,14 +176,9 @@ class Note:
 
 
 class TransactionService:
-    """Transaction search, recurring patterns, notes, and tag operations.
+    """Transaction search, notes, and tag operations.
 
-    Search and recurring helpers return typed dataclasses with a
-    ``to_envelope()`` method. Note and tag operations wrap each mutation and
-    its audit event(s) in a single DuckDB transaction. Tag writes come in
-    imperative (``add_tags``/``remove_tags``) and declarative (``set_tags``)
-    flavors; ``rename_tag`` is the one bulk operation and emits a parent
-    ``tag.rename`` audit event with per-row ``tag.rename_row`` children.
+    Methods return typed dataclasses with a ``to_envelope()`` method.
     """
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
