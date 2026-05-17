@@ -1,6 +1,6 @@
 ---
 name: update-progress
-description: Reconcile the private/ tracking docs — design.md, implementation.md, followups.md, findings.md — with the team's current state of work. Removes items that shipped or are no longer relevant (PR + CHANGELOG carry the durable record), promotes in-flight items to their new status, and adds new items discovered in the in-scope work. Aggressively prunes — these are working memory, not history. Use this after shipping a PR, before opening a new one, alongside /update-specs and /update-docs, or whenever the user says "update progress" / "sweep the tracking docs" / "what's the state of the private docs."
+description: Reconcile the private/ tracking docs — design.md, implementation.md, followups.md, findings.md, testing.md — with the team's current state of work. Removes items that shipped or are no longer relevant (PR + CHANGELOG carry the durable record), promotes in-flight items to their new status, and adds new items discovered in the in-scope work. Aggressively prunes — these are working memory, not history. Use this after shipping a PR, before opening a new one, alongside /update-specs and /update-docs, or whenever the user says "update progress" / "sweep the tracking docs" / "what's the state of the private docs."
 ---
 
 # /update-progress
@@ -13,19 +13,22 @@ value as a planning surface.
 
 ## Files in scope
 
-Exactly these four:
+Exactly these five:
 
 - `private/design.md` — Spec quality/readiness tracker (formerly `spec_implementation.md`)
 - `private/implementation.md` — Next actions, sequencing
 - `private/followups.md` — Deferred PR-review followups by tier
-- `private/findings.md` — UX questions / product ideas surfaced live
+- `private/findings.md` — UX questions / product ideas surfaced live, plus the **Won't Do** section. Partner of `testing.md`.
+- `private/testing.md` — Manual validation plan. Per-feature end-to-end validation status across MCP / CLI / UI. Partner of `findings.md`.
+
+**Partnership flow:** when manual validation surfaces something that breaks or feels wrong, that observation goes into `findings.md` (or `followups.md` if it's a concrete small fix). `testing.md` tracks *whether* a feature has been driven; `findings.md` captures *what surprised us* when we drove it.
 
 **Out of scope** for this skill:
 
 - `private/strategy/` — durable strategic positioning; edit by hand.
 - `private/plans/` — ephemeral per-task scaffolding; let plans live and die with their tasks.
 - `private/reviews/` — per-PR deep-dive artifacts.
-- `private/simplify.md`, `private/testing.md`, `private/sandboxing.md` — reference notes, not active tracking.
+- `private/simplify.md`, `private/notes/` — reference notes, not active tracking.
 
 ## Important path note
 
@@ -81,9 +84,12 @@ Print a one-line scope summary before doing anything:
 
 ### 1. Dispatch one subagent per file, in parallel
 
-Four files → process in two waves of two (or one wave of three + one solo)
-to stay within a **3-in-flight cap** (a safe default to avoid overwhelming
-Claude Code's subagent capacity).
+Five files → process in two waves to stay within a **3-in-flight cap** (a
+safe default to avoid overwhelming Claude Code's subagent capacity).
+Suggested split: wave 1 = `design.md`, `implementation.md`, `followups.md`
+(the three that most often move together with a PR); wave 2 = `findings.md`
++ `testing.md` (which share a partnership flow and benefit from running
+back-to-back so the second can see what the first added).
 
 Each subagent receives a self-contained prompt with:
 
@@ -119,8 +125,9 @@ Per-file summary:
 - **Promoted/updated** — count + one-line sample
 - **Added** — count + one-line sample
 - **Won't-Do moved** (findings.md only) — if any
+- **Validation status changes** (testing.md only) — features promoted to validated, or new features added to the catalog
 
-Plus a top-level note: total bytes removed across the four files. The
+Plus a top-level note: total bytes removed across the five files. The
 metric the user cares about is whether these files got *leaner*.
 
 ## What this skill will NOT do

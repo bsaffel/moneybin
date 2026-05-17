@@ -16,7 +16,7 @@ It is **not** a feature spec. There is no implementation plan. The two narrow na
 
 ## Background
 
-The strategic review of 2026-05-04 (`private/strategy/2026-05-04-strategic-review-engineering.md` §(b)) catalogued the convergence and recommended writing this doc before the next domain spec. The data-layer table in `AGENTS.md` is now a partial map of the schemas that actually exist (three rows; the codebase uses seven going on eight). The service-layer contract is consistent across ~18 services but never written down. The sensitivity decorator and response envelope have hardened but don't have a single-page reference.
+The strategic review of 2026-05-04 (`private/reviews/2026-05-04-strategic-review-engineering.md` §(b)) catalogued the convergence and recommended writing this doc before the next domain spec. The data-layer table in `AGENTS.md` is now a partial map of the schemas that actually exist (three rows; the codebase uses seven going on eight). The service-layer contract is consistent across ~18 services but never written down. The sensitivity decorator and response envelope have hardened but don't have a single-page reference.
 
 ### Related specs
 
@@ -434,7 +434,7 @@ Two narrow naming changes ride along with this spec landing. Both are mechanical
 
 ### Strategic context
 
-- `private/strategy/2026-05-04-strategic-review-engineering.md` §(b) — Architectural review that catalogued the 12 primitives and recommended this spec.
+- `private/reviews/2026-05-04-strategic-review-engineering.md` §(b) — Architectural review that catalogued the 12 primitives and recommended this spec.
 
 ### Source files (primitives)
 

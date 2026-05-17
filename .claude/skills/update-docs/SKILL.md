@@ -18,10 +18,12 @@ voice and density appropriate to where they landed.
 - Before opening a PR that adds capability — so the PR ships with its docs
 - When a milestone closes and the README status callout / roadmap needs to move
 - When the user asks whether the public docs reflect current state
+- When the user asks for a full doc reconciliation against current state ("clean from-scratch update," "everything")
 
-This skill is **not** for writing brand-new guides from scratch — the
-information architecture matters too much to automate. Use it to update,
-prune, and reconcile.
+This skill has **two modes** — see [Modes](#modes) below. Default is
+incremental update against an in-flight code change. From-scratch
+reconciliation mode is opt-in and treats existing docs as reference,
+not as the starting point.
 
 ## Files in scope
 
@@ -41,6 +43,49 @@ prune, and reconcile.
 - `docs/specs/` — that's `/update-specs`
 - `docs/decisions/` — ADRs are durable, edited by hand only
 - `private/` — that's `/update-progress`
+
+## "Last reviewed" datestamp convention
+
+Every in-scope doc opens with an HTML comment naming the date a reviewer
+last confirmed the doc matches the code:
+
+```markdown
+<!-- Last reviewed: YYYY-MM-DD -->
+```
+
+This is **not** git's last-modified date — that bumps for typo fixes
+without anyone rechecking content. The stamp's contract is: "on this
+date, someone read this doc end-to-end against the current state of
+the code and asserted it was accurate."
+
+Two uses:
+
+1. **Scope detection.** Future runs can identify docs whose stamp
+   predates the newest in-scope `src/` change — those are review
+   candidates. Grep: `grep -rln '<!-- Last reviewed:' README.md CHANGELOG.md CONTRIBUTING.md docs/`.
+2. **Reader signal.** A doc stamped six months ago has earned skepticism;
+   a doc stamped last week is fresh.
+
+**Bump rules** — the subagent doing the writing pass MUST update the
+stamp to today's date as the final step. A subagent that decided no
+edits were warranted MUST NOT bump the stamp — absence of an edit
+means the doc wasn't re-read against code. If a doc lacks the stamp
+entirely, add it on first edit using today's date.
+
+## Modes
+
+### Incremental (default)
+
+- Trigger: branch diff, PR file list, or uncommitted changes (see Scope detection).
+- Behavior: read existing doc; identify what the in-scope code change requires; edit only those parts; preserve everything else.
+- Use when: a single PR shipped a feature, fix, or behavior change.
+
+### From-scratch reconciliation
+
+- Trigger: explicit user request — `everything`, `from-scratch`, `clean update`, or a named list of docs paired with framing language ("clean update," "from scratch," "as if writing fresh").
+- Behavior: read current code state (CLI surface, MCP tools, schema, CHANGELOG `Unreleased`); treat the existing doc as **reference only** — structural inspiration, voice, length budget, anti-pattern list — but write what the doc should say from current truth. Don't be bound by the existing wording when current state contradicts it.
+- Use when: a milestone closes; many features have shipped since the doc was last touched; the doc's "Last reviewed" stamp predates a tide of merged PRs; the user explicitly asks for a clean pass.
+- Heavier: a full from-scratch sweep across the doc surface is a multi-wave, multi-hour exercise. **Confirm scope with the user before launching** and prefer wave-by-wave execution with checkpoint review between waves.
 
 ## Personas (read docs/audience.md as the canonical source)
 
@@ -132,14 +177,82 @@ Use `subagent_type: general-purpose`.
 
 ### 3. Each subagent does, for its file
 
-- Update only what the in-scope change requires.
-- Write in the persona voice for that file.
+- **Incremental mode:** update only what the in-scope change requires; preserve everything else.
+- **From-scratch mode:** read current code state and re-author the doc from current truth. Existing doc is reference for structure, voice, and length budget — not the baseline content.
+- Write in the persona voice for that file (see [Per-file voice + length budget](#per-file-voice--length-budget)).
 - Cut content that's no longer accurate.
 - Respect the length budget — if you're adding, find something to remove or compact. Don't grow indefinitely.
 - Apply the anti-patterns rules. If the file currently violates one (e.g., a private/ ref), fix it in-pass.
 - For new diagrams, use Mermaid code blocks.
+- **Bump the `<!-- Last reviewed: -->` stamp** to today's date as the final step. Add the stamp if missing.
 
-### 4. Run the shipping.md checklist for any newly-shipped feature
+### 4. Persona-review pass (mandatory for from-scratch mode, optional for incremental)
+
+After the writing pass for a doc completes, dispatch **2–3 persona-review
+subagents** in parallel to critique the freshly-edited file. This catches
+the failure modes the author subagent can't see from inside its own pass:
+unfamiliar jargon, missing context, jobs-to-be-done that aren't answered,
+information present that the persona doesn't care about.
+
+**Skip for:** `CHANGELOG.md` (mechanical), trivial diff-only edits in
+incremental mode (one bullet added, no narrative change).
+
+For each touched doc, pick 2–3 personas from `docs/audience.md` weighted
+toward the file's primary audience but **always include at least one
+adjacent persona** to surface unstated assumptions. Example weightings:
+
+| File | Personas to review as |
+|---|---|
+| `README.md` | Power-user migrant + AI-native dev + Self-hoster |
+| `docs/architecture.md` | AI-native dev + Power-user migrant |
+| `docs/audience.md` | Tracker (post-launch) + FIRE / wealth-builder (post-launch) + Power-user migrant |
+| `docs/comparison.md` | Power-user migrant + Self-hoster |
+| `docs/features.md` | Power-user migrant + AI-native dev |
+| `docs/guides/*` | Power-user migrant + AI-native dev |
+| `docs/reference/*` | AI-native dev + Power-user migrant |
+| `docs/architecture/*` | AI-native dev + AI-native dev (different framing: "new to project" + "deep in the stack") |
+| `docs/tech/*` | AI-native dev + Self-hoster |
+
+Each persona-review subagent receives:
+
+- Path of the **single freshly-written doc**.
+- The persona description verbatim from `docs/audience.md` (or the persona table above for stable definitions).
+- This prompt template:
+
+  > Read [DOC PATH] as [PERSONA NAME — paragraph description]. You are not editing — you are critiquing.
+  >
+  > Report in five sections (be concrete; cite line numbers or quote sentences when possible):
+  >
+  > 1. **Understandability** — what made sense; what didn't; jargon that needs definition or removal.
+  > 2. **Information present that you don't need** — content that's noise for this persona.
+  > 3. **Information missing that you came looking for** — questions you arrived with that this doc didn't answer.
+  > 4. **Jobs-to-be-done** — list the JTBD this doc *does* answer for you; list adjacent JTBDs it *should* answer but doesn't.
+  > 5. **One-sentence verdict** — would you keep reading the docs after this page, bounce, or feel oriented to act?
+  >
+  > Keep the report under 400 words. Do not propose specific rewrites — that's the next subagent's job. Surface gaps and concerns; don't author replacements.
+
+Use `subagent_type: general-purpose`.
+
+### 5. Revision pass — integrate persona critique
+
+Re-dispatch the author subagent (or a fresh one with the same prompt
+plus the critique reports) to revise the doc based on persona feedback.
+
+The author subagent's prompt for this pass includes:
+
+- The current state of the doc (post-writing-pass).
+- All 2–3 persona critiques verbatim.
+- This guidance:
+
+  > Reconcile the critiques. Apply the ones that converge across personas or that clearly improve understandability. Push back on critiques that conflict with the file's primary persona or length budget — note them in the report but don't act.
+  >
+  > Do NOT chase every comment. The goal is a doc that serves its primary persona well, with the adjacent persona used as a sanity check on missing context — not as an equal voice.
+
+The revision subagent bumps the `<!-- Last reviewed: -->` stamp again
+only if it actually edits. If the critiques produced no actionable
+revisions, leave the stamp from step 3.
+
+### 6. Run the shipping.md checklist for any newly-shipped feature
 
 Per `.claude/rules/shipping.md`:
 
@@ -149,13 +262,15 @@ Per `.claude/rules/shipping.md`:
 - **`README.md`** status callout — update only if a milestone closed or a previously-promised feature now exists. Do not re-add an in-README roadmap matrix.
 - **Per-feature guides** — extend existing guides; only add new ones for substantial new capability.
 
-### 5. Report
+### 7. Report
 
 Per-file summary of edits, plus:
 
 - **Touched** — list of files modified, with one-line summary each.
 - **Considered but skipped** — list of files where the in-scope change didn't warrant an edit, with the reason (e.g., "MCP guide: internal refactor, no user-visible change").
 - **Anti-patterns fixed** — any pre-existing violations cleaned up in-pass.
+- **Persona-review highlights** — for each persona-reviewed doc: the top 1–2 actionable critiques applied, plus any critiques deliberately not applied (with rationale). Helps the user see what the second pass changed and why.
+- **Stamps bumped** — list of docs whose `<!-- Last reviewed: -->` was updated and the new date. Surfaces drift if a doc was expected to be touched but wasn't.
 
 ## What this skill will NOT do
 
