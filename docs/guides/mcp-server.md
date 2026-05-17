@@ -81,17 +81,9 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | `import_formats_list` | Available tabular import formats and saved profiles |
 | `import_status` | Summary of all imported data |
 
-### budget
+### budget, tax (de-registered — re-register when backing spec lands)
 
-| Tool | Description |
-|------|-------------|
-| `budget_set` | Create or update a monthly budget for a category (read views: `reports_budget`) |
-
-### tax
-
-| Tool | Description |
-|------|-------------|
-| `tax_w2` | W-2 summary (wages, withholding, employer info) for a year |
+`budget_set` and `tax_w2` were de-registered 2026-05-17. Both functional implementations remain in the codebase (`src/moneybin/mcp/tools/budget.py`, `tools/tax.py`) and the CLI counterparts (`moneybin budget set`, `moneybin tax w2`, `moneybin tax deductions`) still work — only the MCP surface is gated until `budget-tracking.md` reaches `in-progress` and a tax spec lands per the stub-gating rule in `.claude/rules/mcp-server.md`.
 
 ### sync, transform (taxonomy stubs)
 
@@ -102,12 +94,6 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | Tool | Description |
 |------|-------------|
 | `sql_query` | Execute arbitrary read-only SQL (power user) |
-
-### moneybin
-
-| Tool | Description |
-|------|-------------|
-| `moneybin_discover` | Tool catalog and capability discovery for AI clients |
 
 ```bash
 # See all registered tools with full descriptions and schemas

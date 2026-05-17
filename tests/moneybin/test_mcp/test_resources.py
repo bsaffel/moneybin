@@ -156,35 +156,39 @@ class TestResourceTools:
         return json.loads(await resource_tools())
 
     @pytest.mark.unit
-    async def test_returns_core_namespaces(self) -> None:
+    async def test_returns_flat_namespace_list(self) -> None:
         data = await self._read()
-        assert "core" in data
-        assert isinstance(data["core"], list)
-        core: list[dict[str, Any]] = data["core"]
-        assert len(core) > 0
+        assert "namespaces" in data
+        assert isinstance(data["namespaces"], list)
+        namespaces: list[dict[str, Any]] = data["namespaces"]
+        assert len(namespaces) > 0
 
     @pytest.mark.unit
-    async def test_core_namespaces_have_required_fields(self) -> None:
+    async def test_entries_have_required_fields(self) -> None:
         data = await self._read()
-        for entry in data["core"]:
+        for entry in data["namespaces"]:
             assert "namespace" in entry
-            assert "loaded" in entry
+            assert "tools" in entry
             assert "description" in entry
-
-    @pytest.mark.unit
-    async def test_core_namespaces_loaded_true(self) -> None:
-        data = await self._read()
-        core_entries: list[dict[str, Any]] = data["core"]
-        assert all(entry["loaded"] is True for entry in core_entries)
-
-    @pytest.mark.unit
-    async def test_discover_tool_present(self) -> None:
-        data = await self._read()
-        assert data["discover_tool"] == "moneybin_discover"
 
     @pytest.mark.unit
     async def test_known_namespaces_present(self) -> None:
         data = await self._read()
-        namespaces = {e["namespace"] for e in data["core"]}
+        namespaces = {e["namespace"] for e in data["namespaces"]}
+        # Promoted namespaces appear in the catalog. Categorization tools
+        # live under `transactions_categorize_*` and surface under
+        # `transactions`. ``transform`` is a promotion carve-out (registered
+        # but not promoted). ``budget``, ``tax``, ``privacy``,
+        # ``transactions_matches`` are all phantoms today — no registered
+        # tools, backing specs not at ``in-progress``/``implemented``, so the
+        # namespace stays out per the stub-gating rule. Each returns when
+        # its first tool registers against a real spec.
         assert "reports" in namespaces
         assert "accounts" in namespaces
+        assert "transactions" in namespaces
+        assert "sql" in namespaces
+        assert "budget" not in namespaces
+        assert "tax" not in namespaces
+        assert "transform" not in namespaces
+        assert "privacy" not in namespaces
+        assert "transactions_matches" not in namespaces

@@ -220,32 +220,6 @@ def review_curation_history() -> str:
     """)
 
 
-@mcp.prompt()
-def tax_prep() -> str:
-    """Tax preparation — gather W-2 data and deductible expenses."""
-    return _dedent("""
-        Help the user gather tax-related financial information.
-
-        **Goal:** Compile W-2 data and identify potentially deductible
-        expenses for tax preparation.
-
-        **Relevant tools:**
-        - tax_w2 — retrieve W-2 wage and tax data
-        - reports_spending — find deduction-eligible categories
-        - transactions_get — search for specific deductible expenses
-        - categories_list — review tax-relevant categories
-
-        **Workflow:**
-        1. Ask for the tax year
-        2. Pull W-2 data with tax_w2 for that year
-        3. Review reports_spending for deduction-eligible categories
-           (charitable, medical, business expenses, etc.)
-        4. If needed, search for specific transactions with transactions_get
-        5. Summarize totals by deduction category
-
-        **Guardrails:**
-        - This is data gathering, not tax advice — say so explicitly
-        - Note that completeness depends on what data has been imported
-        - Flag any W-2 discrepancies (e.g., missing forms for known employers)
-        - Present amounts clearly with category totals
-    """)
+# tax_prep prompt removed alongside the tax_w2 / tax_deductions de-registration
+# (no backing tax spec in docs/specs/INDEX.md). Re-add when the tax tools
+# re-register against a real spec.

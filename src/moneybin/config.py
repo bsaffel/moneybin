@@ -240,16 +240,6 @@ class MCPConfig(BaseModel):
             '(e.g. ["core.fct_transactions"]). None means all tables are permitted.'
         ),
     )
-    progressive_disclosure: bool = Field(
-        default=False,
-        description=(
-            "Hide extended-namespace tools (categorize, budget, tax) at connect "
-            "and reveal per-session via moneybin_discover. Requires the client "
-            "to honor notifications/tools/list_changed — Claude Desktop's "
-            "support is unreliable, so this defaults off and every tool is "
-            "visible at connect."
-        ),
-    )
     max_items: int = Field(
         default=500,
         ge=1,
