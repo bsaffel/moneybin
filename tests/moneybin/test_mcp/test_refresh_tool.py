@@ -94,6 +94,25 @@ async def test_refresh_run_emits_followup_hint_when_match_without_categorize() -
 
 
 @pytest.mark.unit
+async def test_refresh_run_suppresses_followup_hint_on_transform_failure() -> None:
+    """Suppress the categorize follow-up hint when transform fails.
+
+    When transform was requested and failed, categorize would run against
+    stale outputs — the agent should resolve the apply failure first.
+    """
+    fake_result = MagicMock(applied=False, duration_seconds=0.5, error="model boom")
+    with (
+        patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
+        patch("moneybin.mcp.tools.refresh.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        envelope = await refresh_run(steps=["match", "transform"])
+    assert REFRESH_CATEGORIZE_FOLLOWUP_HINT not in envelope.actions
+    # Apply-failed hint should still fire.
+    assert any("transform_plan" in a for a in envelope.actions), envelope.actions
+
+
+@pytest.mark.unit
 async def test_refresh_run_no_followup_hint_when_categorize_included() -> None:
     """Default-cascade or explicit categorize → no follow-up hint."""
     fake_result = MagicMock(applied=True, duration_seconds=1.0, error=None)

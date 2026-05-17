@@ -95,7 +95,7 @@ async def test_system_status_surfaces_schema_drift_when_columns_missing(
 
 @pytest.mark.unit
 async def test_system_status_action_hint_for_schema_drift(mcp_db: object) -> None:
-    """Actions array includes a transform_apply remediation hint when drift detected."""
+    """Actions array includes a refresh remediation hint when drift detected."""
     with get_database() as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
     env = await system_status()

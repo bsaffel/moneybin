@@ -152,13 +152,8 @@ def test_refresh_step_match_without_categorize_emits_followup_hint(
     assert REFRESH_CATEGORIZE_FOLLOWUP_HINT in payload["actions"]
 
 
-def test_refresh_unknown_step_raises_user_error(runner: CliRunner) -> None:
-    """Unknown step name surfaces as a CLI error with non-zero exit."""
-    with (
-        patch("moneybin.database.get_database") as get_db,
-    ):
-        get_db.return_value.__enter__.return_value = MagicMock()
-        result = runner.invoke(app, ["refresh", "--step", "bogus"])
-
-    assert result.exit_code != 0
-    assert "UNKNOWN_REFRESH_STEP" in result.output or "bogus" in result.output
+def test_refresh_unknown_step_rejected_at_parse_time(runner: CliRunner) -> None:
+    """Unknown step name is rejected by Typer before the service runs (exit 2)."""
+    result = runner.invoke(app, ["refresh", "--step", "bogus"])
+    assert result.exit_code == 2, result.output
+    assert "bogus" in result.output  # Typer prints the bad value

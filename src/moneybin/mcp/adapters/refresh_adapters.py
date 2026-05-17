@@ -40,6 +40,9 @@ def refresh_envelope(
     actions: list[str] = []
     if not result.applied and result.error is not None:
         actions.append(REFRESH_APPLY_FAILED_HINT)
-    if "match" in requested and "categorize" not in requested:
+    # Gate the follow-up on success: when transform was requested but failed,
+    # categorize would run against stale outputs — direct the agent to resolve
+    # the apply failure first rather than chain categorize after it.
+    if result.error is None and "match" in requested and "categorize" not in requested:
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
     return build_envelope(data=data, sensitivity="low", actions=actions)

@@ -7,6 +7,7 @@ after a failure.
 """
 
 import logging
+from enum import StrEnum
 
 import typer
 
@@ -16,10 +17,24 @@ from moneybin.cli.utils import handle_cli_errors
 logger = logging.getLogger(__name__)
 
 
+class RefreshStepChoice(StrEnum):
+    """Mirrors ``services.refresh.RefreshStep`` for Typer choice validation.
+
+    Rejecting invalid step names at parse time surfaces a usage error
+    (exit code 2) rather than a runtime UserError (exit code 1). The
+    service-layer ``UNKNOWN_REFRESH_STEP`` check remains as
+    defense-in-depth for programmatic callers.
+    """
+
+    MATCH = "match"
+    TRANSFORM = "transform"
+    CATEGORIZE = "categorize"
+
+
 def refresh_command(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
-    step: list[str] = typer.Option(
+    step: list[RefreshStepChoice] = typer.Option(
         None,
         "--step",
         help=(
@@ -43,13 +58,16 @@ def refresh_command(
     )
     from moneybin.services.refresh import expand_steps, refresh  # noqa: PLC0415
 
-    steps: list[str] | None = step if step else None
+    # StrEnum members compare equal to their string values, so downstream
+    # service code that accepts ``list[str]`` works unchanged.
+    steps: list[str] | None = [s.value for s in step] if step else None
 
     with handle_cli_errors(), get_database() as db:
         result = refresh(db, steps=steps)
+    requested = expand_steps(steps)
 
     if output == OutputFormat.JSON:
-        render_or_json(refresh_envelope(result, requested=expand_steps(steps)), output)
+        render_or_json(refresh_envelope(result, requested=requested), output)
         if result.error is not None:
             raise typer.Exit(1)
         return
@@ -65,4 +83,4 @@ def refresh_command(
     if result.error is not None:
         logger.error(f"❌ Refresh failed: {result.error}")
         raise typer.Exit(1)
-    logger.info("✅ Partial refresh complete (transform skipped)")
+    logger.info(f"✅ Partial refresh complete (steps: {', '.join(sorted(requested))})")
