@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from typing import Literal
 
 from fastmcp import FastMCP
 
@@ -235,6 +236,38 @@ def transactions_categorize_auto_stats() -> ResponseEnvelope:
     return auto_stats_envelope(data)
 
 
+@mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
+def transactions_categorize_run(
+    methods: list[Literal["rules", "merchants"]] | None = None,
+) -> ResponseEnvelope:
+    """Run the categorization engine cascade over uncategorized transactions.
+
+    Each method runs a deterministic engine: ``rules`` applies active
+    user-authored pattern rules; ``merchants`` applies the stored merchant
+    catalog. When multiple methods are given, they cascade in order — a
+    rule write blocks a merchant write at the same priority.
+
+    Methods differ in QoS (data source, latency) but share inputs and
+    outputs; this is method-parameter polymorphism. Amounts use the
+    accounting convention: negative = expense, positive = income;
+    transfers exempt.
+
+    Args:
+        methods: Engines to run in order. Defaults to ["rules", "merchants"]
+            (the existing categorize_pending cascade).
+    """
+    with get_database() as db:
+        data = CategorizationService(db).categorize_run(methods=methods)
+    return build_envelope(
+        data=data,
+        sensitivity="medium",
+        actions=[
+            "Use transactions_categorize_stats to check resulting coverage",
+            "Use transactions_categorize_pending_list to see remaining uncategorized rows",
+        ],
+    )
+
+
 def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     """Register all transactions categorize namespace tools with the FastMCP server."""
     register(
@@ -304,4 +337,12 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         transactions_categorize_auto_stats,
         "transactions_categorize_auto_stats",
         "Auto-rule health: active count, pending proposals, transactions categorized.",
+    )
+    register(
+        mcp,
+        transactions_categorize_run,
+        "transactions_categorize_run",
+        "Run the categorization engine cascade (rules and/or merchants) over uncategorized transactions. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Writes app.transaction_categories via the named engine(s); revert by calling transactions_categorize_commit with a different category, or by soft-deleting the source rule via transactions_categorize_rules_delete(reapply=True).",
     )

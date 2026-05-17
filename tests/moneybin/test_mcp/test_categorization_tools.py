@@ -61,6 +61,7 @@ class TestCategorizeToolRegistration:
         assert "categories_set" in names
         assert "categories_delete" in names
         assert "transactions_categorize_assist" in names
+        assert "transactions_categorize_run" in names
 
     @pytest.mark.unit
     async def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
@@ -188,6 +189,37 @@ class TestCategoriesDeleteTool:
                 ["txn-forced"],
             ).fetchall()
         assert txn_rows == []
+
+
+class TestTransactionsCategorizeRun:
+    """transactions_categorize_run tool wiring and response envelope."""
+
+    @pytest.mark.unit
+    async def test_default_methods_runs_rules_and_merchants(self, mcp_db: Path) -> None:
+        """Default methods cascade runs rules then merchants."""
+        from moneybin.mcp.tools.transactions_categorize import (
+            transactions_categorize_run,
+        )
+
+        result = (await transactions_categorize_run()).to_dict()
+        assert result["summary"]["sensitivity"] == "medium"
+        assert "applied_by_method" in result["data"]
+        assert "rules" in result["data"]["applied_by_method"]
+        assert "merchants" in result["data"]["applied_by_method"]
+        assert result["data"]["total_applied"] == sum(
+            result["data"]["applied_by_method"].values()
+        )
+
+    @pytest.mark.unit
+    async def test_with_explicit_methods_rules_only(self, mcp_db: Path) -> None:
+        """methods=['rules'] runs only the rules engine."""
+        from moneybin.mcp.tools.transactions_categorize import (
+            transactions_categorize_run,
+        )
+
+        result = (await transactions_categorize_run(methods=["rules"])).to_dict()
+        assert "rules" in result["data"]["applied_by_method"]
+        assert "merchants" not in result["data"]["applied_by_method"]
 
 
 class TestTransactionsCategorizeCommit:

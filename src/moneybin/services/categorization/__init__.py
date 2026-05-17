@@ -398,6 +398,46 @@ class CategorizationService:
         """Categorize all pending (uncategorized) transactions."""
         return self._orchestrator.categorize_pending()
 
+    def categorize_run(
+        self,
+        methods: list[Literal["rules", "merchants"]] | None = None,
+    ) -> dict[str, Any]:
+        """Run the engine cascade. Returns per-method counts in a unified shape.
+
+        Args:
+            methods: Engines to run in order. Defaults to ["rules", "merchants"]
+                (the existing categorize_pending cascade).
+
+        Returns:
+            Dict with applied_by_method (per-engine counts) and total_applied.
+        """
+        effective = methods or ["rules", "merchants"]
+        result: dict[str, Any] = {
+            "applied_by_method": {},
+            "total_applied": 0,
+        }
+        # When the default cascade is requested, use the optimized shared-scan path.
+        if effective == ["rules", "merchants"]:
+            breakdown = self._orchestrator.categorize_pending()
+            # categorize_pending returns {"rule": N, "merchant": N, "total": N}
+            result["applied_by_method"] = {
+                "rules": breakdown.get("rule", 0),
+                "merchants": breakdown.get("merchant", 0),
+            }
+            result["total_applied"] = sum(result["applied_by_method"].values())
+            return result
+        # Otherwise run methods individually in the requested order.
+        for method in effective:
+            if method == "rules":
+                count = len(self._orchestrator.apply_rules())
+            elif method == "merchants":
+                count = self._orchestrator.apply_merchant_categories()
+            else:  # pragma: no cover — type system blocks other values
+                raise ValueError(f"Unknown method: {method}")
+            result["applied_by_method"][method] = count
+            result["total_applied"] += count
+        return result
+
     # -- Taxonomy / catalog reads --
 
     def get_active_categories(self) -> list[dict[str, str | bool | None]]:
