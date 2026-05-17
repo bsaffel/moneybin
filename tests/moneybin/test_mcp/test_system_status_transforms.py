@@ -90,7 +90,7 @@ async def test_system_status_surfaces_schema_drift_when_columns_missing(
     tables = data["schema_drift"]["tables"]
     entry = next(t for t in tables if t["name"] == "core.dim_accounts")
     assert "display_name" in entry["missing_columns"]
-    assert data["schema_drift"]["remediation"] == "moneybin transform apply"
+    assert data["schema_drift"]["remediation"] == "moneybin refresh"
 
 
 @pytest.mark.unit

@@ -57,7 +57,7 @@ def system_status() -> ResponseEnvelope:
                 {"name": table, "missing_columns": cols}
                 for table, cols in sorted(status.schema_drift.items())
             ],
-            "remediation": "moneybin transform apply",
+            "remediation": "moneybin refresh",
         }
         actions.append(
             "Run refresh_run to rebuild stale models — "

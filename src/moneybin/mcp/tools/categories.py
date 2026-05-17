@@ -24,7 +24,7 @@ def categories_list(include_inactive: bool = False) -> ResponseEnvelope:
         actions=[
             "Use categories_create to add a custom category",
             "Defaults are seeded automatically by `moneybin db init` and "
-            "`moneybin transform apply` (or `moneybin transform seed` to re-run).",
+            "`moneybin refresh` (or `moneybin transform seed` to re-run).",
         ],
     )
 
