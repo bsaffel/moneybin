@@ -18,6 +18,8 @@ migration, (c) the migration is idempotent.
 
 from __future__ import annotations
 
+import logging
+
 import duckdb
 import pytest
 
@@ -124,10 +126,21 @@ class TestV015:
                 "VALUES ('USR0000001A', 'Different', 'Text', true)"
             )
 
-    def test_idempotent(self, v015_db: Database) -> None:
+    def test_idempotent(
+        self, v015_db: Database, caplog: pytest.LogCaptureFixture
+    ) -> None:
         run_migration(v015_db, migrate)
-        # Second call must be a no-op, not error.
-        run_migration(v015_db, migrate)
+        # Second call must hit the early-return path, not rebuild again.
+        migration_logger = (
+            "moneybin.sql.migrations.V015__relax_user_categories_text_unique"
+        )
+        with caplog.at_level(logging.INFO, logger=migration_logger):
+            run_migration(v015_db, migrate)
+        assert any(
+            "skipping rebuild" in record.message
+            for record in caplog.records
+            if record.name == migration_logger
+        ), "second migrate() call should log the no-op early-return"
         v015_db.execute(
             "INSERT INTO app.user_categories "
             "(category_id, category, subcategory, is_active) "

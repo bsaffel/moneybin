@@ -20,21 +20,20 @@ from typing import cast
 
 logger = logging.getLogger(__name__)
 
+_TARGET_UNIQUE_COLUMNS = ["category", "subcategory"]
+
 
 def migrate(conn: object) -> None:
     """Rebuild app.user_categories without UNIQUE (category, subcategory)."""
     constraints = cast(
-        list[tuple[str | None]],
+        list[tuple[list[str]]],
         conn.execute(  # type: ignore[union-attr]
-            "SELECT constraint_text FROM duckdb_constraints() "
+            "SELECT constraint_column_names FROM duckdb_constraints() "
             "WHERE schema_name = 'app' AND table_name = 'user_categories' "
             "AND constraint_type = 'UNIQUE'"
         ).fetchall(),
     )
-    has_unique = any(
-        "category" in (text or "").lower() and "subcategory" in (text or "").lower()
-        for (text,) in constraints
-    )
+    has_unique = any(list(cols) == _TARGET_UNIQUE_COLUMNS for (cols,) in constraints)
     if not has_unique:
         logger.info("V015: UNIQUE constraint absent; skipping rebuild")
         return
@@ -61,5 +60,8 @@ def migrate(conn: object) -> None:
         "INSERT INTO app.user_categories SELECT * FROM app.user_categories__v015_tmp"
     )
     conn.execute("DROP TABLE app.user_categories__v015_tmp")  # type: ignore[union-attr]
+    # Column comments on app.user_categories are not preserved through the
+    # CREATE TABLE + INSERT SELECT rebuild; they self-heal on the next
+    # Database(...) open via init_schemas -> _apply_comments.
 
     logger.info("V015 migration complete (UNIQUE constraint dropped)")
