@@ -905,13 +905,14 @@ class TestDeleteCategory:
         cat_id = svc.create_category("LinkedCat")
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES (?, ?, 'user')",
-            ["txn-test", "LinkedCat"],
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-test", "LinkedCat", cat_id],
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
         assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "transactions" in str(exc_info.value)
 
     @pytest.mark.unit
     def test_refuses_when_referenced_by_budget(self, db: Database) -> None:
@@ -919,13 +920,77 @@ class TestDeleteCategory:
         cat_id = svc.create_category("BudgetCat")
         db.execute(
             "INSERT INTO app.budgets "
-            "(budget_id, category, monthly_amount, start_month) "
-            "VALUES (?, ?, ?, ?)",
-            ["bdg-test", "BudgetCat", "200.00", "2026-01"],
+            "(budget_id, category, category_id, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ["bdg-test", "BudgetCat", cat_id, "200.00", "2026-01"],
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
         assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "budgets" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_merchant(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("MerchCat")
+        db.execute(
+            "INSERT INTO app.user_merchants "
+            "(merchant_id, raw_pattern, match_type, canonical_name, "
+            " category, category_id, created_by) "
+            "VALUES (?, ?, 'contains', ?, 'MerchCat', ?, 'user')",
+            ["mer-test01234", "starbucks", "Starbucks", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "merchants" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_split(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("SplitCat")
+        db.execute(
+            "INSERT INTO app.transaction_splits "
+            "(split_id, transaction_id, amount, category, category_id, created_by) "
+            "VALUES (?, ?, ?, 'SplitCat', ?, 'cli')",
+            ["spl-test01234", "txn-split", "10.00", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "splits" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_rule(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("RuleCat")
+        db.execute(
+            "INSERT INTO app.categorization_rules "
+            "(rule_id, name, merchant_pattern, match_type, "
+            " category, category_id) "
+            "VALUES (?, 'Rule Test', 'pattern', 'contains', 'RuleCat', ?)",
+            ["rul-test01234", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "rules" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_proposed_rule(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ProposedCat")
+        db.execute(
+            "INSERT INTO app.proposed_rules "
+            "(proposed_rule_id, merchant_pattern, match_type, "
+            " category, category_id, status) "
+            "VALUES (?, 'pattern', 'contains', 'ProposedCat', ?, 'pending')",
+            ["pro-test01234", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "proposed rules" in str(exc_info.value)
 
     @pytest.mark.unit
     def test_force_cascades_transaction_references(self, db: Database) -> None:
@@ -933,9 +998,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("ForceCat")
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES (?, ?, 'user')",
-            ["txn-force", "ForceCat"],
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-force", "ForceCat", cat_id],
         )
         svc.delete_category(cat_id, force=True)
 
@@ -959,9 +1024,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("BudgetForceCat")
         db.execute(
             "INSERT INTO app.budgets "
-            "(budget_id, category, monthly_amount, start_month) "
-            "VALUES (?, ?, ?, ?)",
-            ["bdg-force", "BudgetForceCat", "100.00", "2026-01"],
+            "(budget_id, category, category_id, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ["bdg-force", "BudgetForceCat", cat_id, "100.00", "2026-01"],
         )
         svc.delete_category(cat_id, force=True)
 
@@ -973,17 +1038,124 @@ class TestDeleteCategory:
         )
 
     @pytest.mark.unit
+    def test_force_cascades_merchant_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("MerchForceCat")
+        db.execute(
+            "INSERT INTO app.user_merchants "
+            "(merchant_id, raw_pattern, match_type, canonical_name, "
+            " category, category_id, created_by) "
+            "VALUES (?, ?, 'contains', ?, 'MerchForceCat', ?, 'user')",
+            ["mer-force01234", "starbucks", "Starbucks", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_merchants WHERE merchant_id = ?",
+                ["mer-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_split_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("SplitForceCat")
+        db.execute(
+            "INSERT INTO app.transaction_splits "
+            "(split_id, transaction_id, amount, category, category_id, created_by) "
+            "VALUES (?, ?, ?, 'SplitForceCat', ?, 'cli')",
+            ["spl-force01234", "txn-split-f", "10.00", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_splits WHERE split_id = ?",
+                ["spl-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_rule_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("RuleForceCat")
+        db.execute(
+            "INSERT INTO app.categorization_rules "
+            "(rule_id, name, merchant_pattern, match_type, "
+            " category, category_id) "
+            "VALUES (?, 'Rule Force', 'pattern', 'contains', 'RuleForceCat', ?)",
+            ["rul-force01234", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.categorization_rules WHERE rule_id = ?",
+                ["rul-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_proposed_rule_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ProposedForceCat")
+        db.execute(
+            "INSERT INTO app.proposed_rules "
+            "(proposed_rule_id, merchant_pattern, match_type, "
+            " category, category_id, status) "
+            "VALUES (?, 'pattern', 'contains', 'ProposedForceCat', ?, 'pending')",
+            ["pro-force01234", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.proposed_rules WHERE proposed_rule_id = ?",
+                ["pro-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
     def test_subcategory_match_is_exact(self, db: Database) -> None:
         """Deleting (Childcare/Daycare) must not touch (Childcare/Preschool) refs."""
         svc = CategorizationService(db)
         cat_id = svc.create_category("Childcare", subcategory="Daycare")
-        svc.create_category("Childcare", subcategory="Preschool")
+        preschool_id = svc.create_category("Childcare", subcategory="Preschool")
 
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, subcategory, categorized_by) "
-            "VALUES (?, ?, ?, 'user')",
-            ["txn-preschool", "Childcare", "Preschool"],
+            "(transaction_id, category, subcategory, category_id, categorized_by) "
+            "VALUES (?, ?, ?, ?, 'user')",
+            ["txn-preschool", "Childcare", "Preschool", preschool_id],
         )
         svc.delete_category(cat_id)
 
@@ -1016,11 +1188,13 @@ class TestDeleteCategory:
         """
         svc = CategorizationService(db)
         cat_id = svc.create_category("Untouchable")
-        # Seed an unrelated row that shares no text with Untouchable.
+        other_id = svc.create_category("OtherCat")
+        # Seed an unrelated row that references OtherCat (not Untouchable).
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES ('txn-bystander', 'OtherCat', 'user')"
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-bystander", "OtherCat", other_id],
         )
         svc.delete_category(cat_id)
         # The bystander row must still be present — force=False didn't run
@@ -1031,31 +1205,8 @@ class TestDeleteCategory:
         ).fetchall() == [(1,)]
 
     @pytest.mark.unit
-    def test_force_refuses_on_text_collision(self, db: Database) -> None:
-        """force=True must refuse when another taxonomy row shares the text.
-
-        Phase 1 text-FK guard. Two user categories with the same
-        (category, subcategory) text legitimately coexist (V015 dropped the
-        UNIQUE constraint); a force-delete cannot disambiguate referencing
-        rows by category_id today, so refuse rather than clobber both.
-        """
-        svc = CategorizationService(db)
-        first_id = svc.create_category("Twin")
-        # Directly insert a colliding user_category — bypasses create_category's
-        # service-layer duplicate check to simulate the post-V015 collision
-        # case the Phase 1 guard exists to catch.
-        db.execute(
-            "INSERT INTO app.user_categories "
-            "(category_id, category, subcategory, is_active) "
-            "VALUES ('TWIN00000002', 'Twin', NULL, true)"
-        )
-        with pytest.raises(UserError) as exc_info:
-            svc.delete_category(first_id, force=True)
-        assert exc_info.value.code == "CATEGORY_TEXT_COLLISION"
-
-    @pytest.mark.unit
     def test_cascade_is_atomic(self, db: Database) -> None:
-        """All three DELETEs run inside a single transaction.
+        """All cascade DELETEs run inside a single transaction.
 
         Guards against the half-applied cascade where transaction_categories
         gets deleted but user_categories doesn't (leaving orphaned snapshot
@@ -1067,8 +1218,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("AtomicCat")
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES ('txn-atomic', 'AtomicCat', 'user')"
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-atomic", "AtomicCat", cat_id],
         )
         svc.delete_category(cat_id, force=True)
         assert (
