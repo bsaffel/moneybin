@@ -17,7 +17,8 @@ from moneybin.services.budget_service import (
     BudgetSetResult,
     BudgetStatusResult,
 )
-from tests.moneybin.db_helpers import create_core_tables_raw
+from moneybin.services.categorization import CategorizationService
+from tests.moneybin.db_helpers import create_core_tables_raw, seed_categories_view
 
 
 @pytest.fixture()
@@ -175,3 +176,31 @@ class TestEmptyResults:
         result = service.status(month="2026-04")
         assert isinstance(result, BudgetStatusResult)
         assert result.categories == []
+
+
+class TestSetBudgetCategoryIdResolution:
+    """Phase 1 dual-write: set_budget INSERT populates category_id."""
+
+    @pytest.mark.unit
+    def test_known_category_resolves_to_category_id(self, budget_db: Database) -> None:
+        seed_categories_view(budget_db)
+        cat_id = CategorizationService(budget_db).create_category("Hobbies")
+        BudgetService(budget_db).set_budget(
+            "Hobbies", Decimal("100.00"), start_month="2026-05"
+        )
+        row = budget_db.execute(
+            "SELECT category_id FROM app.budgets WHERE category = 'Hobbies'"
+        ).fetchone()
+        assert row == (cat_id,)
+
+    @pytest.mark.unit
+    def test_orphan_text_stays_null(self, budget_db: Database) -> None:
+        seed_categories_view(budget_db)
+        BudgetService(budget_db).set_budget(
+            "NeverDefined", Decimal("50.00"), start_month="2026-05"
+        )
+        row = budget_db.execute(
+            "SELECT category, category_id FROM app.budgets "
+            "WHERE category = 'NeverDefined'"
+        ).fetchone()
+        assert row == ("NeverDefined", None)

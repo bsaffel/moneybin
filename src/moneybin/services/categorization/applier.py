@@ -45,13 +45,16 @@ from moneybin.services.categorization._shared import (
     CategorizationRuleInput,
     InternalMatchType,
     priority_case_sql,
+    resolve_category_id,
 )
 from moneybin.tables import (
     BUDGETS,
     CATEGORIES,
     CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
+    PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
+    TRANSACTION_SPLITS,
     USER_CATEGORIES,
     USER_MERCHANTS,
 )
@@ -188,19 +191,21 @@ class MatchApplier:
         non-user write must route through :meth:`write_categorization`.
         """
         prior = self._fetch_category_row(transaction_id)
+        category_id = resolve_category_id(self._db, category, subcategory)
         self._db.conn.execute(
             f"""
             INSERT INTO {TRANSACTION_CATEGORIES.full_name}
-              (transaction_id, category, subcategory,
+              (transaction_id, category, subcategory, category_id,
                categorized_at, categorized_by)
-            VALUES (?, ?, ?, NOW(), ?)
+            VALUES (?, ?, ?, ?, NOW(), ?)
             ON CONFLICT (transaction_id) DO UPDATE SET
                 category = EXCLUDED.category,
                 subcategory = EXCLUDED.subcategory,
+                category_id = EXCLUDED.category_id,
                 categorized_at = NOW(),
                 categorized_by = EXCLUDED.categorized_by
             """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
-            [transaction_id, category, subcategory, categorized_by],
+            [transaction_id, category, subcategory, category_id, categorized_by],
         )
         after = {
             "category": category,
@@ -291,12 +296,14 @@ class MatchApplier:
         # DuckDB binds Python lists to VARCHAR[]. An empty list keeps the
         # column default semantics intact for non-exemplar merchants.
         exemplars_param: list[str] = list(exemplars) if exemplars else []
+        category_id = resolve_category_id(self._db, category, subcategory)
         self._db.execute(
             f"""
             INSERT INTO {USER_MERCHANTS.full_name}
             (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, created_by, exemplars, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+             category, subcategory, category_id, created_by, exemplars,
+             updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
             [
                 merchant_id,
@@ -305,6 +312,7 @@ class MatchApplier:
                 canonical_name,
                 category,
                 subcategory,
+                category_id,
                 created_by,
                 exemplars_param,
             ],
@@ -452,14 +460,22 @@ class MatchApplier:
                     rule_ids.append(found[0])
                     continue
                 rule_id = uuid.uuid4().hex[:12]
+                # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+                # `None` is a permitted write — orphaned text is a real state
+                # during the dual-write window. Dedup posture is unchanged:
+                # text remains the canonical comparator for "same rule" in
+                # Phase 1.
+                category_id = resolve_category_id(
+                    self._db, item.category, item.subcategory
+                )
                 self._db.execute(
                     f"""
                     INSERT INTO {CATEGORIZATION_RULES.full_name}
                     (rule_id, name, merchant_pattern, match_type,
                      min_amount, max_amount, account_id,
-                     category, subcategory, priority, is_active,
+                     category, subcategory, category_id, priority, is_active,
                      created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
                             'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,  # noqa: S608  # TableRef constant, no user input interpolated
                     [
@@ -472,6 +488,7 @@ class MatchApplier:
                         item.account_id,
                         item.category,
                         item.subcategory,
+                        category_id,
                         item.priority,
                     ],
                 )
@@ -542,51 +559,48 @@ class MatchApplier:
     ) -> str:
         """Create a custom user category (active by default).
 
-        Top-level duplicate detection uses an explicit pre-check because
-        DuckDB's UNIQUE constraint treats NULL as distinct. The
-        check-then-insert shape is safe under MoneyBin's single-process,
-        single-writer connection model — see ``database.py`` for the rationale.
+        Duplicate-text detection scans the full resolved taxonomy in
+        ``core.dim_categories`` (seeds ∪ ``app.user_categories``), not just
+        ``app.user_categories``, so a user cannot create a row whose
+        ``(category, subcategory)`` text collides with a seeded default.
+        Permitting such a collision would make ``resolve_category_id`` pick
+        between two equally-matching dim rows arbitrarily, binding writer
+        FKs to one or the other across calls. V015 relaxed
+        ``app.user_categories``'s ``UNIQUE (category, subcategory)``
+        constraint — the ``category_id`` PK is now the sole DB-enforced
+        uniqueness contract; the cross-source check happens here.
 
         Raises:
             UserError(code="CATEGORY_ALREADY_EXISTS"): the
                 ``(category, subcategory)`` pair is already present in
-                ``app.user_categories``.
+                ``core.dim_categories`` (either as a seeded default or a
+                prior user-created row).
         """
-        # DuckDB treats NULL != NULL in UNIQUE constraints, so a top-level
-        # category (subcategory IS NULL) can be inserted multiple times without
-        # raising ConstraintException. Guard explicitly for that case.
-        if subcategory is None:
-            existing = self._db.execute(
-                f"""
-                SELECT 1 FROM {USER_CATEGORIES.full_name}
-                WHERE category = ? AND subcategory IS NULL
-                LIMIT 1
-                """,  # noqa: S608  # TableRef constant, no user input interpolated
-                [category],
-            ).fetchone()
-            if existing:
-                raise UserError(
-                    f"Category already exists: {category}",
-                    code="CATEGORY_ALREADY_EXISTS",
-                )
-
-        category_id = uuid.uuid4().hex[:12]
-        try:
-            self._db.execute(
-                f"""
-                INSERT INTO {USER_CATEGORIES.full_name}
-                (category_id, category, subcategory, description,
-                 is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,  # noqa: S608  # TableRef constant, no user input interpolated
-                [category_id, category, subcategory, description],
-            )
-        except duckdb.ConstraintException:
+        existing = self._db.execute(
+            f"""
+            SELECT 1 FROM {CATEGORIES.full_name}
+            WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?
+            LIMIT 1
+            """,  # noqa: S608  # TableRef constant, no user input interpolated
+            [category, subcategory],
+        ).fetchone()
+        if existing:
             sub = f" / {subcategory}" if subcategory else ""
             raise UserError(
                 f"Category already exists: {category}{sub}",
                 code="CATEGORY_ALREADY_EXISTS",
-            ) from None
+            )
+
+        category_id = uuid.uuid4().hex[:12]
+        self._db.execute(
+            f"""
+            INSERT INTO {USER_CATEGORIES.full_name}
+            (category_id, category, subcategory, description,
+             is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,  # noqa: S608  # TableRef constant, no user input interpolated
+            [category_id, category, subcategory, description],
+        )
         return category_id
 
     def toggle_category(self, category_id: str, *, is_active: bool) -> None:
@@ -632,34 +646,39 @@ class MatchApplier:
     def delete_category(self, category_id: str, *, force: bool = False) -> None:
         """Hard-delete a user-created category.
 
-        Refuses by default if the category is referenced by any rows in
-        ``app.transaction_categories`` (matched on the same
-        ``(category, subcategory)`` pair) or ``app.budgets`` (top-level
-        ``category`` text match — only relevant when deleting a top-level
-        user category). With ``force=True``, deletes referencing rows in
-        both tables before removing the ``app.user_categories`` row;
-        affected transactions return to the uncategorized state (no row
-        in ``app.transaction_categories``), mirroring ``clear_category``.
+        Reference check and cascade both use ``category_id`` FK matching across
+        six tables: ``app.transaction_categories``, ``app.budgets``,
+        ``app.user_merchants``, ``app.transaction_splits``,
+        ``app.categorization_rules``, and ``app.proposed_rules``. With
+        ``force=False`` (default) the call refuses when any of those tables
+        carries a row with this ``category_id``; with ``force=True`` rows in
+        all six tables are deleted before the ``app.user_categories`` row
+        itself is removed.
 
-        Default (seeded) categories cannot be hard-deleted — operators
-        disable them via :meth:`toggle_category` so that
-        ``app.category_overrides`` records the deactivation without
-        destroying the canonical taxonomy row.
+        ``app.rule_deactivations`` is intentionally excluded from the cascade:
+        it is audit-trail data and historical rows must survive category
+        deletion. Its ``new_category_id`` becomes an unresolvable FK by design,
+        preserving the "what was once true" semantic of the audit log.
+
+        Default (seeded) categories cannot be hard-deleted — operators disable
+        them via :meth:`toggle_category` so that ``app.category_overrides``
+        records the deactivation without destroying the canonical taxonomy row.
 
         Args:
             category_id: ID of the user-created category to delete.
-            force: If True, cascade-delete referencing transaction and
-                budget rows; if False, refuse when references exist.
+            force: If True, cascade-delete referencing rows across the six
+                tables above; if False, refuse when references exist.
 
         Raises:
             UserError(code="CATEGORY_NOT_FOUND"): no category with this ID.
-            UserError(code="CATEGORY_IS_DEFAULT"): seeded default
-                categories cannot be hard-deleted; use ``toggle_category``.
+            UserError(code="CATEGORY_IS_DEFAULT"): seeded default categories
+                cannot be hard-deleted; use ``toggle_category``.
             UserError(code="CATEGORY_HAS_REFERENCES"): force=False and the
-                category is referenced by transactions or budgets.
+                category is referenced by at least one of the six tracked
+                tables.
         """
         existing = self._db.execute(
-            f"SELECT category, subcategory FROM {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT 1 FROM {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
             f"WHERE category_id = ?",
             [category_id],
         ).fetchone()
@@ -679,72 +698,52 @@ class MatchApplier:
                 f"Category {category_id} not found",
                 code="CATEGORY_NOT_FOUND",
             )
-        category_name, subcategory_name = existing
-
-        # Budgets only carry top-level category — subcategory rows can't block
-        # them, and cascade must not touch budgets when deleting a subcategory.
-        check_budgets = subcategory_name is None
-
-        # Phase 1 text-FK guard: with force=True, cascade DELETEs match
-        # referencing rows by (category, subcategory) text. If another taxonomy
-        # row (a seeded default or a second user_category) shares the same text,
-        # we would silently uncategorize transactions and budgets that belong to
-        # it. Refuse to cascade when ambiguity exists; the Phase 2 category_id
-        # FK migration removes this risk (see private/plans/2026-05-17-
-        # category-id-fk-migration.md).
-        if force:
-            collision_row = self._db.execute(
-                f"SELECT COUNT(*) FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-                f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ? "
-                f"  AND category_id != ?",
-                [category_name, subcategory_name, category_id],
-            ).fetchone()
-            if collision_row and collision_row[0]:
-                raise UserError(
-                    f"Cannot force-delete category {category_id}: another "
-                    f"taxonomy row shares the same (category, subcategory) "
-                    f"text. Cascade would clobber unrelated references.",
-                    code="CATEGORY_TEXT_COLLISION",
-                )
 
         if not force:
             refs_row = self._db.execute(
                 f"SELECT "
-                f"  EXISTS(SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-                f"         WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?), "
-                f"  CASE WHEN ? THEN "
-                f"    EXISTS(SELECT 1 FROM {BUDGETS.full_name} WHERE category = ?) "
-                f"  ELSE FALSE END",
-                [category_name, subcategory_name, check_budgets, category_name],
+                f"  EXISTS(SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} WHERE category_id = ?), "  # noqa: S608  # TableRef constants
+                f"  EXISTS(SELECT 1 FROM {BUDGETS.full_name} WHERE category_id = ?), "
+                f"  EXISTS(SELECT 1 FROM {USER_MERCHANTS.full_name} WHERE category_id = ?), "
+                f"  EXISTS(SELECT 1 FROM {TRANSACTION_SPLITS.full_name} WHERE category_id = ?), "
+                f"  EXISTS(SELECT 1 FROM {CATEGORIZATION_RULES.full_name} WHERE category_id = ?), "
+                f"  EXISTS(SELECT 1 FROM {PROPOSED_RULES.full_name} WHERE category_id = ?)",
+                [category_id] * 6,
             ).fetchone()
-            has_txn_refs = bool(refs_row and refs_row[0])
-            has_budget_refs = bool(refs_row and refs_row[1])
-            if has_txn_refs or has_budget_refs:
+            labels = (
+                "transactions",
+                "budgets",
+                "merchants",
+                "splits",
+                "rules",
+                "proposed rules",
+            )
+            present = [
+                label
+                for label, flag in zip(labels, refs_row or (), strict=True)
+                if flag
+            ]
+            if present:
                 raise UserError(
                     f"Category {category_id} is referenced by "
-                    + " and ".join(
-                        label
-                        for label, present in (
-                            ("transactions", has_txn_refs),
-                            ("budgets", has_budget_refs),
-                        )
-                        if present
-                    )
+                    + ", ".join(present)
                     + "; pass force=True to cascade-delete.",
                     code="CATEGORY_HAS_REFERENCES",
                 )
 
         with self._transaction():
             if force:
-                self._db.execute(
-                    f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-                    f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",
-                    [category_name, subcategory_name],
-                )
-                if check_budgets:
+                for table_const in (
+                    TRANSACTION_CATEGORIES,
+                    BUDGETS,
+                    USER_MERCHANTS,
+                    TRANSACTION_SPLITS,
+                    CATEGORIZATION_RULES,
+                    PROPOSED_RULES,
+                ):
                     self._db.execute(
-                        f"DELETE FROM {BUDGETS.full_name} WHERE category = ?",  # noqa: S608  # TableRef constant
-                        [category_name],
+                        f"DELETE FROM {table_const.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
+                        [category_id],
                     )
             self._db.execute(
                 f"DELETE FROM {USER_CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
@@ -795,15 +794,19 @@ class MatchApplier:
         existing_table = TRANSACTION_CATEGORIES.full_name
         excluded_priority = priority_case_sql("EXCLUDED.categorized_by")
         existing_priority = priority_case_sql(f"{existing_table}.categorized_by")
+        # FK is paired with text on identical precedence terms: same WHERE guard
+        # admits both, same ON CONFLICT overwrites both.
+        category_id = resolve_category_id(self._db, category, subcategory)
         cursor = self._db.execute(
             f"""
             INSERT INTO {existing_table}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, merchant_id, rule_id, confidence)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+                (transaction_id, category, subcategory, category_id,
+                 categorized_at, categorized_by, merchant_id, rule_id, confidence)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
             ON CONFLICT (transaction_id) DO UPDATE SET
                 category = EXCLUDED.category,
                 subcategory = EXCLUDED.subcategory,
+                category_id = EXCLUDED.category_id,
                 categorized_at = EXCLUDED.categorized_at,
                 categorized_by = EXCLUDED.categorized_by,
                 merchant_id = EXCLUDED.merchant_id,
@@ -816,6 +819,7 @@ class MatchApplier:
                 transaction_id,
                 category,
                 subcategory,
+                category_id,
                 categorized_by,
                 merchant_id,
                 rule_id,

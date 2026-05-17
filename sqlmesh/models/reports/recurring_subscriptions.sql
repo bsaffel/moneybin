@@ -16,11 +16,13 @@ WITH eligible AS (
     t.amount,
     t.transaction_date
   FROM core.fct_transactions AS t
-  INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
-  WHERE t.amount < 0
+  INNER JOIN core.dim_accounts AS a
+    ON t.account_id = a.account_id
+  WHERE
+    t.amount < 0
     AND NOT t.is_transfer
     AND NOT a.archived
-    AND t.transaction_date >= current_date - INTERVAL '18 months'
+    AND t.transaction_date >= CURRENT_DATE - INTERVAL '18' MONTHS
 ), with_intervals AS (
   /* LAG partitions include account_id so two accounts paying the same
      merchant for the same amount are treated as separate subscriptions —
@@ -50,18 +52,27 @@ WITH eligible AS (
     MIN(transaction_date) AS first_seen,
     MAX(transaction_date) AS last_seen
   FROM with_intervals
-  GROUP BY account_id, merchant_normalized, amount_bucket
-  HAVING COUNT(*) >= 3
+  GROUP BY
+    account_id,
+    merchant_normalized,
+    amount_bucket
+  HAVING
+    COUNT(*) >= 3
 )
 SELECT
   merchant_normalized, /* Normalized merchant string */
   avg_amount, /* Mean absolute charge */
   CASE
-    WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2 THEN 'weekly'
-    WHEN interval_days_avg BETWEEN 12 AND 16 AND interval_days_stddev < 3 THEN 'biweekly'
-    WHEN interval_days_avg BETWEEN 27 AND 33 AND interval_days_stddev < 4 THEN 'monthly'
-    WHEN interval_days_avg BETWEEN 85 AND 95 AND interval_days_stddev < 7 THEN 'quarterly'
-    WHEN interval_days_avg BETWEEN 355 AND 375 AND interval_days_stddev < 14 THEN 'yearly'
+    WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2
+    THEN 'weekly'
+    WHEN interval_days_avg BETWEEN 12 AND 16 AND interval_days_stddev < 3
+    THEN 'biweekly'
+    WHEN interval_days_avg BETWEEN 27 AND 33 AND interval_days_stddev < 4
+    THEN 'monthly'
+    WHEN interval_days_avg BETWEEN 85 AND 95 AND interval_days_stddev < 7
+    THEN 'quarterly'
+    WHEN interval_days_avg BETWEEN 355 AND 375 AND interval_days_stddev < 14
+    THEN 'yearly'
     ELSE 'irregular'
   END AS cadence, /* weekly | biweekly | monthly | quarterly | yearly | irregular */
   interval_days_avg, /* Mean days between consecutive charges */
@@ -70,19 +81,27 @@ SELECT
   first_seen, /* Earliest charge in this cluster */
   last_seen, /* Most recent charge */
   CASE
-    WHEN current_date - last_seen <= GREATEST(60, interval_days_avg * 2) THEN 'active'
+    WHEN CURRENT_DATE - last_seen <= GREATEST(60, interval_days_avg * 2)
+    THEN 'active'
     ELSE 'inactive'
   END AS status, /* 'active' if last_seen is within max(60 days, 2× cadence) — scales for yearly/quarterly */
   CASE
-    WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2 THEN avg_amount * 52
-    WHEN interval_days_avg BETWEEN 12 AND 16 AND interval_days_stddev < 3 THEN avg_amount * 26
-    WHEN interval_days_avg BETWEEN 27 AND 33 AND interval_days_stddev < 4 THEN avg_amount * 12
-    WHEN interval_days_avg BETWEEN 85 AND 95 AND interval_days_stddev < 7 THEN avg_amount * 4
-    WHEN interval_days_avg BETWEEN 355 AND 375 AND interval_days_stddev < 14 THEN avg_amount * 1
-    WHEN interval_days_avg > 0 THEN avg_amount * (365.25 / interval_days_avg)
+    WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2
+    THEN avg_amount * 52
+    WHEN interval_days_avg BETWEEN 12 AND 16 AND interval_days_stddev < 3
+    THEN avg_amount * 26
+    WHEN interval_days_avg BETWEEN 27 AND 33 AND interval_days_stddev < 4
+    THEN avg_amount * 12
+    WHEN interval_days_avg BETWEEN 85 AND 95 AND interval_days_stddev < 7
+    THEN avg_amount * 4
+    WHEN interval_days_avg BETWEEN 355 AND 375 AND interval_days_stddev < 14
+    THEN avg_amount * 1
+    WHEN interval_days_avg > 0
+    THEN avg_amount * (
+      365.25 / interval_days_avg
+    )
     ELSE NULL
   END AS annualized_cost, /* Estimated yearly cost based on cadence */
-  LEAST(1.0, occurrence_count / 6.0)
-    * GREATEST(0.0, 1.0 - LEAST(1.0, COALESCE(interval_days_stddev, 14.0) / 14.0)) AS confidence
-    /* 0.0-1.0; saturates at 1.0 with >=6 occurrences and 0 variance */
+  LEAST(1.0, occurrence_count / 6.0) * GREATEST(0.0, 1.0 - LEAST(1.0, COALESCE(interval_days_stddev, 14.0) / 14.0)) AS confidence
+/* 0.0-1.0; saturates at 1.0 with >=6 occurrences and 0 variance */
 FROM grouped

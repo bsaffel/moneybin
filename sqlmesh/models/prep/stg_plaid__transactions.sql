@@ -7,7 +7,7 @@ SELECT
   transaction_id,
   account_id,
   transaction_date AS posted_date,
-  -1 * amount AS amount, -- Flip Plaid (positive = expense) → MoneyBin (negative = expense)
+  -1 * amount AS amount, /* Flip Plaid (positive = expense) → MoneyBin (negative = expense) */
   TRIM(description) AS description,
   TRIM(merchant_name) AS merchant_name,
   category AS plaid_category,

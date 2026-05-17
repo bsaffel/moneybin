@@ -1,6 +1,5 @@
 /* Confirmed transfer pairs linking two fct_transactions rows;
-   derived from app.match_decisions where match_type = 'transfer' */
--- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
+   derived from app.match_decisions where match_type = 'transfer' */ /* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */
 MODEL (
   name core.bridge_transfers,
   kind VIEW,

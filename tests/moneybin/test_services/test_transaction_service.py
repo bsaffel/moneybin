@@ -716,6 +716,109 @@ class TestSplits:
         assert txn_service.list_splits("nope") == []
 
 
+class TestSplitsDualWrite:
+    """Phase 1 dual-write: split writers populate category_id from (category, subcategory)."""
+
+    @pytest.fixture()
+    def audit_service(self, transaction_db: Database) -> AuditService:
+        return AuditService(transaction_db)
+
+    @pytest.fixture()
+    def txn_service(
+        self, transaction_db: Database, audit_service: AuditService
+    ) -> TransactionService:
+        return TransactionService(transaction_db, audit=audit_service)
+
+    @pytest.fixture()
+    def sample_transaction_id(self) -> str:
+        return "T1"
+
+    @pytest.mark.unit
+    def test_add_split_populates_category_id(
+        self,
+        txn_service: TransactionService,
+        transaction_db: Database,
+        sample_transaction_id: str,
+    ) -> None:
+        from moneybin.services.categorization import CategorizationService
+        from tests.moneybin.db_helpers import seed_categories_view
+
+        seed_categories_view(transaction_db)
+        cat_id = CategorizationService(transaction_db).create_category("Hobbies")
+        split = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-15.00"),
+            category="Hobbies",
+            actor="cli",
+        )
+        row = transaction_db.conn.execute(
+            "SELECT category_id FROM app.transaction_splits WHERE split_id = ?",
+            [split.split_id],
+        ).fetchone()
+        assert row == (cat_id,)
+
+    @pytest.mark.unit
+    def test_add_split_without_category_leaves_fk_null(
+        self,
+        txn_service: TransactionService,
+        transaction_db: Database,
+        sample_transaction_id: str,
+    ) -> None:
+        split = txn_service.add_split(
+            sample_transaction_id,
+            Decimal("-7.50"),
+            category=None,
+            subcategory=None,
+            note="cash back",
+            actor="cli",
+        )
+        row = transaction_db.conn.execute(
+            "SELECT category, category_id FROM app.transaction_splits "
+            "WHERE split_id = ?",
+            [split.split_id],
+        ).fetchone()
+        assert row == (None, None)
+
+    @pytest.mark.unit
+    def test_set_splits_populates_category_id_per_row(
+        self,
+        txn_service: TransactionService,
+        transaction_db: Database,
+        sample_transaction_id: str,
+    ) -> None:
+        from moneybin.services.categorization import CategorizationService
+        from tests.moneybin.db_helpers import seed_categories_view
+
+        seed_categories_view(transaction_db)
+        cat_id = CategorizationService(transaction_db).create_category("Hobbies")
+        result = txn_service.set_splits(
+            sample_transaction_id,
+            [
+                {
+                    "amount": Decimal("-20.00"),
+                    "category": "Hobbies",
+                    "subcategory": None,
+                    "note": None,
+                },
+                {
+                    "amount": Decimal("-30.00"),
+                    "category": None,
+                    "subcategory": None,
+                    "note": "uncategorized",
+                },
+            ],
+            actor="mcp",
+        )
+        rows = transaction_db.conn.execute(
+            "SELECT category, category_id FROM app.transaction_splits "
+            "WHERE transaction_id = ? ORDER BY ord",
+            [sample_transaction_id],
+        ).fetchall()
+        assert rows == [("Hobbies", cat_id), (None, None)]
+        # `set_splits` returns Split rows in the same ord sequence; sanity-check.
+        assert [s.category for s in result] == ["Hobbies", None]
+
+
 class TestManualEntry:
     """Tests for ``TransactionService.create_manual_batch`` (Task 7a)."""
 

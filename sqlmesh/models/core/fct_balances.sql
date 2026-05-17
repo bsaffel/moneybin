@@ -25,7 +25,8 @@ WITH ofx_balances AS (
     source_file AS source_ref,
     loaded_at AS updated_at
   FROM prep.stg_tabular__transactions
-  WHERE balance IS NOT NULL
+  WHERE
+    NOT balance IS NULL
 ), user_assertions AS (
   SELECT
     account_id,
@@ -45,6 +46,20 @@ SELECT
   updated_at /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
 FROM ofx_balances
 UNION ALL
-SELECT account_id, balance_date, balance, source_type, source_ref, updated_at FROM tabular_balances
+SELECT
+  account_id,
+  balance_date,
+  balance,
+  source_type,
+  source_ref,
+  updated_at
+FROM tabular_balances
 UNION ALL
-SELECT account_id, balance_date, balance, source_type, source_ref, updated_at FROM user_assertions
+SELECT
+  account_id,
+  balance_date,
+  balance,
+  source_type,
+  source_ref,
+  updated_at
+FROM user_assertions

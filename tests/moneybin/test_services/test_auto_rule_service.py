@@ -17,6 +17,7 @@ from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
+from moneybin.services.categorization import CategorizationService
 from moneybin.tables import PROPOSED_RULES
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -486,3 +487,129 @@ def test_manual_user_category_does_not_count_as_override(
         "SELECT is_active FROM app.categorization_rules WHERE created_by = 'auto_rule'"
     ).fetchone()
     assert active_row == (True,)
+
+
+class TestPromoteProposedRuleDualWrite:
+    """Phase 1 dual-write: approving a proposal populates category_id on the rule."""
+
+    def test_promoted_rule_carries_category_id(self, real_db: Database) -> None:
+        cat_id = CategorizationService(real_db).create_category("PromoteMe")
+        _seed_transaction(real_db, "t_promote")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t_promote", "PromoteMe")
+        assert pid is not None
+
+        result = svc.accept(accept=[pid])
+        assert result.approved == 1
+        rule_id = result.rule_ids[0]
+
+        row = real_db.execute(
+            "SELECT category, category_id FROM app.categorization_rules "
+            "WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row == ("PromoteMe", cat_id)
+
+
+class TestRuleDeactivationDualWrite:
+    """Phase 1 dual-write: override-threshold deactivation records new_category_id."""
+
+    def test_deactivation_row_carries_new_category_id(
+        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+        clear_settings_cache()
+        monkeypatch.setattr(config_module, "_current_profile", None)
+        monkeypatch.setattr(config_module, "_current_settings", None)
+        set_current_profile("test")
+
+        # Pre-create the converged category so we can assert on its ID.
+        groceries_id = CategorizationService(real_db).create_category("Groceries")
+
+        # Approve an auto-rule for STARBUCKS -> Food & Drink.
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+        svc.accept(accept=[pid])
+
+        # Two user overrides correcting STARBUCKS to Groceries — meets the
+        # threshold and triggers the deactivation path that writes
+        # rule_deactivations.
+        for tid in ("t10", "t11"):
+            real_db.execute(
+                "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
+                [tid],
+            )
+            real_db.execute(
+                "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
+                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+                [tid],
+            )
+
+        assert svc.check_overrides() == 1
+
+        row = real_db.execute(
+            "SELECT new_category, new_subcategory, new_category_id "
+            "FROM app.rule_deactivations"
+        ).fetchone()
+        assert row == ("Groceries", None, groceries_id)
+
+
+class TestProposedRulesDualWrite:
+    """Phase 1 dual-write: proposed_rules writers populate category_id."""
+
+    def test_proposed_rule_carries_category_id(self, real_db: Database) -> None:
+        """Initial detection via record_categorization stores the resolved FK."""
+        cat_id = CategorizationService(real_db).create_category("Food & Drink")
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+
+        row = real_db.execute(
+            f"SELECT category, category_id FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE proposed_rule_id = ?",
+            [pid],
+        ).fetchone()
+        assert row == ("Food & Drink", cat_id)
+
+    def test_re_proposed_rule_on_deactivation_carries_category_id(
+        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Override-threshold re-proposal stores category_id on the new row."""
+        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+        clear_settings_cache()
+        monkeypatch.setattr(config_module, "_current_profile", None)
+        monkeypatch.setattr(config_module, "_current_settings", None)
+        set_current_profile("test")
+
+        groceries_id = CategorizationService(real_db).create_category("Groceries")
+
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+        svc.accept(accept=[pid])
+
+        for tid in ("t10", "t11"):
+            real_db.execute(
+                "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
+                [tid],
+            )
+            real_db.execute(
+                "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
+                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+                [tid],
+            )
+
+        assert svc.check_overrides() == 1
+
+        # The newly-created re-proposal is the row with category = Groceries.
+        row = real_db.execute(
+            f"SELECT category, subcategory, category_id FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE category = 'Groceries'"
+        ).fetchone()
+        assert row == ("Groceries", None, groceries_id)

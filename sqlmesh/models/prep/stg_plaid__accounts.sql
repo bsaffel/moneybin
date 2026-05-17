@@ -5,10 +5,10 @@ MODEL (
 
 SELECT
   account_id,
-  NULL::VARCHAR AS routing_number,
+  NULL::TEXT AS routing_number,
   account_type,
   institution_name,
-  NULL::VARCHAR AS institution_fid,
+  NULL::TEXT AS institution_fid,
   official_name,
   mask,
   account_subtype,

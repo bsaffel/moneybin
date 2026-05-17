@@ -637,6 +637,254 @@ class TestToggleCategory:
         assert exc_info.value.code == "CATEGORY_NOT_FOUND"
 
 
+class TestResolveCategoryId:
+    """The shared resolve_category_id helper used by every writer."""
+
+    @pytest.mark.unit
+    def test_resolves_user_category(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ResolveMe", subcategory="Sub")
+
+        assert resolve_category_id(db, "ResolveMe", "Sub") == cat_id
+
+    @pytest.mark.unit
+    def test_resolves_default_category(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        # The module's `db` fixture doesn't seed defaults; seed FND here so the
+        # core.dim_categories view exposes it.
+        seed_categories_view(db)
+        assert resolve_category_id(db, "Food & Drink", None) == "FND"
+
+    @pytest.mark.unit
+    def test_returns_none_for_unknown_text(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        assert resolve_category_id(db, "NeverDefined", None) is None
+
+    @pytest.mark.unit
+    def test_null_subcategory_matches_null(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("TopLevel")  # subcategory IS NULL
+
+        assert resolve_category_id(db, "TopLevel", None) == cat_id
+
+    @pytest.mark.unit
+    def test_null_does_not_match_non_null(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        svc = CategorizationService(db)
+        svc.create_category("HasSub", subcategory="Specific")
+
+        assert resolve_category_id(db, "HasSub", None) is None
+
+
+class TestWriteCategorizationDualWrite:
+    """Phase 1 dual-write: write_categorization + set_category_in_active_txn populate category_id."""
+
+    @pytest.mark.unit
+    def test_write_categorization_populates_category_id(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("Dual")
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-dual', -50, '2026-05-01')"
+        )
+        svc.write_categorization(
+            transaction_id="txn-dual",
+            category="Dual",
+            subcategory=None,
+            categorized_by="user",
+        )
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-dual'"
+        ).fetchone()
+        assert row == (cat_id,)
+
+    @pytest.mark.unit
+    def test_write_categorization_orphan_text_stays_null(self, db: Database) -> None:
+        """Unresolvable category text writes a row with category_id IS NULL."""
+        svc = CategorizationService(db)
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-orphan', -25, '2026-05-01')"
+        )
+        svc.write_categorization(
+            transaction_id="txn-orphan",
+            category="NeverDefined",
+            subcategory=None,
+            categorized_by="ai",
+            confidence=0.5,
+        )
+        row = db.execute(
+            "SELECT category_id, category FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-orphan'"
+        ).fetchone()
+        assert row == (None, "NeverDefined")
+
+    @pytest.mark.unit
+    def test_write_categorization_updates_category_id_on_conflict(
+        self, db: Database
+    ) -> None:
+        """ON CONFLICT DO UPDATE must replace category_id alongside text."""
+        svc = CategorizationService(db)
+        svc.create_category("First")
+        second = svc.create_category("Second")
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-conflict', -10, '2026-05-01')"
+        )
+        svc.write_categorization(
+            transaction_id="txn-conflict",
+            category="First",
+            subcategory=None,
+            categorized_by="ai",
+            confidence=0.4,
+        )
+        svc.write_categorization(
+            transaction_id="txn-conflict",
+            category="Second",
+            subcategory=None,
+            categorized_by="user",
+        )
+        row = db.execute(
+            "SELECT category, category_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-conflict'"
+        ).fetchone()
+        assert row == ("Second", second)
+
+    @pytest.mark.unit
+    def test_set_category_in_active_txn_populates_category_id(
+        self, db: Database
+    ) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ActiveTxn")
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-active', -75, '2026-05-01')"
+        )
+        svc.set_category(
+            "txn-active",
+            category="ActiveTxn",
+            subcategory=None,
+            actor="test-user",
+        )
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-active'"
+        ).fetchone()
+        assert row == (cat_id,)
+
+
+class TestCreateRulesDualWrite:
+    """Phase 1 dual-write: create_rules populates category_id on categorization_rules."""
+
+    @pytest.mark.unit
+    def test_create_rules_populates_category_id(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("RulesCat")
+        result = svc.create_rules([
+            CategorizationRuleInput(
+                name="Resolved rule",
+                merchant_pattern="RULESCAT-PATTERN",
+                category="RulesCat",
+            )
+        ])
+        rule_id = result.rule_ids[0]
+        row = db.execute(
+            "SELECT category, category_id FROM app.categorization_rules "
+            "WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row == ("RulesCat", cat_id)
+
+    @pytest.mark.unit
+    def test_create_rules_unresolved_text_leaves_fk_null(self, db: Database) -> None:
+        """Unresolvable category text stores the text snapshot with category_id NULL."""
+        svc = CategorizationService(db)
+        result = svc.create_rules([
+            CategorizationRuleInput(
+                name="Orphan rule",
+                merchant_pattern="ORPHAN-PATTERN",
+                category="NeverDefined",
+            )
+        ])
+        rule_id = result.rule_ids[0]
+        row = db.execute(
+            "SELECT category, category_id FROM app.categorization_rules "
+            "WHERE rule_id = ?",
+            [rule_id],
+        ).fetchone()
+        assert row == ("NeverDefined", None)
+
+
+class TestCreateMerchantDualWrite:
+    """Phase 1 dual-write: create_merchant populates category_id on user_merchants."""
+
+    @pytest.mark.unit
+    def test_create_merchant_populates_category_id(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("Coffee")
+        merchant_id = svc.create_merchant(
+            raw_pattern="STARBUCKS",
+            canonical_name="Starbucks",
+            match_type="contains",
+            category="Coffee",
+            subcategory=None,
+            created_by="user",
+        )
+        row = db.execute(
+            "SELECT category_id FROM app.user_merchants WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert row == (cat_id,)
+
+    @pytest.mark.unit
+    def test_create_merchant_without_category_leaves_fk_null(
+        self, db: Database
+    ) -> None:
+        """Merchants created without a default category have NULL text and NULL FK."""
+        svc = CategorizationService(db)
+        merchant_id = svc.create_merchant(
+            raw_pattern="UNCATEGORIZED PATTERN",
+            canonical_name="No-Category Merchant",
+            match_type="contains",
+            created_by="user",
+        )
+        row = db.execute(
+            "SELECT category, category_id FROM app.user_merchants "
+            "WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert row == (None, None)
+
+    @pytest.mark.unit
+    def test_create_merchant_with_unresolved_text_leaves_fk_null(
+        self, db: Database
+    ) -> None:
+        """Unresolvable category text stores the text snapshot with category_id NULL."""
+        svc = CategorizationService(db)
+        merchant_id = svc.create_merchant(
+            raw_pattern="MYSTERY MERCHANT",
+            canonical_name="Mystery Merchant",
+            match_type="contains",
+            category="NeverDefined",
+            subcategory=None,
+            created_by="ai",
+        )
+        row = db.execute(
+            "SELECT category, category_id FROM app.user_merchants "
+            "WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert row == ("NeverDefined", None)
+
+
 class TestDeleteCategory:
     """CategorizationService.delete_category — hard-delete with refuse/cascade."""
 
@@ -657,13 +905,14 @@ class TestDeleteCategory:
         cat_id = svc.create_category("LinkedCat")
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES (?, ?, 'user')",
-            ["txn-test", "LinkedCat"],
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-test", "LinkedCat", cat_id],
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
         assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "transactions" in str(exc_info.value)
 
     @pytest.mark.unit
     def test_refuses_when_referenced_by_budget(self, db: Database) -> None:
@@ -671,13 +920,77 @@ class TestDeleteCategory:
         cat_id = svc.create_category("BudgetCat")
         db.execute(
             "INSERT INTO app.budgets "
-            "(budget_id, category, monthly_amount, start_month) "
-            "VALUES (?, ?, ?, ?)",
-            ["bdg-test", "BudgetCat", "200.00", "2026-01"],
+            "(budget_id, category, category_id, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ["bdg-test", "BudgetCat", cat_id, "200.00", "2026-01"],
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
         assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "budgets" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_merchant(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("MerchCat")
+        db.execute(
+            "INSERT INTO app.user_merchants "
+            "(merchant_id, raw_pattern, match_type, canonical_name, "
+            " category, category_id, created_by) "
+            "VALUES (?, ?, 'contains', ?, 'MerchCat', ?, 'user')",
+            ["mer-test01234", "starbucks", "Starbucks", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "merchants" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_split(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("SplitCat")
+        db.execute(
+            "INSERT INTO app.transaction_splits "
+            "(split_id, transaction_id, amount, category, category_id, created_by) "
+            "VALUES (?, ?, ?, 'SplitCat', ?, 'cli')",
+            ["spl-test01234", "txn-split", "10.00", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "splits" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_rule(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("RuleCat")
+        db.execute(
+            "INSERT INTO app.categorization_rules "
+            "(rule_id, name, merchant_pattern, match_type, "
+            " category, category_id) "
+            "VALUES (?, 'Rule Test', 'pattern', 'contains', 'RuleCat', ?)",
+            ["rul-test01234", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "rules" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_proposed_rule(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ProposedCat")
+        db.execute(
+            "INSERT INTO app.proposed_rules "
+            "(proposed_rule_id, merchant_pattern, match_type, "
+            " category, category_id, status) "
+            "VALUES (?, 'pattern', 'contains', 'ProposedCat', ?, 'pending')",
+            ["pro-test01234", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "proposed rules" in str(exc_info.value)
 
     @pytest.mark.unit
     def test_force_cascades_transaction_references(self, db: Database) -> None:
@@ -685,9 +998,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("ForceCat")
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES (?, ?, 'user')",
-            ["txn-force", "ForceCat"],
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-force", "ForceCat", cat_id],
         )
         svc.delete_category(cat_id, force=True)
 
@@ -711,9 +1024,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("BudgetForceCat")
         db.execute(
             "INSERT INTO app.budgets "
-            "(budget_id, category, monthly_amount, start_month) "
-            "VALUES (?, ?, ?, ?)",
-            ["bdg-force", "BudgetForceCat", "100.00", "2026-01"],
+            "(budget_id, category, category_id, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ["bdg-force", "BudgetForceCat", cat_id, "100.00", "2026-01"],
         )
         svc.delete_category(cat_id, force=True)
 
@@ -725,17 +1038,124 @@ class TestDeleteCategory:
         )
 
     @pytest.mark.unit
+    def test_force_cascades_merchant_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("MerchForceCat")
+        db.execute(
+            "INSERT INTO app.user_merchants "
+            "(merchant_id, raw_pattern, match_type, canonical_name, "
+            " category, category_id, created_by) "
+            "VALUES (?, ?, 'contains', ?, 'MerchForceCat', ?, 'user')",
+            ["mer-force01234", "starbucks", "Starbucks", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_merchants WHERE merchant_id = ?",
+                ["mer-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_split_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("SplitForceCat")
+        db.execute(
+            "INSERT INTO app.transaction_splits "
+            "(split_id, transaction_id, amount, category, category_id, created_by) "
+            "VALUES (?, ?, ?, 'SplitForceCat', ?, 'cli')",
+            ["spl-force01234", "txn-split-f", "10.00", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_splits WHERE split_id = ?",
+                ["spl-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_rule_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("RuleForceCat")
+        db.execute(
+            "INSERT INTO app.categorization_rules "
+            "(rule_id, name, merchant_pattern, match_type, "
+            " category, category_id) "
+            "VALUES (?, 'Rule Force', 'pattern', 'contains', 'RuleForceCat', ?)",
+            ["rul-force01234", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.categorization_rules WHERE rule_id = ?",
+                ["rul-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_proposed_rule_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ProposedForceCat")
+        db.execute(
+            "INSERT INTO app.proposed_rules "
+            "(proposed_rule_id, merchant_pattern, match_type, "
+            " category, category_id, status) "
+            "VALUES (?, 'pattern', 'contains', 'ProposedForceCat', ?, 'pending')",
+            ["pro-force01234", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.proposed_rules WHERE proposed_rule_id = ?",
+                ["pro-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
     def test_subcategory_match_is_exact(self, db: Database) -> None:
         """Deleting (Childcare/Daycare) must not touch (Childcare/Preschool) refs."""
         svc = CategorizationService(db)
         cat_id = svc.create_category("Childcare", subcategory="Daycare")
-        svc.create_category("Childcare", subcategory="Preschool")
+        preschool_id = svc.create_category("Childcare", subcategory="Preschool")
 
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, subcategory, categorized_by) "
-            "VALUES (?, ?, ?, 'user')",
-            ["txn-preschool", "Childcare", "Preschool"],
+            "(transaction_id, category, subcategory, category_id, categorized_by) "
+            "VALUES (?, ?, ?, ?, 'user')",
+            ["txn-preschool", "Childcare", "Preschool", preschool_id],
         )
         svc.delete_category(cat_id)
 
@@ -768,11 +1188,13 @@ class TestDeleteCategory:
         """
         svc = CategorizationService(db)
         cat_id = svc.create_category("Untouchable")
-        # Seed an unrelated row that shares no text with Untouchable.
+        other_id = svc.create_category("OtherCat")
+        # Seed an unrelated row that references OtherCat (not Untouchable).
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES ('txn-bystander', 'OtherCat', 'user')"
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-bystander", "OtherCat", other_id],
         )
         svc.delete_category(cat_id)
         # The bystander row must still be present — force=False didn't run
@@ -783,31 +1205,8 @@ class TestDeleteCategory:
         ).fetchall() == [(1,)]
 
     @pytest.mark.unit
-    def test_force_refuses_on_text_collision(self, db: Database) -> None:
-        """force=True must refuse when another taxonomy row shares the text.
-
-        Phase 1 text-FK guard. Two user categories with the same
-        (category, subcategory) text legitimately coexist (V015 dropped the
-        UNIQUE constraint); a force-delete cannot disambiguate referencing
-        rows by category_id today, so refuse rather than clobber both.
-        """
-        svc = CategorizationService(db)
-        first_id = svc.create_category("Twin")
-        # Directly insert a colliding user_category — bypasses create_category's
-        # service-layer duplicate check to simulate the post-V015 collision
-        # case the Phase 1 guard exists to catch.
-        db.execute(
-            "INSERT INTO app.user_categories "
-            "(category_id, category, subcategory, is_active) "
-            "VALUES ('TWIN00000002', 'Twin', NULL, true)"
-        )
-        with pytest.raises(UserError) as exc_info:
-            svc.delete_category(first_id, force=True)
-        assert exc_info.value.code == "CATEGORY_TEXT_COLLISION"
-
-    @pytest.mark.unit
     def test_cascade_is_atomic(self, db: Database) -> None:
-        """All three DELETEs run inside a single transaction.
+        """All cascade DELETEs run inside a single transaction.
 
         Guards against the half-applied cascade where transaction_categories
         gets deleted but user_categories doesn't (leaving orphaned snapshot
@@ -819,8 +1218,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("AtomicCat")
         db.execute(
             "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES ('txn-atomic', 'AtomicCat', 'user')"
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-atomic", "AtomicCat", cat_id],
         )
         svc.delete_category(cat_id, force=True)
         assert (

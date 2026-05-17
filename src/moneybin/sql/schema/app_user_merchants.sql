@@ -6,8 +6,9 @@ CREATE TABLE IF NOT EXISTS app.user_merchants (
     raw_pattern VARCHAR, -- match pattern; NULL when merchant is exemplar-only (match_type='oneOf')
     match_type VARCHAR NOT NULL DEFAULT 'oneOf', -- 'exact' | 'contains' | 'regex' | 'oneOf'
     canonical_name VARCHAR NOT NULL, -- display name; LLM-proposed for created_by='ai'
-    category VARCHAR, -- default category (joined to core.dim_categories)
-    subcategory VARCHAR, -- default subcategory
+    category VARCHAR, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
+    subcategory VARCHAR, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
+    category_id VARCHAR, -- Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows or merchants with no default category
     created_by VARCHAR NOT NULL, -- 'user' | 'ai' | 'rule' | 'plaid' | 'migration'
     exemplars VARCHAR[] DEFAULT [], -- exact match_text values for oneOf set-membership lookup
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- when this entry was added

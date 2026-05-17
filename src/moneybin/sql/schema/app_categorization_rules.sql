@@ -7,8 +7,9 @@ CREATE TABLE IF NOT EXISTS app.categorization_rules (
     min_amount DECIMAL(18, 2), -- Lower bound (absolute value) for amount matching; NULL means no lower bound
     max_amount DECIMAL(18, 2), -- Upper bound (absolute value) for amount matching; NULL means no upper bound
     account_id VARCHAR, -- Restricts rule to a specific account; NULL means rule applies to all accounts
-    category VARCHAR NOT NULL, -- Category to assign when this rule matches
-    subcategory VARCHAR, -- Subcategory to assign when this rule matches; NULL if no subcategory applies
+    category VARCHAR NOT NULL, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference. NOT NULL retained until Phase 2 drops the column.
+    subcategory VARCHAR, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
+    category_id VARCHAR, -- Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows
     priority INTEGER DEFAULT 100, -- Evaluation order; lower number = higher priority. Default 100; use lower values for more specific rules
     is_active BOOLEAN DEFAULT true, -- False for rules that have been disabled without being deleted
     created_by VARCHAR DEFAULT 'user', -- Who created the rule: user (manually entered) or ai (LLM-suggested)

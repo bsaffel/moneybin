@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -136,27 +137,34 @@ class BudgetService:
         result = self._db.execute(check_sql, [category, start_month, start_month])
         existing = result.fetchone()
 
+        # Budgets are top-level only (no subcategory column), so resolve against
+        # the top-level dim row by passing None on the subcategory axis.
+        category_id = resolve_category_id(self._db, category, None)
         if existing:
-            # Update existing budget
+            # Re-resolve on update so a NULL FK from V014's backfill window heals
+            # the first time the user touches this budget after creating the
+            # matching user_category.
             update_sql = f"""
                 UPDATE {BUDGETS.full_name}
                 SET monthly_amount = ?,
+                    category_id = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE budget_id = ?
             """
-            self._db.execute(update_sql, [monthly_amount, str(existing[0])])
+            self._db.execute(
+                update_sql, [monthly_amount, category_id, str(existing[0])]
+            )
             action = "updated"
         else:
-            # Create new budget
             budget_id = uuid.uuid4().hex[:12]
             insert_sql = f"""
                 INSERT INTO {BUDGETS.full_name}
-                    (budget_id, category, monthly_amount, start_month)
-                VALUES (?, ?, ?, ?)
+                    (budget_id, category, category_id, monthly_amount, start_month)
+                VALUES (?, ?, ?, ?, ?)
             """
             self._db.execute(
                 insert_sql,
-                [budget_id, category, monthly_amount, start_month],
+                [budget_id, category, category_id, monthly_amount, start_month],
             )
             action = "created"
 

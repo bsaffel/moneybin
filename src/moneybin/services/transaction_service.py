@@ -21,6 +21,7 @@ from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._validators import validate_note_text, validate_slug
 from moneybin.services.audit_service import AuditService
+from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
@@ -994,12 +995,14 @@ class TransactionService:
                 [transaction_id],
             ).fetchone()
             next_ord = int(ord_row[0]) if ord_row is not None else 0
+            category_id = resolve_category_id(self._db, category, subcategory)
             params: list[Any] = [
                 split_id,
                 transaction_id,
                 amount,
                 category,
                 subcategory,
+                category_id,
                 note,
                 next_ord,
                 actor,
@@ -1008,8 +1011,8 @@ class TransactionService:
                 """
                 INSERT INTO app.transaction_splits
                     (split_id, transaction_id, amount, category, subcategory,
-                     note, ord, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     category_id, note, ord, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 params,
             )
@@ -1177,12 +1180,16 @@ class TransactionService:
                 )
             for ord_idx, s in enumerate(prepared):
                 split_id = uuid.uuid4().hex[:12]
+                # Resolve FK per row — each split has its own (possibly empty) category.
+                category_id = resolve_category_id(
+                    self._db, s["category"], s["subcategory"]
+                )
                 self._db.conn.execute(
                     """
                     INSERT INTO app.transaction_splits
                         (split_id, transaction_id, amount, category, subcategory,
-                         note, ord, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         category_id, note, ord, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         split_id,
@@ -1190,6 +1197,7 @@ class TransactionService:
                         s["amount"],
                         s["category"],
                         s["subcategory"],
+                        category_id,
                         s["note"],
                         ord_idx,
                         actor,

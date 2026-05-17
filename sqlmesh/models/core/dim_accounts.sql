@@ -1,8 +1,7 @@
 /* Canonical accounts dimension; deduplicated accounts from all sources, with
    user-controlled settings (display_name, archive, include_in_net_worth, Plaid-
    parity metadata) joined in as the single resolved source of truth.
-   Per .claude/rules/database.md, no consumer joins app.account_settings directly. */
--- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
+   Per .claude/rules/database.md, no consumer joins app.account_settings directly. */ /* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */
 MODEL (
   name core.dim_accounts,
   kind FULL,
@@ -36,28 +35,38 @@ WITH ofx_accounts AS (
 ), plaid_accounts AS (
   SELECT
     account_id,
-    NULL::VARCHAR AS routing_number,
+    NULL::TEXT AS routing_number,
     account_type,
     institution_name,
-    NULL::VARCHAR AS institution_fid,
+    NULL::TEXT AS institution_fid,
     'plaid' AS source_type,
     source_file,
     extracted_at,
     loaded_at
   FROM prep.stg_plaid__accounts
 ), all_accounts AS (
-  SELECT * FROM ofx_accounts
+  SELECT
+    *
+  FROM ofx_accounts
   UNION ALL
-  SELECT * FROM tabular_accounts
+  SELECT
+    *
+  FROM tabular_accounts
   UNION ALL
-  SELECT * FROM plaid_accounts
+  SELECT
+    *
+  FROM plaid_accounts
 ), deduplicated AS (
   SELECT
     *,
     ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY extracted_at DESC) AS _row_num
   FROM all_accounts
 ), winners AS (
-  SELECT * FROM deduplicated WHERE _row_num = 1
+  SELECT
+    *
+  FROM deduplicated
+  WHERE
+    _row_num = 1
 )
 SELECT
   w.account_id, /* Unique account identifier; stable across imports; foreign key in fct_transactions */
@@ -84,4 +93,5 @@ SELECT
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from agg_net_worth */
   COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth /* Whether this account contributes to agg_net_worth */
 FROM winners AS w
-LEFT JOIN app.account_settings AS s ON w.account_id = s.account_id
+LEFT JOIN app.account_settings AS s
+  ON w.account_id = s.account_id

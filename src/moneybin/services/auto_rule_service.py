@@ -26,6 +26,7 @@ from moneybin.services.categorization import (
     Merchant,
     matches_pattern,
 )
+from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
@@ -273,13 +274,18 @@ class AutoRuleService:
                 # ``pending`` without genuinely new evidence.
                 new_count = count if already_counted else count + 1
                 new_status = "pending" if new_count >= threshold else "tracking"
+                # Re-resolve to heal rows whose FK was NULL at V014 backfill
+                # time (target category created after the proposal first
+                # landed) — without this, later FK-based cascades miss them.
+                category_id = resolve_category_id(self._db, category, subcategory)
                 self._db.execute(
                     f"""
                     UPDATE {PROPOSED_RULES.full_name}
-                    SET trigger_count = ?, sample_txn_ids = ?, status = ?
+                    SET trigger_count = ?, sample_txn_ids = ?, status = ?,
+                        category_id = ?
                     WHERE proposed_rule_id = ?
                     """,
-                    [new_count, new_samples, new_status, proposed_rule_id],
+                    [new_count, new_samples, new_status, category_id, proposed_rule_id],
                 )
                 return proposed_rule_id
             # Different category: supersede the old proposal, fall through to create a new one
@@ -290,12 +296,13 @@ class AutoRuleService:
 
         proposed_rule_id = uuid.uuid4().hex[:12]
         initial_status = "pending" if threshold <= 1 else "tracking"
+        category_id = resolve_category_id(self._db, category, subcategory)
         self._db.execute(
             f"""
             INSERT INTO {PROPOSED_RULES.full_name}
             (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-             status, trigger_count, source, sample_txn_ids)
-            VALUES (?, ?, ?, ?, ?, ?, 1, 'pattern_detection', ?)
+             category_id, status, trigger_count, source, sample_txn_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pattern_detection', ?)
             """,
             [
                 proposed_rule_id,
@@ -303,6 +310,7 @@ class AutoRuleService:
                 match_type,
                 category,
                 subcategory,
+                category_id,
                 initial_status,
                 [transaction_id],
             ],
@@ -384,14 +392,20 @@ class AutoRuleService:
             # transaction so a partial failure (e.g., interrupt between steps)
             # cannot leave an active rule whose source proposal is still 'pending'
             # — which would let approve() create a duplicate rule on retry.
+            # Phase 1 dual-write: re-resolve the FK from the text snapshot at
+            # write time. The proposed_rule row carries its own `category_id`
+            # but it may have been NULL during V014 backfill if the target
+            # category didn't yet exist; the rule we are now promoting can
+            # find it.
+            category_id = resolve_category_id(self._db, category, subcategory)
             self._db.begin()
             try:
                 self._db.execute(
                     f"""
                     INSERT INTO {CATEGORIZATION_RULES.full_name}
                     (rule_id, name, merchant_pattern, match_type, category, subcategory,
-                     priority, is_active, created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                     category_id, priority, is_active, created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     [
                         rule_id,
@@ -400,6 +414,7 @@ class AutoRuleService:
                         match_type,
                         category,
                         subcategory,
+                        category_id,
                         settings.auto_rule_default_priority,
                     ],
                 )
@@ -561,6 +576,13 @@ class AutoRuleService:
                 "pending" if winning_count >= proposal_threshold else "tracking"
             )
             new_pid = uuid.uuid4().hex[:12]
+            # Phase 1 dual-write: resolve once, share across both writes so the
+            # re-proposal and the audit row agree on the FK in this transaction.
+            # Orphaned text is permitted — the join to dim_categories simply
+            # won't resolve for rows whose target category was later deleted.
+            new_category_id = resolve_category_id(
+                self._db, new_category, new_subcategory
+            )
             # Wrap deactivate + supersede + re-propose + audit in a single
             # transaction so a failure between steps cannot leave the rule
             # deactivated with no replacement proposal.
@@ -582,8 +604,8 @@ class AutoRuleService:
                     f"""
                     INSERT INTO {PROPOSED_RULES.full_name}
                     (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-                     status, trigger_count, source, sample_txn_ids)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pattern_detection', ?)
+                     category_id, status, trigger_count, source, sample_txn_ids)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pattern_detection', ?)
                     """,
                     [
                         new_pid,
@@ -591,6 +613,7 @@ class AutoRuleService:
                         rule_match_type,
                         new_category,
                         new_subcategory,
+                        new_category_id,
                         new_status,
                         winning_count,
                         sample_ids,
@@ -599,8 +622,8 @@ class AutoRuleService:
                 self._db.execute(
                     f"""
                     INSERT INTO {RULE_DEACTIVATIONS.full_name}
-                    (deactivation_id, rule_id, reason, override_count, new_category, new_subcategory)
-                    VALUES (?, ?, 'override_threshold', ?, ?, ?)
+                    (deactivation_id, rule_id, reason, override_count, new_category, new_subcategory, new_category_id)
+                    VALUES (?, ?, 'override_threshold', ?, ?, ?, ?)
                     """,
                     [
                         uuid.uuid4().hex[:12],
@@ -608,6 +631,7 @@ class AutoRuleService:
                         total_overrides,
                         new_category,
                         new_subcategory,
+                        new_category_id,
                     ],
                 )
                 self._db.commit()
