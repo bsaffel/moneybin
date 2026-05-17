@@ -43,16 +43,11 @@ def refresh_run(
             Defaults to None (full cascade). Steps execute in canonical
             order (match → transform → categorize) regardless of input
             order; dependencies enforce it (categorize reads SQLMesh-built
-            views). Pass ``["transform"]`` to run only SQLMesh apply — the
-            granular form formerly exposed as ``transform_apply``.
+            views). Pass ``["transform"]`` to run only SQLMesh apply.
 
     For SQLMesh-step granularity beyond apply (plan, validate, audit,
     per-step status), call ``transform_plan``, ``transform_validate``,
     ``transform_audit``, or ``transform_status`` directly.
-
-    This umbrella is symmetric with ``transactions_categorize_run(methods=...)``:
-    both accept a list parameter to scope which sub-operations execute,
-    both default to the full set, both raise on unknown member names.
     """
     # Widen Literal["match", "transform", "categorize"] to str at the service
     # boundary — list is invariant, so the narrower element type doesn't
@@ -94,17 +89,13 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "SQLMesh apply, deterministic categorization. The single "
         "always-visible entry point for refreshing derived tables (core.* "
         "and reports.*) from raw inputs. Idempotent — safe to retry. "
-        "Accepts an optional steps parameter "
-        "(list of 'match', 'transform', 'categorize') to scope which "
-        "sub-operations execute; defaults to the full cascade. "
-        "Steps always execute in canonical order (match → transform → "
-        "categorize) regardless of input order. Pass steps=['transform'] "
-        "to run SQLMesh apply alone — the granular form formerly exposed "
-        "as the standalone transform_apply tool. "
+        "Accepts optional steps (list of 'match', 'transform', 'categorize') "
+        "to scope which sub-operations execute; defaults to the full cascade. "
+        "Steps execute in canonical order (match → transform → categorize) "
+        "regardless of input order. "
         "Mutation surface: rebuilds core.* and reports.* views via SQLMesh "
         "and writes app.transaction_categories for newly-matched rules. "
         "No revert path; re-run after fixing inputs. "
-        "Symmetric with transactions_categorize_run(methods=...). "
         "For SQLMesh-step granularity beyond apply, call transform_plan, "
         "transform_validate, transform_audit, or transform_status directly.",
     )

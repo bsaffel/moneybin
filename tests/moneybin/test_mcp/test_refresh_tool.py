@@ -104,7 +104,9 @@ async def test_refresh_run_no_followup_hint_when_categorize_included() -> None:
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run()
-    assert not any("categorize'])" in a for a in envelope.actions)
+    assert not any(
+        "categorize" in a and "refresh_run" in a for a in envelope.actions
+    ), envelope.actions
 
 
 @pytest.mark.unit
