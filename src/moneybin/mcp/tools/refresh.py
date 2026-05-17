@@ -48,6 +48,10 @@ def refresh_run(
     For SQLMesh-step granularity beyond apply (plan, validate, audit,
     per-step status), call ``transform_plan``, ``transform_validate``,
     ``transform_audit``, or ``transform_status`` directly.
+
+    This umbrella is symmetric with ``transactions_categorize_run(methods=...)``:
+    both accept a list parameter to scope which sub-operations execute,
+    both default to the full set, both raise on unknown member names.
     """
     # Widen Literal["match", "transform", "categorize"] to str at the service
     # boundary — list is invariant, so the narrower element type doesn't
@@ -96,6 +100,7 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "Mutation surface: rebuilds core.* and reports.* views via SQLMesh "
         "and writes app.transaction_categories for newly-matched rules. "
         "No revert path; re-run after fixing inputs. "
+        "Symmetric with transactions_categorize_run(methods=...). "
         "For SQLMesh-step granularity beyond apply, call transform_plan, "
         "transform_validate, transform_audit, or transform_status directly.",
     )
