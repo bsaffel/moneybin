@@ -21,8 +21,10 @@ async def test_refresh_run_is_registered() -> None:
 @pytest.mark.unit
 async def test_refresh_run_returns_envelope_on_success() -> None:
     fake_result = MagicMock(applied=True, duration_seconds=4.2, error=None)
-    with patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result), \
-         patch("moneybin.mcp.tools.refresh.get_database") as get_db:
+    with (
+        patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
+        patch("moneybin.mcp.tools.refresh.get_database") as get_db,
+    ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run()
     assert envelope.data["applied"] is True
@@ -33,8 +35,10 @@ async def test_refresh_run_returns_envelope_on_success() -> None:
 @pytest.mark.unit
 async def test_refresh_run_surfaces_apply_error() -> None:
     fake_result = MagicMock(applied=False, duration_seconds=1.1, error="model boom")
-    with patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result), \
-         patch("moneybin.mcp.tools.refresh.get_database") as get_db:
+    with (
+        patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
+        patch("moneybin.mcp.tools.refresh.get_database") as get_db,
+    ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run()
     assert envelope.data["applied"] is False
