@@ -489,7 +489,11 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_balance_reconcile,
         "accounts_balance_reconcile",
-        "Days with non-zero reconciliation delta above threshold. "
+        "Show daily balance rows whose precomputed reconciliation_delta "
+        "exceeds the threshold (per-account, point-in-time). Reads "
+        "fct_balances_daily. For a per-assertion-date asserted-vs-computed "
+        "series with categorical drift status (drift / warning / clean / "
+        "no-data), use reports_balance_drift instead. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
