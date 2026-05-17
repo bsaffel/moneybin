@@ -52,7 +52,7 @@ class TestCategorizeToolRegistration:
         assert "transactions_categorize_rules" in names
         assert "merchants" in names
         assert "transactions_categorize_stats" in names
-        assert "transactions_categorize_pending_list" in names
+        assert "transactions_categorize_pending" in names
         assert "transactions_categorize_commit" in names
         assert "transactions_categorize_rules_create" in names
         assert "transactions_categorize_rules_delete" in names

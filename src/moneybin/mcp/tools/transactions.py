@@ -74,7 +74,7 @@ def transactions_review() -> ResponseEnvelope:
     """Return counts of pending reviews across both queues.
 
     Orientation tool: call this to decide which queue to drain first.
-    For categorize, fetch items via ``transactions_categorize_pending_list``.
+    For categorize, fetch items via ``transactions_categorize_pending``.
     Match review is CLI-only today (``moneybin transactions review --type
     matches``); a ``transactions_matches_pending`` MCP tool is planned.
     """
@@ -96,7 +96,7 @@ def transactions_review() -> ResponseEnvelope:
         },
         sensitivity="low",
         actions=[
-            "Use transactions_categorize_pending_list to fetch the categorize queue",
+            "Use transactions_categorize_pending to fetch the categorize queue",
             "For matches, run `moneybin transactions review --type matches` (CLI-only today)",
         ],
     )

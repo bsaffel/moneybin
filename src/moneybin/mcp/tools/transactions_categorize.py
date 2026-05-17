@@ -62,7 +62,7 @@ def transactions_categorize_stats() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
-def transactions_categorize_pending_list(
+def transactions_categorize_pending(
     limit: int = 50,
 ) -> ResponseEnvelope:
     """Find transactions that have not been categorized yet.
@@ -283,8 +283,8 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_categorize_pending_list,
-        "transactions_categorize_pending_list",
+        transactions_categorize_pending,
+        "transactions_categorize_pending",
         "Find transactions that have not been categorized yet. "
         "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Amounts are in the currency named by `summary.display_currency`.",
