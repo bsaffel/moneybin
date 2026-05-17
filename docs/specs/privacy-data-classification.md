@@ -56,11 +56,103 @@ suffix on existing `COMMENT ON COLUMN` strings.
 
 ## Classification Audit
 
-> **Pending:** populated by the audit step of the implementation plan.
-> Will list every `_id`-suffixed column in `core.*` and `app.*` (and
-> any other column whose class required judgment), with its assigned
-> `DataClass` and a one-sentence justification. This is the durable
-> reference for "why this class is what it is" arguments later.
+The columns below were reviewed individually because their name or
+origin made the classification non-obvious — every `_id`-suffixed
+column in `core.*` and `app.*` is listed, plus any other column whose
+class required judgment beyond the priority rules. The justification
+column records the reasoning so a future contributor can argue with it
+from context. The full registry lives in
+`src/moneybin/privacy/taxonomy.py`; this table only covers the entries
+that required a call.
+
+The audit was conducted by static enumeration of `sqlmesh/models/core/`
+and `src/moneybin/sql/schema/app_*.sql` — the keychain was unavailable
+in the sandbox, so a live `duckdb_columns()` enumeration could not be
+performed. Migrations through V013 were reviewed and do not add columns
+beyond what the schema files declare.
+
+### `_id`-suffixed columns
+
+| (schema, table) | column | class | justification |
+|---|---|---|---|
+| (app, account_settings) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID; PK that ties user settings to a real institution account. |
+| (app, audit_log) | audit_id | RECORD_ID | internal full UUID4 hex per `.claude/rules/identifiers.md`; not externally meaningful. |
+| (app, audit_log) | parent_audit_id | RECORD_ID | self-FK to `audit_id`; same class as the target. |
+| (app, audit_log) | target_id | RECORD_ID | references arbitrary internal IDs (transaction, rule, merchant); all are RECORD_ID-class in their home tables. |
+| (app, balance_assertions) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID; same value as `dim_accounts.account_id`. |
+| (app, budgets) | budget_id | RECORD_ID | 12-char truncated UUID4 per identifiers.md; app-created entity with no natural key. |
+| (app, categorization_rules) | account_id | ACCOUNT_IDENTIFIER | optional account-bound external ID restricting the rule. |
+| (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
+| (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
+| (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
+| (app, match_decisions) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID. |
+| (app, match_decisions) | account_id_b | ACCOUNT_IDENTIFIER | second account in a transfer pair; same class as account_id. |
+| (app, match_decisions) | match_id | RECORD_ID | internal UUID PK for the decision row. |
+| (app, match_decisions) | source_transaction_id_a | RECORD_ID | transaction-level external ID (FITID, Plaid transaction_id, content hash); transaction-bound, not account-bound — rule 1 third bullet. |
+| (app, match_decisions) | source_transaction_id_b | RECORD_ID | same as `_a`. |
+| (app, proposed_rules) | proposed_rule_id | RECORD_ID | 12-char truncated UUID4 per identifiers.md. |
+| (app, proposed_rules) | sample_txn_ids | RECORD_ID | LIST of internal transaction IDs; transaction-bound, not account-bound. |
+| (app, rule_deactivations) | deactivation_id | RECORD_ID | 12-char truncated UUID4. |
+| (app, rule_deactivations) | rule_id | RECORD_ID | soft reference to `categorization_rules.rule_id`. |
+| (app, transaction_categories) | merchant_id | RECORD_ID | 12-char truncated UUID4 from `app.user_merchants`. |
+| (app, transaction_categories) | rule_id | RECORD_ID | optional FK to `categorization_rules.rule_id`. |
+| (app, transaction_categories) | transaction_id | RECORD_ID | content-hash gold key per identifiers.md; transaction-bound. |
+| (app, transaction_notes) | note_id | RECORD_ID | 12-char truncated UUID4. |
+| (app, transaction_notes) | transaction_id | RECORD_ID | content-hash gold key. |
+| (app, transaction_splits) | split_id | RECORD_ID | 12-char truncated UUID4. |
+| (app, transaction_splits) | transaction_id | RECORD_ID | content-hash gold key. |
+| (app, transaction_tags) | transaction_id | RECORD_ID | content-hash gold key. |
+| (app, user_categories) | category_id | RECORD_ID | 12-char UUID hex assigned at creation; rule 9 says UUID4 `category_id` → RECORD_ID (distinct from the slug variant in `seeds.categories`). |
+| (app, user_merchants) | merchant_id | RECORD_ID | 12-char UUID hex from `uuid.uuid4().hex[:12]`. |
+| (core, bridge_transfers) | credit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |
+| (core, bridge_transfers) | debit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |
+| (core, bridge_transfers) | transfer_id | RECORD_ID | UUID; also FK to `app.match_decisions.match_id`. |
+| (core, dim_accounts) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID issued by the upstream institution; ties to a real account. |
+| (core, dim_categories) | category_id | CATEGORY | UNIONs seed (semantic slug) and `user_categories` (UUID4) rows; classified as CATEGORY because the view's role is categorical reference regardless of the underlying generator and the dominant population is slug-keyed seeds. |
+| (core, dim_merchants) | merchant_id | RECORD_ID | UUID hex per identifiers.md; thin view over `app.user_merchants`. |
+| (core, fct_balances) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID. |
+| (core, fct_balances_daily) | account_id | ACCOUNT_IDENTIFIER | FK to `dim_accounts.account_id`. |
+| (core, fct_transaction_lines) | account_id | ACCOUNT_IDENTIFIER | FK to `dim_accounts.account_id`. |
+| (core, fct_transaction_lines) | line_id | RECORD_ID | `'whole'` sentinel or `split_id` (truncated UUID4); never account-bound. |
+| (core, fct_transaction_lines) | transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`. |
+| (core, fct_transaction_lines) | transfer_pair_id | RECORD_ID | FK to `bridge_transfers.transfer_id`. |
+| (core, fct_transactions) | account_id | ACCOUNT_IDENTIFIER | same value as `dim_accounts.account_id`; "one concept, one column name" — same class everywhere. |
+| (core, fct_transactions) | pending_transaction_id | RECORD_ID | source-provided ID of the pending transaction this row resolved; transaction-bound, not account-bound. |
+| (core, fct_transactions) | transaction_id | RECORD_ID | content-hash gold key per identifiers.md. |
+| (core, fct_transactions) | transfer_pair_id | RECORD_ID | FK to `bridge_transfers.transfer_id`. |
+
+### Other judgment calls
+
+| (schema, table) | column | class | justification |
+|---|---|---|---|
+| (app, account_settings) | archived, include_in_net_worth | TXN_TYPE | account-level state flags; no `BOOLEAN_FLAG` class exists, TXN_TYPE is the closest LOW-tier categorical bucket. Same applies to the mirror columns on `core.dim_accounts`. |
+| (app, account_settings) | display_name | USER_NOTE | user-supplied free-text label; treat as user input rather than institution-supplied metadata. Same on `core.dim_accounts`. |
+| (app, account_settings) | holder_category | TXN_TYPE | `'personal' / 'business' / 'joint'` — low-cardinality categorical classifier. Same on `core.dim_accounts`. |
+| (app, account_settings) | last_four | INSTITUTION_ACCOUNT_NUMBER | last four digits of the account number; protecting the visible portion of the account number under the account-number class is the conservative read. Same on `core.dim_accounts`. |
+| (app, account_settings) | official_name | INSTITUTION | mirrors Plaid `official_name` (e.g. "Adv Plus Banking") — institution-side branding for the account, not a number; not actionable as an account-lookup key. |
+| (app, audit_log) | before_value, after_value | TXN_AMOUNT | JSON snapshots of mutated rows; can carry amounts, balances, descriptions — classified by the highest-sensitivity content they may contain. HIGH tier is conservative; revisit if a tighter scoping per-action emerges. |
+| (app, audit_log) | context_json | DESCRIPTION | freeform JSON for AI-call provenance and operational extras; treated as MEDIUM free-text. |
+| (app, balance_assertions) | notes | USER_NOTE | optional free-text note attached to a balance assertion. |
+| (app, budgets) | monthly_amount | TXN_AMOUNT | budget target dollar amount; not a transaction per se but matches the same HIGH-tier monetary sensitivity. |
+| (app, categorization_rules) | merchant_pattern | MERCHANT_NAME | pattern matched against transaction description; reveals which merchants the user tracks. Same on `proposed_rules` and `user_merchants.raw_pattern`. |
+| (app, categorization_rules) | name | USER_NOTE | human-readable rule label; user-authored free text. |
+| (app, imports) | labels | USER_NOTE | LIST of user-applied slug labels; user-authored, treat as USER_NOTE for parity with `transaction_tags.tag`. |
+| (app, match_decisions) | match_reason | USER_NOTE | human-readable explanation; may contain merchant or description hints. |
+| (app, metrics) | * | AGGREGATE / TXN_TYPE / TIMESTAMP_OBSERVABILITY | operational telemetry — Prometheus snapshots; numeric/label fields are AGGREGATE, type discriminator is TXN_TYPE, recorded_at is observability. |
+| (app, tabular_formats) | field_mapping, header_signature, skip_trailing_patterns | DESCRIPTION | JSON parse-configuration text; not transaction descriptions but free-text-shaped — MEDIUM tier is conservative. |
+| (app, transaction_notes) | text | USER_NOTE | by definition the user's free-form note. |
+| (app, transaction_splits) | amount | TXN_AMOUNT | per-split signed amount; rule 3 (`*_amount` on transaction tables). |
+| (app, transaction_splits) | note | USER_NOTE | optional per-split free-text note. |
+| (app, transaction_tags) | tag | USER_NOTE | user-authored slug; treated as USER_NOTE rather than CATEGORY since tags are not the canonical taxonomy. |
+| (app, versions) | component, version, previous_version | TXN_TYPE / RECORD_ID | system bookkeeping; `component` is a categorical identifier (`'moneybin'`, `'sqlmesh'`), version strings are opaque internal refs. |
+| (core, dim_accounts) | institution_fid | INSTITUTION | OFX financial-institution identifier; identifies the institution, not the account. |
+| (core, dim_accounts) | source_file | RECORD_ID | path of the source file; internal provenance, not an external identifier. |
+| (core, dim_categories) | description, plaid_detailed | CATEGORY | category metadata (definition text, Plaid PFC mapping); travels with the category, not with user transactions. |
+| (core, fct_transactions) | check_number | DESCRIPTION | identifies a payment instrument; not an account number, but reveals transaction detail beyond a type code — DESCRIPTION (MEDIUM) sits between low-tier types and account-bound IDs. |
+| (core, fct_transactions) | location_* (address, city, region, postal_code, country, latitude, longitude) | MERCHANT_NAME | merchant geographic detail; classified under MERCHANT_NAME because they describe the merchant the user transacted with, and inherit the same MEDIUM sensitivity. |
+| (core, fct_transactions) | memo | DESCRIPTION | additional source-provided notes on the transaction; rule 6 (free-text on transaction tables). |
+| (core, fct_transactions) | splits | TXN_AMOUNT | LIST of split STRUCTs; contains per-split `amount` (HIGH-tier). Classify by the highest-sensitivity component. |
+| (core, fct_transactions) | notes, tags | USER_NOTE | nested LIST aggregations of `app.transaction_notes` / `transaction_tags`; carry user-authored content. |
 
 ## Implementation Plan
 
