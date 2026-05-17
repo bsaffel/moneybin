@@ -156,8 +156,8 @@ def _collect_mcp_tool_names() -> set[str]:
 def _collect_cli_command_names() -> set[str]:
     """Walk the Typer command tree → underscore-joined canonical names.
 
-    ``moneybin transactions categorize apply`` →
-    ``transactions_categorize_apply``. Hyphens in command names are
+    ``moneybin transactions categorize commit`` →
+    ``transactions_categorize_commit``. Hyphens in command names are
     normalized to underscores (``list-tools`` → ``list_tools``) to match
     the MCP convention.
     """

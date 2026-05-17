@@ -65,7 +65,7 @@ class TestMCPServerBoot:
                 assert "accounts_list" in tool_names
                 assert "system_status" in tool_names
                 # Formerly extended-namespace tools must also be visible at connect:
-                assert "transactions_categorize_apply" in tool_names
+                assert "transactions_categorize_commit" in tool_names
 
     async def test_server_invokes_tool(self, mcp_env: dict[str, str]) -> None:
         """MCP server can invoke a tool and return a valid response envelope."""
