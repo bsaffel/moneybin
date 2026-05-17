@@ -125,7 +125,7 @@ class TestMCPServerBoot:
                     "accounts_get",
                     "accounts_summary",
                     "accounts_set",
-                    "accounts_balance_list",
+                    "accounts_balances",
                     "accounts_balance_history",
                     "accounts_balance_reconcile",
                     "accounts_balance_assertions_list",

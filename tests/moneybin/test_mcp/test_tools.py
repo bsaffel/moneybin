@@ -70,7 +70,7 @@ class TestToolRegistration:
         assert "accounts_summary" in names
         assert "accounts_set" in names
         # v2 balance tools
-        assert "accounts_balance_list" in names
+        assert "accounts_balances" in names
         assert "accounts_balance_history" in names
         assert "accounts_balance_reconcile" in names
         assert "accounts_balance_assertions_list" in names

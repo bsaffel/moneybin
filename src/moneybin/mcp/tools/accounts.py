@@ -10,7 +10,7 @@ Write tools (entity, all medium):
   - accounts_set
 
 Read tools (balance, contributed by net-worth.md):
-  - accounts_balance_list (medium)
+  - accounts_balances (medium)
   - accounts_balance_history (medium)
   - accounts_balance_reconcile (medium)
   - accounts_balance_assertions_list (medium)
@@ -206,7 +206,7 @@ def accounts_set(
 
 
 @mcp_tool(sensitivity="medium")
-def accounts_balance_list(
+def accounts_balances(
     account_ids: list[str] | None = None,
     as_of_date: str | None = None,
 ) -> ResponseEnvelope:
@@ -420,8 +420,8 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        accounts_balance_list,
-        "accounts_balance_list",
+        accounts_balances,
+        "accounts_balances",
         "Latest balance per account from fct_balances_daily (or as-of a date). "
         "Amounts are in the currency named by `summary.display_currency`.",
     )

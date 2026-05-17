@@ -32,7 +32,7 @@ def monthly_review() -> str:
         - reports_spending — monthly spending trend with MoM/YoY deltas
         - reports_cashflow — inflow/outflow/net per account x category
         - reports_budget — budget vs actual comparison
-        - accounts_balance_list — current account balances
+        - accounts_balances — current account balances
         - reports_recurring — subscription/recurring charge review
 
         **Workflow:**
@@ -41,7 +41,7 @@ def monthly_review() -> str:
            specific ``category`` filter, or use reports_cashflow for an
            account-and-category breakdown
         3. Check reports_budget for any categories over budget
-        4. Review accounts_balance_list for current position
+        4. Review accounts_balances for current position
         5. Optionally check reports_recurring for subscription review
 
         **Guardrails:**

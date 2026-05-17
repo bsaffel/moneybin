@@ -340,7 +340,7 @@ class AccountListResult:
             data=list(self.accounts),
             sensitivity=self.sensitivity,
             actions=[
-                "Use accounts_balance_list for current balances",
+                "Use accounts_balances for current balances",
                 "Use reports_spending with a category filter to drill in by account",
             ],
         )
