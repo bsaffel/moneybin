@@ -453,7 +453,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 - ~~`src/moneybin/sql/schema/app_merchant_overrides.sql`~~ (retired 2026-05-15)
 - `src/moneybin/mcp/tools/transactions_categorize_assist.py` — new MCP tool
 - `src/moneybin/cli/commands/categorize/export.py` — `export-uncategorized` command
-- `src/moneybin/cli/commands/categorize/apply_from_file.py` — `apply-from-file` command
+- `src/moneybin/cli/commands/transactions/categorize/commit_from_file.py` — `commit-from-file` command
 - `src/moneybin/cli/commands/privacy/redact.py` — `redact` CLI command
 - `tests/moneybin/test_redact_for_llm.py` — unit tests for redactor
 - `tests/moneybin/test_redact_fuzz.py` — fuzz tests for PII non-leakage
