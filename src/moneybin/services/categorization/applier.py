@@ -681,44 +681,41 @@ class MatchApplier:
             )
         category_name, subcategory_name = existing
 
-        # NULL subcategory matches the user_categories row only when the
-        # transaction_categories row's subcategory IS NULL too.
-        if subcategory_name is None:
-            txn_where = "category = ? AND subcategory IS NULL"
-            txn_params: list[object] = [category_name]
-        else:
-            txn_where = "category = ? AND subcategory = ?"
-            txn_params = [category_name, subcategory_name]
-
-        # Budgets only carry top-level category; subcategory-scoped user
-        # categories cannot block a budget delete.
+        # Budgets only carry top-level category — subcategory rows can't block
+        # them, and cascade must not touch budgets when deleting a subcategory.
         check_budgets = subcategory_name is None
 
         if not force:
-            txn_row = self._db.execute(
-                f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-                f"WHERE {txn_where}",
-                txn_params,
+            refs_row = self._db.execute(
+                f"SELECT "
+                f"  EXISTS(SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"         WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?), "
+                f"  CASE WHEN ? THEN "
+                f"    EXISTS(SELECT 1 FROM {BUDGETS.full_name} WHERE category = ?) "
+                f"  ELSE FALSE END",
+                [category_name, subcategory_name, check_budgets, category_name],
             ).fetchone()
-            txn_count = txn_row[0] if txn_row else 0
-            budget_count = 0
-            if check_budgets:
-                budget_row = self._db.execute(
-                    f"SELECT COUNT(*) FROM {BUDGETS.full_name} WHERE category = ?",  # noqa: S608  # TableRef constant
-                    [category_name],
-                ).fetchone()
-                budget_count = budget_row[0] if budget_row else 0
-            if txn_count or budget_count:
+            has_txn_refs = bool(refs_row and refs_row[0])
+            has_budget_refs = bool(refs_row and refs_row[1])
+            if has_txn_refs or has_budget_refs:
                 raise UserError(
-                    f"Category has {txn_count} transaction reference(s) "
-                    f"and {budget_count} budget reference(s); "
-                    f"pass force=True to cascade-delete.",
+                    f"Category {category_id} is referenced by "
+                    + " and ".join(
+                        label
+                        for label, present in (
+                            ("transactions", has_txn_refs),
+                            ("budgets", has_budget_refs),
+                        )
+                        if present
+                    )
+                    + "; pass force=True to cascade-delete.",
                     code="CATEGORY_HAS_REFERENCES",
                 )
 
         self._db.execute(
-            f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} WHERE {txn_where}",  # noqa: S608  # TableRef constant
-            txn_params,
+            f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+            f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",
+            [category_name, subcategory_name],
         )
         if check_budgets:
             self._db.execute(

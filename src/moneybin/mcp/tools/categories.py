@@ -93,21 +93,6 @@ def categories_delete(
 ) -> ResponseEnvelope:
     """Hard-delete a user-created category.
 
-    Refuses by default if the category is referenced by any rows in
-    app.transaction_categories (matched on category/subcategory text) or
-    app.budgets (top-level category text). Pass force=True to also delete
-    those referencing rows — affected transactions return to the
-    uncategorized state, mirroring transactions_categorize_clear.
-
-    Default (seeded) categories cannot be hard-deleted — use
-    categories_set with is_active=False to disable them so the canonical
-    taxonomy row is preserved.
-
-    Mutation surface: deletes the row from app.user_categories. With
-    force=True, also deletes referencing app.transaction_categories rows
-    and app.budgets rows tied to the same category name. No revert path —
-    recreate with categories_create if needed.
-
     Args:
         category_id: ID of the user-created category to delete.
         force: If True, cascade-delete referencing transaction and
