@@ -542,51 +542,43 @@ class MatchApplier:
     ) -> str:
         """Create a custom user category (active by default).
 
-        Top-level duplicate detection uses an explicit pre-check because
-        DuckDB's UNIQUE constraint treats NULL as distinct. The
-        check-then-insert shape is safe under MoneyBin's single-process,
-        single-writer connection model — see ``database.py`` for the rationale.
+        Duplicate-text detection is performed in the service layer using
+        ``IS NOT DISTINCT FROM`` for NULL-symmetric equality on
+        ``subcategory``. V015 relaxed ``app.user_categories``'s
+        ``UNIQUE (category, subcategory)`` constraint — the
+        ``category_id`` PK is now the sole DB-enforced uniqueness
+        contract.
 
         Raises:
             UserError(code="CATEGORY_ALREADY_EXISTS"): the
                 ``(category, subcategory)`` pair is already present in
                 ``app.user_categories``.
         """
-        # DuckDB treats NULL != NULL in UNIQUE constraints, so a top-level
-        # category (subcategory IS NULL) can be inserted multiple times without
-        # raising ConstraintException. Guard explicitly for that case.
-        if subcategory is None:
-            existing = self._db.execute(
-                f"""
-                SELECT 1 FROM {USER_CATEGORIES.full_name}
-                WHERE category = ? AND subcategory IS NULL
-                LIMIT 1
-                """,  # noqa: S608  # TableRef constant, no user input interpolated
-                [category],
-            ).fetchone()
-            if existing:
-                raise UserError(
-                    f"Category already exists: {category}",
-                    code="CATEGORY_ALREADY_EXISTS",
-                )
-
-        category_id = uuid.uuid4().hex[:12]
-        try:
-            self._db.execute(
-                f"""
-                INSERT INTO {USER_CATEGORIES.full_name}
-                (category_id, category, subcategory, description,
-                 is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,  # noqa: S608  # TableRef constant, no user input interpolated
-                [category_id, category, subcategory, description],
-            )
-        except duckdb.ConstraintException:
+        existing = self._db.execute(
+            f"""
+            SELECT 1 FROM {USER_CATEGORIES.full_name}
+            WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?
+            LIMIT 1
+            """,  # noqa: S608  # TableRef constant, no user input interpolated
+            [category, subcategory],
+        ).fetchone()
+        if existing:
             sub = f" / {subcategory}" if subcategory else ""
             raise UserError(
                 f"Category already exists: {category}{sub}",
                 code="CATEGORY_ALREADY_EXISTS",
-            ) from None
+            )
+
+        category_id = uuid.uuid4().hex[:12]
+        self._db.execute(
+            f"""
+            INSERT INTO {USER_CATEGORIES.full_name}
+            (category_id, category, subcategory, description,
+             is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,  # noqa: S608  # TableRef constant, no user input interpolated
+            [category_id, category, subcategory, description],
+        )
         return category_id
 
     def toggle_category(self, category_id: str, *, is_active: bool) -> None:

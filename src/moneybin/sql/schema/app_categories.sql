@@ -6,8 +6,7 @@ CREATE TABLE IF NOT EXISTS app.user_categories (
     description VARCHAR, -- Human-readable description of what transactions belong in this category
     is_active BOOLEAN DEFAULT true, -- False to soft-delete a user category without losing existing categorizations
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this category was added
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Latest of all per-row input timestamps contributing to this row's current values. Set on UPDATE by service writes.
-    UNIQUE (category, subcategory)
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Latest of all per-row input timestamps contributing to this row's current values. Set on UPDATE by service writes.
 );
 
 /* User overrides on default (seeded) categories — the only mutation users can make to defaults is deactivation */
