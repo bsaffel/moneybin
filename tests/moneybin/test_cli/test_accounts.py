@@ -212,13 +212,19 @@ class TestAccountsGet:
         )
 
 
-class TestAccountsRename:
-    """Tests for the accounts rename command."""
+class TestAccountsSetBehavioralFlags:
+    """Tests for the behavioral flags folded into `accounts set`.
+
+    Replaces the formerly-separate rename/include/archive/unarchive commands.
+    Each test asserts routing through `AccountService.settings_update` with
+    the expected kwargs — service-layer behavior is verified separately in
+    `tests/moneybin/test_services/test_account_service.py`.
+    """
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_rename_writes_display_name(
+    def test_set_display_name_writes(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
@@ -226,20 +232,45 @@ class TestAccountsRename:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
-        mock_service.rename.return_value = MagicMock(
-            display_name="Checking", account_id="acct_a"
+        mock_service.settings_update.return_value = (
+            MagicMock(display_name="Checking"),
+            [],
         )
         result = runner.invoke(
-            app, ["accounts", "rename", "acct_a", "Checking", "--yes"]
+            app, ["accounts", "set", "acct_a", "--display-name", "Checking"]
         )
         assert result.exit_code == 0, result.stderr
-        mock_service.rename.assert_called_once_with("acct_a", "Checking")
-        assert "Checking" in result.stderr or "Renamed" in result.stderr
+        kwargs = mock_service.settings_update.call_args.kwargs
+        assert kwargs["display_name"] == "Checking"
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_rename_with_empty_string(
+    def test_set_clear_display_name(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        from moneybin.services.account_service import CLEAR
+
+        mock_get_db.return_value = MagicMock()
+        mock_service = mock_svc_cls.return_value
+        mock_service.settings_update.return_value = (
+            MagicMock(display_name=None),
+            [],
+        )
+        result = runner.invoke(
+            app, ["accounts", "set", "acct_a", "--clear-display-name"]
+        )
+        assert result.exit_code == 0
+        kwargs = mock_service.settings_update.call_args.kwargs
+        assert kwargs["display_name"] is CLEAR
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_set_include_writes_true(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
@@ -247,26 +278,19 @@ class TestAccountsRename:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
-        mock_service.rename.return_value = MagicMock(
-            display_name=None, account_id="acct_a"
+        mock_service.settings_update.return_value = (
+            MagicMock(include_in_net_worth=True),
+            [],
         )
-        result = runner.invoke(app, ["accounts", "rename", "acct_a", "", "--yes"])
+        result = runner.invoke(app, ["accounts", "set", "acct_a", "--include"])
         assert result.exit_code == 0
-        # Service called with empty string — service handles the clearing
-        mock_service.rename.assert_called_once_with("acct_a", "")
-        # Verify the output shows the cleared state
-        assert (
-            "<cleared>" in result.stderr.lower() or "cleared" in result.stderr.lower()
-        )
-
-
-class TestAccountsInclude:
-    """Tests for the accounts include command."""
+        kwargs = mock_service.settings_update.call_args.kwargs
+        assert kwargs["include_in_net_worth"] is True
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_include_default_true(
+    def test_set_exclude_writes_false(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
@@ -274,17 +298,19 @@ class TestAccountsInclude:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
-        mock_service.set_include_in_net_worth.return_value = MagicMock(
-            include_in_net_worth=True
+        mock_service.settings_update.return_value = (
+            MagicMock(include_in_net_worth=False),
+            [],
         )
-        result = runner.invoke(app, ["accounts", "include", "acct_a"])
+        result = runner.invoke(app, ["accounts", "set", "acct_a", "--exclude"])
         assert result.exit_code == 0
-        mock_service.set_include_in_net_worth.assert_called_once_with("acct_a", True)
+        kwargs = mock_service.settings_update.call_args.kwargs
+        assert kwargs["include_in_net_worth"] is False
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_include_no_flag_sets_false(
+    def test_set_archive_announces_cascade(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
@@ -292,21 +318,20 @@ class TestAccountsInclude:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
-        mock_service.set_include_in_net_worth.return_value = MagicMock(
-            include_in_net_worth=False
+        mock_service.settings_update.return_value = (
+            MagicMock(archived=True, include_in_net_worth=False),
+            [],
         )
-        result = runner.invoke(app, ["accounts", "include", "acct_a", "--no"])
+        result = runner.invoke(app, ["accounts", "set", "acct_a", "--archive"])
         assert result.exit_code == 0
-        mock_service.set_include_in_net_worth.assert_called_once_with("acct_a", False)
-
-
-class TestAccountsArchive:
-    """Tests for the accounts archive command."""
+        kwargs = mock_service.settings_update.call_args.kwargs
+        assert kwargs["archived"] is True
+        assert "net worth" in result.stderr.lower()
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_archive_announces_cascade(
+    def test_set_unarchive_no_cascade_note(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
@@ -314,60 +339,45 @@ class TestAccountsArchive:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
-        mock_service.archive.return_value = MagicMock(
-            archived=True, include_in_net_worth=False
+        mock_service.settings_update.return_value = (
+            MagicMock(archived=False, include_in_net_worth=False),
+            [],
         )
-        result = runner.invoke(app, ["accounts", "archive", "acct_a"])
+        result = runner.invoke(app, ["accounts", "set", "acct_a", "--unarchive"])
         assert result.exit_code == 0
-        mock_service.archive.assert_called_once_with("acct_a")
-        # Cascade message should appear in stderr
-        assert (
-            "net worth" in result.stderr.lower() or "exclude" in result.stderr.lower()
-        )
-
-
-class TestAccountsUnarchive:
-    """Tests for the accounts unarchive command."""
+        kwargs = mock_service.settings_update.call_args.kwargs
+        assert kwargs["archived"] is False
+        # Cascade note appears only on --archive, never on --unarchive
+        assert "also excluded from net worth" not in result.stderr.lower()
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_unarchive_warns_if_include_still_false(
+    def test_set_archive_and_unarchive_mutex(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
         runner: CliRunner,
     ) -> None:
-        mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.unarchive.return_value = MagicMock(
-            archived=False, include_in_net_worth=False
-        )
-        result = runner.invoke(app, ["accounts", "unarchive", "acct_a"])
-        assert result.exit_code == 0
-        mock_service.unarchive.assert_called_once_with("acct_a")
-        combined = (result.stdout + result.stderr).lower()
-        # Hint should mention how to re-include
-        assert "include" in combined
+        """Passing both --archive and --unarchive collapses to whichever Typer parses last.
 
-    @pytest.mark.unit
-    @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_unarchive_no_warning_if_include_true(
-        self,
-        mock_svc_cls: MagicMock,
-        mock_get_db: MagicMock,
-        runner: CliRunner,
-    ) -> None:
+        Typer's flag-pair `--archive/--unarchive` is a single boolean — later
+        flag wins. Documenting the behavior so a future change can lock in
+        an explicit mutex error if desired.
+        """
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
-        mock_service.unarchive.return_value = MagicMock(
-            archived=False, include_in_net_worth=True
+        mock_service.settings_update.return_value = (
+            MagicMock(archived=False, include_in_net_worth=False),
+            [],
         )
-        result = runner.invoke(app, ["accounts", "unarchive", "acct_a"])
+        result = runner.invoke(
+            app, ["accounts", "set", "acct_a", "--archive", "--unarchive"]
+        )
         assert result.exit_code == 0
-        # When include_in_net_worth is restored, no remediation hint should appear
-        assert "still excluded" not in result.stderr.lower()
+        kwargs = mock_service.settings_update.call_args.kwargs
+        # --unarchive came last → archived=False wins
+        assert kwargs["archived"] is False
 
 
 class TestAccountsSet:
