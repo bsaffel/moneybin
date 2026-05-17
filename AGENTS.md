@@ -161,6 +161,7 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 | Rule | Covers |
 |------|--------|
 | `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions and the trigger list for the agent protocol |
+| `surface-design.md` | Cross-surface (MCP / CLI / REST) operation-shape taxonomy, verb vocabulary, audience layering. Consult before adding, renaming, or restructuring a tool/command/endpoint |
 | `shipping.md` | Post-implementation checklist: README updates, roadmap icons, `/simplify` pre-push pass |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |

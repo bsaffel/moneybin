@@ -1,5 +1,5 @@
 # ruff: noqa: S101
-"""E2E tests for `moneybin doctor`.
+"""E2E tests for `moneybin system doctor`.
 
 doctor is read-only, so it uses the shared e2e_profile fixture (no mutations).
 The clean profile has no transactions, so all SQLMesh audits and the
@@ -18,7 +18,7 @@ pytestmark = pytest.mark.e2e
 
 
 class TestDoctorCommand:
-    """E2E tests for the `moneybin doctor` command."""
+    """E2E tests for the `moneybin system doctor` command."""
 
     def test_doctor_help(self) -> None:
         result = run_cli("system", "doctor", "--help")
