@@ -94,28 +94,30 @@ def transactions_categorize_pending_list(
 
 
 @mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
-def transactions_categorize_apply(
+def transactions_categorize_commit(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
-    """Assign categories to multiple transactions in one call.
+    """Commit externally-decided categorizations for a batch of transactions.
 
-    Each item should have ``transaction_id``, ``category``, and
-    optionally ``subcategory`` and ``canonical_merchant_name``.
-    Transactions that already have a category are overwritten (subject
-    to source-precedence rules).
+    Each item should have ``transaction_id``, ``category``, and optionally
+    ``subcategory`` and ``canonical_merchant_name``. Transactions that
+    already have a category are overwritten (subject to source-precedence
+    rules).
 
-    Also auto-creates exemplar-only merchant mappings from the row's
-    normalized match_text (description + memo) so future rows with the
-    same match_text are categorized automatically via the oneOf
-    set-membership matcher. When ``canonical_merchant_name`` is
-    provided, multiple rows with different match_text values are
-    merged under one merchant identity by appending exemplars rather
-    than spawning per-row merchants.
+    Also auto-creates exemplar-only merchant mappings from each row's
+    normalized match_text so future rows with the same match_text are
+    categorized automatically via the merchant matcher. When
+    ``canonical_merchant_name`` is provided, multiple rows with different
+    match_text values are merged under one merchant identity by appending
+    exemplars rather than spawning per-row merchants.
+
+    Typical caller: an LLM that received redacted rows from
+    transactions_categorize_assist, proposed categorizations, the user
+    reviewed, and the LLM now persists the accepted decisions.
 
     Args:
         items: List of dicts with transaction_id, category, optional
-            subcategory, and optional canonical_merchant_name (the
-            LLM-proposed display name used to merge exemplars).
+            subcategory, and optional canonical_merchant_name.
     """
     if not items:
         return CategorizationResult(
@@ -258,11 +260,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_categorize_apply,
-        "transactions_categorize_apply",
-        "Assign categories to multiple transactions in one call. "
+        transactions_categorize_commit,
+        "transactions_categorize_commit",
+        "Commit externally-decided categorizations for a batch of transactions. "
         "Auto-creates merchant mappings for future auto-categorization. "
-        "Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category, or by clearing via a follow-up apply.",
+        "Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category.",
     )
     register(
         mcp,

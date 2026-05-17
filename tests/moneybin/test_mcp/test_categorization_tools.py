@@ -22,6 +22,7 @@ from moneybin.mcp.tools.categories import (
 from moneybin.mcp.tools.merchants import register_merchants_tools
 from moneybin.mcp.tools.transactions_categorize import (
     register_transactions_categorize_tools,
+    transactions_categorize_commit,
     transactions_categorize_stats,
 )
 from moneybin.mcp.tools.transactions_categorize_assist import (
@@ -52,7 +53,7 @@ class TestCategorizeToolRegistration:
         assert "merchants_list" in names
         assert "transactions_categorize_stats" in names
         assert "transactions_categorize_pending_list" in names
-        assert "transactions_categorize_apply" in names
+        assert "transactions_categorize_commit" in names
         assert "transactions_categorize_rules_create" in names
         assert "transactions_categorize_rules_delete" in names
         assert "merchants_create" in names
@@ -187,3 +188,44 @@ class TestCategoriesDeleteTool:
                 ["txn-forced"],
             ).fetchall()
         assert txn_rows == []
+
+
+class TestTransactionsCategorizeCommit:
+    """transactions_categorize_commit tool wiring and response envelope."""
+
+    @pytest.mark.unit
+    async def test_transactions_categorize_commit_writes_categorization(
+        self, mcp_db: Path
+    ) -> None:
+        """Commit tool accepts items and writes categorizations."""
+        with get_database() as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_transactions
+                (transaction_id, account_id, authorized_date, amount, description)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                ["txn-123", "acct-1", "2026-05-17", "-50.00", "Test purchase"],
+            )
+
+        result = (
+            await transactions_categorize_commit(
+                items=[
+                    {
+                        "transaction_id": "txn-123",
+                        "category": "Groceries",
+                        "subcategory": None,
+                        "canonical_merchant_name": None,
+                    }
+                ]
+            )
+        ).to_dict()
+
+        assert result["summary"]["returned_count"] == 1
+        assert result["data"]["applied"] == 1
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT category FROM app.transaction_categories WHERE transaction_id = ?",
+                ["txn-123"],
+            ).fetchall()
+        assert rows == [("Groceries",)]
