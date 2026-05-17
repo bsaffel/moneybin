@@ -416,6 +416,67 @@ class TestAccountServiceMutators:
         assert warnings[0]["field"] == "holder_category"
 
 
+class TestSettingsUpdateExtended:
+    """Tests for the Group 13 settings_update extension.
+
+    settings_update absorbs display_name, include_in_net_worth, and archived
+    so the prior single-field mutators (rename, set_include_in_net_worth,
+    archive, unarchive) become thin delegates over one write path.
+    """
+
+    @pytest.mark.unit
+    def test_set_display_name(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        result, _ = svc.settings_update("acct_a", display_name="My Renamed Account")
+        assert result.display_name == "My Renamed Account"
+
+    @pytest.mark.unit
+    def test_set_include_in_net_worth_false(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        result, _ = svc.settings_update("acct_a", include_in_net_worth=False)
+        assert result.include_in_net_worth is False
+
+    @pytest.mark.unit
+    def test_set_archived_true_cascades_include_false(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        # Start from the default include_in_net_worth=True.
+        result, _ = svc.settings_update("acct_a", archived=True)
+        assert result.archived is True
+        assert result.include_in_net_worth is False, (
+            "Archiving must cascade include_in_net_worth to False"
+        )
+
+    @pytest.mark.unit
+    def test_set_archived_false_does_not_restore_include(
+        self, test_db: Database
+    ) -> None:
+        svc = AccountService(test_db)
+        # Archive (cascades include=False).
+        svc.settings_update("acct_a", archived=True)
+        # Unarchive — include stays False, matching the prior unarchive() contract.
+        result, _ = svc.settings_update("acct_a", archived=False)
+        assert result.archived is False
+        assert result.include_in_net_worth is False
+
+    @pytest.mark.unit
+    def test_clear_display_name_via_clear_sentinel(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", display_name="Temporary Name")
+        result, _ = svc.settings_update("acct_a", display_name=CLEAR)
+        assert result.display_name is None
+
+    @pytest.mark.unit
+    def test_multi_field_partial_update(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        result, _ = svc.settings_update(
+            "acct_a",
+            display_name="Multi Field",
+            include_in_net_worth=False,
+        )
+        assert result.display_name == "Multi Field"
+        assert result.include_in_net_worth is False
+
+
 # ---------------------------------------------------------------------------
 # Helpers for new extended-read tests
 # ---------------------------------------------------------------------------
