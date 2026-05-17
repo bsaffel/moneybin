@@ -88,12 +88,12 @@ async def test_import_files_continues_past_failure(
 async def test_import_files_refresh_false_skips(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """refresh=False suppresses transforms; action hints transform_apply."""
+    """refresh=False suppresses transforms; action hints refresh_run."""
     _setup_db(tmp_path, monkeypatch)
     fixture = _copy_fixture(FIXTURES_DIR / "sample_minimal.ofx", tmp_path)
     env = await import_files(paths=[str(fixture)], refresh=False)
     assert env.data["transforms_applied"] is False
-    assert any("transform_apply" in a for a in env.actions)
+    assert any("refresh_run" in a for a in env.actions)
 
 
 async def test_import_files_validates_path_under_home(
