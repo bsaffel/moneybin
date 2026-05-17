@@ -41,7 +41,16 @@ def refresh_command(
         }
         if result.error is not None:
             data["error"] = result.error
-        render_or_json(build_envelope(data=data, sensitivity="low"), output)
+        actions: list[str] = []
+        if not result.applied and result.error is not None:
+            actions.append(
+                "SQLMesh apply failed — call transform_plan to inspect, "
+                "or refresh_run to retry."
+            )
+        render_or_json(
+            build_envelope(data=data, sensitivity="low", actions=actions),
+            output,
+        )
         if not result.applied:
             raise typer.Exit(1)
         return
