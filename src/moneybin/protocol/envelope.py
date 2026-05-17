@@ -73,15 +73,27 @@ class _DecimalEncoder(json.JSONEncoder):
 
     MoneyBin holds money as `Decimal` internally for precision-safe arithmetic;
     on the wire we emit JSON numbers so agents and JSON tooling consume them
-    as numerics, not strings that need re-parsing. `DECIMAL(18,2)` (amounts)
-    and `DECIMAL(18,8)` (prices, quantities, FX rates) both fit inside the
-    ~15.95 significant digits of float64 with room to spare.
+    as numerics, not strings that need re-parsing. Float64 carries ~15.95
+    significant digits — comfortably wider than realistic personal-finance
+    magnitudes (balances < $10^{10}, transaction amounts < $10^{8}, prices /
+    quantities / FX rates well within `DECIMAL(18,8)`). A `DECIMAL(18,2)`
+    value above ~$10^{13} would round on the way out; the wire contract
+    documents money types up to that cap.
+
+    Catch-all for non-serializable types (datetime, UUID, etc.) falls back
+    to `str(o)` here rather than via `json.dumps(..., default=str)` because
+    passing both `cls=` and `default=` to `json.dumps` causes `default=` to
+    REPLACE the encoder's `default()` method — silently dropping the
+    Decimal-to-float conversion.
     """
 
     def default(self, o: object) -> Any:
         if isinstance(o, Decimal):
             return float(o)
-        return super().default(o)
+        try:
+            return super().default(o)
+        except TypeError:
+            return str(o)
 
 
 @dataclass(slots=True)
@@ -118,8 +130,15 @@ class ResponseEnvelope:
         return d
 
     def to_json(self) -> str:
-        """Serialize to JSON string."""
-        return json.dumps(self.to_dict(), cls=_DecimalEncoder, default=str)
+        """Serialize to JSON string.
+
+        Uses ``_DecimalEncoder`` (which handles Decimal → float and falls
+        back to str for other non-serializable types). Do NOT pass
+        ``default=`` to ``json.dumps`` alongside ``cls=``: ``default=``
+        replaces the encoder's ``default()`` and silently breaks the
+        Decimal-to-number conversion.
+        """
+        return json.dumps(self.to_dict(), cls=_DecimalEncoder)
 
 
 def build_envelope(

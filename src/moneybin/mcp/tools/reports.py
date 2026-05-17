@@ -18,6 +18,7 @@ Read tools:
 
 from __future__ import annotations
 
+from datetime import UTC
 from datetime import date as _date
 from datetime import datetime as _datetime
 from typing import Any, Literal
@@ -51,8 +52,15 @@ def _envelope(
 
 
 def _default_window(months: int = 12) -> tuple[str, str]:
-    """Return (from_month, to_month) as YYYY-MM strings covering the last N months."""
-    today = _datetime.now()
+    """Return (from_month, to_month) as YYYY-MM strings covering the last N months.
+
+    Uses UTC so the window definition stays stable across deploy timezones
+    and matches what a manual SQL query against DuckDB's ``current_date``
+    sees (DuckDB has no TZ-aware date type and reads from the system clock,
+    which our deploys treat as UTC). A local-time read would drift by one
+    month near calendar boundaries.
+    """
+    today = _datetime.now(UTC)
     end = today.replace(day=1)
     # Walk back `months - 1` calendar months to get an inclusive N-month window.
     year = end.year

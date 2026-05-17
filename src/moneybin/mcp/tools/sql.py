@@ -13,10 +13,15 @@ from typing import Any
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    build_envelope,
+    build_error_envelope,
+)
 from moneybin.services.schema_catalog import build_schema_doc
 
 
@@ -86,12 +91,16 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope:
             }
             for t in tables
         ]
+        # Preserve `beyond_the_interface` (the catalog-query pointer for
+        # non-curated tables) — it's a few hundred bytes and is the kind of
+        # orientation hint the compact view exists to surface.
         return build_envelope(
             data={
                 "version": doc["version"],
                 "generated_at": doc["generated_at"],
                 "conventions": doc["conventions"],
                 "tables": compact,
+                "beyond_the_interface": doc.get("beyond_the_interface"),
             },
             sensitivity="low",
             actions=[
@@ -106,16 +115,15 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope:
 
     matches = [t for t in tables if t["name"] == table]
     if not matches:
-        known = ", ".join(t["name"] for t in tables)
-        return build_envelope(
-            data={
-                "version": doc["version"],
-                "generated_at": doc["generated_at"],
-                "conventions": doc["conventions"],
-                "tables": [],
-                "error": f"Unknown table: {table}",
-                "available_tables": [t["name"] for t in tables],
-            },
+        available = [t["name"] for t in tables]
+        known = ", ".join(available)
+        return build_error_envelope(
+            error=UserError(
+                f"Unknown table: {table}",
+                code="unknown_table",
+                hint=f"Available tables: {known}",
+                details={"available_tables": available},
+            ),
             sensitivity="low",
             actions=[f"Call again with table=<one of>: {known}"],
         )
