@@ -577,7 +577,7 @@ Net worth across all accounts over time.
 
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
 
-**Service class:** `TransactionService` (search, correct, annotate, recurring), `MatchService` (matches sub-domain)
+**Service class:** `TransactionService` (search, correct, annotate), `MatchService` (matches sub-domain)
 
 ### `transactions_get`
 
@@ -1334,7 +1334,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `get_budget_status` | `budget_status` | |
 | `get_monthly_summary` | `spending_summary` | |
 | `get_spending_by_category` | `spending_by_category` | |
-| `find_recurring_transactions` | `transactions_recurring` | |
+| `find_recurring_transactions` | `transactions_recurring` | (removed) |
 | `csv_preview_file` | `import_csv_preview` | |
 | `csv_list_profiles` | `import_formats_list` | |
 | `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | |
@@ -1571,7 +1571,7 @@ These tools can be fully implemented with the current codebase and existing infr
 **`spending.*`**: `summary`, `by_category`, `merchants`, `compare`
 **`cashflow.*`**: `summary`, `income`
 **`accounts.*`**: `list`, `balances`, `networth`, `resolve`
-**`transactions.*`**: `search`, `recurring`
+**`transactions.*`**: `search`
 **`import.*`**: `file`, `status`, `csv_preview`, `list_formats`
 **`categorize.*`**: `uncategorized`, `apply`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `stats`
 **`budget.*`**: `set`, `status`, `delete`
