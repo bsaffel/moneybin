@@ -1,4 +1,4 @@
-"""Integration tests for `moneybin transactions categorize apply` CLI command."""
+"""Integration tests for `moneybin transactions categorize commit` CLI command."""
 
 # ruff: noqa: S101
 
@@ -85,8 +85,8 @@ def _invoke(
     return runner.invoke(app, args, **kwargs)  # type: ignore[call-overload]
 
 
-class TestCategorizeApplyCLI:
-    """Integration tests for the 'moneybin categorize apply' command."""
+class TestCategorizeCommitCLI:
+    """Integration tests for the 'moneybin categorize commit' command."""
 
     def test_file_input_applies_categorizations(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -102,7 +102,7 @@ class TestCategorizeApplyCLI:
             ])
         )
 
-        result = _invoke(monkeypatch, db, store, ["apply", "--input", str(cats_file)])
+        result = _invoke(monkeypatch, db, store, ["commit", "--input", str(cats_file)])
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
 
     def test_stdin_sentinel_reads_json_from_stdin(
@@ -113,7 +113,7 @@ class TestCategorizeApplyCLI:
         txn_id = _seed_one_transaction(db)
 
         payload = json.dumps([{"transaction_id": txn_id, "category": "Food"}])
-        result = _invoke(monkeypatch, db, store, ["apply", "-"], input=payload)
+        result = _invoke(monkeypatch, db, store, ["commit", "-"], input=payload)
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
 
     def test_json_output_returns_envelope(
@@ -132,7 +132,7 @@ class TestCategorizeApplyCLI:
             monkeypatch,
             db,
             store,
-            ["apply", "--input", str(cats_file), "--output", "json"],
+            ["commit", "--input", str(cats_file), "--output", "json"],
         )
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]
@@ -158,7 +158,7 @@ class TestCategorizeApplyCLI:
             monkeypatch,
             db,
             store,
-            ["apply", "--input", str(cats_file), "--output", "json"],
+            ["commit", "--input", str(cats_file), "--output", "json"],
         )
         assert result.exit_code == 1  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]
@@ -176,7 +176,7 @@ class TestCategorizeApplyCLI:
         cats_file = tmp_path / "cats.json"
         cats_file.write_text(json.dumps({"items": []}))  # dict, not list
 
-        result = _invoke(monkeypatch, db, store, ["apply", "--input", str(cats_file)])
+        result = _invoke(monkeypatch, db, store, ["commit", "--input", str(cats_file)])
         assert result.exit_code == 1  # type: ignore[union-attr]
 
     def test_missing_file_exits_two(
@@ -190,7 +190,7 @@ class TestCategorizeApplyCLI:
             monkeypatch,
             db,
             store,
-            ["apply", "--input", str(tmp_path / "missing.json")],
+            ["commit", "--input", str(tmp_path / "missing.json")],
         )
         assert result.exit_code == 2  # type: ignore[union-attr]
 
@@ -208,7 +208,7 @@ class TestCategorizeApplyCLI:
             monkeypatch,
             db,
             store,
-            ["apply", "--input", str(cats_file), "--output", "json"],
+            ["commit", "--input", str(cats_file), "--output", "json"],
         )
         assert result.exit_code == 0  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]

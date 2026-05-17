@@ -41,8 +41,8 @@ app.command("export-uncategorized")(categorize_export_uncategorized)
 app.command("apply-from-file")(categorize_apply_from_file)
 
 
-@app.command("apply")
-def categorize_apply(
+@app.command("commit")
+def categorize_commit(
     stdin_sentinel: str | None = typer.Argument(
         None,
         help="Pass '-' to read JSON from stdin.",
@@ -52,15 +52,15 @@ def categorize_apply(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Assign categories to transactions from a JSON array.
+    """Commit externally-decided categorizations from a JSON array.
 
     Read from a file:
 
-      moneybin transactions categorize apply --input cats.json
+      moneybin transactions categorize commit --input cats.json
 
     Or from stdin:
 
-      cat cats.json | moneybin transactions categorize apply -
+      cat cats.json | moneybin transactions categorize commit -
 
     Per-item validation: failures are reported in the result without aborting
     the batch. Exit code is 1 if any item failed.
