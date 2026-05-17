@@ -1,10 +1,10 @@
 """Shared primitives for the categorization package.
 
 Pure helpers, enum/literal types, boundary validators, regex utilities, the
-Pydantic input models, and the ``Merchant`` row shape used across the matcher,
-applier, and assist collaborators. Holds nothing that touches the database.
-Lives at the package leaves so any collaborator (and ``auto_rule_service``)
-can import from here without a circular dependency.
+Pydantic input models, the ``Merchant`` row shape, and the lightweight
+DB-touching resolvers used across the matcher, applier, and assist
+collaborators. Lives at the package leaves so any collaborator (and
+``auto_rule_service``) can import from here without a circular dependency.
 """
 
 from __future__ import annotations
@@ -17,6 +17,9 @@ from functools import lru_cache
 from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from moneybin.database import Database
+from moneybin.tables import CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -329,3 +332,27 @@ class Merchant(NamedTuple):
             subcategory=str(row[5]) if row[5] is not None else None,
             exemplars=list(row[6] or []),
         )
+
+
+def resolve_category_id(
+    db: Database, category: str, subcategory: str | None
+) -> str | None:
+    """Resolve a (category, subcategory) text pair to its ``category_id``.
+
+    Returns the matching ``category_id`` from ``core.dim_categories`` (the
+    unified view over seeds + ``app.user_categories``) or ``None`` when
+    no match exists. Callers in the Phase 1 dual-write window must accept
+    the ``None`` case — orphaned text is a real state (legacy rows
+    pre-V014 backfill, or text written before its target category was
+    created).
+
+    ``IS NOT DISTINCT FROM`` treats NULL symmetrically on the subcategory
+    axis, so passing ``subcategory=None`` matches a dim row with
+    ``subcategory IS NULL``.
+    """
+    row = db.execute(
+        f"SELECT category_id FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+        "WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",
+        [category, subcategory],
+    ).fetchone()
+    return row[0] if row else None

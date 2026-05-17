@@ -637,6 +637,52 @@ class TestToggleCategory:
         assert exc_info.value.code == "CATEGORY_NOT_FOUND"
 
 
+class TestResolveCategoryId:
+    """The shared resolve_category_id helper used by every writer."""
+
+    @pytest.mark.unit
+    def test_resolves_user_category(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ResolveMe", subcategory="Sub")
+
+        assert resolve_category_id(db, "ResolveMe", "Sub") == cat_id
+
+    @pytest.mark.unit
+    def test_resolves_default_category(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        # The module's `db` fixture doesn't seed defaults; seed FND here so the
+        # core.dim_categories view exposes it.
+        seed_categories_view(db)
+        assert resolve_category_id(db, "Food & Drink", None) == "FND"
+
+    @pytest.mark.unit
+    def test_returns_none_for_unknown_text(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        assert resolve_category_id(db, "NeverDefined", None) is None
+
+    @pytest.mark.unit
+    def test_null_subcategory_matches_null(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("TopLevel")  # subcategory IS NULL
+
+        assert resolve_category_id(db, "TopLevel", None) == cat_id
+
+    @pytest.mark.unit
+    def test_null_does_not_match_non_null(self, db: Database) -> None:
+        from moneybin.services.categorization._shared import resolve_category_id
+
+        svc = CategorizationService(db)
+        svc.create_category("HasSub", subcategory="Specific")
+
+        assert resolve_category_id(db, "HasSub", None) is None
+
+
 class TestDeleteCategory:
     """CategorizationService.delete_category — hard-delete with refuse/cascade."""
 
