@@ -75,7 +75,7 @@ def inbox_sync(refresh: bool = True) -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="low")
-def inbox_list() -> ResponseEnvelope:
+def import_inbox() -> ResponseEnvelope:
     """Preview the active profile's inbox without moving anything."""
     service = InboxService.for_active_profile_no_db()
     result = dataclasses.asdict(service.enumerate())
@@ -100,7 +100,7 @@ def register_inbox_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        inbox_list,
-        "import_inbox_list",
+        import_inbox,
+        "import_inbox",
         "Preview the active profile's import inbox without moving anything.",
     )

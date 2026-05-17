@@ -1,4 +1,4 @@
-"""Tests for import_inbox_sync / import_inbox_list MCP tools."""
+"""Tests for import_inbox_sync / import_inbox MCP tools."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.mcp.tools.import_inbox import inbox_list as inbox_list_tool
+from moneybin.mcp.tools.import_inbox import import_inbox as inbox_list_tool
 from moneybin.mcp.tools.import_inbox import inbox_sync as inbox_sync_tool
 from moneybin.services.inbox_service import (
     InboxListResult,
@@ -33,7 +33,7 @@ def patch_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> MagicMock:
     )
 
     # Patch InboxService in the tool module so both the constructor call in
-    # inbox_sync AND for_active_profile_no_db in inbox_list return `fake`.
+    # inbox_sync AND for_active_profile_no_db in import_inbox return `fake`.
     fake_cls = MagicMock(return_value=fake)
     fake_cls.for_active_profile_no_db = MagicMock(return_value=fake)
     monkeypatch.setattr(
@@ -105,7 +105,7 @@ class TestInboxSyncTool:
 
 
 class TestInboxListTool:
-    """import_inbox_list envelope shape."""
+    """import_inbox envelope shape."""
 
     async def test_returns_would_process_shape(self, patch_service: MagicMock) -> None:
         patch_service.enumerate.return_value = InboxListResult(
