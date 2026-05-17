@@ -180,10 +180,15 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
     ["src_existing", "src_attempted"],
 )
 
+# Metric names retain the historical `apply` prefix even after the MCP tool
+# was renamed to `transactions_categorize_commit` (2026-05-17). Prometheus
+# metric renames break downstream dashboards and alerts; treat the name as
+# part of the public surface and only rename if a coordinated rollout is
+# planned.
 CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS = Histogram(
     "moneybin_categorize_apply_post_commit_duration_seconds",
     "Latency of the snowball categorize_pending call triggered after every "
-    "transactions_categorize_apply commit.",
+    "transactions_categorize_commit invocation.",
 )
 
 CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED = Histogram(
