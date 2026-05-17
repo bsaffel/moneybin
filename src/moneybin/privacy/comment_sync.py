@@ -1,9 +1,10 @@
 """Sync the DataClass registry into DuckDB column comments.
 
 Each classified column's existing comment is suffixed with
-``[class: <DataClass value>]``. Re-running with the same registry is a
-no-op. Changing a column's class replaces the suffix rather than
-appending a second one.
+``[class: <DataClass value>]``. If a column has no entry in
+``CLASSIFICATION``, any prior sigil is stripped and the human comment
+is restored. Re-running with the same registry is a no-op. Changing a
+column's class replaces the suffix rather than appending a second one.
 
 The sync runs after the two existing comment-writing paths:
 
@@ -47,7 +48,11 @@ def _desired_comment(human: str | None, cls: DataClass) -> str:
 
 
 def sync_classification_comments(db: Database) -> int:
-    """Append the [class: ...] sigil to each classified column's comment.
+    """Reconcile each ``core``/``app`` column comment with the registry.
+
+    Classified columns get a ``[class: <value>]`` suffix appended (or
+    replaced if stale). Columns not in ``CLASSIFICATION`` have any prior
+    sigil stripped so the human comment is restored.
 
     Args:
         db: An open read-write ``Database``.
@@ -68,23 +73,32 @@ def sync_classification_comments(db: Database) -> int:
         current[(schema, table, col)] = comment
 
     updates = 0
-    for (schema, table), cols in CLASSIFICATION.items():
-        for col, cls in cols.items():
-            key = (schema, table, col)
-            if key not in current:
-                continue
-            desired = _desired_comment(current[key], cls)
-            if current[key] == desired:
-                continue
-            # DuckDB's COMMENT ON COLUMN does not accept `?` placeholders —
-            # it requires an inline string literal. Use the project's
-            # escape_sql_literal helper to single-quote-escape the value.
-            safe = escape_sql_literal(desired)
+    for (schema, table, col), comment in current.items():
+        cls = CLASSIFICATION.get((schema, table), {}).get(col)
+        if cls is None:
+            stripped = _SIGIL_RE.sub("", comment or "").rstrip()
+            desired: str | None = stripped or None
+        else:
+            desired = _desired_comment(comment, cls)
+        # "" and NULL both mean "no comment" in DuckDB's catalog — treat
+        # them as equal so empty-string and unset comments don't churn.
+        if (comment or None) == (desired or None):
+            continue
+        # DuckDB's COMMENT ON COLUMN does not accept `?` placeholders —
+        # it requires an inline string literal. Use IS NULL to clear a
+        # comment cleanly so the catalog matches the original
+        # "no comment" state rather than holding an empty string.
+        if desired is None:
             db.execute(
                 f"COMMENT ON COLUMN {_quote(schema)}.{_quote(table)}."
-                f"{_quote(col)} IS '{safe}'"
+                f"{_quote(col)} IS NULL"
             )
-            updates += 1
+        else:
+            db.execute(
+                f"COMMENT ON COLUMN {_quote(schema)}.{_quote(table)}."
+                f"{_quote(col)} IS '{escape_sql_literal(desired)}'"
+            )
+        updates += 1
 
     if updates:
         logger.info(f"Synced {updates} privacy classification comment(s)")

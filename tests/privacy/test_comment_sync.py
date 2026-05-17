@@ -115,3 +115,30 @@ def test_sync_replaces_stale_sigil(populated_db: Database) -> None:
     assert comment == f"Account identifier [class: {cls.value}]"
     assert comment is not None
     assert comment.count("[class:") == 1
+
+
+def test_sync_strips_sigil_for_unregistered_column(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing a column from CLASSIFICATION strips its sigil on next sync."""
+    from moneybin.privacy import comment_sync as cs
+
+    schema, table, col, cls = _pick_classified_column(populated_db)
+    _set_comment(
+        populated_db,
+        schema,
+        table,
+        col,
+        f"Account identifier [class: {cls.value}]",
+    )
+
+    # Copy the registry with the chosen column removed.
+    registry_copy = {
+        k: {c: v for c, v in cols.items() if not (k == (schema, table) and c == col)}
+        for k, cols in CLASSIFICATION.items()
+    }
+    monkeypatch.setattr(cs, "CLASSIFICATION", registry_copy)
+
+    cs.sync_classification_comments(populated_db)
+
+    assert _get_comment(populated_db, schema, table, col) == "Account identifier"
