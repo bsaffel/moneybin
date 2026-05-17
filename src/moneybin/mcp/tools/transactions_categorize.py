@@ -244,14 +244,15 @@ def transactions_categorize_run(
 
     Each method runs a deterministic engine: ``rules`` applies active
     user-authored pattern rules; ``merchants`` applies the stored merchant
-    catalog. When multiple methods are given, they cascade — a rule write
-    blocks a merchant write at the same priority. Amounts use the
-    accounting convention: negative = expense, positive = income;
-    transfers exempt.
+    catalog. Engines run in the order given — an earlier engine's write
+    blocks a later engine's write on the same row via source-precedence.
+    The canonical order ``["rules", "merchants"]`` takes an optimized
+    shared-scan path. Amounts use the accounting convention: negative =
+    expense, positive = income; transfers exempt.
 
     Args:
-        methods: Engines to run in order. Defaults to ["rules", "merchants"]
-            (the existing categorize_pending cascade).
+        methods: Engines to run in the listed order. Defaults to
+            ["rules", "merchants"].
     """
     with get_database() as db:
         data = CategorizationService(db).categorize_run(methods=methods)

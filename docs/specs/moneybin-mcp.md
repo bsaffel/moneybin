@@ -788,7 +788,7 @@ Run the categorization engine cascade over uncategorized transactions.
 
 - **Sensitivity:** `medium` — writes categorizations to `app.transaction_categories`.
 - **Unique parameters:** `methods: list[Literal["rules", "merchants"]] | None` (optional, default `["rules", "merchants"]`) — engines to run in order. A rule write blocks a merchant write at the same priority.
-- **Behavior:** Returns `{applied_by_method: {rules: int, merchants: int}, total_applied: int}`. Methods differ in QoS (data source, latency) but share inputs and outputs — this is method-parameter polymorphism. The `"ml"` literal will be added when ML categorization implementation lands (see §15 deferred).
+- **Behavior:** Returns `{applied_by_method: {rules: int, merchants: int}, total_applied: int}`. The canonical order `["rules", "merchants"]` takes an optimized shared-scan path; other orders run engines individually in the requested order. The `"ml"` literal will be added when ML categorization implementation lands.
 - **Service:** `CategorizationService.categorize_run(methods=...) -> dict`
 - **CLI:** `moneybin transactions categorize run [--methods rules,merchants] [--output json]`
 

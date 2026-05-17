@@ -416,10 +416,13 @@ class CategorizationService:
             "applied_by_method": {},
             "total_applied": 0,
         }
-        # Both engines requested → use the shared-scan path regardless of
-        # order. categorize_pending() shares one uncategorized-rows fetch
-        # across both engines and enforces rule-priority-wins ordering.
-        if set(effective) == {"rules", "merchants"}:
+        # Canonical order → use the shared-scan optimization. Other orders
+        # (e.g. ["merchants", "rules"]) fall through to the per-method path
+        # below, which runs engines in the requested order — necessary to
+        # honor the order contract documented on the MCP tool.
+        # categorize_pending() shares one uncategorized-rows fetch across both
+        # engines and enforces rule-priority-wins on conflicts.
+        if effective == ["rules", "merchants"]:
             breakdown = self._orchestrator.categorize_pending()
             # categorize_pending returns {"rule": N, "merchant": N, "total": N}
             # — keys are singular; the public API exposes plural for symmetry

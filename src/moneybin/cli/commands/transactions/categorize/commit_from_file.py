@@ -101,13 +101,11 @@ def categorize_commit_from_file(
         raise typer.Exit(1) from e
 
     if items:
+        from moneybin.services.categorization import CategorizationService
+
         with handle_cli_errors():
             with get_database() as db:
-                from moneybin.services.categorization import (
-                    CategorizationService,
-                )
-
-            result = CategorizationService(db).categorize_items(items)
+                result = CategorizationService(db).categorize_items(items)
     else:
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
     result.merge_parse_errors(parse_errors)
