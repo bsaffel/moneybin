@@ -47,7 +47,6 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | Tool | Description |
 |------|-------------|
 | `transactions_search` | Search with date, amount, payee, account, and category filters |
-| `transactions_recurring_list` | Detect subscriptions and regular charges |
 | `transactions_categorize_pending_list` | Find transactions needing categorization |
 | `transactions_categorize_apply` | Categorize many transactions in one call (auto-creates merchant mapping) |
 | `transactions_categorize_stats` | Categorization coverage statistics |
@@ -71,6 +70,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | `reports_spending_summary` | Income vs expenses summary by month |
 | `reports_spending_by_category` | Spending breakdown by category for a period |
 | `reports_budget` | Budget vs actual spending comparison |
+| `reports_recurring` | Detect recurring subscriptions and regular charges with confidence scores |
 
 ### import
 
