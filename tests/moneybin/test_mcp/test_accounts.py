@@ -62,6 +62,26 @@ class TestAccountsResolveRegistration:
         assert "accounts_resolve" in names
 
 
+class TestNarrowToolsRemoved:
+    """The four narrow account write tools were folded into accounts_set."""
+
+    @pytest.mark.unit
+    async def test_narrow_account_tools_removed(self) -> None:
+        srv = FastMCP("test")
+        register_accounts_tools(srv)
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        for removed in (
+            "accounts_rename",
+            "accounts_include",
+            "accounts_archive",
+            "accounts_unarchive",
+        ):
+            assert removed not in names, (
+                f"{removed} should be removed; folded into accounts_set"
+            )
+        assert "accounts_set" in names
+
+
 class TestAccountsResolve:
     """Tests for the accounts_resolve MCP tool envelope and action hints."""
 

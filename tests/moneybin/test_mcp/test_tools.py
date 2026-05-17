@@ -64,14 +64,10 @@ class TestToolRegistration:
         srv = FastMCP("test")
         register_accounts_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        # v2 entity tools
+        # v2 entity tools (rename/include/archive/unarchive folded into accounts_set)
         assert "accounts_list" in names
         assert "accounts_get" in names
         assert "accounts_summary" in names
-        assert "accounts_rename" in names
-        assert "accounts_include" in names
-        assert "accounts_archive" in names
-        assert "accounts_unarchive" in names
         assert "accounts_set" in names
         # v2 balance tools
         assert "accounts_balance_list" in names

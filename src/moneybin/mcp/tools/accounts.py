@@ -7,10 +7,6 @@ Read tools (entity):
   - accounts_summary (low)
 
 Write tools (entity, all medium):
-  - accounts_rename
-  - accounts_include
-  - accounts_archive
-  - accounts_unarchive
   - accounts_set
 
 Read tools (balance, contributed by net-worth.md):
@@ -111,67 +107,6 @@ def accounts_summary() -> ResponseEnvelope:
 
 
 # ─── Write tools (entity) ──────────────────────────────────────────────────
-
-
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_rename(account_id: str, display_name: str) -> ResponseEnvelope:
-    """Rename an account by setting app.account_settings.display_name.
-
-    Args:
-        account_id: The account ID
-        display_name: New display name; empty string clears the override
-
-    Returns the updated settings record.
-    """
-    with get_database() as db:
-        settings = AccountService(db).rename(account_id, display_name)
-    return build_envelope(data=settings.to_dict(), sensitivity="medium")
-
-
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_include(account_id: str, include: bool = True) -> ResponseEnvelope:
-    """Toggle account inclusion in net worth.
-
-    Args:
-        account_id: The account ID
-        include: True to include, False to exclude
-
-    Returns the updated settings record.
-    """
-    with get_database() as db:
-        settings = AccountService(db).set_include_in_net_worth(account_id, include)
-    return build_envelope(data=settings.to_dict(), sensitivity="medium")
-
-
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_archive(account_id: str) -> ResponseEnvelope:
-    """Archive an account. Cascades include_in_net_worth=False in the same write.
-
-    Args:
-        account_id: The account ID
-
-    Returns the updated settings record. The data field includes
-    cascaded_include_in_net_worth: false to surface the cascade.
-    """
-    with get_database() as db:
-        settings = AccountService(db).archive(account_id)
-    data = settings.to_dict()
-    data["cascaded_include_in_net_worth"] = False
-    return build_envelope(data=data, sensitivity="medium")
-
-
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_unarchive(account_id: str) -> ResponseEnvelope:
-    """Unarchive an account. Does NOT restore include_in_net_worth.
-
-    Args:
-        account_id: The account ID
-
-    Returns the updated settings record.
-    """
-    with get_database() as db:
-        settings = AccountService(db).unarchive(account_id)
-    return build_envelope(data=settings.to_dict(), sensitivity="medium")
 
 
 _CLEARABLE_FIELDS: frozenset[str] = frozenset({
@@ -466,34 +401,6 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         accounts_summary,
         "accounts_summary",
         "Aggregate account snapshot — counts by type/subtype, archived, excluded, recent activity.",
-    )
-    register(
-        mcp,
-        accounts_rename,
-        "accounts_rename",
-        "Rename an account (writes app.account_settings.display_name; empty clears). "
-        "Writes app.account_settings; revert by calling accounts_rename again with the prior value (or empty string to clear).",
-    )
-    register(
-        mcp,
-        accounts_include,
-        "accounts_include",
-        "Toggle include_in_net_worth on an account. "
-        "Writes app.account_settings.include_in_net_worth; revert by calling with the inverse `include` value.",
-    )
-    register(
-        mcp,
-        accounts_archive,
-        "accounts_archive",
-        "Archive an account; cascades include_in_net_worth=False in the same write. "
-        "Writes app.account_settings (archived, include_in_net_worth); revert with accounts_unarchive (does NOT auto-restore include_in_net_worth).",
-    )
-    register(
-        mcp,
-        accounts_unarchive,
-        "accounts_unarchive",
-        "Unarchive an account. Does NOT auto-restore include_in_net_worth. "
-        "Writes app.account_settings.archived=False; revert with accounts_archive.",
     )
     register(
         mcp,
