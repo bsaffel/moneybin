@@ -29,7 +29,17 @@ if "MONEYBIN_HOME" not in os.environ:
 from moneybin.config import (  # noqa: E402 — must follow sys.path setup above
     get_database_path,
     get_settings,
+    set_current_profile,
 )
+
+# Non-CLI entry points (SQLMesh VSCode extension, direct `sqlmesh` shell
+# invocations, the language server) never run moneybin's CLI callback, so the
+# profile resolver is never registered and get_settings() would raise. Honor
+# MONEYBIN_PROFILE here — the same env var the CLI consults — so config.py is
+# self-sufficient for every entry point. The CLI path is unaffected: it sets
+# the profile before SQLMesh loads config.py, and set_current_profile() is a
+# no-op when the name matches.
+set_current_profile(os.environ.get("MONEYBIN_PROFILE", "default"))
 
 _sqlmesh_dir = os.path.dirname(os.path.abspath(__file__))
 
