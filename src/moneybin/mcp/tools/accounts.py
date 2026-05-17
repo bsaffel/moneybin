@@ -7,10 +7,6 @@ Read tools (entity):
   - accounts_summary (low)
 
 Write tools (entity, all medium):
-  - accounts_rename
-  - accounts_include
-  - accounts_archive
-  - accounts_unarchive
   - accounts_set
 
 Read tools (balance, contributed by net-worth.md):
@@ -113,67 +109,6 @@ def accounts_summary() -> ResponseEnvelope:
 # ─── Write tools (entity) ──────────────────────────────────────────────────
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_rename(account_id: str, display_name: str) -> ResponseEnvelope:
-    """Rename an account by setting app.account_settings.display_name.
-
-    Args:
-        account_id: The account ID
-        display_name: New display name; empty string clears the override
-
-    Returns the updated settings record.
-    """
-    with get_database() as db:
-        settings = AccountService(db).rename(account_id, display_name)
-    return build_envelope(data=settings.to_dict(), sensitivity="medium")
-
-
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_include(account_id: str, include: bool = True) -> ResponseEnvelope:
-    """Toggle account inclusion in net worth.
-
-    Args:
-        account_id: The account ID
-        include: True to include, False to exclude
-
-    Returns the updated settings record.
-    """
-    with get_database() as db:
-        settings = AccountService(db).set_include_in_net_worth(account_id, include)
-    return build_envelope(data=settings.to_dict(), sensitivity="medium")
-
-
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_archive(account_id: str) -> ResponseEnvelope:
-    """Archive an account. Cascades include_in_net_worth=False in the same write.
-
-    Args:
-        account_id: The account ID
-
-    Returns the updated settings record. The data field includes
-    cascaded_include_in_net_worth: false to surface the cascade.
-    """
-    with get_database() as db:
-        settings = AccountService(db).archive(account_id)
-    data = settings.to_dict()
-    data["cascaded_include_in_net_worth"] = False
-    return build_envelope(data=data, sensitivity="medium")
-
-
-@mcp_tool(sensitivity="medium", read_only=False)
-def accounts_unarchive(account_id: str) -> ResponseEnvelope:
-    """Unarchive an account. Does NOT restore include_in_net_worth.
-
-    Args:
-        account_id: The account ID
-
-    Returns the updated settings record.
-    """
-    with get_database() as db:
-        settings = AccountService(db).unarchive(account_id)
-    return build_envelope(data=settings.to_dict(), sensitivity="medium")
-
-
 _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "official_name",
     "last_four",
@@ -181,6 +116,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "holder_category",
     "iso_currency_code",
     "credit_limit",
+    "display_name",
 })
 
 
@@ -193,17 +129,42 @@ def accounts_set(
     holder_category: str | None = None,
     iso_currency_code: str | None = None,
     credit_limit: float | None = None,
+    display_name: str | None = None,
+    include_in_net_worth: bool | None = None,
+    is_archived: bool | None = None,
     clear_fields: list[str] | None = None,
 ) -> ResponseEnvelope:
-    """Partial update of structural metadata fields.
+    """Partial update of an account's settings (structural + behavioral fields).
 
-    Pass None for any field to leave it unchanged. To explicitly clear a field,
-    include its name in the `clear_fields` list. Valid clearable field names:
-    "official_name", "last_four", "account_subtype", "holder_category",
-    "iso_currency_code", "credit_limit".
+    Replaces the formerly-separate ``accounts_rename``, ``accounts_include``,
+    ``accounts_archive``, and ``accounts_unarchive`` tools — one entrypoint for
+    every per-account settings mutation.
 
-    Soft-validation warnings (for non-canonical account_subtype or holder_category
-    values) are embedded in the response data['warnings'] field.
+    Structural fields (Plaid-parity metadata):
+      ``official_name``, ``last_four``, ``account_subtype``, ``holder_category``,
+      ``iso_currency_code``, ``credit_limit``.
+
+    Behavioral fields:
+      ``display_name`` — text override for the account's resolved name.
+      ``include_in_net_worth`` — toggle inclusion in net-worth aggregates.
+      ``is_archived`` — archive / unarchive flag.
+
+    Pass ``None`` to leave a field unchanged. To explicitly clear a text field
+    back to NULL, include its name in ``clear_fields``. Valid clearable names:
+    ``"official_name"``, ``"last_four"``, ``"account_subtype"``,
+    ``"holder_category"``, ``"iso_currency_code"``, ``"credit_limit"``,
+    ``"display_name"``. Booleans (``include_in_net_worth``, ``is_archived``) are
+    not clearable — pass the explicit value.
+
+    Archive cascade: ``is_archived=True`` also sets ``include_in_net_worth=False``
+    atomically in the same write. Unarchiving (``is_archived=False``) does NOT
+    restore the prior ``include_in_net_worth`` value — pass
+    ``include_in_net_worth=True`` explicitly to re-include. When the cascade
+    fires, the response data includes ``cascaded_include_in_net_worth: false``
+    to surface the side effect.
+
+    Soft-validation warnings (for non-canonical ``account_subtype`` or
+    ``holder_category`` values) are embedded in ``data['warnings']``.
     """
     kwargs: dict[str, object] = {
         "official_name": official_name,
@@ -214,6 +175,10 @@ def accounts_set(
         "credit_limit": Decimal(str(credit_limit))
         if credit_limit is not None
         else None,
+        "display_name": display_name,
+        "include_in_net_worth": include_in_net_worth,
+        # MCP param `is_archived` → service kwarg `archived`.
+        "archived": is_archived,
     }
     if clear_fields:
         unknown = set(clear_fields) - _CLEARABLE_FIELDS
@@ -232,6 +197,8 @@ def accounts_set(
     data = settings.to_dict()
     if warnings:
         data["warnings"] = warnings
+    if is_archived is True:
+        data["cascaded_include_in_net_worth"] = False
     return build_envelope(data=data, sensitivity="medium")
 
 
@@ -437,38 +404,18 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        accounts_rename,
-        "accounts_rename",
-        "Rename an account (writes app.account_settings.display_name; empty clears). "
-        "Writes app.account_settings; revert by calling accounts_rename again with the prior value (or empty string to clear).",
-    )
-    register(
-        mcp,
-        accounts_include,
-        "accounts_include",
-        "Toggle include_in_net_worth on an account. "
-        "Writes app.account_settings.include_in_net_worth; revert by calling with the inverse `include` value.",
-    )
-    register(
-        mcp,
-        accounts_archive,
-        "accounts_archive",
-        "Archive an account; cascades include_in_net_worth=False in the same write. "
-        "Writes app.account_settings (archived, include_in_net_worth); revert with accounts_unarchive (does NOT auto-restore include_in_net_worth).",
-    )
-    register(
-        mcp,
-        accounts_unarchive,
-        "accounts_unarchive",
-        "Unarchive an account. Does NOT auto-restore include_in_net_worth. "
-        "Writes app.account_settings.archived=False; revert with accounts_archive.",
-    )
-    register(
-        mcp,
         accounts_set,
         "accounts_set",
-        "Partial update of Plaid-parity metadata (subtype, holder_category, currency, credit_limit, etc.). "
-        "Writes app.account_settings; revert by calling again with the prior values (no built-in undo). "
+        "Partial update of an account's settings. Behavioral fields: "
+        "display_name, include_in_net_worth, is_archived. Structural fields: "
+        "official_name, last_four, account_subtype, holder_category, "
+        "iso_currency_code, credit_limit. Pass None to leave a field "
+        "unchanged; include a text field's name in clear_fields to clear it "
+        "(booleans are not clearable). Archiving (is_archived=True) cascades "
+        "include_in_net_worth=False atomically; unarchive does NOT restore "
+        "the prior include value. "
+        "Writes app.account_settings; revert by calling again with the prior "
+        "values (no built-in undo). "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(

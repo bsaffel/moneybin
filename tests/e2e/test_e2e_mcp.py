@@ -99,7 +99,12 @@ class TestMCPServerBoot:
                 assert envelope["summary"]["sensitivity"] == "low"
 
     async def test_accounts_v2_tools_registered(self, mcp_env: dict[str, str]) -> None:
-        """All 14 v2 accounts namespace tools are registered on the server."""
+        """All v2 accounts namespace tools are registered on the server.
+
+        The narrow write tools (rename/include/archive/unarchive) were folded
+        into ``accounts_set``; confirm both that ``accounts_set`` is present
+        and that the removed names are gone.
+        """
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -119,10 +124,6 @@ class TestMCPServerBoot:
                     "accounts_list",
                     "accounts_get",
                     "accounts_summary",
-                    "accounts_rename",
-                    "accounts_include",
-                    "accounts_archive",
-                    "accounts_unarchive",
                     "accounts_set",
                     "accounts_balance_list",
                     "accounts_balance_history",
@@ -136,6 +137,17 @@ class TestMCPServerBoot:
 
                 # v1 tool removed — confirm it is gone
                 assert "accounts_balances" not in tool_names
+
+                # Narrow write tools folded into accounts_set — must be absent
+                for removed in (
+                    "accounts_rename",
+                    "accounts_include",
+                    "accounts_archive",
+                    "accounts_unarchive",
+                ):
+                    assert removed not in tool_names, (
+                        f"{removed} should be folded into accounts_set"
+                    )
 
     async def test_accounts_balance_assertions_list_invocable(
         self, mcp_env: dict[str, str]

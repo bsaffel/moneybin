@@ -1,4 +1,4 @@
-"""Smoke tests for accounts entity ops (list, show, rename, include).
+"""Smoke tests for accounts entity ops (list, get, set, resolve).
 
 These verify that the commands are wired and their help text is accessible.
 Full behavioral coverage is in test_accounts.py (which mocks AccountService).
@@ -24,13 +24,23 @@ def test_accounts_get_help() -> None:
     assert result.exit_code == 0
 
 
-def test_accounts_rename_help() -> None:
-    """Accounts rename command wires and shows --help."""
-    result = runner.invoke(app, ["accounts", "rename", "--help"])
+def test_accounts_set_help_lists_new_flags() -> None:
+    """`accounts set --help` advertises the folded-in behavioral flags."""
+    result = runner.invoke(app, ["accounts", "set", "--help"])
     assert result.exit_code == 0
+    # Behavioral flags folded in from the removed narrow commands
+    assert "--display-name" in result.output
+    assert "--include" in result.output and "--exclude" in result.output
+    assert "--archive" in result.output and "--unarchive" in result.output
 
 
-def test_accounts_include_help() -> None:
-    """Accounts include command wires and shows --help."""
-    result = runner.invoke(app, ["accounts", "include", "--help"])
-    assert result.exit_code == 0
+def test_accounts_rename_command_removed() -> None:
+    """`accounts rename` was folded into `accounts set --display-name`."""
+    result = runner.invoke(app, ["accounts", "rename", "x", "y"])
+    assert result.exit_code != 0
+
+
+def test_accounts_archive_command_removed() -> None:
+    """`accounts archive` was folded into `accounts set --archive`."""
+    result = runner.invoke(app, ["accounts", "archive", "x"])
+    assert result.exit_code != 0

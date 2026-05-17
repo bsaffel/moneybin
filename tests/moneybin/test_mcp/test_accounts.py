@@ -1,9 +1,10 @@
 # tests/moneybin/test_mcp/test_accounts.py
-"""Tests for accounts_resolve MCP tool.
+"""Tests for accounts.* MCP tools.
 
 Other accounts.* tool wiring lives in test_tools.py. This module covers the
 free-text resolution tool added per docs/specs/moneybin-mcp.md
-§accounts_resolve.
+§accounts_resolve, and the extended accounts_set entrypoint that subsumes
+the rename / include / archive / unarchive narrow tools.
 """
 
 from __future__ import annotations
@@ -14,7 +15,11 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp.tools.accounts import accounts_resolve, register_accounts_tools
+from moneybin.mcp.tools.accounts import (
+    accounts_resolve,
+    accounts_set,
+    register_accounts_tools,
+)
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -55,6 +60,26 @@ class TestAccountsResolveRegistration:
         register_accounts_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "accounts_resolve" in names
+
+
+class TestNarrowToolsRemoved:
+    """The four narrow account write tools were folded into accounts_set."""
+
+    @pytest.mark.unit
+    async def test_narrow_account_tools_removed(self) -> None:
+        srv = FastMCP("test")
+        register_accounts_tools(srv)
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        for removed in (
+            "accounts_rename",
+            "accounts_include",
+            "accounts_archive",
+            "accounts_unarchive",
+        ):
+            assert removed not in names, (
+                f"{removed} should be removed; folded into accounts_set"
+            )
+        assert "accounts_set" in names
 
 
 class TestAccountsResolve:
@@ -146,3 +171,60 @@ class TestAccountsResolve:
         result = await accounts_resolve(query="account", limit=2)
         parsed = result.to_dict()
         assert len(parsed["data"]) == 2
+
+
+class TestAccountsSetExtended:
+    """Tests for the extended accounts_set MCP tool.
+
+    The mcp_db template seeds ACC001/ACC002 in core.dim_accounts with no row
+    in app.account_settings — settings_update lazy-creates the row.
+    """
+
+    @pytest.mark.unit
+    async def test_accepts_display_name_and_include(self, mcp_db: Path) -> None:
+        """accounts_set accepts display_name and include_in_net_worth together."""
+        result = await accounts_set(
+            account_id="ACC001",
+            display_name="My Custom Name",
+            include_in_net_worth=False,
+        )
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "medium"
+        assert parsed["data"]["display_name"] == "My Custom Name"
+        assert parsed["data"]["include_in_net_worth"] is False
+        assert parsed["data"]["archived"] is False
+        # No cascade unless is_archived=True was passed.
+        assert "cascaded_include_in_net_worth" not in parsed["data"]
+
+    @pytest.mark.unit
+    async def test_is_archived_cascades_to_include(self, mcp_db: Path) -> None:
+        """is_archived=True translates to archived=True and cascades include_in_net_worth=False."""
+        result = await accounts_set(account_id="ACC001", is_archived=True)
+        parsed = result.to_dict()
+        # AccountSettings.to_dict() emits "archived", not "is_archived".
+        assert parsed["data"]["archived"] is True
+        assert parsed["data"]["include_in_net_worth"] is False
+        assert parsed["data"]["cascaded_include_in_net_worth"] is False
+
+    @pytest.mark.unit
+    async def test_unarchive_does_not_restore_include(self, mcp_db: Path) -> None:
+        """Unarchive (is_archived=False) leaves include_in_net_worth unchanged."""
+        # Archive first → include cascades to False.
+        await accounts_set(account_id="ACC001", is_archived=True)
+        # Unarchive without an explicit include flag.
+        result = await accounts_set(account_id="ACC001", is_archived=False)
+        parsed = result.to_dict()
+        assert parsed["data"]["archived"] is False
+        # NOT restored — caller must opt back in explicitly.
+        assert parsed["data"]["include_in_net_worth"] is False
+        assert "cascaded_include_in_net_worth" not in parsed["data"]
+
+    @pytest.mark.unit
+    async def test_clear_display_name(self, mcp_db: Path) -> None:
+        """display_name is in _CLEARABLE_FIELDS; clearing it returns NULL."""
+        # Set a name first.
+        await accounts_set(account_id="ACC001", display_name="Initial Name")
+        # Now clear it.
+        result = await accounts_set(account_id="ACC001", clear_fields=["display_name"])
+        parsed = result.to_dict()
+        assert parsed["data"]["display_name"] is None

@@ -109,6 +109,19 @@ class TestNoDBCommands:
             **e2e_env,
             # 127.0.0.1:1 is reserved and refuses connections fast.
             "MONEYBIN_SYNC__SERVER_URL": "http://127.0.0.1:1",
+            # This test asserts direct-dial behavior, so scope the
+            # environment to no-proxy regardless of what the parent
+            # process inherited (e.g., Claude Code's sandbox SOCKS
+            # proxy). Real users don't run with a proxy; the test must
+            # exercise the same path they will.
+            "HTTPS_PROXY": "",
+            "HTTP_PROXY": "",
+            "ALL_PROXY": "",
+            "NO_PROXY": "*",
+            "https_proxy": "",
+            "http_proxy": "",
+            "all_proxy": "",
+            "no_proxy": "*",
         }
         result = run_cli("sync", "status", env=env, timeout=15)
         assert result.exit_code != 0
