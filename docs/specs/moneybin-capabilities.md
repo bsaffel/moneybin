@@ -69,6 +69,7 @@ not-yet-built.
 | 8 | Refresh derived tables after raw data changes                    | `refresh_run`                | `refresh`                                          | —          | live                  |
 | 9 | Rotate the database encryption key                               | — *(cat 1 — secret material)*| `db_key_rotate`                                    | —          | live                  |
 | 10| Run the MCP server                                               | — *(cat 2 — operator)*       | `mcp_serve`                                        | —          | live                  |
+| 11| Hard-delete a user-created category                              | `categories_delete`          | `categories delete`                                | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. The "Discover

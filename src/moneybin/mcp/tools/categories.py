@@ -86,6 +86,31 @@ def categories_set(
     )
 
 
+@mcp_tool(sensitivity="low", read_only=False, destructive=True)
+def categories_delete(
+    category_id: str,
+    force: bool = False,
+) -> ResponseEnvelope:
+    """Hard-delete a user-created category.
+
+    Args:
+        category_id: ID of the user-created category to delete.
+        force: If True, cascade-delete referencing transaction and
+            budget rows; if False (default), refuse when references
+            exist.
+    """
+    with get_database() as db:
+        CategorizationService(db).delete_category(category_id, force=force)
+    return build_envelope(
+        data={
+            "category_id": category_id,
+            "action": "deleted",
+            "force": force,
+        },
+        sensitivity="low",
+    )
+
+
 def register_categories_tools(mcp: FastMCP) -> None:
     """Register all categories namespace tools with the FastMCP server."""
     register(
@@ -112,4 +137,18 @@ def register_categories_tools(mcp: FastMCP) -> None:
         "app.category_overrides for seeded ones; revert by calling again "
         "with the opposite is_active value. "
         "For category lifecycle: categories_create to add, categories_delete to remove.",
+    )
+    register(
+        mcp,
+        categories_delete,
+        "categories_delete",
+        "Hard-delete a user-created category. Refuses by default if "
+        "referenced by transactions or budgets; pass force=True to "
+        "cascade-delete those rows (affected transactions become "
+        "uncategorized). Default (seeded) categories cannot be deleted — "
+        "use categories_set with is_active=False to disable them. "
+        "Mutation surface: deletes app.user_categories row; with force=True "
+        "also deletes referencing app.transaction_categories rows and "
+        "matching app.budgets rows. No revert path — recreate with "
+        "categories_create.",
     )

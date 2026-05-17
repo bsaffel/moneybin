@@ -153,8 +153,11 @@ Reviewer responsibility on every PR adding or modifying an `@mcp_tool` decoratio
 
 ## Agent-experience reports
 
-Any session that touches MoneyBin's MCP server — testing, real use, or
-incidental lookup — must produce an agent-experience report per
-[`agent-experience.md`](agent-experience.md). Reports are session-internal:
-present to Brandon in chat, never paste into PRs, commits, CHANGELOG, or
-ADRs. See `agent-experience.md` for the reporting workflow.
+Any session in which the agent **invokes MoneyBin's MCP tools as a
+first-person consumer** — real use, smoke probing, or incidental lookup —
+must produce an agent-experience report per
+[`agent-experience.md`](agent-experience.md). Running the project test
+suite or editing MCP code/tests does not trigger a report; the signal is
+what it felt like to use the surface. Reports are session-internal: present
+to Brandon in chat, never paste into PRs, commits, CHANGELOG, or ADRs. See
+`agent-experience.md` for the full trigger list and reporting workflow.

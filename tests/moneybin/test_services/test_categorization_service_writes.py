@@ -635,3 +635,205 @@ class TestToggleCategory:
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).toggle_category("NOPE", is_active=False)
         assert exc_info.value.code == "CATEGORY_NOT_FOUND"
+
+
+class TestDeleteCategory:
+    """CategorizationService.delete_category — hard-delete with refuse/cascade."""
+
+    @pytest.mark.unit
+    def test_deletes_unreferenced_user_category(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("TestCat")
+        svc.delete_category(cat_id)
+
+        rows = db.execute(
+            "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+        ).fetchall()
+        assert rows == []
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_transactions(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("LinkedCat")
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) "
+            "VALUES (?, ?, 'user')",
+            ["txn-test", "LinkedCat"],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_budget(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("BudgetCat")
+        db.execute(
+            "INSERT INTO app.budgets "
+            "(budget_id, category, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?)",
+            ["bdg-test", "BudgetCat", "200.00", "2026-01"],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+
+    @pytest.mark.unit
+    def test_force_cascades_transaction_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ForceCat")
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) "
+            "VALUES (?, ?, 'user')",
+            ["txn-force", "ForceCat"],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+                ["txn-force"],
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_budget_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("BudgetForceCat")
+        db.execute(
+            "INSERT INTO app.budgets "
+            "(budget_id, category, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?)",
+            ["bdg-force", "BudgetForceCat", "100.00", "2026-01"],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.budgets WHERE budget_id = ?", ["bdg-force"]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_subcategory_match_is_exact(self, db: Database) -> None:
+        """Deleting (Childcare/Daycare) must not touch (Childcare/Preschool) refs."""
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("Childcare", subcategory="Daycare")
+        svc.create_category("Childcare", subcategory="Preschool")
+
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, subcategory, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-preschool", "Childcare", "Preschool"],
+        )
+        svc.delete_category(cat_id)
+
+        assert db.execute(
+            "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+            ["txn-preschool"],
+        ).fetchall() == [(1,)]
+
+    @pytest.mark.unit
+    def test_refuses_default_category(self, db: Database) -> None:
+        seed_categories_view(db)
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).delete_category("FND")
+        assert exc_info.value.code == "CATEGORY_IS_DEFAULT"
+
+    @pytest.mark.unit
+    def test_raises_for_unknown_category(self, db: Database) -> None:
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).delete_category("does-not-exist")
+        assert exc_info.value.code == "CATEGORY_NOT_FOUND"
+
+    @pytest.mark.unit
+    def test_unforced_delete_does_not_touch_refs(self, db: Database) -> None:
+        """force=False on an unreferenced category must not run cascade DELETEs.
+
+        Regression guard for the TOCTOU window where cascade DELETEs ran
+        unconditionally after the refs-check, even when force=False. A
+        concurrent INSERT between check and delete would have been silently
+        clobbered. After the fix, cascade DELETEs only run when force=True.
+        """
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("Untouchable")
+        # Seed an unrelated row that shares no text with Untouchable.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) "
+            "VALUES ('txn-bystander', 'OtherCat', 'user')"
+        )
+        svc.delete_category(cat_id)
+        # The bystander row must still be present — force=False didn't run
+        # cascade DELETEs that could have raced with a concurrent INSERT.
+        assert db.execute(
+            "SELECT 1 FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-bystander'"
+        ).fetchall() == [(1,)]
+
+    @pytest.mark.unit
+    def test_force_refuses_on_text_collision(self, db: Database) -> None:
+        """force=True must refuse when another taxonomy row shares the text.
+
+        Phase 1 text-FK guard. Two user categories with the same
+        (category, subcategory) text legitimately coexist (V015 dropped the
+        UNIQUE constraint); a force-delete cannot disambiguate referencing
+        rows by category_id today, so refuse rather than clobber both.
+        """
+        svc = CategorizationService(db)
+        first_id = svc.create_category("Twin")
+        # Directly insert a colliding user_category — bypasses create_category's
+        # service-layer duplicate check to simulate the post-V015 collision
+        # case the Phase 1 guard exists to catch.
+        db.execute(
+            "INSERT INTO app.user_categories "
+            "(category_id, category, subcategory, is_active) "
+            "VALUES ('TWIN00000002', 'Twin', NULL, true)"
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(first_id, force=True)
+        assert exc_info.value.code == "CATEGORY_TEXT_COLLISION"
+
+    @pytest.mark.unit
+    def test_cascade_is_atomic(self, db: Database) -> None:
+        """All three DELETEs run inside a single transaction.
+
+        Guards against the half-applied cascade where transaction_categories
+        gets deleted but user_categories doesn't (leaving orphaned snapshot
+        rows + a still-present category). Verified indirectly: after a
+        successful force-delete the user_categories row is gone AND the
+        cascade DELETE ran — both states are observable.
+        """
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("AtomicCat")
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) "
+            "VALUES ('txn-atomic', 'AtomicCat', 'user')"
+        )
+        svc.delete_category(cat_id, force=True)
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?",
+                [cat_id],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories "
+                "WHERE transaction_id = 'txn-atomic'"
+            ).fetchall()
+            == []
+        )

@@ -4,17 +4,37 @@ description: "Agent-experience reporting rule for MoneyBin MCP testing"
 
 # Agent Experience Reports for MoneyBin's MCP
 
-Whenever you interact with MoneyBin's MCP server in a session — **for any
-reason** — you MUST produce a short **agent-experience report** at the end.
-That includes:
+Whenever you **invoke MCP tools** against MoneyBin's running MCP server in
+a session — **for any reason** — you MUST produce a short
+**agent-experience report** at the end. That includes:
 
-- Test probing, smoke checks, new-tool validation, comparing surfaces.
+- Smoke checks, new-tool validation, comparing surfaces by actually calling
+  tools.
 - Production-style use (answering a real financial question with MoneyBin).
 - Read-only lookups during unrelated implementation work.
 - One-off "just checking" calls.
 
-If you touched the MCP server, write the report. The only exception is
-fully automated test suites, which have their own contracts.
+If you invoked MCP tools as an agent consumer, write the report.
+
+### What does NOT trigger a report
+
+The trigger is **first-person tool invocation as an agent consumer**. The
+following do **not** count, even though they touch MCP-related code or
+state:
+
+- **Running the project test suite** (`pytest`, `make test`,
+  `tests/moneybin/test_mcp/...`) — the harness drives the calls, not you.
+  Test failures are captured by pytest output, not AX prose.
+- **Editing MCP code or its tests** without manually invoking the tools
+  afterward — code review, refactors, type fixes, dependency bumps.
+- **Reading MCP code, specs, or fixtures** to answer a question.
+- **Asking another agent / subagent to do MCP work** on your behalf —
+  if the work warrants a report, that agent owes it (or its summary
+  surfaces friction); you don't double-bill.
+
+The signal we care about is *what it felt like to use the surface as an
+agent.* Mechanical test execution and code editing don't produce that
+signal, so they don't produce a report.
 
 This rule exists because the MCP server is a **first-class agent surface**
 (see `mcp-server.md`), and the only reliable way to keep it that way is to

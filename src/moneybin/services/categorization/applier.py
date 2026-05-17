@@ -47,6 +47,7 @@ from moneybin.services.categorization._shared import (
     priority_case_sql,
 )
 from moneybin.tables import (
+    BUDGETS,
     CATEGORIES,
     CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
@@ -626,6 +627,128 @@ class MatchApplier:
                 f"SET is_active = ?, updated_at = CURRENT_TIMESTAMP "
                 f"WHERE category_id = ?",
                 [is_active, category_id],
+            )
+
+    def delete_category(self, category_id: str, *, force: bool = False) -> None:
+        """Hard-delete a user-created category.
+
+        Refuses by default if the category is referenced by any rows in
+        ``app.transaction_categories`` (matched on the same
+        ``(category, subcategory)`` pair) or ``app.budgets`` (top-level
+        ``category`` text match — only relevant when deleting a top-level
+        user category). With ``force=True``, deletes referencing rows in
+        both tables before removing the ``app.user_categories`` row;
+        affected transactions return to the uncategorized state (no row
+        in ``app.transaction_categories``), mirroring ``clear_category``.
+
+        Default (seeded) categories cannot be hard-deleted — operators
+        disable them via :meth:`toggle_category` so that
+        ``app.category_overrides`` records the deactivation without
+        destroying the canonical taxonomy row.
+
+        Args:
+            category_id: ID of the user-created category to delete.
+            force: If True, cascade-delete referencing transaction and
+                budget rows; if False, refuse when references exist.
+
+        Raises:
+            UserError(code="CATEGORY_NOT_FOUND"): no category with this ID.
+            UserError(code="CATEGORY_IS_DEFAULT"): seeded default
+                categories cannot be hard-deleted; use ``toggle_category``.
+            UserError(code="CATEGORY_HAS_REFERENCES"): force=False and the
+                category is referenced by transactions or budgets.
+        """
+        existing = self._db.execute(
+            f"SELECT category, subcategory FROM {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+            f"WHERE category_id = ?",
+            [category_id],
+        ).fetchone()
+        if not existing:
+            default = self._db.execute(
+                f"SELECT 1 FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"WHERE category_id = ? AND is_default = TRUE",
+                [category_id],
+            ).fetchone()
+            if default:
+                raise UserError(
+                    f"Default category {category_id} cannot be deleted "
+                    f"(use categories_set with is_active=False to disable)",
+                    code="CATEGORY_IS_DEFAULT",
+                )
+            raise UserError(
+                f"Category {category_id} not found",
+                code="CATEGORY_NOT_FOUND",
+            )
+        category_name, subcategory_name = existing
+
+        # Budgets only carry top-level category — subcategory rows can't block
+        # them, and cascade must not touch budgets when deleting a subcategory.
+        check_budgets = subcategory_name is None
+
+        # Phase 1 text-FK guard: with force=True, cascade DELETEs match
+        # referencing rows by (category, subcategory) text. If another taxonomy
+        # row (a seeded default or a second user_category) shares the same text,
+        # we would silently uncategorize transactions and budgets that belong to
+        # it. Refuse to cascade when ambiguity exists; the Phase 2 category_id
+        # FK migration removes this risk (see private/plans/2026-05-17-
+        # category-id-fk-migration.md).
+        if force:
+            collision_row = self._db.execute(
+                f"SELECT COUNT(*) FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ? "
+                f"  AND category_id != ?",
+                [category_name, subcategory_name, category_id],
+            ).fetchone()
+            if collision_row and collision_row[0]:
+                raise UserError(
+                    f"Cannot force-delete category {category_id}: another "
+                    f"taxonomy row shares the same (category, subcategory) "
+                    f"text. Cascade would clobber unrelated references.",
+                    code="CATEGORY_TEXT_COLLISION",
+                )
+
+        if not force:
+            refs_row = self._db.execute(
+                f"SELECT "
+                f"  EXISTS(SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"         WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?), "
+                f"  CASE WHEN ? THEN "
+                f"    EXISTS(SELECT 1 FROM {BUDGETS.full_name} WHERE category = ?) "
+                f"  ELSE FALSE END",
+                [category_name, subcategory_name, check_budgets, category_name],
+            ).fetchone()
+            has_txn_refs = bool(refs_row and refs_row[0])
+            has_budget_refs = bool(refs_row and refs_row[1])
+            if has_txn_refs or has_budget_refs:
+                raise UserError(
+                    f"Category {category_id} is referenced by "
+                    + " and ".join(
+                        label
+                        for label, present in (
+                            ("transactions", has_txn_refs),
+                            ("budgets", has_budget_refs),
+                        )
+                        if present
+                    )
+                    + "; pass force=True to cascade-delete.",
+                    code="CATEGORY_HAS_REFERENCES",
+                )
+
+        with self._transaction():
+            if force:
+                self._db.execute(
+                    f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                    f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",
+                    [category_name, subcategory_name],
+                )
+                if check_budgets:
+                    self._db.execute(
+                        f"DELETE FROM {BUDGETS.full_name} WHERE category = ?",  # noqa: S608  # TableRef constant
+                        [category_name],
+                    )
+            self._db.execute(
+                f"DELETE FROM {USER_CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
+                [category_id],
             )
 
     # -- Guarded categorization write --

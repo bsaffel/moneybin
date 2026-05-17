@@ -341,6 +341,10 @@ class CategorizationService:
         """Enable or disable a category. Existing categorizations are preserved."""
         self._applier.toggle_category(category_id, is_active=is_active)
 
+    def delete_category(self, category_id: str, *, force: bool = False) -> None:
+        """Hard-delete a user-created category. See applier for full semantics."""
+        self._applier.delete_category(category_id, force=force)
+
     # -- Categorization core --
 
     def write_categorization(

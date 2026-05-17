@@ -14,6 +14,7 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.categories import (
+    categories_delete,
     categories_list,
     categories_set,
     register_categories_tools,
@@ -57,6 +58,7 @@ class TestCategorizeToolRegistration:
         assert "merchants_create" in names
         assert "categories_create" in names
         assert "categories_set" in names
+        assert "categories_delete" in names
         assert "transactions_categorize_assist" in names
 
     @pytest.mark.unit
@@ -125,3 +127,63 @@ class TestCategorySetWritePath:
             ).fetchone()
         assert rows == [(False,)]
         assert override_count == (0,)
+
+
+class TestCategoriesDeleteTool:
+    """categories_delete envelopes, error mapping, and force semantics."""
+
+    @pytest.mark.unit
+    async def test_deletes_unreferenced_user_category(self, mcp_db: Path) -> None:
+        with get_database() as db:
+            db.execute(
+                "INSERT INTO app.user_categories "
+                "(category_id, category, subcategory, is_active) "
+                "VALUES ('USERCAT1', 'TestCat', NULL, true)"
+            )
+
+        envelope = (await categories_delete(category_id="USERCAT1")).to_dict()
+
+        assert envelope["data"]["action"] == "deleted"
+        assert envelope["data"]["category_id"] == "USERCAT1"
+        assert envelope["data"]["force"] is False
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?",
+                ["USERCAT1"],
+            ).fetchall()
+        assert rows == []
+
+    @pytest.mark.unit
+    async def test_default_category_returns_error_envelope(self, mcp_db: Path) -> None:
+        with get_database() as db:
+            seed_categories_view(db)
+        envelope = (await categories_delete(category_id="FND")).to_dict()
+        assert envelope["status"] == "error"
+        assert envelope["error"]["code"] == "CATEGORY_IS_DEFAULT"
+
+    @pytest.mark.unit
+    async def test_force_cascade_clears_transaction_reference(
+        self, mcp_db: Path
+    ) -> None:
+        with get_database() as db:
+            db.execute(
+                "INSERT INTO app.user_categories "
+                "(category_id, category, subcategory, is_active) "
+                "VALUES ('USERCAT2', 'Linked', NULL, true)"
+            )
+            db.execute(
+                "INSERT INTO app.transaction_categories "
+                "(transaction_id, category, categorized_by) "
+                "VALUES ('txn-forced', 'Linked', 'user')"
+            )
+
+        envelope = (
+            await categories_delete(category_id="USERCAT2", force=True)
+        ).to_dict()
+        assert envelope["data"]["force"] is True
+        with get_database(read_only=True) as db:
+            txn_rows = db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+                ["txn-forced"],
+            ).fetchall()
+        assert txn_rows == []
