@@ -68,8 +68,8 @@ def sync_classification_comments(db: _SupportsExecute) -> int:
     sigil stripped so the human comment is restored.
 
     Args:
-        db: An object exposing ``execute(sql, parameters=...)`` — either
-            a ``Database`` or a raw ``duckdb.DuckDBPyConnection``.
+        db: An object exposing ``execute(sql)`` — either a ``Database``
+            or a raw ``duckdb.DuckDBPyConnection``.
 
     Returns:
         Number of ``COMMENT ON COLUMN`` statements actually executed.
