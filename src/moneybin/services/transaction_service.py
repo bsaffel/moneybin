@@ -995,13 +995,7 @@ class TransactionService:
                 [transaction_id],
             ).fetchone()
             next_ord = int(ord_row[0]) if ord_row is not None else 0
-            # Phase 1 dual-write: resolve the FK alongside the text snapshot.
-            # `None` is a permitted write — splits often carry no category.
-            category_id = (
-                resolve_category_id(self._db, category, subcategory)
-                if category
-                else None
-            )
+            category_id = resolve_category_id(self._db, category, subcategory)
             params: list[Any] = [
                 split_id,
                 transaction_id,
@@ -1186,14 +1180,9 @@ class TransactionService:
                 )
             for ord_idx, s in enumerate(prepared):
                 split_id = uuid.uuid4().hex[:12]
-                # Phase 1 dual-write: resolve per row; each split may have its
-                # own category (or none — splits often carry no category).
-                row_category = s["category"]
-                row_subcategory = s["subcategory"]
-                category_id = (
-                    resolve_category_id(self._db, row_category, row_subcategory)
-                    if row_category
-                    else None
+                # Resolve FK per row — each split has its own (possibly empty) category.
+                category_id = resolve_category_id(
+                    self._db, s["category"], s["subcategory"]
                 )
                 self._db.conn.execute(
                     """
@@ -1206,8 +1195,8 @@ class TransactionService:
                         split_id,
                         transaction_id,
                         s["amount"],
-                        row_category,
-                        row_subcategory,
+                        s["category"],
+                        s["subcategory"],
                         category_id,
                         s["note"],
                         ord_idx,

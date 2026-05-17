@@ -137,23 +137,26 @@ class BudgetService:
         result = self._db.execute(check_sql, [category, start_month, start_month])
         existing = result.fetchone()
 
+        # Budgets are top-level only (no subcategory column), so resolve against
+        # the top-level dim row by passing None on the subcategory axis.
+        category_id = resolve_category_id(self._db, category, None)
         if existing:
-            # Update existing budget
+            # Re-resolve on update so a NULL FK from V014's backfill window heals
+            # the first time the user touches this budget after creating the
+            # matching user_category.
             update_sql = f"""
                 UPDATE {BUDGETS.full_name}
                 SET monthly_amount = ?,
+                    category_id = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE budget_id = ?
             """
-            self._db.execute(update_sql, [monthly_amount, str(existing[0])])
+            self._db.execute(
+                update_sql, [monthly_amount, category_id, str(existing[0])]
+            )
             action = "updated"
         else:
-            # Create new budget
             budget_id = uuid.uuid4().hex[:12]
-            # Phase 1 dual-write: resolve the FK alongside the text snapshot.
-            # Budgets are top-level only (no subcategory column), so pass
-            # None on the subcategory axis to match the top-level dim row.
-            category_id = resolve_category_id(self._db, category, None)
             insert_sql = f"""
                 INSERT INTO {BUDGETS.full_name}
                     (budget_id, category, category_id, monthly_amount, start_month)

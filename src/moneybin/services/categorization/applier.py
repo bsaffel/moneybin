@@ -191,9 +191,6 @@ class MatchApplier:
         non-user write must route through :meth:`write_categorization`.
         """
         prior = self._fetch_category_row(transaction_id)
-        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
-        # `None` is a permitted write — orphaned text is a real state during
-        # the dual-write window.
         category_id = resolve_category_id(self._db, category, subcategory)
         self._db.conn.execute(
             f"""
@@ -299,12 +296,7 @@ class MatchApplier:
         # DuckDB binds Python lists to VARCHAR[]. An empty list keeps the
         # column default semantics intact for non-exemplar merchants.
         exemplars_param: list[str] = list(exemplars) if exemplars else []
-        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
-        # `category=None` is a permitted write — both an unset category and
-        # unresolvable text land NULL.
-        category_id = (
-            resolve_category_id(self._db, category, subcategory) if category else None
-        )
+        category_id = resolve_category_id(self._db, category, subcategory)
         self._db.execute(
             f"""
             INSERT INTO {USER_MERCHANTS.full_name}
@@ -797,11 +789,8 @@ class MatchApplier:
         existing_table = TRANSACTION_CATEGORIES.full_name
         excluded_priority = priority_case_sql("EXCLUDED.categorized_by")
         existing_priority = priority_case_sql(f"{existing_table}.categorized_by")
-        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
-        # `None` is a permitted write — orphaned text is a real state during
-        # the dual-write window. The FK is paired with the text on the same
-        # precedence terms: same WHERE guard admits both, same conflict
-        # overwrites both.
+        # FK is paired with text on identical precedence terms: same WHERE guard
+        # admits both, same ON CONFLICT overwrites both.
         category_id = resolve_category_id(self._db, category, subcategory)
         cursor = self._db.execute(
             f"""

@@ -335,21 +335,24 @@ class Merchant(NamedTuple):
 
 
 def resolve_category_id(
-    db: Database, category: str, subcategory: str | None
+    db: Database, category: str | None, subcategory: str | None
 ) -> str | None:
     """Resolve a (category, subcategory) text pair to its ``category_id``.
 
     Returns the matching ``category_id`` from ``core.dim_categories`` (the
     unified view over seeds + ``app.user_categories``) or ``None`` when
-    no match exists. Callers in the Phase 1 dual-write window must accept
-    the ``None`` case — orphaned text is a real state (legacy rows
-    pre-V014 backfill, or text written before its target category was
-    created).
+    no match exists. ``category=None`` short-circuits to ``None`` so
+    writers with optional categories (merchants, splits) can pass through
+    without a guard. Phase 1 dual-write callers must accept the ``None``
+    case — orphaned text is a real state (legacy rows pre-V014 backfill,
+    or text written before its target category was created).
 
     ``IS NOT DISTINCT FROM`` treats NULL symmetrically on the subcategory
     axis, so passing ``subcategory=None`` matches a dim row with
     ``subcategory IS NULL``.
     """
+    if category is None:
+        return None
     row = db.execute(
         f"SELECT category_id FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
         "WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",

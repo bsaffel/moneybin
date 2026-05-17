@@ -36,7 +36,6 @@ canonical body — the inline body is a one-shot for this migration only.
 """
 
 import logging
-from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -147,18 +146,18 @@ def migrate(conn: object) -> None:
             WHERE t.{fk_col} IS NULL
               AND t.{text_col} = dc.category
               AND {subcategory_pred}
-            RETURNING 1
         """  # noqa: S608  # constants from _BACKFILLS, no user input
-        rows = cast(
-            list[tuple[int]],
-            conn.execute(backfill_sql).fetchall(),  # type: ignore[union-attr]
-        )
-        logger.info(f"V014: backfilled {fk_col} for {len(rows)} {table} rows")
+        conn.execute(backfill_sql)  # type: ignore[union-attr]
 
-        orphan_row = conn.execute(  # type: ignore[union-attr]
-            f"SELECT COUNT(*) FROM {table} WHERE {fk_col} IS NULL"  # noqa: S608  # constants from _BACKFILLS, no user input
+        # Single COUNT scan derives both backfilled and orphan totals without
+        # materializing one row per updated record (a real concern on
+        # multi-million-row tables like transaction_categories).
+        counts_row = conn.execute(  # type: ignore[union-attr]
+            f"SELECT COUNT(*), COUNT(*) FILTER (WHERE {fk_col} IS NULL) "  # noqa: S608  # constants from _BACKFILLS
+            f"FROM {table}"
         ).fetchone()
-        orphan_count = orphan_row[0] if orphan_row else 0
+        total, orphan_count = counts_row if counts_row else (0, 0)
+        logger.info(f"V014: {total - orphan_count} {table} rows resolved {fk_col}")
         if orphan_count:
             logger.warning(
                 f"V014: {orphan_count} {table} rows have NULL {fk_col} "

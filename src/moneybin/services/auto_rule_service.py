@@ -291,7 +291,6 @@ class AutoRuleService:
 
         proposed_rule_id = uuid.uuid4().hex[:12]
         initial_status = "pending" if threshold <= 1 else "tracking"
-        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
         category_id = resolve_category_id(self._db, category, subcategory)
         self._db.execute(
             f"""
