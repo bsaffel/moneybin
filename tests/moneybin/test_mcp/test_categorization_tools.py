@@ -14,8 +14,8 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.categories import (
+    categories,
     categories_delete,
-    categories_list,
     categories_set,
     register_categories_tools,
 )
@@ -48,7 +48,7 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     async def test_all_categorize_tools_register(self) -> None:
         names = await _registered_names()
-        assert "categories_list" in names
+        assert "categories" in names
         assert "transactions_categorize_rules_list" in names
         assert "merchants_list" in names
         assert "transactions_categorize_stats" in names
@@ -73,7 +73,7 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     async def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:
         """List categories returns a valid envelope (empty when no data)."""
-        cat_result = (await categories_list()).to_dict()
+        cat_result = (await categories()).to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
         assert isinstance(cat_result["data"], list)

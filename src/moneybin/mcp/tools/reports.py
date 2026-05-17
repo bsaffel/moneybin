@@ -165,7 +165,7 @@ def reports_spending(
             from_month=from_month, to_month=to_month, category=category, compare=compare
         )
     actions = [
-        "Filter to one category with category='<name>' (see categories_list)",
+        "Filter to one category with category='<name>' (see categories)",
         "Use reports_cashflow for inflow/outflow/net (includes income; spending excludes it)",
         "Use reports_recurring to find subscription-like patterns",
     ]

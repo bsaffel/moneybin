@@ -64,8 +64,13 @@ def categorization_organize() -> str:
         **Relevant tools:**
         - transactions_categorize_stats — check current categorization coverage
         - transactions_categorize_pending_list — fetch uncategorized transactions
+<<<<<<< HEAD
         - categories_list — see available categories
         - transactions_categorize_commit — commit accepted categorizations
+=======
+        - categories — see available categories
+        - transactions_categorize_apply — apply categories to transactions
+>>>>>>> 72641bc (refactor(mcp): rename categories_list -> categories (shape 5 noun-only))
         - transactions_categorize_rules_create — create rules for recurring patterns
         - merchants_create — map merchant names to categories
 
