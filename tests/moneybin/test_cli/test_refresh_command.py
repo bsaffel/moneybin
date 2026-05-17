@@ -78,3 +78,89 @@ def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh"])
 
     assert result.exit_code == 1
+
+
+def test_refresh_step_transform_only(runner: CliRunner) -> None:
+    """``--step transform`` runs only the transform step."""
+    fake_result = MagicMock(applied=True, duration_seconds=0.5, error=None)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--step", "transform"])
+
+    assert result.exit_code == 0
+    assert svc.call_args.kwargs == {"steps": ["transform"]}
+
+
+def test_refresh_step_repeatable(runner: CliRunner) -> None:
+    """``--step match --step categorize`` collects into a list."""
+    fake_result = MagicMock(applied=False, duration_seconds=None, error=None)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(
+            app, ["refresh", "--step", "match", "--step", "categorize"]
+        )
+
+    # applied=False (because transform is skipped) → exit 1 per the existing CLI contract.
+    assert result.exit_code == 1
+    assert svc.call_args.kwargs == {"steps": ["match", "categorize"]}
+
+
+def test_refresh_step_json_partial_cascade(runner: CliRunner) -> None:
+    """``--step transform --output json`` returns the same envelope MCP returns."""
+    fake_result = MagicMock(applied=True, duration_seconds=0.7, error=None)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(
+            app, ["refresh", "--step", "transform", "--output", "json"]
+        )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["data"]["applied"] is True
+    assert payload["data"]["duration_seconds"] == 0.7
+    # No follow-up hint because transform was requested without match
+    # (the hint fires only on match-without-categorize).
+    assert not any(
+        "categorize" in a and "refresh_run" in a for a in payload["actions"]
+    ), payload["actions"]
+
+
+def test_refresh_step_match_without_categorize_emits_followup_hint(
+    runner: CliRunner,
+) -> None:
+    """``--step match --output json`` emits the categorize follow-up hint."""
+    fake_result = MagicMock(applied=False, duration_seconds=None, error=None)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--step", "match", "--output", "json"])
+
+    # match-only → no transform → applied=False → exit 1.
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert any("categorize" in a and "refresh_run" in a for a in payload["actions"]), (
+        payload["actions"]
+    )
+
+
+def test_refresh_unknown_step_raises_user_error(runner: CliRunner) -> None:
+    """Unknown step name surfaces as a CLI error with non-zero exit."""
+    with (
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--step", "bogus"])
+
+    assert result.exit_code != 0
+    assert "UNKNOWN_REFRESH_STEP" in result.output or "bogus" in result.output

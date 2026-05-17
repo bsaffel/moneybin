@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 def refresh_command(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    step: list[str] = typer.Option(
+        None,
+        "--step",
+        help=(
+            "Limit the cascade to one or more steps "
+            "(repeatable; choose from match, transform, categorize). "
+            "Default: full cascade. Steps always run in canonical order "
+            "(match → transform → categorize) regardless of flag order."
+        ),
+    ),
 ) -> None:
     """Run the post-load refresh pipeline: matching, SQLMesh apply, categorization.
 
@@ -31,8 +41,14 @@ def refresh_command(
     from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
     from moneybin.services.refresh import refresh  # noqa: PLC0415
 
+    steps: list[str] | None = step if step else None
+
     with handle_cli_errors(), get_database() as db:
-        result = refresh(db)
+        result = refresh(db, steps=steps)
+
+    requested: set[str] = (
+        {"match", "transform", "categorize"} if steps is None else set(steps)
+    )
 
     if output == OutputFormat.JSON:
         data: dict[str, object] = {
@@ -46,6 +62,11 @@ def refresh_command(
             actions.append(
                 "SQLMesh apply failed — call transform_plan to inspect, "
                 "or refresh_run to retry."
+            )
+        if "match" in requested and "categorize" not in requested:
+            actions.append(
+                "Run refresh_run(steps=['categorize']) to apply rules/merchants "
+                "to newly-matched rows."
             )
         render_or_json(
             build_envelope(data=data, sensitivity="low", actions=actions),
@@ -63,5 +84,11 @@ def refresh_command(
         duration = result.duration_seconds or 0.0
         logger.info(f"✅ Refresh complete in {duration:.2f}s")
     else:
-        logger.error(f"❌ Refresh failed: {result.error}")
+        if result.error is not None:
+            logger.error(f"❌ Refresh failed: {result.error}")
+            raise typer.Exit(1)
+        # Partial cascade that omitted transform — not an error, but
+        # report the result so users can tell the difference between
+        # "nothing happened" and "apply succeeded silently."
+        logger.info("✅ Partial refresh complete (transform skipped)")
         raise typer.Exit(1)
