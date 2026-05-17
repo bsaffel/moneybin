@@ -19,7 +19,7 @@ Five bugs, all confirmed against the current `main`:
 1. **`categorize_assist` SQL projects only `description, source_type, transaction_id`.** `memo` and structural fields (`transaction_type`, `check_number`, `is_transfer`, `payment_channel`) are dropped before redaction. For aggregator transactions (`PAYPAL INST XFER`, `ZELLE TO`, `VENMO PAYMENT`, generic ACH), the wrapped merchant identity lives in `memo` and the LLM never sees it.
 2. **`_match_description` operates only on `description`.** Even a user-curated merchant for "Google YouTube" cannot fire when `description = 'PAYPAL INST XFER'` and the YouTube reference is in `memo`.
 3. **Auto-merchant creation uses the full normalized description as the rule pattern with `match_type='contains'`.** Aggregator strings (`PAYPAL INST XFER`) over-generalize — every future PayPal row gets the first row's category. Varying strings (`BILL PAY Chase - Sapphire 1234`) fail to match siblings — no snowball.
-4. **`categorize_pending()` is never called from the MCP `transactions_categorize_apply` tool.** Merchants and rules created in batch N never apply to still-uncategorized rows before batch N+1. Live observation: `by_source: {"ai": 241}` — every categorization came from the LLM-assist path because the deterministic pillars contributed zero between batches. The cold-start spec's "by the third or fourth import the LLM is barely involved" promise structurally cannot fire.
+4. **`categorize_pending()` is never called from the MCP `transactions_categorize_commit` tool.** Merchants and rules created in batch N never apply to still-uncategorized rows before batch N+1. Live observation: `by_source: {"ai": 241}` — every categorization came from the LLM-assist path because the deterministic pillars contributed zero between batches. The cold-start spec's "by the third or fourth import the LLM is barely involved" promise structurally cannot fire.
 5. **OFX `<NAME>` (32-char-capped by the OFX 1.x format itself) becomes `description`; `<MEMO>` carries the real identity but is dropped from matchable text.** Not a bug we caused — it's how OFX is shaped — but it means `description`-only matching is structurally insufficient for OFX-sourced transactions.
 
 Bugs 1, 2, 5 are the same problem (field coverage). Bugs 3 and 4 are independent. Together they explain every "why didn't the snowball roll?" symptom from the live test.
@@ -228,7 +228,7 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 |---|---|---|
 | Import completes | `import_service.py` (existing) | All uncategorized rows from the import |
 | Rules CLI command | `cli/commands/transactions/categorize/rules.py` (existing) | All uncategorized rows |
-| **Categorize_apply commits a batch** (new) | `transactions_categorize_apply` MCP tool | All still-uncategorized rows |
+| **Categorize_apply commits a batch** (new) | `transactions_categorize_commit` MCP tool | All still-uncategorized rows |
 | **Edit op with `reapply=True`** (new) | rule/merchant update operations | Rows matching the edited entity |
 
 The third row is the snowball fix. After the LLM-assist batch's writes commit, `categorize_pending()` runs once. New merchants and rules from the batch fan out to remaining uncategorized rows in the same dataset. The next `categorize_assist` call sees only what's still genuinely uncategorized.
@@ -309,7 +309,7 @@ The work lands in a single PR but proceeds in this internal order. Each step has
 3. **Field coverage parity** (fixes bugs 1, 2, 5). Extend `RedactedTransaction`, expand `categorize_assist` SQL projection, run redactor over `memo`, build `match_text`, update `_match_description` and `_fetch_merchants` to consume `match_text`. Update the assist tool to pass structural fields through to the response envelope.
 4. **Source precedence enforcement** (prerequisite for step 6). Introduce the inlined `CASE`-based priority comparison and the `ON CONFLICT ... WHERE` write path. All writes to `transaction_categories` route through a new `write_categorization` helper. Existing tests that assert "any source can overwrite any source" need updating to reflect the new precedence semantics; new tests cover precedence skipping outcomes.
 5. **Exemplar accumulator** (fixes bug 3). Schema change + migration. Update `categorize_apply` to append exemplars instead of inventing `contains` patterns. Update `_match_description` lookup order: exemplars first, then existing pattern types.
-6. **Auto-apply on commit** (fixes bug 4). `transactions_categorize_apply` calls `categorize_pending()` after writes commit. The `reapply: bool = False` flag is added to merchant/rule update operations; when `True`, the operation runs `categorize_pending()` scoped to that one entity's match set after the write.
+6. **Auto-apply on commit** (fixes bug 4). `transactions_categorize_commit` calls `categorize_pending()` after writes commit. The `reapply: bool = False` flag is added to merchant/rule update operations; when `True`, the operation runs `categorize_pending()` scoped to that one entity's match set after the write.
 7. **OP_SCORES specificity ranking.** Replace the `CASE match_type WHEN ...` ordering with the score-based comparator.
 
 ### Files to create

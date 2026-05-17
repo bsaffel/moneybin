@@ -222,7 +222,7 @@ Tools that accept list-typed parameters obey a server-enforced upper bound on ea
 - **Empty lists** are not a cap violation. Tools that need to reject empty input handle that themselves (an empty list is sometimes a meaningful query, e.g., "no filters").
 - **No opt-in flag.** Every tool with a list-typed parameter is capped implicitly; the cost of the per-tool override is the right place to disambiguate when (rarely) the default is wrong. Eliminating the explicit flag keeps the call-site API minimal and makes "did the author remember to enable it?" a non-question.
 
-Reference: `lunchmoney-mcp` ships 1–500 caps on its bulk writes (`update_transactions_bulk`, `delete_transactions_bulk`); the cap convention here generalizes that to any list-typed parameter and removes the awkward "bulk vs single" distinction. MoneyBin's tool-name surface drops the "bulk" qualifier — see the §`transactions_categorize_apply` exemplar for the post-rename shape. Internal helpers (e.g., `BulkCategorizationResult` → `CategorizationResult`) carry the same rename; the sweep is part of the same PR that introduces this cap convention.
+Reference: `lunchmoney-mcp` ships 1–500 caps on its bulk writes (`update_transactions_bulk`, `delete_transactions_bulk`); the cap convention here generalizes that to any list-typed parameter and removes the awkward "bulk vs single" distinction. MoneyBin's tool-name surface drops the "bulk" qualifier — see the §`transactions_categorize_commit` exemplar for the post-rename shape. Internal helpers (e.g., `BulkCategorizationResult` → `CategorizationResult`) carry the same rename; the sweep is part of the same PR that introduces this cap convention.
 
 ---
 
@@ -376,7 +376,7 @@ class TransactionService:
 ```
 
 - **Pagination:** `next_cursor` appears at the top level of the envelope when more pages exist. Pass it back as `cursor` to fetch the next page. Absent when all results fit in one page.
-- **Actions:** `["Use transactions_get with the next_cursor value to fetch the next page", "Use reports_spending for category breakdowns", "Use transactions_categorize_apply to categorize uncategorized transactions"]`
+- **Actions:** `["Use transactions_get with the next_cursor value to fetch the next page", "Use reports_spending for category breakdowns", "Use transactions_categorize_commit to categorize uncategorized transactions"]`
 
 **CLI command**
 
@@ -391,7 +391,7 @@ Default output is a table with date, description, amount, category, and account 
 
 ---
 
-### 2.3 `transactions_categorize_apply` — write tool, batch semantics, paired read tool
+### 2.3 `transactions_categorize_commit` — write tool, batch semantics, paired read tool
 
 **Service layer**
 
@@ -410,7 +410,7 @@ When `create_merchant_mappings` is true, the service normalizes each transaction
 
 **MCP tool**
 
-- **Name:** `transactions_categorize_apply`
+- **Name:** `transactions_categorize_commit`
 - **Description:** "Apply categories to multiple transactions at once. Pair with `transactions_categorize_pending_list` to fetch candidates first. Optionally auto-creates merchant mappings so future imports are categorized automatically."
 - **Sensitivity:** `medium` — reads transaction descriptions to create merchant mappings.
 - **Parameters:**
@@ -443,7 +443,7 @@ Note: for write tools, `data` is a result object, not an array. The envelope sti
 **CLI command**
 
 ```
-moneybin transactions categorize apply --file categorizations.json [--no-merchant-mappings] [--output json]
+moneybin transactions categorize commit --file categorizations.json [--no-merchant-mappings] [--output json]
 ```
 
 The CLI accepts a JSON file (or stdin) since batch data doesn't work as flags. `--no-merchant-mappings` disables the auto-create side-effect. Default output is a summary line: "Applied 48, skipped 0, errors 2, merchants created 12."
@@ -778,9 +778,19 @@ Fetch transactions that haven't been categorized yet. The read side of the categ
 - **Service:** `CategorizationService.uncategorized() -> TransactionSearchResult`
 - **CLI:** `moneybin transactions categorize pending [--suggest] [--limit 50]`
 
-### `transactions_categorize_apply`
+### `transactions_categorize_commit`
 
 *Exemplar — see section 2.3.*
+
+### `transactions_categorize_run`
+
+Run the categorization engine cascade over uncategorized transactions.
+
+- **Sensitivity:** `medium` — writes categorizations to `app.transaction_categories`.
+- **Unique parameters:** `methods: list[Literal["rules", "merchants"]] | None` (optional, default `["rules", "merchants"]`) — engines to run in order. A rule write blocks a merchant write at the same priority.
+- **Behavior:** Returns `{applied_by_method: {rules: int, merchants: int}, total_applied: int}`. Methods differ in QoS (data source, latency) but share inputs and outputs — this is method-parameter polymorphism. The `"ml"` literal will be added when ML categorization implementation lands (see §15 deferred).
+- **Service:** `CategorizationService.categorize_run(methods=...) -> dict`
+- **CLI:** `moneybin transactions categorize run [--methods rules,merchants] [--output json]`
 
 ### `transactions_categorize_rules_list`
 
@@ -1185,7 +1195,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Work through uncategorized transactions in batches, applying categories, creating merchant mappings, and building rules so future imports require less manual work.
 
-**Relevant tools:** `transactions_categorize_stats`, `categories_list`, `transactions_categorize_pending_list`, `transactions_categorize_apply`, `transactions_categorize_rules_create`, `merchants_create`, `categories_create`
+**Relevant tools:** `transactions_categorize_stats`, `categories_list`, `transactions_categorize_pending_list`, `transactions_categorize_commit`, `transactions_categorize_rules_create`, `merchants_create`, `categories_create`
 
 **Guardrails:**
 
@@ -1198,7 +1208,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 - If `transactions_categorize_ml_status` shows a trained model, use `suggest=true` to leverage ML suggestions
 - Stop when the user says stop, not when the queue is empty
 
-**Decision points:** User confirms each batch of categorizations before `transactions_categorize_apply` is called. User confirms proposed rules before `transactions_categorize_rules_create` is called.
+**Decision points:** User confirms each batch of categorizations before `transactions_categorize_commit` is called. User confirms proposed rules before `transactions_categorize_rules_create` is called.
 
 ### `onboarding` (Setup)
 
@@ -1397,7 +1407,7 @@ Workflow tools that operate on transaction state stay nested under `transactions
 | v1 | v2 |
 |---|---|
 | `categorize_uncategorized` | `transactions_categorize_pending_list` |
-| `categorize_bulk` | `transactions_categorize_apply` |
+| `categorize_bulk` | `transactions_categorize_commit` |
 | `categorize_apply_rules` | `transactions_categorize_rules_apply` |
 | `categorize_rules` | `transactions_categorize_rules_list` |
 | `categorize_create_rules` | `transactions_categorize_rules_create` |
