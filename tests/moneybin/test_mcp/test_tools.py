@@ -78,7 +78,7 @@ class TestToolRegistration:
         assert "accounts_balance_assertion_delete" in names
 
     @pytest.mark.unit
-    async def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
+    async def test_accounts_returns_envelope(self, mcp_db: object) -> None:
 
         result = await accounts()
         parsed = result.to_dict()
@@ -88,7 +88,7 @@ class TestToolRegistration:
         assert parsed["summary"]["sensitivity"] == "medium"
         assert len(parsed["data"]) == 2  # 2 accounts from mcp_db fixture
 
-    async def test_accounts_list_redacted_returns_low_sensitivity(
+    async def test_accounts_redacted_returns_low_sensitivity(
         self, mcp_db: object
     ) -> None:
         result = await accounts(redacted=True)

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.mcp.tools.import_inbox import import_inbox as inbox_list_tool
+from moneybin.mcp.tools.import_inbox import import_inbox as import_inbox_tool
 from moneybin.mcp.tools.import_inbox import inbox_sync as inbox_sync_tool
 from moneybin.services.inbox_service import (
     InboxListResult,
@@ -104,13 +104,13 @@ class TestInboxSyncTool:
         assert not any("categorize_assist" in a for a in envelope.actions)
 
 
-class TestInboxListTool:
+class TestImportInbox:
     """import_inbox envelope shape."""
 
     async def test_returns_would_process_shape(self, patch_service: MagicMock) -> None:
         patch_service.enumerate.return_value = InboxListResult(
             would_process=[{"filename": "a.csv", "account_hint": None}],
         )
-        envelope = await inbox_list_tool()
+        envelope = await import_inbox_tool()
         assert envelope.summary.sensitivity == "low"
         assert envelope.data["would_process"][0]["filename"] == "a.csv"

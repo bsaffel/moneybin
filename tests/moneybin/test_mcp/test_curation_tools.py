@@ -288,7 +288,7 @@ class TestImportLabelsSet:
 # ---------- audit list ----------
 
 
-class TestSystemAuditList:
+class TestSystemAudit:
     """Audit log query tool."""
 
     @pytest.mark.unit

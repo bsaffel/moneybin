@@ -1,7 +1,7 @@
 """Unified review queue: walks pending matches + uncategorized transactions.
 
 CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
-``transactions_matches_pending`` and ``transactions_categorize_pending_list``
+``transactions_matches_pending`` and ``transactions_categorize_pending``
 tools because their result shapes differ; the orientation tool
 ``transactions_review`` returns the counts.
 
