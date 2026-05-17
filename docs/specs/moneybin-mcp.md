@@ -866,15 +866,15 @@ Create a custom category.
 - **Service:** `CategorizationService.create_category() -> Category`
 - **CLI:** `moneybin categories create --category NAME [--subcategory NAME]`
 
-### `categories_toggle`
+### `categories_set`
 
-Enable or disable a category.
+Update a category's settings (currently only `is_active`).
 
 - **Sensitivity:** `low`
 - **Unique parameters:** `category_id: str` (required), `is_active: bool` (required).
-- **Behavior:** Toggles the active flag. Existing categorizations are preserved.
+- **Behavior:** Idempotent partial update. Existing categorizations are preserved when a category is disabled. Shape-1b — matches `accounts_set` / `budget_set`.
 - **Service:** `CategorizationService.toggle_category() -> ToggleResult`
-- **CLI:** `moneybin categories toggle --category-id ID --active/--inactive`
+- **CLI:** `moneybin categories set CATEGORY_ID --active/--inactive`
 
 ### `transactions_categorize_stats`
 
@@ -1439,7 +1439,7 @@ Categories are reference data that transactions reference, not a workflow on tra
 |---|---|
 | `categorize_categories` | `categories_list` |
 | `categorize_create_category` | `categories_create` |
-| `categorize_toggle_category` | `categories_toggle` |
+| `categorize_toggle_category` | `categories_set` | renamed twice (via `categories_toggle`) |
 | (new) | `categories_delete` |
 
 ### `merchants_*` (new top-level — merchant mapping reference data)

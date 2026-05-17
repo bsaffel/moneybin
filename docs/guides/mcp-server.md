@@ -60,7 +60,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 |------|-------------|
 | `categories_list` | List the category taxonomy (use `include_inactive=True` to see disabled) |
 | `categories_create` | Create a custom category or subcategory |
-| `categories_toggle` | Enable or disable a category |
+| `categories_set` | Update a category's settings (currently only `is_active`) |
 | `merchants_list` | List merchant name mappings |
 | `merchants_create` | Create one or many merchant mappings |
 

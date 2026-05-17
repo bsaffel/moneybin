@@ -15,7 +15,7 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp.tools.categories import (
     categories_list,
-    categories_toggle,
+    categories_set,
     register_categories_tools,
 )
 from moneybin.mcp.tools.merchants import register_merchants_tools
@@ -56,7 +56,7 @@ class TestCategorizeToolRegistration:
         assert "transactions_categorize_rules_delete" in names
         assert "merchants_create" in names
         assert "categories_create" in names
-        assert "categories_toggle" in names
+        assert "categories_set" in names
         assert "transactions_categorize_assist" in names
 
     @pytest.mark.unit
@@ -85,14 +85,14 @@ class TestCategorizeToolRegistration:
 
 
 class TestToggleCategoryWritePath:
-    """categories_toggle routes writes to the right backing table."""
+    """categories_set routes writes to the right backing table."""
 
     @pytest.mark.unit
     async def test_toggle_default_category_writes_override(self, mcp_db: Path) -> None:
         with get_database() as db:
             seed_categories_view(db)
 
-        await categories_toggle(category_id="FND", is_active=False)
+        await categories_set(category_id="FND", is_active=False)
 
         with get_database() as db:
             rows = db.execute(
@@ -112,7 +112,7 @@ class TestToggleCategoryWritePath:
                 VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
             """)
 
-        await categories_toggle(category_id="CUSTOM1", is_active=False)
+        await categories_set(category_id="CUSTOM1", is_active=False)
 
         with get_database() as db:
             rows = db.execute(
