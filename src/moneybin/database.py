@@ -281,6 +281,7 @@ class Database:
         self._db_path = db_path
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._closed = False
+        self._read_only = read_only
 
         store = secret_store or SecretStore()
 
@@ -935,15 +936,20 @@ def sqlmesh_context(
         # After the caller's SQLMesh plan/run has written
         # register_comments output to core.*, append the privacy
         # classification sigils. Idempotent — short-circuits when the
-        # catalog already matches the registry. Wrapped in a broad
-        # except so privacy-sync failures never break the SQLMesh
-        # workflow.
-        from moneybin.privacy.comment_sync import sync_classification_comments
+        # catalog already matches the registry. Skip on read-only DBs
+        # (COMMENT ON COLUMN is an ALTER and would fail). Wrapped in a
+        # broad except so any other privacy-sync failure never breaks
+        # the SQLMesh workflow; logged at debug to avoid noising stderr.
+        if not db._read_only:  # pyright: ignore[reportPrivateUsage]  # internal flag
+            from moneybin.privacy.comment_sync import sync_classification_comments
 
-        try:
-            sync_classification_comments(conn)
-        except Exception:  # noqa: BLE001 — sync errors must not break sqlmesh flows
-            logger.exception("Privacy classification sync after sqlmesh_context failed")
+            try:
+                sync_classification_comments(conn)
+            except Exception:  # noqa: BLE001 — sync errors must not break sqlmesh flows
+                logger.debug(
+                    "Privacy classification sync after sqlmesh_context failed",
+                    exc_info=True,
+                )
     finally:
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
