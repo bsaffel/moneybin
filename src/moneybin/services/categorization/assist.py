@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+import duckdb
+
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.metrics.registry import (
@@ -119,25 +121,31 @@ class AssistBridge:
         start = time.monotonic()
         result: list[RedactedTransaction] = []
         try:
-            rows = self._db.execute(
-                f"""
-                SELECT t.transaction_id,
-                       t.description,
-                       t.memo,
-                       t.source_type,
-                       t.transaction_type,
-                       t.check_number,
-                       t.is_transfer,
-                       t.transfer_pair_id,
-                       t.payment_channel,
-                       t.amount
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
-                WHERE {where_sql}
-                LIMIT ?
-                """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
-                params + [effective_limit],
-            ).fetchall()
+            try:
+                rows = self._db.execute(
+                    f"""
+                    SELECT t.transaction_id,
+                           t.description,
+                           t.memo,
+                           t.source_type,
+                           t.transaction_type,
+                           t.check_number,
+                           t.is_transfer,
+                           t.transfer_pair_id,
+                           t.payment_channel,
+                           t.amount
+                    FROM {FCT_TRANSACTIONS.full_name} t
+                    LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
+                    WHERE {where_sql}
+                    LIMIT ?
+                    """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
+                    params + [effective_limit],
+                ).fetchall()
+            except duckdb.CatalogException:
+                # core.fct_transactions does not exist yet (no data imported / no
+                # transform applied). Return empty result instead of crashing —
+                # matches the pattern in queries.list_uncategorized_transactions.
+                return []
 
             result = [
                 RedactedTransaction(
