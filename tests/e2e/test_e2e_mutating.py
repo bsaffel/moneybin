@@ -730,9 +730,7 @@ class TestCategoriesDeleteCommand:
     def test_delete_unreferenced_user_category(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
-        env = make_workflow_env_fast(
-            tmp_path, "catdel-ok", _mutating_profile_template
-        )
+        env = make_workflow_env_fast(tmp_path, "catdel-ok", _mutating_profile_template)
         insert_sql = (
             "INSERT INTO app.user_categories "
             "(category_id, category, subcategory, is_active) "

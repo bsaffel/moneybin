@@ -739,13 +739,10 @@ class TestDeleteCategory:
         )
         svc.delete_category(cat_id)
 
-        assert (
-            db.execute(
-                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
-                ["txn-preschool"],
-            ).fetchall()
-            == [(1,)]
-        )
+        assert db.execute(
+            "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+            ["txn-preschool"],
+        ).fetchall() == [(1,)]
 
     @pytest.mark.unit
     def test_refuses_default_category(self, db: Database) -> None:
