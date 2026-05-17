@@ -15,20 +15,38 @@ from moneybin.protocol.envelope import (
 
 
 @mcp_tool(sensitivity="low")
-async def moneybin_discover(domain: str, ctx: Context) -> ResponseEnvelope:
-    """Reveal tools from an extended namespace for the calling session.
+async def moneybin_discover(
+    ctx: Context, domain: str | None = None
+) -> ResponseEnvelope:
+    """List or enable extended-namespace tool domains for the calling session.
 
     Extended namespaces (categorize, budget, tax, privacy,
-    transactions_matches) start hidden. Calling this tool with a domain
-    name enables the tools tagged with that domain for the current session
-    only — other connected clients are unaffected.
+    transactions_matches) start hidden when progressive disclosure is on.
+    Call with no ``domain`` to enumerate the available namespaces and their
+    descriptions; call with a ``domain`` to enable that namespace's tools
+    for the current session only (other connected clients are unaffected).
 
     Args:
-        domain: The namespace to reveal (e.g. 'categorize', 'budget').
+        domain: Optional namespace to enable. If omitted, the tool returns
+            the catalog of available domains so the agent can choose one.
         ctx: FastMCP request context (auto-injected). Used to scope the
             visibility change to the calling session only.
     """
     from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS, EXTENDED_DOMAINS
+
+    if domain is None:
+        catalog = [
+            {"domain": name, "description": EXTENDED_DOMAIN_DESCRIPTIONS[name]}
+            for name in sorted(EXTENDED_DOMAINS)
+        ]
+        return build_envelope(
+            data=catalog,
+            sensitivity="low",
+            actions=[
+                "Call moneybin_discover(domain='<name>') with one of the listed "
+                "domains to enable its tools for this session.",
+            ],
+        )
 
     if domain not in EXTENDED_DOMAINS:
         known = ", ".join(sorted(EXTENDED_DOMAINS))
@@ -63,7 +81,9 @@ def register_discover_tool(mcp: FastMCP) -> None:
     mcp.tool(
         name="moneybin_discover",
         description=(
-            f"Reveal tools from an extended namespace ({domains}) "
-            "for the current session."
+            "List or enable extended-namespace tool domains. "
+            f"Available: {domains}. "
+            "Call with no arguments to enumerate; pass `domain=<name>` to "
+            "enable that namespace's tools for this session."
         ),
     )(moneybin_discover)

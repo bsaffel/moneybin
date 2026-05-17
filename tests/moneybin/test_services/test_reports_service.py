@@ -30,13 +30,14 @@ pytestmark = pytest.mark.unit
 
 def _install_cash_flow_view(db: Database) -> None:
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    # year_month is 'YYYY-MM' VARCHAR per reports.cash_flow's SQLMesh model.
     db.execute("""
         CREATE OR REPLACE VIEW reports.cash_flow AS
         SELECT * FROM (VALUES
-            (DATE '2026-01-01', 'A1', 'Alpha', 'Food', 100.0, -30.0, 70.0, 5),
-            (DATE '2026-01-01', 'A1', 'Alpha', 'Travel', 0.0, -50.0, -50.0, 2),
-            (DATE '2026-01-01', 'A2', 'Alpha', 'Food', 50.0, -10.0, 40.0, 3),
-            (DATE '2026-02-01', 'A1', 'Alpha', 'Food', 200.0, -60.0, 140.0, 7)
+            ('2026-01', 'A1', 'Alpha', 'Food', 100.0, -30.0, 70.0, 5),
+            ('2026-01', 'A1', 'Alpha', 'Travel', 0.0, -50.0, -50.0, 2),
+            ('2026-01', 'A2', 'Alpha', 'Food', 50.0, -10.0, 40.0, 3),
+            ('2026-02', 'A1', 'Alpha', 'Food', 200.0, -60.0, 140.0, 7)
         ) AS t(year_month, account_id, account_name, category, inflow, outflow, net, txn_count)
     """)
 
@@ -78,12 +79,13 @@ class TestCashFlow:
 
     def test_from_to_bounds_filter_rows(self, db: Database) -> None:
         _install_cash_flow_view(db)
+        # from_month accepts 'YYYY-MM' or 'YYYY-MM-DD' — the day is stripped.
         cols, rows = ReportsService(db).cash_flow(
             from_month="2026-02-01", by="account-and-category"
         )
         # Only February rows survive.
-        year_months = {row[cols.index("year_month")].isoformat() for row in rows}
-        assert year_months == {"2026-02-01"}
+        year_months = {row[cols.index("year_month")] for row in rows}
+        assert year_months == {"2026-02"}
 
 
 class TestAllowlistRejection:

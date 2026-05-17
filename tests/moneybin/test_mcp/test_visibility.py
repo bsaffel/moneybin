@@ -87,6 +87,30 @@ async def test_unknown_domain_returns_error_envelope() -> None:
         assert "Unknown domain" in str(envelope["error"])
 
 
+async def test_discover_no_args_enumerates_domains() -> None:
+    """Calling moneybin_discover with no args returns the domain catalog.
+
+    Discovery is the agent's escape hatch when it doesn't know what's
+    available — making `domain` optional means the catalog itself is
+    discoverable, not just the tools inside it.
+    """
+    import json
+
+    from moneybin.mcp.server import EXTENDED_DOMAINS, mcp
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("moneybin_discover", {})
+        envelope = json.loads(result.content[0].text)  # type: ignore[attr-defined]
+        assert envelope["error"] is None
+        catalog: list[dict[str, str]] = envelope["data"]
+        assert isinstance(catalog, list)
+        names = {entry["domain"] for entry in catalog}
+        assert names == set(EXTENDED_DOMAINS)
+        # Each entry carries a human-readable description.
+        for entry in catalog:
+            assert entry["description"]
+
+
 async def test_per_session_discover_isolated() -> None:
     """Two clients connected to the same server have independent visibility.
 

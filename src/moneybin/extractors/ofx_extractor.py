@@ -7,6 +7,7 @@ for data warehousing and analysis.
 Documentation: https://github.com/jseutter/ofxparse
 """
 
+import html
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +22,27 @@ from pydantic import BaseModel, Field, field_validator
 from moneybin.utils.parsing import coerce_to_decimal
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_text_field(value: str | None) -> str | None:
+    """Repeatedly HTML-unescape a text field until it stabilizes.
+
+    Some banks (notably Wells Fargo) emit SGML payee/memo content that is
+    already entity-escaped (e.g. ``AT&amp;T``) and ofxparse decodes only one
+    level, so ``AT&amp;amp;T`` survives one pass as ``AT&amp;T`` and lands in
+    the database with stale entities. Looping ``html.unescape`` is idempotent
+    on already-clean strings — ``html.unescape("AT&T")`` returns ``"AT&T"``.
+    """
+    if value is None:
+        return None
+    current = value
+    for _ in range(3):  # 3 passes covers single + double + paranoid triple-escape
+        decoded = html.unescape(current)
+        if decoded == current:
+            return current
+        current = decoded
+    return current
+
 
 _DECIMAL_AMOUNT = pl.Decimal(precision=18, scale=2)
 _BALANCE_AMOUNT_OVERRIDES = {
@@ -355,8 +377,8 @@ class OFXExtractor:
                     "transaction_type": tx_schema.type,
                     "date_posted": tx_schema.date.isoformat(),
                     "amount": tx_schema.amount,
-                    "payee": tx_schema.payee,
-                    "memo": tx_schema.memo,
+                    "payee": _decode_text_field(tx_schema.payee),
+                    "memo": _decode_text_field(tx_schema.memo),
                     "check_number": tx_schema.checknum,
                     "source_file": source_file,
                     "extracted_at": extraction_timestamp.isoformat(),

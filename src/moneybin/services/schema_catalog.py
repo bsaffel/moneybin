@@ -371,7 +371,7 @@ EXAMPLES: dict[str, list[Example]] = {
             sql="""
                 SELECT category, SUM(outflow) AS total_outflow
                 FROM reports.cash_flow
-                WHERE year_month >= date_trunc('month', current_date - INTERVAL 12 MONTH)
+                WHERE year_month >= strftime(current_date - INTERVAL 12 MONTH, '%Y-%m')
                 GROUP BY category
                 ORDER BY total_outflow ASC
             """,
