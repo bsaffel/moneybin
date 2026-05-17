@@ -175,12 +175,18 @@ class TestResourceTools:
     async def test_known_namespaces_present(self) -> None:
         data = await self._read()
         namespaces = {e["namespace"] for e in data["namespaces"]}
-        # Both formerly-core and formerly-extended namespaces must appear —
-        # full surface is visible at connect (mcp-architecture.md §3).
-        # Categorization tools live under `transactions_categorize_*` and
-        # therefore surface under the `transactions` namespace.
+        # Promoted namespaces appear in the catalog. Categorization tools
+        # live under `transactions_categorize_*` and surface under
+        # `transactions`. ``budget`` and ``transform`` are intentionally
+        # not promoted; ``privacy`` and ``transactions_matches`` are
+        # phantoms (no registered tools today) — both classes return when
+        # their first/next tool registers. See ``_NAMESPACE_DESCRIPTIONS``
+        # preamble in ``resources.py``.
         assert "reports" in namespaces
         assert "accounts" in namespaces
         assert "transactions" in namespaces
-        assert "budget" in namespaces
         assert "tax" in namespaces
+        assert "budget" not in namespaces
+        assert "transform" not in namespaces
+        assert "privacy" not in namespaces
+        assert "transactions_matches" not in namespaces

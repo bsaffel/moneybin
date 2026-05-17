@@ -1255,18 +1255,14 @@ Flat catalog of registered tool namespaces with one-line descriptions. All names
     {"namespace": "spending", "tools": 4, "description": "Expense analysis, trends, category breakdowns"},
     {"namespace": "accounts", "tools": 4, "description": "Account listing, balances, net worth"},
     {"namespace": "transactions", "tools": 15, "description": "Universal query, corrections, annotations, categorization, recurring"},
-    {"namespace": "transactions_matches", "tools": 6, "description": "Match review workflow"},
     {"namespace": "import", "tools": 5, "description": "File import, status, format detection"},
-    {"namespace": "transform", "tools": 5, "description": "Apply/plan/validate SQLMesh transforms"},
-    {"namespace": "budget", "tools": 4, "description": "Budget targets, status, rollovers"},
     {"namespace": "tax", "tools": 2, "description": "W-2, deductible expense search"},
-    {"namespace": "privacy", "tools": 4, "description": "Consent, grants, revocations, audit log"},
     {"namespace": "sql", "tools": 1, "description": "Power-user escape hatch"}
   ]
 }
 ```
 
-Static for a given server build — namespace and tool counts reflect what is registered (bounded by the surface-discipline rule in `.claude/rules/mcp-server.md`). The `core`/`extended`/`loaded`/`discover_tool` shape from the earlier progressive-disclosure design is retired.
+Static for a given server build — namespace and tool counts reflect what is registered (bounded by the surface-discipline rule in `.claude/rules/mcp-server.md`). The `core`/`extended`/`loaded`/`discover_tool` shape from the earlier progressive-disclosure design is retired. Two classes of namespaces are intentionally absent from this catalog: (1) phantoms — `privacy.*`, `transactions_matches.*`, and any other prefix with no registered tools today — they re-enter when their first tool registers; (2) tools in prefixes not promoted as top-level domains — `budget_*` (held back until `budget-tracking.md` ships in full) and `transform_*` (infrastructure verbs reached via `system_status` action hints, not a user-facing domain) — still register and appear in `list_tools()` but do not surface here.
 
 ---
 

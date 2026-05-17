@@ -99,25 +99,34 @@ def resource_schema() -> str:
 
 # Namespace descriptions for the moneybin://tools resource. Keep in sync with
 # docs/specs/mcp-architecture.md §3 "Tool namespaces (all visible at connect)".
-# Categorization tools live under `transactions_*` (e.g. ``transactions_categorize_apply``)
-# and therefore surface under the ``transactions`` namespace.
+#
+# Only promoted namespaces — ones with at least one registered tool today AND
+# a curated user-language description — appear here. Categorization tools live
+# under ``transactions_*`` (e.g. ``transactions_categorize_apply``) and surface
+# under the ``transactions`` namespace, not as a separate ``categorize`` entry.
+#
+# Intentionally NOT promoted as top-level namespaces here:
+#   - ``budget`` — held back until the broader budget-tracking feature ships per
+#     ``budget-tracking.md`` (today's ``budget_set`` is a partial slice).
+#   - ``transform`` — by consolidation agreement, ``transform_*`` tools are
+#     infrastructure verbs rather than a user-facing top-level domain.
+# Tools in those prefixes still register and appear via ``list_tools()``; they
+# just don't show up as namespaces in the ``moneybin://tools`` catalog.
+#
+# Phantom namespaces (no registered tools) — ``privacy``, ``transactions_matches`` —
+# are added in the same PR that registers their first tool. Listing them here
+# before tools exist creates an empty promise in the catalog.
 _NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "accounts": "Account listing, balances, net worth",
-    "budget": "Budget targets, status, rollovers",
     "categories": "Category taxonomy reference data",
     "import": "File import, status, format management",
     "merchants": "Merchant name mapping reference data",
-    "privacy": "Consent status, grants, revocations, audit log",
     "reports": "Spending analysis, budget vs actual, financial summaries",
     "sql": "Direct read-only SQL queries",
     "sync": "Provider sync (Plaid Transactions)",
     "system": "Data status, audit log, schema health",
     "tax": "W-2 data, deductible expense search",
     "transactions": "Search, corrections, annotations, categorization, recurring",
-    # forward-looking — populated when the match-review surface lands; today's
-    # transactions_review routes to ``transactions`` via first-underscore split.
-    "transactions_matches": "Match review workflow",
-    "transform": "Apply/plan/validate SQLMesh transforms (refresh derived tables)",
 }
 
 
@@ -153,13 +162,18 @@ async def resource_tools() -> str:
         ns = _namespace_for(tool.name)
         counts[ns] = counts.get(ns, 0) + 1
 
+    # Only surface namespaces that have a curated description. Tools whose
+    # prefix is intentionally not promoted (see _NAMESPACE_DESCRIPTIONS
+    # preamble) remain discoverable via list_tools() but don't appear as
+    # phantom rows with empty descriptions here.
     namespaces = [
         {
             "namespace": ns,
             "tools": counts[ns],
-            "description": _NAMESPACE_DESCRIPTIONS.get(ns, ""),
+            "description": _NAMESPACE_DESCRIPTIONS[ns],
         }
         for ns in sorted(counts)
+        if ns in _NAMESPACE_DESCRIPTIONS
     ]
 
     return json.dumps({"namespaces": namespaces}, indent=2)

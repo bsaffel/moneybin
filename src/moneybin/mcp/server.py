@@ -29,9 +29,9 @@ mcp = FastMCP(
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
         Top-level domains:
-        - accounts, transactions (query/correct/annotate/match/categorize), assets (physical), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
+        - accounts, transactions (query/correct/annotate/match/categorize), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
         - categories, merchants (taxonomy reference data)
-        - tax (forms, deductions), system (status, audit), import, sync, privacy (consent, audit)
+        - tax (forms, deductions), system (status, audit), import, sync, sql (read-only escape hatch)
 
         Tool names: domain_<sub>_verb, verb at end — transactions_categorize_apply, reports_networth, accounts_balance_assert.
 

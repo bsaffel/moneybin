@@ -152,18 +152,18 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 
 | Namespace | Purpose |
 |---|---|
-| `overview.*` | Orientation, data status, financial health snapshot |
-| `spending.*` | Expense analysis, trends, category breakdowns |
-| `cashflow.*` | Income vs outflows, income sources |
 | `accounts.*` | Account listing, balances, net worth |
 | `transactions.*` | Universal query, corrections, annotations, categorization (incl. rules, merchants, ML, auto-rule review), recurring |
-| `transactions_matches.*` | Match review workflow |
-| `import.*` | File import, status, format detection, AI-assisted parsing |
-| `transform.*` | Apply/plan/validate SQLMesh transforms (refresh derived tables) |
-| `budget.*` | Targets, status, rollovers |
+| `reports.*` | Cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual |
+| `categories.*`, `merchants.*` | Taxonomy reference data |
+| `import.*`, `sync.*` | Data ingestion (files, providers) |
+| `system.*` | Orientation, data status, audit log, schema health |
 | `tax.*` | W-2, deductible expense search |
-| `privacy.*` | Consent, grants, revocations, audit log |
-| `sql.*` | Power-user escape hatch |
+| `sql.*` | Read-only escape hatch |
+
+A namespace appears in this table only when it has at least one registered tool today. The earlier v1 plan listed `overview.*`, `spending.*`, `cashflow.*`, `transactions_matches.*`, `privacy.*` — those folded into other namespaces or remain forward-looking (privacy, match-review). They re-enter the table in the PR that registers their first tool.
+
+Intentionally not promoted as top-level namespaces, even though tools exist: `budget.*` (held back until the broader budget-tracking feature ships per `budget-tracking.md`) and `transform.*` (consolidation agreement — `transform_*` tools are infrastructure verbs the agent reaches via `system_status` action hints, not a user-facing domain). Tools in those prefixes still register and appear via `list_tools()`; they don't surface as namespaces in `moneybin://tools` or in the `instructions` orientation block.
 
 The registered set at any moment is bounded by the surface-discipline rule. Tools whose backing spec has not reached `in-progress` are not registered — the dependency tracker in `moneybin-mcp.md` §17 reflects current status.
 
