@@ -102,7 +102,7 @@ def resource_schema() -> str:
 #
 # Only promoted namespaces — ones with at least one registered tool today AND
 # a curated user-language description — appear here. Categorization tools live
-# under ``transactions_*`` (e.g. ``transactions_categorize_apply``) and surface
+# under ``transactions_*`` (e.g. ``transactions_categorize_commit``) and surface
 # under the ``transactions`` namespace, not as a separate ``categorize`` entry.
 #
 # Promotion carve-out — registered but intentionally not surfaced here:

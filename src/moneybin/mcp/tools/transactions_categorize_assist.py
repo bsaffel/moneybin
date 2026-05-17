@@ -27,7 +27,7 @@ def transactions_categorize_assist(
     """Return uncategorized transactions as redacted records for LLM categorization.
 
     The LLM proposes (category, subcategory, canonical_merchant_name) for each.
-    The user reviews; the LLM commits via transactions_categorize_apply with
+    The user reviews; the LLM commits via transactions_categorize_commit with
     categorized_by='ai'.
 
     Privacy: descriptions pass through redact_for_llm() before transmission.
@@ -88,7 +88,7 @@ def transactions_categorize_assist(
         sensitivity="medium",
         actions=[
             "Propose (category, subcategory, canonical_merchant_name) per item",
-            "Use transactions_categorize_apply to commit user-accepted proposals",
+            "Use transactions_categorize_commit to commit user-accepted proposals",
             "Redaction: description + memo redacted; structural fields exposed for matcher and LLM signal",
         ],
     )

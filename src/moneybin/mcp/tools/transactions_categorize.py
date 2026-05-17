@@ -87,7 +87,7 @@ def transactions_categorize_pending_list(
         data=records,
         sensitivity="medium",
         actions=[
-            "Use transactions_categorize_apply to assign categories to these transactions",
+            "Use transactions_categorize_commit to commit categorizations for these transactions",
             "Use transactions_categorize_rules_create to set up automatic categorization",
         ],
     )

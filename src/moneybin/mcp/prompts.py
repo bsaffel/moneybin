@@ -65,7 +65,7 @@ def categorization_organize() -> str:
         - transactions_categorize_stats — check current categorization coverage
         - transactions_categorize_pending_list — fetch uncategorized transactions
         - categories_list — see available categories
-        - transactions_categorize_apply — apply categories to transactions
+        - transactions_categorize_commit — commit accepted categorizations
         - transactions_categorize_rules_create — create rules for recurring patterns
         - merchants_create — map merchant names to categories
 
@@ -74,7 +74,7 @@ def categorization_organize() -> str:
         2. Fetch a batch with transactions_categorize_pending_list (limit ~20)
         3. Group similar transactions by description pattern
         4. For repeating patterns, suggest a rule (transactions_categorize_rules_create)
-        5. For one-offs, use transactions_categorize_apply directly
+        5. For one-offs, use transactions_categorize_commit directly
         6. Repeat until coverage is acceptable
 
         **Guardrails:**
