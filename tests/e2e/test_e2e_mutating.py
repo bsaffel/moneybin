@@ -777,3 +777,216 @@ class TestCategoriesDeleteCommand:
             f"output: {result.output}"
         )
         assert "not found" in result.output.lower()
+
+
+class TestCategorizeRulesCreateCLI:
+    """`moneybin transactions categorize rules create` — single and batch modes."""
+
+    def test_create_single_rule(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-one", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "starbucks-rule",
+            "--pattern",
+            "STARBUCKS",
+            "--category",
+            "Food & Dining",
+            "--subcategory",
+            "Coffee Shops",
+            "--match-type",
+            "contains",
+            "--priority",
+            "100",
+            env=env,
+        )
+        result.assert_success()
+        assert "Created 1" in result.output or "created" in result.output.lower()
+
+        # Confirm the rule appears in the list (text output goes through logger → stderr)
+        listing = run_cli("transactions", "categorize", "rules", "list", env=env)
+        listing.assert_success()
+        assert "starbucks-rule" in listing.output
+
+    def test_create_from_file_batch(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        import json
+
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-batch", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(
+            json.dumps([
+                {
+                    "name": "amazon-rule",
+                    "merchant_pattern": "AMAZON",
+                    "category": "Shopping",
+                    "match_type": "contains",
+                    "priority": 100,
+                },
+                {
+                    "name": "uber-rule",
+                    "merchant_pattern": "UBER",
+                    "category": "Transportation",
+                    "match_type": "contains",
+                    "priority": 100,
+                },
+            ])
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            env=env,
+        )
+        result.assert_success()
+        assert "Created 2" in result.output or "2" in result.stdout
+
+    def test_create_with_json_output(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        import json
+
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-json", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "test-json-rule",
+            "--pattern",
+            "TEST",
+            "--category",
+            "Other",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert "rules_create" in payload
+        data = payload["rules_create"]
+        assert data["created"] >= 1
+        assert isinstance(data.get("rule_ids"), list)
+
+    def test_create_requires_name_pattern_category_when_no_file(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Bare `create` without name+pattern+category or --from-file is a usage error."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-usage", _mutating_profile_template
+        )
+        result = run_cli("transactions", "categorize", "rules", "create", env=env)
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+
+
+class TestCategorizeRulesDeleteCLI:
+    """`moneybin transactions categorize rules delete` — soft-delete by ID."""
+
+    def test_delete_existing_rule(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        import json
+
+        env = make_workflow_env_fast(
+            tmp_path, "rulesdel-ok", _mutating_profile_template
+        )
+        create_result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "delete-target",
+            "--pattern",
+            "DEL",
+            "--category",
+            "Other",
+            "--output",
+            "json",
+            env=env,
+        )
+        create_result.assert_success()
+        rule_ids = json.loads(create_result.stdout)["rules_create"]["rule_ids"]
+        assert rule_ids, "create did not return any rule_ids"
+        rule_id = rule_ids[0]
+
+        delete_result = run_cli(
+            "transactions", "categorize", "rules", "delete", rule_id, env=env
+        )
+        delete_result.assert_success()
+        assert "deactivated" in delete_result.output.lower()
+
+    def test_delete_existing_rule_json_output(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        import json
+
+        env = make_workflow_env_fast(
+            tmp_path, "rulesdel-json", _mutating_profile_template
+        )
+        create_result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "delete-target-json",
+            "--pattern",
+            "DELJ",
+            "--category",
+            "Other",
+            "--output",
+            "json",
+            env=env,
+        )
+        create_result.assert_success()
+        rule_id = json.loads(create_result.stdout)["rules_create"]["rule_ids"][0]
+
+        delete_result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "delete",
+            rule_id,
+            "--output",
+            "json",
+            env=env,
+        )
+        delete_result.assert_success()
+        payload = json.loads(delete_result.stdout)
+        assert payload["rules_delete"]["rule_id"] == rule_id
+        assert payload["rules_delete"]["action"] == "deactivated"
+
+    def test_delete_nonexistent_rule_errors(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulesdel-missing", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "delete",
+            "does-not-exist",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert (
+            "not found" in result.stderr.lower()
+            or "rule_not_found" in result.stderr.lower()
+        )
