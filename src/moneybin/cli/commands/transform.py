@@ -154,7 +154,10 @@ def transform_status(
     if output == OutputFormat.JSON:
         actions: list[str] = []
         if status.pending:
-            actions.append("Run transform_apply to refresh derived tables")
+            actions.append(
+                "Run `moneybin refresh --step transform` "
+                "(or `refresh_run(steps=['transform'])` on MCP) to refresh derived tables"
+            )
         render_or_json(
             build_envelope(
                 data={

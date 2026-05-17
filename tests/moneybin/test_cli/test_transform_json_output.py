@@ -87,7 +87,9 @@ def test_transform_status_json_pending_emits_action(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["data"]["pending"] is True
-    assert "Run transform_apply to refresh derived tables" in payload["actions"]
+    assert any("moneybin refresh --step transform" in a for a in payload["actions"]), (
+        payload["actions"]
+    )
 
 
 def test_transform_apply_json(monkeypatch: pytest.MonkeyPatch) -> None:

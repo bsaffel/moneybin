@@ -22,7 +22,7 @@ Snapshot of MoneyBin's shipped capabilities, with links to the per-feature guide
 - **Cross-source dedup** with SHA-256 content hashes and golden-record merge. `prep.seed_source_priority` config-driven seed table. → [matching specs](specs/matching-overview.md)
 - **Transfer detection** across accounts: shared matching engine Tier 4, `core.bridge_transfers`, always-review v1, four-signal scoring. → [matching specs](specs/matching-overview.md)
 - **Reconciliation deltas** computed and self-healing on reimport.
-- **Transform handoff to the agent.** `transform_status`, `transform_plan`, `transform_validate`, `transform_audit`, `transform_apply` MCP tools (previously CLI-only). `system_status` reports whether derived tables are stale.
+- **Transform handoff to the agent.** `transform_status`, `transform_plan`, `transform_validate`, `transform_audit` MCP tools (previously CLI-only). The SQLMesh-apply capability is exposed via `refresh_run` (default cascade) or `refresh_run(steps=["transform"])` (granular form). `system_status` reports whether derived tables are stale.
 
 ## Categorization
 

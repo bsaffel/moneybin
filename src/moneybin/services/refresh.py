@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
@@ -60,50 +62,112 @@ class RefreshResult:
     error: str | None = None
 
 
-def refresh(db: Database) -> RefreshResult:
+RefreshStep = Literal["match", "transform", "categorize"]
+CANONICAL_STEPS: tuple[RefreshStep, ...] = ("match", "transform", "categorize")
+
+
+def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
+    """Resolve a steps list (or None) to the canonical frozenset.
+
+    None expands to all canonical steps; a list narrows to its elements.
+    Used by surfaces to decide which follow-up hints to emit without
+    re-deriving the membership rule from the service's internal logic.
+    """
+    return frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
+
+
+def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     """Run the post-load pipeline: matching → SQLMesh apply → categorization.
+
+    When ``steps`` is None (default), the full cascade runs — same behavior
+    as the pre-``steps`` signature, preserved for all existing callers.
+
+    When ``steps`` is provided, only the named steps execute, in canonical
+    order (``match`` → ``transform`` → ``categorize``) regardless of the
+    input list's order. Dependencies enforce the order: categorize reads
+    SQLMesh-built views, so running it after transform is mandatory; the
+    parameter cannot reorder this.
+
+    Skipping ``transform`` returns ``RefreshResult(applied=False,
+    duration_seconds=None)`` without invoking the SQLMesh apply path —
+    callers reading ``applied`` get an unambiguous "no apply happened"
+    signal rather than a half-truthful "apply succeeded."
+
+    Args:
+        db: Database handle to run against.
+        steps: Subset of ``("match", "transform", "categorize")`` to run.
+            Defaults to all three when None.
+
+    Raises:
+        UserError(code="UNKNOWN_REFRESH_STEP"): if any element of ``steps``
+            is not in the canonical set.
 
     See module docstring for the conceptual contract. Soft-fail variant:
     SQLMesh errors are returned in the result rather than raised, so
     callers can preserve already-loaded raw rows and surface the failure
-    in their response envelope. Callers needing fail-loud semantics
-    (single-file imports preserving the legacy exit-code contract)
-    check ``result.error`` and raise themselves.
+    in their response envelope.
     """
-    # Imports deferred to avoid pulling matching/categorization stacks
-    # into cold-start paths that don't run refresh.
     from moneybin.config import get_settings  # noqa: PLC0415
+    from moneybin.errors import UserError  # noqa: PLC0415
     from moneybin.matching.engine import TransactionMatcher  # noqa: PLC0415
     from moneybin.matching.priority import seed_source_priority  # noqa: PLC0415
-    from moneybin.services.auto_rule_service import AutoRuleService  # noqa: PLC0415
-    from moneybin.services.categorization import (  # noqa: PLC0415
-        CategorizationService,
-    )
 
-    try:
-        settings = get_settings().matching
-        seed_source_priority(db, settings)
-        matcher = TransactionMatcher(db, settings)
-        match_result = matcher.run()
-        if match_result.has_matches:
-            logger.info(f"Matching: {match_result.summary()}")
-            if match_result.has_pending:
-                logger.info(
-                    "Run 'moneybin transactions review --type matches' when ready"
-                )
-    except Exception:  # noqa: BLE001 — best-effort; first load may precede SQLMesh views
-        logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+    if steps is not None:
+        unknown = [s for s in steps if s not in CANONICAL_STEPS]
+        if unknown:
+            raise UserError(
+                f"Unknown refresh step(s): {', '.join(unknown)}",
+                code="UNKNOWN_REFRESH_STEP",
+                hint=f"known steps: {', '.join(CANONICAL_STEPS)}",
+            )
+
+    requested = expand_steps(steps)
+
+    if "match" in requested:
+        try:
+            settings = get_settings().matching
+            seed_source_priority(db, settings)
+            matcher = TransactionMatcher(db, settings)
+            match_result = matcher.run()
+            if match_result.has_matches:
+                logger.info(f"Matching: {match_result.summary()}")
+                if match_result.has_pending:
+                    logger.info(
+                        "Run 'moneybin transactions review --type matches' when ready"
+                    )
+        except Exception:  # noqa: BLE001 — best-effort; first load may precede SQLMesh views
+            logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+
+    if "transform" not in requested:
+        # Caller asked for a partial cascade that omits transform. Return
+        # an "apply did not run" result so the envelope's applied=False
+        # signal is honest. Categorize, if also requested, still runs
+        # against whatever SQLMesh-built views are already on disk.
+        if "categorize" in requested:
+            _run_categorize_step(db)
+        return RefreshResult(applied=False, duration_seconds=None)
 
     apply_result = TransformService(db).apply()
     if not apply_result.applied:
-        # Stop here: categorization runs against the same SQLMesh-built
-        # views the apply was supposed to rebuild. Running it on a
-        # half-built core would either no-op or produce inconsistent state.
         return RefreshResult(
             applied=False,
             duration_seconds=apply_result.duration_seconds,
             error=apply_result.error,
         )
+
+    if "categorize" in requested:
+        _run_categorize_step(db)
+
+    return RefreshResult(
+        applied=True,
+        duration_seconds=apply_result.duration_seconds,
+    )
+
+
+def _run_categorize_step(db: Database) -> None:
+    """Best-effort categorization step. Failures log-only — never propagated."""
+    from moneybin.services.auto_rule_service import AutoRuleService  # noqa: PLC0415
+    from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
 
     cat_start = time.monotonic()
     try:
@@ -124,8 +188,3 @@ def refresh(db: Database) -> RefreshResult:
     except Exception:  # noqa: BLE001 — best-effort; surfaces in logs only
         logger.debug("Categorization skipped (tables may not exist yet)", exc_info=True)
     logger.debug(f"Categorization step finished in {time.monotonic() - cat_start:.2f}s")
-
-    return RefreshResult(
-        applied=True,
-        duration_seconds=apply_result.duration_seconds,
-    )

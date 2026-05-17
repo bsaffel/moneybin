@@ -122,6 +122,15 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |   +-- remove                 -- Uninstall scheduled job
 |   +-- rotate-key                 -- Rotate E2E encryption key pair
 |
++-- refresh                        -- Run the post-load pipeline (match -> transform -> categorize)
+|         [--step STEP]              Subset of canonical steps; repeatable.
+|                                    Choices: match, transform, categorize.
+|                                    Default: full cascade. Steps execute in canonical
+|                                    order regardless of flag order. `--step transform`
+|                                    is the granular form formerly exposed as the
+|                                    standalone `transform_apply` MCP tool.
+|         [--output json] [-q]
+|
 +-- accounts
 |   +-- list                       -- List accounts
 |   +-- show <account_id>          -- Show one account
@@ -267,14 +276,15 @@ Tax:            tax (forms, deductions, future capital gains)
 System:         system (data status meta-view)
 Data in:        import, sync
 Data out:       export
+Pipeline:       refresh (post-load orchestration: match -> transform -> categorize)
 Mutation:       budget (target management; vs-actual report lives under reports/budget)
 Operational:    logs, stats
 Infrastructure: profile, db, mcp, transform
 ```
 
-### Top-level command count: 18
+### Top-level command count: 19
 
-`profile`, `import`, `sync`, `accounts`, `transactions`, `assets`, `categories`, `merchants`, `reports`, `tax`, `system`, `budget`, `export`, `logs`, `stats`, `db`, `mcp`, `transform`
+`profile`, `import`, `sync`, `refresh`, `accounts`, `transactions`, `assets`, `categories`, `merchants`, `reports`, `tax`, `system`, `budget`, `export`, `logs`, `stats`, `db`, `mcp`, `transform`
 
 ## Cross-Interface Taxonomy
 

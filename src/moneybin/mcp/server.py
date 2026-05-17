@@ -102,7 +102,7 @@ def check_schema_at_boot() -> None:
 
     Drift detected on a read-only check triggers one synchronous
     ``TransformService.apply()`` self-heal attempt before raising. The MCP
-    transform_apply tool is the intended recovery path but lives inside this
+    refresh_run tool is the intended recovery path but lives inside this
     server, so users hitting drift on reconnect would otherwise be stuck
     behind a chicken-and-egg: the server can't boot to expose the fix.
     Re-verifies with a fresh read-only connection after the heal; raises

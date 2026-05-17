@@ -128,6 +128,11 @@ CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
     "synthetic_reset",
     "transform_seed",
     "transform_restate",
+    # Folded into refresh_run(steps=["transform"]) — the MCP path is the
+    # umbrella, the CLI command stays as the operator-territory granular
+    # path. See `.claude/rules/mcp-server.md` "When CLI-only is justified"
+    # and `private/plans/2026-05-17-refresh-run-steps-and-transform-apply-fold.md`.
+    "transform_apply",
     # Category 3 — Typer-idiomatic `<group> list` subcommands whose MCP
     # sibling uses the noun-only shape-5 form. Intentional surface-idiom
     # divergence per `.claude/rules/surface-design.md` §CLI.
