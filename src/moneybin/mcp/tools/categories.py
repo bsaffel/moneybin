@@ -99,7 +99,7 @@ def register_categories_tools(mcp: FastMCP) -> None:
         categories_create,
         "categories_create",
         "Create a custom category or subcategory. "
-        "Writes app.user_categories; revert with categories_set (set is_active=False) or hard-remove with categories_delete (Group 2).",
+        "Writes app.user_categories; revert with categories_set (set is_active=False) or hard-remove with categories_delete.",
     )
     register(
         mcp,
