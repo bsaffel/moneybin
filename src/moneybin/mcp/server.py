@@ -31,11 +31,11 @@ mcp = FastMCP(
         Top-level domains:
         - accounts, transactions (query/correct/annotate/match/categorize), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
         - categories, merchants (taxonomy reference data)
-        - system (status, audit), import, sync, sql (read-only escape hatch)
+        - system (status, audit), import, sync, refresh (rebuild derived tables), sql (read-only escape hatch)
 
         Tool names: domain_<sub>_verb, verb at end — transactions_categorize_apply, reports_networth, accounts_balance_assert.
 
-        Start with system_status — shows what data exists, freshness, pending review queues, and whether core.* tables need a refresh (system_status.data.transforms.pending → call transform_apply).
+        Start with system_status — shows what data exists, freshness, pending review queues, and whether core.* tables need a refresh (system_status.data.transforms.pending → call refresh_run).
 
         Every tool returns {summary, data, actions}. Pagination via summary.has_more; actions[] suggests next steps and explains how to widen capped defaults. Prefer batch tools; list parameters are capped per-call.
 
