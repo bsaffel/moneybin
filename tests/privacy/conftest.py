@@ -43,6 +43,8 @@ def populated_db(tmp_path: Path) -> Generator[Database, None, None]:
     # entries match the test universe without mutating the shared helper.
     # core.fct_balances is a view in the test helper; rebuild it with the
     # extra column. core.fct_transactions is a table; ALTER works.
+    # Remove these statements once `tests/moneybin/db_helpers.py` grows
+    # `updated_at` on both relations.
     database.execute(
         "CREATE OR REPLACE VIEW core.fct_balances AS "
         "SELECT 'placeholder'::VARCHAR AS account_id, "
