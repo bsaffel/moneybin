@@ -67,9 +67,7 @@ introduction:
   ``transactions_categorize_pending_list``,
   ``transactions_categorize_rules_delete``,
   ``transactions_categorize_rules_create``, ``transactions_get``,
-  ``transactions_recurring_list``. ``moneybin_discover`` is MCP-only by
-  design (visibility-disclosure mechanism) and lives in
-  ``MCP_ONLY_ALLOWED`` rather than the drift backlog.
+  ``transactions_recurring_list``.
 """
 
 # ruff: noqa: S101
@@ -134,27 +132,22 @@ CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
 })
 
 # MCP-only by design — tools that implement MCP-protocol-specific
-# mechanisms with no CLI semantic. ``moneybin_discover`` is the
-# visibility-disclosure tool that re-enables extended-namespace tools
-# per MCP session; the CLI has no notion of session-scoped tool
-# visibility. See `.claude/rules/mcp-server.md` Tool Taxonomy
-# (progressive disclosure paragraph) and `docs/specs/mcp-architecture.md`
-# §3.
-MCP_ONLY_ALLOWED: frozenset[str] = frozenset({
-    "moneybin_discover",
-})
+# mechanisms with no CLI semantic. Empty today; kept as a documented
+# extension point. Client-driven progressive disclosure (and its
+# ``moneybin_discover`` meta-tool) was retired 2026-05-17, see
+# ``docs/specs/mcp-architecture.md`` §3.
+MCP_ONLY_ALLOWED: frozenset[str] = frozenset()
 
 
 def _collect_mcp_tool_names() -> set[str]:
-    """Every registered MCP tool name, transforms bypassed.
+    """Every registered MCP tool name.
 
-    Uses ``_list_tools()`` (FastMCP 3.x internal) so the parity check
-    sees the full registered surface regardless of the
-    ``progressive_disclosure`` setting — a tool hidden by the Visibility
-    transform is still registered and still owes a CLI sibling. The
-    public ``list_tools()`` filters by visibility. Matches the
-    established convention used by ``src/moneybin/mcp/resources.py:150``
-    and ``src/moneybin/cli/commands/mcp.py:597``.
+    Uses ``_list_tools()`` (FastMCP 3.x internal) for index stability —
+    matches the convention in ``src/moneybin/mcp/resources.py`` and
+    ``src/moneybin/cli/commands/mcp.py``. The public ``list_tools()``
+    filters by visibility, but with progressive disclosure retired the
+    two sets are equal; ``_list_tools()`` remains preferred for its
+    transform-bypass guarantee against future regressions.
     """
     mcp_server.register_core_tools()
     raw = asyncio.run(mcp_server.mcp._list_tools())  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]

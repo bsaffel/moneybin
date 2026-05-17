@@ -68,10 +68,12 @@ not-yet-built.
 | 7 | Summarize an account's activity                                  | `accounts_summary`           | — *(pending-build)*                                | —          | pending-build (CLI)   |
 | 8 | Rotate the database encryption key                               | — *(cat 1 — secret material)*| `db_key_rotate`                                    | —          | live                  |
 | 9 | Run the MCP server                                               | — *(cat 2 — operator)*       | `mcp_serve`                                        | —          | live                  |
-| 10| Discover currently-hidden MCP tools (visibility re-enable)       | `moneybin_discover`          | — *(MCP protocol mechanism — no CLI semantic)*     | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
-follow-up work closes the parity backlog.)*
+follow-up work closes the parity backlog. Row 10 — "Discover
+currently-hidden MCP tools" — was removed 2026-05-17 when
+client-driven progressive disclosure was retired; see
+[`mcp-architecture.md`](mcp-architecture.md) §3.)*
 
 ## Exemption categories
 
@@ -90,12 +92,12 @@ A capability marked exempt on a surface cites the category by number.
 Categories 3–5 are documented here for forward-compatibility; the
 formal definitions land with the follow-up allowlist refactor.
 
-**MCP-only exemptions.** Tools that implement MCP-protocol-specific
-mechanisms with no CLI semantic (`moneybin_discover` — session-scoped
-visibility re-enable) are cited inline rather than via a numbered
-category, because the CLI-only-justification list does not cover the
-reverse case. If the inventory grows, a parallel numbered list will be
-added.
+**MCP-only exemptions.** Reserved for tools that implement MCP-protocol-specific
+mechanisms with no CLI semantic. Empty today — the prior entry
+(`moneybin_discover` for session-scoped visibility re-enable) was
+retired 2026-05-17. If the inventory grows again, exemptions will be
+cited inline rather than via a numbered category, because the
+CLI-only-justification list does not cover the reverse case.
 
 ## Contributor recipe
 

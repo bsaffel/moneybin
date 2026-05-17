@@ -67,8 +67,7 @@ def inbox_sync(refresh: bool = True) -> ResponseEnvelope:
     if uncategorized >= threshold:
         actions.append(
             f"{uncategorized} uncategorized transactions — use "
-            "moneybin_discover('categorize') then transactions_categorize_assist "
-            "for AI-assisted categorization, or "
+            "transactions_categorize_assist for AI-assisted categorization, or "
             "`moneybin transactions categorize export-uncategorized` for the CLI bridge"
         )
 

@@ -157,7 +157,7 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 | **Prompts** | core | ✅ shipped | Registered via `@mcp.prompt()` in `src/moneybin/mcp/prompts.py`; surfaced via FastMCP. Add new prompts when a workflow is repeatable and benefits from a templated agent path. |
 | **Resources** | core | ✅ shipped | Registered via `@mcp.resource(...)` in `src/moneybin/mcp/resources.py`, including the curated `moneybin://schema` resource. Pattern is established; extend for any read-only context that benefits from URI addressing (docs, schema docs, error-code catalog, BQL-style references if added). |
 | **Resource templates** | core | ⏳ deliberate defer | Use direct URIs only today. Revisit if/when a parameterized resource (e.g. `moneybin://account/{id}/summary`) is genuinely cheaper than an equivalent tool. |
-| **`tools/list_changed` notifications** | core | ✅ shipped (off by default) | Wired for progressive disclosure but `MoneyBinSettings.mcp.progressive_disclosure` defaults `False` because client support is uneven (Claude Code honors it; Claude Desktop is unreliable). In default deployment the full tool surface is visible at connect; design new tools accordingly. See `mcp-architecture.md` §3 "Progressive disclosure" current-state callout. |
+| **`tools/list_changed` notifications** | core | ⏳ retired strategy | Originally wired for client-driven progressive disclosure; that approach was retired 2026-05-17 because client support is too uneven (Claude Desktop unreliable, most generic clients ignore). Notification capability stays available on the FastMCP server for any future dynamic-surface needs. See `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led". |
 | **`resources/list_changed` notifications** | core | ⏳ not used | Resource set is static today. If `moneybin://schema` ever becomes dynamic per-session, wire this. |
 | **`prompts/list_changed` notifications** | core | ⏳ not used | Prompt set is static today. |
 | **Progress notifications** | core | ⏳ not used | Required for the job-handle pattern; `sync-plaid.md` rewrite is the first surface that needs it. |
@@ -1042,7 +1042,7 @@ Search transactions for potentially deductible expenses.
 
 **Service class:** `PrivacyService`
 
-**Dependency:** All `privacy.*` tools depend on the consent management spec, audit log spec, and provider profiles spec. They ship with stubbed behavior until those specs are implemented.
+**Dependency:** All `privacy.*` tools depend on the consent management spec, audit log spec, and provider profiles spec. Per the surface-discipline rule in `.claude/rules/mcp-server.md`, individual `privacy.*` tools are registered only when their backing spec reaches `in-progress` or `implemented` in `docs/specs/INDEX.md`. No stubbed tools are exposed on the MCP surface.
 
 ### `privacy_status`
 
@@ -1256,57 +1256,33 @@ Current net worth snapshot: total net worth, assets vs liabilities breakdown, an
 
 ### `moneybin://tools`
 
-Available tool namespaces with one-line descriptions, tool counts, and loaded/unloaded status. Lets the AI know what capabilities exist without seeing every tool schema. Example:
+Flat catalog of registered tool namespaces with one-line descriptions. All namespaces are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led") — this resource is a cheaper-than-tool-listing way for the agent to scan the domain map without paying the schema-cost of every tool. Example:
 
 ```json
 {
-  "core": [
-    {"namespace": "overview", "tools": 2, "loaded": true, "description": "Data status and financial health snapshot"},
-    {"namespace": "spending", "tools": 4, "loaded": true, "description": "Expense analysis, trends, category breakdowns"},
-    {"namespace": "accounts", "tools": 4, "loaded": true, "description": "Account listing, balances, net worth"}
-  ],
-  "extended": [
-    {"namespace": "categorize", "tools": 15, "loaded": false, "description": "Rules, merchant mappings, categorization, auto-rule review, ML"},
-    {"namespace": "budget", "tools": 4, "loaded": false, "description": "Budget targets, status, rollovers"},
-    {"namespace": "tax", "tools": 2, "loaded": false, "description": "W-2 data, deductible expense search"}
-  ],
-  "discover_tool": "moneybin_discover"
+  "namespaces": [
+    {"namespace": "overview", "tools": 2, "description": "Data status and financial health snapshot"},
+    {"namespace": "spending", "tools": 4, "description": "Expense analysis, trends, category breakdowns"},
+    {"namespace": "accounts", "tools": 4, "description": "Account listing, balances, net worth"},
+    {"namespace": "transactions", "tools": 15, "description": "Universal query, corrections, annotations, categorization, recurring"},
+    {"namespace": "transactions_matches", "tools": 6, "description": "Match review workflow"},
+    {"namespace": "import", "tools": 5, "description": "File import, status, format detection"},
+    {"namespace": "transform", "tools": 5, "description": "Apply/plan/validate SQLMesh transforms"},
+    {"namespace": "budget", "tools": 4, "description": "Budget targets, status, rollovers"},
+    {"namespace": "tax", "tools": 2, "description": "W-2, deductible expense search"},
+    {"namespace": "privacy", "tools": 4, "description": "Consent, grants, revocations, audit log"},
+    {"namespace": "sql", "tools": 1, "description": "Power-user escape hatch"}
+  ]
 }
 ```
 
-Updated dynamically as namespaces are loaded during a session.
+Static for a given server build — namespace and tool counts reflect what is registered (bounded by the surface-discipline rule in `.claude/rules/mcp-server.md`). The `core`/`extended`/`loaded`/`discover_tool` shape from the earlier progressive-disclosure design is retired.
 
 ---
 
-## 15b. `moneybin_discover` — Namespace discovery meta-tool
+## 15b. `moneybin_discover` — Retired
 
-Always registered regardless of namespace configuration. Enables progressive disclosure of the full tool surface without overwhelming the AI's context at connection time. See `mcp-architecture.md` §3 "Progressive disclosure via namespace registration" for the design rationale.
-
-- **Name:** `moneybin_discover`
-- **Description:** "Load tools from a namespace. Call this when you need capabilities not in the currently loaded tools. Use the moneybin://tools resource to see available namespaces."
-- **Sensitivity:** `low` — no financial data, just tool metadata.
-- **Parameters:**
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `namespace` | `str` | (required) | Namespace to load (e.g., `categorize`, `budget`, `tax`, `matches`) |
-
-- **Behavior:** Registers all tools in the requested namespace, sends `tools/list_changed` notification, and returns tool names with descriptions so the AI can immediately use them. Idempotent — calling discover on an already-loaded namespace returns the tool list without side effects.
-- **Response `data` shape:**
-
-```json
-{
-  "namespace": "categorize",
-  "tools_loaded": [
-    {"name": "transactions_categorize_pending_list", "description": "Fetch transactions that haven't been categorized yet"},
-    {"name": "transactions_categorize_apply", "description": "Apply categories to multiple transactions at once"},
-    {"name": "transactions_categorize_rules_list", "description": "List active categorization rules"}
-  ],
-  "already_loaded": false
-}
-```
-
-- **CLI equivalent:** N/A — the CLI has all commands available via `--help`. Progressive disclosure is an MCP-specific optimization for AI context management.
+> **Retired 2026-05-17.** Originally designed as a namespace-discovery meta-tool that fired `tools/list_changed` to reveal extended namespaces per-session. Retired because the underlying `tools/list_changed` capability has insufficient client support to make the disclosure mechanism reliable — clients that ignore the notification never see the revealed tools, producing a silent capability gap. Removed from the codebase together with `MoneyBinSettings.mcp.progressive_disclosure` and the `Visibility(False, tags={domain})` server transform. The `@mcp_tool(domain=...)` decorator argument and resulting `tags={domain}` markers on individual tools are retained as dormant metadata; see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led" for the replacement strategy and future-client rationale.
 
 ---
 
@@ -1504,7 +1480,7 @@ v2 splits them by their actual content. Status is a system meta-view; health is 
 
 ### `assets_*` (new top-level — physical assets)
 
-Reserved namespace for `asset-tracking.md`. Workflows (registration, valuation, liability linking, staleness) defined there. Initial v2 implementation creates the namespace with stubs only; full tool surface lands when `asset-tracking.md` is implemented.
+Reserved namespace for `asset-tracking.md`. Workflows (registration, valuation, liability linking, staleness) defined there. Per the surface-discipline rule, no `assets_*` tools are registered until `asset-tracking.md` reaches `in-progress`; the namespace is documented here for forward-looking taxonomy alignment only.
 
 ### `sync_*` (new MCP exposure — was CLI-only)
 
@@ -1557,7 +1533,7 @@ A few renames make minor judgment calls. Flagged here so they can be revisited i
 
 ## 17. Dependency tracker
 
-Tools that depend on unbuilt subsystems are included in the full catalog with dependency markers. They ship with stub or no-op behavior until their dependency is implemented.
+Tools that depend on unbuilt subsystems are documented in the catalog with dependency markers but **are not registered on the MCP surface until their backing spec reaches `in-progress` or `implemented`** in `docs/specs/INDEX.md`. The "Blocked tools" column below names the future tool set; today only entries whose dependency is `in-progress`/`implemented` are live. See `.claude/rules/mcp-server.md` "Surface change discipline" for the rule.
 
 | Dependency | Status | Blocked tools |
 |---|---|---|
@@ -1578,7 +1554,6 @@ Tools that depend on unbuilt subsystems are included in the full catalog with de
 
 These tools can be fully implemented with the current codebase and existing infrastructure:
 
-**Infrastructure**: `moneybin_discover`
 **`spending.*`**: `summary`, `by_category`, `merchants`, `compare`
 **`cashflow.*`**: `summary`, `income`
 **`accounts.*`**: `list`, `balances`, `networth`, `resolve`
@@ -1590,7 +1565,7 @@ These tools can be fully implemented with the current codebase and existing infr
 **`overview.*`**: `status`, `health`
 **`sql.*`**: `query`
 
-This is a 35-tool surface (34 domain tools + `moneybin_discover`) that can ship independently of any pending spec work. With progressive disclosure, the AI sees ~20 core tools at connection time plus `moneybin_discover`; extended namespaces load on demand.
+This is a 34-domain-tool surface that can ship independently of any pending spec work. All 34 are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led"). Tools blocked on dependencies above stay unregistered until their backing spec reaches `in-progress`.
 
 ---
 

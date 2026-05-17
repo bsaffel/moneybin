@@ -97,36 +97,38 @@ def resource_schema() -> str:
     return json.dumps(doc, indent=2, default=str)
 
 
-_CORE_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
+# Namespace descriptions for the moneybin://tools resource. Keep in sync with
+# docs/specs/mcp-architecture.md §3 "Tool namespaces (all visible at connect)".
+# Categorization tools live under `transactions_*` (e.g. ``transactions_categorize_apply``)
+# and therefore surface under the ``transactions`` namespace.
+_NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "accounts": "Account listing, balances, net worth",
+    "budget": "Budget targets, status, rollovers",
     "categories": "Category taxonomy reference data",
     "import": "File import, status, format management",
     "merchants": "Merchant name mapping reference data",
+    "privacy": "Consent status, grants, revocations, audit log",
     "reports": "Spending analysis, budget vs actual, financial summaries",
     "sql": "Direct read-only SQL queries",
-    "transactions": "Search, corrections, annotations, recurring",
+    "sync": "Provider sync (Plaid Transactions)",
+    "system": "Data status, audit log, schema health",
+    "tax": "W-2 data, deductible expense search",
+    "transactions": "Search, corrections, annotations, categorization, recurring",
+    # forward-looking — populated when the match-review surface lands; today's
+    # transactions_review routes to ``transactions`` via first-underscore split.
+    "transactions_matches": "Match review workflow",
+    "transform": "Apply/plan/validate SQLMesh transforms (refresh derived tables)",
 }
-
-
-def _description_for(ns: str) -> str:
-    from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS
-
-    return _CORE_NAMESPACE_DESCRIPTIONS.get(ns) or EXTENDED_DOMAIN_DESCRIPTIONS.get(
-        ns, ""
-    )
 
 
 def _namespace_for(tool_name: str) -> str:
     """Extract the namespace prefix from an underscore-joined tool name.
 
-    First-underscore split: ``reports_spending_by_category`` → ``reports``,
-    ``accounts_balance_list`` → ``accounts``. Multi-segment namespaces
-    (e.g. ``transactions_matches``) are matched explicitly via longest-prefix
+    Multi-segment namespaces (``transactions_matches``) match via longest-prefix
     lookup so tools like ``transactions_matches_pending`` group correctly.
+    Single-segment namespaces use first-underscore split.
     """
-    from moneybin.mcp.server import EXTENDED_DOMAIN_DESCRIPTIONS
-
-    for ns in EXTENDED_DOMAIN_DESCRIPTIONS:
+    for ns in _NAMESPACE_DESCRIPTIONS:
         if "_" in ns and tool_name.startswith(f"{ns}_"):
             return ns
     head, sep, _ = tool_name.partition("_")
@@ -135,53 +137,32 @@ def _namespace_for(tool_name: str) -> str:
 
 @mcp.resource("moneybin://tools")
 async def resource_tools() -> str:
-    """Available tool namespaces with descriptions and loaded status.
+    """Flat catalog of registered tool namespaces with one-line descriptions.
 
-    "Loaded" here means visible by default — i.e. the namespace is not in
-    ``EXTENDED_DOMAINS``. Extended namespaces are hidden globally and only
-    enabled per-session via ``moneybin_discover``.
+    All namespaces are visible at connect — client-driven progressive
+    disclosure was retired 2026-05-17 (see docs/specs/mcp-architecture.md §3).
+    This resource is a cheaper-than-tools/list way for the agent to scan the
+    domain map without paying the schema-cost of every tool.
     """
     logger.info("Resource read: moneybin://tools")
-    from moneybin.mcp.server import EXTENDED_DOMAINS
 
-    # Use the unfiltered provider listing so hidden (extended-domain) tools
-    # are still counted in their namespace summary. Re-verify on any fastmcp
-    # version bump beyond 3.1.x.
-    tools = await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — kept as defense against accidental Visibility re-introduction  # pyright: ignore[reportPrivateUsage]
 
-    # Group registered tools by namespace. ``moneybin_discover`` is the
-    # meta-tool — tracked separately so it doesn't appear under "core".
-    namespaces: dict[str, int] = {}
+    counts: dict[str, int] = {}
     for tool in tools:
-        if tool.name == "moneybin_discover":
-            continue
         ns = _namespace_for(tool.name)
-        namespaces[ns] = namespaces.get(ns, 0) + 1
+        counts[ns] = counts.get(ns, 0) + 1
 
-    # Extended namespaces aren't visible at connect time but we still list
-    # them so discoverers know what to call moneybin_discover with.
-    all_namespaces = set(namespaces.keys()) | set(EXTENDED_DOMAINS)
-
-    core_list: list[dict[str, Any]] = []
-    extended_list: list[dict[str, Any]] = []
-    for ns in sorted(all_namespaces):
-        entry = {
+    namespaces = [
+        {
             "namespace": ns,
-            "tools": namespaces.get(ns, 0),
-            "loaded": ns not in EXTENDED_DOMAINS,
-            "description": _description_for(ns),
+            "tools": counts[ns],
+            "description": _NAMESPACE_DESCRIPTIONS.get(ns, ""),
         }
-        if ns in EXTENDED_DOMAINS:
-            extended_list.append(entry)
-        else:
-            core_list.append(entry)
+        for ns in sorted(counts)
+    ]
 
-    data = {
-        "core": core_list,
-        "extended": extended_list,
-        "discover_tool": "moneybin_discover",
-    }
-    return json.dumps(data, indent=2)
+    return json.dumps({"namespaces": namespaces}, indent=2)
 
 
 @mcp.resource("accounts://summary")
