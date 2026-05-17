@@ -1,7 +1,7 @@
 """Merchants namespace tools — merchant name mapping reference data.
 
 Tools:
-    - merchants_list — List all merchant name mappings (low sensitivity)
+    - merchants — List all merchant name mappings (low sensitivity)
     - merchants_create — Create merchant name mappings (low sensitivity)
 """
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low")
-def merchants_list() -> ResponseEnvelope:
+def merchants() -> ResponseEnvelope:
     """List all merchant name mappings.
 
     Returns merchant ID, raw pattern, match type, canonical name,
@@ -119,7 +119,7 @@ def merchants_create(
         sensitivity="low",
         total_count=len(merchants),
         actions=[
-            "Use merchants_list to review all merchant mappings",
+            "Use merchants to review all merchant mappings",
         ],
     )
 
@@ -128,8 +128,8 @@ def register_merchants_tools(mcp: FastMCP) -> None:
     """Register all merchants namespace tools with the FastMCP server."""
     register(
         mcp,
-        merchants_list,
-        "merchants_list",
+        merchants,
+        "merchants",
         "List all merchant name mappings.",
     )
     register(

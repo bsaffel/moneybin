@@ -50,7 +50,7 @@ class TestCategorizeToolRegistration:
         names = await _registered_names()
         assert "categories" in names
         assert "transactions_categorize_rules_list" in names
-        assert "merchants_list" in names
+        assert "merchants" in names
         assert "transactions_categorize_stats" in names
         assert "transactions_categorize_pending_list" in names
         assert "transactions_categorize_commit" in names
