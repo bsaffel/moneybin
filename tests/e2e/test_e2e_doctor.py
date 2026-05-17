@@ -21,14 +21,14 @@ class TestDoctorCommand:
     """E2E tests for the `moneybin doctor` command."""
 
     def test_doctor_help(self) -> None:
-        result = run_cli("doctor", "--help")
+        result = run_cli("system", "doctor", "--help")
         result.assert_success()
         assert "--verbose" in result.output
         assert "--output" in result.output
 
     def test_doctor_clean_profile_exits_0(self, e2e_profile: dict[str, str]) -> None:
         """A freshly initialized profile has no data — all audits pass (no violations)."""
-        result = run_cli("doctor", env=e2e_profile)
+        result = run_cli("system", "doctor", env=e2e_profile)
         # SQLMesh may not have audits available if transform was never run;
         # the command must not crash regardless.
         assert "Traceback" not in result.stderr
@@ -36,7 +36,7 @@ class TestDoctorCommand:
         assert result.exit_code in (0, 1)
 
     def test_doctor_json_output_shape(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("doctor", "--output", "json", env=e2e_profile)
+        result = run_cli("system", "doctor", "--output", "json", env=e2e_profile)
         assert "Traceback" not in result.stderr
         # JSON must parse and have the standard envelope shape
         envelope = json.loads(result.stdout)
@@ -49,13 +49,15 @@ class TestDoctorCommand:
         assert "failing" in data
 
     def test_doctor_verbose_flag_accepted(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("doctor", "--verbose", env=e2e_profile)
+        result = run_cli("system", "doctor", "--verbose", env=e2e_profile)
         assert "Traceback" not in result.stderr
 
     def test_doctor_json_verbose_flag_accepted(
         self, e2e_profile: dict[str, str]
     ) -> None:
-        result = run_cli("doctor", "--output", "json", "--verbose", env=e2e_profile)
+        result = run_cli(
+            "system", "doctor", "--output", "json", "--verbose", env=e2e_profile
+        )
         assert "Traceback" not in result.stderr
         envelope = json.loads(result.stdout)
         assert "data" in envelope

@@ -37,7 +37,7 @@ _READ_ONLY_HELP_PATHS: list[list[str]] = [
     ["db", "migrate", "status", "--help"],
     ["stats", "--help"],
     ["logs", "--help"],
-    ["doctor", "--help"],
+    ["system", "doctor", "--help"],
 ]
 
 

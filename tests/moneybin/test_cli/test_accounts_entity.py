@@ -18,9 +18,9 @@ def test_accounts_list_help() -> None:
     assert "--output" in result.output
 
 
-def test_accounts_show_help() -> None:
-    """Accounts show command wires and shows --help."""
-    result = runner.invoke(app, ["accounts", "show", "--help"])
+def test_accounts_get_help() -> None:
+    """Accounts get command wires and shows --help."""
+    result = runner.invoke(app, ["accounts", "get", "--help"])
     assert result.exit_code == 0
 
 

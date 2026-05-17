@@ -17,14 +17,8 @@ from moneybin.services.reports_service import DRIFT_STATUSES, ReportsService
 
 logger = logging.getLogger(__name__)
 
-balance_drift_app = typer.Typer(
-    help="Asserted vs computed balance reconciliation deltas",
-    no_args_is_help=True,
-)
 
-
-@balance_drift_app.command("show")
-def reports_balance_drift_show(
+def reports_balance_drift(
     account: str | None = typer.Option(
         None, "--account", help="Filter to account name"
     ),

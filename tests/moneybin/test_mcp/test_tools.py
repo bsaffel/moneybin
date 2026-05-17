@@ -45,21 +45,18 @@ class TestToolRegistration:
         srv = FastMCP("test")
         register_reports_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        # Renamed networth_history → networth_history_get
-        assert "reports_networth_get" in names
-        assert "reports_networth_history_get" in names
-        # New reports.* view-backed tools
-        assert "reports_spending_get" in names
-        assert "reports_cashflow_get" in names
-        assert "reports_recurring_get" in names
-        assert "reports_merchants_get" in names
-        assert "reports_uncategorized_get" in names
-        assert "reports_large_transactions_get" in names
-        assert "reports_balance_drift_get" in names
+        assert "reports_networth" in names
+        assert "reports_networth_history" in names
+        assert "reports_spending" in names
+        assert "reports_cashflow" in names
+        assert "reports_recurring" in names
+        assert "reports_merchants" in names
+        assert "reports_uncategorized" in names
+        assert "reports_large_transactions" in names
+        assert "reports_balance_drift" in names
         # Removed v1 tools should be gone
         assert "reports_spending_summary" not in names
         assert "reports_spending_by_category" not in names
-        assert "reports_networth_history" not in names
 
     @pytest.mark.unit
     async def test_accounts_tools_register(self) -> None:
@@ -75,7 +72,7 @@ class TestToolRegistration:
         assert "accounts_include" in names
         assert "accounts_archive" in names
         assert "accounts_unarchive" in names
-        assert "accounts_settings_update" in names
+        assert "accounts_set" in names
         # v2 balance tools
         assert "accounts_balance_list" in names
         assert "accounts_balance_history" in names

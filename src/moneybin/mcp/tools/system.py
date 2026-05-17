@@ -48,8 +48,8 @@ def system_status() -> ResponseEnvelope:
     }
 
     actions = [
-        "Use transactions_review_status for per-queue review counts",
-        "Use reports_spending_get for a monthly spending trend snapshot",
+        "Use transactions_review for per-queue review counts",
+        "Use reports_spending for a monthly spending trend snapshot",
     ]
     if status.schema_drift:
         data["schema_drift"] = {
@@ -97,7 +97,9 @@ def system_doctor() -> ResponseEnvelope:
 
     actions: list[str] = []
     if failing > 0:
-        actions.append("Run moneybin doctor --verbose for affected transaction IDs")
+        actions.append(
+            "Run moneybin system doctor --verbose for affected transaction IDs"
+        )
 
     return build_envelope(
         data={

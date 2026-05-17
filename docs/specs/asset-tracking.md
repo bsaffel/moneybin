@@ -311,7 +311,7 @@ Grandma's Ring      valuable      $12,000      2024-03-01     ✅ Current
 ```
 
 ```
-$ moneybin reports networth show
+$ moneybin reports networth
 
 Net Worth: $347,250 as of 2025-04-23
 

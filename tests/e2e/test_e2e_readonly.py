@@ -43,7 +43,7 @@ class TestNoDBCommands:
         # exit_code may be 0 or 1 depending on whether a profile is set
         assert "Traceback" not in result.stderr
 
-    def test_import_list_formats(self) -> None:
+    def test_import_formats_list(self) -> None:
         result = run_cli("import", "formats", "list")
         result.assert_success()
 
@@ -262,8 +262,8 @@ class TestDBReadOnlyCommands:
         assert result.exit_code == 0, result.output
         assert "--output" in result.output
 
-    def test_accounts_show_help(self) -> None:
-        result = _runner.invoke(app, ["accounts", "show", "--help"])
+    def test_accounts_get_help(self) -> None:
+        result = _runner.invoke(app, ["accounts", "get", "--help"])
         assert result.exit_code == 0, result.output
         assert "account_id" in result.output.lower() or "ACCOUNT_ID" in result.output
 
@@ -293,8 +293,10 @@ class TestDBReadOnlyCommands:
         assert result.exit_code == 0, result.output
         assert "--output" not in result.output or "account_id" in result.output.lower()
 
-    def test_accounts_balance_delete_help(self) -> None:
-        result = _runner.invoke(app, ["accounts", "balance", "delete", "--help"])
+    def test_accounts_balance_assertion_delete_help(self) -> None:
+        result = _runner.invoke(
+            app, ["accounts", "balance", "assertion-delete", "--help"]
+        )
         assert result.exit_code == 0, result.output
         assert "--yes" in result.output or "assertion_date" in result.output.lower()
 
@@ -303,13 +305,13 @@ class TestDBReadOnlyCommands:
         assert result.exit_code == 0, result.output
         assert "--threshold" in result.output
 
-    def test_reports_networth_show_help(self) -> None:
-        result = _runner.invoke(app, ["reports", "networth", "show", "--help"])
+    def test_reports_networth_help(self) -> None:
+        result = _runner.invoke(app, ["reports", "networth", "--help"])
         assert result.exit_code == 0, result.output
         assert "--output" in result.output
 
     def test_reports_networth_history_help(self) -> None:
-        result = _runner.invoke(app, ["reports", "networth", "history", "--help"])
+        result = _runner.invoke(app, ["reports", "networth-history", "--help"])
         assert result.exit_code == 0, result.output
         assert "--from" in result.output
 

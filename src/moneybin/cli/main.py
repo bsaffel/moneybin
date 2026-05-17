@@ -41,9 +41,6 @@ from .commands import (
 from .commands import (
     budget as budget_cmd,
 )
-from .commands import (
-    doctor as doctor_cmd,
-)
 from .commands.stubs import (
     export_app,
 )
@@ -160,10 +157,6 @@ app.add_typer(
     name="synthetic",
     help="Generate and manage synthetic financial data for testing",
 )
-app.command(
-    name="doctor",
-    help="Run pipeline integrity checks across all invariants",
-)(doctor_cmd.doctor_command)
 app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(

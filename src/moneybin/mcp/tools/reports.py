@@ -4,16 +4,16 @@ Cross-domain analytical views (read-only). All tools delegate to a service
 layer; no business logic here.
 
 Read tools:
-  - reports_networth_get (medium)
-  - reports_networth_history_get (medium)
-  - reports_spending_get (medium)
-  - reports_cashflow_get (medium)
-  - reports_recurring_get (medium)
-  - reports_merchants_get (medium)
-  - reports_uncategorized_get (medium)
-  - reports_large_transactions_get (medium)
-  - reports_balance_drift_get (medium)
-  - reports_budget_status (low)
+  - reports_networth (medium)
+  - reports_networth_history (medium)
+  - reports_spending (medium)
+  - reports_cashflow (medium)
+  - reports_recurring (medium)
+  - reports_merchants (medium)
+  - reports_uncategorized (medium)
+  - reports_large_transactions (medium)
+  - reports_balance_drift (medium)
+  - reports_budget (low)
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def _default_window(months: int = 12) -> tuple[str, str]:
 
 
 @mcp_tool(sensitivity="medium")
-def reports_networth_get(
+def reports_networth(
     as_of_date: str | None = None,
     account_ids: list[str] | None = None,
 ) -> ResponseEnvelope:
@@ -97,7 +97,7 @@ def reports_networth_get(
         data=snapshot.to_dict(),
         sensitivity="medium",
         actions=[
-            "Use reports_networth_history_get(from_date, to_date) for the time series",
+            "Use reports_networth_history(from_date, to_date) for the time series",
             "Use accounts_balance_history(account_id=...) to drill into one account",
             "Use accounts_list to see archived / excluded accounts not counted here",
         ],
@@ -105,7 +105,7 @@ def reports_networth_get(
 
 
 @mcp_tool(sensitivity="medium")
-def reports_networth_history_get(
+def reports_networth_history(
     from_date: str,
     to_date: str,
     interval: str = "monthly",
@@ -128,14 +128,14 @@ def reports_networth_history_get(
         data=rows,
         sensitivity="medium",
         actions=[
-            "Use reports_networth_get(as_of_date=...) for a single-date snapshot with per-account breakdown",
+            "Use reports_networth(as_of_date=...) for a single-date snapshot with per-account breakdown",
             "Switch `interval` to 'daily' or 'weekly' for finer resolution",
         ],
     )
 
 
 @mcp_tool(sensitivity="low")
-def reports_spending_get(
+def reports_spending(
     from_month: str | None = None,
     to_month: str | None = None,
     category: str | None = None,
@@ -166,8 +166,8 @@ def reports_spending_get(
         )
     actions = [
         "Filter to one category with category='<name>' (see categories_list)",
-        "Use reports_cashflow_get for inflow/outflow/net (includes income; spending excludes it)",
-        "Use reports_recurring_get to find subscription-like patterns",
+        "Use reports_cashflow for inflow/outflow/net (includes income; spending excludes it)",
+        "Use reports_recurring to find subscription-like patterns",
     ]
     if defaulted:
         actions.insert(
@@ -185,7 +185,7 @@ def reports_spending_get(
 
 
 @mcp_tool(sensitivity="low")
-def reports_cashflow_get(
+def reports_cashflow(
     from_month: str | None = None,
     to_month: str | None = None,
     by: str = "account-and-category",
@@ -210,7 +210,7 @@ def reports_cashflow_get(
         )
     actions = [
         "Switch `by` to 'account', 'category', or 'account-and-category' to regroup",
-        "Use reports_spending_get for outflow-only trend with MoM/YoY deltas",
+        "Use reports_spending for outflow-only trend with MoM/YoY deltas",
     ]
     if defaulted:
         actions.insert(
@@ -228,7 +228,7 @@ def reports_cashflow_get(
 
 
 @mcp_tool(sensitivity="low")
-def reports_recurring_get(
+def reports_recurring(
     min_confidence: float = 0.5,
     status: str = "active",
     cadence: str | None = None,
@@ -249,7 +249,7 @@ def reports_recurring_get(
 
 
 @mcp_tool(sensitivity="low")
-def reports_merchants_get(
+def reports_merchants(
     top: int = 25,
     sort: str = "spend",
 ) -> ResponseEnvelope:
@@ -265,7 +265,7 @@ def reports_merchants_get(
 
 
 @mcp_tool(sensitivity="medium")
-def reports_uncategorized_get(
+def reports_uncategorized(
     min_amount: float = 0.0,
     account: str | None = None,
     limit: int = 50,
@@ -285,7 +285,7 @@ def reports_uncategorized_get(
 
 
 @mcp_tool(sensitivity="medium")
-def reports_large_transactions_get(
+def reports_large_transactions(
     top: int = 25,
     anomaly: str = "none",
 ) -> ResponseEnvelope:
@@ -301,7 +301,7 @@ def reports_large_transactions_get(
 
 
 @mcp_tool(sensitivity="medium")
-def reports_balance_drift_get(
+def reports_balance_drift(
     account: str | None = None,
     status: str = "all",
     since: str | None = None,
@@ -321,7 +321,7 @@ def reports_balance_drift_get(
 
 
 @mcp_tool(sensitivity="low", domain="budget")
-def reports_budget_status(
+def reports_budget(
     month: str | None = None,
 ) -> ResponseEnvelope:
     """Get budget vs actual spending comparison for a month.
@@ -341,71 +341,71 @@ def register_reports_tools(mcp: FastMCP) -> None:
     """Register all reports namespace tools with the FastMCP server."""
     register(
         mcp,
-        reports_networth_get,
-        "reports_networth_get",
+        reports_networth,
+        "reports_networth",
         "Current or historical net worth snapshot with per-account breakdown. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
-        reports_networth_history_get,
-        "reports_networth_history_get",
+        reports_networth_history,
+        "reports_networth_history",
         "Net worth time series with period-over-period change (daily/weekly/monthly). "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
-        reports_spending_get,
-        "reports_spending_get",
+        reports_spending,
+        "reports_spending",
         "Monthly spending trend per category with MoM, YoY, and trailing-3mo deltas. "
         "Reads from reports.spending_trend.",
     )
     register(
         mcp,
-        reports_cashflow_get,
-        "reports_cashflow_get",
+        reports_cashflow,
+        "reports_cashflow",
         "Monthly cash flow rollup: inflow/outflow/net per account x category. "
         "Reads from reports.cash_flow.",
     )
     register(
         mcp,
-        reports_recurring_get,
-        "reports_recurring_get",
+        reports_recurring,
+        "reports_recurring",
         "Likely-recurring subscription candidates with confidence scores and "
         "annualized cost. Reads from reports.recurring_subscriptions.",
     )
     register(
         mcp,
-        reports_merchants_get,
-        "reports_merchants_get",
+        reports_merchants,
+        "reports_merchants",
         "Per-merchant lifetime activity totals (spend, count, first/last seen, "
         "top category). Reads from reports.merchant_activity.",
     )
     register(
         mcp,
-        reports_uncategorized_get,
-        "reports_uncategorized_get",
+        reports_uncategorized,
+        "reports_uncategorized",
         "Uncategorized transactions queue, ranked by curator-impact "
         "(amount x age). Reads from reports.uncategorized_queue.",
     )
     register(
         mcp,
-        reports_large_transactions_get,
-        "reports_large_transactions_get",
+        reports_large_transactions,
+        "reports_large_transactions",
         "Top transactions by absolute amount with per-account and per-category "
         "z-scores for anomaly filtering. Reads from reports.large_transactions.",
     )
     register(
         mcp,
-        reports_balance_drift_get,
-        "reports_balance_drift_get",
+        reports_balance_drift,
+        "reports_balance_drift",
         "Balance reconciliation drift: asserted vs computed per assertion date. "
         "Reads from reports.balance_drift.",
     )
     register(
         mcp,
-        reports_budget_status,
-        "reports_budget_status",
+        reports_budget,
+        "reports_budget",
         "Get budget vs actual spending comparison for a month. "
         "Shows target, spent, remaining, and status for each category. "
         "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "

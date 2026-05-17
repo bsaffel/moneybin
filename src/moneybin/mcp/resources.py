@@ -235,7 +235,7 @@ def resource_networth_summary() -> str:
 
     Returns total net worth, total assets, total liabilities, account count,
     and as-of date. Does not include per-account breakdown; use the
-    reports_networth_get tool for that.
+    reports_networth tool for that.
     """
     logger.info("Resource read: net-worth://summary")
     with get_database(read_only=True) as db:

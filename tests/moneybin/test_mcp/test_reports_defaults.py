@@ -1,4 +1,4 @@
-"""Tests for reports_spending_get / reports_cashflow_get default-window behavior.
+"""Tests for reports_spending / reports_cashflow default-window behavior.
 
 `_default_window` is pure math (no DB). The defaulted-tool behavior tests
 need empty stubs for `reports.spending_trend` and `reports.cash_flow` so
@@ -129,7 +129,7 @@ class TestDefaultWindow:
 
 
 class TestDefaultedSpendingTool:
-    """`reports_spending_get()` with no args surfaces a widen hint + period."""
+    """`reports_spending()` with no args surfaces a widen hint + period."""
 
     async def test_no_arg_call_prepends_widen_hint(
         self, monkeypatch: pytest.MonkeyPatch
@@ -140,13 +140,13 @@ class TestDefaultedSpendingTool:
                 return _dt.datetime(2026, 5, 17, tzinfo=_dt.UTC)
 
         monkeypatch.setattr(reports_tools, "_datetime", _FrozenDateTime)
-        envelope = await reports_tools.reports_spending_get()
+        envelope = await reports_tools.reports_spending()
         body = envelope.to_dict()
         assert body["actions"][0].startswith("Showing the last 12 months")
         assert body["summary"]["period"] == "2025-06 to 2026-05"
 
     async def test_explicit_bounds_skip_widen_hint(self) -> None:
-        envelope = await reports_tools.reports_spending_get(
+        envelope = await reports_tools.reports_spending(
             from_month="2025-01", to_month="2025-03"
         )
         body = envelope.to_dict()
@@ -157,7 +157,7 @@ class TestDefaultedSpendingTool:
 
 
 class TestDefaultedCashflowTool:
-    """`reports_cashflow_get()` with no args mirrors the spending behavior."""
+    """`reports_cashflow()` with no args mirrors the spending behavior."""
 
     async def test_no_arg_call_prepends_widen_hint(
         self, monkeypatch: pytest.MonkeyPatch
@@ -168,7 +168,7 @@ class TestDefaultedCashflowTool:
                 return _dt.datetime(2026, 5, 17, tzinfo=_dt.UTC)
 
         monkeypatch.setattr(reports_tools, "_datetime", _FrozenDateTime)
-        envelope = await reports_tools.reports_cashflow_get()
+        envelope = await reports_tools.reports_cashflow()
         body = envelope.to_dict()
         assert body["actions"][0].startswith("Showing the last 12 months")
         assert body["summary"]["period"] == "2025-06 to 2026-05"

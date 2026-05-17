@@ -3,7 +3,7 @@
 CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
 ``transactions_matches_pending`` and ``transactions_categorize_pending_list``
 tools because their result shapes differ; the orientation tool
-``transactions_review_status`` returns the counts.
+``transactions_review`` returns the counts.
 
 Interactive loop UX is stubbed for v2; --status works end-to-end.
 """

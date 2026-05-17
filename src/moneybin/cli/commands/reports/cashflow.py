@@ -17,11 +17,8 @@ from moneybin.services.reports_service import CASHFLOW_GROUPINGS, ReportsService
 
 logger = logging.getLogger(__name__)
 
-cashflow_app = typer.Typer(help="Monthly cash flow", no_args_is_help=True)
 
-
-@cashflow_app.command("show")
-def reports_cashflow_show(
+def reports_cashflow(
     from_month: str | None = typer.Option(None, "--from", help="ISO date YYYY-MM-01"),
     to_month: str | None = typer.Option(None, "--to", help="ISO date YYYY-MM-01"),
     by: str = typer.Option(

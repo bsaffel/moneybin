@@ -21,14 +21,8 @@ from moneybin.services.reports_service import (
 
 logger = logging.getLogger(__name__)
 
-recurring_app = typer.Typer(
-    help="Likely-recurring subscription candidates with confidence scores",
-    no_args_is_help=True,
-)
 
-
-@recurring_app.command("show")
-def reports_recurring_show(
+def reports_recurring(
     min_confidence: float = typer.Option(
         0.5,
         "--min-confidence",

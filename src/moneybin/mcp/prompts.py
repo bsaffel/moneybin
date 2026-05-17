@@ -29,20 +29,20 @@ def monthly_review() -> str:
         that needs attention.
 
         **Relevant tools:**
-        - reports_spending_get — monthly spending trend with MoM/YoY deltas
-        - reports_cashflow_get — inflow/outflow/net per account x category
-        - reports_budget_status — budget vs actual comparison
+        - reports_spending — monthly spending trend with MoM/YoY deltas
+        - reports_cashflow — inflow/outflow/net per account x category
+        - reports_budget — budget vs actual comparison
         - accounts_balance_list — current account balances
-        - reports_recurring_get — subscription/recurring charge review
+        - reports_recurring — subscription/recurring charge review
 
         **Workflow:**
-        1. Start with reports_spending_get for the last 1-2 months
-        2. If spending is above average, drill into reports_spending_get with a
-           specific ``category`` filter, or use reports_cashflow_get for an
+        1. Start with reports_spending for the last 1-2 months
+        2. If spending is above average, drill into reports_spending with a
+           specific ``category`` filter, or use reports_cashflow for an
            account-and-category breakdown
-        3. Check reports_budget_status for any categories over budget
+        3. Check reports_budget for any categories over budget
         4. Review accounts_balance_list for current position
-        5. Optionally check reports_recurring_get for subscription review
+        5. Optionally check reports_recurring for subscription review
 
         **Guardrails:**
         - Present totals and trends, not individual transaction details unless asked
@@ -128,17 +128,17 @@ def onboarding() -> str:
 
         **Relevant tools:**
         - import_files — import one or more financial data files
-        - import_list_formats — see supported formats
+        - import_formats_list — see supported formats
         - accounts_list — verify imported accounts
         - transactions_categorize_stats — check categorization coverage
-        - reports_spending_get — first look at their data
+        - reports_spending — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
         2. Import the user's files in one call to import_files (pass a list of paths)
         3. Verify with accounts_list that accounts were created
         4. Check transactions_categorize_stats — if many uncategorized, offer to help
-        5. Show reports_spending_get as their first financial snapshot
+        5. Show reports_spending as their first financial snapshot
 
         Default categories are seeded automatically by `moneybin db init`
         and `moneybin transform apply`.
@@ -231,14 +231,14 @@ def tax_prep() -> str:
 
         **Relevant tools:**
         - tax_w2 — retrieve W-2 wage and tax data
-        - reports_spending_get — find deduction-eligible categories
+        - reports_spending — find deduction-eligible categories
         - transactions_get — search for specific deductible expenses
         - categories_list — review tax-relevant categories
 
         **Workflow:**
         1. Ask for the tax year
         2. Pull W-2 data with tax_w2 for that year
-        3. Review reports_spending_get for deduction-eligible categories
+        3. Review reports_spending for deduction-eligible categories
            (charitable, medical, business expenses, etc.)
         4. If needed, search for specific transactions with transactions_get
         5. Summarize totals by deduction category

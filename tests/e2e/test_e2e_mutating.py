@@ -675,7 +675,7 @@ class TestBalanceAssertions:
         result = run_cli(
             "accounts",
             "balance",
-            "delete",
+            "assertion-delete",
             self._ACCOUNT,
             self._DATE,
             env=env,
@@ -706,7 +706,7 @@ class TestBalanceAssertions:
         result = run_cli(
             "accounts",
             "balance",
-            "delete",
+            "assertion-delete",
             "nonexistent_acct",
             "2000-01-01",
             env=env,

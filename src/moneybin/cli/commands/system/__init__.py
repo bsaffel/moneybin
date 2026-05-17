@@ -15,6 +15,7 @@ from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
 from . import audit as _audit
+from . import doctor as _doctor
 
 app = typer.Typer(
     help="System and data status",
@@ -22,6 +23,10 @@ app = typer.Typer(
 )
 
 app.add_typer(_audit.app, name="audit")
+app.command(
+    name="doctor",
+    help="Run pipeline integrity checks across all invariants",
+)(_doctor.doctor_command)
 
 logger = logging.getLogger(__name__)
 

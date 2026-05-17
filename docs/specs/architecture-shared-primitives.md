@@ -192,7 +192,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 | Concept | CLI | MCP | HTTP (future) |
 |---|---|---|---|
 | List accounts | `accounts list` | `accounts_list` | `GET /accounts` |
-| Net worth report | `reports networth` | `reports_networth_get` | `GET /reports/networth` |
+| Net worth report | `reports networth` | `reports_networth` | `GET /reports/networth` |
 | Confirm a match | `transactions matches confirm <id>` | `transactions_matches_confirm` | `POST /transactions/matches/{id}/confirm` |
 
 Same noun ordering across all three; only the verb position and separators differ. The architecture spec's job here is to point at the rule, not restate it.

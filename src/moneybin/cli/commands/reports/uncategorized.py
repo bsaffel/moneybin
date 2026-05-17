@@ -18,14 +18,8 @@ from moneybin.services.reports_service import ReportsService
 
 logger = logging.getLogger(__name__)
 
-uncategorized_app = typer.Typer(
-    help="Curator queue for uncategorized transactions",
-    no_args_is_help=True,
-)
 
-
-@uncategorized_app.command("show")
-def reports_uncategorized_show(
+def reports_uncategorized(
     min_amount: str = typer.Option(
         "0", "--min-amount", help="Filter to absolute amount >= this"
     ),

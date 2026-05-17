@@ -54,11 +54,11 @@ mcp = FastMCP(
         - import, sync — data ingestion (sync_pull/status/connect available; OAuth flows return URLs the client opens)
         - privacy — consent and audit
 
-        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_get.
+        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth, reports_spending.
 
         Read surface:
         - transactions_get — primary transaction read tool. Filter parameters: `accounts` (list of IDs or display names), `date_from` / `date_to` ('YYYY-MM-DD'), `categories` (list), `amount_min` / `amount_max` (decimal strings), `description` (case-insensitive pattern), `uncategorized_only` (bool). Returns notes/tags/splits. Cursor pagination via `cursor` + `next_cursor`.
-        - reports_spending_get, reports_cashflow_get — monthly aggregates. Bounds are `from_month` / `to_month` as 'YYYY-MM' (defaults to the last 12 months when both are omitted).
+        - reports_spending, reports_cashflow — monthly aggregates. Bounds are `from_month` / `to_month` as 'YYYY-MM' (defaults to the last 12 months when both are omitted).
 
         Curation surface (visible at connect):
         - transactions_create — bulk manual entry (1..100 atomic)
@@ -70,7 +70,7 @@ mcp = FastMCP(
 
         Getting oriented:
         - system_status — what data exists, freshness, pending review queues, transforms-pending signal
-        - reports_spending_get — monthly spending trend with MoM/YoY/trailing deltas
+        - reports_spending — monthly spending trend with MoM/YoY/trailing deltas
 
         Refreshing derived tables:
         - import_files and import_inbox_sync apply transforms once at end of batch by default.

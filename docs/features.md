@@ -37,8 +37,8 @@ Snapshot of MoneyBin's shipped capabilities, with links to the per-feature guide
 
 ## Accounts and balances
 
-- **Account management:** `accounts list / show / rename / include / archive / unarchive / set` with Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). Reversible account merging via bridge model. → [Account Management spec](specs/account-management.md)
-- **Net-worth and balance tracking:** `accounts balance show / history / assert / list / delete / reconcile` per-account workflow; `reports networth show / history` cross-account rollup with period-over-period change. Three-model SQLMesh pipeline: `core.fct_balances` (VIEW) → `core.fct_balances_daily` (TABLE, daily carry-forward) → `core.agg_net_worth` (VIEW). Authoritative observations from OFX, tabular running balances, and user assertions. → [Net Worth spec](specs/net-worth.md)
+- **Account management:** `accounts list / get / rename / include / archive / unarchive / set` with Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). Reversible account merging via bridge model. → [Account Management spec](specs/account-management.md)
+- **Net-worth and balance tracking:** `accounts balance show / history / assert / list / assertion-delete / reconcile` per-account workflow; `reports networth / networth-history` cross-account rollup with period-over-period change. Three-model SQLMesh pipeline: `core.fct_balances` (VIEW) → `core.fct_balances_daily` (TABLE, daily carry-forward) → `core.agg_net_worth` (VIEW). Authoritative observations from OFX, tabular running balances, and user assertions. → [Net Worth spec](specs/net-worth.md)
 
 ## Surfaces
 

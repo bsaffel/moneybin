@@ -33,7 +33,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | Tool | Description |
 |------|-------------|
 | `system_status` | Data inventory (accounts, transactions, freshness) + pending review queue counts |
-| `transactions_review_status` | Lighter orientation tool: just the queue counts |
+| `transactions_review` | Lighter orientation tool: just the queue counts |
 
 ### accounts
 
@@ -70,7 +70,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 |------|-------------|
 | `reports_spending_summary` | Income vs expenses summary by month |
 | `reports_spending_by_category` | Spending breakdown by category for a period |
-| `reports_budget_status` | Budget vs actual spending comparison |
+| `reports_budget` | Budget vs actual spending comparison |
 
 ### import
 
@@ -78,14 +78,14 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 |------|-------------|
 | `import_file` | Import a financial data file (auto-detects format) |
 | `import_preview` | Preview structure and column mapping (dry run) |
-| `import_list_formats` | Available tabular import formats and saved profiles |
+| `import_formats_list` | Available tabular import formats and saved profiles |
 | `import_status` | Summary of all imported data |
 
 ### budget
 
 | Tool | Description |
 |------|-------------|
-| `budget_set` | Create or update a monthly budget for a category (read views: `reports_budget_status`) |
+| `budget_set` | Create or update a monthly budget for a category (read views: `reports_budget`) |
 
 ### tax
 

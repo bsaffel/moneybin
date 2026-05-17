@@ -37,10 +37,10 @@ introduction:
 
 - **A. Naming-pattern mismatches.** MCP ``*_get`` vs CLI ``*_show``
   across the ``reports_*`` family (9 tools), ``accounts_get`` vs
-  ``accounts_show``, ``accounts_settings_update`` vs ``accounts_set``,
-  ``transactions_review_status`` vs ``transactions_review``,
-  ``import_list_formats`` vs ``import_formats_list``, ``system_doctor``
-  vs top-level ``doctor``, ``reports_budget_status`` vs
+  ``accounts_show``, ``accounts_set`` vs ``accounts_set``,
+  ``transactions_review`` vs ``transactions_review``,
+  ``import_formats_list`` vs ``import_formats_list``, ``system_doctor``
+  vs top-level ``doctor``, ``reports_budget`` vs
   ``reports_budget``, ``accounts_balance_assertion_delete`` vs
   ``accounts_balance_delete``.
 - **B. Set-semantic vs verb-list split.** MCP collapses to ``*_set``
@@ -65,7 +65,7 @@ introduction:
   ``accounts_summary``, ``import_inbox_sync``,
   ``transactions_categorize_assist``,
   ``transactions_categorize_pending_list``,
-  ``transactions_categorize_rule_delete``,
+  ``transactions_categorize_rules_delete``,
   ``transactions_categorize_rules_create``, ``transactions_get``,
   ``transactions_recurring_list``. ``moneybin_discover`` is MCP-only by
   design (visibility-disclosure mechanism) and lives in
