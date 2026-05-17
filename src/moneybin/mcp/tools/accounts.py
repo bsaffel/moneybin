@@ -364,7 +364,7 @@ def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
     actions: list[str] = []
     if not matches:
         actions.append(
-            "No accounts matched the query. Try a broader query or use accounts."
+            "No accounts matched the query. Try a broader query or call the `accounts` tool."
         )
     elif matches[0].confidence < threshold:
         actions.append(

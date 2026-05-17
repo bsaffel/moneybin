@@ -113,8 +113,8 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "curation fields (notes, tags, splits). "
         "Amounts use the accounting convention: negative = expense, positive = income; "
         "transfers exempt. Amounts are in the currency named by `summary.display_currency`. "
-        "`accounts` accepts display names or exact account IDs — use `accounts` to "
-        "discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
+        "`accounts` accepts display names or exact account IDs — call the `accounts` "
+        "tool to discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
     )
     register(
         mcp,
